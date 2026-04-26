@@ -15,8 +15,9 @@ import (
 )
 
 type scheduleHandlers struct {
-	eng *engine.CompressionEngine
-	db  *sql.DB
+	eng    *engine.CompressionEngine
+	smart  *engine.SmartScheduler
+	db     *sql.DB
 	oauthConfig *oauth2.Config
 }
 
@@ -151,4 +152,78 @@ func hasConflict(busy map[string][]calendar.TimeSlot, start, end time.Time) bool
 		}
 	}
 	return false
+}
+
+func (h *scheduleHandlers) suggestMeeting(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DurationMinutes int      `json:"duration_minutes"`
+		Attendees       []string `json:"attendees"`
+		RangeStart      string   `json:"range_start"`
+		RangeEnd        string   `json:"range_end"`
+		Title           string   `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	start, err1 := time.Parse(time.RFC3339, body.RangeStart)
+	end, err2 := time.Parse(time.RFC3339, body.RangeEnd)
+	if err1 != nil || err2 != nil {
+		writeError(w, "invalid range_start or range_end (use RFC3339)", http.StatusBadRequest)
+		return
+	}
+
+	req := engine.ScheduleRequest{
+		DurationMinutes: body.DurationMinutes,
+		Attendees:       body.Attendees,
+		RangeStart:      start,
+		RangeEnd:        end,
+		Title:           body.Title,
+	}
+	suggestions, err := h.smart.Suggest(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(suggestions)
+}
+
+func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title       string   `json:"title"`
+		Start       string   `json:"start"`
+		End         string   `json:"end"`
+		Attendees   []string `json:"attendees"`
+		Description string   `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	start, err1 := time.Parse(time.RFC3339, body.Start)
+	end, err2 := time.Parse(time.RFC3339, body.End)
+	if err1 != nil || err2 != nil {
+		writeError(w, "invalid start or end (use RFC3339)", http.StatusBadRequest)
+		return
+	}
+
+	req := engine.ScheduleRequest{
+		Title:       body.Title,
+		Description: body.Description,
+		Attendees:   body.Attendees,
+	}
+	slot := engine.SuggestedSlot{Start: start, End: end}
+
+	created, err := h.smart.CreateMeeting(r.Context(), req, slot)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	storage.WriteAuditLog(h.db, "meeting_created", `{"event_id":"`+created.Id+`","title":"`+body.Title+`"}`)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(created)
 }

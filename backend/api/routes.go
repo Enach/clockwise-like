@@ -42,10 +42,13 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 	})
 
 	comprEng := &engine.CompressionEngine{DB: db, OAuthConfig: oauthConfig}
-	sched := &scheduleHandlers{eng: comprEng, db: db, oauthConfig: oauthConfig}
+	smartEng := &engine.SmartScheduler{DB: db, OAuthConfig: oauthConfig}
+	sched := &scheduleHandlers{eng: comprEng, smart: smartEng, db: db, oauthConfig: oauthConfig}
 	r.Route("/api/schedule", func(r chi.Router) {
 		r.Post("/compress", sched.compress)
 		r.Post("/compress/apply", sched.applyCompress)
+		r.Post("/suggest", sched.suggestMeeting)
+		r.Post("/create", sched.createMeeting)
 	})
 
 	r.Route("/api/nlp", func(r chi.Router) {
