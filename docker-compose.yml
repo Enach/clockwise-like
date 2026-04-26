@@ -62,6 +62,19 @@ services:
         - default
     restart: unless-stopped
 
+  mcp-server:
+    build: ./mcp
+    environment:
+      BACKEND_URL: http://backend:8080
+      MCP_TRANSPORT: sse
+      MCP_PORT: "3001"
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   nginx:
     image: nginx:alpine
     ports:
