@@ -79,7 +79,7 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		ollama_base_url, ollama_model,
 		calendar_provider, COALESCE(microsoft_tokens,''), webcal_url, calendar_email,
 		COALESCE(conferencing_provider,'meet'), COALESCE(zoom_tokens,''),
-		recap_enabled, recap_send_time::TEXT, recap_send_to,
+		recap_enabled, COALESCE(recap_send_time::TEXT,''), COALESCE(recap_send_to,''),
 		COALESCE(recap_channel_id,''), recap_include_briefs, recap_include_focus, recap_include_habits,
 		updated_at
 		FROM settings WHERE id = 1`)
@@ -194,8 +194,22 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.OllamaBaseURL, s.OllamaModel,
 		s.CalendarProvider, s.WebcalURL, s.CalendarEmail,
 		s.ConferencingProvider,
-		s.RecapEnabled, s.RecapSendTime, s.RecapSendTo, s.RecapChannelID,
+		s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo), s.RecapChannelID,
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
 	)
 	return err
+}
+
+func recapSendTimeOrDefault(v string) string {
+	if v == "" {
+		return "08:00"
+	}
+	return v
+}
+
+func recapSendToOrDefault(v string) string {
+	if v == "" {
+		return "dm"
+	}
+	return v
 }

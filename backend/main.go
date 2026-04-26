@@ -72,6 +72,28 @@ func main() {
 	recapCron.Start()
 	defer recapCron.Stop()
 
+	// Manager team detection — runs every Sunday at 03:00 UTC.
+	mgrEng := &engine.ManagerEngine{DB: db, OAuthConfig: oauthConfig}
+	mgrCron := cron.New()
+	if _, err := mgrCron.AddFunc("0 3 * * 0", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		ids, err := storage.ListManagerUserIDs(db)
+		if err != nil {
+			log.Printf("manager batch: list users error: %v", err)
+			return
+		}
+		for _, uid := range ids {
+			if _, err := mgrEng.DetectTeam(ctx, uid); err != nil {
+				log.Printf("manager batch: detect %s: %v", uid, err)
+			}
+		}
+	}); err != nil {
+		log.Printf("manager cron registration error: %v", err)
+	}
+	mgrCron.Start()
+	defer mgrCron.Stop()
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 
 	r := chi.NewRouter()
