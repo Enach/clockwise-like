@@ -22,7 +22,7 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64
+          version: latest
           working-directory: backend
           args: --config ../.golangci.yml
 
@@ -75,7 +75,7 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64
+          version: latest
           working-directory: mcp
           args: --config ../.golangci.yml
 

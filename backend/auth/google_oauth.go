@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"database/sql"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -28,14 +27,6 @@ func GetAuthURL(config *oauth2.Config, state string) string {
 
 func ExchangeCode(ctx context.Context, config *oauth2.Config, code string) (*oauth2.Token, error) {
 	return config.Exchange(ctx, code)
-}
-
-func TokenFromDB(db *sql.DB) (*oauth2.Token, error) {
-	return LoadToken(db)
-}
-
-func SaveToken(db *sql.DB, token *oauth2.Token) error {
-	return UpsertToken(db, token)
 }
 
 func TokenSource(ctx context.Context, config *oauth2.Config, token *oauth2.Token) oauth2.TokenSource {

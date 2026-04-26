@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/domain"
 	"github.com/google/uuid"
 )
 
@@ -40,11 +40,11 @@ func SetUserOrg(db *sql.DB, userID, orgID uuid.UUID) error {
 // AssociateUserWithOrg derives the org from the user's email domain and links them.
 // No-op for generic provider domains (gmail.com, outlook.com, etc.).
 func AssociateUserWithOrg(db *sql.DB, userID uuid.UUID, email string) error {
-	domain := auth.ExtractDomain(email)
-	if domain == "" || auth.IsGenericDomain(domain) {
+	d := domain.ExtractDomain(email)
+	if d == "" || domain.IsGenericDomain(d) {
 		return nil
 	}
-	org, err := UpsertOrg(db, domain, auth.DeriveOrgName(domain))
+	org, err := UpsertOrg(db, d, domain.DeriveOrgName(d))
 	if err != nil {
 		return err
 	}
