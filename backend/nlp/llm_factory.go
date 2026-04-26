@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 // NewLLMClientFromSettings creates the appropriate LLM client based on the configured provider.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 func TestScoreCandidate_Morning(t *testing.T) {

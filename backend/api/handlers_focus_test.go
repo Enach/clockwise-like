@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/engine"
+	"github.com/Enach/paceday/backend/engine"
 )
 
 // mockFocusEngine implements FocusEngine.

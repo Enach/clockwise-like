@@ -1,4 +1,4 @@
-module github.com/Enach/clockwise-like/backend
+module github.com/Enach/paceday/backend
 
 go 1.25.0
 

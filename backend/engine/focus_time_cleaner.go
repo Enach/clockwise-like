@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 func (e *FocusTimeEngine) ClearWeek(ctx context.Context, targetWeek time.Time) (int, error) {

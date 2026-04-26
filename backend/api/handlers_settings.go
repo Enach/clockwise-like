@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/robfig/cron/v3"
 )
 

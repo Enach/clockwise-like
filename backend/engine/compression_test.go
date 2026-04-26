@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/calendar"
+	"github.com/Enach/paceday/backend/calendar"
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 

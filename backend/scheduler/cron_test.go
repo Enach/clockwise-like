@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
 

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/nlp"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/nlp"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 type nlpHandlers struct {

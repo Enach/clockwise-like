@@ -10,7 +10,7 @@ import (
 )
 
 func buildServer(c *backendClient) *server.MCPServer {
-	s := server.NewMCPServer("Clockwise-like", "1.0.0")
+	s := server.NewMCPServer("Paceday", "1.0.0")
 
 	// ── Calendar ──────────────────────────────────────────────────────────────
 

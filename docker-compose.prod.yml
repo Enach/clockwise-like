@@ -5,9 +5,9 @@ version: '3.9'
 
 services:
   backend:
-    image: ghcr.io/enach/clockwise-backend:latest
+    image: ghcr.io/enach/paceday-backend:latest
     build: !reset {}
 
   frontend:
-    image: ghcr.io/enach/clockwise-frontend:latest
+    image: ghcr.io/enach/paceday-frontend:latest
     build: !reset {}

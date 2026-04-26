@@ -9,11 +9,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/robfig/cron/v3"
-	"github.com/Enach/clockwise-like/backend/api"
-	"github.com/Enach/clockwise-like/backend/auth"
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/scheduler"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/api"
+	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/scheduler"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 func main() {

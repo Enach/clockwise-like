@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/calendar"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 var testNow = time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC) // Tuesday

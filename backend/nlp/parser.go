@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/calendar"
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
 

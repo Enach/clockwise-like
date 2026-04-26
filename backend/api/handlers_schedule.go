@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 type scheduleHandlers struct {

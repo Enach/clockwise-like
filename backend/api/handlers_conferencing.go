@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/auth"
-	"github.com/Enach/clockwise-like/backend/conference"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/conference"
+	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
 

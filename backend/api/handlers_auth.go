@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/auth"
+	"github.com/Enach/paceday/backend/auth"
 	"golang.org/x/oauth2"
 )
 

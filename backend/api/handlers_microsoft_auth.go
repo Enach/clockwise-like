@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/Enach/clockwise-like/backend/auth"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Request) {

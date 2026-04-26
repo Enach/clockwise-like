@@ -3,8 +3,8 @@ package api
 import (
 	"database/sql"
 
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/nlp"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/nlp"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 )

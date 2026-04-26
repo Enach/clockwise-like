@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/nlp"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/nlp"
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 

@@ -1,6 +1,6 @@
-# Clockwise-like
+# Paceday
 
-A Clockwise-inspired calendar management app with focus time scheduling and meeting compression.
+An AI-powered calendar management app that protects your focus time, compresses meetings, and lets you control your schedule with natural language.
 
 ## Setup
 
@@ -16,13 +16,14 @@ docker compose up --build
 
 ## Stack
 
-- **Backend**: Go 1.25, chi router, SQLite
+- **Backend**: Go 1.25, chi router, PostgreSQL
 - **Frontend**: React 18, TypeScript, Vite 5, Tailwind CSS, shadcn/ui
+- **MCP Server**: Go, port 3001 — exposes Paceday tools to Claude Desktop, Cursor, Zed
 - **Infrastructure**: Docker Compose, Nginx reverse proxy
 
 ## Frontend Development
 
-The frontend source lives in `frontend/src/` and is generated and maintained via **Lovable** at [https://github.com/Enach/smart-calendar-flow](https://github.com/Enach/smart-calendar-flow).
+The frontend source is generated and maintained via **Lovable** at [https://github.com/Enach/smart-calendar-flow](https://github.com/Enach/smart-calendar-flow).
 
 ### Pull the latest Lovable changes
 
@@ -52,4 +53,31 @@ go run .
 ```bash
 docker compose build
 docker compose up
+```
+
+## MCP Server (Claude Desktop / Cursor)
+
+Paceday exposes 16 calendar tools via the [Model Context Protocol](https://modelcontextprotocol.io).
+
+**SSE mode** (running via docker-compose, port 3001):
+```json
+{
+  "mcpServers": {
+    "paceday": {
+      "url": "http://localhost:3001/sse"
+    }
+  }
+}
+```
+
+**stdio mode** (direct binary):
+```json
+{
+  "mcpServers": {
+    "paceday": {
+      "command": "/path/to/mcp-server",
+      "env": { "BACKEND_URL": "http://localhost:8080" }
+    }
+  }
+}
 ```

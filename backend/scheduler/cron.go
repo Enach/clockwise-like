@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/engine"
-	"github.com/Enach/clockwise-like/backend/storage"
+	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/robfig/cron/v3"
 	"golang.org/x/oauth2"
 )

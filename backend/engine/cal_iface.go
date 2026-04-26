@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/auth"
-	"github.com/Enach/clockwise-like/backend/calendar"
+	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/calendar"
 	googlecalendar "google.golang.org/api/calendar/v3"
 	"golang.org/x/oauth2"
 )

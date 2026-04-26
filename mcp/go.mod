@@ -1,4 +1,4 @@
-module github.com/Enach/clockwise-like/mcp
+module github.com/Enach/paceday/mcp
 
 go 1.22
 
