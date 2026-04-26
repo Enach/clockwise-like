@@ -165,6 +165,22 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		fbh := newFreeBusyHandlers(db, oauthConfig)
 		r.Post("/api/freebusy", fbh.query)
 
+		ih := &integrationsHandlers{db: db}
+		r.Route("/api/integrations", func(r chi.Router) {
+			r.Get("/slack/connect", ih.slackConnect)
+			r.Get("/slack/callback", ih.slackCallback)
+			r.Delete("/slack", ih.slackDisconnect)
+			r.Get("/slack/status", ih.slackStatus)
+			r.Get("/notion/connect", ih.notionConnect)
+			r.Get("/notion/callback", ih.notionCallback)
+			r.Delete("/notion", ih.notionDisconnect)
+			r.Get("/notion/status", ih.notionStatus)
+		})
+
+		mbh := &meetingBriefHandlers{db: db, oauthConfig: oauthConfig}
+		r.Get("/api/meetings/{event_id}/brief", mbh.getBrief)
+		r.Post("/api/meetings/{event_id}/brief/refresh", mbh.refreshBrief)
+
 		th := newTeamHandlers(db, oauthConfig)
 		r.Route("/api/teams", func(r chi.Router) {
 			r.Post("/", th.createTeam)

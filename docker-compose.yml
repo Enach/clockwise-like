@@ -34,6 +34,14 @@ services:
       - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID:-}
       - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET:-}
       - ZOOM_REDIRECT_URL=${ZOOM_REDIRECT_URL:-}
+      # Slack OAuth (meeting briefs + daily recap)
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
+      - SLACK_REDIRECT_URI=${SLACK_REDIRECT_URI:-}
+      # Notion OAuth (meeting briefs)
+      - NOTION_CLIENT_ID=${NOTION_CLIENT_ID:-}
+      - NOTION_CLIENT_SECRET=${NOTION_CLIENT_SECRET:-}
+      - NOTION_REDIRECT_URI=${NOTION_REDIRECT_URI:-}
       # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
       # Vertex AI, Ollama) are configured per-user in the Settings page and
       # stored in the database — no server-level env vars needed.
