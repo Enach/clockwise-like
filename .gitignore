@@ -1,0 +1,19 @@
+# Go
+backend/server
+backend/*.test
+*.exe
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Environment
+.env
+
+# Data
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
