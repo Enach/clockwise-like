@@ -15,6 +15,12 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 	r.Get("/api/health", healthHandler)
 
+	// Public booking routes — no JWT required
+	bh := newBookingHandlers(db, oauthConfig)
+	r.Get("/api/book/{slug}", bh.getLinkInfo)
+	r.Get("/api/book/{slug}/slots", bh.getSlots)
+	r.Post("/api/book/{slug}", bh.createBooking)
+
 	// Public auth routes — no JWT required
 	ah := &authHandlers{oauthConfig: oauthConfig, db: db, jwtSecret: jwtSecret}
 	ssoh := &ssoHandlers{ah: ah}
@@ -116,6 +122,20 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 		oh := &orgHandlers{db: db}
 		r.Get("/api/org/members", oh.members)
+
+		slh := newSchedulingLinkHandlers(db, oauthConfig)
+		r.Route("/api/scheduling-links", func(r chi.Router) {
+			r.Post("/", slh.createLink)
+			r.Get("/", slh.listLinks)
+			r.Get("/host-invites", slh.listHostInvites)
+			r.Post("/host-invites/{id}/accept", slh.acceptInvite)
+			r.Post("/host-invites/{id}/decline", slh.declineInvite)
+			r.Get("/{id}", slh.getLink)
+			r.Patch("/{id}", slh.updateLink)
+			r.Delete("/{id}", slh.deleteLink)
+			r.Get("/{id}/bookings", slh.listBookings)
+			r.Post("/{id}/hosts", slh.inviteHost)
+		})
 
 		r.Route("/api/admin/sso", func(r chi.Router) {
 			r.Post("/", ssoh.createSSOProvider)

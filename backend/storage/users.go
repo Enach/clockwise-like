@@ -34,6 +34,26 @@ func UpsertUser(db *sql.DB, email, name, avatarURL, provider, providerID string)
 	return u, row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &u.CreatedAt)
 }
 
+func GetUserByEmail(db *sql.DB, email string) (*User, error) {
+	row := db.QueryRow(`
+		SELECT id, email, name, avatar_url, provider, org_id, created_at
+		FROM users WHERE email = $1
+	`, email)
+
+	u := &User{}
+	var orgID uuid.NullUUID
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &orgID, &u.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if orgID.Valid {
+		u.OrgID = &orgID.UUID
+	}
+	return u, nil
+}
+
 func GetUserByID(db *sql.DB, id uuid.UUID) (*User, error) {
 	row := db.QueryRow(`
 		SELECT id, email, name, avatar_url, provider, org_id, created_at
