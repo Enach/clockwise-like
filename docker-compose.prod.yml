@@ -1,13 +1,114 @@
 version: '3.9'
 
-# Production overrides — use pre-built GHCR images instead of local builds.
-# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Production compose — standalone, no base file needed.
+# Usage: docker compose -f docker-compose.prod.yml up -d
+#
+# Copy .env.example to .env and fill in every value before first run.
 
 services:
+
+  # ── Database ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       clockwise
+      POSTGRES_USER:     clockwise
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}          # required
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clockwise -d clockwise"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Backend ─────────────────────────────────────────────────────────────────
   backend:
     image: ghcr.io/enach/paceday-backend:latest
-    build: !reset {}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://clockwise:${POSTGRES_PASSWORD}@postgres:5432/clockwise?sslmode=disable
 
+      # ── Auth ────────────────────────────────────────────────────────────────
+      # HS256 secret for JWT cookies — generate with: openssl rand -hex 32
+      JWT_SECRET: ${JWT_SECRET}                        # required
+
+      # Legacy session secret (kept for backward compat)
+      SESSION_SECRET: ${SESSION_SECRET}                # required
+
+      # ── Google OAuth (calendar + sign-in) ───────────────────────────────────
+      GOOGLE_CLIENT_ID:       ${GOOGLE_CLIENT_ID}      # required
+      GOOGLE_CLIENT_SECRET:   ${GOOGLE_CLIENT_SECRET}  # required
+      # Callback URL registered in Google Cloud Console
+      GOOGLE_REDIRECT_URL:    ${GOOGLE_REDIRECT_URL}   # e.g. https://app.example.com/api/auth/callback
+
+      # ── Microsoft OAuth (Outlook calendar + sign-in) ────────────────────────
+      MICROSOFT_CLIENT_ID:     ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      # Callback URL registered in Azure App Registration
+      MICROSOFT_REDIRECT_URL:  ${MICROSOFT_REDIRECT_URL:-}  # e.g. https://app.example.com/api/auth/microsoft/callback
+
+      # ── Zoom OAuth (conferencing) ────────────────────────────────────────────
+      ZOOM_CLIENT_ID:     ${ZOOM_CLIENT_ID:-}
+      ZOOM_CLIENT_SECRET: ${ZOOM_CLIENT_SECRET:-}
+      ZOOM_REDIRECT_URL:  ${ZOOM_REDIRECT_URL:-}       # e.g. https://app.example.com/api/auth/zoom/callback
+
+      # ── LLM: AWS Bedrock ────────────────────────────────────────────────────
+      # Use IAM role credentials (preferred in EC2/ECS) or explicit keys
+      AWS_REGION:            ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN:     ${AWS_SESSION_TOKEN:-}
+
+      # ── LLM: Azure OpenAI ───────────────────────────────────────────────────
+      AZURE_TENANT_ID:     ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID:     ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+
+      # ── LLM: Google Vertex AI ───────────────────────────────────────────────
+      # In prod, use Workload Identity or pass the service-account JSON as a file
+      GOOGLE_CLOUD_PROJECT:          ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
     image: ghcr.io/enach/paceday-frontend:latest
-    build: !reset {}
+    restart: unless-stopped
+
+  # ── MCP Server ───────────────────────────────────────────────────────────────
+  mcp-server:
+    image: ghcr.io/enach/paceday-mcp:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3001:3001"
+    environment:
+      BACKEND_URL:    http://backend:8080
+      MCP_TRANSPORT:  sse
+      MCP_PORT:       "3001"
+      # Optional bearer token to protect the SSE endpoint
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+
+  # ── Reverse Proxy ─────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Mount TLS certificates (Let's Encrypt / certbot output)
+      - ${TLS_CERT_DIR:-/etc/letsencrypt}:/etc/letsencrypt:ro
+
+volumes:
+  postgres_data:
