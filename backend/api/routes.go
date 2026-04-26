@@ -109,5 +109,8 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 		cnh := &conferencingHandlers{db: db, oauthConfig: oauthConfig}
 		r.Post("/api/conference/create", cnh.createConference)
+
+		oh := &orgHandlers{db: db}
+		r.Get("/api/org/members", oh.members)
 	})
 }

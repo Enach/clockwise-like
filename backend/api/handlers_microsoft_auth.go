@@ -71,6 +71,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 	// Fetch Microsoft user profile and upsert user
 	if info, err := fetchMicrosoftUserInfo(r.Context(), token); err == nil && info.Email != "" {
 		if user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID); err == nil {
+			storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
 			h.issueJWT(w, user)
 		}
 	}

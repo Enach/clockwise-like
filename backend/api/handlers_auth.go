@@ -71,6 +71,9 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-associate with org based on email domain
+	storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
+
 	h.issueJWT(w, user)
 	http.Redirect(w, r, "/?connected=true", http.StatusFound)
 }
