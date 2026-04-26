@@ -1,0 +1,12 @@
+ALTER TABLE settings DROP COLUMN IF EXISTS aws_region;
+ALTER TABLE settings DROP COLUMN IF EXISTS aws_profile;
+ALTER TABLE settings DROP COLUMN IF EXISTS bedrock_model;
+ALTER TABLE settings DROP COLUMN IF EXISTS azure_endpoint;
+ALTER TABLE settings DROP COLUMN IF EXISTS azure_deployment;
+ALTER TABLE settings DROP COLUMN IF EXISTS azure_api_version;
+ALTER TABLE settings DROP COLUMN IF EXISTS gcp_project;
+ALTER TABLE settings DROP COLUMN IF EXISTS gcp_location;
+ALTER TABLE settings DROP COLUMN IF EXISTS vertex_model;
+ALTER TABLE settings DROP COLUMN IF EXISTS ollama_base_url;
+ALTER TABLE settings DROP COLUMN IF EXISTS ollama_model;
+ALTER TABLE settings ALTER COLUMN llm_provider SET DEFAULT '';

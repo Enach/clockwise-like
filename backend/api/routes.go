@@ -58,4 +58,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 		r.Post("/parse", nh.parse)
 		r.Post("/confirm", nh.confirm)
 	})
+
+	lh := &llmHandlers{db: db}
+	r.Post("/api/llm/test", lh.testLLM)
 }

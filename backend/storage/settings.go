@@ -27,7 +27,22 @@ type Settings struct {
 	LLMModel                string    `json:"llmModel"`
 	LLMAPIKey               string    `json:"llmApiKey"`
 	LLMBaseURL              string    `json:"llmBaseUrl"`
-	UpdatedAt               time.Time `json:"updatedAt"`
+	// AWS Bedrock
+	AWSRegion    string `json:"awsRegion"`
+	AWSProfile   string `json:"awsProfile"`
+	BedrockModel string `json:"bedrockModel"`
+	// Azure OpenAI
+	AzureEndpoint   string `json:"azureEndpoint"`
+	AzureDeployment string `json:"azureDeployment"`
+	AzureAPIVersion string `json:"azureApiVersion"`
+	// Google Vertex AI
+	GCPProject  string `json:"gcpProject"`
+	GCPLocation string `json:"gcpLocation"`
+	VertexModel string `json:"vertexModel"`
+	// Ollama
+	OllamaBaseURL string    `json:"ollamaBaseUrl"`
+	OllamaModel   string    `json:"ollamaModel"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 func GetSettings(db *sql.DB) (*Settings, error) {
@@ -37,7 +52,11 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
 		buffer_before_minutes, buffer_after_minutes, compression_enabled,
 		auto_schedule_enabled, auto_schedule_cron,
-		llm_provider, llm_model, llm_api_key, llm_base_url, updated_at
+		llm_provider, llm_model, llm_api_key, llm_base_url,
+		aws_region, aws_profile, bedrock_model,
+		azure_endpoint, azure_deployment, azure_api_version,
+		gcp_project, gcp_location, vertex_model,
+		ollama_base_url, ollama_model, updated_at
 		FROM settings WHERE id = 1`)
 
 	s := &Settings{}
@@ -47,7 +66,11 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &s.ProtectLunch,
 		&s.BufferBeforeMinutes, &s.BufferAfterMinutes, &s.CompressionEnabled,
 		&s.AutoScheduleEnabled, &s.AutoScheduleCron,
-		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL, &s.UpdatedAt,
+		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL,
+		&s.AWSRegion, &s.AWSProfile, &s.BedrockModel,
+		&s.AzureEndpoint, &s.AzureDeployment, &s.AzureAPIVersion,
+		&s.GCPProject, &s.GCPLocation, &s.VertexModel,
+		&s.OllamaBaseURL, &s.OllamaModel, &s.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return insertDefaultSettings(db)
@@ -74,8 +97,12 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
 			buffer_before_minutes, buffer_after_minutes, compression_enabled,
 			auto_schedule_enabled, auto_schedule_cron,
-			llm_provider, llm_model, llm_api_key, llm_base_url, updated_at
-		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
+			llm_provider, llm_model, llm_api_key, llm_base_url,
+			aws_region, aws_profile, bedrock_model,
+			azure_endpoint, azure_deployment, azure_api_version,
+			gcp_project, gcp_location, vertex_model,
+			ollama_base_url, ollama_model, updated_at
+		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
 			timezone=EXCLUDED.timezone,
@@ -92,6 +119,13 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			auto_schedule_cron=EXCLUDED.auto_schedule_cron,
 			llm_provider=EXCLUDED.llm_provider, llm_model=EXCLUDED.llm_model,
 			llm_api_key=EXCLUDED.llm_api_key, llm_base_url=EXCLUDED.llm_base_url,
+			aws_region=EXCLUDED.aws_region, aws_profile=EXCLUDED.aws_profile,
+			bedrock_model=EXCLUDED.bedrock_model,
+			azure_endpoint=EXCLUDED.azure_endpoint, azure_deployment=EXCLUDED.azure_deployment,
+			azure_api_version=EXCLUDED.azure_api_version,
+			gcp_project=EXCLUDED.gcp_project, gcp_location=EXCLUDED.gcp_location,
+			vertex_model=EXCLUDED.vertex_model,
+			ollama_base_url=EXCLUDED.ollama_base_url, ollama_model=EXCLUDED.ollama_model,
 			updated_at=NOW()`,
 		s.WorkStart, s.WorkEnd, s.Timezone,
 		s.FocusMinBlockMinutes, s.FocusMaxBlockMinutes, s.FocusDailyTargetMinutes,
@@ -99,6 +133,10 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.BufferBeforeMinutes, s.BufferAfterMinutes, s.CompressionEnabled,
 		s.AutoScheduleEnabled, s.AutoScheduleCron,
 		s.LLMProvider, s.LLMModel, s.LLMAPIKey, s.LLMBaseURL,
+		s.AWSRegion, s.AWSProfile, s.BedrockModel,
+		s.AzureEndpoint, s.AzureDeployment, s.AzureAPIVersion,
+		s.GCPProject, s.GCPLocation, s.VertexModel,
+		s.OllamaBaseURL, s.OllamaModel,
 	)
 	return err
 }

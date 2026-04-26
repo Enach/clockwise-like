@@ -274,29 +274,7 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 }
 
 func (s *NLPService) buildLLMClient(settings *storage.Settings) (LLMClient, error) {
-	if settings.LLMAPIKey == "" && settings.LLMProvider != "ollama" {
-		return nil, fmt.Errorf("LLM not configured — set API key in Settings")
-	}
-	model := settings.LLMModel
-	switch settings.LLMProvider {
-	case "openai":
-		if model == "" {
-			model = "gpt-4o-mini"
-		}
-		return &OpenAIClient{APIKey: settings.LLMAPIKey, Model: model}, nil
-	case "anthropic":
-		if model == "" {
-			model = "claude-haiku-4-5-20251001"
-		}
-		return &AnthropicClient{APIKey: settings.LLMAPIKey, Model: model}, nil
-	case "ollama":
-		if model == "" {
-			model = "llama3.2"
-		}
-		return &OllamaClient{BaseURL: settings.LLMBaseURL, Model: model}, nil
-	default:
-		return nil, fmt.Errorf("LLM not configured — set API key in Settings")
-	}
+	return NewLLMClientFromSettings(settings)
 }
 
 func buildSystemPrompt(s *storage.Settings) (string, error) {

@@ -14,10 +14,13 @@ import (
 var timePattern = regexp.MustCompile(`^\d{2}:\d{2}$`)
 
 var validLLMProviders = map[string]bool{
-	"openai":    true,
-	"anthropic": true,
-	"ollama":    true,
-	"":          true,
+	"openai":       true,
+	"anthropic":    true,
+	"ollama":       true,
+	"bedrock":      true,
+	"azure_openai": true,
+	"vertex":       true,
+	"":             true,
 }
 
 type settingsHandlers struct {
@@ -101,7 +104,7 @@ func validateSettings(s *storage.Settings) error {
 	}
 
 	if s.LLMProvider != "" && !validLLMProviders[s.LLMProvider] {
-		return &validationError{"llmProvider must be one of: openai, anthropic, ollama"}
+		return &validationError{"llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex"}
 	}
 
 	return nil

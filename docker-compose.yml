@@ -25,6 +25,23 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL:-}
       - SESSION_SECRET=${SESSION_SECRET:-changeme}
+      # AWS Bedrock
+      - AWS_PROFILE
+      - AWS_REGION
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      # Azure OpenAI
+      - AZURE_TENANT_ID
+      - AZURE_CLIENT_ID
+      - AZURE_CLIENT_SECRET
+      # Google Vertex AI
+      - GOOGLE_APPLICATION_CREDENTIALS
+      - GOOGLE_CLOUD_PROJECT
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - ~/.azure:/root/.azure:ro
+      - ~/.config/gcloud:/root/.config/gcloud:ro
     depends_on:
       postgres:
         condition: service_healthy
