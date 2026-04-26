@@ -27,8 +27,10 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 		r.Get("/freebusy", ch.freeBusy)
 	})
 
+	sh := &settingsHandlers{db: db}
 	r.Route("/api/settings", func(r chi.Router) {
-		// T-03: Settings handlers
+		r.Get("/", sh.getSettings)
+		r.Put("/", sh.putSettings)
 	})
 
 	r.Route("/api/focus", func(r chi.Router) {
@@ -42,6 +44,4 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 	r.Route("/api/nlp", func(r chi.Router) {
 		// T-07: NLP backend handlers
 	})
-
-	_ = db
 }
