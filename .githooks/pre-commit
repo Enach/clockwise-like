@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+YELLOW='\033[0;33m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+fail() { echo -e "${RED}✗ $*${NC}" >&2; exit 1; }
+ok()   { echo -e "${GREEN}✓ $*${NC}"; }
+info() { echo -e "${YELLOW}» $*${NC}"; }
+
+# Only check files that are staged
+changed_dirs() {
+  git diff --cached --name-only | grep -E "^$1/" | head -1
+}
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+if changed_dirs backend || changed_dirs "backend/.*"; then
+  info "backend: build"
+  (cd backend && go build ./...) || fail "backend build failed"
+  ok "backend build"
+
+  if command -v golangci-lint &>/dev/null; then
+    info "backend: lint"
+    (cd backend && golangci-lint run --config ../.golangci.yml --fast) || fail "backend lint failed"
+    ok "backend lint"
+  else
+    echo "  (golangci-lint not found — skipping backend lint)"
+  fi
+fi
+
+# ── MCP ───────────────────────────────────────────────────────────────────────
+if changed_dirs mcp; then
+  info "mcp: build"
+  (cd mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' go build ./...) || fail "mcp build failed"
+  ok "mcp build"
+
+  if command -v golangci-lint &>/dev/null; then
+    info "mcp: lint"
+    (cd mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' golangci-lint run --config ../.golangci.yml --fast) || fail "mcp lint failed"
+    ok "mcp lint"
+  else
+    echo "  (golangci-lint not found — skipping mcp lint)"
+  fi
+fi
