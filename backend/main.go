@@ -59,6 +59,19 @@ func main() {
 	personalCron.Start()
 	defer personalCron.Stop()
 
+	// Daily morning recap — fires every minute, checks per-user send time.
+	recapSvc := &engine.DailyRecapService{DB: db}
+	recapCron := cron.New()
+	if _, err := recapCron.AddFunc("* * * * *", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+		defer cancel()
+		recapSvc.RunAll(ctx)
+	}); err != nil {
+		log.Printf("recap cron registration error: %v", err)
+	}
+	recapCron.Start()
+	defer recapCron.Stop()
+
 	jwtSecret := os.Getenv("JWT_SECRET")
 
 	r := chi.NewRouter()

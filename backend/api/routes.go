@@ -181,6 +181,14 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Get("/api/meetings/{event_id}/brief", mbh.getBrief)
 		r.Post("/api/meetings/{event_id}/brief/refresh", mbh.refreshBrief)
 
+		drh := &dailyRecapHandlers{db: db}
+		r.Route("/api/settings/daily-recap", func(r chi.Router) {
+			r.Get("/", drh.getSettings)
+			r.Patch("/", drh.patchSettings)
+			r.Post("/preview", drh.preview)
+			r.Post("/test", drh.test)
+		})
+
 		th := newTeamHandlers(db, oauthConfig)
 		r.Route("/api/teams", func(r chi.Router) {
 			r.Post("/", th.createTeam)

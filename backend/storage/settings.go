@@ -18,11 +18,11 @@ type Settings struct {
 	LunchStart              string    `json:"lunchStart"`
 	LunchEnd                string    `json:"lunchEnd"`
 	ProtectLunch            bool      `json:"protectLunch"`
-	BufferBeforeMinutes      int  `json:"bufferBeforeMinutes"`
-	BufferAfterMinutes       int  `json:"bufferAfterMinutes"`
-	BufferEnabled            bool `json:"bufferEnabled"`
-	BufferMinMeetingMinutes  int  `json:"bufferMinMeetingMinutes"`
-	BufferSkipBackToBack     bool `json:"bufferSkipBackToBack"`
+	BufferBeforeMinutes     int       `json:"bufferBeforeMinutes"`
+	BufferAfterMinutes      int       `json:"bufferAfterMinutes"`
+	BufferEnabled           bool      `json:"bufferEnabled"`
+	BufferMinMeetingMinutes int       `json:"bufferMinMeetingMinutes"`
+	BufferSkipBackToBack    bool      `json:"bufferSkipBackToBack"`
 	CompressionEnabled      bool      `json:"compressionEnabled"`
 	AutoScheduleEnabled     bool      `json:"autoScheduleEnabled"`
 	AutoScheduleCron        string    `json:"autoScheduleCron"`
@@ -53,7 +53,15 @@ type Settings struct {
 	// Conferencing
 	ConferencingProvider string `json:"conferencingProvider"`
 	ZoomTokens           string `json:"-"` // JSON blob, not exposed in API
-	UpdatedAt            time.Time `json:"updatedAt"`
+	// Daily recap
+	RecapEnabled       bool   `json:"recapEnabled"`
+	RecapSendTime      string `json:"recapSendTime"` // "HH:MM"
+	RecapSendTo        string `json:"recapSendTo"`   // "dm" or "channel"
+	RecapChannelID     string `json:"recapChannelId"`
+	RecapIncludeBriefs bool   `json:"recapIncludeBriefs"`
+	RecapIncludeFocus  bool   `json:"recapIncludeFocus"`
+	RecapIncludeHabits bool   `json:"recapIncludeHabits"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 func GetSettings(db *sql.DB) (*Settings, error) {
@@ -71,6 +79,8 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		ollama_base_url, ollama_model,
 		calendar_provider, COALESCE(microsoft_tokens,''), webcal_url, calendar_email,
 		COALESCE(conferencing_provider,'meet'), COALESCE(zoom_tokens,''),
+		recap_enabled, recap_send_time::TEXT, recap_send_to,
+		COALESCE(recap_channel_id,''), recap_include_briefs, recap_include_focus, recap_include_habits,
 		updated_at
 		FROM settings WHERE id = 1`)
 
@@ -89,6 +99,8 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		&s.OllamaBaseURL, &s.OllamaModel,
 		&s.CalendarProvider, &s.MicrosoftTokens, &s.WebcalURL, &s.CalendarEmail,
 		&s.ConferencingProvider, &s.ZoomTokens,
+		&s.RecapEnabled, &s.RecapSendTime, &s.RecapSendTo,
+		&s.RecapChannelID, &s.RecapIncludeBriefs, &s.RecapIncludeFocus, &s.RecapIncludeHabits,
 		&s.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -123,8 +135,15 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			gcp_project, gcp_location, vertex_model,
 			ollama_base_url, ollama_model,
 			calendar_provider, webcal_url, calendar_email,
-			conferencing_provider, updated_at
-		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,NOW())
+			conferencing_provider,
+			recap_enabled, recap_send_time, recap_send_to, recap_channel_id,
+			recap_include_briefs, recap_include_focus, recap_include_habits,
+			updated_at
+		) VALUES (
+			1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+			$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
+			$39,$40,$41,$42,$43,$44,$45,NOW()
+		)
 		ON CONFLICT (id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
 			timezone=EXCLUDED.timezone,
@@ -154,6 +173,13 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			calendar_provider=EXCLUDED.calendar_provider,
 			webcal_url=EXCLUDED.webcal_url, calendar_email=EXCLUDED.calendar_email,
 			conferencing_provider=EXCLUDED.conferencing_provider,
+			recap_enabled=EXCLUDED.recap_enabled,
+			recap_send_time=EXCLUDED.recap_send_time,
+			recap_send_to=EXCLUDED.recap_send_to,
+			recap_channel_id=EXCLUDED.recap_channel_id,
+			recap_include_briefs=EXCLUDED.recap_include_briefs,
+			recap_include_focus=EXCLUDED.recap_include_focus,
+			recap_include_habits=EXCLUDED.recap_include_habits,
 			updated_at=NOW()`,
 		s.WorkStart, s.WorkEnd, s.Timezone,
 		s.FocusMinBlockMinutes, s.FocusMaxBlockMinutes, s.FocusDailyTargetMinutes,
@@ -168,6 +194,8 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.OllamaBaseURL, s.OllamaModel,
 		s.CalendarProvider, s.WebcalURL, s.CalendarEmail,
 		s.ConferencingProvider,
+		s.RecapEnabled, s.RecapSendTime, s.RecapSendTo, s.RecapChannelID,
+		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
 	)
 	return err
 }
