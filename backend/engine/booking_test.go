@@ -3,6 +3,8 @@ package engine
 import (
 	"testing"
 	"time"
+
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 func TestSlugify(t *testing.T) {
@@ -113,6 +115,28 @@ func TestGenerateICS(t *testing.T) {
 		if !contains(ics, want) {
 			t.Errorf("ICS missing %q", want)
 		}
+	}
+}
+
+func TestParseEventTime(t *testing.T) {
+	// Valid RFC3339 times.
+	ev := &googlecalendar.Event{
+		Start: &googlecalendar.EventDateTime{DateTime: "2024-06-03T09:00:00Z"},
+		End:   &googlecalendar.EventDateTime{DateTime: "2024-06-03T10:00:00Z"},
+	}
+	s, e := parseEventTime(ev)
+	if s.IsZero() || e.IsZero() {
+		t.Error("expected non-zero times for valid event")
+	}
+	wantStart := time.Date(2024, 6, 3, 9, 0, 0, 0, time.UTC)
+	if !s.Equal(wantStart) {
+		t.Errorf("start = %v, want %v", s, wantStart)
+	}
+
+	// Nil start/end.
+	s2, e2 := parseEventTime(&googlecalendar.Event{})
+	if !s2.IsZero() || !e2.IsZero() {
+		t.Error("expected zero times for event with nil start/end")
 	}
 }
 

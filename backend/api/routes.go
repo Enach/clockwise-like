@@ -123,6 +123,14 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		oh := &orgHandlers{db: db}
 		r.Get("/api/org/members", oh.members)
 
+		ah2 := newAnalyticsHandlers(db, oauthConfig)
+		r.Route("/api/analytics", func(r chi.Router) {
+			r.Get("/week", ah2.week)
+			r.Get("/trends", ah2.trends)
+			r.Get("/meetings", ah2.meetings)
+			r.Post("/recompute", ah2.recompute)
+		})
+
 		hh := newHabitsHandlers(db, oauthConfig)
 		r.Route("/api/habits", func(r chi.Router) {
 			r.Get("/templates", hh.templates)
