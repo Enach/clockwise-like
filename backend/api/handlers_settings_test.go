@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,16 +9,6 @@ import (
 
 	"github.com/Enach/paceday/backend/storage"
 )
-
-func openTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := storage.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
 
 func TestGetSettings(t *testing.T) {
 	db := openTestDB(t)

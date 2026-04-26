@@ -101,31 +101,46 @@ func DeactivateHabit(db *sql.DB, id uuid.UUID) error {
 
 func scanHabit(row *sql.Row) (*Habit, error) {
 	var h Habit
+	var daysOfWeek pq.Int64Array
 	err := row.Scan(
 		&h.ID, &h.UserID, &h.Title, &h.DurationMinutes,
-		pq.Array(&h.DaysOfWeek), &h.WindowStart, &h.WindowEnd,
+		&daysOfWeek, &h.WindowStart, &h.WindowEnd,
 		&h.Priority, &h.Color, &h.Active, &h.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	return &h, err
+	if err != nil {
+		return nil, err
+	}
+	h.DaysOfWeek = int64SliceToInt(daysOfWeek)
+	return &h, nil
 }
 
 func scanHabits(rows *sql.Rows) ([]*Habit, error) {
 	var out []*Habit
 	for rows.Next() {
 		var h Habit
+		var daysOfWeek pq.Int64Array
 		if err := rows.Scan(
 			&h.ID, &h.UserID, &h.Title, &h.DurationMinutes,
-			pq.Array(&h.DaysOfWeek), &h.WindowStart, &h.WindowEnd,
+			&daysOfWeek, &h.WindowStart, &h.WindowEnd,
 			&h.Priority, &h.Color, &h.Active, &h.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		h.DaysOfWeek = int64SliceToInt(daysOfWeek)
 		out = append(out, &h)
 	}
 	return out, rows.Err()
+}
+
+func int64SliceToInt(s pq.Int64Array) []int {
+	out := make([]int, len(s))
+	for i, v := range s {
+		out[i] = int(v)
+	}
+	return out
 }
 
 // --- HabitOccurrence CRUD -------------------------------------------------

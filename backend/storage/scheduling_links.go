@@ -133,34 +133,44 @@ func DeleteSchedulingLink(db *sql.DB, id uuid.UUID) error {
 
 func scanSchedulingLink(row *sql.Row) (*SchedulingLink, error) {
 	var l SchedulingLink
+	var durOpts, daysOfWeek pq.Int64Array
 	err := row.Scan(
 		&l.ID, &l.OwnerUserID, &l.Slug, &l.Title,
-		pq.Array(&l.DurationOptions), pq.Array(&l.DaysOfWeek),
+		&durOpts, &daysOfWeek,
 		&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
 		&l.Active, &l.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	return &l, err
+	if err != nil {
+		return nil, err
+	}
+	l.DurationOptions = int64SliceToInt(durOpts)
+	l.DaysOfWeek = int64SliceToInt(daysOfWeek)
+	return &l, nil
 }
 
 func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 	var out []*SchedulingLink
 	for rows.Next() {
 		var l SchedulingLink
+		var durOpts, daysOfWeek pq.Int64Array
 		if err := rows.Scan(
 			&l.ID, &l.OwnerUserID, &l.Slug, &l.Title,
-			pq.Array(&l.DurationOptions), pq.Array(&l.DaysOfWeek),
+			&durOpts, &daysOfWeek,
 			&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
 			&l.Active, &l.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
+		l.DurationOptions = int64SliceToInt(durOpts)
+		l.DaysOfWeek = int64SliceToInt(daysOfWeek)
 		out = append(out, &l)
 	}
 	return out, rows.Err()
 }
+
 
 // --- LinkHost CRUD ---------------------------------------------------------
 
