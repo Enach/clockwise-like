@@ -1,0 +1,37 @@
+package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/Enach/clockwise-like/backend/api"
+	"github.com/Enach/clockwise-like/backend/storage"
+)
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "/data/clockwise.db"
+	}
+
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		log.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	r := chi.NewRouter()
+	api.RegisterRoutes(r, db)
+
+	log.Printf("server listening on :%s", port)
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
