@@ -33,8 +33,11 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 		r.Put("/", sh.putSettings)
 	})
 
+	fh := newFocusHandlers(db, oauthConfig)
 	r.Route("/api/focus", func(r chi.Router) {
-		// T-04: Focus time engine handlers
+		r.Post("/run", fh.runFocus)
+		r.Get("/blocks", fh.listBlocks)
+		r.Delete("/blocks", fh.clearBlocks)
 	})
 
 	r.Route("/api/schedule", func(r chi.Router) {

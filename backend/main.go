@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/Enach/clockwise-like/backend/api"
 	"github.com/Enach/clockwise-like/backend/auth"
+	"github.com/Enach/clockwise-like/backend/scheduler"
 	"github.com/Enach/clockwise-like/backend/storage"
 )
 
@@ -33,6 +34,10 @@ func main() {
 		os.Getenv("GOOGLE_CLIENT_SECRET"),
 		os.Getenv("GOOGLE_REDIRECT_URL"),
 	)
+
+	focusCron := scheduler.NewFocusCron(db, oauthConfig)
+	focusCron.Start()
+	defer focusCron.Stop()
 
 	r := chi.NewRouter()
 	api.RegisterRoutes(r, db, oauthConfig)
