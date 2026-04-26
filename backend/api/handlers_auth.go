@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
 
 type authHandlers struct {
 	oauthConfig *oauth2.Config
 	db          *sql.DB
+	jwtSecret   string
 }
 
 func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +43,6 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-
 	http.SetCookie(w, &http.Cookie{Name: "oauth_state", MaxAge: -1, Path: "/"})
 
 	token, err := auth.ExchangeCode(r.Context(), h.oauthConfig, r.URL.Query().Get("code"))
@@ -50,30 +51,73 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := auth.SaveToken(h.db, token); err != nil {
+	// Fetch user profile from Google
+	info, err := fetchGoogleUserInfo(r.Context(), token, h.oauthConfig)
+	if err != nil {
+		http.Error(w, "userinfo failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Upsert user row
+	user, err := storage.UpsertUser(h.db, info.Email, info.Name, info.Picture, "google", info.ID)
+	if err != nil {
+		http.Error(w, "upsert user failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Store OAuth token associated with user
+	if err := auth.UpsertUserToken(h.db, user.ID, token); err != nil {
 		http.Error(w, "save token failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	h.issueJWT(w, user)
 	http.Redirect(w, r, "/?connected=true", http.StatusFound)
 }
 
-func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
+func (h *authHandlers) statusWithProvider(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	token, err := auth.TokenFromDB(h.db)
-	if err != nil || token == nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "email": ""})
+	s, err := storage.GetSettings(h.db)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 		return
 	}
 
-	ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
-	email := fetchUserEmail(r.Context(), ts)
+	provider := s.CalendarProvider
+	if provider == "" {
+		provider = "google"
+	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"connected": true,
-		"email":     email,
-	})
+	switch provider {
+	case "outlook":
+		msToken, _ := auth.LoadMicrosoftToken(h.db)
+		connected := msToken != nil && msToken.RefreshToken != ""
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"connected": connected,
+			"provider":  "outlook",
+			"email":     s.CalendarEmail,
+		})
+	case "webcal":
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"connected": s.WebcalURL != "",
+			"provider":  "webcal",
+			"email":     s.CalendarEmail,
+		})
+	default: // google
+		token, err := auth.TokenFromDB(h.db)
+		if err != nil || token == nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
+			return
+		}
+		ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
+		email := fetchUserEmail(r.Context(), ts)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"connected": true,
+			"provider":  "google",
+			"email":     email,
+		})
+	}
 }
 
 func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +125,54 @@ func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Clear auth cookie
+	http.SetCookie(w, &http.Cookie{Name: "auth_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) {
+	if h.jwtSecret == "" {
+		return
+	}
+	jwtToken, err := auth.GenerateToken(user.ID, user.Email, h.jwtSecret)
+	if err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "auth_token",
+		Value:    jwtToken,
+		Path:     "/",
+		MaxAge:   7 * 24 * 3600,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+type googleUserInfo struct {
+	ID      string `json:"id"`
+	Email   string `json:"email"`
+	Name    string `json:"name"`
+	Picture string `json:"picture"`
+}
+
+func fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token, cfg *oauth2.Config) (*googleUserInfo, error) {
+	ts := auth.TokenSource(ctx, cfg, token)
+	t, err := ts.Token()
+	if err != nil {
+		return nil, err
+	}
+	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(t))
+	client.Timeout = 5 * time.Second
+	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var info googleUserInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+	return &info, nil
 }
 
 func fetchUserEmail(ctx context.Context, ts oauth2.TokenSource) string {

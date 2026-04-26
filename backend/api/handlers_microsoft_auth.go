@@ -1,14 +1,17 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/storage"
+	"golang.org/x/oauth2"
 )
 
 func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Request) {
@@ -65,52 +68,35 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Fetch Microsoft user profile and upsert user
+	if info, err := fetchMicrosoftUserInfo(r.Context(), token); err == nil && info.Email != "" {
+		if user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID); err == nil {
+			h.issueJWT(w, user)
+		}
+	}
+
 	http.Redirect(w, r, "/?connected=true&provider=outlook", http.StatusFound)
 }
 
-func (h *authHandlers) statusWithProvider(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+type msUserInfo struct {
+	ID    string `json:"id"`
+	Email string `json:"mail"`
+	Name  string `json:"displayName"`
+}
 
-	s, err := storage.GetSettings(h.db)
+func fetchMicrosoftUserInfo(ctx context.Context, token *oauth2.Token) (*msUserInfo, error) {
+	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
+	client.Timeout = 5 * time.Second
+	resp, err := client.Get("https://graph.microsoft.com/v1.0/me?$select=id,mail,displayName")
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
-		return
+		return nil, err
 	}
-
-	provider := s.CalendarProvider
-	if provider == "" {
-		provider = "google"
+	defer resp.Body.Close()
+	var info msUserInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
 	}
-
-	switch provider {
-	case "outlook":
-		msToken, _ := auth.LoadMicrosoftToken(h.db)
-		connected := msToken != nil && msToken.RefreshToken != ""
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"connected": connected,
-			"provider":  "outlook",
-			"email":     s.CalendarEmail,
-		})
-	case "webcal":
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"connected": s.WebcalURL != "",
-			"provider":  "webcal",
-			"email":     s.CalendarEmail,
-		})
-	default: // google
-		token, err := auth.TokenFromDB(h.db)
-		if err != nil || token == nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
-			return
-		}
-		ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
-		email := fetchUserEmail(r.Context(), ts)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"connected": true,
-			"provider":  "google",
-			"email":     email,
-		})
-	}
+	return &info, nil
 }
 
 func microsoftConfig() *auth.MicrosoftConfig {

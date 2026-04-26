@@ -57,8 +57,10 @@ func main() {
 	personalCron.Start()
 	defer personalCron.Stop()
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+
 	r := chi.NewRouter()
-	api.RegisterRoutes(r, db, oauthConfig)
+	api.RegisterRoutes(r, db, oauthConfig, jwtSecret)
 
 	log.Printf("server listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, r); err != nil {
