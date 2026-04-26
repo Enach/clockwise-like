@@ -1,3 +1,143 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 20% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 20% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 20% 12%;
+
+    --primary: 239 84% 60%;
+    --primary-foreground: 0 0% 100%;
+    --primary-muted: 239 84% 96%;
+
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 20% 12%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    --accent: 239 84% 96%;
+    --accent-foreground: 239 84% 40%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --info: 217 91% 60%;
+    --info-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 239 84% 60%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 222 20% 8%;
+    --foreground: 210 40% 98%;
+    --card: 222 20% 10%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 20% 10%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 239 84% 67%;
+    --primary-foreground: 222 20% 8%;
+    --primary-muted: 239 50% 18%;
+    --secondary: 217 32% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 32% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 239 50% 18%;
+    --accent-foreground: 239 84% 80%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 210 40% 98%;
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 217 91% 60%;
+    --info-foreground: 0 0% 100%;
+    --border: 217 32% 17%;
+    --input: 217 32% 17%;
+    --ring: 239 84% 67%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  }
+}
+
+/* FullCalendar overrides to fit our design system */
+@layer components {
+  .fc {
+    @apply text-sm;
+    --fc-border-color: hsl(var(--border));
+    --fc-page-bg-color: hsl(var(--card));
+    --fc-neutral-bg-color: hsl(var(--muted));
+    --fc-today-bg-color: hsl(var(--primary-muted));
+    --fc-event-border-color: transparent;
+  }
+  .fc .fc-toolbar-title {
+    @apply text-base font-semibold;
+  }
+  .fc .fc-col-header-cell-cushion,
+  .fc .fc-timegrid-axis-cushion,
+  .fc .fc-timegrid-slot-label-cushion {
+    @apply text-xs text-muted-foreground font-medium;
+  }
+  .fc .fc-event {
+    @apply rounded-md px-1.5 py-0.5 text-xs font-medium border-0 shadow-sm cursor-pointer;
+  }
+  .fc .fc-event:hover {
+    @apply opacity-90;
+  }
+  .fc .fc-button {
+    @apply bg-secondary text-secondary-foreground border-0 rounded-md text-xs font-medium px-3 py-1.5 capitalize shadow-none;
+  }
+  .fc .fc-button:hover {
+    @apply bg-muted;
+  }
+  .fc .fc-button-primary:not(:disabled).fc-button-active,
+  .fc .fc-button-primary:not(:disabled):active {
+    @apply bg-primary text-primary-foreground;
+  }
+  .fc-theme-standard td,
+  .fc-theme-standard th,
+  .fc-theme-standard .fc-scrollgrid {
+    border-color: hsl(var(--border));
+  }
+  .fc .fc-timegrid-now-indicator-line {
+    border-color: hsl(var(--destructive));
+  }
+  .fc .fc-timegrid-now-indicator-arrow {
+    border-color: hsl(var(--destructive));
+    color: hsl(var(--destructive));
+  }
+}
