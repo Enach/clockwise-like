@@ -161,5 +161,23 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Get("/", ssoh.listSSOProviders)
 			r.Delete("/{domain}", ssoh.deleteSSOProvider)
 		})
+
+		th := newTeamHandlers(db, oauthConfig)
+		r.Route("/api/teams", func(r chi.Router) {
+			r.Post("/", th.createTeam)
+			r.Get("/", th.listTeams)
+			r.Get("/invites/{token}", th.getInvite)
+			r.Post("/invites/{token}/accept", th.acceptInvite)
+			r.Get("/{id}", th.getTeam)
+			r.Patch("/{id}", th.patchTeam)
+			r.Delete("/{id}", th.deleteTeam)
+			r.Post("/{id}/members/invite", th.inviteMember)
+			r.Delete("/{id}/members/{userId}", th.removeMember)
+			r.Post("/{id}/no-meeting-zones", th.createZone)
+			r.Get("/{id}/no-meeting-zones", th.listZones)
+			r.Delete("/{id}/no-meeting-zones/{zoneId}", th.deleteZone)
+			r.Get("/{id}/availability", th.availability)
+			r.Get("/{id}/analytics", th.analyticsHandler)
+		})
 	})
 }
