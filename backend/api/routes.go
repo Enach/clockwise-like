@@ -4,6 +4,7 @@ import (
 	"database/sql"
 
 	"github.com/Enach/clockwise-like/backend/engine"
+	"github.com/Enach/clockwise-like/backend/nlp"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 )
@@ -51,7 +52,10 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 		r.Post("/create", sched.createMeeting)
 	})
 
+	nlpSvc := &nlp.NLPService{DB: db, OAuthConfig: oauthConfig}
+	nh := &nlpHandlers{svc: nlpSvc, smart: smartEng, db: db, oauthConfig: oauthConfig}
 	r.Route("/api/nlp", func(r chi.Router) {
-		// T-07: NLP backend handlers
+		r.Post("/parse", nh.parse)
+		r.Post("/confirm", nh.confirm)
 	})
 }
