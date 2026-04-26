@@ -287,7 +287,7 @@ func scoreSlot(s scoredSlot, day time.Time) int {
 
 func parseHHMM(hhmm string, day time.Time, loc *time.Location) time.Time {
 	var h, m int
-	fmt.Sscanf(hhmm, "%d:%d", &h, &m)
+	_, _ = fmt.Sscanf(hhmm, "%d:%d", &h, &m)
 	return time.Date(day.Year(), day.Month(), day.Day(), h, m, 0, 0, loc)
 }
 

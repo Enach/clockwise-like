@@ -32,7 +32,7 @@ func (h *nlpHandlers) parse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (h *nlpHandlers) confirm(w http.ResponseWriter, r *http.Request) {
@@ -67,5 +67,5 @@ func (h *nlpHandlers) confirm(w http.ResponseWriter, r *http.Request) {
 	storage.WriteAuditLog(h.db, "nlp_confirmed", `{"event_id":"`+created.Id+`"}`)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(created)
+	_ = json.NewEncoder(w).Encode(created)
 }

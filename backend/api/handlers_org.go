@@ -24,7 +24,7 @@ func (h *orgHandlers) members(w http.ResponseWriter, r *http.Request) {
 
 	user, err := storage.GetUserByID(h.db, userID)
 	if err != nil || user.OrgID == nil {
-		json.NewEncoder(w).Encode([]interface{}{})
+		_ = json.NewEncoder(w).Encode([]interface{}{})
 		return
 	}
 
@@ -36,5 +36,5 @@ func (h *orgHandlers) members(w http.ResponseWriter, r *http.Request) {
 	if members == nil {
 		members = []*storage.User{}
 	}
-	json.NewEncoder(w).Encode(members)
+	_ = json.NewEncoder(w).Encode(members)
 }

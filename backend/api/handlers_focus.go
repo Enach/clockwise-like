@@ -41,7 +41,7 @@ func (h *focusHandlers) runFocus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (h *focusHandlers) listBlocks(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +63,7 @@ func (h *focusHandlers) listBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(blocks)
+	_ = json.NewEncoder(w).Encode(blocks)
 }
 
 func (h *focusHandlers) clearBlocks(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,7 @@ func (h *focusHandlers) clearBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"deleted": n})
+	_ = json.NewEncoder(w).Encode(map[string]int{"deleted": n})
 }
 
 func newFocusHandlers(db *sql.DB, oauthConfig *oauth2.Config) *focusHandlers {

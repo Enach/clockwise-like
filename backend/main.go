@@ -47,13 +47,15 @@ func main() {
 	// Personal calendar blocker — sync every 30 minutes.
 	blocker := &engine.PersonalBlocker{DB: db, OAuthConfig: oauthConfig}
 	personalCron := cron.New()
-	personalCron.AddFunc("@every 30m", func() {
+	if _, err := personalCron.AddFunc("@every 30m", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		if err := blocker.SyncAll(ctx); err != nil {
 			log.Printf("personal blocker sync error: %v", err)
 		}
-	})
+	}); err != nil {
+		log.Printf("personal blocker cron registration error: %v", err)
+	}
 	personalCron.Start()
 	defer personalCron.Stop()
 

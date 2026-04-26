@@ -28,7 +28,7 @@ func (h *conferencingHandlers) startZoomOAuth(w http.ResponseWriter, r *http.Req
 		return
 	}
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "zoom_oauth_state",
@@ -108,5 +108,5 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(details)
+	_ = json.NewEncoder(w).Encode(details)
 }

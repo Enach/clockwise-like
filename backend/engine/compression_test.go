@@ -219,6 +219,7 @@ func TestCompressionEngine_SuggestForDay_WithMock(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("result should not be nil")
+		return
 	}
 	if result.Date != "2025-01-06" {
 		t.Errorf("date = %q, want 2025-01-06", result.Date)
@@ -308,6 +309,7 @@ func TestCompressionEngine_SuggestForDay_WithMoveableEvents(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("result should not be nil")
+		return
 	}
 	// Should produce proposals since gain > 30 min is achievable
 	if len(result.Proposals) == 0 {

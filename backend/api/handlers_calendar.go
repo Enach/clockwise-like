@@ -54,7 +54,7 @@ func (h *calendarHandlers) listEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(events)
+	_ = json.NewEncoder(w).Encode(events)
 }
 
 func (h *calendarHandlers) freeBusy(w http.ResponseWriter, r *http.Request) {
@@ -91,5 +91,5 @@ func (h *calendarHandlers) freeBusy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(result)
 }

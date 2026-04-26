@@ -17,8 +17,7 @@ func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 
-	container, err := postgres.RunContainer(ctx,
-		testcontainers.WithImage("postgres:16-alpine"),
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
@@ -77,6 +76,7 @@ func TestUpsertAndLoadToken(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected token, got nil")
+		return
 	}
 	if got.AccessToken != "access-abc" {
 		t.Errorf("AccessToken = %q, want access-abc", got.AccessToken)

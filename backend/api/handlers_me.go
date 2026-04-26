@@ -25,7 +25,7 @@ func (h *meHandlers) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	_ = json.NewEncoder(w).Encode(user)
 }
 
 func (h *meHandlers) logout(w http.ResponseWriter, r *http.Request) {

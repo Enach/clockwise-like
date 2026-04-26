@@ -22,7 +22,7 @@ func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Reques
 	}
 
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
 	http.SetCookie(w, &http.Cookie{
@@ -71,7 +71,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 	// Fetch Microsoft user profile and upsert user
 	if info, err := fetchMicrosoftUserInfo(r.Context(), token); err == nil && info.Email != "" {
 		if user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID); err == nil {
-			storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
+			_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
 			h.issueJWT(w, user)
 		}
 	}
@@ -88,7 +88,11 @@ type msUserInfo struct {
 func fetchMicrosoftUserInfo(ctx context.Context, token *oauth2.Token) (*msUserInfo, error) {
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
 	client.Timeout = 5 * time.Second
-	resp, err := client.Get("https://graph.microsoft.com/v1.0/me?$select=id,mail,displayName")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://graph.microsoft.com/v1.0/me?$select=id,mail,displayName", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

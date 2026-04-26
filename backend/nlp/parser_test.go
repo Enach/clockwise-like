@@ -21,8 +21,7 @@ func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
 
-	container, err := postgres.RunContainer(ctx,
-		testcontainers.WithImage("postgres:16-alpine"),
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("testdb"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
@@ -278,7 +277,8 @@ func TestOllamaClient_Complete_Mock(t *testing.T) {
 
 func TestNLPService_Parse_NoLLM(t *testing.T) {
 	db := openTestDB(t)
-	// No settings saved → LLMProvider = "" → "LLM not configured"
+	// DB default for llm_provider is "ollama" (would try localhost:11434); force empty.
+	storage.SaveSettings(db, &storage.Settings{LLMProvider: ""})
 	svc := &NLPService{DB: db}
 	result, err := svc.Parse(context.Background(), "schedule a meeting tomorrow")
 	if err != nil {

@@ -22,7 +22,7 @@ type authHandlers struct {
 
 func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
 	http.SetCookie(w, &http.Cookie{
@@ -72,18 +72,18 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-associate with org based on email domain
-	storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
+	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
 
 	h.issueJWT(w, user)
 	http.Redirect(w, r, "/?connected=true", http.StatusFound)
 }
 
-func (h *authHandlers) statusWithProvider(w http.ResponseWriter, r *http.Request) {
+func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	s, err := storage.GetSettings(h.db)
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 		return
 	}
 
@@ -96,13 +96,13 @@ func (h *authHandlers) statusWithProvider(w http.ResponseWriter, r *http.Request
 	case "outlook":
 		msToken, _ := auth.LoadMicrosoftToken(h.db)
 		connected := msToken != nil && msToken.RefreshToken != ""
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"connected": connected,
 			"provider":  "outlook",
 			"email":     s.CalendarEmail,
 		})
 	case "webcal":
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"connected": s.WebcalURL != "",
 			"provider":  "webcal",
 			"email":     s.CalendarEmail,
@@ -110,12 +110,12 @@ func (h *authHandlers) statusWithProvider(w http.ResponseWriter, r *http.Request
 	default: // google
 		token, err := auth.TokenFromDB(h.db)
 		if err != nil || token == nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 			return
 		}
 		ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
 		email := fetchUserEmail(r.Context(), ts)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"connected": true,
 			"provider":  "google",
 			"email":     email,
@@ -166,7 +166,11 @@ func fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token, cfg *oauth2.C
 	}
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(t))
 	client.Timeout = 5 * time.Second
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +189,11 @@ func fetchUserEmail(ctx context.Context, ts oauth2.TokenSource) string {
 	}
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
 	client.Timeout = 5 * time.Second
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -193,6 +201,6 @@ func fetchUserEmail(ctx context.Context, ts oauth2.TokenSource) string {
 	var info struct {
 		Email string `json:"email"`
 	}
-	json.NewDecoder(resp.Body).Decode(&info)
+	_ = json.NewDecoder(resp.Body).Decode(&info)
 	return info.Email
 }

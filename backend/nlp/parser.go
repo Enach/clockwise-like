@@ -231,7 +231,7 @@ func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, tex
 	var result struct {
 		Attendees []string `json:"attendees"`
 	}
-	json.Unmarshal([]byte(rawJSON), &result)
+	_ = json.Unmarshal([]byte(rawJSON), &result)
 	return result.Attendees
 }
 

@@ -28,7 +28,8 @@ func TestNewClient(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 	if client == nil {
-		t.Error("client should not be nil")
+		t.Fatal("client should not be nil")
+		return
 	}
 	if client.CalendarID != "primary" {
 		t.Errorf("CalendarID = %q, want primary", client.CalendarID)

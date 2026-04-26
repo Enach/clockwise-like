@@ -21,7 +21,7 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 		Date string `json:"date"`
 		Week string `json:"week"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	var results []*engine.CompressionResult
 
@@ -59,7 +59,7 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	_ = json.NewEncoder(w).Encode(results)
 }
 
 type applyRequest struct {
@@ -101,7 +101,7 @@ func (h *scheduleHandlers) applyCompress(w http.ResponseWriter, r *http.Request)
 	failed = append(failed, engineFailed...)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"applied": applied,
 		"failed":  failed,
 	})
@@ -148,7 +148,7 @@ func (h *scheduleHandlers) suggestMeeting(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(suggestions)
+	_ = json.NewEncoder(w).Encode(suggestions)
 }
 
 func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request) {
@@ -186,5 +186,5 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 	storage.WriteAuditLog(h.db, "meeting_created", `{"event_id":"`+created.Id+`","title":"`+body.Title+`"}`)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(created)
+	_ = json.NewEncoder(w).Encode(created)
 }

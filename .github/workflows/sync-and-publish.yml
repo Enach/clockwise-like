@@ -20,11 +20,12 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: backend
-          args: --config ../.golangci.yml
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Run lint
+        working-directory: backend
+        run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
   # ── Backend: test ────────────────────────────────────────────────────────────
   test-backend:
@@ -73,11 +74,12 @@ jobs:
         working-directory: mcp
         run: go vet ./...
 
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: mcp
-          args: --config ../.golangci.yml
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Run lint
+        working-directory: mcp
+        run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
   # ── MCP: test (compile check) ────────────────────────────────────────────────
   test-mcp:

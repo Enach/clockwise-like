@@ -59,5 +59,5 @@ func FocusMinutesForDay(db *sql.DB, date string) (int, error) {
 }
 
 func WriteAuditLog(db *sql.DB, action, details string) {
-	db.Exec(`INSERT INTO audit_log (action, details, created_at) VALUES ($1, $2, NOW())`, action, details)
+	_, _ = db.Exec(`INSERT INTO audit_log (action, details, created_at) VALUES ($1, $2, NOW())`, action, details)
 }

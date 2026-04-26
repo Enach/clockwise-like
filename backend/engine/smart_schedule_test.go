@@ -178,6 +178,7 @@ func TestSmartScheduler_CreateMeeting_WithMock(t *testing.T) {
 	}
 	if created == nil {
 		t.Fatal("created event should not be nil")
+		return
 	}
 	if created.Summary != "Team Sync" {
 		t.Errorf("Summary = %q, want Team Sync", created.Summary)

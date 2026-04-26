@@ -34,7 +34,7 @@ func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(s)
+	_ = json.NewEncoder(w).Encode(s)
 }
 
 func (h *settingsHandlers) putSettings(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +60,7 @@ func (h *settingsHandlers) putSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updated)
+	_ = json.NewEncoder(w).Encode(updated)
 }
 
 func validateSettings(s *storage.Settings) error {
@@ -119,5 +119,5 @@ func (e *validationError) Error() string { return e.msg }
 func writeError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

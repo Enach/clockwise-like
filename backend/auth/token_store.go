@@ -9,7 +9,12 @@ import (
 )
 
 // UpsertUserToken stores an OAuth token keyed by user UUID.
+// Passes NULL for user_id when userID is the zero UUID (legacy single-user path).
 func UpsertUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+	var uid interface{}
+	if userID != uuid.Nil {
+		uid = userID
+	}
 	_, err := db.Exec(`
 		INSERT INTO oauth_tokens (id, user_id, access_token, refresh_token, expiry, calendar_id, updated_at)
 		VALUES (1, $1, $2, $3, $4, 'primary', NOW())
@@ -19,7 +24,7 @@ func UpsertUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
 			refresh_token = EXCLUDED.refresh_token,
 			expiry        = EXCLUDED.expiry,
 			updated_at    = NOW()
-	`, userID, token.AccessToken, token.RefreshToken, token.Expiry.UTC())
+	`, uid, token.AccessToken, token.RefreshToken, token.Expiry.UTC())
 	return err
 }
 

@@ -30,7 +30,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			if jwtSecret != "" {
 				r.Use(requireAuth(jwtSecret))
 			}
-			r.Get("/status", ah.statusWithProvider)
+			r.Get("/status", ah.status)
 			r.Delete("/disconnect", ah.disconnect)
 		})
 	})

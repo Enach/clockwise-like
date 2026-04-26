@@ -83,7 +83,7 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(updated)
+	_ = json.NewEncoder(w).Encode(updated)
 }
 
 // DELETE /api/events/:id
@@ -118,7 +118,7 @@ func (h *eventHandlers) listRooms(w http.ResponseWriter, r *http.Request) {
 		rooms = []calendar.Room{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rooms)
+	_ = json.NewEncoder(w).Encode(rooms)
 }
 
 // GET /api/attendees/suggest?q=
@@ -138,5 +138,5 @@ func (h *eventHandlers) suggestAttendees(w http.ResponseWriter, r *http.Request)
 		suggestions = []calendar.AttendeeSuggestion{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(suggestions)
+	_ = json.NewEncoder(w).Encode(suggestions)
 }
