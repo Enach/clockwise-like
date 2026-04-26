@@ -34,23 +34,9 @@ services:
       - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID:-}
       - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET:-}
       - ZOOM_REDIRECT_URL=${ZOOM_REDIRECT_URL:-}
-      # AWS Bedrock
-      - AWS_PROFILE
-      - AWS_REGION
-      - AWS_ACCESS_KEY_ID
-      - AWS_SECRET_ACCESS_KEY
-      - AWS_SESSION_TOKEN
-      # Azure OpenAI
-      - AZURE_TENANT_ID
-      - AZURE_CLIENT_ID
-      - AZURE_CLIENT_SECRET
-      # Google Vertex AI
-      - GOOGLE_APPLICATION_CREDENTIALS
-      - GOOGLE_CLOUD_PROJECT
-    volumes:
-      - ~/.aws:/root/.aws:ro
-      - ~/.azure:/root/.azure:ro
-      - ~/.config/gcloud:/root/.config/gcloud:ro
+      # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
+      # Vertex AI, Ollama) are configured per-user in the Settings page and
+      # stored in the database — no server-level env vars needed.
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,8 +45,6 @@ services:
   frontend:
     build:
       context: ./frontend
-      ssh:
-        - default
     restart: unless-stopped
 
   mcp-server:

@@ -58,22 +58,9 @@ services:
       ZOOM_CLIENT_SECRET: ${ZOOM_CLIENT_SECRET:-}
       ZOOM_REDIRECT_URL:  ${ZOOM_REDIRECT_URL:-}       # e.g. https://app.example.com/api/auth/zoom/callback
 
-      # ── LLM: AWS Bedrock ────────────────────────────────────────────────────
-      # Use IAM role credentials (preferred in EC2/ECS) or explicit keys
-      AWS_REGION:            ${AWS_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN:     ${AWS_SESSION_TOKEN:-}
-
-      # ── LLM: Azure OpenAI ───────────────────────────────────────────────────
-      AZURE_TENANT_ID:     ${AZURE_TENANT_ID:-}
-      AZURE_CLIENT_ID:     ${AZURE_CLIENT_ID:-}
-      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
-
-      # ── LLM: Google Vertex AI ───────────────────────────────────────────────
-      # In prod, use Workload Identity or pass the service-account JSON as a file
-      GOOGLE_CLOUD_PROJECT:          ${GOOGLE_CLOUD_PROJECT:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
+      # Vertex AI, Ollama) are configured per-user in the Settings page and
+      # stored in the database — no server-level env vars needed.
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
