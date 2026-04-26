@@ -8,14 +8,12 @@ import (
 	"github.com/Enach/clockwise-like/backend/engine"
 	"github.com/Enach/clockwise-like/backend/nlp"
 	"github.com/Enach/clockwise-like/backend/storage"
-	"golang.org/x/oauth2"
 )
 
 type nlpHandlers struct {
-	svc         *nlp.NLPService
-	smart       *engine.SmartScheduler
-	db          *sql.DB
-	oauthConfig *oauth2.Config
+	svc   NLPParser
+	smart Scheduler
+	db    *sql.DB
 }
 
 func (h *nlpHandlers) parse(w http.ResponseWriter, r *http.Request) {

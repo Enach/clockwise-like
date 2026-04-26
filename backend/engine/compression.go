@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/auth"
 	"github.com/Enach/clockwise-like/backend/calendar"
 	"github.com/Enach/clockwise-like/backend/storage"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -33,15 +32,14 @@ type CompressionResult struct {
 type CompressionEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	calOps      calendarOps
 }
 
-func (e *CompressionEngine) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
-	token, err := auth.TokenFromDB(e.DB)
-	if err != nil || token == nil {
-		return nil, fmt.Errorf("not authenticated")
+func (e *CompressionEngine) calClient(ctx context.Context) (calendarOps, error) {
+	if e.calOps != nil {
+		return e.calOps, nil
 	}
-	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
-	return calendar.NewClient(ctx, ts)
+	return newCalOps(ctx, e.DB, e.OAuthConfig)
 }
 
 func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (*CompressionResult, error) {
@@ -63,7 +61,7 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 	dayStart := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
 	dayEnd := dayStart.Add(24 * time.Hour)
 
-	events, err := client.ListEvents(ctx, client.CalendarID, dayStart, dayEnd)
+	events, err := client.listEvents(ctx, dayStart, dayEnd)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
@@ -113,7 +111,7 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 			}
 
 			if len(attendeeEmails) > 0 {
-				busy, err := client.GetFreeBusy(ctx, attendeeEmails, candidate, proposedEnd)
+				busy, err := client.getFreeBusy(ctx, attendeeEmails, candidate, proposedEnd)
 				if err != nil || hasConflict(busy, candidate, proposedEnd) {
 					continue
 				}
@@ -143,6 +141,41 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 	}
 
 	return result, nil
+}
+
+func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal) ([]string, []string, error) {
+	client, err := e.calClient(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var applied, failed []string
+	for _, p := range proposals {
+		busy, err := client.getFreeBusy(ctx, nil, p.ProposedStart, p.ProposedEnd)
+		if err == nil && hasConflict(busy, p.ProposedStart, p.ProposedEnd) {
+			failed = append(failed, p.EventID+": attendee conflict at proposed time")
+			continue
+		}
+
+		existing, err := client.getEvent(ctx, p.EventID)
+		if err != nil {
+			failed = append(failed, p.EventID+": "+err.Error())
+			continue
+		}
+
+		existing.Start = &googlecalendar.EventDateTime{DateTime: p.ProposedStart.Format(time.RFC3339)}
+		existing.End = &googlecalendar.EventDateTime{DateTime: p.ProposedEnd.Format(time.RFC3339)}
+
+		if _, err := client.updateEvent(ctx, p.EventID, existing); err != nil {
+			failed = append(failed, p.EventID+": "+err.Error())
+			continue
+		}
+
+		storage.WriteAuditLog(e.DB, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
+		applied = append(applied, p.EventID)
+	}
+
+	return applied, failed, nil
 }
 
 type eventInterval struct {

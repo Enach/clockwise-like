@@ -22,11 +22,16 @@ type LLMClient interface {
 }
 
 type OpenAIClient struct {
-	APIKey string
-	Model  string
+	APIKey  string
+	Model   string
+	BaseURL string
 }
 
 func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
+	base := c.BaseURL
+	if base == "" {
+		base = "https://api.openai.com"
+	}
 	payload := map[string]interface{}{
 		"model": c.Model,
 		"messages": []map[string]string{
@@ -34,7 +39,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (strin
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, "https://api.openai.com/v1/chat/completions",
+	return postJSON(ctx, base+"/v1/chat/completions",
 		map[string]string{"Authorization": "Bearer " + c.APIKey}, payload,
 		func(body []byte) (string, error) {
 			var resp struct {
@@ -50,11 +55,16 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (strin
 }
 
 type AnthropicClient struct {
-	APIKey string
-	Model  string
+	APIKey  string
+	Model   string
+	BaseURL string
 }
 
 func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (string, error) {
+	base := c.BaseURL
+	if base == "" {
+		base = "https://api.anthropic.com"
+	}
 	payload := map[string]interface{}{
 		"model":      c.Model,
 		"max_tokens": 1024,
@@ -63,7 +73,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, "https://api.anthropic.com/v1/messages",
+	return postJSON(ctx, base+"/v1/messages",
 		map[string]string{
 			"x-api-key":         c.APIKey,
 			"anthropic-version": "2023-06-01",

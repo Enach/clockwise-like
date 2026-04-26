@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/auth"
-	"github.com/Enach/clockwise-like/backend/calendar"
 	"github.com/Enach/clockwise-like/backend/storage"
 	googlecalendar "google.golang.org/api/calendar/v3"
 	"golang.org/x/oauth2"
@@ -36,15 +34,14 @@ type ScheduleSuggestions struct {
 type SmartScheduler struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	calOps      calendarOps
 }
 
-func (e *SmartScheduler) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
-	token, err := auth.TokenFromDB(e.DB)
-	if err != nil || token == nil {
-		return nil, fmt.Errorf("not authenticated")
+func (e *SmartScheduler) calClient(ctx context.Context) (calendarOps, error) {
+	if e.calOps != nil {
+		return e.calOps, nil
 	}
-	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
-	return calendar.NewClient(ctx, ts)
+	return newCalOps(ctx, e.DB, e.OAuthConfig)
 }
 
 func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*ScheduleSuggestions, error) {
@@ -58,8 +55,8 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 		return nil, err
 	}
 
-	allEmails := append([]string{client.CalendarID}, req.Attendees...)
-	busyMap, err := client.GetFreeBusy(ctx, allEmails, req.RangeStart, req.RangeEnd)
+	allEmails := append([]string{client.calendarID()}, req.Attendees...)
+	busyMap, err := client.getFreeBusy(ctx, allEmails, req.RangeStart, req.RangeEnd)
 	if err != nil {
 		return nil, fmt.Errorf("freebusy: %w", err)
 	}
@@ -203,7 +200,7 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 		Attendees:   attendees,
 	}
 
-	created, err := client.CreateEvent(ctx, client.CalendarID, event)
+	created, err := client.createEvent(ctx, event)
 	if err != nil {
 		return nil, err
 	}

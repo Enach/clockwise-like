@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/clockwise-like/backend/auth"
-	"github.com/Enach/clockwise-like/backend/calendar"
 	"github.com/Enach/clockwise-like/backend/storage"
 	googlecalendar "google.golang.org/api/calendar/v3"
 	"golang.org/x/oauth2"
@@ -42,15 +40,14 @@ type scoredSlot struct {
 type FocusTimeEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	calOps      calendarOps
 }
 
-func (e *FocusTimeEngine) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
-	token, err := auth.TokenFromDB(e.DB)
-	if err != nil || token == nil {
-		return nil, fmt.Errorf("not authenticated")
+func (e *FocusTimeEngine) calClient(ctx context.Context) (calendarOps, error) {
+	if e.calOps != nil {
+		return e.calOps, nil
 	}
-	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
-	return calendar.NewClient(ctx, ts)
+	return newCalOps(ctx, e.DB, e.OAuthConfig)
 }
 
 func (e *FocusTimeEngine) Run(ctx context.Context, targetWeek time.Time) (*FocusRunResult, error) {
@@ -86,7 +83,7 @@ func (e *FocusTimeEngine) Run(ctx context.Context, targetWeek time.Time) (*Focus
 	return result, nil
 }
 
-func (e *FocusTimeEngine) processDay(ctx context.Context, client *calendar.CalendarClient, s *storage.Settings, day time.Time, dateStr string, result *FocusRunResult) error {
+func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, s *storage.Settings, day time.Time, dateStr string, result *FocusRunResult) error {
 	existingMinutes, _ := storage.FocusMinutesForDay(e.DB, dateStr)
 	if existingMinutes >= s.FocusDailyTargetMinutes {
 		result.SkippedDays = append(result.SkippedDays, dateStr)
@@ -105,7 +102,7 @@ func (e *FocusTimeEngine) processDay(ctx context.Context, client *calendar.Calen
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
 	dayEnd := dayStart.Add(24 * time.Hour)
 
-	events, err := client.ListEvents(ctx, client.CalendarID, dayStart, dayEnd)
+	events, err := client.listEvents(ctx, dayStart, dayEnd)
 	if err != nil {
 		return fmt.Errorf("list events: %w", err)
 	}
@@ -155,7 +152,7 @@ func (e *FocusTimeEngine) processDay(ctx context.Context, client *calendar.Calen
 			End:          &googlecalendar.EventDateTime{DateTime: blockEnd.Format(time.RFC3339)},
 		}
 
-		created, err := client.CreateEvent(ctx, client.CalendarID, event)
+		created, err := client.createEvent(ctx, event)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("create event %s: %v", dateStr, err))
 			continue
@@ -303,5 +300,5 @@ func startOfWeek(t time.Time) time.Time {
 }
 
 func colorIDFromHex(_ string) string {
-	return "7" // Peacock blue; actual mapping can be extended
+	return "7"
 }

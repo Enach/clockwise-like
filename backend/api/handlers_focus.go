@@ -12,7 +12,7 @@ import (
 )
 
 type focusHandlers struct {
-	eng *engine.FocusTimeEngine
+	eng FocusEngine
 	db  *sql.DB
 }
 
@@ -78,16 +78,14 @@ func (h *focusHandlers) clearBlocks(w http.ResponseWriter, r *http.Request) {
 		weekStart = parsed
 	}
 
-	blocks, _ := storage.ListFocusBlocksForWeek(h.db, weekStart)
-	count := len(blocks)
-
-	if err := h.eng.ClearWeek(r.Context(), weekStart); err != nil {
+	n, err := h.eng.ClearWeek(r.Context(), weekStart)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"deleted": count})
+	json.NewEncoder(w).Encode(map[string]int{"deleted": n})
 }
 
 func newFocusHandlers(db *sql.DB, oauthConfig *oauth2.Config) *focusHandlers {
