@@ -29,6 +29,10 @@ services:
       - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
       - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}
       - MICROSOFT_REDIRECT_URL=${MICROSOFT_REDIRECT_URL:-}
+      # Zoom OAuth
+      - ZOOM_CLIENT_ID=${ZOOM_CLIENT_ID:-}
+      - ZOOM_CLIENT_SECRET=${ZOOM_CLIENT_SECRET:-}
+      - ZOOM_REDIRECT_URL=${ZOOM_REDIRECT_URL:-}
       # AWS Bedrock
       - AWS_PROFILE
       - AWS_REGION
@@ -52,7 +56,10 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      ssh:
+        - default
     restart: unless-stopped
 
   nginx:

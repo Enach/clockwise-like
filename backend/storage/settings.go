@@ -47,7 +47,10 @@ type Settings struct {
 	MicrosoftTokens  string `json:"-"` // JSON blob, not exposed in API
 	WebcalURL        string `json:"webcalUrl"`
 	CalendarEmail    string `json:"calendarEmail"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	// Conferencing
+	ConferencingProvider string `json:"conferencingProvider"`
+	ZoomTokens           string `json:"-"` // JSON blob, not exposed in API
+	UpdatedAt            time.Time `json:"updatedAt"`
 }
 
 func GetSettings(db *sql.DB) (*Settings, error) {
@@ -63,6 +66,7 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		gcp_project, gcp_location, vertex_model,
 		ollama_base_url, ollama_model,
 		calendar_provider, COALESCE(microsoft_tokens,''), webcal_url, calendar_email,
+		COALESCE(conferencing_provider,'meet'), COALESCE(zoom_tokens,''),
 		updated_at
 		FROM settings WHERE id = 1`)
 
@@ -79,6 +83,7 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		&s.GCPProject, &s.GCPLocation, &s.VertexModel,
 		&s.OllamaBaseURL, &s.OllamaModel,
 		&s.CalendarProvider, &s.MicrosoftTokens, &s.WebcalURL, &s.CalendarEmail,
+		&s.ConferencingProvider, &s.ZoomTokens,
 		&s.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -111,8 +116,9 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			azure_endpoint, azure_deployment, azure_api_version,
 			gcp_project, gcp_location, vertex_model,
 			ollama_base_url, ollama_model,
-			calendar_provider, webcal_url, calendar_email, updated_at
-		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,NOW())
+			calendar_provider, webcal_url, calendar_email,
+			conferencing_provider, updated_at
+		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
 			timezone=EXCLUDED.timezone,
@@ -138,6 +144,7 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			ollama_base_url=EXCLUDED.ollama_base_url, ollama_model=EXCLUDED.ollama_model,
 			calendar_provider=EXCLUDED.calendar_provider,
 			webcal_url=EXCLUDED.webcal_url, calendar_email=EXCLUDED.calendar_email,
+			conferencing_provider=EXCLUDED.conferencing_provider,
 			updated_at=NOW()`,
 		s.WorkStart, s.WorkEnd, s.Timezone,
 		s.FocusMinBlockMinutes, s.FocusMaxBlockMinutes, s.FocusDailyTargetMinutes,
@@ -150,6 +157,7 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.GCPProject, s.GCPLocation, s.VertexModel,
 		s.OllamaBaseURL, s.OllamaModel,
 		s.CalendarProvider, s.WebcalURL, s.CalendarEmail,
+		s.ConferencingProvider,
 	)
 	return err
 }

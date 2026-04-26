@@ -1,0 +1,13 @@
+version: '3.9'
+
+# Production overrides — use pre-built GHCR images instead of local builds.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    image: ghcr.io/enach/clockwise-backend:latest
+    build: !reset {}
+
+  frontend:
+    image: ghcr.io/enach/clockwise-frontend:latest
+    build: !reset {}

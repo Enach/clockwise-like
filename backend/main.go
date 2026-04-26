@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/robfig/cron/v3"
 	"github.com/Enach/clockwise-like/backend/api"
 	"github.com/Enach/clockwise-like/backend/auth"
+	"github.com/Enach/clockwise-like/backend/engine"
 	"github.com/Enach/clockwise-like/backend/scheduler"
 	"github.com/Enach/clockwise-like/backend/storage"
 )
@@ -35,9 +39,23 @@ func main() {
 		os.Getenv("GOOGLE_REDIRECT_URL"),
 	)
 
+	// Focus time auto-scheduler cron (schedule configured in settings).
 	focusCron := scheduler.NewFocusCron(db, oauthConfig)
 	focusCron.Start()
 	defer focusCron.Stop()
+
+	// Personal calendar blocker — sync every 30 minutes.
+	blocker := &engine.PersonalBlocker{DB: db, OAuthConfig: oauthConfig}
+	personalCron := cron.New()
+	personalCron.AddFunc("@every 30m", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := blocker.SyncAll(ctx); err != nil {
+			log.Printf("personal blocker sync error: %v", err)
+		}
+	})
+	personalCron.Start()
+	defer personalCron.Stop()
 
 	r := chi.NewRouter()
 	api.RegisterRoutes(r, db, oauthConfig)
