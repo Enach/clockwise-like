@@ -2,27 +2,33 @@ package api
 
 import (
 	"database/sql"
-	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"golang.org/x/oauth2"
 )
 
-func RegisterRoutes(r *chi.Mux, db *sql.DB) {
+func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 	r.Use(corsMiddleware)
 	r.Use(loggingMiddleware)
 
 	r.Get("/api/health", healthHandler)
 
+	ah := &authHandlers{oauthConfig: oauthConfig, db: db}
 	r.Route("/api/auth", func(r chi.Router) {
-		// T-02: Google OAuth handlers
+		r.Get("/google", ah.startOAuth)
+		r.Get("/callback", ah.callback)
+		r.Get("/status", ah.status)
+		r.Delete("/disconnect", ah.disconnect)
+	})
+
+	ch := &calendarHandlers{oauthConfig: oauthConfig, db: db}
+	r.Route("/api/calendar", func(r chi.Router) {
+		r.Get("/events", ch.listEvents)
+		r.Get("/freebusy", ch.freeBusy)
 	})
 
 	r.Route("/api/settings", func(r chi.Router) {
 		// T-03: Settings handlers
-	})
-
-	r.Route("/api/calendar", func(r chi.Router) {
-		// T-04: Calendar / focus handlers
 	})
 
 	r.Route("/api/focus", func(r chi.Router) {
@@ -38,5 +44,4 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB) {
 	})
 
 	_ = db
-	_ = http.MethodGet
 }
