@@ -80,6 +80,8 @@ func (e *HabitsEngine) scheduleDay(
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
 
+	settings, _ := storage.GetSettings(e.DB)
+
 	// Fetch calendar busy intervals once for the day.
 	var calBusy []interval
 	if calConnected {
@@ -93,6 +95,15 @@ func (e *HabitsEngine) scheduleDay(
 				if !s.IsZero() && !e2.IsZero() {
 					calBusy = append(calBusy, interval{start: s, end: e2})
 				}
+			}
+			if settings != nil {
+				loc, _ := time.LoadLocation(settings.Timezone)
+				if loc == nil {
+					loc = time.UTC
+				}
+				workStart := parseHHMM(settings.WorkStart, day, loc)
+				workEnd := parseHHMM(settings.WorkEnd, day, loc)
+				calBusy = append(calBusy, ComputeBufferBlocks(events, settings, workStart, workEnd)...)
 			}
 		}
 	}

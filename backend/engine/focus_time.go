@@ -209,6 +209,8 @@ func buildBusy(events []*googlecalendar.Event, workStart, workEnd time.Time, s *
 		busy = append(busy, interval{start, end})
 	}
 
+	busy = append(busy, ComputeBufferBlocks(events, s, workStart, workEnd)...)
+
 	return mergeIntervals(busy)
 }
 

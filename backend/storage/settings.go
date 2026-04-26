@@ -18,8 +18,11 @@ type Settings struct {
 	LunchStart              string    `json:"lunchStart"`
 	LunchEnd                string    `json:"lunchEnd"`
 	ProtectLunch            bool      `json:"protectLunch"`
-	BufferBeforeMinutes     int       `json:"bufferBeforeMinutes"`
-	BufferAfterMinutes      int       `json:"bufferAfterMinutes"`
+	BufferBeforeMinutes      int  `json:"bufferBeforeMinutes"`
+	BufferAfterMinutes       int  `json:"bufferAfterMinutes"`
+	BufferEnabled            bool `json:"bufferEnabled"`
+	BufferMinMeetingMinutes  int  `json:"bufferMinMeetingMinutes"`
+	BufferSkipBackToBack     bool `json:"bufferSkipBackToBack"`
 	CompressionEnabled      bool      `json:"compressionEnabled"`
 	AutoScheduleEnabled     bool      `json:"autoScheduleEnabled"`
 	AutoScheduleCron        string    `json:"autoScheduleCron"`
@@ -58,8 +61,9 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		id, work_start, work_end, timezone,
 		focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
 		focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
-		buffer_before_minutes, buffer_after_minutes, compression_enabled,
-		auto_schedule_enabled, auto_schedule_cron,
+		buffer_before_minutes, buffer_after_minutes,
+		buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
+		compression_enabled, auto_schedule_enabled, auto_schedule_cron,
 		llm_provider, llm_model, llm_api_key, llm_base_url,
 		aws_region, aws_profile, bedrock_model,
 		azure_endpoint, azure_deployment, azure_api_version,
@@ -75,8 +79,9 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
 		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &s.ProtectLunch,
-		&s.BufferBeforeMinutes, &s.BufferAfterMinutes, &s.CompressionEnabled,
-		&s.AutoScheduleEnabled, &s.AutoScheduleCron,
+		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
+		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,
+		&s.CompressionEnabled, &s.AutoScheduleEnabled, &s.AutoScheduleCron,
 		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL,
 		&s.AWSRegion, &s.AWSProfile, &s.BedrockModel,
 		&s.AzureEndpoint, &s.AzureDeployment, &s.AzureAPIVersion,
@@ -109,8 +114,9 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			id, work_start, work_end, timezone,
 			focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
 			focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
-			buffer_before_minutes, buffer_after_minutes, compression_enabled,
-			auto_schedule_enabled, auto_schedule_cron,
+			buffer_before_minutes, buffer_after_minutes,
+			buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
+			compression_enabled, auto_schedule_enabled, auto_schedule_cron,
 			llm_provider, llm_model, llm_api_key, llm_base_url,
 			aws_region, aws_profile, bedrock_model,
 			azure_endpoint, azure_deployment, azure_api_version,
@@ -118,7 +124,7 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			ollama_base_url, ollama_model,
 			calendar_provider, webcal_url, calendar_email,
 			conferencing_provider, updated_at
-		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,NOW())
+		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
 			timezone=EXCLUDED.timezone,
@@ -130,6 +136,9 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			protect_lunch=EXCLUDED.protect_lunch,
 			buffer_before_minutes=EXCLUDED.buffer_before_minutes,
 			buffer_after_minutes=EXCLUDED.buffer_after_minutes,
+			buffer_enabled=EXCLUDED.buffer_enabled,
+			buffer_min_meeting_minutes=EXCLUDED.buffer_min_meeting_minutes,
+			buffer_skip_back_to_back=EXCLUDED.buffer_skip_back_to_back,
 			compression_enabled=EXCLUDED.compression_enabled,
 			auto_schedule_enabled=EXCLUDED.auto_schedule_enabled,
 			auto_schedule_cron=EXCLUDED.auto_schedule_cron,
@@ -149,8 +158,9 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.WorkStart, s.WorkEnd, s.Timezone,
 		s.FocusMinBlockMinutes, s.FocusMaxBlockMinutes, s.FocusDailyTargetMinutes,
 		s.FocusLabel, s.FocusColor, s.LunchStart, s.LunchEnd, s.ProtectLunch,
-		s.BufferBeforeMinutes, s.BufferAfterMinutes, s.CompressionEnabled,
-		s.AutoScheduleEnabled, s.AutoScheduleCron,
+		s.BufferBeforeMinutes, s.BufferAfterMinutes,
+		s.BufferEnabled, s.BufferMinMeetingMinutes, s.BufferSkipBackToBack,
+		s.CompressionEnabled, s.AutoScheduleEnabled, s.AutoScheduleCron,
 		s.LLMProvider, s.LLMModel, s.LLMAPIKey, s.LLMBaseURL,
 		s.AWSRegion, s.AWSProfile, s.BedrockModel,
 		s.AzureEndpoint, s.AzureDeployment, s.AzureAPIVersion,

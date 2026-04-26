@@ -1,0 +1,4 @@
+ALTER TABLE settings
+    ADD COLUMN IF NOT EXISTS buffer_enabled BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS buffer_min_meeting_minutes INTEGER NOT NULL DEFAULT 30,
+    ADD COLUMN IF NOT EXISTS buffer_skip_back_to_back BOOLEAN NOT NULL DEFAULT true;
