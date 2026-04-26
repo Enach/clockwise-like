@@ -25,7 +25,7 @@ services:
 
   # ── Backend ─────────────────────────────────────────────────────────────────
   backend:
-    image: ghcr.io/enach/paceday-backend:latest
+    image: enach/paceday-backend:latest
     restart: unless-stopped
     depends_on:
       postgres:
@@ -77,12 +77,12 @@ services:
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
-    image: ghcr.io/enach/paceday-frontend:latest
+    image: enach/paceday-frontend:latest
     restart: unless-stopped
 
   # ── MCP Server ───────────────────────────────────────────────────────────────
   mcp-server:
-    image: ghcr.io/enach/paceday-mcp:latest
+    image: enach/paceday-mcp:latest
     restart: unless-stopped
     depends_on:
       - backend
