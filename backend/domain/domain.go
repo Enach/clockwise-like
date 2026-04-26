@@ -27,6 +27,13 @@ func IsGenericDomain(domain string) bool {
 
 // DeriveOrgName turns a domain base segment into a display name.
 // "gorgias.com" → "Gorgias", "acme-corp.io" → "Acme Corp"
+// DomainMatchesOrg returns true if d is equal to orgDomain or a subdomain of it.
+func DomainMatchesOrg(d, orgDomain string) bool {
+	d = strings.ToLower(strings.TrimSpace(d))
+	orgDomain = strings.ToLower(strings.TrimSpace(orgDomain))
+	return d == orgDomain || strings.HasSuffix(d, "."+orgDomain)
+}
+
 func DeriveOrgName(d string) string {
 	base := strings.SplitN(d, ".", 2)[0]
 	words := strings.Split(base, "-")

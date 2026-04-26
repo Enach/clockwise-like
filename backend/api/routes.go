@@ -17,6 +17,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 	// Public auth routes — no JWT required
 	ah := &authHandlers{oauthConfig: oauthConfig, db: db, jwtSecret: jwtSecret}
+	ssoh := &ssoHandlers{ah: ah}
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Get("/google", ah.startOAuth)
 		r.Get("/callback", ah.callback)
@@ -24,6 +25,9 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Get("/microsoft/callback", ah.microsoftCallback)
 		r.Get("/zoom", (&conferencingHandlers{db: db, oauthConfig: oauthConfig}).startZoomOAuth)
 		r.Get("/zoom/callback", (&conferencingHandlers{db: db, oauthConfig: oauthConfig}).zoomCallback)
+		r.Post("/detect", ssoh.detect)
+		r.Get("/sso/{domain}", ssoh.startSSO)
+		r.Get("/callback/oidc/{domain}", ssoh.oidcCallback)
 
 		// Protected sub-routes (status, disconnect)
 		r.Group(func(r chi.Router) {
@@ -112,5 +116,11 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 		oh := &orgHandlers{db: db}
 		r.Get("/api/org/members", oh.members)
+
+		r.Route("/api/admin/sso", func(r chi.Router) {
+			r.Post("/", ssoh.createSSOProvider)
+			r.Get("/", ssoh.listSSOProviders)
+			r.Delete("/{domain}", ssoh.deleteSSOProvider)
+		})
 	})
 }
