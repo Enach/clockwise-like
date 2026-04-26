@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Enach/clockwise-like/backend/storage"
@@ -18,6 +19,9 @@ type ScheduleRequest struct {
 	RangeEnd        time.Time
 	Title           string
 	Description     string
+	// From NLP result — boost/penalize candidate slots accordingly
+	PreferredTimes []string // e.g. ["10:00-12:00"]
+	AvoidTimes     []string // e.g. ["08:00-09:00"]
 }
 
 type SuggestedSlot struct {
@@ -96,6 +100,7 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 			}
 
 			score, reasons := scoreCandidate(t, end, focusBlocks, s)
+			score, reasons = adjustScoreForPreferences(score, reasons, t, loc, req.PreferredTimes, req.AvoidTimes)
 			candidates = append(candidates, SuggestedSlot{
 				Start:   t,
 				End:     end,
@@ -147,6 +152,45 @@ func scoreCandidate(start, end time.Time, focusBlocks []storage.FocusBlock, s *s
 	}
 
 	return score, reasons
+}
+
+func adjustScoreForPreferences(score int, reasons []string, t time.Time, loc *time.Location, preferred, avoid []string) (int, []string) {
+	local := t.In(loc)
+	h, m := local.Hour(), local.Minute()
+	for _, r := range preferred {
+		if timeInHHMMRange(h, m, r) {
+			score += 25
+			reasons = append(reasons, "Preferred time window")
+		}
+	}
+	for _, r := range avoid {
+		if timeInHHMMRange(h, m, r) {
+			score -= 40
+			reasons = append(reasons, "Avoid time window")
+		}
+	}
+	return score, reasons
+}
+
+func timeInHHMMRange(h, m int, hhmmRange string) bool {
+	parts := strings.SplitN(hhmmRange, "-", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	sh, sm := parseHHMMParts(parts[0])
+	eh, em := parseHHMMParts(parts[1])
+	cur := h*60 + m
+	return cur >= sh*60+sm && cur < eh*60+em
+}
+
+func parseHHMMParts(hhmm string) (int, int) {
+	hhmm = strings.TrimSpace(hhmm)
+	if len(hhmm) < 5 || hhmm[2] != ':' {
+		return 0, 0
+	}
+	h := int(hhmm[0]-'0')*10 + int(hhmm[1]-'0')
+	m := int(hhmm[3]-'0')*10 + int(hhmm[4]-'0')
+	return h, m
 }
 
 func sortSlotsByScore(slots []SuggestedSlot) {
