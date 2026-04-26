@@ -1,19 +1,8 @@
 package storage
 
 import (
-	"database/sql"
 	"testing"
 )
-
-func openTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
 
 func TestGetSettings_Defaults(t *testing.T) {
 	db := openTestDB(t)
@@ -136,14 +125,5 @@ func TestSaveSettings_Update(t *testing.T) {
 	}
 	if got.WorkStart != "07:00" {
 		t.Errorf("WorkStart = %q, want 07:00", got.WorkStart)
-	}
-}
-
-func TestBoolToInt(t *testing.T) {
-	if boolToInt(true) != 1 {
-		t.Error("boolToInt(true) should be 1")
-	}
-	if boolToInt(false) != 0 {
-		t.Error("boolToInt(false) should be 0")
 	}
 }

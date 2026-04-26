@@ -1,17 +1,33 @@
 version: '3.9'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: clockwise
+      POSTGRES_USER: clockwise
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clockwise}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clockwise -d clockwise"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   backend:
     build: ./backend
     environment:
       - PORT=8080
-      - DB_PATH=/data/clockwise.db
+      - DATABASE_URL=postgres://clockwise:${POSTGRES_PASSWORD:-clockwise}@postgres:5432/clockwise?sslmode=disable
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL:-}
       - SESSION_SECRET=${SESSION_SECRET:-changeme}
-    volumes:
-      - sqlite_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -30,4 +46,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  sqlite_data:
+  postgres_data:

@@ -41,16 +41,13 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		FROM settings WHERE id = 1`)
 
 	s := &Settings{}
-	var protectLunch, compressionEnabled, autoScheduleEnabled int
-	var updatedAt string
-
 	err := row.Scan(
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
-		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &protectLunch,
-		&s.BufferBeforeMinutes, &s.BufferAfterMinutes, &compressionEnabled,
-		&autoScheduleEnabled, &s.AutoScheduleCron,
-		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL, &updatedAt,
+		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &s.ProtectLunch,
+		&s.BufferBeforeMinutes, &s.BufferAfterMinutes, &s.CompressionEnabled,
+		&s.AutoScheduleEnabled, &s.AutoScheduleCron,
+		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL, &s.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return insertDefaultSettings(db)
@@ -58,16 +55,11 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	s.ProtectLunch = protectLunch != 0
-	s.CompressionEnabled = compressionEnabled != 0
-	s.AutoScheduleEnabled = autoScheduleEnabled != 0
-	s.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	return s, nil
 }
 
 func insertDefaultSettings(db *sql.DB) (*Settings, error) {
-	_, err := db.Exec(`INSERT OR IGNORE INTO settings (id) VALUES (1)`)
+	_, err := db.Exec(`INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`)
 	if err != nil {
 		return nil, err
 	}
@@ -83,37 +75,30 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			buffer_before_minutes, buffer_after_minutes, compression_enabled,
 			auto_schedule_enabled, auto_schedule_cron,
 			llm_provider, llm_model, llm_api_key, llm_base_url, updated_at
-		) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-		ON CONFLICT(id) DO UPDATE SET
-			work_start=excluded.work_start, work_end=excluded.work_end,
-			timezone=excluded.timezone,
-			focus_min_block_minutes=excluded.focus_min_block_minutes,
-			focus_max_block_minutes=excluded.focus_max_block_minutes,
-			focus_daily_target_minutes=excluded.focus_daily_target_minutes,
-			focus_label=excluded.focus_label, focus_color=excluded.focus_color,
-			lunch_start=excluded.lunch_start, lunch_end=excluded.lunch_end,
-			protect_lunch=excluded.protect_lunch,
-			buffer_before_minutes=excluded.buffer_before_minutes,
-			buffer_after_minutes=excluded.buffer_after_minutes,
-			compression_enabled=excluded.compression_enabled,
-			auto_schedule_enabled=excluded.auto_schedule_enabled,
-			auto_schedule_cron=excluded.auto_schedule_cron,
-			llm_provider=excluded.llm_provider, llm_model=excluded.llm_model,
-			llm_api_key=excluded.llm_api_key, llm_base_url=excluded.llm_base_url,
-			updated_at=excluded.updated_at`,
+		) VALUES (1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
+			timezone=EXCLUDED.timezone,
+			focus_min_block_minutes=EXCLUDED.focus_min_block_minutes,
+			focus_max_block_minutes=EXCLUDED.focus_max_block_minutes,
+			focus_daily_target_minutes=EXCLUDED.focus_daily_target_minutes,
+			focus_label=EXCLUDED.focus_label, focus_color=EXCLUDED.focus_color,
+			lunch_start=EXCLUDED.lunch_start, lunch_end=EXCLUDED.lunch_end,
+			protect_lunch=EXCLUDED.protect_lunch,
+			buffer_before_minutes=EXCLUDED.buffer_before_minutes,
+			buffer_after_minutes=EXCLUDED.buffer_after_minutes,
+			compression_enabled=EXCLUDED.compression_enabled,
+			auto_schedule_enabled=EXCLUDED.auto_schedule_enabled,
+			auto_schedule_cron=EXCLUDED.auto_schedule_cron,
+			llm_provider=EXCLUDED.llm_provider, llm_model=EXCLUDED.llm_model,
+			llm_api_key=EXCLUDED.llm_api_key, llm_base_url=EXCLUDED.llm_base_url,
+			updated_at=NOW()`,
 		s.WorkStart, s.WorkEnd, s.Timezone,
 		s.FocusMinBlockMinutes, s.FocusMaxBlockMinutes, s.FocusDailyTargetMinutes,
-		s.FocusLabel, s.FocusColor, s.LunchStart, s.LunchEnd, boolToInt(s.ProtectLunch),
-		s.BufferBeforeMinutes, s.BufferAfterMinutes, boolToInt(s.CompressionEnabled),
-		boolToInt(s.AutoScheduleEnabled), s.AutoScheduleCron,
+		s.FocusLabel, s.FocusColor, s.LunchStart, s.LunchEnd, s.ProtectLunch,
+		s.BufferBeforeMinutes, s.BufferAfterMinutes, s.CompressionEnabled,
+		s.AutoScheduleEnabled, s.AutoScheduleCron,
 		s.LLMProvider, s.LLMModel, s.LLMAPIKey, s.LLMBaseURL,
 	)
 	return err
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

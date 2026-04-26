@@ -1,4 +1,4 @@
-.PHONY: update-frontend
+.PHONY: update-frontend db-shell
 
 ## Pull latest changes from the Lovable frontend repo into frontend/src/
 update-frontend:
@@ -18,3 +18,7 @@ update-frontend:
 	git add frontend/
 	git commit -m "chore: sync frontend from Lovable (smart-calendar-flow)"
 	@echo "Frontend updated. Run 'docker compose build' to rebuild."
+
+## Open a psql shell into the running postgres container
+db-shell:
+	docker compose exec postgres psql -U clockwise -d clockwise

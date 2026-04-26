@@ -18,12 +18,12 @@ func main() {
 		port = "8080"
 	}
 
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "/data/clockwise.db"
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
 	}
 
-	db, err := storage.Open(dbPath)
+	db, err := storage.Open(dsn)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}

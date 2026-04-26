@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS focus_blocks;
+DROP TABLE IF EXISTS oauth_tokens;
+DROP TABLE IF EXISTS settings;
