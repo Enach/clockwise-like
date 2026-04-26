@@ -129,15 +129,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # SSH agent needed so the frontend Dockerfile can clone smart-calendar-flow
-      - name: Set up SSH agent for frontend clone
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.FRONTEND_DEPLOY_KEY }}
-
-      - name: Add github.com to known hosts
-        run: ssh-keyscan github.com >> ~/.ssh/known_hosts
-
       - name: Build and push backend
         uses: docker/build-push-action@v6
         with:
@@ -154,7 +145,6 @@ jobs:
         with:
           context: ./frontend
           push: true
-          ssh: default
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
