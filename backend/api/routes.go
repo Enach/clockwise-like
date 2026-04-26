@@ -162,6 +162,9 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Delete("/{domain}", ssoh.deleteSSOProvider)
 		})
 
+		fbh := newFreeBusyHandlers(db, oauthConfig)
+		r.Post("/api/freebusy", fbh.query)
+
 		th := newTeamHandlers(db, oauthConfig)
 		r.Route("/api/teams", func(r chi.Router) {
 			r.Post("/", th.createTeam)
