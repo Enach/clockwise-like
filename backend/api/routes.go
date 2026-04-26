@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 
+	"github.com/Enach/clockwise-like/backend/engine"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 )
@@ -40,8 +41,11 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 		r.Delete("/blocks", fh.clearBlocks)
 	})
 
+	comprEng := &engine.CompressionEngine{DB: db, OAuthConfig: oauthConfig}
+	sched := &scheduleHandlers{eng: comprEng, db: db, oauthConfig: oauthConfig}
 	r.Route("/api/schedule", func(r chi.Router) {
-		// T-06: Smart scheduling handlers
+		r.Post("/compress", sched.compress)
+		r.Post("/compress/apply", sched.applyCompress)
 	})
 
 	r.Route("/api/nlp", func(r chi.Router) {
