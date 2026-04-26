@@ -19,8 +19,10 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config) {
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Get("/google", ah.startOAuth)
 		r.Get("/callback", ah.callback)
-		r.Get("/status", ah.status)
+		r.Get("/status", ah.statusWithProvider)
 		r.Delete("/disconnect", ah.disconnect)
+		r.Get("/microsoft", ah.startMicrosoftOAuth)
+		r.Get("/microsoft/callback", ah.microsoftCallback)
 	})
 
 	ch := &calendarHandlers{oauthConfig: oauthConfig, db: db}
