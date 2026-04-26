@@ -1,0 +1,30 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck       # unchecked errors
+    - govet          # go vet passes
+    - ineffassign    # assignments that are never used
+    - staticcheck    # staticcheck suite (SA*, QF*, S*, ST*)
+    - unused         # unused code
+    - revive         # drop-in replacement for golint
+    - bodyclose      # unclosed HTTP response bodies
+    - noctx          # HTTP requests without context
+    - gosimple       # simplification suggestions
+
+linters-settings:
+  revive:
+    rules:
+      # Don't require doc comments on every exported symbol
+      - name: exported
+        disabled: true
+
+issues:
+  exclude-rules:
+    # errcheck is too noisy in test files (deferred closes, etc.)
+    - path: "_test\\.go"
+      linters: [errcheck]
+    # Legacy single-user path that is intentionally kept
+    - text: "Magic number: 1"
+      linters: [revive]
