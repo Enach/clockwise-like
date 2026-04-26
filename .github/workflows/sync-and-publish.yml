@@ -1,4 +1,4 @@
-name: Build, Publish & Deploy
+name: Build & Publish
 
 on:
   push:
@@ -56,22 +56,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/clockwise-frontend:latest
             ghcr.io/${{ github.repository_owner }}/clockwise-frontend:${{ github.sha }}
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            set -e
-            cd /opt/clockwise-like
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
-            docker image prune -f
