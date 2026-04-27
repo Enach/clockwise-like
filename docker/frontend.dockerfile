@@ -6,7 +6,7 @@ RUN npm install --legacy-peer-deps
 COPY . .
 RUN npm run build
 
-FROM caddy:alpine
+FROM caddy:2-alpine
 RUN apk upgrade --no-cache
 COPY --from=builder /app/dist /srv
 EXPOSE 80
