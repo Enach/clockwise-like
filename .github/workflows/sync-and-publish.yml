@@ -78,15 +78,14 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: paceday-backend:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: '1'
-        env:
-          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-backend
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-backend \
+            paceday-backend:${{ github.sha }}
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
@@ -186,15 +185,14 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: paceday-mcp:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: '1'
-        env:
-          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-mcp
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-mcp \
+            paceday-mcp:${{ github.sha }}
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
@@ -257,15 +255,14 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: paceday-frontend:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: '1'
-        env:
-          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend \
+            paceday-frontend:${{ github.sha }}
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
@@ -315,15 +312,14 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: paceday-docs:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: '1'
-        env:
-          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-docs
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-docs \
+            paceday-docs:${{ github.sha }}
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
