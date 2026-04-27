@@ -161,3 +161,14 @@ jobs:
           tags: |
             enach/paceday-mcp:latest
             enach/paceday-mcp:${{ github.sha }}
+
+      - name: Build and push docs
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docs
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            enach/paceday-docs:latest
+            enach/paceday-docs:${{ github.sha }}

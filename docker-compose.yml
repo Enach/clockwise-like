@@ -55,6 +55,10 @@ services:
       context: ./frontend
     restart: unless-stopped
 
+  docs:
+    build: ./docs
+    restart: unless-stopped
+
   mcp-server:
     build: ./mcp
     environment:

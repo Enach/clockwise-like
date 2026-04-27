@@ -1,0 +1,7 @@
+node_modules
+dist
+.astro
+.vscode
+*.md
+!src/**/*.md
+!src/**/*.mdx

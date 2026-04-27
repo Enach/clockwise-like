@@ -77,6 +77,11 @@ services:
     image: enach/paceday-frontend:latest
     restart: unless-stopped
 
+  # ── Docs ──────────────────────────────────────────────────────────────────────
+  docs:
+    image: enach/paceday-docs:latest
+    restart: unless-stopped
+
   # ── MCP Server ───────────────────────────────────────────────────────────────
   mcp-server:
     image: enach/paceday-mcp:latest

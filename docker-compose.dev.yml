@@ -19,5 +19,8 @@ services:
   frontend:
     restart: "no"
 
+  docs:
+    restart: "no"
+
   nginx:
     restart: "no"
