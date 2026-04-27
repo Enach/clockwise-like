@@ -1,13 +1,14 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o server .
+RUN CGO_ENABLED=0 GOOS=linux go build -o server .
 
-FROM alpine:3.19
-WORKDIR /app
-RUN mkdir -p /data
-COPY --from=builder /app/server .
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /app/server /server
 EXPOSE 8080
-CMD ["./server"]
+CMD ["/server"]

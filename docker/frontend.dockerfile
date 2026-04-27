@@ -6,7 +6,8 @@ RUN npm install --legacy-peer-deps
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
+FROM caddy:alpine
+RUN apk upgrade --no-cache
+COPY --from=builder /app/dist /srv
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["file-server", "--root", "/srv", "--listen", ":80"]
