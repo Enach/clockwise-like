@@ -8,3 +8,4 @@ RUN npm run build
 FROM caddy:alpine
 COPY --from=builder /app/dist /srv
 EXPOSE 80
+CMD ["caddy", "file-server", "--root", "/srv", "--listen", ":80"]
