@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# All jobs run on self-hosted runners sharing a single Docker daemon on the
+# same host. Build jobs write images to the daemon; downstream scan/push jobs
+# reference them by tag — no artifact upload/download needed.
+
 # ══════════════════════════════════════════════════════════════════════════════
 # BACKEND
 # ══════════════════════════════════════════════════════════════════════════════
@@ -62,17 +66,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prune stale images
+        run: docker image prune -f
+
       - name: Build image
         run: docker build -t paceday-backend:${{ github.sha }} ./backend
-
-      - name: Export image
-        run: docker save paceday-backend:${{ github.sha }} | gzip > backend-image.tar.gz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: backend-image
-          path: backend-image.tar.gz
-          retention-days: 1
 
   scan-backend:
     name: Backend — Security Scan
@@ -81,14 +79,6 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: backend-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c backend-image.tar.gz)
-
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -108,20 +98,16 @@ jobs:
           sarif_file: trivy-results.sarif
           category: backend
 
+      - name: Cleanup image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker rmi paceday-backend:${{ github.sha }} || true
+
   push-backend:
     name: Backend — Push
     needs: [scan-backend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: backend-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c backend-image.tar.gz)
-
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -134,7 +120,7 @@ jobs:
           docker push enach/paceday-backend:latest
           docker push enach/paceday-backend:${{ github.sha }}
 
-      - name: Cleanup local image
+      - name: Cleanup image
         if: always()
         run: docker rmi paceday-backend:${{ github.sha }} || true
 
@@ -198,17 +184,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prune stale images
+        run: docker image prune -f
+
       - name: Build image
         run: docker build -t paceday-mcp:${{ github.sha }} ./mcp
-
-      - name: Export image
-        run: docker save paceday-mcp:${{ github.sha }} | gzip > mcp-image.tar.gz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mcp-image
-          path: mcp-image.tar.gz
-          retention-days: 1
 
   scan-mcp:
     name: MCP — Security Scan
@@ -217,14 +197,6 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: mcp-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c mcp-image.tar.gz)
-
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -244,20 +216,16 @@ jobs:
           sarif_file: trivy-results.sarif
           category: mcp
 
+      - name: Cleanup image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker rmi paceday-mcp:${{ github.sha }} || true
+
   push-mcp:
     name: MCP — Push
     needs: [scan-mcp]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: mcp-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c mcp-image.tar.gz)
-
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -270,7 +238,7 @@ jobs:
           docker push enach/paceday-mcp:latest
           docker push enach/paceday-mcp:${{ github.sha }}
 
-      - name: Cleanup local image
+      - name: Cleanup image
         if: always()
         run: docker rmi paceday-mcp:${{ github.sha }} || true
 
@@ -297,17 +265,11 @@ jobs:
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git frontend
           rm -f "$KEY"
 
+      - name: Prune stale images
+        run: docker image prune -f
+
       - name: Build image
         run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.sha }} ./frontend
-
-      - name: Export image
-        run: docker save paceday-frontend:${{ github.sha }} | gzip > frontend-image.tar.gz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: frontend-image
-          path: frontend-image.tar.gz
-          retention-days: 1
 
   scan-frontend:
     name: Frontend — Security Scan
@@ -316,14 +278,6 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: frontend-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c frontend-image.tar.gz)
-
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -343,20 +297,16 @@ jobs:
           sarif_file: trivy-results.sarif
           category: frontend
 
+      - name: Cleanup image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker rmi paceday-frontend:${{ github.sha }} || true
+
   push-frontend:
     name: Frontend — Push
     needs: [scan-frontend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: frontend-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c frontend-image.tar.gz)
-
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -369,7 +319,7 @@ jobs:
           docker push enach/paceday-frontend:latest
           docker push enach/paceday-frontend:${{ github.sha }}
 
-      - name: Cleanup local image
+      - name: Cleanup image
         if: always()
         run: docker rmi paceday-frontend:${{ github.sha }} || true
 
@@ -383,17 +333,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prune stale images
+        run: docker image prune -f
+
       - name: Build image
         run: docker build -t paceday-docs:${{ github.sha }} ./docs
-
-      - name: Export image
-        run: docker save paceday-docs:${{ github.sha }} | gzip > docs-image.tar.gz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: docs-image
-          path: docs-image.tar.gz
-          retention-days: 1
 
   scan-docs:
     name: Docs — Security Scan
@@ -402,14 +346,6 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: docs-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c docs-image.tar.gz)
-
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -429,20 +365,16 @@ jobs:
           sarif_file: trivy-results.sarif
           category: docs
 
+      - name: Cleanup image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker rmi paceday-docs:${{ github.sha }} || true
+
   push-docs:
     name: Docs — Push
     needs: [scan-docs]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: docs-image
-
-      - name: Load image
-        shell: bash
-        run: docker load < <(gunzip -c docs-image.tar.gz)
-
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -455,6 +387,6 @@ jobs:
           docker push enach/paceday-docs:latest
           docker push enach/paceday-docs:${{ github.sha }}
 
-      - name: Cleanup local image
+      - name: Cleanup image
         if: always()
         run: docker rmi paceday-docs:${{ github.sha }} || true
