@@ -1,0 +1,51 @@
+---
+title: Microsoft Outlook / Microsoft 365
+description: Connect your Microsoft 365 or Outlook calendar to Paceday, with support for Teams conferencing and org-wide free/busy lookup.
+---
+
+Paceday supports Microsoft 365 and Outlook as a calendar provider, with the same core features available as with Google Calendar. If your organization runs on Microsoft, you can use Paceday without switching tools.
+
+## What permissions Paceday requests
+
+When you sign in with a Microsoft account, Microsoft shows a permission screen listing what Paceday needs access to:
+
+**Read your calendar events**
+Paceday reads your existing events to understand your schedule, generate meeting briefs, find focus time, and detect 1:1 patterns if you're in manager mode.
+
+**Create and edit events**
+Paceday creates events on your behalf when you schedule habits, use Find a time, or book through a scheduling link. It also edits events to add buffer time or update focus blocks.
+
+**Read free/busy information**
+This lets Paceday check availability for your team members and colleagues when finding meeting slots or generating team analytics.
+
+[Screenshot: Microsoft OAuth permission screen listing Paceday's requested access]
+
+## What Paceday never accesses
+
+Just like with Google Calendar, Paceday's access is limited to your calendar. It does not access your Outlook email, OneDrive files, Teams chat messages, SharePoint documents, or any other Microsoft 365 service beyond the calendar.
+
+## Microsoft Teams conferencing auto-detection
+
+If your organization uses Microsoft Teams for video calls, Paceday can automatically detect when an event already has a Teams meeting link. When you create new events through Paceday, it can also add a Teams conferencing link automatically, so you don't have to copy-paste the link separately.
+
+This works when your Microsoft 365 tenant has Teams enabled and your account has permission to create online meetings.
+
+## Free/busy lookup for colleagues
+
+Paceday can check the availability of your colleagues when using the **Find a time** tool or the team scheduling features. This relies on Microsoft 365's free/busy sharing, which is typically enabled by default within an organization.
+
+If you can't see colleagues' availability in Paceday, your IT administrator may need to confirm that free/busy sharing is enabled within your Microsoft 365 tenant. This is a standard Microsoft 365 setting and doesn't require any special Paceday configuration.
+
+## Reconnect if access is revoked
+
+If your Microsoft session expires or access is revoked:
+1. Go to **Settings > Integrations**.
+2. Find the **Microsoft Outlook** card and click **Reconnect**.
+3. Sign in with your Microsoft account and approve the permissions again.
+
+If reconnecting doesn't help, try signing out of Paceday and signing back in with your Microsoft account.
+
+## Related links
+
+- [Google Calendar](/integrations/google-calendar) — connect a Google Calendar account instead
+- [Calendar not syncing](/help/calendar-not-syncing) — troubleshoot sync problems

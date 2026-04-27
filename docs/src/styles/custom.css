@@ -1,0 +1,12 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Playfair+Display:wght@700&display=swap');
+
+:root {
+  --sl-color-accent: #5B7FFF;
+  --sl-color-accent-high: #3B5FDF;
+  --sl-font-system: 'Inter', sans-serif;
+  --sl-font-system-mono: 'JetBrains Mono', monospace;
+}
+
+h1, h2 {
+  font-family: 'Playfair Display', serif;
+}

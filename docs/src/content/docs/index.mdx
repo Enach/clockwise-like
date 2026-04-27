@@ -1,0 +1,33 @@
+---
+title: Welcome to Paceday Help
+description: Everything you need to get the most out of your calendar.
+template: splash
+hero:
+  title: Welcome to Paceday Help
+  tagline: Everything you need to get the most out of your calendar.
+  actions:
+    - text: Get started
+      link: /getting-started/what-is-paceday
+      icon: right-arrow
+      variant: primary
+    - text: Connect your calendar
+      link: /getting-started/connecting-your-calendar
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Protect focus time" icon="pencil">
+    Paceday automatically finds and defends blocks of uninterrupted work time in your calendar.
+    [Learn about focus time →](/focus/what-is-focus-time)
+  </Card>
+  <Card title="Track your habits" icon="add-document">
+    Build routines that stick. Paceday schedules your habits around your meetings so they never get squeezed out.
+    [Learn about habits →](/habits/what-are-habits)
+  </Card>
+  <Card title="Manage your team" icon="setting">
+    Get visibility into your team's focus time and never miss a 1:1 again.
+    [Get started as a manager →](/team/getting-started-as-a-manager)
+  </Card>
+</CardGrid>

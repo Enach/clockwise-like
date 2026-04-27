@@ -1,0 +1,55 @@
+---
+title: Slack integration
+description: Connect Slack to get a daily morning recap in your DMs and enrich your meeting briefs with context from recent conversations.
+---
+
+Connecting Slack lets Paceday do two things: pull in conversation context that makes your meeting briefs richer, and send you a personalized daily recap each morning so you start the day knowing exactly what's ahead.
+
+## Connect Slack
+
+1. Go to **Settings > Integrations**.
+2. Find the **Slack** card and click **Connect**.
+3. You'll be redirected to Slack's authorization page. Sign in if needed and click **Allow**.
+4. Choose whether you want to receive your daily recap as a **direct message** to yourself or in a specific **channel**.
+5. Click **Finish** to complete the setup.
+
+[Screenshot: Settings > Integrations page with the Slack card showing a Connect button]
+
+## What Paceday reads from Slack
+
+Paceday reads recent Slack messages to provide context in your meeting briefs — things like relevant discussions that happened before a meeting so you walk in prepared.
+
+Specifically, Paceday looks at:
+- Messages from the **last 30 days**
+- Only in **channels you're already a member of** and your direct messages
+- Messages related to **meeting attendees and event titles** (Paceday matches names and topics, not raw keyword searches)
+
+Paceday does not read every message in every channel. It only surfaces content relevant to your upcoming meetings.
+
+## The daily morning recap
+
+Every morning, Paceday sends you a recap message in Slack. It includes:
+- Your **upcoming meetings** for the day with a quick brief for each
+- Your **focus blocks** so you know when you've protected time for deep work
+- Any **habits** scheduled for today
+
+**To configure the recap:**
+1. Go to **Settings > Notifications**.
+2. Set the **send time** (for example, 8:00 AM in your local timezone).
+3. Choose **DM** (sent to yourself) or pick a Slack **channel**.
+4. Click **Save**.
+
+You can also click **Send test message** to preview what your recap looks like before it goes live.
+
+## Disconnect Slack
+
+1. Go to **Settings > Integrations**.
+2. Click the **Slack** card.
+3. Click **Disconnect**.
+
+Disconnecting removes Paceday's access to your Slack workspace. Your daily recap will stop, and meeting briefs will no longer include Slack context. You can reconnect at any time.
+
+## Related links
+
+- [Notion integration](/integrations/notion) — add document context to your meeting briefs
+- [Notifications settings](/settings/notifications) — configure your daily recap timing and format

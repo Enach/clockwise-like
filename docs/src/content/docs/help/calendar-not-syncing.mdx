@@ -1,0 +1,46 @@
+---
+title: Calendar not syncing
+description: Fix common calendar sync issues in Paceday, including expired OAuth tokens, revoked permissions, and initial sync problems.
+---
+
+If your calendar events aren't showing up in Paceday, or if changes you make in Google Calendar or Outlook aren't reflected in Paceday, there are a few common causes. Most of them are quick to fix.
+
+## Common reasons your calendar might not be syncing
+
+**Expired OAuth token** — Your authorization with Google or Microsoft has a time limit. If it expires, Paceday loses the ability to read your calendar until you reconnect. This happens automatically over time or if you change your account password.
+
+**Calendar permissions revoked** — If you visited your Google Account settings or Microsoft account settings and removed Paceday's access, the connection breaks immediately.
+
+**Network issue during initial sync** — If something went wrong when you first connected your calendar (a slow connection, a timeout, an interrupted page load), the initial pull of your events may be incomplete.
+
+## Step-by-step fix
+
+**Step 1: Reconnect your calendar**
+1. Go to **Settings > Integrations**.
+2. Find your calendar provider — Google Calendar or Microsoft Outlook.
+3. Click **Reconnect** next to it.
+4. Sign in to your Google or Microsoft account and approve the permissions again.
+5. Wait about 30 seconds, then refresh Paceday.
+
+This resolves the vast majority of sync issues.
+
+**Step 2: Sign out and sign back in**
+
+If reconnecting doesn't help:
+1. Click your avatar or initials in the top-right corner of Paceday.
+2. Click **Sign out**.
+3. Sign back in with the same Google or Microsoft account you normally use.
+
+Signing back in triggers a fresh sync of your calendar data.
+
+**Step 3: Contact support**
+
+If your calendar is still not syncing after both steps above, reach out to the Paceday support team. [Contact support](#) and include:
+- Which calendar provider you use (Google or Microsoft)
+- Roughly when the sync stopped working
+- Any error messages you saw
+
+## Related links
+
+- [Google Calendar integration](/integrations/google-calendar) — understand what permissions Paceday needs
+- [Microsoft Outlook integration](/integrations/microsoft-outlook) — Microsoft-specific connection details

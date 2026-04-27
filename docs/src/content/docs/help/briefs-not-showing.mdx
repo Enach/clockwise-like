@@ -1,0 +1,40 @@
+---
+title: Meeting briefs not showing
+description: Troubleshoot why your meeting brief is empty or missing, including integration requirements, timing, and how to force a refresh.
+---
+
+Meeting briefs appear in the event panel for upcoming meetings and pull in relevant context from Slack and Notion. If a brief isn't showing up — or looks empty — here's what to check.
+
+## Requirements checklist
+
+Before troubleshooting, make sure all three of these are true:
+
+1. **You are the organizer of the meeting.** Paceday only generates briefs for meetings you created or are hosting. If you're a guest in someone else's meeting, a brief won't appear.
+
+2. **At least one integration is connected.** Briefs are powered by Slack and Notion. If neither is connected, there's no source for Paceday to pull context from. Go to **Settings > Integrations** and confirm that Slack, Notion, or both show as **Connected**.
+
+3. **The meeting is in the right time window.** Paceday generates briefs for meetings that are upcoming or within the past 24 hours. Older past meetings won't have briefs.
+
+## The 24-hour brief cache
+
+Paceday refreshes meeting briefs at most once per day. This means if new Slack messages or Notion pages have appeared since the brief was last generated, you might not see them yet.
+
+To force an update:
+1. Open the meeting in Paceday's event panel.
+2. Click the **Refresh** button (the circular arrow icon) at the top of the brief.
+
+This triggers an immediate re-fetch from Slack and Notion and usually updates the brief within a few seconds.
+
+## If the brief is still empty after refreshing
+
+Check the status of your integrations:
+1. Go to **Settings > Integrations**.
+2. Look for a warning or "Disconnected" status next to Slack or Notion.
+3. If either shows a problem, click **Reconnect** and follow the prompts.
+
+It's also possible that Paceday genuinely couldn't find relevant Slack messages or Notion pages for this particular meeting. In that case, the brief won't appear — it only shows when there's something useful to surface.
+
+## Related links
+
+- [Slack integration](/integrations/slack) — connect Slack and understand what Paceday reads
+- [Notion integration](/integrations/notion) — connect Notion for document context in briefs
