@@ -298,7 +298,7 @@ jobs:
           rm -f "$KEY"
 
       - name: Build image
-        run: docker build -t paceday-frontend:${{ github.sha }} ./frontend
+        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.sha }} ./frontend
 
       - name: Export image
         run: docker save paceday-frontend:${{ github.sha }} | gzip > frontend-image.tar.gz
