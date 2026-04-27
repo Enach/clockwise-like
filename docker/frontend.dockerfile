@@ -1,13 +1,19 @@
 # syntax=docker/dockerfile:1
-FROM node:20-alpine AS builder
+# Build context: repo root (.)
+FROM node:20-alpine AS node-builder
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm install --legacy-peer-deps
-COPY . .
+COPY frontend/ .
 RUN npm run build
 
-FROM caddy:2-alpine
-RUN apk upgrade --no-cache
-COPY --from=builder /app/dist /srv
+FROM golang:1.25-alpine AS server-builder
+WORKDIR /build
+COPY docker/fileserver/ .
+RUN CGO_ENABLED=0 GOOS=linux go build -o fileserver .
+
+FROM scratch
+COPY --from=server-builder /build/fileserver /fileserver
+COPY --from=node-builder /app/dist /srv
 EXPOSE 80
-CMD ["file-server", "--root", "/srv", "--listen", ":80"]
+CMD ["/fileserver"]

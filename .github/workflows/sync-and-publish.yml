@@ -251,7 +251,7 @@ jobs:
         run: docker image prune -f
 
       - name: Build image
-        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.sha }} ./frontend
+        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.sha }} .
 
   scan-frontend:
     name: Frontend — Security Scan
@@ -309,7 +309,7 @@ jobs:
         run: docker image prune -f
 
       - name: Build image
-        run: docker build -t paceday-docs:${{ github.sha }} ./docs
+        run: docker build -f docs/Dockerfile -t paceday-docs:${{ github.sha }} .
 
   scan-docs:
     name: Docs — Security Scan
