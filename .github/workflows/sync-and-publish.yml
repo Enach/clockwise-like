@@ -76,27 +76,17 @@ jobs:
     name: Backend — Security Scan
     needs: [build-backend]
     runs-on: self-hosted
-    permissions:
-      security-events: write
     steps:
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: paceday-backend:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
+          format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
         env:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-backend
-
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-          category: backend
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
@@ -194,27 +184,17 @@ jobs:
     name: MCP — Security Scan
     needs: [build-mcp]
     runs-on: self-hosted
-    permissions:
-      security-events: write
     steps:
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: paceday-mcp:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
+          format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
         env:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-mcp
-
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-          category: mcp
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
@@ -275,27 +255,17 @@ jobs:
     name: Frontend — Security Scan
     needs: [build-frontend]
     runs-on: self-hosted
-    permissions:
-      security-events: write
     steps:
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: paceday-frontend:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
+          format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
         env:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend
-
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-          category: frontend
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
@@ -343,27 +313,17 @@ jobs:
     name: Docs — Security Scan
     needs: [build-docs]
     runs-on: self-hosted
-    permissions:
-      security-events: write
     steps:
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: paceday-docs:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
+          format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
         env:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-docs
-
-      - name: Upload SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-          category: docs
 
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
