@@ -47,7 +47,9 @@ jobs:
 
       - name: Run tests
         working-directory: backend
-        run: go test ./... -race -timeout 120s -coverprofile=coverage.out
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: go test ./... -race -timeout 300s -coverprofile=coverage.out
 
       - name: Upload coverage
         if: always()
@@ -57,7 +59,7 @@ jobs:
           name: backend-coverage
           path: backend/coverage.out
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 3
 
   build-backend:
     name: Backend — Build
@@ -79,8 +81,9 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy image \
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
@@ -186,8 +189,9 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy image \
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
@@ -256,8 +260,9 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy image \
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
@@ -313,8 +318,9 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-          trivy image \
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
