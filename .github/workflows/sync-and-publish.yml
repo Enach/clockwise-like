@@ -6,11 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BACKEND
+# ══════════════════════════════════════════════════════════════════════════════
+
 jobs:
 
-  # ── Backend: lint ────────────────────────────────────────────────────────────
   lint-backend:
-    name: Lint — Backend
+    name: Backend — Lint
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -27,9 +30,8 @@ jobs:
         working-directory: backend
         run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
-  # ── Backend: test ────────────────────────────────────────────────────────────
   test-backend:
-    name: Test — Backend
+    name: Backend — Test
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -39,8 +41,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      # Tests spin up postgres via testcontainers — Docker daemon is available
-      # on ubuntu-latest runners, no separate service container needed.
       - name: Run tests
         working-directory: backend
         run: go test ./... -race -timeout 120s -coverprofile=coverage.out
@@ -55,9 +55,95 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  # ── MCP: lint ────────────────────────────────────────────────────────────────
+  build-backend:
+    name: Backend — Build
+    needs: [lint-backend, test-backend]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t paceday-backend:${{ github.sha }} ./backend
+
+      - name: Export image
+        run: docker save paceday-backend:${{ github.sha }} | gzip > backend-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: backend-image.tar.gz
+          retention-days: 1
+
+  scan-backend:
+    name: Backend — Security Scan
+    needs: [build-backend]
+    runs-on: self-hosted
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c backend-image.tar.gz)
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: paceday-backend:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-backend
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: backend
+
+  push-backend:
+    name: Backend — Push
+    needs: [scan-backend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c backend-image.tar.gz)
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          docker tag paceday-backend:${{ github.sha }} enach/paceday-backend:latest
+          docker tag paceday-backend:${{ github.sha }} enach/paceday-backend:${{ github.sha }}
+          docker push enach/paceday-backend:latest
+          docker push enach/paceday-backend:${{ github.sha }}
+
+      - name: Cleanup local image
+        if: always()
+        run: docker rmi paceday-backend:${{ github.sha }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MCP
+# ══════════════════════════════════════════════════════════════════════════════
+
   lint-mcp:
-    name: Lint — MCP
+    name: MCP — Lint
     runs-on: self-hosted
     env:
       GONOSUMDB: '*'
@@ -84,9 +170,8 @@ jobs:
         working-directory: mcp
         run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
-  # ── MCP: test (compile check) ────────────────────────────────────────────────
   test-mcp:
-    name: Test — MCP
+    name: MCP — Test
     runs-on: self-hosted
     env:
       GONOSUMDB: '*'
@@ -106,80 +191,270 @@ jobs:
         working-directory: mcp
         run: go test ./... -race -timeout 60s
 
-  # ── Build & Push Docker images ───────────────────────────────────────────────
-  # Runs only on push to main, after all lint + test jobs pass.
-  build-and-push:
-    name: Build & Push
-    needs: [lint-backend, test-backend, lint-mcp, test-mcp]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  build-mcp:
+    name: MCP — Build
+    needs: [lint-mcp, test-mcp]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t paceday-mcp:${{ github.sha }} ./mcp
+
+      - name: Export image
+        run: docker save paceday-mcp:${{ github.sha }} | gzip > mcp-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-image
+          path: mcp-image.tar.gz
+          retention-days: 1
+
+  scan-mcp:
+    name: MCP — Security Scan
+    needs: [build-mcp]
     runs-on: self-hosted
     permissions:
-      contents: read
-
+      security-events: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-image
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c mcp-image.tar.gz)
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: paceday-mcp:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-mcp
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: mcp
+
+  push-mcp:
+    name: MCP — Push
+    needs: [scan-mcp]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c mcp-image.tar.gz)
+
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Fetch latest frontend source
+      - name: Tag and push
         run: |
+          docker tag paceday-mcp:${{ github.sha }} enach/paceday-mcp:latest
+          docker tag paceday-mcp:${{ github.sha }} enach/paceday-mcp:${{ github.sha }}
+          docker push enach/paceday-mcp:latest
+          docker push enach/paceday-mcp:${{ github.sha }}
+
+      - name: Cleanup local image
+        if: always()
+        run: docker rmi paceday-mcp:${{ github.sha }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FRONTEND
+# ══════════════════════════════════════════════════════════════════════════════
+
+  build-frontend:
+    name: Frontend — Build
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/frontend_deploy_key_${{ github.run_id }}
           mkdir -p ~/.ssh
-          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > ~/.ssh/frontend_deploy_key
-          chmod 600 ~/.ssh/frontend_deploy_key
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
           ssh-keyscan github.com >> ~/.ssh/known_hosts
           rm -rf frontend
-          GIT_SSH_COMMAND="ssh -i ~/.ssh/frontend_deploy_key" \
+          GIT_SSH_COMMAND="ssh -i $KEY" \
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git frontend
-          rm ~/.ssh/frontend_deploy_key
+          rm -f "$KEY"
 
-      - name: Build and push backend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            enach/paceday-backend:latest
-            enach/paceday-backend:${{ github.sha }}
+      - name: Build image
+        run: docker build -t paceday-frontend:${{ github.sha }} ./frontend
 
-      - name: Build and push frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            enach/paceday-frontend:latest
-            enach/paceday-frontend:${{ github.sha }}
+      - name: Export image
+        run: docker save paceday-frontend:${{ github.sha }} | gzip > frontend-image.tar.gz
 
-      - name: Build and push mcp-server
-        uses: docker/build-push-action@v6
+      - uses: actions/upload-artifact@v4
         with:
-          context: ./mcp
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            enach/paceday-mcp:latest
-            enach/paceday-mcp:${{ github.sha }}
+          name: frontend-image
+          path: frontend-image.tar.gz
+          retention-days: 1
 
-      - name: Build and push docs
-        uses: docker/build-push-action@v6
+  scan-frontend:
+    name: Frontend — Security Scan
+    needs: [build-frontend]
+    runs-on: self-hosted
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          context: ./docs
-          push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            enach/paceday-docs:latest
-            enach/paceday-docs:${{ github.sha }}
+          name: frontend-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c frontend-image.tar.gz)
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: paceday-frontend:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: frontend
+
+  push-frontend:
+    name: Frontend — Push
+    needs: [scan-frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c frontend-image.tar.gz)
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          docker tag paceday-frontend:${{ github.sha }} enach/paceday-frontend:latest
+          docker tag paceday-frontend:${{ github.sha }} enach/paceday-frontend:${{ github.sha }}
+          docker push enach/paceday-frontend:latest
+          docker push enach/paceday-frontend:${{ github.sha }}
+
+      - name: Cleanup local image
+        if: always()
+        run: docker rmi paceday-frontend:${{ github.sha }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCS
+# ══════════════════════════════════════════════════════════════════════════════
+
+  build-docs:
+    name: Docs — Build
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t paceday-docs:${{ github.sha }} ./docs
+
+      - name: Export image
+        run: docker save paceday-docs:${{ github.sha }} | gzip > docs-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-image
+          path: docs-image.tar.gz
+          retention-days: 1
+
+  scan-docs:
+    name: Docs — Security Scan
+    needs: [build-docs]
+    runs-on: self-hosted
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c docs-image.tar.gz)
+
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: paceday-docs:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-${{ github.run_id }}-docs
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: docs
+
+  push-docs:
+    name: Docs — Push
+    needs: [scan-docs]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-image
+
+      - name: Load image
+        shell: bash
+        run: docker load < <(gunzip -c docs-image.tar.gz)
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          docker tag paceday-docs:${{ github.sha }} enach/paceday-docs:latest
+          docker tag paceday-docs:${{ github.sha }} enach/paceday-docs:${{ github.sha }}
+          docker push enach/paceday-docs:latest
+          docker push enach/paceday-docs:${{ github.sha }}
+
+      - name: Cleanup local image
+        if: always()
+        run: docker rmi paceday-docs:${{ github.sha }} || true
