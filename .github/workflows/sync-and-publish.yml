@@ -142,8 +142,8 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
         working-directory: mcp
+        run: env -u GOFLAGS go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
       - name: Run lint
         working-directory: mcp
