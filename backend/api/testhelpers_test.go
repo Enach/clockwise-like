@@ -33,23 +33,26 @@ func TestMain(m *testing.M) {
 		_, _ = os.Stderr.WriteString("start postgres container: " + err.Error() + "\n")
 		os.Exit(1)
 	}
-	defer container.Terminate(ctx)
 
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
+		container.Terminate(ctx) //nolint:errcheck
 		_, _ = os.Stderr.WriteString("get connection string: " + err.Error() + "\n")
 		os.Exit(1)
 	}
 
 	db, err := storage.Open(dsn)
 	if err != nil {
+		container.Terminate(ctx) //nolint:errcheck
 		_, _ = os.Stderr.WriteString("open test db: " + err.Error() + "\n")
 		os.Exit(1)
 	}
-	defer db.Close()
 
 	sharedTestDB = db
-	os.Exit(m.Run())
+	code := m.Run()
+	db.Close()
+	container.Terminate(ctx) //nolint:errcheck
+	os.Exit(code)
 }
 
 func openTestDB(t *testing.T) *sql.DB {
