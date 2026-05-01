@@ -14,11 +14,15 @@ export default defineConfig({
     dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', '@tanstack/react-query', '@tanstack/query-core'],
   },
   server: {
-    proxy: {
-      '/api': {
-        target: 'http://backend:8080',
-        changeOrigin: true,
-      },
-    },
+    ...(process.env.VITE_BACKEND_URL
+      ? {
+          proxy: {
+            '/api': {
+              target: process.env.VITE_BACKEND_URL,
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
   },
 })
