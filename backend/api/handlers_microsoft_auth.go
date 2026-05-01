@@ -76,7 +76,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	http.Redirect(w, r, "/?connected=true&provider=outlook", http.StatusFound)
+	http.Redirect(w, r, h.frontendURL+"/auth/callback?provider=outlook", http.StatusFound)
 }
 
 type msUserInfo struct {

@@ -9,7 +9,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin string) {
+func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin, frontendURL string) {
 	r.Use(corsMiddleware(allowedOrigin))
 	r.Use(loggingMiddleware)
 
@@ -22,7 +22,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 	r.Post("/api/book/{slug}", bh.createBooking)
 
 	// Public auth routes — no JWT required
-	ah := &authHandlers{oauthConfig: oauthConfig, db: db, jwtSecret: jwtSecret}
+	ah := &authHandlers{oauthConfig: oauthConfig, db: db, jwtSecret: jwtSecret, frontendURL: frontendURL}
 	ssoh := &ssoHandlers{ah: ah}
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Get("/google", ah.startOAuth)

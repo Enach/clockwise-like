@@ -18,6 +18,7 @@ type authHandlers struct {
 	oauthConfig *oauth2.Config
 	db          *sql.DB
 	jwtSecret   string
+	frontendURL string
 }
 
 func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +76,7 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
 
 	h.issueJWT(w, user)
-	http.Redirect(w, r, "/?connected=true", http.StatusFound)
+	http.Redirect(w, r, h.frontendURL+"/auth/callback", http.StatusFound)
 }
 
 func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {

@@ -183,7 +183,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, userInfo.Email)
 
 	h.ah.issueJWT(w, user)
-	http.Redirect(w, r, "/?connected=true&provider=sso", http.StatusFound)
+	http.Redirect(w, r, h.ah.frontendURL+"/auth/callback?provider=sso", http.StatusFound)
 }
 
 // --- Admin SSO CRUD (protected) -------------------------------------------

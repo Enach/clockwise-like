@@ -43,6 +43,11 @@ services:
       # Leave unset (or *) only if frontend and backend share the same domain.
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-}
 
+      # ── Frontend URL ──────────────────────────────────────────────────────────
+      # Used to redirect back to the frontend after OAuth callbacks.
+      # Must match the public URL of the frontend (no trailing slash).
+      FRONTEND_URL: ${FRONTEND_URL:-}
+
       # Legacy session secret (kept for backward compat)
       SESSION_SECRET: ${SESSION_SECRET}                # required
 
