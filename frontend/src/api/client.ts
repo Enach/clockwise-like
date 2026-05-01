@@ -168,7 +168,10 @@ seedMocks();
 
 // ---------- Tiny fetch wrapper with mock fallback ----------
 
-const API_BASE = (window as Window & { __API_BASE_URL__?: string }).__API_BASE_URL__ ?? "/api";
+const API_BASE =
+  (window as Window & { __API_BASE_URL__?: string }).__API_BASE_URL__ ??
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  "/api";
 const NETWORK_TIMEOUT_MS = 4000;
 
 async function realFetch<T>(method: string, path: string, body?: unknown, query?: Record<string, string | undefined>): Promise<T> {
