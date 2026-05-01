@@ -143,6 +143,8 @@ jobs:
 
       - name: Install golangci-lint
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        env:
+          GOFLAGS: ''
 
       - name: Run lint
         working-directory: mcp
