@@ -30,7 +30,7 @@ jobs:
       - name: Install golangci-lint
         run: |
           mkdir -p "$HOME/.local/bin"
-          if [ ! -f "$HOME/.local/bin/golangci-lint" ]; then
+          if ! "$HOME/.local/bin/golangci-lint" version 2>&1 | grep -q "1.64.8"; then
             curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
               | sh -s -- -b "$HOME/.local/bin" v1.64.8
           fi
@@ -149,7 +149,7 @@ jobs:
       - name: Install golangci-lint
         run: |
           mkdir -p "$HOME/.local/bin"
-          if [ ! -f "$HOME/.local/bin/golangci-lint" ]; then
+          if ! "$HOME/.local/bin/golangci-lint" version 2>&1 | grep -q "1.64.8"; then
             curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
               | sh -s -- -b "$HOME/.local/bin" v1.64.8
           fi
