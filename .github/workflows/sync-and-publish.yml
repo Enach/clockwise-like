@@ -142,9 +142,8 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b $(go env GOPATH)/bin
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        working-directory: mcp
 
       - name: Run lint
         working-directory: mcp
