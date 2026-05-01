@@ -204,13 +204,15 @@ async function realFetch<T>(method: string, path: string, body?: unknown, query?
 }
 
 async function withFallback<T>(real: () => Promise<T>, mock: () => T | Promise<T>): Promise<T> {
-  if (usingMocks) return mock();
   try {
     const v = await real();
-    if (usingMocks) setMockMode(false);
+    setMockMode(false);
     return v;
-  } catch {
-    setMockMode(true);
+  } catch (err) {
+    // HTTP errors (401, 403, 5xx) mean the backend is reachable — don't enter mock mode
+    if (!(err instanceof Error && err.message.startsWith("HTTP "))) {
+      setMockMode(true);
+    }
     return mock();
   }
 }
