@@ -34,7 +34,7 @@ func TestCORSMiddleware_Options(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := corsMiddleware(next)
+	handler := corsMiddleware("*")(next)
 
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
 	w := httptest.NewRecorder()
@@ -54,7 +54,7 @@ func TestCORSMiddleware_GET(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := corsMiddleware(next)
+	handler := corsMiddleware("*")(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	w := httptest.NewRecorder()

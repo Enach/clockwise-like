@@ -38,6 +38,11 @@ services:
       # HS256 secret for JWT cookies — generate with: openssl rand -hex 32
       JWT_SECRET: ${JWT_SECRET}                        # required
 
+      # ── CORS ─────────────────────────────────────────────────────────────────
+      # Frontend origin for cross-origin requests (e.g. https://paceday.nhochart.ovh)
+      # Leave unset (or *) only if frontend and backend share the same domain.
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-}
+
       # Legacy session secret (kept for backward compat)
       SESSION_SECRET: ${SESSION_SECRET}                # required
 

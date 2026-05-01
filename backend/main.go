@@ -95,9 +95,10 @@ func main() {
 	defer mgrCron.Stop()
 
 	jwtSecret := os.Getenv("JWT_SECRET")
+	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
 
 	r := chi.NewRouter()
-	api.RegisterRoutes(r, db, oauthConfig, jwtSecret)
+	api.RegisterRoutes(r, db, oauthConfig, jwtSecret, allowedOrigin)
 
 	log.Printf("server listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, r); err != nil {

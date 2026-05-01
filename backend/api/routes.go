@@ -9,8 +9,8 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret string) {
-	r.Use(corsMiddleware)
+func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin string) {
+	r.Use(corsMiddleware(allowedOrigin))
 	r.Use(loggingMiddleware)
 
 	r.Get("/api/health", healthHandler)
