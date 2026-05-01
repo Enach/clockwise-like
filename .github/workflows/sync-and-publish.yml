@@ -29,15 +29,12 @@ jobs:
 
       - name: Install golangci-lint
         run: |
-          mkdir -p "$HOME/.local/bin"
-          if ! "$HOME/.local/bin/golangci-lint" version 2>&1 | grep -q "1.64.8"; then
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-              | sh -s -- -b "$HOME/.local/bin" v1.64.8
-          fi
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "${{ runner.temp }}/bin" v1.64.8
 
       - name: Run lint
         working-directory: backend
-        run: $HOME/.local/bin/golangci-lint run --config ../.golangci.yml
+        run: ${{ runner.temp }}/bin/golangci-lint run --config ../.golangci.yml
 
   test-backend:
     name: Backend — Test
@@ -148,15 +145,12 @@ jobs:
 
       - name: Install golangci-lint
         run: |
-          mkdir -p "$HOME/.local/bin"
-          if ! "$HOME/.local/bin/golangci-lint" version 2>&1 | grep -q "1.64.8"; then
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-              | sh -s -- -b "$HOME/.local/bin" v1.64.8
-          fi
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "${{ runner.temp }}/bin" v1.64.8
 
       - name: Run lint
         working-directory: mcp
-        run: $HOME/.local/bin/golangci-lint run --config ../.golangci.yml
+        run: ${{ runner.temp }}/bin/golangci-lint run --config ../.golangci.yml
 
   test-mcp:
     name: MCP — Test
