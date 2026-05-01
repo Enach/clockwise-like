@@ -75,6 +75,8 @@ services:
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
     image: enach/paceday-frontend:latest
+    environment:
+      API_BASE_URL: ${API_BASE_URL:-}
     restart: unless-stopped
 
   # ── Docs ──────────────────────────────────────────────────────────────────────
