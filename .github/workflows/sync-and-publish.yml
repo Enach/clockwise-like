@@ -28,11 +28,16 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          if [ ! -f "$HOME/.local/bin/golangci-lint" ]; then
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+              | sh -s -- -b "$HOME/.local/bin" v1.64.8
+          fi
 
       - name: Run lint
         working-directory: backend
-        run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
+        run: $HOME/.local/bin/golangci-lint run --config ../.golangci.yml
 
   test-backend:
     name: Backend — Test
@@ -142,12 +147,16 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        working-directory: mcp
-        run: env -u GOFLAGS go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          if [ ! -f "$HOME/.local/bin/golangci-lint" ]; then
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+              | sh -s -- -b "$HOME/.local/bin" v1.64.8
+          fi
 
       - name: Run lint
         working-directory: mcp
-        run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
+        run: $HOME/.local/bin/golangci-lint run --config ../.golangci.yml
 
   test-mcp:
     name: MCP — Test
