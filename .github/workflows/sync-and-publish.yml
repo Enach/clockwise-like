@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 
       - name: Run lint
         working-directory: backend
@@ -143,7 +143,7 @@ jobs:
 
       - name: Install golangci-lint
         working-directory: mcp
-        run: env -u GOFLAGS go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        run: env -u GOFLAGS go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 
       - name: Run lint
         working-directory: mcp
