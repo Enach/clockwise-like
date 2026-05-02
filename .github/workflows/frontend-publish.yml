@@ -1,0 +1,70 @@
+name: Frontend Publish
+
+# Triggered by a push to smart-calendar-flow via repository_dispatch.
+# Runs only the frontend build → scan → push pipeline.
+
+on:
+  repository_dispatch:
+    types: [frontend-push]
+
+jobs:
+
+  build-frontend:
+    name: Frontend — Build
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/frontend_deploy_key_${{ github.run_id }}
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          rm -rf frontend
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git frontend
+          rm -f "$KEY"
+
+      - name: Prune stale images
+        run: docker image prune -f || true
+
+      - name: Build image
+        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.run_id }} .
+
+  scan-frontend:
+    name: Frontend — Security Scan
+    needs: [build-frontend]
+    runs-on: self-hosted
+    steps:
+      - name: Scan with Trivy
+        run: |
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend \
+            paceday-frontend:${{ github.run_id }}
+
+  push-frontend:
+    name: Frontend — Push
+    needs: [scan-frontend]
+    runs-on: self-hosted
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          docker tag paceday-frontend:${{ github.run_id }} enach/paceday-frontend:latest
+          docker push enach/paceday-frontend:latest
+
+      - name: Cleanup image
+        if: always()
+        run: docker rmi paceday-frontend:${{ github.run_id }} || true
