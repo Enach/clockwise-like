@@ -31,6 +31,9 @@ jobs:
     env:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -47,12 +50,19 @@ jobs:
         working-directory: backend
         run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
+
   test-backend:
     name: Backend — Test
     runs-on: self-hosted
     env:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -77,12 +87,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
+
   quality-backend:
     name: Backend — Code Quality
     runs-on: self-hosted
     env:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -106,6 +123,10 @@ jobs:
       - name: Cyclomatic complexity (max 35)
         working-directory: backend
         run: $(go env GOPATH)/bin/gocyclo -over 35 .
+
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   build-backend:
     name: Backend — Build
@@ -131,6 +152,9 @@ jobs:
     env:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -147,6 +171,10 @@ jobs:
         working-directory: backend
         run: $(go env GOPATH)/bin/gosec -fmt=text ./...
         continue-on-error: true
+
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   dast-backend:
     name: Backend — DAST
@@ -498,6 +526,9 @@ jobs:
       GOFLAGS: '-mod=mod'
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -521,6 +552,10 @@ jobs:
         working-directory: mcp
         run: /tmp/bin/golangci-lint run --config ../.golangci.yml
 
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
+
   test-mcp:
     name: MCP — Test
     runs-on: self-hosted
@@ -529,6 +564,9 @@ jobs:
       GOFLAGS: '-mod=mod'
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -543,6 +581,10 @@ jobs:
         working-directory: mcp
         run: go test ./... -race -timeout 60s
 
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
+
   quality-mcp:
     name: MCP — Code Quality
     runs-on: self-hosted
@@ -551,6 +593,9 @@ jobs:
       GOFLAGS: '-mod=mod'
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -564,6 +609,10 @@ jobs:
       - name: Cyclomatic complexity (max 20)
         working-directory: mcp
         run: $(go env GOPATH)/bin/gocyclo -over 20 .
+
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   build-mcp:
     name: MCP — Build
@@ -591,6 +640,9 @@ jobs:
       GOFLAGS: '-mod=mod'
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
+      - name: Clean stale Go build caches
+        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -606,6 +658,10 @@ jobs:
         working-directory: mcp
         run: $(go env GOPATH)/bin/gosec -fmt=text ./...
         continue-on-error: true
+
+      - name: Cleanup Go build cache
+        if: always()
+        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   scan-mcp:
     name: MCP — Security Scan
