@@ -5,16 +5,24 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  repository_dispatch:
+    types: [frontend-push]
+  workflow_dispatch:
 
 # All jobs run on self-hosted runners sharing a single Docker daemon on the
 # same host. Build jobs write images to the daemon; downstream scan/push jobs
 # reference them by tag — no artifact upload/download needed.
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BACKEND
-# ══════════════════════════════════════════════════════════════════════════════
+#
+# Pipeline structure per component:
+#   Phase 1 │ lint · test · quality (parallel) + build (needs lint, test)
+#   Phase 2 │ sast · dast · scan               (parallel, need build)
+#   Phase 3 │ push                              (needs quality + all phase-2)
 
 jobs:
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BACKEND — Phase 1: Lint · Test · Quality · Build
+# ══════════════════════════════════════════════════════════════════════════════
 
   lint-backend:
     name: Backend — Lint
@@ -27,7 +35,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      # Evict any corrupt build-cache entries left by a failed tar restore.
       - name: Clear Go build cache
         run: go clean -cache
 
@@ -68,28 +75,6 @@ jobs:
           path: backend/coverage.out
           if-no-files-found: warn
           retention-days: 3
-
-  sast-backend:
-    name: Backend — SAST
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
-
-      - name: Clear Go build cache
-        run: go clean -cache
-
-      - name: Install gosec
-        working-directory: backend
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
-
-      - name: Run gosec
-        working-directory: backend
-        run: $(go env GOPATH)/bin/gosec -fmt=text ./...
 
   quality-backend:
     name: Backend — Code Quality
@@ -134,25 +119,32 @@ jobs:
       - name: Build image
         run: docker build -t paceday-backend:${{ github.sha }} ./backend
 
-  scan-backend:
-    name: Backend — Security Scan
+# ══════════════════════════════════════════════════════════════════════════════
+# BACKEND — Phase 2: SAST · DAST · Security Scan
+# ══════════════════════════════════════════════════════════════════════════════
+
+  sast-backend:
+    name: Backend — SAST
     needs: [build-backend]
     runs-on: self-hosted
     steps:
-      - name: Scan with Trivy
-        run: |
-          mkdir -p ${{ runner.temp }}/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
-          ${{ runner.temp }}/bin/trivy image \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            --exit-code 1 \
-            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-backend \
-            paceday-backend:${{ github.sha }}
+      - uses: actions/checkout@v4
 
-      - name: Cleanup image (PR only)
-        if: github.event_name == 'pull_request'
-        run: docker rmi paceday-backend:${{ github.sha }} || true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Clear Go build cache
+        run: go clean -cache
+
+      - name: Install gosec
+        working-directory: backend
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        working-directory: backend
+        run: $(go env GOPATH)/bin/gosec -fmt=text ./...
 
   dast-backend:
     name: Backend — DAST
@@ -211,9 +203,33 @@ jobs:
           docker rm -f dast-be-${{ github.run_id }} dast-pg-${{ github.run_id }} || true
           docker network rm dast-backend-${{ github.run_id }} || true
 
+  scan-backend:
+    name: Backend — Security Scan
+    needs: [build-backend]
+    runs-on: self-hosted
+    steps:
+      - name: Scan with Trivy
+        run: |
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-backend \
+            paceday-backend:${{ github.sha }}
+
+      - name: Cleanup image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker rmi paceday-backend:${{ github.sha }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BACKEND — Phase 3: Push
+# ══════════════════════════════════════════════════════════════════════════════
+
   push-backend:
     name: Backend — Push
-    needs: [scan-backend, sast-backend, quality-backend, dast-backend]
+    needs: [quality-backend, sast-backend, dast-backend, scan-backend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
@@ -234,7 +250,245 @@ jobs:
         run: docker rmi paceday-backend:${{ github.sha }} || true
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MCP
+# FRONTEND — Phase 1: Lint · Test · Quality · Build
+# ══════════════════════════════════════════════════════════════════════════════
+
+  lint-frontend:
+    name: Frontend — Lint
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_lint
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run lint
+
+  test-frontend:
+    name: Frontend — Test
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_test
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm test
+
+  quality-frontend:
+    name: Frontend — Code Quality
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_quality
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      # Informational — third-party dep vulns shouldn't gate our own deploys
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+
+  build-frontend:
+    name: Frontend — Build
+    needs: [lint-frontend, test-frontend]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/frontend_deploy_key_${{ github.run_id }}
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          rm -rf frontend
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git frontend
+          rm -f "$KEY"
+
+      - name: Prune stale images
+        run: docker image prune -f || true
+
+      - name: Build image
+        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.run_id }} .
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FRONTEND — Phase 2: SAST · DAST · Security Scan
+# ══════════════════════════════════════════════════════════════════════════════
+
+  sast-frontend:
+    name: Frontend — SAST
+    needs: [build-frontend]
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_sast
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Semgrep scan
+        run: |
+          semgrep scan \
+            --config "p/typescript" \
+            --config "p/react" \
+            --config "p/secrets" \
+            --error \
+            src/
+
+  dast-frontend:
+    name: Frontend — DAST
+    needs: [build-frontend]
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_dast
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build
+        run: npm ci && npm run build
+
+      - name: Start preview server
+        run: |
+          nohup npm run preview -- --port 4173 > /tmp/preview-${{ github.run_id }}.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4173 && break || sleep 1
+          done
+
+      # host.docker.internal resolves to the Docker host from inside a container
+      - name: ZAP baseline scan
+        run: |
+          docker run --rm \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://host.docker.internal:4173 \
+            -I
+        continue-on-error: true
+
+      - name: Stop preview server
+        if: always()
+        run: pkill -f "vite preview" || true
+
+  scan-frontend:
+    name: Frontend — Security Scan
+    needs: [build-frontend]
+    runs-on: self-hosted
+    steps:
+      - name: Scan with Trivy
+        run: |
+          mkdir -p ${{ runner.temp }}/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
+          ${{ runner.temp }}/bin/trivy image \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend \
+            paceday-frontend:${{ github.run_id }}
+
+      - name: Cleanup image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker rmi paceday-frontend:${{ github.run_id }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FRONTEND — Phase 3: Push
+# ══════════════════════════════════════════════════════════════════════════════
+
+  push-frontend:
+    name: Frontend — Push
+    needs: [quality-frontend, sast-frontend, dast-frontend, scan-frontend]
+    if: >
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'repository_dispatch' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: self-hosted
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          docker tag paceday-frontend:${{ github.run_id }} enach/paceday-frontend:latest
+          docker push enach/paceday-frontend:latest
+
+      - name: Cleanup image
+        if: always()
+        run: docker rmi paceday-frontend:${{ github.run_id }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MCP — Phase 1: Lint · Test · Quality · Build
 # ══════════════════════════════════════════════════════════════════════════════
 
   lint-mcp:
@@ -288,6 +542,29 @@ jobs:
         working-directory: mcp
         run: go test ./... -race -timeout 60s
 
+  quality-mcp:
+    name: MCP — Code Quality
+    runs-on: self-hosted
+    env:
+      GONOSUMDB: '*'
+      GOFLAGS: '-mod=mod'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mcp/go.mod
+
+      - name: Clear Go build cache
+        run: go clean -cache
+
+      - name: Install gocyclo
+        run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+
+      - name: Cyclomatic complexity (max 20)
+        working-directory: mcp
+        run: $(go env GOPATH)/bin/gocyclo -over 20 .
+
   build-mcp:
     name: MCP — Build
     needs: [lint-mcp, test-mcp]
@@ -300,6 +577,35 @@ jobs:
 
       - name: Build image
         run: docker build -t paceday-mcp:${{ github.sha }} ./mcp
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MCP — Phase 2: SAST · Security Scan
+# ══════════════════════════════════════════════════════════════════════════════
+
+  sast-mcp:
+    name: MCP — SAST
+    needs: [build-mcp]
+    runs-on: self-hosted
+    env:
+      GONOSUMDB: '*'
+      GOFLAGS: '-mod=mod'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: mcp/go.mod
+
+      - name: Clear Go build cache
+        run: go clean -cache
+
+      - name: Install gosec
+        working-directory: mcp
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        working-directory: mcp
+        run: $(go env GOPATH)/bin/gosec -fmt=text ./...
 
   scan-mcp:
     name: MCP — Security Scan
@@ -321,9 +627,13 @@ jobs:
         if: github.event_name == 'pull_request'
         run: docker rmi paceday-mcp:${{ github.sha }} || true
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MCP — Phase 3: Push
+# ══════════════════════════════════════════════════════════════════════════════
+
   push-mcp:
     name: MCP — Push
-    needs: [scan-mcp]
+    needs: [quality-mcp, sast-mcp, scan-mcp]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: self-hosted
     steps:
@@ -344,78 +654,7 @@ jobs:
         run: docker rmi paceday-mcp:${{ github.sha }} || true
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FRONTEND
-# ══════════════════════════════════════════════════════════════════════════════
-
-  build-frontend:
-    name: Frontend — Build
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Fetch latest frontend source
-        shell: bash
-        run: |
-          KEY=${{ runner.temp }}/frontend_deploy_key_${{ github.run_id }}
-          mkdir -p ~/.ssh
-          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
-          chmod 600 "$KEY"
-          ssh-keyscan github.com >> ~/.ssh/known_hosts
-          rm -rf frontend
-          GIT_SSH_COMMAND="ssh -i $KEY" \
-            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git frontend
-          rm -f "$KEY"
-
-      - name: Prune stale images
-        run: docker image prune -f || true
-
-      - name: Build image
-        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.sha }} .
-
-  scan-frontend:
-    name: Frontend — Security Scan
-    needs: [build-frontend]
-    runs-on: self-hosted
-    steps:
-      - name: Scan with Trivy
-        run: |
-          mkdir -p ${{ runner.temp }}/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
-          ${{ runner.temp }}/bin/trivy image \
-            --severity CRITICAL,HIGH \
-            --ignore-unfixed \
-            --exit-code 1 \
-            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend \
-            paceday-frontend:${{ github.sha }}
-
-      - name: Cleanup image (PR only)
-        if: github.event_name == 'pull_request'
-        run: docker rmi paceday-frontend:${{ github.sha }} || true
-
-  push-frontend:
-    name: Frontend — Push
-    needs: [scan-frontend]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: self-hosted
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Tag and push
-        run: |
-          docker tag paceday-frontend:${{ github.sha }} enach/paceday-frontend:latest
-          docker tag paceday-frontend:${{ github.sha }} enach/paceday-frontend:${{ github.sha }}
-          docker push enach/paceday-frontend:latest
-          docker push enach/paceday-frontend:${{ github.sha }}
-
-      - name: Cleanup image
-        if: always()
-        run: docker rmi paceday-frontend:${{ github.sha }} || true
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DOCS
+# DOCS — Phase 1: Build
 # ══════════════════════════════════════════════════════════════════════════════
 
   build-docs:
@@ -429,6 +668,10 @@ jobs:
 
       - name: Build image
         run: docker build -f docs/Dockerfile -t paceday-docs:${{ github.sha }} .
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCS — Phase 2: Security Scan
+# ══════════════════════════════════════════════════════════════════════════════
 
   scan-docs:
     name: Docs — Security Scan
@@ -449,6 +692,10 @@ jobs:
       - name: Cleanup image (PR only)
         if: github.event_name == 'pull_request'
         run: docker rmi paceday-docs:${{ github.sha }} || true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCS — Phase 3: Push
+# ══════════════════════════════════════════════════════════════════════════════
 
   push-docs:
     name: Docs — Push
