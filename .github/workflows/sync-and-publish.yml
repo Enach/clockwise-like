@@ -27,6 +27,8 @@ jobs:
   lint-backend:
     name: Backend — Lint
     runs-on: self-hosted
+    env:
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,8 +37,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Clear Go build cache
-        run: go clean -cache
 
       - name: Install golangci-lint
         working-directory: backend
@@ -49,6 +49,8 @@ jobs:
   test-backend:
     name: Backend — Test
     runs-on: self-hosted
+    env:
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,8 +59,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Clear Go build cache
-        run: go clean -cache
 
       - name: Run tests
         working-directory: backend
@@ -79,6 +79,8 @@ jobs:
   quality-backend:
     name: Backend — Code Quality
     runs-on: self-hosted
+    env:
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -87,8 +89,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Clear Go build cache
-        run: go clean -cache
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -127,6 +127,8 @@ jobs:
     name: Backend — SAST
     needs: [build-backend]
     runs-on: self-hosted
+    env:
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,8 +137,6 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Clear Go build cache
-        run: go clean -cache
 
       - name: Install gosec
         working-directory: backend
@@ -273,7 +273,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - run: npm ci
       - run: npm run lint
@@ -298,7 +297,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - run: npm ci
       - run: npm test
@@ -323,7 +321,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - run: npm ci
 
@@ -420,7 +417,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Build
         run: npm ci && npm run build
@@ -502,6 +498,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -532,6 +529,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -553,6 +551,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -560,8 +559,6 @@ jobs:
         with:
           go-version-file: mcp/go.mod
 
-      - name: Clear Go build cache
-        run: go clean -cache
 
       - name: Install gocyclo
         run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
@@ -594,6 +591,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
+      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -601,8 +599,6 @@ jobs:
         with:
           go-version-file: mcp/go.mod
 
-      - name: Clear Go build cache
-        run: go clean -cache
 
       - name: Install gosec
         working-directory: mcp
