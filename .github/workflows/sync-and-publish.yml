@@ -387,7 +387,7 @@ jobs:
 
       - name: Semgrep scan
         run: |
-          semgrep scan \
+          python3 -m semgrep scan \
             --config "p/typescript" \
             --config "p/react" \
             --config "p/secrets" \
