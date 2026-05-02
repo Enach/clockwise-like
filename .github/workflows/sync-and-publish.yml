@@ -265,6 +265,7 @@ jobs:
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           GIT_SSH_COMMAND="ssh -i $KEY" \
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
           rm -f "$KEY"
@@ -289,6 +290,7 @@ jobs:
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           GIT_SSH_COMMAND="ssh -i $KEY" \
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
           rm -f "$KEY"
@@ -313,6 +315,7 @@ jobs:
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           GIT_SSH_COMMAND="ssh -i $KEY" \
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
           rm -f "$KEY"
@@ -375,6 +378,7 @@ jobs:
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           GIT_SSH_COMMAND="ssh -i $KEY" \
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
           rm -f "$KEY"
@@ -408,6 +412,7 @@ jobs:
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           GIT_SSH_COMMAND="ssh -i $KEY" \
             git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
           rm -f "$KEY"
