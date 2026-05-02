@@ -18,6 +18,9 @@ on:
 #   Phase 1 │ lint · test · quality (parallel) + build (needs lint, test)
 #   Phase 2 │ sast · dast · scan               (parallel, need build)
 #   Phase 3 │ push                              (needs quality + all phase-2)
+#
+# Go temp dirs (GOCACHE, GOTMPDIR) live in the workspace so actions/checkout
+# wipes them automatically — prevents /tmp exhaustion on self-hosted runners.
 
 jobs:
 
@@ -29,18 +32,15 @@ jobs:
     name: Backend — Lint
     runs-on: self-hosted
     env:
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-
 
       - name: Install golangci-lint
         working-directory: backend
@@ -50,26 +50,19 @@ jobs:
         working-directory: backend
         run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
-
   test-backend:
     name: Backend — Test
     runs-on: self-hosted
     env:
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-
 
       - name: Run tests
         working-directory: backend
@@ -87,26 +80,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
-
   quality-backend:
     name: Backend — Code Quality
     runs-on: self-hosted
     env:
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -123,10 +109,6 @@ jobs:
       - name: Cyclomatic complexity (max 35)
         working-directory: backend
         run: $(go env GOPATH)/bin/gocyclo -over 35 .
-
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   build-backend:
     name: Backend — Build
@@ -150,18 +132,15 @@ jobs:
     needs: [build-backend]
     runs-on: self-hosted
     env:
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-
 
       - name: Install gosec
         working-directory: backend
@@ -171,10 +150,6 @@ jobs:
         working-directory: backend
         run: $(go env GOPATH)/bin/gosec -fmt=text ./...
         continue-on-error: true
-
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   dast-backend:
     name: Backend — DAST
@@ -240,13 +215,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p /tmp/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
-          /tmp/bin/trivy image \
+          mkdir -p /tmp/trivy-bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
+          /tmp/trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-${{ github.run_id }}-backend \
+            --cache-dir /tmp/trivy-cache-backend \
             paceday-backend:${{ github.sha }}
 
       - name: Cleanup image (PR only)
@@ -414,7 +389,10 @@ jobs:
         run: python3 -m pip install semgrep --break-system-packages --quiet
 
       - name: Semgrep scan
+        env:
+          SEMGREP_SETTINGS_FILE: ${{ github.workspace }}/.semgrep/settings.yml
         run: |
+          mkdir -p "${{ github.workspace }}/.semgrep"
           export PATH="$(python3 -m site --user-base)/bin:/usr/local/bin:$PATH"
           semgrep scan \
             --config "p/typescript" \
@@ -475,13 +453,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p /tmp/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
-          /tmp/bin/trivy image \
+          mkdir -p /tmp/trivy-bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
+          /tmp/trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-${{ github.run_id }}-frontend \
+            --cache-dir /tmp/trivy-cache-frontend \
             paceday-frontend:${{ github.run_id }}
 
       - name: Cleanup image (PR only)
@@ -525,11 +503,9 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -545,17 +521,11 @@ jobs:
         run: go vet ./...
 
       - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "/tmp/bin" v1.64.8
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 
       - name: Run lint
         working-directory: mcp
-        run: /tmp/bin/golangci-lint run --config ../.golangci.yml
-
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
+        run: $(go env GOPATH)/bin/golangci-lint run --config ../.golangci.yml
 
   test-mcp:
     name: MCP — Test
@@ -563,11 +533,9 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
@@ -582,27 +550,20 @@ jobs:
         working-directory: mcp
         run: go test ./... -race -timeout 60s
 
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
-
   quality-mcp:
     name: MCP — Code Quality
     runs-on: self-hosted
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: mcp/go.mod
-
 
       - name: Install gocyclo
         run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
@@ -610,10 +571,6 @@ jobs:
       - name: Cyclomatic complexity (max 20)
         working-directory: mcp
         run: $(go env GOPATH)/bin/gocyclo -over 20 .
-
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
 
   build-mcp:
     name: MCP — Build
@@ -639,17 +596,14 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: ${{ github.workspace }}/.go-cache
+      GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
-      - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: mcp/go.mod
-
 
       - name: Install gosec
         working-directory: mcp
@@ -660,10 +614,6 @@ jobs:
         run: $(go env GOPATH)/bin/gosec -fmt=text ./...
         continue-on-error: true
 
-      - name: Cleanup Go build cache
-        if: always()
-        run: rm -rf "/tmp/go-build-${{ github.run_id }}-${{ github.job }}" 2>/dev/null || true
-
   scan-mcp:
     name: MCP — Security Scan
     needs: [build-mcp]
@@ -671,13 +621,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p /tmp/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
-          /tmp/bin/trivy image \
+          mkdir -p /tmp/trivy-bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
+          /tmp/trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-${{ github.run_id }}-mcp \
+            --cache-dir /tmp/trivy-cache-mcp \
             paceday-mcp:${{ github.sha }}
 
       - name: Cleanup image (PR only)
@@ -737,13 +687,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p /tmp/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
-          /tmp/bin/trivy image \
+          mkdir -p /tmp/trivy-bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
+          /tmp/trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-${{ github.run_id }}-docs \
+            --cache-dir /tmp/trivy-cache-docs \
             paceday-docs:${{ github.sha }}
 
       - name: Cleanup image (PR only)
