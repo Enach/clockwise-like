@@ -1,3 +1,4 @@
+[![CI](https://github.com/Enach/clockwise-like/actions/workflows/sync-and-publish.yml/badge.svg)](https://github.com/Enach/clockwise-like/actions/workflows/sync-and-publish.yml)
 # Paceday
 
 An AI-powered calendar management app that protects your focus time, compresses meetings, and lets you control your schedule with natural language.
