@@ -1,16 +1,190 @@
 name: Frontend Publish
 
-# Triggered by a push to smart-calendar-flow via repository_dispatch.
-# Runs only the frontend build → scan → push pipeline.
+# Triggered by a push to smart-calendar-flow via repository_dispatch,
+# or manually via workflow_dispatch.
+# Runs full frontend CI then build → scan → push.
 
 on:
   repository_dispatch:
     types: [frontend-push]
+  workflow_dispatch:
+
+# All CI jobs clone the frontend source into their own workspace via deploy key.
+# build-frontend re-clones into the clockwise-like context so the Dockerfile
+# can COPY from ./frontend.
 
 jobs:
 
+# ── Lint ─────────────────────────────────────────────────────────────────────
+
+  lint-frontend:
+    name: Frontend — Lint
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_lint
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run lint
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+
+  test-frontend:
+    name: Frontend — Test
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_test
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm test
+
+# ── Code Quality ─────────────────────────────────────────────────────────────
+
+  quality-frontend:
+    name: Frontend — Code Quality
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_quality
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      # Informational — third-party dep vulns shouldn't gate our own deploys
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+        continue-on-error: true
+
+# ── SAST ─────────────────────────────────────────────────────────────────────
+
+  sast-frontend:
+    name: Frontend — SAST
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_sast
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Semgrep scan
+        run: |
+          semgrep scan \
+            --config "p/typescript" \
+            --config "p/react" \
+            --config "p/secrets" \
+            --error \
+            src/
+
+# ── DAST ─────────────────────────────────────────────────────────────────────
+
+  dast-frontend:
+    name: Frontend — DAST
+    runs-on: self-hosted
+    steps:
+      - name: Checkout frontend source
+        shell: bash
+        run: |
+          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_dast
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
+          chmod 600 "$KEY"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i $KEY" \
+            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
+          rm -f "$KEY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build
+        run: npm ci && npm run build
+
+      - name: Start preview server
+        run: |
+          nohup npm run preview -- --port 4173 > /tmp/preview-${{ github.run_id }}.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4173 && break || sleep 1
+          done
+
+      # host.docker.internal resolves to the Docker host from inside a container
+      - name: ZAP baseline scan
+        run: |
+          docker run --rm \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://host.docker.internal:4173 \
+            -I
+        continue-on-error: true
+
+      - name: Stop preview server
+        if: always()
+        run: pkill -f "vite preview" || true
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
   build-frontend:
     name: Frontend — Build
+    needs: [lint-frontend, test-frontend, quality-frontend, sast-frontend, dast-frontend]
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +208,8 @@ jobs:
       - name: Build image
         run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.run_id }} .
 
+# ── Scan ─────────────────────────────────────────────────────────────────────
+
   scan-frontend:
     name: Frontend — Security Scan
     needs: [build-frontend]
@@ -49,6 +225,8 @@ jobs:
             --exit-code 1 \
             --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend \
             paceday-frontend:${{ github.run_id }}
+
+# ── Push ─────────────────────────────────────────────────────────────────────
 
   push-frontend:
     name: Frontend — Push
