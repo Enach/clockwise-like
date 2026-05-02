@@ -12,6 +12,7 @@ on:
 # All jobs run on self-hosted runners sharing a single Docker daemon on the
 # same host. Build jobs write images to the daemon; downstream scan/push jobs
 # reference them by tag — no artifact upload/download needed.
+# Frontend source: cloned from smart-calendar-flow main at run time.
 #
 # Pipeline structure per component:
 #   Phase 1 │ lint · test · quality (parallel) + build (needs lint, test)
