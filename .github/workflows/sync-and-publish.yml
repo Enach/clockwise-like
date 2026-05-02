@@ -32,7 +32,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -61,7 +61,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -98,7 +98,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -153,7 +153,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -411,11 +411,12 @@ jobs:
           rm -f "$KEY"
 
       - name: Install Semgrep
-        run: python3 -m pip install semgrep --break-system-packages
+        run: python3 -m pip install semgrep --break-system-packages --quiet
 
       - name: Semgrep scan
         run: |
-          python3 -m semgrep scan \
+          export PATH="$(python3 -m site --user-base)/bin:/usr/local/bin:$PATH"
+          semgrep scan \
             --config "p/typescript" \
             --config "p/react" \
             --config "p/secrets" \
@@ -527,7 +528,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -565,7 +566,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -594,7 +595,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
@@ -641,7 +642,7 @@ jobs:
       GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - name: Clean stale Go build caches
-        run: find /tmp -maxdepth 1 -name "go-build-*" ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
+        run: find /tmp -maxdepth 1 \( -name "go-build-*" -o -name "go-build[0-9]*" \) ! -name "go-build-${{ github.run_id }}-*" -exec rm -rf {} + 2>/dev/null || true
 
       - uses: actions/checkout@v4
 
