@@ -29,7 +29,7 @@ jobs:
     name: Backend — Lint
     runs-on: self-hosted
     env:
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +51,7 @@ jobs:
     name: Backend — Test
     runs-on: self-hosted
     env:
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -81,7 +81,7 @@ jobs:
     name: Backend — Code Quality
     runs-on: self-hosted
     env:
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -129,7 +129,7 @@ jobs:
     needs: [build-backend]
     runs-on: self-hosted
     env:
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -211,13 +211,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p ${{ runner.temp }}/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
-          ${{ runner.temp }}/bin/trivy image \
+          mkdir -p /tmp/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
+          /tmp/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-backend \
+            --cache-dir /tmp/trivy-${{ github.run_id }}-backend \
             paceday-backend:${{ github.sha }}
 
       - name: Cleanup image (PR only)
@@ -261,7 +261,7 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_lint
+          KEY=/tmp/fdk_${{ github.run_id }}_lint
           mkdir -p ~/.ssh
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
@@ -285,7 +285,7 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_test
+          KEY=/tmp/fdk_${{ github.run_id }}_test
           mkdir -p ~/.ssh
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
@@ -309,7 +309,7 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_quality
+          KEY=/tmp/fdk_${{ github.run_id }}_quality
           mkdir -p ~/.ssh
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
@@ -343,7 +343,7 @@ jobs:
       - name: Fetch latest frontend source
         shell: bash
         run: |
-          KEY=${{ runner.temp }}/frontend_deploy_key_${{ github.run_id }}
+          KEY=/tmp/frontend_deploy_key_${{ github.run_id }}
           mkdir -p ~/.ssh
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
@@ -371,7 +371,7 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_sast
+          KEY=/tmp/fdk_${{ github.run_id }}_sast
           mkdir -p ~/.ssh
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
@@ -405,7 +405,7 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=${{ runner.temp }}/fdk_${{ github.run_id }}_dast
+          KEY=/tmp/fdk_${{ github.run_id }}_dast
           mkdir -p ~/.ssh
           echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
           chmod 600 "$KEY"
@@ -449,13 +449,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p ${{ runner.temp }}/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
-          ${{ runner.temp }}/bin/trivy image \
+          mkdir -p /tmp/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
+          /tmp/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-frontend \
+            --cache-dir /tmp/trivy-${{ github.run_id }}-frontend \
             paceday-frontend:${{ github.run_id }}
 
       - name: Cleanup image (PR only)
@@ -499,7 +499,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -518,11 +518,11 @@ jobs:
       - name: Install golangci-lint
         run: |
           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "${{ runner.temp }}/bin" v1.64.8
+            | sh -s -- -b "/tmp/bin" v1.64.8
 
       - name: Run lint
         working-directory: mcp
-        run: ${{ runner.temp }}/bin/golangci-lint run --config ../.golangci.yml
+        run: /tmp/bin/golangci-lint run --config ../.golangci.yml
 
   test-mcp:
     name: MCP — Test
@@ -530,7 +530,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -552,7 +552,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -592,7 +592,7 @@ jobs:
     env:
       GONOSUMDB: '*'
       GOFLAGS: '-mod=mod'
-      GOCACHE: ${{ runner.temp }}/go-build-${{ github.run_id }}-${{ github.job }}
+      GOCACHE: /tmp/go-build-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v4
 
@@ -616,13 +616,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p ${{ runner.temp }}/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
-          ${{ runner.temp }}/bin/trivy image \
+          mkdir -p /tmp/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
+          /tmp/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-mcp \
+            --cache-dir /tmp/trivy-${{ github.run_id }}-mcp \
             paceday-mcp:${{ github.sha }}
 
       - name: Cleanup image (PR only)
@@ -682,13 +682,13 @@ jobs:
     steps:
       - name: Scan with Trivy
         run: |
-          mkdir -p ${{ runner.temp }}/bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ${{ runner.temp }}/bin
-          ${{ runner.temp }}/bin/trivy image \
+          mkdir -p /tmp/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/bin
+          /tmp/bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir ${{ runner.temp }}/trivy-${{ github.run_id }}-docs \
+            --cache-dir /tmp/trivy-${{ github.run_id }}-docs \
             paceday-docs:${{ github.sha }}
 
       - name: Cleanup image (PR only)
