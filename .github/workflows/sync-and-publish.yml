@@ -21,6 +21,7 @@ on:
 #
 # Go temp dirs (GOCACHE, GOTMPDIR) live in the workspace so actions/checkout
 # wipes them automatically — prevents /tmp exhaustion on self-hosted runners.
+# Trivy binary, cache, and TMPDIR also live in workspace for the same reason.
 
 jobs:
 
@@ -36,6 +37,9 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
 
       - uses: actions/setup-go@v5
         with:
@@ -58,6 +62,9 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
 
       - uses: actions/setup-go@v5
         with:
@@ -88,6 +95,9 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
 
       - uses: actions/setup-go@v5
         with:
@@ -136,6 +146,9 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
 
       - uses: actions/setup-go@v5
         with:
@@ -214,14 +227,16 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
+        env:
+          TMPDIR: ${{ github.workspace }}/.trivy-tmp
         run: |
-          mkdir -p /tmp/trivy-bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
-          /tmp/trivy-bin/trivy image \
+          mkdir -p $GITHUB_WORKSPACE/.trivy-bin $GITHUB_WORKSPACE/.trivy-tmp $GITHUB_WORKSPACE/.trivy-cache
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $GITHUB_WORKSPACE/.trivy-bin
+          $GITHUB_WORKSPACE/.trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-cache-backend \
+            --cache-dir $GITHUB_WORKSPACE/.trivy-cache \
             paceday-backend:${{ github.sha }}
 
       - name: Cleanup image (PR only)
@@ -452,14 +467,16 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
+        env:
+          TMPDIR: ${{ github.workspace }}/.trivy-tmp
         run: |
-          mkdir -p /tmp/trivy-bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
-          /tmp/trivy-bin/trivy image \
+          mkdir -p $GITHUB_WORKSPACE/.trivy-bin $GITHUB_WORKSPACE/.trivy-tmp $GITHUB_WORKSPACE/.trivy-cache
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $GITHUB_WORKSPACE/.trivy-bin
+          $GITHUB_WORKSPACE/.trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-cache-frontend \
+            --cache-dir $GITHUB_WORKSPACE/.trivy-cache \
             paceday-frontend:${{ github.run_id }}
 
       - name: Cleanup image (PR only)
@@ -508,6 +525,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: mcp/go.mod
@@ -538,6 +558,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: mcp/go.mod
@@ -560,6 +583,9 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
 
       - uses: actions/setup-go@v5
         with:
@@ -601,6 +627,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare workspace dirs
+        run: mkdir -p .go-cache .go-tmp
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: mcp/go.mod
@@ -620,14 +649,16 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
+        env:
+          TMPDIR: ${{ github.workspace }}/.trivy-tmp
         run: |
-          mkdir -p /tmp/trivy-bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
-          /tmp/trivy-bin/trivy image \
+          mkdir -p $GITHUB_WORKSPACE/.trivy-bin $GITHUB_WORKSPACE/.trivy-tmp $GITHUB_WORKSPACE/.trivy-cache
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $GITHUB_WORKSPACE/.trivy-bin
+          $GITHUB_WORKSPACE/.trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-cache-mcp \
+            --cache-dir $GITHUB_WORKSPACE/.trivy-cache \
             paceday-mcp:${{ github.sha }}
 
       - name: Cleanup image (PR only)
@@ -686,14 +717,16 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Scan with Trivy
+        env:
+          TMPDIR: ${{ github.workspace }}/.trivy-tmp
         run: |
-          mkdir -p /tmp/trivy-bin
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /tmp/trivy-bin
-          /tmp/trivy-bin/trivy image \
+          mkdir -p $GITHUB_WORKSPACE/.trivy-bin $GITHUB_WORKSPACE/.trivy-tmp $GITHUB_WORKSPACE/.trivy-cache
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $GITHUB_WORKSPACE/.trivy-bin
+          $GITHUB_WORKSPACE/.trivy-bin/trivy image \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
             --exit-code 1 \
-            --cache-dir /tmp/trivy-cache-docs \
+            --cache-dir $GITHUB_WORKSPACE/.trivy-cache \
             paceday-docs:${{ github.sha }}
 
       - name: Cleanup image (PR only)
