@@ -274,7 +274,7 @@ jobs:
         with:
           node-version: '20'
 
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps
       - run: npm run lint
 
   test-frontend:
@@ -298,7 +298,7 @@ jobs:
         with:
           node-version: '20'
 
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps
       - run: npm test
 
   quality-frontend:
@@ -322,7 +322,7 @@ jobs:
         with:
           node-version: '20'
 
-      - run: npm ci
+      - run: npm ci --legacy-peer-deps
 
       - name: TypeScript type check
         run: npx tsc --noEmit
@@ -419,7 +419,7 @@ jobs:
           node-version: '20'
 
       - name: Build
-        run: npm ci && npm run build
+        run: npm ci --legacy-peer-deps && npm run build
 
       - name: Start preview server
         run: |
