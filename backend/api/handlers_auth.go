@@ -126,7 +126,8 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
-	if err := auth.DeleteToken(h.db); err != nil {
+	userID := userIDFromCtx(r.Context())
+	if err := auth.DeleteUserToken(h.db, userID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

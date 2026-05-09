@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// CtxKey is the unexported context key type. Use it via the helpers below.
+// ctxKey is the unexported context key type. Use it via the helpers below.
 type ctxKey string
 
 // UserIDKey is the request-scoped key under which the authenticated user's UUID is stored.

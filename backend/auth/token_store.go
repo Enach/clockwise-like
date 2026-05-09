@@ -2,46 +2,60 @@ package auth
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
-// UpsertUserToken stores an OAuth token keyed by user UUID.
-// Passes NULL for user_id when userID is the zero UUID (legacy single-user path).
+// UpsertUserToken stores an OAuth token for the given user (one row per
+// user_id+calendar_id, enforced by migration 017). Returns ErrNoUser when
+// userID is uuid.Nil — production callers must always supply the
+// authenticated user's UUID (see UserIDFromContext).
 func UpsertUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
-	var uid interface{}
-	if userID != uuid.Nil {
-		uid = userID
+	if userID == uuid.Nil {
+		return ErrNoUser
 	}
 	_, err := db.Exec(`
-		INSERT INTO oauth_tokens (id, user_id, access_token, refresh_token, expiry, calendar_id, updated_at)
-		VALUES (1, $1, $2, $3, $4, 'primary', NOW())
-		ON CONFLICT (id) DO UPDATE SET
-			user_id       = EXCLUDED.user_id,
+		INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id, updated_at)
+		VALUES ($1, $2, $3, $4, 'primary', NOW())
+		ON CONFLICT (user_id, calendar_id) DO UPDATE SET
 			access_token  = EXCLUDED.access_token,
 			refresh_token = EXCLUDED.refresh_token,
 			expiry        = EXCLUDED.expiry,
 			updated_at    = NOW()
-	`, uid, token.AccessToken, token.RefreshToken, token.Expiry.UTC())
+	`, userID, token.AccessToken, token.RefreshToken, token.Expiry.UTC())
 	return err
 }
 
-// LoadUserToken retrieves the OAuth token for a specific user.
-// Falls back to the legacy id=1 row when userID is uuid.Nil.
+// ErrNoUser is returned when LoadUserToken is invoked with uuid.Nil.
+// All authenticated callers must resolve userID via UserIDFromContext first;
+// background callers (cron) must iterate users explicitly.
+var ErrNoUser = errors.New("auth.LoadUserToken: userID is required (received uuid.Nil)")
+
+// LoadUserToken retrieves the most recent OAuth token for a specific user.
+// Returns ErrNoUser if userID is uuid.Nil — silent fallback to a legacy
+// id=1 row was removed because it leaked tokens across tenants.
 func LoadUserToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
-	var row *sql.Row
 	if userID == uuid.Nil {
-		row = db.QueryRow(`SELECT access_token, refresh_token, expiry FROM oauth_tokens WHERE id = 1`)
-	} else {
-		row = db.QueryRow(`
-			SELECT access_token, refresh_token, expiry
-			FROM oauth_tokens WHERE user_id = $1
-			ORDER BY updated_at DESC LIMIT 1
-		`, userID)
+		return nil, ErrNoUser
 	}
+	row := db.QueryRow(`
+		SELECT access_token, refresh_token, expiry
+		FROM oauth_tokens WHERE user_id = $1
+		ORDER BY updated_at DESC LIMIT 1
+	`, userID)
 	return scanToken(row)
+}
+
+// DeleteUserToken removes the OAuth token for a specific user.
+func DeleteUserToken(db *sql.DB, userID uuid.UUID) error {
+	if userID == uuid.Nil {
+		return ErrNoUser
+	}
+	_, err := db.Exec(`DELETE FROM oauth_tokens WHERE user_id = $1`, userID)
+	return err
 }
 
 func scanToken(row *sql.Row) (*oauth2.Token, error) {
@@ -60,30 +74,4 @@ func scanToken(row *sql.Row) (*oauth2.Token, error) {
 	}, nil
 }
 
-// ── Legacy single-user aliases (id = 1) ──────────────────────────────────────
 
-func UpsertToken(db *sql.DB, token *oauth2.Token) error {
-	return UpsertUserToken(db, uuid.Nil, token)
-}
-
-func SaveToken(db *sql.DB, token *oauth2.Token) error {
-	return UpsertToken(db, token)
-}
-
-func LoadToken(db *sql.DB) (*oauth2.Token, error) {
-	return LoadUserToken(db, uuid.Nil)
-}
-
-func TokenFromDB(db *sql.DB) (*oauth2.Token, error) {
-	return LoadToken(db)
-}
-
-func DeleteToken(db *sql.DB) error {
-	_, err := db.Exec(`DELETE FROM oauth_tokens WHERE id = 1`)
-	return err
-}
-
-func IsConnected(db *sql.DB) bool {
-	token, err := LoadToken(db)
-	return err == nil && token != nil && token.RefreshToken != ""
-}
