@@ -19,6 +19,15 @@ import (
 type ManagerEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	Clock       Clock // optional; falls back to SystemClock when nil
+}
+
+// now returns the current time via the injected Clock, or SystemClock when unset.
+func (e *ManagerEngine) now() time.Time {
+	if e.Clock != nil {
+		return e.Clock.Now()
+	}
+	return SystemClock.Now()
 }
 
 // ── Team Detection ────────────────────────────────────────────────────────────
@@ -42,7 +51,7 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		return nil, fmt.Errorf("calendar client: %w", err)
 	}
 
-	now := time.Now()
+	now := e.now()
 	events, err := client.ListEvents(ctx, "primary", now.Add(-14*24*time.Hour), now)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
@@ -179,7 +188,7 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 	}
 
 	if result.MembersAdded+result.MembersUpdated > 0 {
-		now2 := time.Now().UTC()
+		now2 := e.now().UTC()
 		profile.IsManager = true
 		profile.DetectedAt = &now2
 		result.IsManager = true
@@ -221,14 +230,14 @@ func (e *ManagerEngine) GetGaps(ctx context.Context, managerID uuid.UUID) ([]Cad
 		return nil, err
 	}
 
-	now := time.Now().UTC()
+	now := e.now().UTC()
 	var gaps []CadenceGap
 
 	for _, m := range members {
 		if m.Cadence == "none" {
 			continue
 		}
-		nextExpected := nextExpectedDate(m)
+		nextExpected := e.nextExpectedDate(m)
 		if nextExpected.IsZero() {
 			continue
 		}
@@ -268,21 +277,23 @@ func (e *ManagerEngine) GetGaps(ctx context.Context, managerID uuid.UUID) ([]Cad
 	return gaps, nil
 }
 
-func nextExpectedDate(m *storage.ManagerTeamMember) time.Time {
-	base := time.Now().UTC()
+// nextExpectedDate returns the date the next 1:1 with m should occur.
+// Uses calendar-month arithmetic for "monthly" cadence; day-based addition for the rest.
+func (e *ManagerEngine) nextExpectedDate(m *storage.ManagerTeamMember) time.Time {
+	base := e.now().UTC()
 	if m.LastOneOnOneAt != nil {
 		base = *m.LastOneOnOneAt
 	}
 	switch m.Cadence {
 	case "weekly":
-		return base.Add(7 * 24 * time.Hour)
+		return base.AddDate(0, 0, 7)
 	case "biweekly":
-		return base.Add(14 * 24 * time.Hour)
+		return base.AddDate(0, 0, 14)
 	case "monthly":
-		return base.Add(30 * 24 * time.Hour)
+		return base.AddDate(0, 1, 0)
 	case "custom":
 		if m.CadenceCustomDays != nil && *m.CadenceCustomDays > 0 {
-			return base.Add(time.Duration(*m.CadenceCustomDays) * 24 * time.Hour)
+			return base.AddDate(0, 0, *m.CadenceCustomDays)
 		}
 	}
 	return time.Time{}

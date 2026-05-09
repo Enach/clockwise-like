@@ -52,8 +52,9 @@ func newMemberWithCadence(cadence string, lastAt *time.Time, customDays *int) *s
 func TestNextExpectedDate_Weekly(t *testing.T) {
 	last := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	m := newMemberWithCadence("weekly", &last, nil)
-	got := nextExpectedDate(m)
-	want := last.Add(7 * 24 * time.Hour)
+	e := &ManagerEngine{}
+	got := e.nextExpectedDate(m)
+	want := last.AddDate(0, 0, 7)
 	if !got.Equal(want) {
 		t.Errorf("weekly: got %v, want %v", got, want)
 	}
@@ -62,8 +63,9 @@ func TestNextExpectedDate_Weekly(t *testing.T) {
 func TestNextExpectedDate_Biweekly(t *testing.T) {
 	last := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	m := newMemberWithCadence("biweekly", &last, nil)
-	got := nextExpectedDate(m)
-	want := last.Add(14 * 24 * time.Hour)
+	e := &ManagerEngine{}
+	got := e.nextExpectedDate(m)
+	want := last.AddDate(0, 0, 14)
 	if !got.Equal(want) {
 		t.Errorf("biweekly: got %v, want %v", got, want)
 	}
@@ -72,8 +74,9 @@ func TestNextExpectedDate_Biweekly(t *testing.T) {
 func TestNextExpectedDate_Monthly(t *testing.T) {
 	last := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	m := newMemberWithCadence("monthly", &last, nil)
-	got := nextExpectedDate(m)
-	want := last.Add(30 * 24 * time.Hour)
+	e := &ManagerEngine{}
+	got := e.nextExpectedDate(m)
+	want := last.AddDate(0, 1, 0)
 	if !got.Equal(want) {
 		t.Errorf("monthly: got %v, want %v", got, want)
 	}
@@ -83,8 +86,9 @@ func TestNextExpectedDate_Custom(t *testing.T) {
 	last := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	days := 21
 	m := newMemberWithCadence("custom", &last, &days)
-	got := nextExpectedDate(m)
-	want := last.Add(21 * 24 * time.Hour)
+	e := &ManagerEngine{}
+	got := e.nextExpectedDate(m)
+	want := last.AddDate(0, 0, 21)
 	if !got.Equal(want) {
 		t.Errorf("custom: got %v, want %v", got, want)
 	}
@@ -94,7 +98,8 @@ func TestNextExpectedDate_CustomZeroDays(t *testing.T) {
 	last := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	days := 0
 	m := newMemberWithCadence("custom", &last, &days)
-	got := nextExpectedDate(m)
+	e := &ManagerEngine{}
+	got := e.nextExpectedDate(m)
 	if !got.IsZero() {
 		t.Errorf("custom with 0 days should return zero time, got %v", got)
 	}
@@ -102,12 +107,13 @@ func TestNextExpectedDate_CustomZeroDays(t *testing.T) {
 
 func TestNextExpectedDate_NoLastDate(t *testing.T) {
 	m := newMemberWithCadence("weekly", nil, nil)
+	e := &ManagerEngine{}
 	before := time.Now().UTC()
-	got := nextExpectedDate(m)
+	got := e.nextExpectedDate(m)
 	after := time.Now().UTC()
 	// base is now(), so expected is now()+7d; just check it's roughly 7 days out
-	minExpected := before.Add(7 * 24 * time.Hour)
-	maxExpected := after.Add(7 * 24 * time.Hour)
+	minExpected := before.AddDate(0, 0, 7)
+	maxExpected := after.AddDate(0, 0, 7)
 	if got.Before(minExpected) || got.After(maxExpected) {
 		t.Errorf("no last date weekly: got %v, expected roughly %v", got, minExpected)
 	}
@@ -115,7 +121,8 @@ func TestNextExpectedDate_NoLastDate(t *testing.T) {
 
 func TestNextExpectedDate_None(t *testing.T) {
 	m := newMemberWithCadence("none", nil, nil)
-	got := nextExpectedDate(m)
+	e := &ManagerEngine{}
+	got := e.nextExpectedDate(m)
 	if !got.IsZero() {
 		t.Errorf("cadence=none should return zero time, got %v", got)
 	}
@@ -194,3 +201,19 @@ func TestCalcEventDurationMinutes_Hour(t *testing.T) {
 		t.Errorf("calcEventDurationMinutes 60min = %d, want 60", got)
 	}
 }
+
+// TestNextExpectedDate_Monthly_CalendarMonth pins down the fix for the
+// "30 days != 1 month" bug. Jan 15 + 1 month should return Feb 15, not
+// Feb 14 (which is what 30*24h yielded). Edge-case month-ends (e.g. Jan 31)
+// follow Go's AddDate normalisation rules and are intentionally not pinned.
+func TestNextExpectedDate_Monthly_CalendarMonth(t *testing.T) {
+	last := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	m := newMemberWithCadence("monthly", &last, nil)
+	e := &ManagerEngine{Clock: FixedClock{T: last}}
+	got := e.nextExpectedDate(m)
+	want := time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("monthly cadence from 2026-01-15: got %v, want %v", got, want)
+	}
+}
+
