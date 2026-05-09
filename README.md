@@ -24,36 +24,29 @@ docker compose up --build
 
 ## Frontend Development
 
-The frontend source is generated and maintained via **Lovable** at [https://github.com/Enach/smart-calendar-flow](https://github.com/Enach/smart-calendar-flow).
-
-### Pull the latest Lovable changes
-
-```bash
-make update-frontend
-```
-
-This fetches the latest commits from the Lovable repo, copies the updated `src/` into `frontend/src/`, merges any new dependencies into `frontend/package.json`, and creates a commit automatically.
+The frontend lives in a **separate repo**: [Enach/smart-calendar-flow](https://github.com/Enach/smart-calendar-flow). See [ADR-0002](docs/adr/0002-frontend-source-of-truth.md) for the rationale. CI clones it at run-time for every frontend job.
 
 ### Local development
 
+Clone the frontend repo as a sibling and run its dev server:
+
 ```bash
-cd frontend
-npm install --legacy-peer-deps
-npm run dev   # requires backend running on :8080
+git clone git@github.com:Enach/smart-calendar-flow.git ../smart-calendar-flow
+cd ../smart-calendar-flow
+bun install
+bun run dev   # http://localhost:8080, proxies /api → http://localhost:8080
 ```
 
-Vite proxies all `/api/` requests to `http://localhost:8080` in dev mode, so start the Go backend first:
+Start the backend first (`cd backend && go run .` from this repo) so `/api` calls succeed.
+
+### Building the production frontend image locally
+
+`docker-compose.yml` defaults to the published image `enach/paceday-frontend:latest`. To build from a local clone instead:
 
 ```bash
-cd backend
-go run .
-```
-
-### Rebuild after frontend changes
-
-```bash
-docker compose build
-docker compose up
+git clone git@github.com:Enach/smart-calendar-flow.git ../smart-calendar-flow
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build frontend
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 ```
 
 ## MCP Server (Claude Desktop / Cursor)

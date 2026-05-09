@@ -376,7 +376,7 @@ jobs:
         run: docker image prune -f || true
 
       - name: Build image
-        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.run_id }} .
+        run: docker build -f docker/frontend.dockerfile -t paceday-frontend:${{ github.run_id }} ./frontend
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FRONTEND — Phase 2: SAST · DAST · Security Scan

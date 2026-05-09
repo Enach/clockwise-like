@@ -52,8 +52,11 @@ services:
     restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
+    # Frontend source lives in Enach/smart-calendar-flow (see ADR-0002).
+    # CI publishes images to enach/paceday-frontend; pin via FRONTEND_IMAGE_TAG.
+    # For local frontend development, clone smart-calendar-flow and run
+    # `bun install && bun run dev` there (it proxies /api to localhost:8080).
+    image: enach/paceday-frontend:${FRONTEND_IMAGE_TAG:-latest}
     environment:
       API_BASE_URL: ${API_BASE_URL:-}
     restart: unless-stopped
