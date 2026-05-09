@@ -41,7 +41,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -66,7 +66,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -99,7 +99,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -150,7 +150,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -528,7 +528,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: mcp/go.mod
 
@@ -561,7 +561,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: mcp/go.mod
 
@@ -587,7 +587,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: mcp/go.mod
 
@@ -630,7 +630,7 @@ jobs:
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: mcp/go.mod
 
