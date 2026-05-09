@@ -77,6 +77,13 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: go test ./... -race -timeout 300s -coverprofile=coverage.out
 
+      - name: Enforce coverage gate (>=75%)
+        working-directory: backend
+        run: |
+          PCT=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Backend total line coverage: ${PCT}%"
+          awk -v p="$PCT" 'BEGIN{ exit (p+0 < 75) }'
+
       - name: Upload coverage
         if: always()
         continue-on-error: true
@@ -571,7 +578,24 @@ jobs:
 
       - name: Run tests
         working-directory: mcp
-        run: go test ./... -race -timeout 60s
+        run: go test ./... -race -timeout 60s -coverprofile=coverage.out
+
+      - name: Enforce coverage gate (>=75%)
+        working-directory: mcp
+        run: |
+          PCT=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "MCP total line coverage: ${PCT}%"
+          awk -v p="$PCT" 'BEGIN{ exit (p+0 < 75) }'
+
+      - name: Upload coverage
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-coverage
+          path: mcp/coverage.out
+          if-no-files-found: warn
+          retention-days: 3
 
   quality-mcp:
     name: MCP — Code Quality
