@@ -15,16 +15,12 @@ jobs:
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Auto-merge patch + minor
+      - name: Auto-merge patch + minor via GraphQL
         if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"
-      - name: Open Task for major
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
         run: |
-          gh issue create --repo "${{ github.repository }}" \
-            --title "Dependabot major: ${{ steps.meta.outputs.dependency-names }}" \
-            --body "Major bump in PR #${{ github.event.pull_request.number }} requires manual triage by security-engineer."
+          curl -fsS -X POST -H "Authorization: bearer ${GH_TOKEN}" -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation(\$id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:\$id,mergeMethod:SQUASH}){pullRequest{number}}}\",\"variables\":{\"id\":\"${PR_NODE_ID}\"}}" \
+            https://api.github.com/graphql

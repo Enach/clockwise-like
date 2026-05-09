@@ -8,8 +8,15 @@ jobs:
   enable:
     runs-on: [self-hosted, linux, x64]
     if: github.event.pull_request.draft == false
+    permissions:
+      pull-requests: write
+      contents: write
     steps:
-      - name: Enable auto-merge (squash)
+      - name: Enable auto-merge (squash) via GraphQL
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+        run: |
+          curl -fsS -X POST -H "Authorization: bearer ${GH_TOKEN}" -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation(\$id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:\$id,mergeMethod:SQUASH}){pullRequest{number}}}\",\"variables\":{\"id\":\"${PR_NODE_ID}\"}}" \
+            https://api.github.com/graphql
