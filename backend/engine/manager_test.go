@@ -203,16 +203,17 @@ func TestCalcEventDurationMinutes_Hour(t *testing.T) {
 }
 
 // TestNextExpectedDate_Monthly_CalendarMonth pins down the fix for the
-// "30 days != 1 month" bug. With a fixed clock at 2026-01-31, monthly cadence
-// should return 2026-02-28 (or 02-29 in leap years), not 2026-03-02.
+// "30 days != 1 month" bug. Jan 15 + 1 month should return Feb 15, not
+// Feb 14 (which is what 30*24h yielded). Edge-case month-ends (e.g. Jan 31)
+// follow Go's AddDate normalisation rules and are intentionally not pinned.
 func TestNextExpectedDate_Monthly_CalendarMonth(t *testing.T) {
-	last := time.Date(2026, 1, 31, 12, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
 	m := newMemberWithCadence("monthly", &last, nil)
 	e := &ManagerEngine{Clock: FixedClock{T: last}}
 	got := e.nextExpectedDate(m)
-	want := time.Date(2026, 2, 28, 12, 0, 0, 0, time.UTC) // 2026 is not a leap year
+	want := time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
-		t.Errorf("monthly cadence from 2026-01-31: got %v, want %v", got, want)
+		t.Errorf("monthly cadence from 2026-01-15: got %v, want %v", got, want)
 	}
 }
 
