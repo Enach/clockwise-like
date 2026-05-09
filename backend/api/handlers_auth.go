@@ -109,7 +109,8 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 			"email":     s.CalendarEmail,
 		})
 	default: // google
-		token, err := auth.TokenFromDB(h.db)
+		userID := userIDFromCtx(r.Context())
+		token, err := auth.LoadUserToken(h.db, userID)
 		if err != nil || token == nil {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 			return

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -39,7 +40,7 @@ func setupTeamRoutes(t *testing.T) *chi.Mux {
 
 // withUser injects a userID into a request context (simulates JWT middleware).
 func withUser(r *http.Request, userID uuid.UUID) *http.Request {
-	ctx := context.WithValue(r.Context(), ctxUserID, userID)
+	ctx := context.WithValue(r.Context(), auth.UserIDKey, userID)
 	return r.WithContext(ctx)
 }
 

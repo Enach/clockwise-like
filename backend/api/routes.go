@@ -37,9 +37,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 		// Protected sub-routes (status, disconnect)
 		r.Group(func(r chi.Router) {
-			if jwtSecret != "" {
-				r.Use(requireAuth(jwtSecret))
-			}
+			r.Use(requireAuth(jwtSecret))
 			r.Get("/status", ah.status)
 			r.Delete("/disconnect", ah.disconnect)
 		})
@@ -48,18 +46,14 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 	// /api/auth/me and /api/auth/logout — protected
 	mh := &meHandlers{db: db}
 	r.Group(func(r chi.Router) {
-		if jwtSecret != "" {
-			r.Use(requireAuth(jwtSecret))
-		}
+		r.Use(requireAuth(jwtSecret))
 		r.Get("/api/auth/me", mh.me)
 		r.Post("/api/auth/logout", mh.logout)
 	})
 
 	// All remaining API routes — protected
 	r.Group(func(r chi.Router) {
-		if jwtSecret != "" {
-			r.Use(requireAuth(jwtSecret))
-		}
+		r.Use(requireAuth(jwtSecret))
 
 		ch := &calendarHandlers{oauthConfig: oauthConfig, db: db}
 		r.Route("/api/calendar", func(r chi.Router) {

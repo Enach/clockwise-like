@@ -14,15 +14,11 @@ import (
 type ctxKey string
 
 const (
-	ctxUserID    ctxKey = "userID"
 	ctxUserEmail ctxKey = "userEmail"
 )
 
 func userIDFromCtx(ctx context.Context) uuid.UUID {
-	if id, ok := ctx.Value(ctxUserID).(uuid.UUID); ok {
-		return id
-	}
-	return uuid.Nil
+	return auth.UserIDFromContext(ctx)
 }
 
 func requireAuth(jwtSecret string) func(http.Handler) http.Handler {
@@ -54,7 +50,7 @@ func requireAuth(jwtSecret string) func(http.Handler) http.Handler {
 				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
-			ctx := context.WithValue(r.Context(), ctxUserID, userID)
+			ctx := context.WithValue(r.Context(), auth.UserIDKey, userID)
 			ctx = context.WithValue(ctx, ctxUserEmail, claims.Email)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

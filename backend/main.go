@@ -95,6 +95,9 @@ func main() {
 	defer mgrCron.Stop()
 
 	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is required")
+	}
 	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
 	frontendURL := os.Getenv("FRONTEND_URL")
 
