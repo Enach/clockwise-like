@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
-# Build context: repo root (.)
+# Build context: a checkout of Enach/smart-calendar-flow (see ADR-0002).
+# CI passes ./frontend (cloned at run-time). Local dev passes ../smart-calendar-flow.
 FROM node:20-alpine AS node-builder
 WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json ./
+COPY package.json package-lock.json ./
 RUN npm install --legacy-peer-deps
-COPY frontend/ .
+COPY . .
 RUN npm run build
 
 FROM golang:1.25-alpine AS server-builder

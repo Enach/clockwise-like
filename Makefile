@@ -1,23 +1,14 @@
-.PHONY: update-frontend db-shell install-hooks
+.PHONY: clone-frontend db-shell install-hooks
 
-## Pull latest changes from the Lovable frontend repo into frontend/src/
-update-frontend:
-	git fetch lovable-frontend
-	git subtree pull --prefix=_lovable_tmp lovable-frontend main --squash
-	cp -r _lovable_tmp/src/. frontend/src/
-	@echo "Merging package.json dependencies..."
-	node -e " \
-	  const fs = require('fs'); \
-	  const base = JSON.parse(fs.readFileSync('frontend/package.json')); \
-	  const lovable = JSON.parse(fs.readFileSync('_lovable_tmp/package.json')); \
-	  base.dependencies = { ...lovable.dependencies, ...base.dependencies }; \
-	  fs.writeFileSync('frontend/package.json', JSON.stringify(base, null, 2) + '\n'); \
-	  console.log('Done merging dependencies'); \
-	"
-	git rm -r _lovable_tmp
-	git add frontend/
-	git commit -m "chore: sync frontend from Lovable (smart-calendar-flow)"
-	@echo "Frontend updated. Run 'docker compose build' to rebuild."
+## Clone (or update) Enach/smart-calendar-flow as a sibling for local frontend dev
+clone-frontend:
+	@if [ -d ../smart-calendar-flow ]; then \
+		echo "Updating ../smart-calendar-flow"; \
+		cd ../smart-calendar-flow && git pull --ff-only; \
+	else \
+		echo "Cloning into ../smart-calendar-flow"; \
+		git clone git@github.com:Enach/smart-calendar-flow.git ../smart-calendar-flow; \
+	fi
 
 ## Point git at the committed hook scripts
 install-hooks:
