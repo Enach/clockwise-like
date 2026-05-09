@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -125,9 +126,13 @@ func toCalendarEventDTO(e *googlecalendar.Event) calendarEventDTO {
 }
 
 func (h *calendarHandlers) getCalendarClient(r *http.Request) (*calendar.CalendarClient, error) {
-	token, err := auth.TokenFromDB(h.db)
+	userID := userIDFromCtx(r.Context())
+	token, err := auth.LoadUserToken(h.db, userID)
 	if err != nil {
 		return nil, err
+	}
+	if token == nil {
+		return nil, fmt.Errorf("not authenticated")
 	}
 	ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
 	return calendar.NewClient(r.Context(), ts)

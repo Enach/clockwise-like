@@ -22,7 +22,8 @@ type eventHandlers struct {
 }
 
 func (h *eventHandlers) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
-	token, err := auth.TokenFromDB(h.db)
+	userID := userIDFromCtx(ctx)
+	token, err := auth.LoadUserToken(h.db, userID)
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}

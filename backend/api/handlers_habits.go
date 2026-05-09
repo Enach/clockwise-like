@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -84,8 +85,9 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trigger background scheduling for the next 14 days.
+	bgCtx := context.WithoutCancel(r.Context())
 	go func() {
-		_ = h.eng.ReoptimizeAll(r.Context(), userID)
+		_ = h.eng.ReoptimizeAll(bgCtx, userID)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -178,8 +180,9 @@ func (h *habitsHandlers) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bgCtx := context.WithoutCancel(r.Context())
 	go func() {
-		_ = h.eng.ReoptimizeAll(r.Context(), userID)
+		_ = h.eng.ReoptimizeAll(bgCtx, userID)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -269,8 +272,9 @@ func (h *habitsHandlers) occurrences(w http.ResponseWriter, r *http.Request) {
 // POST /api/habits/reoptimize
 func (h *habitsHandlers) reoptimize(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	bgCtx := context.WithoutCancel(r.Context())
 	go func() {
-		if err := h.eng.ReoptimizeAll(r.Context(), userID); err != nil {
+		if err := h.eng.ReoptimizeAll(bgCtx, userID); err != nil {
 			// logged inside ReoptimizeAll
 			_ = err
 		}

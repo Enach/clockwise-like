@@ -51,7 +51,8 @@ func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax ti
 }
 
 func newCalOps(ctx context.Context, db *sql.DB, oauthConfig *oauth2.Config) (calendarOps, error) {
-	token, err := auth.TokenFromDB(db)
+	userID := auth.UserIDFromContext(ctx)
+	token, err := auth.LoadUserToken(db, userID)
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -85,8 +86,9 @@ func (h *analyticsHandlers) meetings(w http.ResponseWriter, r *http.Request) {
 // POST /api/analytics/recompute
 func (h *analyticsHandlers) recompute(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	bgCtx := context.WithoutCancel(r.Context())
 	go func() {
-		_, _ = h.eng.ForceCompute(r.Context(), userID, time.Now())
+		_, _ = h.eng.ForceCompute(bgCtx, userID, time.Now())
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
