@@ -18,14 +18,9 @@ services:
 
   frontend:
     restart: "no"
-    # Optional: build locally from a sibling clone of smart-calendar-flow.
-    # 1) git clone git@github.com:Enach/smart-calendar-flow.git ../smart-calendar-flow
-    # 2) docker compose -f docker-compose.yml -f docker-compose.dev.yml build frontend
-    # Comment the `image:` field above (or leave it — build wins on `docker compose build`).
-    build:
-      context: ../smart-calendar-flow
-      # docker/frontend.dockerfile is in this repo (clockwise-like), so path is relative to context (the SCF repo).
-      dockerfile: ${PACEDAY_REPO:-../clockwise-like}/docker/frontend.dockerfile
+    # Local frontend dev: see README.md "Frontend Development" — run
+    # `make clone-frontend` then `bun run dev` in the sibling smart-calendar-flow
+    # checkout. The default `image:` here pulls the published artefact.
 
   docs:
     restart: "no"

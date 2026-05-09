@@ -232,7 +232,11 @@ func buildServer(c *backendClient) *server.MCPServer {
 }
 
 func strArg(req mcp.CallToolRequest, key string) string {
-	if v, ok := req.Params.Arguments[key].(string); ok {
+	args, ok := req.Params.Arguments.(map[string]any)
+	if !ok {
+		return ""
+	}
+	if v, ok := args[key].(string); ok {
 		return v
 	}
 	return ""
