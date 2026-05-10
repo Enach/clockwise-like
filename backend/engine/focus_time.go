@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/storage"
-	googlecalendar "google.golang.org/api/calendar/v3"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 type FocusBlock struct {
@@ -50,10 +52,33 @@ func (e *FocusTimeEngine) calClient(ctx context.Context) (calendarOps, error) {
 	return newCalOps(ctx, e.DB, e.OAuthConfig)
 }
 
+// Run is a thin compatibility wrapper that delegates to RunForUser by
+// extracting userID from ctx (set by HTTP middleware or by RunForUser itself).
+// Returns an error if no userID is in ctx — callers from cron paths must use
+// RunForUser directly.
 func (e *FocusTimeEngine) Run(ctx context.Context, targetWeek time.Time) (*FocusRunResult, error) {
-	s, err := storage.GetSettings(e.DB)
+	userID := auth.UserIDFromContext(ctx)
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("FocusTimeEngine.Run: userID is required (use RunForUser from cron paths)")
+	}
+	return e.RunForUser(ctx, userID, targetWeek)
+}
+
+// RunForUser executes the focus-time scheduling for a specific user. Injects
+// the userID into ctx so downstream calOps / storage queries see it, then
+// loads that user's settings and runs the same algorithm as before.
+func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targetWeek time.Time) (*FocusRunResult, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("FocusTimeEngine.RunForUser: userID is required")
+	}
+	ctx = context.WithValue(ctx, auth.UserIDKey, userID)
+
+	s, err := storage.GetSettingsByUser(e.DB, userID)
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
+	}
+	if s == nil {
+		return nil, fmt.Errorf("no settings row for user %s", userID)
 	}
 
 	client, err := e.calClient(ctx)

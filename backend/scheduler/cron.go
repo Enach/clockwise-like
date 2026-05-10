@@ -8,15 +8,18 @@ import (
 
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 	"golang.org/x/oauth2"
 )
 
+// FocusCron schedules per-user auto focus-time runs. Reload queries
+// storage.ListUsersWithAutoSchedule and registers one cron entry per user.
 type FocusCron struct {
 	cron        *cron.Cron
 	db          *sql.DB
 	oauthConfig *oauth2.Config
-	entryID     cron.EntryID
+	entryIDs    map[uuid.UUID]cron.EntryID
 }
 
 func NewFocusCron(db *sql.DB, oauthConfig *oauth2.Config) *FocusCron {
@@ -24,43 +27,47 @@ func NewFocusCron(db *sql.DB, oauthConfig *oauth2.Config) *FocusCron {
 		cron:        cron.New(),
 		db:          db,
 		oauthConfig: oauthConfig,
+		entryIDs:    make(map[uuid.UUID]cron.EntryID),
 	}
 }
 
+// Reload re-registers cron entries from the current set of users with
+// auto-schedule enabled. Safe to call repeatedly (e.g. after a settings PUT).
 func (fc *FocusCron) Reload() {
-	s, err := storage.GetSettings(fc.db)
+	configs, err := storage.ListUsersWithAutoSchedule(fc.db)
 	if err != nil {
-		log.Printf("cron reload: failed to load settings: %v", err)
+		log.Printf("cron reload: failed to list auto-schedule users: %v", err)
 		return
 	}
 
-	if fc.entryID != 0 {
-		fc.cron.Remove(fc.entryID)
-		fc.entryID = 0
-	}
-
-	if !s.AutoScheduleEnabled || s.AutoScheduleCron == "" {
-		return
+	// Remove any existing entries — simplest correctness model.
+	for userID, id := range fc.entryIDs {
+		fc.cron.Remove(id)
+		delete(fc.entryIDs, userID)
 	}
 
 	eng := &engine.FocusTimeEngine{DB: fc.db, OAuthConfig: fc.oauthConfig}
-	id, err := fc.cron.AddFunc(s.AutoScheduleCron, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		result, err := eng.Run(ctx, time.Now())
+	for _, cfg := range configs {
+		userID := cfg.UserID // capture per-iteration
+		cronExpr := cfg.CronExpr
+		id, err := fc.cron.AddFunc(cronExpr, func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			result, err := eng.RunForUser(ctx, userID, time.Now())
+			if err != nil {
+				log.Printf("cron focus run for user %s: %v", userID, err)
+				return
+			}
+			log.Printf("cron focus run for user %s: created %d blocks (%d min)",
+				userID, len(result.CreatedBlocks), result.TotalMinutes)
+		})
 		if err != nil {
-			log.Printf("cron focus run error: %v", err)
-			return
+			log.Printf("cron: invalid schedule %q for user %s: %v", cronExpr, userID, err)
+			continue
 		}
-		log.Printf("cron focus run: created %d blocks (%d min)", len(result.CreatedBlocks), result.TotalMinutes)
-	})
-	if err != nil {
-		log.Printf("cron: invalid schedule %q: %v", s.AutoScheduleCron, err)
-		return
+		fc.entryIDs[userID] = id
+		log.Printf("cron: focus time scheduled for user %s: %s", userID, cronExpr)
 	}
-
-	fc.entryID = id
-	log.Printf("cron: focus time scheduled: %s", s.AutoScheduleCron)
 }
 
 func (fc *FocusCron) Start() {

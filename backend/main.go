@@ -7,13 +7,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/robfig/cron/v3"
 	"github.com/Enach/paceday/backend/api"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/scheduler"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/go-chi/chi/v5"
+	"github.com/robfig/cron/v3"
 )
 
 func main() {
@@ -44,14 +44,23 @@ func main() {
 	focusCron.Start()
 	defer focusCron.Stop()
 
-	// Personal calendar blocker — sync every 30 minutes.
+	// Personal calendar blocker — sync every 30 minutes, per user.
+	// We re-query users on every tick so users connecting calendars mid-run
+	// don't have to wait for a restart.
 	blocker := &engine.PersonalBlocker{DB: db, OAuthConfig: oauthConfig}
 	personalCron := cron.New()
 	if _, err := personalCron.AddFunc("@every 30m", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		if err := blocker.SyncAll(ctx); err != nil {
-			log.Printf("personal blocker sync error: %v", err)
+		userIDs, err := storage.ListUsersWithPersonalCalendars(db)
+		if err != nil {
+			log.Printf("personal blocker: list users: %v", err)
+			return
+		}
+		for _, userID := range userIDs {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			if err := blocker.SyncAllForUser(ctx, userID); err != nil {
+				log.Printf("personal blocker sync for user %s: %v", userID, err)
+			}
+			cancel()
 		}
 	}); err != nil {
 		log.Printf("personal blocker cron registration error: %v", err)

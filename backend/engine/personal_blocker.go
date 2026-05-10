@@ -7,10 +7,12 @@ import (
 	"log"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
-	googlecalendar "google.golang.org/api/calendar/v3"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 const personalBlockerTitle = "[Personal] Busy"
@@ -22,8 +24,24 @@ type PersonalBlocker struct {
 	OAuthConfig *oauth2.Config
 }
 
+// SyncAll is a thin compatibility wrapper that requires userID in ctx.
+// Cron callers must use SyncAllForUser instead.
 func (b *PersonalBlocker) SyncAll(ctx context.Context) error {
-	cals, err := storage.ListPersonalCalendars(b.DB)
+	userID := auth.UserIDFromContext(ctx)
+	if userID == uuid.Nil {
+		return fmt.Errorf("PersonalBlocker.SyncAll: userID is required (use SyncAllForUser from cron paths)")
+	}
+	return b.SyncAllForUser(ctx, userID)
+}
+
+// SyncAllForUser syncs every enabled personal calendar owned by the given user.
+// Injects userID into ctx so newCalOps / oauth_tokens queries are scoped correctly.
+func (b *PersonalBlocker) SyncAllForUser(ctx context.Context, userID uuid.UUID) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("PersonalBlocker.SyncAllForUser: userID is required")
+	}
+	ctx = context.WithValue(ctx, auth.UserIDKey, userID)
+	cals, err := storage.ListPersonalCalendarsByUser(b.DB, userID)
 	if err != nil {
 		return fmt.Errorf("list personal calendars: %w", err)
 	}
