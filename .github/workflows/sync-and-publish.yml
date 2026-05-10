@@ -37,12 +37,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -65,12 +67,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -111,12 +115,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -165,12 +171,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -546,12 +554,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -582,12 +592,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -628,12 +640,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
@@ -674,12 +688,14 @@ jobs:
       GOTMPDIR: ${{ github.workspace }}/.go-tmp
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
-      PATH: ${{ github.workspace }}/.go-bin:/home/nhochart/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
+
+      - name: Prepend .go-bin to PATH
+        run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
       - uses: actions/setup-go@v5
         with:
