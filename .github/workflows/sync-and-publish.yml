@@ -310,15 +310,9 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=/tmp/fdk_${{ github.run_id }}_lint
-          mkdir -p ~/.ssh
-          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
-          chmod 600 "$KEY"
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # SCF is public — clone over HTTPS, no deploy key needed.
           find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          GIT_SSH_COMMAND="ssh -i $KEY" \
-            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
-          rm -f "$KEY"
+          git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v4
         with:
@@ -334,15 +328,9 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=/tmp/fdk_${{ github.run_id }}_test
-          mkdir -p ~/.ssh
-          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
-          chmod 600 "$KEY"
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # SCF is public — clone over HTTPS, no deploy key needed.
           find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          GIT_SSH_COMMAND="ssh -i $KEY" \
-            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
-          rm -f "$KEY"
+          git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v4
         with:
@@ -358,15 +346,9 @@ jobs:
       - name: Checkout frontend source
         shell: bash
         run: |
-          KEY=/tmp/fdk_${{ github.run_id }}_quality
-          mkdir -p ~/.ssh
-          echo "${{ secrets.FRONTEND_DEPLOY_KEY }}" > "$KEY"
-          chmod 600 "$KEY"
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          # SCF is public — clone over HTTPS, no deploy key needed.
           find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-          GIT_SSH_COMMAND="ssh -i $KEY" \
-            git clone --depth 1 git@github.com:Enach/smart-calendar-flow.git .
-          rm -f "$KEY"
+          git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v4
         with:
