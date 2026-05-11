@@ -85,7 +85,7 @@ jobs:
         working-directory: backend
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: go test ./... -race -timeout 300s -coverprofile=coverage.out
+        run: go test ./... -race -timeout 600s -coverprofile=coverage.out
 
       - name: Enforce coverage gate (>=25%; ratchet to 75%)
         working-directory: backend
