@@ -38,7 +38,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -68,7 +68,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -116,7 +116,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -150,7 +150,7 @@ jobs:
     needs: [lint-backend, test-backend]
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prune stale images
         run: docker image prune -f || true
@@ -172,7 +172,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -369,7 +369,7 @@ jobs:
     needs: [lint-frontend, test-frontend]
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Fetch latest frontend source
         shell: bash
@@ -519,7 +519,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -557,7 +557,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -605,7 +605,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -629,7 +629,7 @@ jobs:
     needs: [lint-mcp, test-mcp]
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prune stale images
         run: docker image prune -f || true
@@ -653,7 +653,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
         run: mkdir -p .go-cache .go-tmp .go-bin .golangci-cache
@@ -730,7 +730,7 @@ jobs:
     name: Docs — Build
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Prune stale images
         run: docker image prune -f || true
