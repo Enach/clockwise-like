@@ -47,9 +47,17 @@ type cachedResult struct {
 type FreeBusyService struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	Clock       Clock
 
 	mu    sync.Mutex
 	cache map[string]cachedResult
+}
+
+func (s *FreeBusyService) now() time.Time {
+	if s.Clock != nil {
+		return s.Clock.Now()
+	}
+	return SystemClock.Now()
 }
 
 // NewFreeBusyService constructs a FreeBusyService.
@@ -71,7 +79,7 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 
 	// Separate personal-domain emails (skip) from queryable emails.
 	type pending struct {
-		email   string
+		email    string
 		cacheKey string
 	}
 	var toQuery []pending
@@ -129,7 +137,7 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 		}
 	}
 
-	ttl := time.Now().Add(15 * time.Minute)
+	ttl := s.now().Add(15 * time.Minute)
 	for _, p := range toQuery {
 		slots, ok := fetched[p.email]
 		coverage := "unknown"
@@ -150,7 +158,7 @@ func (s *FreeBusyService) getCached(key string) (cachedResult, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.cache[key]
-	if !ok || time.Now().After(c.expiresAt) {
+	if !ok || s.now().After(c.expiresAt) {
 		delete(s.cache, key)
 		return cachedResult{}, false
 	}
