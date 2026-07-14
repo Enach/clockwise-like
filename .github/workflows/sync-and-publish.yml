@@ -38,6 +38,21 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - &reset-workspace
+        name: Reset self-hosted workspace
+        shell: bash
+        run: |
+          # A cancelled Docker/self-hosted job can leave root-owned files behind.
+          # Try the normal runner cleanup first, then use the shared Docker daemon
+          # as a root-capable fallback so checkout always starts from an empty dir.
+          if ! find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace" \
+              alpine:3.20 \
+              sh -c 'find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'
+          fi
+          test -z "$(find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -print -quit)"
+
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -68,6 +83,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -116,6 +132,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -150,6 +167,7 @@ jobs:
     needs: [lint-backend, test-backend]
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prune stale images
@@ -172,6 +190,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -307,11 +326,11 @@ jobs:
     name: Frontend — Lint
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - name: Checkout frontend source
         shell: bash
         run: |
           # SCF is public — clone over HTTPS, no deploy key needed.
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v6
@@ -325,11 +344,11 @@ jobs:
     name: Frontend — Test
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - name: Checkout frontend source
         shell: bash
         run: |
           # SCF is public — clone over HTTPS, no deploy key needed.
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v6
@@ -343,11 +362,11 @@ jobs:
     name: Frontend — Code Quality
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - name: Checkout frontend source
         shell: bash
         run: |
           # SCF is public — clone over HTTPS, no deploy key needed.
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v6
@@ -369,6 +388,7 @@ jobs:
     needs: [lint-frontend, test-frontend]
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Fetch latest frontend source
@@ -393,11 +413,11 @@ jobs:
     needs: [build-frontend]
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - name: Checkout frontend source
         shell: bash
         run: |
           # SCF is public — clone over HTTPS, no deploy key needed.
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - name: Install Semgrep
@@ -421,11 +441,11 @@ jobs:
     needs: [build-frontend]
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - name: Checkout frontend source
         shell: bash
         run: |
           # SCF is public — clone over HTTPS, no deploy key needed.
-          find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
           git clone --depth 1 https://github.com/Enach/smart-calendar-flow.git .
 
       - uses: actions/setup-node@v6
@@ -519,6 +539,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -557,6 +578,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -605,6 +627,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -629,6 +652,7 @@ jobs:
     needs: [lint-mcp, test-mcp]
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prune stale images
@@ -653,6 +677,7 @@ jobs:
       GOBIN: ${{ github.workspace }}/.go-bin
       GOLANGCI_LINT_CACHE: ${{ github.workspace }}/.golangci-cache
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prepare workspace dirs
@@ -730,6 +755,7 @@ jobs:
     name: Docs — Build
     runs-on: self-hosted
     steps:
+      - *reset-workspace
       - uses: actions/checkout@v7
 
       - name: Prune stale images
