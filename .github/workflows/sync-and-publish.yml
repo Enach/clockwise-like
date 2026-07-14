@@ -101,7 +101,9 @@ jobs:
         working-directory: backend
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: go test ./... -race -timeout 600s -coverprofile=coverage.out
+        # Integration packages start Postgres containers. Run packages serially
+        # so a busy self-hosted Docker daemon does not starve readiness probes.
+        run: go test -p 1 ./... -race -timeout 600s -coverprofile=coverage.out
 
       - name: Enforce coverage gate (>=25%; ratchet to 75%)
         working-directory: backend
