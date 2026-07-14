@@ -8,6 +8,7 @@ import (
 
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -184,7 +185,7 @@ func TestMergeIntervals_Adjacent(t *testing.T) {
 func TestScoreSlot(t *testing.T) {
 	// Use Tuesday (Jan 7) to avoid Monday early-morning penalty
 	morning := time.Date(2025, 1, 7, 10, 0, 0, 0, time.UTC) // Tuesday 10am
-	evening := time.Date(2025, 1, 7, 17, 0, 0, 0, time.UTC)  // Tuesday 5pm (no bonus)
+	evening := time.Date(2025, 1, 7, 17, 0, 0, 0, time.UTC) // Tuesday 5pm (no bonus)
 
 	mSlot := scoredSlot{iv: interval{morning, morning.Add(time.Hour)}}
 	eSlot := scoredSlot{iv: interval{evening, evening.Add(time.Hour)}}
@@ -323,10 +324,20 @@ func TestFocusRun_WithMock(t *testing.T) {
 		calOps: mock,
 	}
 
+	// Seed a user + settings row keyed by user_id so RunForUser finds them.
+	userID := uuid.New()
+	if _, err := db.Exec(`INSERT INTO users (id, email, name, created_at) VALUES ($1, $2, $2, NOW())`, userID, "test@example.com"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO settings (user_id, work_start, work_end, timezone, focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes, updated_at)
+		VALUES ($1, '09:00', '17:00', 'UTC', 30, 120, 120, NOW())`, userID); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
 	monday := time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)
-	result, err := eng.Run(context.Background(), monday)
+	result, err := eng.RunForUser(context.Background(), userID, monday)
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("RunForUser: %v", err)
 	}
 	if result == nil {
 		t.Fatal("result should not be nil")

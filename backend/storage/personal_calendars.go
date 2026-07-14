@@ -2,11 +2,15 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
+
+	"github.com/google/uuid"
 	"time"
 )
 
 type PersonalCalendar struct {
 	ID              int64     `json:"id"`
+	UserID          uuid.UUID `json:"-"`
 	Provider        string    `json:"provider"`
 	Name            string    `json:"name"`
 	URL             string    `json:"url,omitempty"`
@@ -24,7 +28,7 @@ type PersonalBlocker struct {
 }
 
 func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
-	rows, err := db.Query(`SELECT id, provider, name, url, credentials_json, enabled, created_at FROM personal_calendars ORDER BY id`)
+	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, created_at FROM personal_calendars ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +36,7 @@ func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
 	var cals []PersonalCalendar
 	for rows.Next() {
 		var c PersonalCalendar
-		if err := rows.Scan(&c.ID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		cals = append(cals, c)
@@ -41,9 +45,9 @@ func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
 }
 
 func GetPersonalCalendar(db *sql.DB, id int64) (*PersonalCalendar, error) {
-	row := db.QueryRow(`SELECT id, provider, name, url, credentials_json, enabled, created_at FROM personal_calendars WHERE id = $1`, id)
+	row := db.QueryRow(`SELECT id, user_id, provider, name, url, credentials_json, enabled, created_at FROM personal_calendars WHERE id = $1`, id)
 	var c PersonalCalendar
-	if err := row.Scan(&c.ID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -121,4 +125,46 @@ func SaveZoomTokens(db *sql.DB, accessToken, refreshToken string) error {
 		`{"access_token":"`+accessToken+`","refresh_token":"`+refreshToken+`"}`,
 	)
 	return err
+}
+
+// ListPersonalCalendarsByUser returns calendars owned by the given user.
+func ListPersonalCalendarsByUser(db *sql.DB, userID uuid.UUID) ([]PersonalCalendar, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("ListPersonalCalendarsByUser: userID is required")
+	}
+	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, created_at
+		FROM personal_calendars WHERE user_id = $1 ORDER BY id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cals []PersonalCalendar
+	for rows.Next() {
+		var c PersonalCalendar
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		cals = append(cals, c)
+	}
+	return cals, rows.Err()
+}
+
+// ListUsersWithPersonalCalendars returns the distinct user IDs that own at
+// least one personal calendar. Used by the personal-blocker cron to fan out
+// per user. Empty slice when nobody has connected a personal calendar.
+func ListUsersWithPersonalCalendars(db *sql.DB) ([]uuid.UUID, error) {
+	rows, err := db.Query(`SELECT DISTINCT user_id FROM personal_calendars WHERE enabled = TRUE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
