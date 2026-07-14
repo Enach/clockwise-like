@@ -288,8 +288,13 @@ jobs:
             --cache-dir $GITHUB_WORKSPACE/.trivy-cache \
             paceday-backend:${{ github.sha }}
 
-      - name: Cleanup image (PR only)
-        if: github.event_name == 'pull_request'
+  cleanup-backend:
+    name: Backend — Cleanup image
+    needs: [sast-backend, dast-backend, scan-backend]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: self-hosted
+    steps:
+      - name: Remove PR image after all consumers finish
         run: docker rmi paceday-backend:${{ github.sha }} || true
 
 # ══════════════════════════════════════════════════════════════════════════════
