@@ -18,16 +18,24 @@ import (
 
 // DailyRecapService sends Block Kit morning summaries via Slack.
 type DailyRecapService struct {
-	DB *sql.DB
+	DB    *sql.DB
+	Clock Clock
+}
+
+func (s *DailyRecapService) now() time.Time {
+	if s.Clock != nil {
+		return s.Clock.Now()
+	}
+	return SystemClock.Now()
 }
 
 // RecapSend records idempotency for one user + date.
 type RecapSend struct {
-	UserID          uuid.UUID
-	SentDate        time.Time
-	SentAt          time.Time
-	SlackMessageTS  string
-	Status          string // "sent" | "failed"
+	UserID         uuid.UUID
+	SentDate       time.Time
+	SentAt         time.Time
+	SlackMessageTS string
+	Status         string // "sent" | "failed"
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -75,7 +83,7 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	if err != nil {
 		loc = time.UTC
 	}
-	now := time.Now().In(loc)
+	now := s.now().In(loc)
 
 	// Parse send_time "HH:MM"
 	var sendH, sendM int
@@ -98,7 +106,7 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	rec := RecapSend{
 		UserID:   userID,
 		SentDate: today,
-		SentAt:   time.Now().UTC(),
+		SentAt:   s.now().UTC(),
 		Status:   "sent",
 	}
 	if sendErr != nil {

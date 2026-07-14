@@ -22,6 +22,14 @@ const personalLookAheadDays = 14
 type PersonalBlocker struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	Clock       Clock
+}
+
+func (b *PersonalBlocker) now() time.Time {
+	if b.Clock != nil {
+		return b.Clock.Now()
+	}
+	return SystemClock.Now()
 }
 
 // SyncAll is a thin compatibility wrapper that requires userID in ctx.
@@ -73,7 +81,7 @@ func (b *PersonalBlocker) Sync(ctx context.Context, calID int64) error {
 }
 
 func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalendar) error {
-	start := time.Now().Truncate(24 * time.Hour)
+	start := b.now().Truncate(24 * time.Hour)
 	end := start.AddDate(0, 0, personalLookAheadDays)
 
 	events, err := calendar.ReadPersonalEvents(ctx, pc, start, end)

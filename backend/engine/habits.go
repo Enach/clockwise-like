@@ -46,6 +46,14 @@ var HabitTemplates = []HabitTemplate{
 type HabitsEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	Clock       Clock
+}
+
+func (e *HabitsEngine) now() time.Time {
+	if e.Clock != nil {
+		return e.Clock.Now()
+	}
+	return SystemClock.Now()
 }
 
 // ReoptimizeAll schedules all active habits for the next 14 days.
@@ -58,7 +66,7 @@ func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) erro
 	calOps, calErr := e.calOpsForUser(ctx, userID)
 	// calOps may be nil if not connected — we degrade gracefully.
 
-	now := time.Now()
+	now := e.now()
 	for i := 0; i < 14; i++ {
 		day := now.AddDate(0, 0, i)
 		if err := e.scheduleDay(ctx, userID, habits, day, calOps, calErr == nil); err != nil {
