@@ -61,7 +61,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -92,7 +92,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -143,7 +143,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -201,7 +201,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
@@ -555,7 +555,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: mcp/go.mod
 
@@ -594,7 +594,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: mcp/go.mod
 
@@ -643,7 +643,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: mcp/go.mod
 
@@ -693,7 +693,7 @@ jobs:
       - name: Prepend .go-bin to PATH
         run: echo "${{ github.workspace }}/.go-bin" >> $GITHUB_PATH
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: mcp/go.mod
 
