@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -34,21 +38,46 @@ func buildServer(c *backendClient) *server.MCPServer {
 		mcp.WithString("preferred_date", mcp.Description("Preferred date in YYYY-MM-DD format")),
 		mcp.WithString("location", mcp.Description("Meeting location or conferencing URL")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		payload := map[string]any{
+		duration := parseDuration(strArg(req, "duration"), 30)
+		rangeStart, rangeEnd, err := schedulingRange(strArg(req, "preferred_date"))
+		if err != nil {
+			return jsonResult(nil, err)
+		}
+		attendees := splitEmails(strArg(req, "attendees"))
+		suggestionPayload := map[string]any{
+			"title":            strArg(req, "title"),
+			"attendees":        attendees,
+			"duration_minutes": duration,
+			"range_start":      rangeStart,
+			"range_end":        rangeEnd,
+		}
+		suggestions, err := c.post(ctx, "/api/schedule/suggest", suggestionPayload)
+		if err != nil {
+			return jsonResult(nil, err)
+		}
+		var result struct {
+			Slots []struct {
+				Start time.Time `json:"start"`
+				End   time.Time `json:"end"`
+			} `json:"slots"`
+		}
+		if err := json.Unmarshal(suggestions, &result); err != nil {
+			return jsonResult(nil, fmt.Errorf("decode schedule suggestions: %w", err))
+		}
+		if len(result.Slots) == 0 {
+			return jsonResult(nil, fmt.Errorf("no available slot found"))
+		}
+		createPayload := map[string]any{
 			"title":     strArg(req, "title"),
-			"attendees": strArg(req, "attendees"),
-		}
-		if v := strArg(req, "duration"); v != "" {
-			payload["duration"] = v
-		}
-		if v := strArg(req, "preferred_date"); v != "" {
-			payload["preferredDate"] = v
+			"attendees": attendees,
+			"start":     result.Slots[0].Start,
+			"end":       result.Slots[0].End,
 		}
 		if v := strArg(req, "location"); v != "" {
-			payload["location"] = v
+			createPayload["location"] = v
 		}
-		res, err := c.post(ctx, "/api/schedule/create", payload)
-		return jsonResult(res, err)
+		created, err := c.post(ctx, "/api/schedule/create", createPayload)
+		return jsonResult(created, err)
 	})
 
 	s.AddTool(mcp.NewTool("clockwise_update_event",
@@ -79,7 +108,7 @@ func buildServer(c *backendClient) *server.MCPServer {
 			payload["end"] = v
 		}
 		if v := strArg(req, "attendees"); v != "" {
-			payload["attendees"] = v
+			payload["attendees"] = splitEmails(v)
 		}
 		res, err := c.patch(ctx, "/api/events/"+id, payload)
 		return jsonResult(res, err)
@@ -153,8 +182,12 @@ func buildServer(c *backendClient) *server.MCPServer {
 		mcp.WithDescription("Apply a compression plan returned by clockwise_compress_schedule"),
 		mcp.WithString("plan", mcp.Required(), mcp.Description("JSON compression plan as returned by clockwise_compress_schedule")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		proposals, err := decodeCompressionProposals(strArg(req, "plan"))
+		if err != nil {
+			return jsonResult(nil, err)
+		}
 		res, err := c.post(ctx, "/api/schedule/compress/apply", map[string]any{
-			"plan": strArg(req, "plan"),
+			"proposals": proposals,
 		})
 		return jsonResult(res, err)
 	})
@@ -164,7 +197,7 @@ func buildServer(c *backendClient) *server.MCPServer {
 		mcp.WithString("command", mcp.Required(), mcp.Description("Natural-language command, e.g. \"schedule a 30-min call with alice@example.com next Tuesday\"")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		res, err := c.post(ctx, "/api/nlp/parse", map[string]any{
-			"command": strArg(req, "command"),
+			"text": strArg(req, "command"),
 		})
 		return jsonResult(res, err)
 	})
@@ -217,18 +250,82 @@ func buildServer(c *backendClient) *server.MCPServer {
 		mcp.WithString("attendees", mcp.Required(), mcp.Description("Comma-separated attendee emails")),
 		mcp.WithString("duration", mcp.Description("Duration in minutes (default 30)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		payload := map[string]any{
-			"title":     strArg(req, "title"),
-			"attendees": strArg(req, "attendees"),
+		duration := parseDuration(strArg(req, "duration"), 30)
+		rangeStart, rangeEnd, err := schedulingRange("")
+		if err != nil {
+			return jsonResult(nil, err)
 		}
-		if v := strArg(req, "duration"); v != "" {
-			payload["duration"] = v
+		payload := map[string]any{
+			"title":            strArg(req, "title"),
+			"attendees":        splitEmails(strArg(req, "attendees")),
+			"duration_minutes": duration,
+			"range_start":      rangeStart,
+			"range_end":        rangeEnd,
 		}
 		res, err := c.post(ctx, "/api/schedule/suggest", payload)
 		return jsonResult(res, err)
 	})
 
 	return s
+}
+
+type compressionProposal struct {
+	EventID       string `json:"event_id"`
+	ProposedStart string `json:"proposed_start"`
+	ProposedEnd   string `json:"proposed_end"`
+}
+
+func parseDuration(value string, fallback int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && n > 0 {
+		return n
+	}
+	return fallback
+}
+
+func splitEmails(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if email := strings.TrimSpace(part); email != "" {
+			out = append(out, email)
+		}
+	}
+	return out
+}
+
+func schedulingRange(preferredDate string) (time.Time, time.Time, error) {
+	if preferredDate != "" {
+		day, err := time.Parse("2006-01-02", preferredDate)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("preferred_date must be YYYY-MM-DD: %w", err)
+		}
+		return day, day.Add(24 * time.Hour), nil
+	}
+	start := time.Now().UTC()
+	return start, start.Add(7 * 24 * time.Hour), nil
+}
+
+func decodeCompressionProposals(raw string) ([]compressionProposal, error) {
+	var direct struct {
+		Proposals []compressionProposal `json:"proposals"`
+	}
+	if err := json.Unmarshal([]byte(raw), &direct); err == nil && direct.Proposals != nil {
+		return direct.Proposals, nil
+	}
+	var results []struct {
+		Proposals []compressionProposal `json:"proposals"`
+	}
+	if err := json.Unmarshal([]byte(raw), &results); err != nil {
+		return nil, fmt.Errorf("plan must be compression JSON: %w", err)
+	}
+	var proposals []compressionProposal
+	for _, result := range results {
+		proposals = append(proposals, result.Proposals...)
+	}
+	if proposals == nil {
+		return nil, fmt.Errorf("plan does not contain proposals")
+	}
+	return proposals, nil
 }
 
 func strArg(req mcp.CallToolRequest, key string) string {

@@ -37,13 +37,13 @@ type TeamInvite struct {
 }
 
 type NoMeetingZone struct {
-	ID         uuid.UUID `json:"id"`
-	TeamID     uuid.UUID `json:"teamId"`
-	DayOfWeek  int       `json:"dayOfWeek"`
-	StartTime  string    `json:"startTime"`
-	EndTime    string    `json:"endTime"`
-	Label      string    `json:"label"`
-	CreatedAt  time.Time `json:"createdAt"`
+	ID        uuid.UUID `json:"id"`
+	TeamID    uuid.UUID `json:"teamId"`
+	DayOfWeek int       `json:"dayOfWeek"`
+	StartTime string    `json:"startTime"`
+	EndTime   string    `json:"endTime"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 // --- Teams ---
@@ -236,6 +236,16 @@ func ListNoMeetingZones(db *sql.DB, teamID uuid.UUID) ([]*NoMeetingZone, error) 
 		zones = append(zones, &z)
 	}
 	return zones, rows.Err()
+}
+
+func UpdateNoMeetingZone(db *sql.DB, id, teamID uuid.UUID, dayOfWeek int, startTime, endTime, label string) (*NoMeetingZone, error) {
+	row := db.QueryRow(`
+		UPDATE no_meeting_zones
+		SET day_of_week = $3, start_time = $4, end_time = $5, label = $6
+		WHERE id = $1 AND team_id = $2
+		RETURNING id, team_id, day_of_week, start_time, end_time, label, created_at`,
+		id, teamID, dayOfWeek, startTime, endTime, label)
+	return scanZone(row)
 }
 
 func DeleteNoMeetingZone(db *sql.DB, id, teamID uuid.UUID) error {

@@ -331,6 +331,46 @@ func (h *teamHandlers) createZone(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(zone)
 }
 
+// PATCH /api/teams/:id/no-meeting-zones/:zoneId
+func (h *teamHandlers) updateZone(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	teamID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid team id", http.StatusBadRequest)
+		return
+	}
+	if err := h.requireOwner(teamID, userID); err != nil {
+		writeError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	zoneID, err := uuid.Parse(chi.URLParam(r, "zoneId"))
+	if err != nil {
+		writeError(w, "invalid zone id", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		DayOfWeek int    `json:"dayOfWeek"`
+		StartTime string `json:"startTime"`
+		EndTime   string `json:"endTime"`
+		Label     string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	zone, err := storage.UpdateNoMeetingZone(h.db, zoneID, teamID, body.DayOfWeek, body.StartTime, body.EndTime, body.Label)
+	if err == sql.ErrNoRows {
+		writeError(w, "zone not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(zone)
+}
+
 // GET /api/teams/:id/no-meeting-zones
 func (h *teamHandlers) listZones(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())

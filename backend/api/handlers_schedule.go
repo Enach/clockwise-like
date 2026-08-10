@@ -158,6 +158,7 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 		End         string   `json:"end"`
 		Attendees   []string `json:"attendees"`
 		Description string   `json:"description"`
+		Location    string   `json:"location"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
@@ -173,6 +174,7 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 	req := engine.ScheduleRequest{
 		Title:       body.Title,
 		Description: body.Description,
+		Location:    body.Location,
 		Attendees:   body.Attendees,
 	}
 	slot := engine.SuggestedSlot{Start: start, End: end}

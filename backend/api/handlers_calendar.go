@@ -21,17 +21,17 @@ type calendarHandlers struct {
 
 // calendarEventDTO is the shape expected by the frontend CalendarEvent type.
 type calendarEventDTO struct {
-	ID              string          `json:"id"`
-	Title           string          `json:"title"`
-	Start           string          `json:"start"`
-	End             string          `json:"end"`
-	Color           string          `json:"color,omitempty"`
-	Attendees       []string        `json:"attendees,omitempty"`
-	AttendeeDetails []attendeeDTO   `json:"attendee_details,omitempty"`
-	IsPersonalBlock bool            `json:"is_personal_block,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	Location        string          `json:"location,omitempty"`
-	Conference      *conferenceDTO  `json:"conference,omitempty"`
+	ID              string         `json:"id"`
+	Title           string         `json:"title"`
+	Start           string         `json:"start"`
+	End             string         `json:"end"`
+	Color           string         `json:"color,omitempty"`
+	Attendees       []string       `json:"attendees,omitempty"`
+	AttendeeDetails []attendeeDTO  `json:"attendee_details,omitempty"`
+	IsPersonalBlock bool           `json:"is_personal_block,omitempty"`
+	Description     string         `json:"description,omitempty"`
+	Location        string         `json:"location,omitempty"`
+	Conference      *conferenceDTO `json:"conference,omitempty"`
 }
 
 type attendeeDTO struct {
@@ -113,12 +113,18 @@ func toCalendarEventDTO(e *googlecalendar.Event) calendarEventDTO {
 		})
 	}
 
-	// Conference link — Google Meet via hangoutLink.
+	// Conference link — Google Meet or an external provider attached by Paceday.
 	if e.HangoutLink != "" {
 		dto.Conference = &conferenceDTO{
 			Provider: "google_meet",
 			URL:      e.HangoutLink,
 			Label:    "Google Meet",
+		}
+	} else if provider, url := conferenceFromEvent(e); url != "" {
+		dto.Conference = &conferenceDTO{
+			Provider: provider,
+			URL:      url,
+			Label:    strings.ToUpper(provider),
 		}
 	}
 

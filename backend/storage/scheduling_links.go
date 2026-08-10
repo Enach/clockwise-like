@@ -12,19 +12,23 @@ import (
 
 // SchedulingLink represents a public booking page.
 type SchedulingLink struct {
-	ID              uuid.UUID `json:"id"`
-	OwnerUserID     uuid.UUID `json:"owner_user_id"`
-	Slug            string    `json:"slug"`
-	Title           string    `json:"title"`
-	DurationOptions []int     `json:"duration_options"`
-	DaysOfWeek      []int     `json:"days_of_week"`
-	WindowStart     string    `json:"window_start_time"`
-	WindowEnd       string    `json:"window_end_time"`
-	BufferBefore    int       `json:"buffer_before"`
-	BufferAfter     int       `json:"buffer_after"`
-	Active          bool      `json:"active"`
-	CreatedAt       time.Time `json:"created_at"`
-	Hosts           []*LinkHost `json:"hosts,omitempty"`
+	ID               uuid.UUID   `json:"id"`
+	OwnerUserID      uuid.UUID   `json:"owner_user_id"`
+	Slug             string      `json:"slug"`
+	Title            string      `json:"title"`
+	DurationOptions  []int       `json:"duration_options"`
+	DaysOfWeek       []int       `json:"days_of_week"`
+	WindowStart      string      `json:"window_start_time"`
+	WindowEnd        string      `json:"window_end_time"`
+	BufferBefore     int         `json:"buffer_before"`
+	BufferAfter      int         `json:"buffer_after"`
+	MinNoticeMinutes int         `json:"min_notice_minutes"`
+	UsageType        string      `json:"usage_type"`
+	MaxUses          *int        `json:"max_uses,omitempty"`
+	UsesCount        int         `json:"uses_count"`
+	Active           bool        `json:"active"`
+	CreatedAt        time.Time   `json:"created_at"`
+	Hosts            []*LinkHost `json:"hosts,omitempty"`
 }
 
 // LinkHost is one accepted or pending co-host on a scheduling link.
@@ -62,23 +66,40 @@ type BookingEvent struct {
 // --- SchedulingLink CRUD ---------------------------------------------------
 
 func CreateSchedulingLink(db *sql.DB, l *SchedulingLink) (*SchedulingLink, error) {
+	if l.UsageType == "" {
+		l.UsageType = "reusable"
+	}
+	if len(l.DurationOptions) == 0 {
+		l.DurationOptions = []int{30}
+	}
+	if len(l.DaysOfWeek) == 0 {
+		l.DaysOfWeek = []int{1, 2, 3, 4, 5}
+	}
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_links
 			(owner_user_id, slug, title, duration_options, days_of_week,
-			 window_start_time, window_end_time, buffer_before, buffer_after)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			 window_start_time, window_end_time, buffer_before, buffer_after,
+             min_notice_minutes, usage_type, max_uses)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
-			window_start_time, window_end_time, buffer_before, buffer_after, active, created_at
+			window_start_time, window_end_time, buffer_before, buffer_after,
+            min_notice_minutes, usage_type, max_uses,
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            active, created_at
 	`, l.OwnerUserID, l.Slug, l.Title,
 		pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
-		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter)
+		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter,
+		l.MinNoticeMinutes, l.UsageType, l.MaxUses)
 	return scanSchedulingLink(row)
 }
 
 func GetSchedulingLinkBySlug(db *sql.DB, slug string) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
-			window_start_time, window_end_time, buffer_before, buffer_after, active, created_at
+			window_start_time, window_end_time, buffer_before, buffer_after,
+            min_notice_minutes, usage_type, max_uses,
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            active, created_at
 		FROM scheduling_links WHERE slug = $1 AND active = true
 	`, slug)
 	return scanSchedulingLink(row)
@@ -87,7 +108,10 @@ func GetSchedulingLinkBySlug(db *sql.DB, slug string) (*SchedulingLink, error) {
 func GetSchedulingLinkByID(db *sql.DB, id uuid.UUID) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
-			window_start_time, window_end_time, buffer_before, buffer_after, active, created_at
+			window_start_time, window_end_time, buffer_before, buffer_after,
+            min_notice_minutes, usage_type, max_uses,
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            active, created_at
 		FROM scheduling_links WHERE id = $1
 	`, id)
 	return scanSchedulingLink(row)
@@ -98,7 +122,9 @@ func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink,
 		SELECT DISTINCT sl.id, sl.owner_user_id, sl.slug, sl.title,
 			sl.duration_options, sl.days_of_week,
 			sl.window_start_time, sl.window_end_time,
-			sl.buffer_before, sl.buffer_after, sl.active, sl.created_at
+			sl.buffer_before, sl.buffer_after, sl.min_notice_minutes, sl.usage_type, sl.max_uses,
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id AND b.status <> 'cancelled'),
+            sl.active, sl.created_at
 		FROM scheduling_links sl
 		LEFT JOIN scheduling_link_hosts slh ON slh.link_id = sl.id
 		WHERE sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted')
@@ -114,14 +140,19 @@ func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink,
 func UpdateSchedulingLink(db *sql.DB, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE scheduling_links SET
-			title = $2, duration_options = $3, days_of_week = $4,
-			window_start_time = $5, window_end_time = $6,
-			buffer_before = $7, buffer_after = $8, active = $9
+			slug = $2, title = $3, duration_options = $4, days_of_week = $5,
+			window_start_time = $6, window_end_time = $7,
+			buffer_before = $8, buffer_after = $9, min_notice_minutes = $10,
+            usage_type = $11, max_uses = $12, active = $13
 		WHERE id = $1
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
-			window_start_time, window_end_time, buffer_before, buffer_after, active, created_at
-	`, id, l.Title, pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
-		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter, l.Active)
+			window_start_time, window_end_time, buffer_before, buffer_after,
+            min_notice_minutes, usage_type, max_uses,
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            active, created_at
+	`, id, l.Slug, l.Title, pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
+		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter, l.MinNoticeMinutes,
+		l.UsageType, l.MaxUses, l.Active)
 	return scanSchedulingLink(row)
 }
 
@@ -138,6 +169,7 @@ func scanSchedulingLink(row *sql.Row) (*SchedulingLink, error) {
 		&l.ID, &l.OwnerUserID, &l.Slug, &l.Title,
 		&durOpts, &daysOfWeek,
 		&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
+		&l.MinNoticeMinutes, &l.UsageType, &l.MaxUses, &l.UsesCount,
 		&l.Active, &l.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -160,6 +192,7 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 			&l.ID, &l.OwnerUserID, &l.Slug, &l.Title,
 			&durOpts, &daysOfWeek,
 			&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
+			&l.MinNoticeMinutes, &l.UsageType, &l.MaxUses, &l.UsesCount,
 			&l.Active, &l.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -171,8 +204,13 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 	return out, rows.Err()
 }
 
-
 // --- LinkHost CRUD ---------------------------------------------------------
+
+func RemoveNonOwnerLinkHosts(db *sql.DB, linkID, ownerID uuid.UUID) error {
+	_, err := db.ExecContext(context.Background(),
+		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id <> $2`, linkID, ownerID)
+	return err
+}
 
 func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
 	row := db.QueryRowContext(context.Background(), `
@@ -244,6 +282,12 @@ func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error)
 	return out, rows.Err()
 }
 
+func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) error {
+	_, err := db.ExecContext(context.Background(),
+		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`, linkID, userID)
+	return err
+}
+
 func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) error {
 	_, err := db.ExecContext(context.Background(), `
 		UPDATE scheduling_link_hosts
@@ -285,6 +329,15 @@ func CreateBooking(db *sql.DB, b *Booking) (*Booking, error) {
 		RETURNING id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
 	`, b.LinkID, b.BookerName, b.BookerEmail, b.StartTime, b.EndTime, b.Notes)
 	return scanBooking(row)
+}
+
+func HasOverlappingBooking(db *sql.DB, linkID uuid.UUID, start, end time.Time) (bool, error) {
+	var exists bool
+	err := db.QueryRowContext(context.Background(), `
+		SELECT EXISTS(SELECT 1 FROM bookings
+		WHERE link_id = $1 AND status <> 'cancelled'
+		  AND start_time < $3 AND end_time > $2)`, linkID, start, end).Scan(&exists)
+	return exists, err
 }
 
 func GetBookingsByLink(db *sql.DB, linkID uuid.UUID) ([]*Booking, error) {

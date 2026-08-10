@@ -98,6 +98,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Route("/api/personal-calendars", func(r chi.Router) {
 			r.Get("/", ph.list)
 			r.Post("/", ph.create)
+			r.Patch("/{id}", ph.patch)
 			r.Delete("/{id}", ph.delete)
 			r.Get("/{id}/preview", ph.preview)
 			r.Post("/{id}/sync", ph.sync)
@@ -113,6 +114,10 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 		cnh := &conferencingHandlers{db: db, oauthConfig: oauthConfig}
 		r.Post("/api/conference/create", cnh.createConference)
+		r.Get("/api/conference/providers", cnh.providers)
+		r.Post("/api/conference/zoom/disconnect", cnh.disconnectZoom)
+		r.Post("/api/events/{id}/conference", cnh.addEventConference)
+		r.Delete("/api/events/{id}/conference", cnh.removeEventConference)
 
 		oh := &orgHandlers{db: db}
 		r.Get("/api/org/members", oh.members)
@@ -141,6 +146,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Post("/", slh.createLink)
 			r.Get("/", slh.listLinks)
 			r.Get("/host-invites", slh.listHostInvites)
+			r.Get("/invites", slh.listHostInvites)
 			r.Post("/host-invites/{id}/accept", slh.acceptInvite)
 			r.Post("/host-invites/{id}/decline", slh.declineInvite)
 			r.Get("/{id}", slh.getLink)
@@ -148,6 +154,9 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Delete("/{id}", slh.deleteLink)
 			r.Get("/{id}/bookings", slh.listBookings)
 			r.Post("/{id}/hosts", slh.inviteHost)
+			r.Post("/{id}/accept", slh.acceptInvite)
+			r.Post("/{id}/decline", slh.declineInvite)
+			r.Post("/{id}/leave", slh.leaveLink)
 		})
 
 		r.Route("/api/admin/sso", func(r chi.Router) {
@@ -158,6 +167,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 		fbh := newFreeBusyHandlers(db, oauthConfig)
 		r.Post("/api/freebusy", fbh.query)
+		r.Get("/api/audit", auditHandler(db))
 
 		ih := &integrationsHandlers{db: db}
 		r.Route("/api/integrations", func(r chi.Router) {
@@ -210,6 +220,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Delete("/{id}/members/{userId}", th.removeMember)
 			r.Post("/{id}/no-meeting-zones", th.createZone)
 			r.Get("/{id}/no-meeting-zones", th.listZones)
+			r.Patch("/{id}/no-meeting-zones/{zoneId}", th.updateZone)
 			r.Delete("/{id}/no-meeting-zones/{zoneId}", th.deleteZone)
 			r.Get("/{id}/availability", th.availability)
 			r.Get("/{id}/analytics", th.analyticsHandler)

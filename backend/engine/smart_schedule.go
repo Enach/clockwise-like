@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/storage"
-	googlecalendar "google.golang.org/api/calendar/v3"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 type ScheduleRequest struct {
@@ -19,6 +19,7 @@ type ScheduleRequest struct {
 	RangeEnd        time.Time
 	Title           string
 	Description     string
+	Location        string
 	// From NLP result — boost/penalize candidate slots accordingly
 	PreferredTimes []string // e.g. ["10:00-12:00"]
 	AvoidTimes     []string // e.g. ["08:00-09:00"]
@@ -239,6 +240,7 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 	event := &googlecalendar.Event{
 		Summary:     req.Title,
 		Description: req.Description,
+		Location:    req.Location,
 		Start:       &googlecalendar.EventDateTime{DateTime: slot.Start.Format(time.RFC3339)},
 		End:         &googlecalendar.EventDateTime{DateTime: slot.End.Format(time.RFC3339)},
 		Attendees:   attendees,

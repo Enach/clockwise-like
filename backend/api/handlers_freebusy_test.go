@@ -80,14 +80,27 @@ func TestFreeBusy_PersonalEmailsReturnUnknown(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Results []engine.ParticipantBusy `json:"results"`
+		Results      []engine.ParticipantBusy       `json:"results"`
+		Participants []freeBusyParticipantDTO       `json:"participants"`
+		Busy         map[string][]freeBusyWindowDTO `json:"busy"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	if len(resp.Results) != 2 || len(resp.Participants) != 2 {
+		t.Fatalf("response result counts = %d/%d, want 2/2", len(resp.Results), len(resp.Participants))
+	}
 	for _, r := range resp.Results {
 		if r.Coverage != "unknown" {
 			t.Errorf("email %s: coverage = %q, want unknown", r.Email, r.Coverage)
+		}
+	}
+	for _, participant := range resp.Participants {
+		if participant.Status != "unknown" {
+			t.Errorf("email %s: status = %q, want unknown", participant.Email, participant.Status)
+		}
+		if participant.Busy == nil || resp.Busy[participant.Email] == nil {
+			t.Errorf("email %s: canonical busy windows should be present", participant.Email)
 		}
 	}
 }

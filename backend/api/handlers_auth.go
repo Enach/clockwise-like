@@ -133,7 +133,7 @@ func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 	}
 	// Clear auth cookie
 	http.SetCookie(w, &http.Cookie{Name: "auth_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) {

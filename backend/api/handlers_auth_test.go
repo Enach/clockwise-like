@@ -47,8 +47,8 @@ func TestAuthDisconnect(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.disconnect(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", w.Code)
 	}
 }
 

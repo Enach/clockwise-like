@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
@@ -35,4 +36,34 @@ func (c *CalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID st
 
 func (c *CalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*googlecalendar.Event, error) {
 	return c.service.Events.Get(calendarID, eventID).Context(ctx).Do()
+}
+
+func (c *CalendarClient) AddGoogleMeet(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error) {
+	event.ConferenceData = &googlecalendar.ConferenceData{
+		CreateRequest: &googlecalendar.CreateConferenceRequest{
+			RequestId:             uuid.NewString(),
+			ConferenceSolutionKey: &googlecalendar.ConferenceSolutionKey{Type: "hangoutsMeet"},
+		},
+	}
+	return c.service.Events.Update(calendarID, eventID, event).
+		Context(ctx).ConferenceDataVersion(1).Do()
+}
+
+func (c *CalendarClient) ClearGoogleMeet(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error) {
+	event.ConferenceData = nil
+	event.NullFields = append(event.NullFields, "ConferenceData")
+	return c.service.Events.Update(calendarID, eventID, event).
+		Context(ctx).ConferenceDataVersion(1).Do()
+}
+
+func ConferenceEntryURL(event *googlecalendar.Event) string {
+	if event == nil || event.ConferenceData == nil {
+		return ""
+	}
+	for _, entry := range event.ConferenceData.EntryPoints {
+		if entry != nil && entry.Uri != "" && (entry.EntryPointType == "video" || entry.EntryPointType == "") {
+			return entry.Uri
+		}
+	}
+	return ""
 }

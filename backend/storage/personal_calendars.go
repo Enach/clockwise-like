@@ -9,14 +9,15 @@ import (
 )
 
 type PersonalCalendar struct {
-	ID              int64     `json:"id"`
-	UserID          uuid.UUID `json:"-"`
-	Provider        string    `json:"provider"`
-	Name            string    `json:"name"`
-	URL             string    `json:"url,omitempty"`
-	CredentialsJSON string    `json:"-"`
-	Enabled         bool      `json:"enabled"`
-	CreatedAt       time.Time `json:"createdAt"`
+	ID              int64      `json:"id"`
+	UserID          uuid.UUID  `json:"-"`
+	Provider        string     `json:"provider"`
+	Name            string     `json:"name"`
+	URL             string     `json:"url,omitempty"`
+	CredentialsJSON string     `json:"-"`
+	Enabled         bool       `json:"enabled"`
+	LastSyncedAt    *time.Time `json:"-"`
+	CreatedAt       time.Time  `json:"createdAt"`
 }
 
 type PersonalBlocker struct {
@@ -28,7 +29,7 @@ type PersonalBlocker struct {
 }
 
 func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
-	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, created_at FROM personal_calendars ORDER BY id`)
+	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at FROM personal_calendars ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +37,7 @@ func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
 	var cals []PersonalCalendar
 	for rows.Next() {
 		var c PersonalCalendar
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		cals = append(cals, c)
@@ -45,9 +46,9 @@ func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
 }
 
 func GetPersonalCalendar(db *sql.DB, id int64) (*PersonalCalendar, error) {
-	row := db.QueryRow(`SELECT id, user_id, provider, name, url, credentials_json, enabled, created_at FROM personal_calendars WHERE id = $1`, id)
+	row := db.QueryRow(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at FROM personal_calendars WHERE id = $1`, id)
 	var c PersonalCalendar
-	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -56,10 +57,41 @@ func GetPersonalCalendar(db *sql.DB, id int64) (*PersonalCalendar, error) {
 func InsertPersonalCalendar(db *sql.DB, c *PersonalCalendar) (int64, error) {
 	var id int64
 	err := db.QueryRow(
-		`INSERT INTO personal_calendars (provider, name, url, credentials_json, enabled) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		c.Provider, c.Name, c.URL, c.CredentialsJSON, c.Enabled,
+		`INSERT INTO personal_calendars (user_id, provider, name, url, credentials_json, enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		c.UserID, c.Provider, c.Name, c.URL, c.CredentialsJSON, c.Enabled,
 	).Scan(&id)
 	return id, err
+}
+
+func UpdatePersonalCalendar(db *sql.DB, id int64, userID uuid.UUID, name, url *string, enabled *bool) (*PersonalCalendar, error) {
+	row := db.QueryRow(`
+		UPDATE personal_calendars SET
+			name = COALESCE($3, name), url = COALESCE($4, url), enabled = COALESCE($5, enabled)
+		WHERE id = $1 AND user_id = $2
+		RETURNING id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at`,
+		id, userID, name, url, enabled)
+	var c PersonalCalendar
+	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+func DeletePersonalCalendarForUser(db *sql.DB, id int64, userID uuid.UUID) (bool, error) {
+	result, err := db.Exec(`DELETE FROM personal_calendars WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n > 0, err
+}
+
+func MarkPersonalCalendarSynced(db *sql.DB, id int64, userID uuid.UUID) error {
+	_, err := db.Exec(`UPDATE personal_calendars SET last_synced_at = NOW() WHERE id = $1 AND user_id = $2`, id, userID)
+	return err
 }
 
 func DeletePersonalCalendar(db *sql.DB, id int64) error {
@@ -132,7 +164,7 @@ func ListPersonalCalendarsByUser(db *sql.DB, userID uuid.UUID) ([]PersonalCalend
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("ListPersonalCalendarsByUser: userID is required")
 	}
-	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, created_at
+	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at
 		FROM personal_calendars WHERE user_id = $1 ORDER BY id`, userID)
 	if err != nil {
 		return nil, err
@@ -141,7 +173,7 @@ func ListPersonalCalendarsByUser(db *sql.DB, userID uuid.UUID) ([]PersonalCalend
 	var cals []PersonalCalendar
 	for rows.Next() {
 		var c PersonalCalendar
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		cals = append(cals, c)

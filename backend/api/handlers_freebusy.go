@@ -15,6 +15,17 @@ type freeBusyHandlers struct {
 	svc *engine.FreeBusyService
 }
 
+type freeBusyWindowDTO struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+type freeBusyParticipantDTO struct {
+	Email  string              `json:"email"`
+	Status string              `json:"status"`
+	Busy   []freeBusyWindowDTO `json:"busy"`
+}
+
 func newFreeBusyHandlers(db *sql.DB, cfg *oauth2.Config) *freeBusyHandlers {
 	return &freeBusyHandlers{svc: engine.NewFreeBusyService(db, cfg)}
 }
@@ -62,6 +73,29 @@ func (h *freeBusyHandlers) query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	participants := make([]freeBusyParticipantDTO, 0, len(results))
+	busy := make(map[string][]freeBusyWindowDTO, len(results))
+	for _, result := range results {
+		windows := make([]freeBusyWindowDTO, 0, len(result.Busy))
+		for _, slot := range result.Busy {
+			windows = append(windows, freeBusyWindowDTO{Start: slot.Start, End: slot.End})
+		}
+		participants = append(participants, freeBusyParticipantDTO{
+			Email:  result.Email,
+			Status: result.Coverage,
+			Busy:   windows,
+		})
+		busy[result.Email] = windows
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"results": results})
+	// Keep results for older API consumers while exposing the canonical
+	// participants/busy shape used by the frontend.
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"start_time":   start,
+		"end_time":     end,
+		"participants": participants,
+		"busy":         busy,
+		"results":      results,
+	})
 }

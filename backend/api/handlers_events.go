@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
-	googlecalendar "google.golang.org/api/calendar/v3"
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 type eventHandlers struct {
@@ -40,7 +40,7 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 		Location    *string    `json:"location"`
 		Start       *time.Time `json:"start"`
 		End         *time.Time `json:"end"`
-		Attendees   []string   `json:"attendees"`
+		Attendees   *[]string  `json:"attendees"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, "invalid body", http.StatusBadRequest)
@@ -71,9 +71,9 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 	if body.End != nil {
 		existing.End = &googlecalendar.EventDateTime{DateTime: body.End.UTC().Format(time.RFC3339)}
 	}
-	if len(body.Attendees) > 0 {
-		attendees := make([]*googlecalendar.EventAttendee, len(body.Attendees))
-		for i, email := range body.Attendees {
+	if body.Attendees != nil {
+		attendees := make([]*googlecalendar.EventAttendee, len(*body.Attendees))
+		for i, email := range *body.Attendees {
 			attendees[i] = &googlecalendar.EventAttendee{Email: email}
 		}
 		existing.Attendees = attendees

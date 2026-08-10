@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
@@ -24,79 +25,278 @@ func newSchedulingLinkHandlers(db *sql.DB, oauthConfig *oauth2.Config) *scheduli
 	}
 }
 
+// These DTOs deliberately use the frontend names. Storage keeps the original
+// database-oriented names so the MCP and internal engine callers remain stable.
+type schedulingLinkDTO struct {
+	ID               string              `json:"id"`
+	OwnerID          string              `json:"owner_id"`
+	Title            string              `json:"title"`
+	Slug             string              `json:"slug"`
+	Durations        []int               `json:"durations"`
+	Days             []string            `json:"days"`
+	WindowStart      string              `json:"window_start"`
+	WindowEnd        string              `json:"window_end"`
+	BufferBefore     int                 `json:"buffer_before"`
+	BufferAfter      int                 `json:"buffer_after"`
+	MinNoticeMinutes int                 `json:"min_notice_minutes"`
+	UsageType        string              `json:"usage_type"`
+	MaxUses          *int                `json:"max_uses,omitempty"`
+	UsesCount        int                 `json:"uses_count"`
+	Active           bool                `json:"active"`
+	Hosts            []schedulingHostDTO `json:"hosts"`
+	CreatedAt        string              `json:"created_at"`
+	IsOwner          bool                `json:"is_owner"`
+	MyStatus         string              `json:"my_status,omitempty"`
+}
+
+type schedulingHostDTO struct {
+	UserID    string `json:"user_id,omitempty"`
+	Email     string `json:"email"`
+	Name      string `json:"name,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	IsOwner   bool   `json:"is_owner"`
+	Status    string `json:"status"`
+}
+
+type hostInviteDTO struct {
+	LinkID     string `json:"link_id"`
+	LinkTitle  string `json:"link_title"`
+	OwnerName  string `json:"owner_name"`
+	OwnerEmail string `json:"owner_email"`
+	InvitedAt  string `json:"invited_at"`
+}
+
+type schedulingLinkInput struct {
+	Title            string   `json:"title"`
+	Slug             string   `json:"slug"`
+	DurationOptions  []int    `json:"duration_options"`
+	Durations        []int    `json:"durations"`
+	DaysOfWeek       []int    `json:"days_of_week"`
+	Days             []string `json:"days"`
+	WindowStart      string   `json:"window_start_time"`
+	WindowStartAlias string   `json:"window_start"`
+	WindowEnd        string   `json:"window_end_time"`
+	WindowEndAlias   string   `json:"window_end"`
+	BufferBefore     int      `json:"buffer_before"`
+	BufferAfter      int      `json:"buffer_after"`
+	MinNoticeMinutes int      `json:"min_notice_minutes"`
+	UsageType        string   `json:"usage_type"`
+	MaxUses          *int     `json:"max_uses"`
+	CoHostEmails     []string `json:"co_host_emails"`
+}
+
+type schedulingLinkPatch struct {
+	Title            *string  `json:"title"`
+	Slug             *string  `json:"slug"`
+	DurationOptions  []int    `json:"duration_options"`
+	Durations        []int    `json:"durations"`
+	DaysOfWeek       []int    `json:"days_of_week"`
+	Days             []string `json:"days"`
+	WindowStart      *string  `json:"window_start_time"`
+	WindowStartAlias *string  `json:"window_start"`
+	WindowEnd        *string  `json:"window_end_time"`
+	WindowEndAlias   *string  `json:"window_end"`
+	BufferBefore     *int     `json:"buffer_before"`
+	BufferAfter      *int     `json:"buffer_after"`
+	MinNoticeMinutes *int     `json:"min_notice_minutes"`
+	UsageType        *string  `json:"usage_type"`
+	MaxUses          *int     `json:"max_uses"`
+	Active           *bool    `json:"active"`
+	CoHostEmails     []string `json:"co_host_emails"`
+}
+
+func dayNames(days []int) []string {
+	out := make([]string, 0, len(days))
+	for _, day := range days {
+		if name, ok := map[int]string{0: "sun", 1: "mon", 2: "tue", 3: "wed", 4: "thu", 5: "fri", 6: "sat"}[day]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func dayNumbers(days []string) []int {
+	out := make([]int, 0, len(days))
+	for _, raw := range days {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "sun", "sunday", "0":
+			out = append(out, 0)
+		case "mon", "monday", "1":
+			out = append(out, 1)
+		case "tue", "tuesday", "2":
+			out = append(out, 2)
+		case "wed", "wednesday", "3":
+			out = append(out, 3)
+		case "thu", "thursday", "4":
+			out = append(out, 4)
+		case "fri", "friday", "5":
+			out = append(out, 5)
+		case "sat", "saturday", "6":
+			out = append(out, 6)
+		}
+	}
+	return out
+}
+
+func normalizeSlug(raw string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(raw)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func (in schedulingLinkInput) normalized() (storage.SchedulingLink, error) {
+	durations := in.DurationOptions
+	if len(durations) == 0 {
+		durations = in.Durations
+	}
+	if len(durations) == 0 {
+		durations = []int{30}
+	}
+	days := in.DaysOfWeek
+	if len(days) == 0 {
+		days = dayNumbers(in.Days)
+	}
+	if len(days) == 0 {
+		days = []int{1, 2, 3, 4, 5}
+	}
+	start := in.WindowStart
+	if start == "" {
+		start = in.WindowStartAlias
+	}
+	if start == "" {
+		start = "09:00"
+	}
+	end := in.WindowEnd
+	if end == "" {
+		end = in.WindowEndAlias
+	}
+	if end == "" {
+		end = "17:00"
+	}
+	usage := strings.ToLower(strings.TrimSpace(in.UsageType))
+	if usage == "" {
+		usage = "reusable"
+	}
+	if usage != "reusable" && usage != "recurring" && usage != "single_use" {
+		return storage.SchedulingLink{}, &httpError{Code: http.StatusBadRequest, Msg: "usage_type must be reusable, recurring, or single_use"}
+	}
+	return storage.SchedulingLink{
+		Slug: normalizeSlug(in.Slug), Title: strings.TrimSpace(in.Title),
+		DurationOptions: durations, DaysOfWeek: days, WindowStart: start, WindowEnd: end,
+		BufferBefore: in.BufferBefore, BufferAfter: in.BufferAfter,
+		MinNoticeMinutes: maxInt(in.MinNoticeMinutes, 0), UsageType: usage, MaxUses: in.MaxUses,
+	}, nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {
+	dto := schedulingLinkDTO{
+		ID: link.ID.String(), OwnerID: link.OwnerUserID.String(), Title: link.Title, Slug: link.Slug,
+		Durations: link.DurationOptions, Days: dayNames(link.DaysOfWeek), WindowStart: link.WindowStart,
+		WindowEnd: link.WindowEnd, BufferBefore: link.BufferBefore, BufferAfter: link.BufferAfter,
+		MinNoticeMinutes: link.MinNoticeMinutes, UsageType: link.UsageType, MaxUses: link.MaxUses,
+		UsesCount: link.UsesCount, Active: link.Active, CreatedAt: link.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		IsOwner: link.OwnerUserID == viewer,
+	}
+	if dto.UsageType == "" {
+		dto.UsageType = "reusable"
+	}
+	if includeHosts {
+		hosts, _ := storage.GetLinkHosts(db, link.ID)
+		dto.Hosts = make([]schedulingHostDTO, 0, len(hosts))
+		for _, host := range hosts {
+			h := schedulingHostDTO{UserID: host.UserID.String(), IsOwner: host.UserID == link.OwnerUserID, Status: host.Status}
+			if user, err := storage.GetUserByID(db, host.UserID); err == nil && user != nil {
+				h.Email, h.Name, h.AvatarURL = user.Email, user.Name, user.AvatarURL
+			}
+			dto.Hosts = append(dto.Hosts, h)
+			if host.UserID == viewer {
+				dto.MyStatus = host.Status
+			}
+		}
+	}
+	if dto.Hosts == nil {
+		dto.Hosts = []schedulingHostDTO{}
+	}
+	return dto
+}
+
+func (h *schedulingLinkHandlers) writeLink(w http.ResponseWriter, link *storage.SchedulingLink, viewer uuid.UUID) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(toSchedulingLinkDTO(h.db, link, viewer, true))
+}
+
 // POST /api/scheduling-links
 func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-
-	var body struct {
-		Title           string `json:"title"`
-		DurationOptions []int  `json:"duration_options"`
-		DaysOfWeek      []int  `json:"days_of_week"`
-		WindowStart     string `json:"window_start_time"`
-		WindowEnd       string `json:"window_end_time"`
-		BufferBefore    int    `json:"buffer_before"`
-		BufferAfter     int    `json:"buffer_after"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var input schedulingLinkInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if body.Title == "" {
+	link, err := input.normalized()
+	if err != nil {
+		e := err.(*httpError)
+		writeError(w, e.Msg, e.Code)
+		return
+	}
+	if link.Title == "" {
 		writeError(w, "title is required", http.StatusBadRequest)
 		return
 	}
-
-	u, err := storage.GetUserByID(h.db, userID)
-	if err != nil || u == nil {
+	owner, err := storage.GetUserByID(h.db, userID)
+	if err != nil || owner == nil {
 		writeError(w, "user not found", http.StatusInternalServerError)
 		return
 	}
-
-	dur := 30
-	if len(body.DurationOptions) > 0 {
-		dur = body.DurationOptions[0]
-	}
-	slug, err := h.bookEng.GenerateSlug(u.Name, dur)
-	if err != nil {
-		writeError(w, "slug generation failed", http.StatusInternalServerError)
+	if link.Slug == "" {
+		link.Slug, err = h.bookEng.GenerateSlug(owner.Name, link.DurationOptions[0])
+		if err != nil {
+			writeError(w, "slug generation failed", http.StatusInternalServerError)
+			return
+		}
+	} else if exists, e := storage.SlugExists(h.db, link.Slug); e != nil {
+		writeError(w, "slug check failed", http.StatusInternalServerError)
+		return
+	} else if exists {
+		writeError(w, "slug already exists", http.StatusConflict)
 		return
 	}
-
-	if len(body.DurationOptions) == 0 {
-		body.DurationOptions = []int{30}
-	}
-	if len(body.DaysOfWeek) == 0 {
-		body.DaysOfWeek = []int{1, 2, 3, 4, 5}
-	}
-	if body.WindowStart == "" {
-		body.WindowStart = "09:00"
-	}
-	if body.WindowEnd == "" {
-		body.WindowEnd = "17:00"
-	}
-
-	link, err := storage.CreateSchedulingLink(h.db, &storage.SchedulingLink{
-		OwnerUserID:     userID,
-		Slug:            slug,
-		Title:           body.Title,
-		DurationOptions: body.DurationOptions,
-		DaysOfWeek:      body.DaysOfWeek,
-		WindowStart:     body.WindowStart,
-		WindowEnd:       body.WindowEnd,
-		BufferBefore:    body.BufferBefore,
-		BufferAfter:     body.BufferAfter,
-	})
+	link.OwnerUserID = userID
+	created, err := storage.CreateSchedulingLink(h.db, &link)
 	if err != nil {
 		writeError(w, "create failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Auto-accept the owner as a host.
-	_, _ = storage.AddLinkHost(h.db, link.ID, userID, "accepted")
-
+	if _, err = storage.AddLinkHost(h.db, created.ID, userID, "accepted"); err != nil {
+		writeError(w, "owner host failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, email := range input.CoHostEmails {
+		invitee, e := storage.GetUserByEmail(h.db, strings.ToLower(strings.TrimSpace(email)))
+		if e != nil || invitee == nil {
+			continue
+		}
+		_, _ = storage.AddLinkHost(h.db, created.ID, invitee.ID, "pending")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(link)
+	h.writeLink(w, created, userID)
 }
 
 // GET /api/scheduling-links
@@ -107,11 +307,17 @@ func (h *schedulingLinkHandlers) listLinks(w http.ResponseWriter, r *http.Reques
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if links == nil {
-		links = []*storage.SchedulingLink{}
+	owned, shared := []schedulingLinkDTO{}, []schedulingLinkDTO{}
+	for _, link := range links {
+		dto := toSchedulingLinkDTO(h.db, link, userID, true)
+		if dto.IsOwner {
+			owned = append(owned, dto)
+		} else {
+			shared = append(shared, dto)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(links)
+	_ = json.NewEncoder(w).Encode(map[string]any{"owned": owned, "shared": shared})
 }
 
 // GET /api/scheduling-links/{id}
@@ -130,12 +336,7 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-
-	hosts, _ := storage.GetLinkHosts(h.db, id)
-	link.Hosts = hosts
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(link)
+	h.writeLink(w, link, userIDFromCtx(r.Context()))
 }
 
 // PATCH /api/scheduling-links/{id}
@@ -146,7 +347,6 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-
 	existing, err := storage.GetSchedulingLinkByID(h.db, id)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -160,55 +360,89 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-
-	var body struct {
-		Title           *string `json:"title"`
-		DurationOptions []int   `json:"duration_options"`
-		DaysOfWeek      []int   `json:"days_of_week"`
-		WindowStart     *string `json:"window_start_time"`
-		WindowEnd       *string `json:"window_end_time"`
-		BufferBefore    *int    `json:"buffer_before"`
-		BufferAfter     *int    `json:"buffer_after"`
-		Active          *bool   `json:"active"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var patch schedulingLinkPatch
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	updated := *existing
-	if body.Title != nil {
-		updated.Title = *body.Title
+	if patch.Title != nil {
+		updated.Title = strings.TrimSpace(*patch.Title)
 	}
-	if body.DurationOptions != nil {
-		updated.DurationOptions = body.DurationOptions
+	if patch.Slug != nil {
+		updated.Slug = normalizeSlug(*patch.Slug)
 	}
-	if body.DaysOfWeek != nil {
-		updated.DaysOfWeek = body.DaysOfWeek
+	if patch.DurationOptions != nil {
+		updated.DurationOptions = patch.DurationOptions
 	}
-	if body.WindowStart != nil {
-		updated.WindowStart = *body.WindowStart
+	if patch.Durations != nil {
+		updated.DurationOptions = patch.Durations
 	}
-	if body.WindowEnd != nil {
-		updated.WindowEnd = *body.WindowEnd
+	if patch.DaysOfWeek != nil {
+		updated.DaysOfWeek = patch.DaysOfWeek
 	}
-	if body.BufferBefore != nil {
-		updated.BufferBefore = *body.BufferBefore
+	if patch.Days != nil {
+		updated.DaysOfWeek = dayNumbers(patch.Days)
 	}
-	if body.BufferAfter != nil {
-		updated.BufferAfter = *body.BufferAfter
+	if patch.WindowStart != nil {
+		updated.WindowStart = *patch.WindowStart
+	} else if patch.WindowStartAlias != nil {
+		updated.WindowStart = *patch.WindowStartAlias
 	}
-	if body.Active != nil {
-		updated.Active = *body.Active
+	if patch.WindowEnd != nil {
+		updated.WindowEnd = *patch.WindowEnd
+	} else if patch.WindowEndAlias != nil {
+		updated.WindowEnd = *patch.WindowEndAlias
 	}
-
+	if patch.BufferBefore != nil {
+		updated.BufferBefore = *patch.BufferBefore
+	}
+	if patch.BufferAfter != nil {
+		updated.BufferAfter = *patch.BufferAfter
+	}
+	if patch.MinNoticeMinutes != nil {
+		updated.MinNoticeMinutes = maxInt(*patch.MinNoticeMinutes, 0)
+	}
+	if patch.UsageType != nil {
+		updated.UsageType = strings.ToLower(strings.TrimSpace(*patch.UsageType))
+	}
+	if patch.MaxUses != nil {
+		updated.MaxUses = patch.MaxUses
+	}
+	if patch.Active != nil {
+		updated.Active = *patch.Active
+	}
+	if updated.Slug == "" {
+		writeError(w, "slug cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if updated.UsageType != "reusable" && updated.UsageType != "recurring" && updated.UsageType != "single_use" {
+		writeError(w, "invalid usage_type", http.StatusBadRequest)
+		return
+	}
+	if updated.Slug != existing.Slug {
+		if exists, e := storage.SlugExists(h.db, updated.Slug); e != nil {
+			writeError(w, "slug check failed", http.StatusInternalServerError)
+			return
+		} else if exists {
+			writeError(w, "slug already exists", http.StatusConflict)
+			return
+		}
+	}
 	result, err := storage.UpdateSchedulingLink(h.db, id, &updated)
 	if err != nil {
 		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	if patch.CoHostEmails != nil {
+		_ = storage.RemoveNonOwnerLinkHosts(h.db, id, userID)
+		for _, email := range patch.CoHostEmails {
+			if u, e := storage.GetUserByEmail(h.db, strings.ToLower(strings.TrimSpace(email))); e == nil && u != nil {
+				_, _ = storage.AddLinkHost(h.db, id, u.ID, "pending")
+			}
+		}
+	}
+	h.writeLink(w, result, userID)
 }
 
 // DELETE /api/scheduling-links/{id}
@@ -219,21 +453,19 @@ func (h *schedulingLinkHandlers) deleteLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-
-	existing, err := storage.GetSchedulingLinkByID(h.db, id)
+	link, err := storage.GetSchedulingLinkByID(h.db, id)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if existing == nil {
+	if link == nil {
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	if existing.OwnerUserID != userID {
+	if link.OwnerUserID != userID {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-
 	if err := storage.DeleteSchedulingLink(h.db, id); err != nil {
 		writeError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -249,7 +481,6 @@ func (h *schedulingLinkHandlers) listBookings(w http.ResponseWriter, r *http.Req
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-
 	link, err := storage.GetSchedulingLinkByID(h.db, id)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -263,7 +494,6 @@ func (h *schedulingLinkHandlers) listBookings(w http.ResponseWriter, r *http.Req
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-
 	bookings, err := storage.GetBookingsByLink(h.db, id)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -284,7 +514,6 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-
 	link, err := storage.GetSchedulingLinkByID(h.db, id)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -298,21 +527,18 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-
 	var body struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Email) == "" {
 		writeError(w, "email is required", http.StatusBadRequest)
 		return
 	}
-
-	invitee, err := storage.GetUserByEmail(h.db, body.Email)
+	invitee, err := storage.GetUserByEmail(h.db, strings.ToLower(strings.TrimSpace(body.Email)))
 	if err != nil || invitee == nil {
 		writeError(w, "user not found", http.StatusNotFound)
 		return
 	}
-
 	host, err := storage.AddLinkHost(h.db, id, invitee.ID, "pending")
 	if err != nil {
 		writeError(w, "invite failed: "+err.Error(), http.StatusInternalServerError)
@@ -323,7 +549,7 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(host)
 }
 
-// GET /api/scheduling-links/host-invites
+// GET /api/scheduling-links/host-invites and /api/scheduling-links/invites
 func (h *schedulingLinkHandlers) listHostInvites(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	invites, err := storage.GetPendingInvitesForUser(h.db, userID)
@@ -331,23 +557,23 @@ func (h *schedulingLinkHandlers) listHostInvites(w http.ResponseWriter, r *http.
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if invites == nil {
-		invites = []*storage.LinkHost{}
+	out := make([]hostInviteDTO, 0, len(invites))
+	for _, invite := range invites {
+		link, e := storage.GetSchedulingLinkByID(h.db, invite.LinkID)
+		if e != nil || link == nil {
+			continue
+		}
+		owner, e := storage.GetUserByID(h.db, link.OwnerUserID)
+		if e != nil || owner == nil {
+			continue
+		}
+		out = append(out, hostInviteDTO{LinkID: link.ID.String(), LinkTitle: link.Title, OwnerName: owner.Name, OwnerEmail: owner.Email, InvitedAt: invite.InvitedAt.UTC().Format("2006-01-02T15:04:05.000Z07:00")})
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(invites)
+	_ = json.NewEncoder(w).Encode(out)
 }
 
-// POST /api/scheduling-links/host-invites/{id}/accept
-func (h *schedulingLinkHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
-	h.respondToInvite(w, r, "accepted")
-}
-
-// POST /api/scheduling-links/host-invites/{id}/decline
-func (h *schedulingLinkHandlers) declineInvite(w http.ResponseWriter, r *http.Request) {
-	h.respondToInvite(w, r, "declined")
-}
-
+// POST /api/scheduling-links/host-invites/{id}/accept|decline and aliases /{id}/accept|decline
 func (h *schedulingLinkHandlers) respondToInvite(w http.ResponseWriter, r *http.Request, status string) {
 	userID := userIDFromCtx(r.Context())
 	linkID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -361,4 +587,38 @@ func (h *schedulingLinkHandlers) respondToInvite(w http.ResponseWriter, r *http.
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+}
+func (h *schedulingLinkHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
+	h.respondToInvite(w, r, "accepted")
+}
+func (h *schedulingLinkHandlers) declineInvite(w http.ResponseWriter, r *http.Request) {
+	h.respondToInvite(w, r, "declined")
+}
+
+// POST /api/scheduling-links/{id}/leave
+func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	link, err := storage.GetSchedulingLinkByID(h.db, id)
+	if err != nil {
+		writeError(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if link == nil {
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if link.OwnerUserID == userID {
+		writeError(w, "owner cannot leave link", http.StatusBadRequest)
+		return
+	}
+	if err := storage.RemoveLinkHost(h.db, id, userID); err != nil {
+		writeError(w, "leave failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
