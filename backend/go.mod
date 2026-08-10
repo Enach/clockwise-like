@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.54.0
 	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608
-	github.com/go-chi/chi/v5 v5.3.0
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
