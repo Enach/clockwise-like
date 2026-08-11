@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
@@ -154,18 +156,22 @@ func normalizeSlug(raw string) string {
 }
 
 func (in schedulingLinkInput) normalized() (storage.SchedulingLink, error) {
-	durations := in.DurationOptions
-	if len(durations) == 0 {
+	var durations []int
+	switch {
+	case in.DurationOptions != nil:
+		durations = in.DurationOptions
+	case in.Durations != nil:
 		durations = in.Durations
-	}
-	if len(durations) == 0 {
+	default:
 		durations = []int{30}
 	}
-	days := in.DaysOfWeek
-	if len(days) == 0 {
+	var days []int
+	switch {
+	case in.DaysOfWeek != nil:
+		days = in.DaysOfWeek
+	case in.Days != nil:
 		days = dayNumbers(in.Days)
-	}
-	if len(days) == 0 {
+	default:
 		days = []int{1, 2, 3, 4, 5}
 	}
 	start := in.WindowStart
@@ -182,19 +188,16 @@ func (in schedulingLinkInput) normalized() (storage.SchedulingLink, error) {
 	if end == "" {
 		end = "17:00"
 	}
-	usage := strings.ToLower(strings.TrimSpace(in.UsageType))
-	if usage == "" {
-		usage = "reusable"
-	}
-	if usage != "reusable" && usage != "recurring" && usage != "single_use" {
-		return storage.SchedulingLink{}, &httpError{Code: http.StatusBadRequest, Msg: "usage_type must be reusable, recurring, or single_use"}
-	}
-	return storage.SchedulingLink{
+	link := storage.SchedulingLink{
 		Slug: normalizeSlug(in.Slug), Title: strings.TrimSpace(in.Title),
 		DurationOptions: durations, DaysOfWeek: days, WindowStart: start, WindowEnd: end,
 		BufferBefore: in.BufferBefore, BufferAfter: in.BufferAfter,
-		MinNoticeMinutes: maxInt(in.MinNoticeMinutes, 0), UsageType: usage, MaxUses: in.MaxUses,
-	}, nil
+		MinNoticeMinutes: in.MinNoticeMinutes, UsageType: in.UsageType, MaxUses: in.MaxUses,
+	}
+	if err := validateSchedulingLink(&link); err != nil {
+		return storage.SchedulingLink{}, err
+	}
+	return link, nil
 }
 
 func maxInt(a, b int) int {
@@ -202,6 +205,93 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func parseClock(value string) (time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	for _, layout := range []string{"15:04", "15:04:05"} {
+		if parsed, err := time.Parse(layout, trimmed); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, &httpError{Code: http.StatusUnprocessableEntity, Msg: "window times must use HH:MM"}
+}
+
+func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
+	if strings.TrimSpace(link.Title) == "" {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "title is required"}
+	}
+	if len(link.DurationOptions) == 0 {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "at least one duration is required"}
+	}
+	for _, duration := range link.DurationOptions {
+		if duration <= 0 {
+			return &httpError{Code: http.StatusUnprocessableEntity, Msg: "durations must be positive integers"}
+		}
+	}
+	if len(link.DaysOfWeek) == 0 {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "at least one day is required"}
+	}
+	seenDays := make(map[int]struct{}, len(link.DaysOfWeek))
+	for _, day := range link.DaysOfWeek {
+		if day < 0 || day > 6 {
+			return &httpError{Code: http.StatusUnprocessableEntity, Msg: "days_of_week must contain values between 0 and 6"}
+		}
+		seenDays[day] = struct{}{}
+	}
+	if len(seenDays) == 0 {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "at least one day is required"}
+	}
+	start, err := parseClock(link.WindowStart)
+	if err != nil {
+		return err.(*httpError)
+	}
+	end, err := parseClock(link.WindowEnd)
+	if err != nil {
+		return err.(*httpError)
+	}
+	if !start.Before(end) {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "window_start must be before window_end"}
+	}
+	if link.BufferBefore < 0 || link.BufferAfter < 0 {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "buffers must be zero or positive"}
+	}
+	if link.MinNoticeMinutes < 0 {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "min_notice_minutes must be zero or positive"}
+	}
+	usage := strings.ToLower(strings.TrimSpace(link.UsageType))
+	if usage == "" {
+		usage = "reusable"
+	}
+	if usage != "reusable" && usage != "recurring" && usage != "single_use" {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "usage_type must be reusable, recurring, or single_use"}
+	}
+	link.UsageType = usage
+	if usage == "recurring" {
+		if link.MaxUses == nil || *link.MaxUses <= 0 {
+			return &httpError{Code: http.StatusUnprocessableEntity, Msg: "max_uses must be set to a positive integer for recurring links"}
+		}
+	} else {
+		link.MaxUses = nil
+	}
+	link.WindowStart = start.Format("15:04")
+	link.WindowEnd = end.Format("15:04")
+	return nil
+}
+
+func parseOptionalInt(value *string) (*int, error) {
+	if value == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return nil, &httpError{Code: http.StatusUnprocessableEntity, Msg: "max_uses must be a positive integer"}
+	}
+	return &parsed, nil
 }
 
 func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {
@@ -253,10 +343,6 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		e := err.(*httpError)
 		writeError(w, e.Msg, e.Code)
-		return
-	}
-	if link.Title == "" {
-		writeError(w, "title is required", http.StatusBadRequest)
 		return
 	}
 	owner, err := storage.GetUserByID(h.db, userID)
@@ -366,11 +452,13 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	updated := *existing
+	slugPatched := false
 	if patch.Title != nil {
 		updated.Title = strings.TrimSpace(*patch.Title)
 	}
 	if patch.Slug != nil {
 		updated.Slug = normalizeSlug(*patch.Slug)
+		slugPatched = true
 	}
 	if patch.DurationOptions != nil {
 		updated.DurationOptions = patch.DurationOptions
@@ -401,7 +489,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		updated.BufferAfter = *patch.BufferAfter
 	}
 	if patch.MinNoticeMinutes != nil {
-		updated.MinNoticeMinutes = maxInt(*patch.MinNoticeMinutes, 0)
+		updated.MinNoticeMinutes = *patch.MinNoticeMinutes
 	}
 	if patch.UsageType != nil {
 		updated.UsageType = strings.ToLower(strings.TrimSpace(*patch.UsageType))
@@ -412,12 +500,12 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	if patch.Active != nil {
 		updated.Active = *patch.Active
 	}
-	if updated.Slug == "" {
-		writeError(w, "slug cannot be empty", http.StatusBadRequest)
+	if slugPatched && updated.Slug == "" {
+		writeError(w, "slug cannot be empty", http.StatusUnprocessableEntity)
 		return
 	}
-	if updated.UsageType != "reusable" && updated.UsageType != "recurring" && updated.UsageType != "single_use" {
-		writeError(w, "invalid usage_type", http.StatusBadRequest)
+	if validationErr := validateSchedulingLink(&updated); validationErr != nil {
+		writeError(w, validationErr.Msg, validationErr.Code)
 		return
 	}
 	if updated.Slug != existing.Slug {

@@ -17,14 +17,15 @@ import (
 
 type personalHandlers struct {
 	db      *sql.DB
-	blocker *engine.PersonalBlocker
+	blocker PersonalCalendarBlocker
 }
 
 func newPersonalHandlers(db *sql.DB, oauthConfig *oauth2.Config) *personalHandlers {
-	return &personalHandlers{
-		db:      db,
-		blocker: &engine.PersonalBlocker{DB: db, OAuthConfig: oauthConfig},
-	}
+	return newPersonalHandlersWithBlocker(db, &engine.PersonalBlocker{DB: db, OAuthConfig: oauthConfig})
+}
+
+func newPersonalHandlersWithBlocker(db *sql.DB, blocker PersonalCalendarBlocker) *personalHandlers {
+	return &personalHandlers{db: db, blocker: blocker}
 }
 
 type personalCalendarDTO struct {

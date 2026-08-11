@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/nlp"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -26,4 +27,9 @@ type Scheduler interface {
 
 type NLPParser interface {
 	Parse(ctx context.Context, text string) (*nlp.ParseResult, error)
+}
+
+type PersonalCalendarBlocker interface {
+	Preview(ctx context.Context, personalCalendarID int64, start, end time.Time) ([]calendar.GenericEvent, error)
+	Sync(ctx context.Context, personalCalendarID int64) error
 }
