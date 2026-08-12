@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -21,8 +22,38 @@ import (
 )
 
 type conferencingHandlers struct {
-	db          *sql.DB
-	oauthConfig *oauth2.Config
+	db              *sql.DB
+	oauthConfig     *oauth2.Config
+	loadEventClient func(ctx context.Context) (ConferenceEventClient, error)
+	providerFactory ConferenceProviderFactory
+}
+
+type defaultConferenceProviderFactory struct{ db *sql.DB }
+
+func (f defaultConferenceProviderFactory) ProviderForRequest(_ context.Context, providerName string, settings *storage.Settings) (conference.Provider, error) {
+	switch providerName {
+	case "zoom":
+		copy := *settings
+		copy.ConferencingProvider = "zoom"
+		return conference.NewProvider(&copy)
+	case "teams":
+		msToken, tokenErr := auth.LoadMicrosoftToken(f.db)
+		if tokenErr != nil || msToken == nil {
+			return nil, fmt.Errorf("teams: not connected — visit /api/auth/microsoft to authenticate")
+		}
+		return conference.NewTeamsProvider(msToken.AccessToken), nil
+	default:
+		return nil, fmt.Errorf("unsupported conference provider %q", providerName)
+	}
+}
+
+func newConferencingHandlers(db *sql.DB, oauthConfig *oauth2.Config) *conferencingHandlers {
+	h := &conferencingHandlers{db: db, oauthConfig: oauthConfig, providerFactory: defaultConferenceProviderFactory{db: db}}
+	h.loadEventClient = func(ctx context.Context) (ConferenceEventClient, error) {
+		eh := &eventHandlers{db: db, oauthConfig: oauthConfig}
+		return eh.calClient(ctx)
+	}
+	return h
 }
 
 type conferenceProviderStatus struct {
@@ -226,13 +257,12 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 		return
 	}
 
-	eh := &eventHandlers{db: h.db, oauthConfig: h.oauthConfig}
-	client, err := eh.calClient(r.Context())
+	client, err := h.loadEventClient(r.Context())
 	if err != nil {
 		writeError(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	event, err := client.GetEvent(r.Context(), client.CalendarID, eventID)
+	event, err := client.GetEvent(r.Context(), client.CurrentCalendarID(), eventID)
 	if err != nil {
 		writeError(w, "event not found: "+err.Error(), http.StatusNotFound)
 		return
@@ -254,7 +284,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 			return
 		}
 		setExternalConference(event, req.Provider, req.URL)
-		if _, err := client.UpdateEvent(r.Context(), client.CalendarID, eventID, event); err != nil {
+		if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
 			writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -264,7 +294,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 	}
 
 	if req.Provider == "google_meet" {
-		updated, err := client.AddGoogleMeet(r.Context(), client.CalendarID, eventID, event)
+		updated, err := client.AddGoogleMeet(r.Context(), client.CurrentCalendarID(), eventID, event)
 		if err != nil {
 			writeError(w, "create Google Meet: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -297,22 +327,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var provider conference.Provider
-	switch req.Provider {
-	case "zoom":
-		copy := *settings
-		copy.ConferencingProvider = "zoom"
-		provider, err = conference.NewProvider(&copy)
-	case "teams":
-		msToken, tokenErr := auth.LoadMicrosoftToken(h.db)
-		if tokenErr != nil || msToken == nil {
-			err = fmt.Errorf("teams: not connected — visit /api/auth/microsoft to authenticate")
-		} else {
-			provider = conference.NewTeamsProvider(msToken.AccessToken)
-		}
-	default:
-		err = fmt.Errorf("unsupported conference provider %q", req.Provider)
-	}
+	provider, err := h.providerFactory.ProviderForRequest(r.Context(), req.Provider, settings)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -327,7 +342,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 		return
 	}
 	setExternalConference(event, req.Provider, details.JoinURL)
-	if _, err := client.UpdateEvent(r.Context(), client.CalendarID, eventID, event); err != nil {
+	if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
 		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -337,27 +352,26 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 
 func (h *conferencingHandlers) removeEventConference(w http.ResponseWriter, r *http.Request) {
 	eventID := chi.URLParam(r, "id")
-	eh := &eventHandlers{db: h.db, oauthConfig: h.oauthConfig}
-	client, err := eh.calClient(r.Context())
+	client, err := h.loadEventClient(r.Context())
 	if err != nil {
 		writeError(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	event, err := client.GetEvent(r.Context(), client.CalendarID, eventID)
+	event, err := client.GetEvent(r.Context(), client.CurrentCalendarID(), eventID)
 	if err != nil {
 		writeError(w, "event not found: "+err.Error(), http.StatusNotFound)
 		return
 	}
 
 	if event.ConferenceData != nil || event.HangoutLink != "" {
-		event, err = client.ClearGoogleMeet(r.Context(), client.CalendarID, eventID, event)
+		event, err = client.ClearGoogleMeet(r.Context(), client.CurrentCalendarID(), eventID, event)
 		if err != nil {
 			writeError(w, "remove Google Meet: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 	if removeExternalConference(event) {
-		if _, err := client.UpdateEvent(r.Context(), client.CalendarID, eventID, event); err != nil {
+		if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
 			writeError(w, "remove conference: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

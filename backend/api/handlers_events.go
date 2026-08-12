@@ -51,7 +51,7 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	existing, err := client.GetEvent(r.Context(), client.CalendarID, eventID)
+	existing, err := client.GetEvent(r.Context(), client.CurrentCalendarID(), eventID)
 	if err != nil {
 		writeError(w, "event not found: "+err.Error(), http.StatusNotFound)
 		return
@@ -78,7 +78,7 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		existing.Attendees = attendees
 	}
-	updated, err := client.UpdateEvent(r.Context(), client.CalendarID, eventID, existing)
+	updated, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, existing)
 	if err != nil {
 		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -95,7 +95,7 @@ func (h *eventHandlers) deleteEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if err := client.DeleteEvent(r.Context(), client.CalendarID, eventID); err != nil {
+	if err := client.DeleteEvent(r.Context(), client.CurrentCalendarID(), eventID); err != nil {
 		writeError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

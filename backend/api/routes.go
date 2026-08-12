@@ -29,8 +29,8 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Get("/callback", ah.callback)
 		r.Get("/microsoft", ah.startMicrosoftOAuth)
 		r.Get("/microsoft/callback", ah.microsoftCallback)
-		r.Get("/zoom", (&conferencingHandlers{db: db, oauthConfig: oauthConfig}).startZoomOAuth)
-		r.Get("/zoom/callback", (&conferencingHandlers{db: db, oauthConfig: oauthConfig}).zoomCallback)
+		r.Get("/zoom", (newConferencingHandlers(db, oauthConfig)).startZoomOAuth)
+		r.Get("/zoom/callback", (newConferencingHandlers(db, oauthConfig)).zoomCallback)
 		r.Post("/detect", ssoh.detect)
 		r.Get("/sso/{domain}", ssoh.startSSO)
 		r.Get("/callback/oidc/{domain}", ssoh.oidcCallback)
@@ -112,7 +112,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Get("/api/rooms", eh.listRooms)
 		r.Get("/api/attendees/suggest", eh.suggestAttendees)
 
-		cnh := &conferencingHandlers{db: db, oauthConfig: oauthConfig}
+		cnh := newConferencingHandlers(db, oauthConfig)
 		r.Post("/api/conference/create", cnh.createConference)
 		r.Get("/api/conference/providers", cnh.providers)
 		r.Post("/api/conference/zoom/disconnect", cnh.disconnectZoom)

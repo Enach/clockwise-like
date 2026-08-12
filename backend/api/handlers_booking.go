@@ -16,12 +16,16 @@ import (
 )
 
 type bookingHandlers struct {
-	eng *engine.BookingEngine
+	eng BookingFlow
 	db  *sql.DB
 }
 
 func newBookingHandlers(db *sql.DB, oauthConfig *oauth2.Config) *bookingHandlers {
-	return &bookingHandlers{eng: &engine.BookingEngine{DB: db, OAuthConfig: oauthConfig}, db: db}
+	return newBookingHandlersWithEngine(db, &engine.BookingEngine{DB: db, OAuthConfig: oauthConfig})
+}
+
+func newBookingHandlersWithEngine(db *sql.DB, eng BookingFlow) *bookingHandlers {
+	return &bookingHandlers{eng: eng, db: db}
 }
 
 type publicHostDTO struct {

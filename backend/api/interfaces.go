@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/conference"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/nlp"
+	"github.com/Enach/paceday/backend/storage"
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
@@ -32,4 +34,21 @@ type NLPParser interface {
 type PersonalCalendarBlocker interface {
 	Preview(ctx context.Context, personalCalendarID int64, start, end time.Time) ([]calendar.GenericEvent, error)
 	Sync(ctx context.Context, personalCalendarID int64) error
+}
+
+type BookingFlow interface {
+	CollectiveSlots(ctx context.Context, link *storage.SchedulingLink, date time.Time, durationMinutes int) ([]engine.AvailableSlot, error)
+	ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes string) (*storage.Booking, error)
+}
+
+type ConferenceEventClient interface {
+	CurrentCalendarID() string
+	GetEvent(ctx context.Context, calendarID, eventID string) (*googlecalendar.Event, error)
+	UpdateEvent(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error)
+	AddGoogleMeet(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error)
+	ClearGoogleMeet(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error)
+}
+
+type ConferenceProviderFactory interface {
+	ProviderForRequest(ctx context.Context, provider string, settings *storage.Settings) (conference.Provider, error)
 }
