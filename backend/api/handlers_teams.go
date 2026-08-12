@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,12 +19,17 @@ import (
 )
 
 type teamHandlers struct {
-	db          *sql.DB
-	oauthConfig *oauth2.Config
+	db                 *sql.DB
+	oauthConfig        *oauth2.Config
+	availabilityEngine TeamAvailability
 }
 
 func newTeamHandlers(db *sql.DB, cfg *oauth2.Config) *teamHandlers {
-	return &teamHandlers{db: db, oauthConfig: cfg}
+	return newTeamHandlersWithAvailabilityEngine(db, &engine.TeamAvailabilityEngine{DB: db, OAuthConfig: cfg})
+}
+
+func newTeamHandlersWithAvailabilityEngine(db *sql.DB, availabilityEngine TeamAvailability) *teamHandlers {
+	return &teamHandlers{db: db, availabilityEngine: availabilityEngine}
 }
 
 // POST /api/teams
@@ -169,8 +175,13 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "email is required", http.StatusBadRequest)
 		return
 	}
+	email, err := normalizeManagerEmail(body.Email)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 
-	invite, err := storage.CreateTeamInvite(h.db, teamID, strings.ToLower(strings.TrimSpace(body.Email)), userID)
+	invite, err := storage.CreateTeamInvite(h.db, teamID, email, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -317,17 +328,22 @@ func (h *teamHandlers) createZone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if body.StartTime == "" || body.EndTime == "" {
-		writeError(w, "startTime and endTime are required", http.StatusBadRequest)
+	if err := validateNoMeetingZone(body.DayOfWeek, body.StartTime, body.EndTime); err != nil {
+		writeError(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	zone, err := storage.CreateNoMeetingZone(h.db, teamID, body.DayOfWeek, body.StartTime, body.EndTime, body.Label)
+	body.StartTime = strings.TrimSpace(body.StartTime)
+	body.EndTime = strings.TrimSpace(body.EndTime)
+	body.Label = strings.TrimSpace(body.Label)
+	storageDay := storageWeekday(body.DayOfWeek)
+	zone, err := storage.CreateNoMeetingZone(h.db, teamID, storageDay, body.StartTime, body.EndTime, body.Label)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	zone.DayOfWeek = apiWeekday(zone.DayOfWeek)
 	_ = json.NewEncoder(w).Encode(zone)
 }
 
@@ -358,7 +374,14 @@ func (h *teamHandlers) updateZone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	zone, err := storage.UpdateNoMeetingZone(h.db, zoneID, teamID, body.DayOfWeek, body.StartTime, body.EndTime, body.Label)
+	if err := validateNoMeetingZone(body.DayOfWeek, body.StartTime, body.EndTime); err != nil {
+		writeError(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	body.StartTime = strings.TrimSpace(body.StartTime)
+	body.EndTime = strings.TrimSpace(body.EndTime)
+	body.Label = strings.TrimSpace(body.Label)
+	zone, err := storage.UpdateNoMeetingZone(h.db, zoneID, teamID, storageWeekday(body.DayOfWeek), body.StartTime, body.EndTime, body.Label)
 	if err == sql.ErrNoRows {
 		writeError(w, "zone not found", http.StatusNotFound)
 		return
@@ -368,6 +391,7 @@ func (h *teamHandlers) updateZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	zone.DayOfWeek = apiWeekday(zone.DayOfWeek)
 	_ = json.NewEncoder(w).Encode(zone)
 }
 
@@ -392,6 +416,9 @@ func (h *teamHandlers) listZones(w http.ResponseWriter, r *http.Request) {
 		zones = []*storage.NoMeetingZone{}
 	}
 	w.Header().Set("Content-Type", "application/json")
+	for _, zone := range zones {
+		zone.DayOfWeek = apiWeekday(zone.DayOfWeek)
+	}
 	_ = json.NewEncoder(w).Encode(zones)
 }
 
@@ -441,13 +468,15 @@ func (h *teamHandlers) availability(w http.ResponseWriter, r *http.Request) {
 
 	durationMinutes := 60
 	if d := r.URL.Query().Get("duration"); d != "" {
-		if _, err := fmt.Sscanf(d, "%d", &durationMinutes); err != nil || durationMinutes <= 0 {
+		parsed, err := strconv.Atoi(d)
+		if err != nil || parsed <= 0 || parsed > 24*60 {
 			writeError(w, "duration must be a positive integer (minutes)", http.StatusBadRequest)
 			return
 		}
+		durationMinutes = parsed
 	}
 
-	eng := &engine.TeamAvailabilityEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+	eng := h.availabilityEngine
 	slots, err := eng.FindSlots(r.Context(), teamID, day, durationMinutes)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -484,7 +513,7 @@ func (h *teamHandlers) analyticsHandler(w http.ResponseWriter, r *http.Request) 
 		weekStart = startOfWeek(d)
 	}
 
-	eng := &engine.TeamAvailabilityEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+	eng := h.availabilityEngine
 	analytics, err := eng.GetTeamAnalytics(r.Context(), teamID, weekStart)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -510,6 +539,41 @@ func (h *teamHandlers) requireOwner(teamID, userID uuid.UUID) error {
 		return fmt.Errorf("not owner")
 	}
 	return nil
+}
+
+func validateNoMeetingZone(dayOfWeek int, startTime, endTime string) error {
+	if dayOfWeek < 1 || dayOfWeek > 7 {
+		return fmt.Errorf("dayOfWeek must be between 1 and 7")
+	}
+	if strings.TrimSpace(startTime) == "" || strings.TrimSpace(endTime) == "" {
+		return fmt.Errorf("startTime and endTime are required")
+	}
+	start, err := time.Parse("15:04", strings.TrimSpace(startTime))
+	if err != nil {
+		return fmt.Errorf("startTime must be HH:MM")
+	}
+	end, err := time.Parse("15:04", strings.TrimSpace(endTime))
+	if err != nil {
+		return fmt.Errorf("endTime must be HH:MM")
+	}
+	if !start.Before(end) {
+		return fmt.Errorf("startTime must be before endTime")
+	}
+	return nil
+}
+
+func storageWeekday(apiDay int) int {
+	if apiDay == 7 {
+		return 0
+	}
+	return apiDay
+}
+
+func apiWeekday(storageDay int) int {
+	if storageDay == 0 {
+		return 7
+	}
+	return storageDay
 }
 
 func sendTeamInviteEmail(to, inviterName, teamName, token string) {

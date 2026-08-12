@@ -193,7 +193,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Post("/test", drh.test)
 		})
 
-		mgrh := &managerHandlers{db: db, oauthConfig: oauthConfig}
+		mgrh := newManagerHandlers(db, oauthConfig)
 		r.Route("/api/manager", func(r chi.Router) {
 			r.Get("/profile", mgrh.getProfile)
 			r.Post("/profile", mgrh.postProfile)

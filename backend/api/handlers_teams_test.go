@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -316,5 +317,116 @@ func TestGetInvite_NotFound(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+type fakeTeamAvailabilityEngine struct {
+	slots          []engine.TeamSlot
+	slotCalls      int
+	analyticsCalls int
+	lastDay        time.Time
+	lastDuration   int
+	lastWeekStart  time.Time
+}
+
+func (f *fakeTeamAvailabilityEngine) FindSlots(_ context.Context, _ uuid.UUID, day time.Time, durationMinutes int) ([]engine.TeamSlot, error) {
+	f.slotCalls++
+	f.lastDay = day
+	f.lastDuration = durationMinutes
+	return f.slots, nil
+}
+
+func (f *fakeTeamAvailabilityEngine) GetTeamAnalytics(_ context.Context, _ uuid.UUID, weekStart time.Time) (*engine.TeamAnalytics, error) {
+	f.analyticsCalls++
+	f.lastWeekStart = weekStart
+	return &engine.TeamAnalytics{MemberBreakdown: []engine.MemberAnalyticsSummary{}}, nil
+}
+
+func setupTeamAvailabilityRoutes(t *testing.T, availability TeamAvailability) *chi.Mux {
+	t.Helper()
+	h := newTeamHandlersWithAvailabilityEngine(openTestDB(t), availability)
+	r := chi.NewRouter()
+	r.Get("/api/teams/{id}/availability", h.availability)
+	r.Get("/api/teams/{id}/analytics", h.analyticsHandler)
+	return r
+}
+
+func TestTeamAvailability_UsesInjectedEngineAndQuery(t *testing.T) {
+	fake := &fakeTeamAvailabilityEngine{
+		slots: []engine.TeamSlot{{Start: time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC), End: time.Date(2026, 9, 14, 10, 30, 0, 0, time.UTC), QualityScore: 90}},
+	}
+	r := setupTeamAvailabilityRoutes(t, fake)
+	ownerID := createTestUser(t, "availability-contract@example.com")
+	db := openTestDB(t)
+	team, err := storage.CreateTeam(db, "Availability Contract", ownerID)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := storage.AddTeamMember(db, team.ID, ownerID, "owner"); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/teams/"+team.ID.String()+"/availability?date=2026-09-14&duration=30", nil)
+	req = withUser(req, ownerID)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	if fake.slotCalls != 1 || fake.lastDuration != 30 || fake.lastDay.Format("2006-01-02") != "2026-09-14" {
+		t.Fatalf("engine call = %d/%s/%d", fake.slotCalls, fake.lastDay.Format("2006-01-02"), fake.lastDuration)
+	}
+}
+
+func TestNoMeetingZone_ValidatesAndConvertsWeekdayAtBoundary(t *testing.T) {
+	r := setupTeamRoutes(t)
+	ownerID := createTestUser(t, "zone-contract@example.com")
+	db := openTestDB(t)
+	team, err := storage.CreateTeam(db, "Zone Contract", ownerID)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if err := storage.AddTeamMember(db, team.ID, ownerID, "owner"); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+	path := "/api/teams/" + team.ID.String() + "/no-meeting-zones"
+
+	for name, input := range map[string]any{
+		"weekday zero":  map[string]any{"dayOfWeek": 0, "startTime": "09:00", "endTime": "10:00"},
+		"inverted time": map[string]any{"dayOfWeek": 1, "startTime": "10:00", "endTime": "09:00"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, _ := json.Marshal(input)
+			req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+			req = withUser(req, ownerID)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+
+	encoded, _ := json.Marshal(map[string]any{"dayOfWeek": 7, "startTime": "09:00", "endTime": "10:00", "label": "Sunday"})
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+	req = withUser(req, ownerID)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("valid zone: status = %d; body: %s", w.Code, w.Body.String())
+	}
+	var returned storage.NoMeetingZone
+	if err := json.Unmarshal(w.Body.Bytes(), &returned); err != nil {
+		t.Fatalf("decode zone: %v", err)
+	}
+	if returned.DayOfWeek != 7 {
+		t.Fatalf("response weekday = %d, want 7", returned.DayOfWeek)
+	}
+	zones, err := storage.ListNoMeetingZones(db, team.ID)
+	if err != nil || len(zones) != 1 {
+		t.Fatalf("stored zones = %d, err=%v", len(zones), err)
+	}
+	if zones[0].DayOfWeek != 0 {
+		t.Fatalf("stored weekday = %d, want legacy Sunday=0", zones[0].DayOfWeek)
 	}
 }

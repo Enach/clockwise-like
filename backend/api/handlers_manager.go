@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/mail"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
@@ -19,6 +22,17 @@ import (
 type managerHandlers struct {
 	db          *sql.DB
 	oauthConfig *oauth2.Config
+	newEngine   func() ManagerWorkflow
+}
+
+func newManagerHandlers(db *sql.DB, oauthConfig *oauth2.Config) *managerHandlers {
+	return newManagerHandlersWithEngineFactory(db, func() ManagerWorkflow {
+		return &engine.ManagerEngine{DB: db, OAuthConfig: oauthConfig}
+	})
+}
+
+func newManagerHandlersWithEngineFactory(db *sql.DB, newEngine func() ManagerWorkflow) *managerHandlers {
+	return &managerHandlers{db: db, newEngine: newEngine}
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────────
@@ -47,7 +61,7 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 		IsManager bool `json:"is_manager"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
@@ -59,7 +73,7 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 	p.IsManager = body.IsManager
 	if body.IsManager && p.DetectedAt == nil {
 		// Trigger detection async
-		eng := &engine.ManagerEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+		eng := h.newEngine()
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -76,7 +90,7 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	eng := &engine.ManagerEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+	eng := h.newEngine()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -97,9 +111,12 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	weekStr := r.URL.Query().Get("week")
 	weekStart := currentWeekStart()
 	if weekStr != "" {
-		if t, err := time.Parse("2006-01-02", weekStr); err == nil {
-			weekStart = t
+		t, err := time.Parse("2006-01-02", weekStr)
+		if err != nil {
+			writeError(w, "week must be YYYY-MM-DD", http.StatusBadRequest)
+			return
 		}
+		weekStart = t
 	}
 	priorWeekStart := weekStart.Add(-7 * 24 * time.Hour)
 
@@ -109,18 +126,18 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eng := &engine.ManagerEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+	eng := h.newEngine()
 
 	type memberResp struct {
-		Email          string                   `json:"email"`
-		DisplayName    string                   `json:"display_name"`
-		Source         string                   `json:"source"`
-		Cadence        string                   `json:"cadence"`
-		LastOneOnOneAt *time.Time               `json:"last_one_on_one_at"`
-		IsPacedayUser  bool                     `json:"is_paceday_user"`
-		ThisWeek       *engine.MemberWeekStats  `json:"this_week"`
-		LastWeek       *engine.MemberWeekStats  `json:"last_week"`
-		FocusTrendPct  float64                  `json:"focus_trend_pct"`
+		Email          string                  `json:"email"`
+		DisplayName    string                  `json:"display_name"`
+		Source         string                  `json:"source"`
+		Cadence        string                  `json:"cadence"`
+		LastOneOnOneAt *time.Time              `json:"last_one_on_one_at"`
+		IsPacedayUser  bool                    `json:"is_paceday_user"`
+		ThisWeek       *engine.MemberWeekStats `json:"this_week"`
+		LastWeek       *engine.MemberWeekStats `json:"last_week"`
+		FocusTrendPct  float64                 `json:"focus_trend_pct"`
 	}
 
 	var result []memberResp
@@ -155,29 +172,43 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	var body struct {
-		Email            string `json:"email"`
-		DisplayName      string `json:"display_name"`
-		Cadence          string `json:"cadence"`
-		CadenceCustomDays *int  `json:"cadence_custom_days"`
+		Email             string `json:"email"`
+		DisplayName       string `json:"display_name"`
+		Cadence           string `json:"cadence"`
+		CadenceCustomDays *int   `json:"cadence_custom_days"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	email, err := normalizeManagerEmail(body.Email)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	if body.Cadence == "" {
 		body.Cadence = "none"
 	}
+	body.Cadence = strings.ToLower(strings.TrimSpace(body.Cadence))
+	if err := validateManagerCadence(body.Cadence, body.CadenceCustomDays); err != nil {
+		writeError(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	displayName := strings.TrimSpace(body.DisplayName)
+	if displayName == "" {
+		displayName = strings.Split(email, "@")[0]
+	}
 	m := &storage.ManagerTeamMember{
-		ManagerUserID:    userID,
-		MemberEmail:      body.Email,
-		DisplayName:      body.DisplayName,
-		Source:           "manual",
-		Cadence:          body.Cadence,
+		ManagerUserID:     userID,
+		MemberEmail:       email,
+		DisplayName:       displayName,
+		Source:            "manual",
+		Cadence:           body.Cadence,
 		CadenceCustomDays: body.CadenceCustomDays,
 	}
 	// Resolve member_user_id if they're a Paceday user
 	var uid uuid.UUID
-	if err := h.db.QueryRow(`SELECT id FROM users WHERE email=$1`, body.Email).Scan(&uid); err == nil {
+	if err := h.db.QueryRow(`SELECT id FROM users WHERE email=$1`, email).Scan(&uid); err == nil {
 		m.MemberUserID = &uid
 	}
 	if err := storage.UpsertManagerTeamMember(h.db, m); err != nil {
@@ -191,21 +222,21 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	email := chi.URLParam(r, "email")
+	email := managerEmailParam(r)
 	_ = storage.DeleteManagerTeamMemberByEmail(h.db, userID, email)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	email := chi.URLParam(r, "email")
+	email := managerEmailParam(r)
 	var body struct {
-		DisplayName      *string `json:"display_name"`
-		Cadence          *string `json:"cadence"`
-		CadenceCustomDays *int   `json:"cadence_custom_days"`
+		DisplayName       *string `json:"display_name"`
+		Cadence           *string `json:"cadence"`
+		CadenceCustomDays *int    `json:"cadence_custom_days"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 	m, err := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
@@ -222,9 +253,24 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		displayName = *body.DisplayName
 	}
 	if body.Cadence != nil {
-		cadence = *body.Cadence
+		cadence = strings.ToLower(strings.TrimSpace(*body.Cadence))
 	}
-	if err := storage.PatchManagerTeamMember(h.db, userID, email, displayName, cadence, body.CadenceCustomDays); err != nil {
+	customDays := m.CadenceCustomDays
+	if body.CadenceCustomDays != nil {
+		customDays = body.CadenceCustomDays
+	}
+	if body.Cadence != nil && cadence != "custom" {
+		customDays = nil
+	}
+	if err := validateManagerCadence(cadence, customDays); err != nil {
+		writeError(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		displayName = strings.Split(m.MemberEmail, "@")[0]
+	}
+	if err := storage.PatchManagerTeamMember(h.db, userID, email, displayName, cadence, customDays); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -237,7 +283,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	eng := &engine.ManagerEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+	eng := h.newEngine()
 	gaps, err := eng.GetGaps(r.Context(), userID)
 	if err != nil {
 		http.Error(w, "gap detection error: "+err.Error(), http.StatusInternalServerError)
@@ -252,12 +298,21 @@ func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	email := chi.URLParam(r, "email")
+	email := managerEmailParam(r)
 
 	var body struct {
 		SuggestedDate string `json:"suggested_date"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.SuggestedDate != "" {
+		if _, err := time.Parse("2006-01-02", body.SuggestedDate); err != nil {
+			writeError(w, "suggested_date must be YYYY-MM-DD", http.StatusUnprocessableEntity)
+			return
+		}
+	}
 
 	m, err := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
 	if err == sql.ErrNoRows {
@@ -288,9 +343,12 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	weekStr := r.URL.Query().Get("week")
 	weekStart := currentWeekStart()
 	if weekStr != "" {
-		if t, err := time.Parse("2006-01-02", weekStr); err == nil {
-			weekStart = t
+		t, err := time.Parse("2006-01-02", weekStr)
+		if err != nil {
+			writeError(w, "week must be YYYY-MM-DD", http.StatusBadRequest)
+			return
 		}
+		weekStart = t
 	}
 	months := 3
 	members, err := storage.ListManagerTeamMembers(h.db, userID)
@@ -300,20 +358,20 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type weekData struct {
-		WeekStart      string                  `json:"week_start"`
-		FocusMinutes   int                     `json:"focus_minutes"`
-		MeetingMinutes int                     `json:"meeting_minutes"`
-		FreeMinutes    int                     `json:"free_minutes"`
-		DataAvailable  bool                    `json:"data_available"`
+		WeekStart      string `json:"week_start"`
+		FocusMinutes   int    `json:"focus_minutes"`
+		MeetingMinutes int    `json:"meeting_minutes"`
+		FreeMinutes    int    `json:"free_minutes"`
+		DataAvailable  bool   `json:"data_available"`
 	}
 	type memberAnalytics struct {
-		Email   string     `json:"email"`
-		Name    string     `json:"display_name"`
-		Weeks   []weekData `json:"weeks"`
+		Email string     `json:"email"`
+		Name  string     `json:"display_name"`
+		Weeks []weekData `json:"weeks"`
 	}
 	_ = months
 
-	eng := &engine.ManagerEngine{DB: h.db, OAuthConfig: h.oauthConfig}
+	eng := h.newEngine()
 	var result []memberAnalytics
 	numWeeks := months * 4
 	for _, m := range members {
@@ -353,3 +411,38 @@ func currentWeekStart() time.Time {
 	return time.Date(monday.Year(), monday.Month(), monday.Day(), 0, 0, 0, 0, time.UTC)
 }
 
+func normalizeManagerEmail(raw string) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(raw))
+	if email == "" {
+		return "", fmt.Errorf("email is required")
+	}
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email {
+		return "", fmt.Errorf("email must be a valid email address")
+	}
+	return email, nil
+}
+
+func managerEmailParam(r *http.Request) string {
+	raw := chi.URLParam(r, "email")
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		return raw
+	}
+	return decoded
+}
+func validateManagerCadence(cadence string, customDays *int) error {
+	switch cadence {
+	case "weekly", "biweekly", "monthly", "none":
+		if customDays != nil {
+			return fmt.Errorf("custom_cadence_days is only valid with custom cadence")
+		}
+	case "custom":
+		if customDays == nil || *customDays < 1 || *customDays > 365 {
+			return fmt.Errorf("custom_cadence_days must be between 1 and 365")
+		}
+	default:
+		return fmt.Errorf("cadence must be weekly, biweekly, monthly, custom, or none")
+	}
+	return nil
+}
