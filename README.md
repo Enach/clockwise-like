@@ -1,4 +1,3 @@
-[![CI](https://github.com/Enach/clockwise-like/actions/workflows/sync-and-publish.yml/badge.svg)](https://github.com/Enach/clockwise-like/actions/workflows/sync-and-publish.yml)
 # Paceday
 
 An AI-powered calendar management app that protects your focus time, compresses meetings, and lets you control your schedule with natural language.
@@ -24,7 +23,7 @@ docker compose up --build
 
 ## Frontend Development
 
-The frontend lives in a **separate repo**: [Enach/smart-calendar-flow](https://github.com/Enach/smart-calendar-flow). See [ADR-0002](docs/adr/0002-frontend-source-of-truth.md) for the rationale. CI clones it at run-time for every frontend job.
+The frontend lives in a **separate repo**: [Enach/smart-calendar-flow](https://github.com/Enach/smart-calendar-flow). See [ADR-0002](docs/adr/0002-frontend-source-of-truth.md) for the rationale. Run it locally alongside this backend repository.
 
 ### Local development
 
@@ -37,7 +36,7 @@ bun install
 bun run dev   # http://localhost:8080, proxies /api → http://localhost:8080
 ```
 
-Start the backend first (`cd backend && go run .` from this repo) so `/api` calls succeed.
+Start the backend first (`cd backend && go run .` from this repo) and configure the frontend API base URL so `/api` calls reach it.
 
 ### Building the production frontend image locally
 
