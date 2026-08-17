@@ -41,10 +41,10 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Get("/status", ah.status)
 			r.Delete("/disconnect", ah.disconnect)
 		})
-		// Provider availability only exposes non-sensitive configuration status and is public
-		// so login/onboarding can hide OAuth options that this server cannot start.
-		r.Get("/api/integrations/availability", (&integrationsHandlers{}).availability)
 	})
+	// Provider availability only exposes non-sensitive configuration status and is public
+	// so login/onboarding can hide OAuth options that this server cannot start.
+	r.Get("/api/integrations/availability", (&integrationsHandlers{}).availability)
 
 	// /api/auth/me and /api/auth/logout — protected
 	mh := &meHandlers{db: db}
