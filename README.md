@@ -33,7 +33,8 @@ Clone the frontend repo as a sibling and run its dev server:
 git clone git@github.com:Enach/smart-calendar-flow.git ../smart-calendar-flow
 cd ../smart-calendar-flow
 bun install
-bun run dev   # http://localhost:8080, proxies /api → http://localhost:8080
+VITE_BACKEND_URL=http://localhost:8080 bun run dev -- --port 5173
+# frontend: http://localhost:5173, /api proxied to http://localhost:8080
 ```
 
 Start the backend first (`cd backend && go run .` from this repo) and configure the frontend API base URL so `/api` calls reach it.
