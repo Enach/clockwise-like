@@ -91,6 +91,16 @@ func setupConferencingRoutes(t *testing.T, client ConferenceEventClient, factory
 }
 
 func TestConferencingProvidersContract(t *testing.T) {
+	for _, key := range []string{
+		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
+		"MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_REDIRECT_URL",
+		"ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_REDIRECT_URL",
+	} {
+		t.Setenv(key, "configured-for-test")
+	}
+	t.Setenv("GOOGLE_REDIRECT_URL", "http://localhost:8080/api/auth/callback")
+	t.Setenv("MICROSOFT_REDIRECT_URL", "http://localhost:8080/api/auth/microsoft/callback")
+	t.Setenv("ZOOM_REDIRECT_URL", "http://localhost:8080/api/auth/zoom/callback")
 	userID := createTestUser(t, "conf-providers@example.com")
 	r := setupConferencingRoutes(t, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/conference/providers", nil)

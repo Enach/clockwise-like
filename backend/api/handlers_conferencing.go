@@ -166,12 +166,18 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 	userID := userIDFromCtx(r.Context())
 	googleToken, _ := auth.LoadUserToken(h.db, userID)
 	microsoftToken, _ := auth.LoadMicrosoftToken(h.db)
-	out := []conferenceProviderStatus{
-		{Provider: "google_meet", Connected: googleToken != nil, Email: settings.CalendarEmail, AutoWith: "google"},
-		{Provider: "zoom", Connected: strings.TrimSpace(settings.ZoomTokens) != ""},
-		{Provider: "teams", Connected: microsoftToken != nil, Enabled: microsoftToken != nil, AutoWith: "outlook"},
-		{Provider: "custom", Connected: true},
+	configured := integrationAvailabilitySnapshot()
+	out := make([]conferenceProviderStatus, 0, 4)
+	if configured["google"].Available {
+		out = append(out, conferenceProviderStatus{Provider: "google_meet", Connected: googleToken != nil, Email: settings.CalendarEmail, AutoWith: "google"})
 	}
+	if configured["zoom"].Available {
+		out = append(out, conferenceProviderStatus{Provider: "zoom", Connected: strings.TrimSpace(settings.ZoomTokens) != ""})
+	}
+	if configured["microsoft"].Available {
+		out = append(out, conferenceProviderStatus{Provider: "teams", Connected: microsoftToken != nil, Enabled: microsoftToken != nil, AutoWith: "outlook"})
+	}
+	out = append(out, conferenceProviderStatus{Provider: "custom", Connected: true})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
