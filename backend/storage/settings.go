@@ -2,37 +2,173 @@ package storage
 
 import (
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
-	"time"
 )
 
+type DaySchedule struct {
+	Enabled bool   `json:"enabled"`
+	Start   string `json:"start"`
+	End     string `json:"end"`
+}
+
+type WorkingHoursSchedule struct {
+	Mode    string                 `json:"mode"`
+	Default DaySchedule            `json:"default"`
+	Days    map[string]DaySchedule `json:"days"`
+}
+
+type LunchBreakSchedule map[string]DaySchedule
+
+func (w *WorkingHoursSchedule) Scan(src any) error {
+	if w == nil {
+		return fmt.Errorf("WorkingHoursSchedule.Scan on nil receiver")
+	}
+	*w = WorkingHoursSchedule{}
+	return scanJSONB(src, w)
+}
+
+func (w WorkingHoursSchedule) Value() (driver.Value, error) {
+	return json.Marshal(w)
+}
+
+func (l *LunchBreakSchedule) Scan(src any) error {
+	if l == nil {
+		return fmt.Errorf("LunchBreakSchedule.Scan on nil receiver")
+	}
+	*l = LunchBreakSchedule{}
+	return scanJSONB(src, l)
+}
+
+func (l LunchBreakSchedule) Value() (driver.Value, error) {
+	if l == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(l)
+}
+
+func scanJSONB(src any, dst any) error {
+	switch value := src.(type) {
+	case nil:
+		return nil
+	case []byte:
+		if len(value) == 0 {
+			return nil
+		}
+		return json.Unmarshal(value, dst)
+	case string:
+		if value == "" {
+			return nil
+		}
+		return json.Unmarshal([]byte(value), dst)
+	default:
+		return fmt.Errorf("cannot scan %T as JSONB", src)
+	}
+}
+
+func defaultWorkingHours(workStart, workEnd string) WorkingHoursSchedule {
+	if workStart == "" {
+		workStart = "09:00"
+	}
+	if workEnd == "" {
+		workEnd = "18:00"
+	}
+	return WorkingHoursSchedule{
+		Mode: "all_days",
+		Default: DaySchedule{
+			Enabled: true,
+			Start:   workStart,
+			End:     workEnd,
+		},
+		Days: map[string]DaySchedule{},
+	}
+}
+
+func (s *Settings) normalizeSchedules() {
+	if s.WorkingHours.Mode == "" {
+		s.WorkingHours = defaultWorkingHours(s.WorkStart, s.WorkEnd)
+	} else if s.WorkingHours.Mode == "all_days" &&
+		s.WorkingHours.Default.Start == "" && s.WorkingHours.Default.End == "" &&
+		!s.WorkingHours.Default.Enabled {
+		s.WorkingHours.Default = defaultWorkingHours(s.WorkStart, s.WorkEnd).Default
+	}
+	if s.WorkingHours.Days == nil {
+		s.WorkingHours.Days = map[string]DaySchedule{}
+	}
+	if s.LunchBreaks == nil {
+		s.LunchBreaks = LunchBreakSchedule{}
+	}
+}
+
+// WorkWindow returns the effective working window for the local calendar day.
+// The legacy global fields remain the fallback for settings written by older clients.
+func (s *Settings) WorkWindow(day time.Time) (start, end string, enabled bool) {
+	if s == nil {
+		return "09:00", "18:00", true
+	}
+	copy := *s
+	copy.normalizeSchedules()
+	if strings.EqualFold(copy.WorkingHours.Mode, "by_day") {
+		entry, ok := copy.WorkingHours.Days[strings.ToLower(day.Weekday().String())]
+		if !ok {
+			return "", "", false
+		}
+		return entry.Start, entry.End, entry.Enabled && entry.Start != "" && entry.End != ""
+	}
+	entry := copy.WorkingHours.Default
+	if entry.Start == "" || entry.End == "" {
+		entry = defaultWorkingHours(copy.WorkStart, copy.WorkEnd).Default
+	}
+	return entry.Start, entry.End, entry.Enabled && entry.Start != "" && entry.End != ""
+}
+
+// LunchWindow returns the effective lunch block for the local calendar day.
+// A per-day entry overrides the legacy global lunch settings, including disabling it.
+func (s *Settings) LunchWindow(day time.Time) (start, end string, enabled bool) {
+	if s == nil {
+		return "", "", false
+	}
+	copy := *s
+	copy.normalizeSchedules()
+	if entry, ok := copy.LunchBreaks[strings.ToLower(day.Weekday().String())]; ok {
+		return entry.Start, entry.End, entry.Enabled && entry.Start != "" && entry.End != ""
+	}
+	return copy.LunchStart, copy.LunchEnd,
+		copy.ProtectLunch && copy.LunchStart != "" && copy.LunchEnd != ""
+}
+
 type Settings struct {
-	ID                      int64  `json:"-"`
-	WorkStart               string `json:"workStart"`
-	WorkEnd                 string `json:"workEnd"`
-	Timezone                string `json:"timezone"`
-	FocusMinBlockMinutes    int    `json:"focusMinBlockMinutes"`
-	FocusMaxBlockMinutes    int    `json:"focusMaxBlockMinutes"`
-	FocusDailyTargetMinutes int    `json:"focusDailyTargetMinutes"`
-	FocusLabel              string `json:"focusLabel"`
-	FocusColor              string `json:"focusColor"`
-	LunchStart              string `json:"lunchStart"`
-	LunchEnd                string `json:"lunchEnd"`
-	ProtectLunch            bool   `json:"protectLunch"`
-	BufferBeforeMinutes     int    `json:"bufferBeforeMinutes"`
-	BufferAfterMinutes      int    `json:"bufferAfterMinutes"`
-	BufferEnabled           bool   `json:"bufferEnabled"`
-	BufferMinMeetingMinutes int    `json:"bufferMinMeetingMinutes"`
-	BufferSkipBackToBack    bool   `json:"bufferSkipBackToBack"`
-	CompressionEnabled      bool   `json:"compressionEnabled"`
-	AutoScheduleEnabled     bool   `json:"autoScheduleEnabled"`
-	AutoScheduleCron        string `json:"autoScheduleCron"`
-	LLMProvider             string `json:"llmProvider"`
-	LLMModel                string `json:"llmModel"`
-	LLMAPIKey               string `json:"llmApiKey"`
-	LLMBaseURL              string `json:"llmBaseUrl"`
+	ID                      int64                `json:"-"`
+	WorkStart               string               `json:"workStart"`
+	WorkEnd                 string               `json:"workEnd"`
+	Timezone                string               `json:"timezone"`
+	FocusMinBlockMinutes    int                  `json:"focusMinBlockMinutes"`
+	FocusMaxBlockMinutes    int                  `json:"focusMaxBlockMinutes"`
+	FocusDailyTargetMinutes int                  `json:"focusDailyTargetMinutes"`
+	FocusLabel              string               `json:"focusLabel"`
+	FocusColor              string               `json:"focusColor"`
+	LunchStart              string               `json:"lunchStart"`
+	LunchEnd                string               `json:"lunchEnd"`
+	ProtectLunch            bool                 `json:"protectLunch"`
+	BufferBeforeMinutes     int                  `json:"bufferBeforeMinutes"`
+	BufferAfterMinutes      int                  `json:"bufferAfterMinutes"`
+	BufferEnabled           bool                 `json:"bufferEnabled"`
+	BufferMinMeetingMinutes int                  `json:"bufferMinMeetingMinutes"`
+	BufferSkipBackToBack    bool                 `json:"bufferSkipBackToBack"`
+	WorkingHours            WorkingHoursSchedule `json:"workingHours"`
+	LunchBreaks             LunchBreakSchedule   `json:"lunchBreaks,omitempty"`
+	CompressionEnabled      bool                 `json:"compressionEnabled"`
+	AutoScheduleEnabled     bool                 `json:"autoScheduleEnabled"`
+	AutoScheduleCron        string               `json:"autoScheduleCron"`
+	LLMProvider             string               `json:"llmProvider"`
+	LLMModel                string               `json:"llmModel"`
+	LLMAPIKey               string               `json:"llmApiKey"`
+	LLMBaseURL              string               `json:"llmBaseUrl"`
 	// AWS Bedrock
 	AWSRegion    string `json:"awsRegion"`
 	AWSProfile   string `json:"awsProfile"`
@@ -110,6 +246,9 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		return insertDefaultSettings(db)
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := loadScheduleFields(db, s, nil); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -200,7 +339,10 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo), s.RecapChannelID,
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return saveScheduleFields(db, s)
 }
 
 func recapSendTimeOrDefault(v string) string {
@@ -296,5 +438,44 @@ func GetSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := loadScheduleFields(db, s, &userID); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+func loadScheduleFields(db *sql.DB, s *Settings, userID *uuid.UUID) error {
+	var row *sql.Row
+	if userID == nil {
+		row = db.QueryRow(`SELECT COALESCE(working_hours, '{}'::jsonb), COALESCE(lunch_breaks, '{}'::jsonb)
+			FROM settings WHERE id = 1`)
+	} else {
+		row = db.QueryRow(`SELECT COALESCE(working_hours, '{}'::jsonb), COALESCE(lunch_breaks, '{}'::jsonb)
+			FROM settings WHERE user_id = $1`, *userID)
+	}
+
+	var working WorkingHoursSchedule
+	var lunch LunchBreakSchedule
+	if err := row.Scan(&working, &lunch); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	s.WorkingHours = working
+	s.LunchBreaks = lunch
+	s.normalizeSchedules()
+	return nil
+}
+
+func saveScheduleFields(db *sql.DB, s *Settings) error {
+	s.normalizeSchedules()
+	id := s.ID
+	if id == 0 {
+		id = 1
+	}
+	_, err := db.Exec(`UPDATE settings
+		SET working_hours = $1, lunch_breaks = $2, updated_at = NOW()
+		WHERE id = $3`, s.WorkingHours, s.LunchBreaks, id)
+	return err
 }

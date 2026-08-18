@@ -109,9 +109,12 @@ func (e *HabitsEngine) scheduleDay(
 				if loc == nil {
 					loc = time.UTC
 				}
-				workStart := parseHHMM(settings.WorkStart, day, loc)
-				workEnd := parseHHMM(settings.WorkEnd, day, loc)
-				calBusy = append(calBusy, ComputeBufferBlocks(events, settings, workStart, workEnd)...)
+				workStartRaw, workEndRaw, workEnabled := settings.WorkWindow(day.In(loc))
+				if workEnabled {
+					workStart := parseHHMM(workStartRaw, day, loc)
+					workEnd := parseHHMM(workEndRaw, day, loc)
+					calBusy = append(calBusy, ComputeBufferBlocks(events, settings, workStart, workEnd)...)
+				}
 			}
 		}
 	}

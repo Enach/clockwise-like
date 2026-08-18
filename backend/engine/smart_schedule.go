@@ -93,11 +93,25 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 		for !t.Add(dur).After(free.end) {
 			end := t.Add(dur)
 
-			workStart := parseHHMM(s.WorkStart, t, loc)
-			workEnd := parseHHMM(s.WorkEnd, t, loc)
+			workStartRaw, workEndRaw, workEnabled := s.WorkWindow(t.In(loc))
+			if !workEnabled {
+				t = t.Add(30 * time.Minute)
+				continue
+			}
+			workStart := parseHHMM(workStartRaw, t, loc)
+			workEnd := parseHHMM(workEndRaw, t, loc)
 			if t.Before(workStart) || end.After(workEnd) {
 				t = t.Add(30 * time.Minute)
 				continue
+			}
+			lunchStartRaw, lunchEndRaw, lunchEnabled := s.LunchWindow(t.In(loc))
+			if lunchEnabled {
+				lunchStart := parseHHMM(lunchStartRaw, t, loc)
+				lunchEnd := parseHHMM(lunchEndRaw, t, loc)
+				if t.Before(lunchEnd) && end.After(lunchStart) {
+					t = t.Add(30 * time.Minute)
+					continue
+				}
 			}
 
 			score, reasons := scoreCandidate(t, end, focusBlocks, s)

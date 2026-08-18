@@ -121,9 +121,13 @@ func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, s 
 		loc = time.UTC
 	}
 
-	workStart := parseHHMM(s.WorkStart, day, loc)
-	workEnd := parseHHMM(s.WorkEnd, day, loc)
-
+	workStartRaw, workEndRaw, enabled := s.WorkWindow(day.In(loc))
+	if !enabled {
+		result.SkippedDays = append(result.SkippedDays, dateStr)
+		return nil
+	}
+	workStart := parseHHMM(workStartRaw, day, loc)
+	workEnd := parseHHMM(workEndRaw, day, loc)
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
 	dayEnd := dayStart.Add(24 * time.Hour)
 
@@ -204,9 +208,10 @@ func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, s 
 func buildBusy(events []*googlecalendar.Event, workStart, workEnd time.Time, s *storage.Settings, day time.Time, loc *time.Location) []interval {
 	var busy []interval
 
-	if s.ProtectLunch && s.LunchStart != "" && s.LunchEnd != "" {
-		ls := parseHHMM(s.LunchStart, day, loc)
-		le := parseHHMM(s.LunchEnd, day, loc)
+	lunchStart, lunchEnd, lunchEnabled := s.LunchWindow(day.In(loc))
+	if lunchEnabled {
+		ls := parseHHMM(lunchStart, day, loc)
+		le := parseHHMM(lunchEnd, day, loc)
 		busy = append(busy, interval{ls, le})
 	}
 

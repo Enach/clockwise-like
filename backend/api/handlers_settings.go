@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/robfig/cron/v3"
@@ -107,7 +108,89 @@ func validateSettings(s *storage.Settings) error {
 		return &validationError{"llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex"}
 	}
 
+	if err := validateSchedulePreferences(s); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+var validScheduleWeekdays = map[string]bool{
+	"monday": true, "tuesday": true, "wednesday": true, "thursday": true,
+	"friday": true, "saturday": true, "sunday": true,
+}
+
+func validateSchedulePreferences(s *storage.Settings) error {
+	mode := strings.ToLower(strings.TrimSpace(s.WorkingHours.Mode))
+	if mode != "" && mode != "all_days" && mode != "by_day" {
+		return &validationError{"workingHours.mode must be all_days or by_day"}
+	}
+	if mode == "" && len(s.WorkingHours.Days) > 0 {
+		return &validationError{"workingHours.mode is required when day-specific hours are provided"}
+	}
+
+	if mode == "all_days" {
+		if scheduleHasValues(s.WorkingHours.Default) {
+			if err := validateDaySchedule("workingHours.default", s.WorkingHours.Default); err != nil {
+				return err
+			}
+		}
+	}
+	if mode == "by_day" {
+		for day, schedule := range s.WorkingHours.Days {
+			if !validScheduleWeekdays[strings.ToLower(day)] {
+				return &validationError{"workingHours.days." + day + " is not a valid weekday"}
+			}
+			if err := validateDaySchedule("workingHours.days."+day, schedule); err != nil {
+				return err
+			}
+		}
+	}
+	for day, schedule := range s.LunchBreaks {
+		if !validScheduleWeekdays[strings.ToLower(day)] {
+			return &validationError{"lunchBreaks." + day + " is not a valid weekday"}
+		}
+		if err := validateDaySchedule("lunchBreaks."+day, schedule); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scheduleHasValues(s storage.DaySchedule) bool {
+	return s.Enabled || s.Start != "" || s.End != ""
+}
+
+func validateDaySchedule(field string, schedule storage.DaySchedule) error {
+	if !schedule.Enabled {
+		if schedule.Start != "" && !validClockTime(schedule.Start) {
+			return &validationError{field + ".start must be in HH:MM format"}
+		}
+		if schedule.End != "" && !validClockTime(schedule.End) {
+			return &validationError{field + ".end must be in HH:MM format"}
+		}
+		return nil
+	}
+	if schedule.Start == "" || schedule.End == "" {
+		return &validationError{field + " requires start and end when enabled"}
+	}
+	if !validClockTime(schedule.Start) || !validClockTime(schedule.End) {
+		return &validationError{field + " start and end must be in HH:MM format"}
+	}
+	start, _ := time.Parse("15:04", schedule.Start)
+	end, _ := time.Parse("15:04", schedule.End)
+	if !end.After(start) {
+		return &validationError{field + " end must be after start"}
+	}
+	return nil
+}
+
+func validClockTime(value string) bool {
+	if !timePattern.MatchString(value) {
+		return false
+	}
+	_, err := time.Parse("15:04", value)
+	return err == nil
 }
 
 type validationError struct {

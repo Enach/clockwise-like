@@ -12,6 +12,7 @@ frontend/dist/
 
 # Data
 data/
+.local-backups/
 
 # IDE
 .idea/

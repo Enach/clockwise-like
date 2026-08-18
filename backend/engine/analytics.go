@@ -60,13 +60,21 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 		return nil, fmt.Errorf("get settings: %w", err)
 	}
 
-	workStartMin := hhmmToMinutes(settings.WorkStart)
-	workEndMin := hhmmToMinutes(settings.WorkEnd)
-	workDayMinutes := workEndMin - workStartMin
-	if workDayMinutes <= 0 {
-		workDayMinutes = 480 // 8 hours default
+	totalWorkingMinutes := 0
+	for i := 0; i < 5; i++ {
+		day := weekStart.AddDate(0, 0, i)
+		workStart, workEnd, enabled := settings.WorkWindow(day)
+		if !enabled {
+			continue
+		}
+		workDayMinutes := hhmmToMinutes(workEnd) - hhmmToMinutes(workStart)
+		if workDayMinutes > 0 {
+			totalWorkingMinutes += workDayMinutes
+		}
 	}
-	totalWorkingMinutes := workDayMinutes * 5 // Mon-Fri
+	if totalWorkingMinutes <= 0 && settings.WorkingHours.Mode != "by_day" {
+		totalWorkingMinutes = 480 * 5
+	}
 
 	// Build focus event ID set.
 	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, weekStart)

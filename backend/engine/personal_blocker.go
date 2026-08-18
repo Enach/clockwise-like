@@ -144,7 +144,11 @@ func personalEventDuringWorkHours(e calendar.GenericEvent, s *storage.Settings) 
 	if err != nil {
 		loc = time.UTC
 	}
-	workStart := parseHHMM(s.WorkStart, e.Start, loc)
-	workEnd := parseHHMM(s.WorkEnd, e.Start, loc)
+	workStartRaw, workEndRaw, enabled := s.WorkWindow(e.Start.In(loc))
+	if !enabled {
+		return false
+	}
+	workStart := parseHHMM(workStartRaw, e.Start, loc)
+	workEnd := parseHHMM(workEndRaw, e.Start, loc)
 	return e.Start.Before(workEnd) && e.End.After(workStart)
 }

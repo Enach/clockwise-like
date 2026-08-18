@@ -8,8 +8,8 @@ import (
 
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
-	googlecalendar "google.golang.org/api/calendar/v3"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 type MoveProposal struct {
@@ -57,6 +57,12 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 	if err != nil {
 		loc = time.UTC
 	}
+	workStartRaw, workEndRaw, workEnabled := s.WorkWindow(date.In(loc))
+	lunchStartRaw, lunchEndRaw, lunchEnabled := s.LunchWindow(date.In(loc))
+	result := &CompressionResult{Date: date.Format("2006-01-02")}
+	if !workEnabled {
+		return result, nil
+	}
 
 	dayStart := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
 	dayEnd := dayStart.Add(24 * time.Hour)
@@ -66,21 +72,19 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 
-	workStart := parseHHMM(s.WorkStart, date, loc)
-	workEnd := parseHHMM(s.WorkEnd, date, loc)
+	workStart := parseHHMM(workStartRaw, date, loc)
+	workEnd := parseHHMM(workEndRaw, date, loc)
 
 	moveable, fixed := classifyEvents(events, workStart, workEnd)
 
 	currentBusy := toIntervals(append(moveable, fixed...))
-	if s.ProtectLunch && s.LunchStart != "" && s.LunchEnd != "" {
-		ls := parseHHMM(s.LunchStart, date, loc)
-		le := parseHHMM(s.LunchEnd, date, loc)
+	if lunchEnabled {
+		ls := parseHHMM(lunchStartRaw, date, loc)
+		le := parseHHMM(lunchEndRaw, date, loc)
 		currentBusy = append(currentBusy, interval{ls, le})
 	}
 	currentFree := subtractIntervals(interval{workStart, workEnd}, mergeIntervals(currentBusy))
 	currentLargest := largestSlot(currentFree)
-
-	result := &CompressionResult{Date: date.Format("2006-01-02")}
 
 	for _, mv := range moveable {
 		dur := mv.end.Sub(mv.start)
@@ -88,9 +92,9 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 
 		otherFixed := toIntervals(fixed)
 		otherMoveable := toIntervalsExcept(moveable, mv.event.Id)
-		if s.ProtectLunch && s.LunchStart != "" && s.LunchEnd != "" {
-			ls := parseHHMM(s.LunchStart, date, loc)
-			le := parseHHMM(s.LunchEnd, date, loc)
+		if lunchEnabled {
+			ls := parseHHMM(lunchStartRaw, date, loc)
+			le := parseHHMM(lunchEndRaw, date, loc)
 			otherFixed = append(otherFixed, interval{ls, le})
 		}
 
