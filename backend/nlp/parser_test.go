@@ -11,41 +11,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/testdb"
 	"github.com/Enach/paceday/backend/storage"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	ctx := context.Background()
-
-	container, err := postgres.Run(ctx, "postgres:16-alpine",
-		postgres.WithDatabase("testdb"),
-		postgres.WithUsername("test"),
-		postgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
-		),
-	)
+	dsn, cleanup, err := testdb.Create()
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		t.Fatalf("create test database: %v", err)
 	}
-	t.Cleanup(func() { container.Terminate(ctx) })
-
-	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("get connection string: %v", err)
-	}
-
 	db, err := storage.Open(dsn)
 	if err != nil {
+		_ = cleanup()
 		t.Fatalf("open test db: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		db.Close()
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup test database: %v", err)
+		}
+	})
 	return db
 }
 
