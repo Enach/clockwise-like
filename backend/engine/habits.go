@@ -67,6 +67,11 @@ func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) erro
 	// calOps may be nil if not connected — we degrade gracefully.
 
 	now := e.now()
+	if settings, settingsErr := storage.GetSettingsByUser(e.DB, userID); settingsErr == nil && settings != nil {
+		if loc, locErr := time.LoadLocation(settings.Timezone); locErr == nil {
+			now = now.In(loc)
+		}
+	}
 	for i := 0; i < 14; i++ {
 		day := now.AddDate(0, 0, i)
 		if err := e.scheduleDay(ctx, userID, habits, day, calOps, calErr == nil); err != nil {
@@ -88,7 +93,10 @@ func (e *HabitsEngine) scheduleDay(
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
 
-	settings, _ := storage.GetSettings(e.DB)
+	settings, _ := storage.GetSettingsByUser(e.DB, userID)
+	if settings == nil {
+		settings, _ = storage.GetSettings(e.DB)
+	}
 
 	// Fetch calendar busy intervals once for the day.
 	var calBusy []interval
@@ -119,6 +127,20 @@ func (e *HabitsEngine) scheduleDay(
 		}
 	}
 
+	if settings != nil {
+		loc, err := time.LoadLocation(settings.Timezone)
+		if err != nil {
+			loc = time.UTC
+		}
+		lunchStartRaw, lunchEndRaw, lunchEnabled := settings.LunchWindow(day.In(loc))
+		if lunchEnabled {
+			calBusy = append(calBusy, interval{
+				start: parseHHMM(lunchStartRaw, day, loc),
+				end:   parseHHMM(lunchEndRaw, day, loc),
+			})
+		}
+	}
+
 	// Focus blocks.
 	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, day)
 	for _, fb := range focusBlocks {
@@ -132,7 +154,7 @@ func (e *HabitsEngine) scheduleDay(
 	// Habits already scheduled for this day — accumulated as we place each habit.
 	placedBusy := calBusy
 
-	weekday := int(day.Weekday())
+	weekday := habitWeekday(day)
 
 	for _, h := range habits {
 		if !containsInt(h.DaysOfWeek, weekday) {
@@ -145,6 +167,12 @@ func (e *HabitsEngine) scheduleDay(
 
 		// Check existing occurrence for this day.
 		existing, _ := e.existingOccurrence(h.ID, day)
+
+		// Completed occurrences are user-confirmed and must survive reoptimization.
+		if existing != nil && existing.Status == "completed" {
+			placedBusy = append(placedBusy, interval{start: existing.StartTime, end: existing.EndTime})
+			continue
+		}
 
 		// If already scheduled and not displaced, verify it still fits.
 		if existing != nil && existing.Status == "scheduled" {
@@ -257,6 +285,15 @@ func containsInt(slice []int, v int) bool {
 		}
 	}
 	return false
+}
+
+// habitWeekday maps time.Weekday to the API convention Monday=1 through Sunday=7.
+func habitWeekday(day time.Time) int {
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		return 7
+	}
+	return weekday
 }
 
 // habitColorID maps hex color to Google Calendar color ID (best-effort).

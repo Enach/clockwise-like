@@ -183,6 +183,19 @@ func ListHabitOccurrences(db *sql.DB, habitID uuid.UUID, from, to time.Time) ([]
 	return out, rows.Err()
 }
 
+// UpdateHabitOccurrenceStatus changes the status of an occurrence owned by userID.
+func UpdateHabitOccurrenceStatus(db *sql.DB, occurrenceID, habitID, userID uuid.UUID, status string) (*HabitOccurrence, error) {
+	row := db.QueryRowContext(context.Background(), `
+		UPDATE habit_occurrences ho
+		SET status = $4
+		FROM habits h
+		WHERE ho.id = $1 AND ho.habit_id = $2 AND ho.habit_id = h.id AND h.user_id = $3
+		RETURNING ho.id, ho.habit_id, ho.scheduled_date, ho.start_time, ho.end_time,
+		          ho.status, ho.calendar_event_id, ho.created_at
+	`, occurrenceID, habitID, userID, status)
+	return scanOccurrence(row)
+}
+
 // ListScheduledOccurrencesForDay returns all scheduled habit_occurrences on a date.
 // Used to build busy intervals when scheduling other habits.
 func ListScheduledOccurrencesForDay(db *sql.DB, userID uuid.UUID, date time.Time) ([]*HabitOccurrence, error) {

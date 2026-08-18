@@ -7,7 +7,7 @@ import (
 
 func TestFindFirstSlot_Empty(t *testing.T) {
 	base := time.Date(2024, 6, 3, 9, 0, 0, 0, time.UTC) // 09:00
-	end := base.Add(3 * time.Hour)                       // 12:00
+	end := base.Add(3 * time.Hour)                      // 12:00
 	dur := 30 * time.Minute
 
 	slot := findFirstSlot(base, end, dur, nil)
@@ -75,5 +75,16 @@ func TestHabitTemplatesCount(t *testing.T) {
 		if len(tmpl.DaysOfWeek) == 0 {
 			t.Errorf("template[%d] has empty days_of_week", i)
 		}
+	}
+}
+
+func TestHabitWeekdayUsesMondayOneThroughSundaySeven(t *testing.T) {
+	monday := time.Date(2024, 6, 3, 9, 0, 0, 0, time.UTC)
+	sunday := monday.AddDate(0, 0, 6)
+	if got := habitWeekday(monday); got != 1 {
+		t.Fatalf("Monday mapped to %d, want 1", got)
+	}
+	if got := habitWeekday(sunday); got != 7 {
+		t.Fatalf("Sunday mapped to %d, want 7", got)
 	}
 }

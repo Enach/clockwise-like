@@ -141,6 +141,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Get("/", hh.list)
 			r.Patch("/{id}", hh.update)
 			r.Delete("/{id}", hh.deactivate)
+			r.Patch("/{id}/occurrences/{occurrenceId}", hh.updateOccurrence)
 			r.Get("/{id}/occurrences", hh.occurrences)
 		})
 

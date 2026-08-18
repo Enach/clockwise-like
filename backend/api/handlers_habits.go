@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
@@ -24,6 +26,51 @@ func newHabitsHandlers(db *sql.DB, oauthConfig *oauth2.Config) *habitsHandlers {
 		eng: &engine.HabitsEngine{DB: db, OAuthConfig: oauthConfig},
 		db:  db,
 	}
+}
+
+func validateHabitFields(title string, duration int, days []int, windowStart, windowEnd string, priority int) error {
+	if strings.TrimSpace(title) == "" {
+		return fmt.Errorf("title is required")
+	}
+	if len([]rune(strings.TrimSpace(title))) > 200 {
+		return fmt.Errorf("title must be 200 characters or fewer")
+	}
+	if duration <= 0 || duration > 24*60 {
+		return fmt.Errorf("duration_minutes must be between 1 and 1440")
+	}
+	if len(days) == 0 {
+		return fmt.Errorf("days_of_week must contain at least one weekday")
+	}
+	seen := make(map[int]bool, len(days))
+	for _, day := range days {
+		if day < 1 || day > 7 {
+			return fmt.Errorf("days_of_week must use Monday=1 through Sunday=7")
+		}
+		if seen[day] {
+			return fmt.Errorf("days_of_week must not contain duplicates")
+		}
+		seen[day] = true
+	}
+	if !validHabitClock(windowStart) || !validHabitClock(windowEnd) {
+		return fmt.Errorf("window_start and window_end must be in HH:MM format")
+	}
+	start, _ := time.Parse("15:04", windowStart)
+	end, _ := time.Parse("15:04", windowEnd)
+	if !end.After(start) {
+		return fmt.Errorf("window_end must be after window_start")
+	}
+	if priority < 0 || priority > 100 {
+		return fmt.Errorf("priority must be between 0 and 100")
+	}
+	return nil
+}
+
+func validHabitClock(value string) bool {
+	if len(value) != 5 || value[2] != ':' {
+		return false
+	}
+	_, err := time.Parse("15:04", value)
+	return err == nil
 }
 
 // GET /api/habits/templates
@@ -48,14 +95,12 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if body.Title == "" || body.DurationMinutes <= 0 {
-		writeError(w, "title and duration_minutes are required", http.StatusBadRequest)
-		return
-	}
-
-	if len(body.DaysOfWeek) == 0 {
+	body.Title = strings.TrimSpace(body.Title)
+	if body.DaysOfWeek == nil {
 		body.DaysOfWeek = []int{1, 2, 3, 4, 5}
 	}
+	body.WindowStart = strings.TrimSpace(body.WindowStart)
+	body.WindowEnd = strings.TrimSpace(body.WindowEnd)
 	if body.WindowStart == "" {
 		body.WindowStart = "09:00"
 	}
@@ -67,6 +112,10 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Color == "" {
 		body.Color = "#5B7FFF"
+	}
+	if err := validateHabitFields(body.Title, body.DurationMinutes, body.DaysOfWeek, body.WindowStart, body.WindowEnd, body.Priority); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	habit, err := storage.CreateHabit(h.db, &storage.Habit{
@@ -173,6 +222,13 @@ func (h *habitsHandlers) update(w http.ResponseWriter, r *http.Request) {
 	if body.Active != nil {
 		updated.Active = *body.Active
 	}
+	updated.Title = strings.TrimSpace(updated.Title)
+	updated.WindowStart = strings.TrimSpace(updated.WindowStart)
+	updated.WindowEnd = strings.TrimSpace(updated.WindowEnd)
+	if err := validateHabitFields(updated.Title, updated.DurationMinutes, updated.DaysOfWeek, updated.WindowStart, updated.WindowEnd, updated.Priority); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	result, err := storage.UpdateHabit(h.db, id, &updated)
 	if err != nil {
@@ -242,19 +298,29 @@ func (h *habitsHandlers) occurrences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	from := now.AddDate(0, -1, 0)
-	to := now.AddDate(0, 1, 0)
+	now := time.Now().UTC()
+	from := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
+	to := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
 
-	if s := r.URL.Query().Get("from"); s != "" {
-		if t, err := time.Parse("2006-01-02", s); err == nil {
-			from = t
+	if value := r.URL.Query().Get("from"); value != "" {
+		t, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			writeError(w, "from must use YYYY-MM-DD", http.StatusBadRequest)
+			return
 		}
+		from = t
 	}
-	if s := r.URL.Query().Get("to"); s != "" {
-		if t, err := time.Parse("2006-01-02", s); err == nil {
-			to = t
+	if value := r.URL.Query().Get("to"); value != "" {
+		t, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			writeError(w, "to must use YYYY-MM-DD", http.StatusBadRequest)
+			return
 		}
+		to = t
+	}
+	if from.After(to) {
+		writeError(w, "from must be on or before to", http.StatusBadRequest)
+		return
 	}
 
 	occs, err := storage.ListHabitOccurrences(h.db, id, from, to)
@@ -267,6 +333,47 @@ func (h *habitsHandlers) occurrences(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(occs)
+}
+
+// PATCH /api/habits/:habitID/occurrences/:occurrenceId
+func (h *habitsHandlers) updateOccurrence(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	habitID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid habit id", http.StatusBadRequest)
+		return
+	}
+	occurrenceID, err := uuid.Parse(chi.URLParam(r, "occurrenceId"))
+	if err != nil {
+		writeError(w, "invalid occurrence id", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	body.Status = strings.ToLower(strings.TrimSpace(body.Status))
+	if body.Status != "completed" && body.Status != "scheduled" {
+		writeError(w, "status must be completed or scheduled", http.StatusBadRequest)
+		return
+	}
+
+	occurrence, err := storage.UpdateHabitOccurrenceStatus(h.db, occurrenceID, habitID, userID, body.Status)
+	if err != nil {
+		writeError(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if occurrence == nil {
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(occurrence)
 }
 
 // POST /api/habits/reoptimize
