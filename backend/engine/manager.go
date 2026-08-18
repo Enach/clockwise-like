@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 // ManagerEngine handles team detection, 1:1 gap analysis, and analytics.
@@ -38,39 +40,27 @@ type DetectResult struct {
 	IsManager      bool
 }
 
-// DetectTeam scans the past 14 days of calendar events and identifies 1:1
-// recurring meetings to build the manager's team member list.
-func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*DetectResult, error) {
-	token, err := auth.LoadUserToken(e.DB, managerID)
-	if err != nil {
-		return nil, fmt.Errorf("load token: %w", err)
-	}
-	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
-	client, err := calendar.NewClient(ctx, ts)
-	if err != nil {
-		return nil, fmt.Errorf("calendar client: %w", err)
-	}
+type oneOnOneOccurrence struct {
+	eventID    string
+	occurredAt time.Time
+}
 
-	now := e.now()
-	events, err := client.ListEvents(ctx, "primary", now.Add(-14*24*time.Hour), now)
-	if err != nil {
-		return nil, fmt.Errorf("list events: %w", err)
-	}
+type oneOnOneCandidate struct {
+	email                string
+	displayName          string
+	rrule                string
+	hasRecurringMetadata bool
+	occurrences          []oneOnOneOccurrence
+}
 
-	// Group recurring 2-attendee events by other attendee email.
-	type candidate struct {
-		email       string
-		displayName string
-		rrule       string
-		occurrences []*struct {
-			eventID    string
-			occurredAt time.Time
-		}
-	}
-	byEmail := map[string]*candidate{}
-
+// collectOneOnOneCandidates extracts likely 1:1s from expanded calendar
+// instances. Google returns recurring instances with RecurringEventId and an
+// empty Recurrence field when SingleEvents=true, so Recurrence alone is not a
+// reliable recurring-meeting signal.
+func collectOneOnOneCandidates(events []*googlecalendar.Event, managerEmail string) map[string]*oneOnOneCandidate {
+	byEmail := map[string]*oneOnOneCandidate{}
 	for _, ev := range events {
-		if len(ev.Attendees) != 2 {
+		if ev == nil {
 			continue
 		}
 		dur := calcEventDurationMinutes(
@@ -90,49 +80,129 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		if dur < 15 || dur > 90 {
 			continue
 		}
-		if len(ev.Recurrence) == 0 {
+
+		// Keep exactly one participant other than the manager. This tolerates
+		// resource/organizer entries while still excluding group meetings.
+		var other *googlecalendar.EventAttendee
+		for _, attendee := range ev.Attendees {
+			if attendee == nil {
+				continue
+			}
+			email := strings.ToLower(strings.TrimSpace(attendee.Email))
+			if email == "" || attendee.Self || strings.EqualFold(email, managerEmail) {
+				continue
+			}
+			if other != nil {
+				other = nil
+				break
+			}
+			other = attendee
+		}
+		if other == nil {
 			continue
 		}
+
 		rrule := ""
-		for _, r := range ev.Recurrence {
-			if strings.HasPrefix(r, "RRULE:") {
-				rrule = r
+		for _, recurrence := range ev.Recurrence {
+			if strings.HasPrefix(strings.ToUpper(recurrence), "RRULE:") {
+				rrule = recurrence
 				break
 			}
 		}
-		if rrule == "" {
-			continue
-		}
-
-		// Find the other attendee (not the organizer)
-		var otherEmail, otherName string
-		for _, a := range ev.Attendees {
-			if a.Self {
-				continue
+		candidateEmail := strings.ToLower(strings.TrimSpace(other.Email))
+		candidate := byEmail[candidateEmail]
+		if candidate == nil {
+			candidate = &oneOnOneCandidate{
+				email:                candidateEmail,
+				displayName:          other.DisplayName,
+				rrule:                rrule,
+				hasRecurringMetadata: rrule != "" || ev.RecurringEventId != "",
 			}
-			otherEmail = a.Email
-			otherName = a.DisplayName
-			if otherName == "" {
-				otherName = otherEmail
-			}
+			byEmail[candidateEmail] = candidate
+		} else if candidate.displayName == "" {
+			candidate.displayName = other.DisplayName
 		}
-		if otherEmail == "" {
-			continue
+		if candidate.rrule == "" && rrule != "" {
+			candidate.rrule = rrule
 		}
+		candidate.hasRecurringMetadata = candidate.hasRecurringMetadata || rrule != "" || ev.RecurringEventId != ""
 
-		if _, ok := byEmail[otherEmail]; !ok {
-			byEmail[otherEmail] = &candidate{email: otherEmail, displayName: otherName, rrule: rrule}
-		}
-		c := byEmail[otherEmail]
 		var occurredAt time.Time
 		if ev.Start != nil && ev.Start.DateTime != "" {
 			occurredAt, _ = time.Parse(time.RFC3339, ev.Start.DateTime)
 		}
-		c.occurrences = append(c.occurrences, &struct {
-			eventID    string
-			occurredAt time.Time
-		}{ev.Id, occurredAt})
+		candidate.occurrences = append(candidate.occurrences, oneOnOneOccurrence{eventID: ev.Id, occurredAt: occurredAt})
 	}
+
+	// Two separate instances with no recurrence metadata can still represent a
+	// recurring 1:1. A single isolated meeting must not be auto-added.
+	for email, candidate := range byEmail {
+		if !candidate.hasRecurringMetadata && len(candidate.occurrences) < 2 {
+			delete(byEmail, email)
+		}
+	}
+	return byEmail
+}
+
+func inferCandidateCadence(candidate *oneOnOneCandidate) string {
+	if cadence := inferCadence(candidate.rrule); cadence != "none" {
+		return cadence
+	}
+	if len(candidate.occurrences) < 2 {
+		return "none"
+	}
+	times := make([]time.Time, 0, len(candidate.occurrences))
+	for _, occurrence := range candidate.occurrences {
+		if !occurrence.occurredAt.IsZero() {
+			times = append(times, occurrence.occurredAt)
+		}
+	}
+	if len(times) < 2 {
+		return "none"
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	var totalDays float64
+	for i := 1; i < len(times); i++ {
+		totalDays += times[i].Sub(times[i-1]).Hours() / 24
+	}
+	averageDays := totalDays / float64(len(times)-1)
+	switch {
+	case averageDays >= 5 && averageDays <= 9:
+		return "weekly"
+	case averageDays > 9 && averageDays <= 18:
+		return "biweekly"
+	case averageDays >= 25 && averageDays <= 35:
+		return "monthly"
+	default:
+		return "none"
+	}
+}
+
+// DetectTeam scans a six-week window around now and identifies 1:1
+// recurring meetings to build the manager's team member list.
+func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*DetectResult, error) {
+	token, err := auth.LoadUserToken(e.DB, managerID)
+	if err != nil {
+		return nil, fmt.Errorf("load token: %w", err)
+	}
+	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
+	client, err := calendar.NewClient(ctx, ts)
+	if err != nil {
+		return nil, fmt.Errorf("calendar client: %w", err)
+	}
+
+	now := e.now()
+	events, err := client.ListEvents(ctx, "primary", now.Add(-42*24*time.Hour), now.Add(42*24*time.Hour))
+	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+
+	manager, _ := storage.GetUserByID(e.DB, managerID)
+	managerEmail := ""
+	if manager != nil {
+		managerEmail = manager.Email
+	}
+	byEmail := collectOneOnOneCandidates(events, managerEmail)
 
 	profile, _ := storage.GetOrCreateUserProfile(e.DB, managerID)
 	result := &DetectResult{}
@@ -141,12 +211,12 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		if len(c.occurrences) == 0 {
 			continue
 		}
-		cadence := inferCadence(c.rrule)
+		cadence := inferCandidateCadence(c)
 
 		// Latest occurrence
 		var lastOOO time.Time
 		for _, occ := range c.occurrences {
-			if occ.occurredAt.After(lastOOO) {
+			if !occ.occurredAt.IsZero() && !occ.occurredAt.After(now) && occ.occurredAt.After(lastOOO) {
 				lastOOO = occ.occurredAt
 			}
 		}

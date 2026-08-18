@@ -430,3 +430,47 @@ func TestNoMeetingZone_ValidatesAndConvertsWeekdayAtBoundary(t *testing.T) {
 		t.Fatalf("stored weekday = %d, want legacy Sunday=0", zones[0].DayOfWeek)
 	}
 }
+
+func TestListTeams_ReturnsAllMemberships(t *testing.T) {
+	r := setupTeamRoutes(t)
+	userID := createTestUser(t, "multi-team@example.com")
+	db := openTestDB(t)
+
+	first, err := storage.CreateTeam(db, "Alpha", userID)
+	if err != nil {
+		t.Fatalf("create first team: %v", err)
+	}
+	second, err := storage.CreateTeam(db, "Beta", userID)
+	if err != nil {
+		t.Fatalf("create second team: %v", err)
+	}
+	if err := storage.AddTeamMember(db, first.ID, userID, "owner"); err != nil {
+		t.Fatalf("add first membership: %v", err)
+	}
+	if err := storage.AddTeamMember(db, second.ID, userID, "owner"); err != nil {
+		t.Fatalf("add second membership: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/teams", nil)
+	req = withUser(req, userID)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var teams []storage.Team
+	if err := json.NewDecoder(w.Body).Decode(&teams); err != nil {
+		t.Fatalf("decode teams: %v", err)
+	}
+	if len(teams) != 2 {
+		t.Fatalf("teams = %d, want 2", len(teams))
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, team := range teams {
+		seen[team.ID] = true
+	}
+	if !seen[first.ID] || !seen[second.ID] {
+		t.Fatalf("returned team IDs = %v, want both memberships", seen)
+	}
+}

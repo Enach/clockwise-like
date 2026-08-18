@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/storage"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
 // ── inferCadence ──────────────────────────────────────────────────────────────
@@ -217,3 +218,58 @@ func TestNextExpectedDate_Monthly_CalendarMonth(t *testing.T) {
 	}
 }
 
+func managerEvent(id, start, end string, recurringID string, recurrence []string, otherEmail string) *googlecalendar.Event {
+	return &googlecalendar.Event{
+		Id:               id,
+		RecurringEventId: recurringID,
+		Recurrence:       recurrence,
+		Start:            &googlecalendar.EventDateTime{DateTime: start},
+		End:              &googlecalendar.EventDateTime{DateTime: end},
+		Attendees: []*googlecalendar.EventAttendee{
+			{Email: "manager@example.com", Self: true},
+			{Email: otherEmail, DisplayName: "Other Person"},
+		},
+	}
+}
+
+func TestCollectOneOnOneCandidates_ExpandedRecurringInstances(t *testing.T) {
+	events := []*googlecalendar.Event{
+		managerEvent("event-1", "2026-08-03T10:00:00Z", "2026-08-03T10:30:00Z", "series-1", nil, "alex@example.com"),
+		managerEvent("event-2", "2026-08-10T10:00:00Z", "2026-08-10T10:30:00Z", "series-1", nil, "alex@example.com"),
+	}
+
+	candidates := collectOneOnOneCandidates(events, "manager@example.com")
+	candidate := candidates["alex@example.com"]
+	if candidate == nil {
+		t.Fatal("expanded recurring instances should produce a candidate")
+	}
+	if got := inferCandidateCadence(candidate); got != "weekly" {
+		t.Fatalf("cadence = %q, want weekly", got)
+	}
+}
+
+func TestCollectOneOnOneCandidates_RejectsIsolatedAndGroupMeetings(t *testing.T) {
+	isolated := managerEvent("event-1", "2026-08-03T10:00:00Z", "2026-08-03T10:30:00Z", "", nil, "alex@example.com")
+	group := managerEvent("event-2", "2026-08-03T11:00:00Z", "2026-08-03T11:30:00Z", "series-2", nil, "alex@example.com")
+	group.Attendees = append(group.Attendees, &googlecalendar.EventAttendee{Email: "third@example.com"})
+
+	candidates := collectOneOnOneCandidates([]*googlecalendar.Event{isolated, group}, "manager@example.com")
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %+v, want no isolated or group meetings", candidates)
+	}
+}
+
+func TestCollectOneOnOneCandidates_InfersRepeatedNonRecurringMeetings(t *testing.T) {
+	events := []*googlecalendar.Event{
+		managerEvent("event-1", "2026-08-03T10:00:00Z", "2026-08-03T10:30:00Z", "", nil, "alex@example.com"),
+		managerEvent("event-2", "2026-08-10T10:00:00Z", "2026-08-10T10:30:00Z", "", nil, "alex@example.com"),
+	}
+
+	candidate := collectOneOnOneCandidates(events, "manager@example.com")["alex@example.com"]
+	if candidate == nil {
+		t.Fatal("repeated 1:1 meetings should produce a candidate")
+	}
+	if got := inferCandidateCadence(candidate); got != "weekly" {
+		t.Fatalf("cadence = %q, want weekly", got)
+	}
+}

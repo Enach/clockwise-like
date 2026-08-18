@@ -63,7 +63,7 @@ func GetTeam(db *sql.DB, id uuid.UUID) (*Team, error) {
 
 func ListTeamsForUser(db *sql.DB, userID uuid.UUID) ([]*Team, error) {
 	rows, err := db.Query(`
-		SELECT t.id, t.org_id, t.name, t.created_by, t.created_at
+		SELECT DISTINCT t.id, t.org_id, t.name, t.created_by, t.created_at
 		FROM teams t
 		JOIN team_members tm ON tm.team_id = t.id
 		WHERE tm.user_id = $1

@@ -351,6 +351,10 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if link.Slug == "" {
+		if len(link.DurationOptions) == 0 {
+			writeError(w, "at least one duration is required", http.StatusUnprocessableEntity)
+			return
+		}
 		link.Slug, err = h.bookEng.GenerateSlug(owner.Name, link.DurationOptions[0])
 		if err != nil {
 			writeError(w, "slug generation failed", http.StatusInternalServerError)
