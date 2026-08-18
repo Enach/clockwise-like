@@ -161,7 +161,7 @@ type Settings struct {
 	BufferMinMeetingMinutes int                  `json:"bufferMinMeetingMinutes"`
 	BufferSkipBackToBack    bool                 `json:"bufferSkipBackToBack"`
 	WorkingHours            WorkingHoursSchedule `json:"workingHours"`
-	LunchBreaks             LunchBreakSchedule   `json:"lunchBreaks,omitempty"`
+	LunchBreaks             LunchBreakSchedule   `json:"lunchBreaks"`
 	CompressionEnabled      bool                 `json:"compressionEnabled"`
 	AutoScheduleEnabled     bool                 `json:"autoScheduleEnabled"`
 	AutoScheduleCron        string               `json:"autoScheduleCron"`
