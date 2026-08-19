@@ -83,6 +83,10 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 	}
 
 	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, req.RangeStart)
+	allowOutOfHours, err := canScheduleOutOfHours(ctx, client, s, req.RangeStart)
+	if err != nil {
+		return nil, fmt.Errorf("count out-of-hours meetings: %w", err)
+	}
 
 	var candidates []SuggestedSlot
 	for _, free := range freeBlocks {
@@ -94,13 +98,10 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 			end := t.Add(dur)
 
 			workStartRaw, workEndRaw, workEnabled := s.WorkWindow(t.In(loc))
-			if !workEnabled {
-				t = t.Add(30 * time.Minute)
-				continue
-			}
 			workStart := parseHHMM(workStartRaw, t, loc)
 			workEnd := parseHHMM(workEndRaw, t, loc)
-			if t.Before(workStart) || end.After(workEnd) {
+			outsideWork := !workEnabled || t.Before(workStart) || end.After(workEnd)
+			if outsideWork && !allowOutOfHours {
 				t = t.Add(30 * time.Minute)
 				continue
 			}
@@ -131,6 +132,42 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 	top := pickTopUnique(candidates, 3, time.Hour)
 
 	return &ScheduleSuggestions{Slots: top}, nil
+}
+
+func canScheduleOutOfHours(ctx context.Context, client calendarOps, settings *storage.Settings, anchor time.Time) (bool, error) {
+	if settings.OutOfHoursMeetingsPerWeek <= 0 {
+		return false, nil
+	}
+	loc, err := time.LoadLocation(settings.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	weekStart := startOfWeek(anchor.In(loc))
+	events, err := client.listEvents(ctx, weekStart, weekStart.AddDate(0, 0, 7))
+	if err != nil {
+		return false, err
+	}
+	outOfHours := 0
+	for _, event := range events {
+		start, end := parseEventTime(event)
+		if start.IsZero() || end.IsZero() {
+			continue
+		}
+		if eventIsOutsideWork(event, start, end, settings, loc) {
+			outOfHours++
+		}
+	}
+	return outOfHours < settings.OutOfHoursMeetingsPerWeek, nil
+}
+
+func eventIsOutsideWork(_ *googlecalendar.Event, start, end time.Time, settings *storage.Settings, loc *time.Location) bool {
+	workStartRaw, workEndRaw, enabled := settings.WorkWindow(start.In(loc))
+	if !enabled {
+		return true
+	}
+	workStart := parseHHMM(workStartRaw, start.In(loc), loc)
+	workEnd := parseHHMM(workEndRaw, start.In(loc), loc)
+	return start.Before(workStart) || end.After(workEnd)
 }
 
 func scoreCandidate(start, end time.Time, focusBlocks []storage.FocusBlock, s *storage.Settings) (int, []string) {
@@ -244,6 +281,24 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 	client, err := e.calClient(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	settings, err := storage.GetSettings(e.DB)
+	if err != nil {
+		return nil, fmt.Errorf("load settings: %w", err)
+	}
+	loc, err := time.LoadLocation(settings.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	if eventIsOutsideWork(nil, slot.Start, slot.End, settings, loc) {
+		allowed, err := canScheduleOutOfHours(ctx, client, settings, slot.Start)
+		if err != nil {
+			return nil, fmt.Errorf("count out-of-hours meetings: %w", err)
+		}
+		if !allowed {
+			return nil, fmt.Errorf("out-of-hours meeting allowance reached")
+		}
 	}
 
 	attendees := make([]*googlecalendar.EventAttendee, len(req.Attendees))

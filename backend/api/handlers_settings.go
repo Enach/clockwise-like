@@ -86,6 +86,10 @@ func validateSettings(s *storage.Settings) error {
 	if s.FocusDailyTargetMinutes < 0 {
 		return &validationError{"focusDailyTargetMinutes must be positive"}
 	}
+
+	if s.OutOfHoursMeetingsPerWeek < 0 {
+		return &validationError{"outOfHoursMeetingsPerWeek must be zero or positive"}
+	}
 	if s.BufferBeforeMinutes < 0 {
 		return &validationError{"bufferBeforeMinutes must be positive"}
 	}

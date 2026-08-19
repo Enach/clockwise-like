@@ -150,6 +150,8 @@ type Settings struct {
 	FocusMinBlockMinutes    int                  `json:"focusMinBlockMinutes"`
 	FocusMaxBlockMinutes    int                  `json:"focusMaxBlockMinutes"`
 	FocusDailyTargetMinutes int                  `json:"focusDailyTargetMinutes"`
+	OutOfHoursMeetingsPerWeek int                `json:"outOfHoursMeetingsPerWeek"`
+	AutoDeclineOutsideWorkingHours bool           `json:"autoDeclineOutsideWorkingHours"`
 	FocusLabel              string               `json:"focusLabel"`
 	FocusColor              string               `json:"focusColor"`
 	LunchStart              string               `json:"lunchStart"`
@@ -207,6 +209,7 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 	row := db.QueryRow(`SELECT
 		id, work_start, work_end, timezone,
 		focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
+		out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
 		focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
 		buffer_before_minutes, buffer_after_minutes,
 		buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
@@ -227,6 +230,7 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 	err := row.Scan(
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
+		&s.OutOfHoursMeetingsPerWeek, &s.AutoDeclineOutsideWorkingHours,
 		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &s.ProtectLunch,
 		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
 		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,
@@ -280,11 +284,12 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			conferencing_provider,
 			recap_enabled, recap_send_time, recap_send_to, recap_channel_id,
 			recap_include_briefs, recap_include_focus, recap_include_habits,
+			out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
 			updated_at
 		) VALUES (
 			1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
 			$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
-			$39,$40,$41,$42,$43,$44,$45,NOW()
+			$39,$40,$41,$42,$43,$44,$45,$46,$47,NOW()
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
@@ -292,6 +297,8 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			focus_min_block_minutes=EXCLUDED.focus_min_block_minutes,
 			focus_max_block_minutes=EXCLUDED.focus_max_block_minutes,
 			focus_daily_target_minutes=EXCLUDED.focus_daily_target_minutes,
+			out_of_hours_meetings_per_week=EXCLUDED.out_of_hours_meetings_per_week,
+			auto_decline_outside_working_hours=EXCLUDED.auto_decline_outside_working_hours,
 			focus_label=EXCLUDED.focus_label, focus_color=EXCLUDED.focus_color,
 			lunch_start=EXCLUDED.lunch_start, lunch_end=EXCLUDED.lunch_end,
 			protect_lunch=EXCLUDED.protect_lunch,
@@ -338,6 +345,7 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.ConferencingProvider,
 		s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo), s.RecapChannelID,
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
+		s.OutOfHoursMeetingsPerWeek, s.AutoDeclineOutsideWorkingHours,
 	)
 	if err != nil {
 		return err
@@ -389,6 +397,24 @@ func ListUsersWithAutoSchedule(db *sql.DB) ([]UserScheduleConfig, error) {
 	return out, rows.Err()
 }
 
+// ListUsersWithAutoDecline returns users whose automatic outside-hours decline is enabled.
+func ListUsersWithAutoDecline(db *sql.DB) ([]uuid.UUID, error) {
+	rows, err := db.Query(`SELECT user_id FROM settings WHERE user_id IS NOT NULL AND auto_decline_outside_working_hours = TRUE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		out = append(out, userID)
+	}
+	return out, rows.Err()
+}
+
 // GetSettingsByUser returns the settings row for a specific user.
 // Returns an error if userID is uuid.Nil. Returns (nil, nil) if no row exists.
 func GetSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
@@ -398,6 +424,7 @@ func GetSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
 	row := db.QueryRow(`SELECT
 		id, work_start, work_end, timezone,
 		focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
+		out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
 		focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
 		buffer_before_minutes, buffer_after_minutes,
 		buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
@@ -417,6 +444,7 @@ func GetSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
 	err := row.Scan(
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
+		&s.OutOfHoursMeetingsPerWeek, &s.AutoDeclineOutsideWorkingHours,
 		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &s.ProtectLunch,
 		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
 		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,

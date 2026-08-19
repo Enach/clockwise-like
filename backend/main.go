@@ -68,6 +68,23 @@ func main() {
 	personalCron.Start()
 	defer personalCron.Stop()
 
+	// Automatic RSVP decline — checks the next ten working days every 15 minutes.
+	// The per-user setting is off by default and the service only handles
+	// pending/tentative incoming invitations outside work or protected lunch.
+	autoDecliner := &engine.AutoDeclineService{DB: db, OAuthConfig: oauthConfig}
+	autoDeclineCron := cron.New()
+	if _, err := autoDeclineCron.AddFunc("@every 15m", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := autoDecliner.RunAll(ctx); err != nil {
+			log.Printf("auto-decline batch: %v", err)
+		}
+	}); err != nil {
+		log.Printf("auto-decline cron registration error: %v", err)
+	}
+	autoDeclineCron.Start()
+	defer autoDeclineCron.Stop()
+
 	// Daily morning recap — fires every minute, checks per-user send time.
 	recapSvc := &engine.DailyRecapService{DB: db}
 	recapCron := cron.New()

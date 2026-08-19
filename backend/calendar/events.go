@@ -30,6 +30,16 @@ func (c *CalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 	return c.service.Events.Update(calendarID, eventID, event).Context(ctx).Do()
 }
 
+// DeclineEvent updates the current user's RSVP and notifies the other
+// attendees. The caller must have already verified that the event is an
+// incoming invitation that is still pending or tentative.
+func (c *CalendarClient) DeclineEvent(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event) (*googlecalendar.Event, error) {
+	return c.service.Events.Update(calendarID, eventID, event).
+		Context(ctx).
+		SendUpdates("all").
+		Do()
+}
+
 func (c *CalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	return c.service.Events.Delete(calendarID, eventID).Context(ctx).Do()
 }
