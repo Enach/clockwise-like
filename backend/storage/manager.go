@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,21 +55,27 @@ func UpsertUserProfile(db *sql.DB, p *UserProfile) error {
 // ── ManagerTeamMember ────────────────────────────────────────────────────────────────
 
 type ManagerTeamMember struct {
-	ID               uuid.UUID
-	ManagerUserID    uuid.UUID
-	MemberEmail      string
-	MemberUserID     *uuid.UUID
-	DisplayName      string
-	Source           string // "auto" | "manual"
-	Cadence          string // "weekly" | "biweekly" | "monthly" | "custom" | "none"
+	ID                uuid.UUID
+	ManagerUserID     uuid.UUID
+	MemberEmail       string
+	MemberUserID      *uuid.UUID
+	DisplayName       string
+	Source            string // "auto" | "manual"
+	Cadence           string // "weekly" | "biweekly" | "monthly" | "custom" | "none"
 	CadenceCustomDays *int
-	LastOneOnOneAt   *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	LastOneOnOneAt    *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
-func UpsertManagerTeamMember(db *sql.DB, m *ManagerTeamMember) error {
-	_, err := db.Exec(`
+type sqlExecutor interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+func upsertManagerTeamMember(exec sqlExecutor, m *ManagerTeamMember) error {
+	m.MemberEmail = strings.ToLower(strings.TrimSpace(m.MemberEmail))
+	m.DisplayName = strings.TrimSpace(m.DisplayName)
+	_, err := exec.Exec(`
 		INSERT INTO manager_team_members
 			(manager_user_id, member_email, member_user_id, display_name, source,
 			 cadence, cadence_custom_days, last_one_on_one_at)
@@ -87,7 +94,12 @@ func UpsertManagerTeamMember(db *sql.DB, m *ManagerTeamMember) error {
 	return err
 }
 
+func UpsertManagerTeamMember(db *sql.DB, m *ManagerTeamMember) error {
+	return upsertManagerTeamMember(db, m)
+}
+
 func GetManagerTeamMemberByEmail(db *sql.DB, managerID uuid.UUID, email string) (*ManagerTeamMember, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	row := db.QueryRow(`
 		SELECT id, manager_user_id, member_email, member_user_id, display_name,
 		       source, cadence, cadence_custom_days, last_one_on_one_at, created_at, updated_at
@@ -118,19 +130,197 @@ func ListManagerTeamMembers(db *sql.DB, managerID uuid.UUID) ([]*ManagerTeamMemb
 	return members, rows.Err()
 }
 
+func UpsertManagerTeamMemberForTeam(db *sql.DB, teamID uuid.UUID, m *ManagerTeamMember) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := upsertManagerTeamMember(tx, m); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO manager_team_member_assignments
+			(manager_user_id, team_id, member_email, cadence, cadence_custom_days)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (manager_user_id, team_id, member_email) DO UPDATE SET
+			cadence=EXCLUDED.cadence,
+			cadence_custom_days=EXCLUDED.cadence_custom_days`,
+		m.ManagerUserID, teamID, m.MemberEmail, m.Cadence, m.CadenceCustomDays); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func AssignManagerTeamMembersMatchingFormalTeam(db *sql.DB, managerID, teamID uuid.UUID) (int64, error) {
+	result, err := db.Exec(`
+		INSERT INTO manager_team_member_assignments (manager_user_id, team_id, member_email)
+		SELECT mtm.manager_user_id, $2, mtm.member_email
+		FROM manager_team_members mtm
+		JOIN users u ON lower(u.email) = lower(mtm.member_email)
+		JOIN team_members tm ON tm.team_id=$2 AND tm.user_id=u.id
+		WHERE mtm.manager_user_id=$1 AND u.id<>$1
+		ON CONFLICT DO NOTHING`, managerID, teamID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func ListManagerTeamMembersForTeam(db *sql.DB, managerID, teamID uuid.UUID) ([]*ManagerTeamMember, error) {
+	rows, err := db.Query(`
+		SELECT mtm.id, mtm.manager_user_id, mtm.member_email, mtm.member_user_id,
+		       COALESCE(NULLIF(btrim(a.display_name_override), ''), mtm.display_name),
+		       mtm.source, a.cadence, a.cadence_custom_days,
+		       mtm.last_one_on_one_at, mtm.created_at, mtm.updated_at
+		FROM manager_team_members mtm
+		JOIN manager_team_member_assignments a
+		  ON a.manager_user_id=mtm.manager_user_id
+		 AND a.member_email=mtm.member_email
+		WHERE a.manager_user_id=$1 AND a.team_id=$2
+		ORDER BY mtm.display_name`, managerID, teamID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []*ManagerTeamMember
+	for rows.Next() {
+		m, err := scanTeamMember(rows)
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
+}
+
+func GetManagerTeamMemberByEmailForTeam(db *sql.DB, managerID, teamID uuid.UUID, email string) (*ManagerTeamMember, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	row := db.QueryRow(`
+		SELECT mtm.id, mtm.manager_user_id, mtm.member_email, mtm.member_user_id,
+		       COALESCE(NULLIF(btrim(a.display_name_override), ''), mtm.display_name),
+		       mtm.source, a.cadence, a.cadence_custom_days,
+		       mtm.last_one_on_one_at, mtm.created_at, mtm.updated_at
+		FROM manager_team_members mtm
+		JOIN manager_team_member_assignments a
+		  ON a.manager_user_id=mtm.manager_user_id
+		 AND a.member_email=mtm.member_email
+		WHERE a.manager_user_id=$1 AND a.team_id=$2 AND a.member_email=$3`,
+		managerID, teamID, email)
+	return scanTeamMember(row)
+}
+
+func UnassignManagerTeamMember(db *sql.DB, managerID, teamID uuid.UUID, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	_, err := db.Exec(`
+		DELETE FROM manager_team_member_assignments
+		WHERE manager_user_id=$1 AND team_id=$2 AND member_email=$3`,
+		managerID, teamID, email)
+	return err
+}
+
 func DeleteManagerTeamMemberByEmail(db *sql.DB, managerID uuid.UUID, email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := db.Exec(`DELETE FROM manager_team_members WHERE manager_user_id=$1 AND member_email=$2`,
 		managerID, email)
 	return err
 }
 
 func PatchManagerTeamMember(db *sql.DB, managerID uuid.UUID, email, displayName, cadence string, customDays *int) error {
+	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := db.Exec(`
 		UPDATE manager_team_members
 		SET display_name=$3, cadence=$4, cadence_custom_days=$5, updated_at=now()
 		WHERE manager_user_id=$1 AND member_email=$2`,
 		managerID, email, displayName, cadence, customDays)
 	return err
+}
+
+// PatchManagerTeamMemberForTeam changes only team-scoped preferences. The
+// canonical display name and email identity remain on manager_team_members.
+func PatchManagerTeamMemberForTeam(db *sql.DB, managerID, teamID uuid.UUID, email, displayName, cadence string, customDays *int) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	displayName = strings.TrimSpace(displayName)
+	var override *string
+	var canonical string
+	if err := db.QueryRow(`
+		SELECT display_name FROM manager_team_members
+		WHERE manager_user_id=$1 AND member_email=$2`, managerID, email).Scan(&canonical); err != nil {
+		return err
+	}
+	if displayName != "" && displayName != canonical {
+		override = &displayName
+	}
+	result, err := db.Exec(`
+		UPDATE manager_team_member_assignments
+		SET display_name_override=$4, cadence=$5, cadence_custom_days=$6
+		WHERE manager_user_id=$1 AND team_id=$2 AND member_email=$3`,
+		managerID, teamID, email, override, cadence, customDays)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ConfirmManagerTeamMembers atomically assigns known global candidates to one
+// explicitly selected team. Duplicate and unknown emails are counted once as
+// skipped; repeated confirmation is idempotent.
+func ConfirmManagerTeamMembers(db *sql.DB, managerID, teamID uuid.UUID, emails []string) (assigned, skipped, total int, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	seen := make(map[string]struct{}, len(emails))
+	for _, raw := range emails {
+		email := strings.ToLower(strings.TrimSpace(raw))
+		if email == "" {
+			skipped++
+			continue
+		}
+		if _, duplicate := seen[email]; duplicate {
+			skipped++
+			continue
+		}
+		seen[email] = struct{}{}
+		var exists bool
+		if err := tx.QueryRow(`SELECT EXISTS(
+			SELECT 1 FROM manager_team_members
+			WHERE manager_user_id=$1 AND member_email=$2)`, managerID, email).Scan(&exists); err != nil {
+			return 0, 0, 0, err
+		}
+		if !exists {
+			skipped++
+			continue
+		}
+		result, err := tx.Exec(`
+			INSERT INTO manager_team_member_assignments
+				(manager_user_id, team_id, member_email, cadence, cadence_custom_days)
+			SELECT manager_user_id, $2, member_email, cadence, cadence_custom_days
+			FROM manager_team_members
+			WHERE manager_user_id=$1 AND member_email=$3
+			ON CONFLICT DO NOTHING`, managerID, teamID, email)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		if n, _ := result.RowsAffected(); n == 1 {
+			assigned++
+		} else {
+			skipped++
+		}
+	}
+	if err := tx.QueryRow(`
+		SELECT count(*) FROM manager_team_member_assignments
+		WHERE manager_user_id=$1 AND team_id=$2`, managerID, teamID).Scan(&total); err != nil {
+		return 0, 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, 0, err
+	}
+	return assigned, skipped, total, nil
 }
 
 type scanner interface {

@@ -202,6 +202,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Get("/profile", mgrh.getProfile)
 			r.Post("/profile", mgrh.postProfile)
 			r.Post("/detect", mgrh.detect)
+			r.Post("/detect/confirm", mgrh.confirmDetection)
 			r.Get("/team", mgrh.getTeam)
 			r.Post("/team/members", mgrh.addMember)
 			r.Delete("/team/members/{email}", mgrh.deleteMember)

@@ -34,10 +34,17 @@ func (e *ManagerEngine) now() time.Time {
 
 // ── Team Detection ────────────────────────────────────────────────────────────
 
+type DetectedCandidate struct {
+	Email       string `json:"email"`
+	DisplayName string `json:"display_name"`
+}
+
 type DetectResult struct {
 	MembersAdded   int
 	MembersUpdated int
 	IsManager      bool
+	Candidates     []DetectedCandidate
+	ScannedAt      time.Time
 }
 
 type oneOnOneOccurrence struct {
@@ -197,15 +204,21 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 
-	manager, _ := storage.GetUserByID(e.DB, managerID)
+	manager, err := storage.GetUserByID(e.DB, managerID)
+	if err != nil && err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load manager: %w", err)
+	}
 	managerEmail := ""
 	if manager != nil {
 		managerEmail = manager.Email
 	}
 	byEmail := collectOneOnOneCandidates(events, managerEmail)
 
-	profile, _ := storage.GetOrCreateUserProfile(e.DB, managerID)
-	result := &DetectResult{}
+	profile, err := storage.GetOrCreateUserProfile(e.DB, managerID)
+	if err != nil {
+		return nil, fmt.Errorf("load manager profile: %w", err)
+	}
+	result := &DetectResult{ScannedAt: e.now().UTC(), Candidates: []DetectedCandidate{}}
 
 	for _, c := range byEmail {
 		if len(c.occurrences) == 0 {
@@ -242,18 +255,25 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 			Cadence:        cadence,
 			LastOneOnOneAt: lastOOOPtr,
 		}
+		result.Candidates = append(result.Candidates, DetectedCandidate{Email: c.email, DisplayName: c.displayName})
 
-		existing, err := storage.GetManagerTeamMemberByEmail(e.DB, managerID, c.email)
-		if err != nil {
+		existing, lookupErr := storage.GetManagerTeamMemberByEmail(e.DB, managerID, c.email)
+		if lookupErr == sql.ErrNoRows {
 			result.MembersAdded++
+		} else if lookupErr != nil {
+			return nil, fmt.Errorf("lookup detected member %s: %w", c.email, lookupErr)
 		} else if existing != nil {
 			result.MembersUpdated++
 		}
-		_ = storage.UpsertManagerTeamMember(e.DB, m)
+		if err := storage.UpsertManagerTeamMember(e.DB, m); err != nil {
+			return nil, fmt.Errorf("persist detected member %s: %w", c.email, err)
+		}
 
 		// Record occurrences
 		for _, occ := range c.occurrences {
-			_ = storage.UpsertOneOnOneOccurrence(e.DB, managerID, c.email, occ.eventID, occ.occurredAt)
+			if err := storage.UpsertOneOnOneOccurrence(e.DB, managerID, c.email, occ.eventID, occ.occurredAt); err != nil {
+				return nil, fmt.Errorf("persist occurrence for %s: %w", c.email, err)
+			}
 		}
 	}
 
@@ -262,9 +282,14 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		profile.IsManager = true
 		profile.DetectedAt = &now2
 		result.IsManager = true
-		_ = storage.UpsertUserProfile(e.DB, profile)
+		if err := storage.UpsertUserProfile(e.DB, profile); err != nil {
+			return nil, fmt.Errorf("persist manager profile: %w", err)
+		}
 	}
 
+	sort.Slice(result.Candidates, func(i, j int) bool {
+		return result.Candidates[i].Email < result.Candidates[j].Email
+	})
 	return result, nil
 }
 
@@ -433,7 +458,7 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 		isPacedayUser = true
 	} else {
 		// External user — use FreeBusyService
-		fbSvc := &FreeBusyService{DB: e.DB, OAuthConfig: e.OAuthConfig}
+		fbSvc := NewFreeBusyService(e.DB, e.OAuthConfig)
 		weekEnd := weekStart.Add(7 * 24 * time.Hour)
 		results, err := fbSvc.Query(ctx, managerID, []string{member.MemberEmail}, weekStart, weekEnd)
 		if err == nil && len(results) > 0 {

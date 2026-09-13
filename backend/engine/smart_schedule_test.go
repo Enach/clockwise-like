@@ -98,9 +98,9 @@ func TestPickTopUnique(t *testing.T) {
 	base := time.Date(2025, 1, 6, 9, 0, 0, 0, time.UTC)
 	slots := []SuggestedSlot{
 		{Start: base, Score: 50},
-		{Start: base.Add(30 * time.Minute), Score: 40},        // too close to first
-		{Start: base.Add(2 * time.Hour), Score: 30},           // far enough
-		{Start: base.Add(3 * time.Hour), Score: 20},           // far enough
+		{Start: base.Add(30 * time.Minute), Score: 40},             // too close to first
+		{Start: base.Add(2 * time.Hour), Score: 30},                // far enough
+		{Start: base.Add(3 * time.Hour), Score: 20},                // far enough
 		{Start: base.Add(3*time.Hour + 10*time.Minute), Score: 15}, // too close to above
 	}
 
@@ -156,21 +156,55 @@ func TestSmartScheduler_Suggest_WithMock(t *testing.T) {
 	// With empty busy map, should return slots
 }
 
+func futureEnabledWorkSlot(t *testing.T, settings *storage.Settings) SuggestedSlot {
+	t.Helper()
+
+	loc, err := time.LoadLocation(settings.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	firstDay := time.Now().In(loc).Add(72 * time.Hour)
+	for dayOffset := 0; dayOffset < 14; dayOffset++ {
+		day := firstDay.AddDate(0, 0, dayOffset)
+		startText, endText, enabled := settings.WorkWindow(day)
+		if !enabled {
+			continue
+		}
+
+		start, err := time.ParseInLocation("2006-01-02 15:04", day.Format(time.DateOnly)+" "+startText, loc)
+		if err != nil {
+			t.Fatalf("parse enabled work window start %q: %v", startText, err)
+		}
+		end, err := time.ParseInLocation("2006-01-02 15:04", day.Format(time.DateOnly)+" "+endText, loc)
+		if err != nil {
+			t.Fatalf("parse enabled work window end %q: %v", endText, err)
+		}
+		if end.Sub(start) < 30*time.Minute {
+			continue
+		}
+
+		return SuggestedSlot{Start: start, End: start.Add(30 * time.Minute)}
+	}
+
+	t.Fatal("settings have no enabled future work window of at least 30 minutes")
+	return SuggestedSlot{}
+}
+
 func TestSmartScheduler_CreateMeeting_WithMock(t *testing.T) {
 	db := openTestDB(t)
 	mock := &mockCalOps{calID: "primary"}
 	sched := &SmartScheduler{DB: db, calOps: mock}
 
-	now := time.Now().UTC()
+	settings, err := storage.GetSettings(db)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
 	req := ScheduleRequest{
 		Title:       "Team Sync",
 		Description: "Weekly sync",
 		Attendees:   []string{"bob@co.com"},
 	}
-	slot := SuggestedSlot{
-		Start: now.Add(time.Hour),
-		End:   now.Add(2 * time.Hour),
-	}
+	slot := futureEnabledWorkSlot(t, settings)
 
 	created, err := sched.CreateMeeting(context.Background(), req, slot)
 	if err != nil {

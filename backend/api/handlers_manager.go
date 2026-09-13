@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -90,6 +91,10 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.requiredManagerTeamScope(w, r, userID, true)
+	if !ok {
+		return
+	}
 	eng := h.newEngine()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -100,14 +105,86 @@ func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "detection error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	type candidateResponse struct {
+		Email           string `json:"email"`
+		DisplayName     string `json:"display_name"`
+		AlreadyAssigned bool   `json:"already_assigned"`
+	}
+	candidates := make([]candidateResponse, 0, len(result.Candidates))
+	eligible := 0
+	for _, candidate := range result.Candidates {
+		_, lookupErr := storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, candidate.Email)
+		alreadyAssigned := lookupErr == nil
+		if lookupErr != nil && lookupErr != sql.ErrNoRows {
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
+		if !alreadyAssigned {
+			eligible++
+		}
+		candidates = append(candidates, candidateResponse{
+			Email: candidate.Email, DisplayName: candidate.DisplayName, AlreadyAssigned: alreadyAssigned,
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"team_id":    teamID.String(),
+		"scanned_at": result.ScannedAt,
+		"detected":   len(candidates),
+		"eligible":   eligible,
+		"assigned":   0,
+		"skipped":    len(candidates) - eligible,
+		"candidates": candidates,
+	})
+}
+
+func (h *managerHandlers) confirmDetection(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.requiredManagerTeamScope(w, r, userID, true)
+	if !ok {
+		return
+	}
+	var body struct {
+		Emails []string `json:"emails"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.Emails == nil {
+		writeError(w, "emails is required", http.StatusUnprocessableEntity)
+		return
+	}
+	normalized := make([]string, 0, len(body.Emails))
+	for _, raw := range body.Emails {
+		email, err := normalizeManagerEmail(raw)
+		if err != nil {
+			writeError(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		normalized = append(normalized, email)
+	}
+	assigned, skipped, total, err := storage.ConfirmManagerTeamMembers(h.db, userID, *teamID, normalized)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"team_id": teamID.String(), "assigned": assigned, "skipped": skipped, "total": total,
+	})
 }
 
 // ── Team CRUD ─────────────────────────────────────────────────────────────────
 
 func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.requiredManagerTeamScope(w, r, userID, false)
+	if !ok {
+		return
+	}
 	weekStr := r.URL.Query().Get("week")
 	weekStart := currentWeekStart()
 	if weekStr != "" {
@@ -120,7 +197,7 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	priorWeekStart := weekStart.Add(-7 * 24 * time.Hour)
 
-	members, err := storage.ListManagerTeamMembers(h.db, userID)
+	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -129,15 +206,16 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	eng := h.newEngine()
 
 	type memberResp struct {
-		Email          string                  `json:"email"`
-		DisplayName    string                  `json:"display_name"`
-		Source         string                  `json:"source"`
-		Cadence        string                  `json:"cadence"`
-		LastOneOnOneAt *time.Time              `json:"last_one_on_one_at"`
-		IsPacedayUser  bool                    `json:"is_paceday_user"`
-		ThisWeek       *engine.MemberWeekStats `json:"this_week"`
-		LastWeek       *engine.MemberWeekStats `json:"last_week"`
-		FocusTrendPct  float64                 `json:"focus_trend_pct"`
+		Email             string                  `json:"email"`
+		DisplayName       string                  `json:"display_name"`
+		Source            string                  `json:"source"`
+		Cadence           string                  `json:"cadence"`
+		CadenceCustomDays *int                    `json:"cadence_custom_days"`
+		LastOneOnOneAt    *time.Time              `json:"last_one_on_one_at"`
+		IsPacedayUser     bool                    `json:"is_paceday_user"`
+		ThisWeek          *engine.MemberWeekStats `json:"this_week"`
+		LastWeek          *engine.MemberWeekStats `json:"last_week"`
+		FocusTrendPct     float64                 `json:"focus_trend_pct"`
 	}
 
 	var result []memberResp
@@ -151,26 +229,34 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 			lastWeek = &engine.MemberWeekStats{}
 		}
 		result = append(result, memberResp{
-			Email:          m.MemberEmail,
-			DisplayName:    m.DisplayName,
-			Source:         m.Source,
-			Cadence:        m.Cadence,
-			LastOneOnOneAt: m.LastOneOnOneAt,
-			IsPacedayUser:  m.MemberUserID != nil,
-			ThisWeek:       thisWeek,
-			LastWeek:       lastWeek,
-			FocusTrendPct:  engine.TrendPct(thisWeek.FocusMinutes, lastWeek.FocusMinutes),
+			Email:             m.MemberEmail,
+			DisplayName:       m.DisplayName,
+			Source:            m.Source,
+			Cadence:           m.Cadence,
+			CadenceCustomDays: m.CadenceCustomDays,
+			LastOneOnOneAt:    m.LastOneOnOneAt,
+			IsPacedayUser:     m.MemberUserID != nil,
+			ThisWeek:          thisWeek,
+			LastWeek:          lastWeek,
+			FocusTrendPct:     engine.TrendPct(thisWeek.FocusMinutes, lastWeek.FocusMinutes),
 		})
 	}
 	if result == nil {
 		result = []memberResp{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"members": result})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"team_id": teamID.String(),
+		"members": result,
+	})
 }
 
 func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.managerTeamScope(w, r, userID, true)
+	if !ok {
+		return
+	}
 	var body struct {
 		Email             string `json:"email"`
 		DisplayName       string `json:"display_name"`
@@ -211,7 +297,12 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.QueryRow(`SELECT id FROM users WHERE email=$1`, email).Scan(&uid); err == nil {
 		m.MemberUserID = &uid
 	}
-	if err := storage.UpsertManagerTeamMember(h.db, m); err != nil {
+	if teamID != nil {
+		err = storage.UpsertManagerTeamMemberForTeam(h.db, *teamID, m)
+	} else {
+		err = storage.UpsertManagerTeamMember(h.db, m)
+	}
+	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -222,13 +313,36 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.managerTeamScope(w, r, userID, true)
+	if !ok {
+		return
+	}
 	email := managerEmailParam(r)
-	_ = storage.DeleteManagerTeamMemberByEmail(h.db, userID, email)
+	if teamID == nil {
+		_ = storage.DeleteManagerTeamMemberByEmail(h.db, userID, email)
+	} else {
+		var targetID uuid.UUID
+		if err := h.db.QueryRow(`SELECT id FROM users WHERE lower(email)=lower($1)`, email).Scan(&targetID); err == nil {
+			if membership, memberErr := storage.GetTeamMember(h.db, *teamID, targetID); memberErr == nil {
+				if membership.Role == "owner" {
+					writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
+					return
+				}
+				_ = storage.RemoveTeamMember(h.db, *teamID, targetID)
+			}
+		}
+		_ = storage.UnassignManagerTeamMember(h.db, userID, *teamID, email)
+		_, _ = h.db.Exec(`DELETE FROM team_invites WHERE team_id=$1 AND lower(invitee_email)=lower($2) AND status='pending'`, *teamID, email)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.managerTeamScope(w, r, userID, true)
+	if !ok {
+		return
+	}
 	email := managerEmailParam(r)
 	var body struct {
 		DisplayName       *string `json:"display_name"`
@@ -239,7 +353,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	m, err := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
+	m, err := h.getOrCreateScopedMember(userID, teamID, email)
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -270,11 +384,19 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 	if displayName == "" {
 		displayName = strings.Split(m.MemberEmail, "@")[0]
 	}
-	if err := storage.PatchManagerTeamMember(h.db, userID, email, displayName, cadence, customDays); err != nil {
+	if teamID == nil {
+		err = storage.PatchManagerTeamMember(h.db, userID, email, displayName, cadence, customDays)
+	} else {
+		err = storage.PatchManagerTeamMemberForTeam(h.db, userID, *teamID, email, displayName, cadence, customDays)
+	}
+	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	updated, _ := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
+	if teamID != nil {
+		updated, _ = storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, email)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
 }
@@ -283,6 +405,10 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 
 func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.managerTeamScope(w, r, userID, false)
+	if !ok {
+		return
+	}
 	eng := h.newEngine()
 	gaps, err := eng.GetGaps(r.Context(), userID)
 	if err != nil {
@@ -292,12 +418,34 @@ func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	if gaps == nil {
 		gaps = []engine.CadenceGap{}
 	}
+	if teamID != nil {
+		members, listErr := h.listManagerMembers(userID, teamID)
+		if listErr != nil {
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
+		allowed := make(map[string]bool, len(members))
+		for _, member := range members {
+			allowed[strings.ToLower(member.MemberEmail)] = true
+		}
+		filtered := gaps[:0]
+		for _, gap := range gaps {
+			if allowed[strings.ToLower(gap.MemberEmail)] {
+				filtered = append(filtered, gap)
+			}
+		}
+		gaps = filtered
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"gaps": gaps})
 }
 
 func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.managerTeamScope(w, r, userID, false)
+	if !ok {
+		return
+	}
 	email := managerEmailParam(r)
 
 	var body struct {
@@ -314,7 +462,7 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	m, err := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
+	m, err := h.getOrCreateScopedMember(userID, teamID, email)
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -330,7 +478,7 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 	if body.SuggestedDate != "" {
 		q.Set("date", body.SuggestedDate)
 	}
-	prefillURL := "/app/calendar/new?" + q.Encode()
+	prefillURL := "/app?" + q.Encode()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"prefill_url": prefillURL})
@@ -340,6 +488,10 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 
 func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
+	teamID, ok := h.managerTeamScope(w, r, userID, false)
+	if !ok {
+		return
+	}
 	weekStr := r.URL.Query().Get("week")
 	weekStart := currentWeekStart()
 	if weekStr != "" {
@@ -351,7 +503,7 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		weekStart = t
 	}
 	months := 3
-	members, err := storage.ListManagerTeamMembers(h.db, userID)
+	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -400,6 +552,113 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+func (h *managerHandlers) requiredManagerTeamScope(w http.ResponseWriter, r *http.Request, userID uuid.UUID, requireOwner bool) (*uuid.UUID, bool) {
+	if strings.TrimSpace(r.URL.Query().Get("team_id")) == "" {
+		writeError(w, "team_id is required", http.StatusBadRequest)
+		return nil, false
+	}
+	return h.managerTeamScope(w, r, userID, requireOwner)
+}
+
+func (h *managerHandlers) managerTeamScope(w http.ResponseWriter, r *http.Request, userID uuid.UUID, requireOwner bool) (*uuid.UUID, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("team_id"))
+	if raw == "" {
+		return nil, true
+	}
+	teamID, err := uuid.Parse(raw)
+	if err != nil {
+		writeError(w, "team_id must be a valid UUID", http.StatusBadRequest)
+		return nil, false
+	}
+	membership, err := storage.GetTeamMember(h.db, teamID, userID)
+	if err != nil || (requireOwner && membership.Role != "owner") {
+		writeError(w, "forbidden", http.StatusForbidden)
+		return nil, false
+	}
+	return &teamID, true
+}
+
+func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID) ([]*storage.ManagerTeamMember, error) {
+	if teamID == nil {
+		return storage.ListManagerTeamMembers(h.db, userID)
+	}
+	assigned, err := storage.ListManagerTeamMembersForTeam(h.db, userID, *teamID)
+	if err != nil {
+		return nil, err
+	}
+	byEmail := make(map[string]*storage.ManagerTeamMember, len(assigned))
+	for _, member := range assigned {
+		byEmail[strings.ToLower(member.MemberEmail)] = member
+	}
+	formalMembers, err := storage.ListTeamMembers(h.db, *teamID)
+	if err != nil {
+		return nil, err
+	}
+	for _, formal := range formalMembers {
+		email := strings.ToLower(strings.TrimSpace(formal.Email))
+		if email == "" || formal.UserID == userID {
+			continue
+		}
+		if _, exists := byEmail[email]; exists {
+			continue
+		}
+		memberUserID := formal.UserID
+		displayName := strings.TrimSpace(formal.Name)
+		if displayName == "" {
+			displayName = strings.Split(email, "@")[0]
+		}
+		byEmail[email] = &storage.ManagerTeamMember{
+			ManagerUserID: userID,
+			MemberEmail:   email,
+			MemberUserID:  &memberUserID,
+			DisplayName:   displayName,
+			Source:        "formal",
+			Cadence:       "none",
+		}
+	}
+	result := make([]*storage.ManagerTeamMember, 0, len(byEmail))
+	for _, member := range byEmail {
+		result = append(result, member)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return strings.ToLower(result[i].DisplayName) < strings.ToLower(result[j].DisplayName)
+	})
+	return result, nil
+}
+
+func (h *managerHandlers) getOrCreateScopedMember(userID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, error) {
+	if teamID == nil {
+		return storage.GetManagerTeamMemberByEmail(h.db, userID, email)
+	}
+	member, err := storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, email)
+	if err == nil || err != sql.ErrNoRows {
+		return member, err
+	}
+	formalMembers, err := storage.ListTeamMembers(h.db, *teamID)
+	if err != nil {
+		return nil, err
+	}
+	for _, formal := range formalMembers {
+		if !strings.EqualFold(formal.Email, email) || formal.UserID == userID {
+			continue
+		}
+		memberUserID := formal.UserID
+		displayName := strings.TrimSpace(formal.Name)
+		if displayName == "" {
+			displayName = strings.Split(email, "@")[0]
+		}
+		member = &storage.ManagerTeamMember{
+			ManagerUserID: userID, MemberEmail: strings.ToLower(email), MemberUserID: &memberUserID,
+			DisplayName: displayName, Source: "manual", Cadence: "none",
+		}
+		if err := storage.UpsertManagerTeamMemberForTeam(h.db, *teamID, member); err != nil {
+			return nil, err
+		}
+		return member, nil
+	}
+	return nil, sql.ErrNoRows
+}
 
 func currentWeekStart() time.Time {
 	now := time.Now().UTC()

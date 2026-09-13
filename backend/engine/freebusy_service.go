@@ -168,6 +168,9 @@ func (s *FreeBusyService) getCached(key string) (cachedResult, bool) {
 func (s *FreeBusyService) setCached(key string, r cachedResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.cache == nil {
+		s.cache = make(map[string]cachedResult)
+	}
 	s.cache[key] = r
 }
 

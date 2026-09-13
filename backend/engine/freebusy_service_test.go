@@ -91,3 +91,15 @@ func TestNewFreeBusyService(t *testing.T) {
 		t.Error("expected cache to be initialized and functional")
 	}
 }
+
+func TestFreeBusyCacheLazyInitialization(t *testing.T) {
+	// Keep the zero-value service safe for callers that construct it directly.
+	svc := &FreeBusyService{}
+	svc.setCached("lazy-init", cachedResult{
+		coverage:  "known",
+		expiresAt: time.Now().Add(time.Minute),
+	})
+	if _, ok := svc.getCached("lazy-init"); !ok {
+		t.Error("expected cache to initialize on first write")
+	}
+}
