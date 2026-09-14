@@ -1,0 +1,33 @@
+{
+  "featureId": "PAC-12",
+  "linearIssueUrl": null,
+  "status": "draft",
+  "contractRevision": "1",
+  "contractHash": "fe5d5f61108fa2c603cb1d09ef637b616515baeb5761390cd45e904a85249bce",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "repositories": {
+    "frontend": {
+      "url": "C:/Users/jouzu/Documents/New project/smart-calendar-flow",
+      "allowedPaths": [
+        "frontend"
+      ]
+    },
+    "backend": {
+      "url": "C:/Users/jouzu/Documents/New project/clockwise-like",
+      "allowedPaths": [
+        "backend",
+        "contracts"
+      ]
+    }
+  },
+  "gates": {
+    "contractApproval": "GitHub PR approval on this contract PR",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "Contract/provider/consumer tests must pass locally before implementation approval."
+  ],
+  "rollback": "Revert the implementation PRs and keep the approved contract revision immutable."
+}
