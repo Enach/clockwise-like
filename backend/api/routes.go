@@ -10,6 +10,11 @@ import (
 )
 
 func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin, frontendURL string) {
+	// Sentry panic reporting must be the outermost middleware so it observes
+	// panics from every handler and inner middleware. It repanics, so a panic
+	// still becomes a 500 exactly as before (contract §3, §5). When Sentry was
+	// not initialized (no DSN), the hub is a no-op and this is transparent.
+	r.Use(sentryMiddleware())
 	r.Use(corsMiddleware(allowedOrigin))
 	r.Use(loggingMiddleware)
 
