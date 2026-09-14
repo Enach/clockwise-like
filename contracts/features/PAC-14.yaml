@@ -1,0 +1,39 @@
+{
+  "featureId": "PAC-14",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-14/add-sentry-to-go-backend-and-react-frontend",
+  "status": "draft",
+  "contractRevision": "1",
+  "contractHash": "598041f604485673809cb56502c000d32224ea5ff55462afddfeecb82ad8868e",
+  "contractDoc": "contracts/features/PAC-14.md",
+  "supersedes": "PAC-12",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "repositories": {
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "frontend"
+      ]
+    },
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend",
+        "contracts"
+      ]
+    }
+  },
+  "gates": {
+    "contractApproval": "GitHub PR approval on this contract PR",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "Backend boots with SENTRY_DSN unset (init non-fatal).",
+    "BeforeSend scrubber removes Authorization, Cookie, and *token*/*secret* fields.",
+    "A panic in a backend/api handler is reported to Sentry and still returns 500.",
+    "Frontend error boundary captures a render exception and shows fallback UI.",
+    "Contract/provider/consumer tests must pass locally before implementation approval."
+  ],
+  "rollback": "Revert the implementation PRs and keep the approved contract revision immutable. Runtime kill switch: unset SENTRY_DSN / VITE_SENTRY_DSN."
+}
