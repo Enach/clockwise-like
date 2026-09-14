@@ -12,11 +12,19 @@ import (
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/scheduler"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/getsentry/sentry-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/robfig/cron/v3"
 )
 
 func main() {
+	// Sentry MUST be initialized before any DB open or cron start so a panic
+	// during startup is still captured, and Flush MUST be deferred so buffered
+	// events are delivered on shutdown (contract §2). Init is non-fatal: a
+	// bad/empty DSN degrades to "monitoring disabled" and the server still boots.
+	initSentry()
+	defer sentry.Flush(2 * time.Second)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -53,12 +61,14 @@ func main() {
 		userIDs, err := storage.ListUsersWithPersonalCalendars(db)
 		if err != nil {
 			log.Printf("personal blocker: list users: %v", err)
+			sentry.CaptureException(err)
 			return
 		}
 		for _, userID := range userIDs {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			if err := blocker.SyncAllForUser(ctx, userID); err != nil {
 				log.Printf("personal blocker sync for user %s: %v", userID, err)
+				sentry.CaptureException(err)
 			}
 			cancel()
 		}
@@ -78,6 +88,7 @@ func main() {
 		defer cancel()
 		if err := autoDecliner.RunAll(ctx); err != nil {
 			log.Printf("auto-decline batch: %v", err)
+			sentry.CaptureException(err)
 		}
 	}); err != nil {
 		log.Printf("auto-decline cron registration error: %v", err)
