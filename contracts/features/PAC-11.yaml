@@ -1,0 +1,33 @@
+{
+  "featureId": "PAC-11",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-11/complete-independent-review-and-production-release-of-pace-023",
+  "status": "draft",
+  "contractRevision": "1",
+  "contractHash": "93020cc143acb1d34adc38b4b5c9849a297f3b0f3c752a8041b6c8774799425b",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "repositories": {
+    "frontend": {
+      "url": "C:/Users/jouzu/Documents/New project/smart-calendar-flow",
+      "allowedPaths": [
+        "frontend"
+      ]
+    },
+    "backend": {
+      "url": "C:/Users/jouzu/Documents/New project/clockwise-like",
+      "allowedPaths": [
+        "backend",
+        "contracts"
+      ]
+    }
+  },
+  "gates": {
+    "contractApproval": "GitHub PR approval on this contract PR",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "Contract/provider/consumer tests must pass locally before implementation approval."
+  ],
+  "rollback": "Revert the implementation PRs and keep the approved contract revision immutable."
+}
