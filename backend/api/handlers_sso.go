@@ -174,6 +174,14 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no email in OIDC token claims", http.StatusBadRequest)
 		return
 	}
+	// The provider row was chosen by {domain}, and that row's issuer and client
+	// credentials are writable by org members. Without this check an IdP
+	// configured for one domain could assert any email and UpsertUser would
+	// hand back the existing account for it (PAC-45).
+	if !domain.EmailBelongsToDomain(userInfo.Email, d) {
+		http.Error(w, "email domain does not match SSO provider domain", http.StatusForbidden)
+		return
+	}
 
 	user, err := storage.UpsertUser(h.ah.db, userInfo.Email, userInfo.Name, "", "sso", userInfo.Sub)
 	if err != nil {
