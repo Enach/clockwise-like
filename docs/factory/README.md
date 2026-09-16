@@ -246,3 +246,43 @@ and 22 `x-uncertain` markers. Two standing rules follow:
    something wrong, the contract says so and links the defect. Specifying the
    intended behaviour and leaving the server wrong would make the contract a lie,
    and a lying contract is worse than no contract.
+
+## 8. Where each stage runs
+
+Work on Paceday happens in two kinds of session, and putting a stage in the wrong
+one is expensive. This section exists because the factory itself was built in the
+wrong one: 74 files were written in a cloud session that could not compile, test
+or push any of them, and they had to be delivered as patch files.
+
+| | Environment | Stages |
+|---|---|---|
+| **Cloud session** | Anthropic's container. Reads GitHub. No repo push, no package registries unless explicitly allowed. No Docker. | 0 intake, 1 spec, 2 contract, 3 plan, 6 review |
+| **Local Claude Code** | Your machine, rooted in the repo. Real credentials, real toolchain, `.claude/agents/` loaded, hooks active. | 4 implement, 5 verify, 7 release |
+
+The dividing line is simple: **a stage that must run a command belongs on the
+machine that can run it.** Stages 0–3 and 6 produce and read text — a Linear
+issue, a spec, a contract, a plan, a review. They need reasoning across both
+repos and no toolchain. Stages 4, 5 and 7 must execute `make verify`, `make e2e`,
+`git push` and `docker compose`, and a session that cannot run those cannot
+honour the gate it is supposed to own.
+
+Two consequences worth stating plainly:
+
+- **Never implement in a cloud session.** Not "implement and note that tests did
+  not run" — §3 rule 2 makes the note mandatory, but the note is not the point.
+  Code nobody has executed is a proposal wearing a commit's clothes.
+- **Before starting any stage, confirm the environment can run its gate.** One
+  command (`go build ./...`, `git push --dry-run`) settles it in seconds and is
+  far cheaper than discovering it at the end.
+
+### The handoff
+
+The two session types hand off through **artifacts in the repo**, never through
+conversation. A spec written in a cloud session is picked up by a local session
+because it is a committed file, not because the same context is still loaded.
+That is already how the stages work — §2 requires an artifact per stage precisely
+so the next stage can start cold.
+
+This is also why the artifact must stand alone. If a spec, contract or plan only
+makes sense with a verbal gloss from whoever produced it, it cannot cross the
+boundary, and the challenger roles are instructed to treat that as a defect.
