@@ -1,0 +1,1612 @@
+# Domain: scheduling
+# Source of truth: backend/api/routes.go, handlers_focus.go, handlers_schedule.go,
+# handlers_nlp.go, handlers_llm.go, handlers_settings.go, handlers_daily_recap.go,
+# backend/engine/{focus_time,compression,smart_schedule,daily_recap}.go,
+# backend/nlp/{parser,llm_factory}.go, backend/storage/settings.go.
+#
+# All routes below are registered inside the `requireAuth(jwtSecret)` chi group in
+# routes.go, so they inherit the global default security scheme (no per-operation
+# `security` key is written here, by instruction).
+#
+# Two distinct error encodings exist in this domain and are NOT interchangeable:
+#   * writeError()  -> application/json, body {"error": "<msg>"}  (handlers_settings.go:206)
+#   * http.Error()  -> text/plain; charset=utf-8, body "<msg>\n"  (Go stdlib overwrites
+#                      any Content-Type the handler set beforehand)
+# Each response below states which one the handler actually uses.
+#
+# Nil-slice caveat: Go encodes a nil slice as JSON `null`, not `[]`. Every array-typed
+# field produced by these handlers from an un-appended slice is therefore nullable.
+
+paths:
+  /api/focus/run:
+    post:
+      operationId: runFocus
+      tags: [focus]
+      summary: Run the focus-time engine for a week
+      description: >
+        Creates focus blocks for the target week. The request body is decoded
+        best-effort: if the body is absent or is malformed JSON the handler
+        silently falls back to `week = ""` (i.e. the current week) and returns
+        200 - it does NOT return 400 for malformed JSON. A 400 is only produced
+        when `week` decodes to a non-empty string that fails
+        `time.Parse("2006-01-02", ...)`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FocusRunRequest'
+      responses:
+        '200':
+          description: Focus run result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FocusRunResult'
+        '400':
+          description: >
+            `invalid week format, use YYYY-MM-DD` - JSON error shape (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Engine failure. Written with http.Error, so the body is the raw Go
+            error string as text/plain, NOT the JSON error shape.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/focus/blocks:
+    get:
+      operationId: listFocusBlocks
+      tags: [focus]
+      summary: List persisted focus blocks for a week
+      description: >
+        Returns rows from the `focus_blocks` table where
+        `date >= week AND date < week+7days`, ordered by start_time.
+        NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
+        emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`,
+        `Date`, `CreatedAt`) - not snake_case and not camelCase.
+      parameters:
+        - name: week
+          in: query
+          required: false
+          description: >
+            Week anchor date, format `YYYY-MM-DD` (Go layout "2006-01-02").
+            Omitted or empty -> `time.Now()`. The value is used verbatim as the
+            lower bound; it is NOT snapped to Monday (unlike
+            POST /api/schedule/compress, which does snap via startOfWeek()).
+          schema:
+            type: string
+            format: date
+            example: '2025-01-06'
+      responses:
+        '200':
+          description: >
+            Focus block rows. `null` (not `[]`) when the week has no rows,
+            because the handler encodes a nil slice.
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  $ref: '#/components/schemas/FocusBlockRecord'
+        '400':
+          description: '`invalid week format` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: DB failure, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+    delete:
+      operationId: clearFocusBlocks
+      tags: [focus]
+      summary: Delete the focus blocks of a week
+      parameters:
+        - name: week
+          in: query
+          required: false
+          description: >
+            Week anchor date, `YYYY-MM-DD`. Omitted -> `time.Now()`.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Number of deleted blocks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FocusClearResult'
+        '400':
+          description: '`invalid week format` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Engine failure, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/compress:
+    post:
+      operationId: previewCompression
+      tags: [schedule]
+      summary: Preview meeting-compression proposals
+      description: >
+        Body decode errors are swallowed (`_ = json.NewDecoder(...).Decode(&body)`),
+        so malformed JSON behaves like an empty body and yields 200 for today.
+        If `week` is set it wins over `date`: the handler snaps the parsed date to
+        Monday (startOfWeek) and iterates Mon..Fri, appending one CompressionResult
+        per day and SILENTLY SKIPPING days whose engine call errors - so week mode
+        never returns 500, and can return `null` if all five days error.
+        If `week` is empty, `date` (or today) produces a single-element array and
+        an engine error becomes a 500.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompressionRequest'
+      responses:
+        '200':
+          description: >
+            Array of per-day results. `null` when the slice stayed empty
+            (week mode with every day failing).
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  $ref: '#/components/schemas/CompressionResult'
+        '400':
+          description: >
+            `invalid week format` or `invalid date format` - JSON error shape
+            (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Single-day mode only. Raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/compress/apply:
+    post:
+      operationId: applyCompression
+      tags: [schedule]
+      summary: Apply selected move proposals
+      description: >
+        The request proposal objects are snake_case (`event_id`,
+        `proposed_start`, `proposed_end`) even though the CompressionResult
+        proposals returned by /api/schedule/compress are camelCase. Only these
+        three fields are read; any other field on the posted object is ignored.
+        A proposal whose start or end fails RFC3339 parsing is NOT an error: it
+        is dropped and `"<event_id>: invalid time format"` is appended to
+        `failed` (confirmed by TestApplyCompress_InvalidTime, which expects 200).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompressionApplyRequest'
+      responses:
+        '200':
+          description: Applied / failed event ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompressionApplyResult'
+        '400':
+          description: '`invalid JSON` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Engine Apply() error, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/suggest:
+    post:
+      operationId: suggestMeetingSlots
+      tags: [schedule]
+      summary: Suggest meeting slots
+      description: >
+        `range_start` and `range_end` are both mandatory and must parse as
+        RFC3339; either one failing yields a single 400. `duration_minutes`,
+        `attendees` and `title` are optional as far as the handler is concerned
+        (no validation) - `duration_minutes: 0` produces zero-length candidate
+        slots rather than an error.
+        The engine walks candidate starts in 30-minute steps
+        (engine/smart_schedule.go: `t = t.Add(30 * time.Minute)`) and returns at
+        most 3 slots, each at least 1h apart (pickTopUnique(candidates, 3, time.Hour)).
+      x-uncertain: >
+        The task brief mentions a 15-minute increment rule. No 15-minute
+        constraint exists anywhere on this route: the smart scheduler steps 30
+        minutes, and the only 15-minute stepping in the repo is in
+        engine/booking.go, engine/habits.go and engine/team_availability.go,
+        which back other domains (booking links, habits, team availability).
+        A human should confirm whether a 15-minute rule was intended here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleSuggestRequest'
+      responses:
+        '200':
+          description: Ranked slot suggestions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleSuggestions'
+        '400':
+          description: >
+            `invalid JSON`, or
+            `invalid range_start or range_end (use RFC3339)` - JSON error shape
+            (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Engine error (freebusy failure, settings load, or the out-of-hours
+            allowance counter). Raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/create:
+    post:
+      operationId: createScheduledMeeting
+      tags: [schedule]
+      summary: Create a meeting at an explicit time
+      description: >
+        `start` and `end` must both parse as RFC3339. The handler builds an
+        `engine.ScheduleRequest` WITHOUT `duration_minutes` (the slot carries the
+        times) and calls SmartScheduler.CreateMeeting, which refuses out-of-hours
+        creation once the weekly allowance is spent - that refusal surfaces as a
+        500 with the text `out-of-hours meeting allowance reached`, not a 4xx.
+        On success an audit row `meeting_created` is written.
+        The response body is the raw Google Calendar API
+        `calendar/v3.Event` struct as returned by the calendar client - it is
+        NOT normalised into the app's own event shape.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleCreateRequest'
+      responses:
+        '200':
+          description: The created Google Calendar event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleCalendarEvent'
+        '400':
+          description: >
+            `invalid JSON`, or `invalid start or end (use RFC3339)` - JSON error
+            shape (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Calendar/engine error, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/nlp/parse:
+    post:
+      operationId: parseNaturalLanguage
+      tags: [nlp]
+      summary: Parse a natural-language scheduling request
+      description: >
+        A malformed body and an empty `text` are collapsed into the same 400
+        (`missing text field`). Note that LLM-level failures inside the parser
+        do NOT surface as 5xx: the parser returns
+        `{"intent":"unknown","error":"..."}` with HTTP 200. A 500 only occurs
+        when Parse() itself returns a non-nil error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NLPParseRequest'
+      responses:
+        '200':
+          description: Parse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NLPParseResult'
+        '400':
+          description: '`missing text field` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Parser error, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/nlp/confirm:
+    post:
+      operationId: confirmNaturalLanguage
+      tags: [nlp]
+      summary: Create the meeting for a chosen parsed slot
+      description: >
+        The whole ParseResult from /api/nlp/parse is echoed back. Only
+        `title`, `attendees`, `constraints` (mapped to the event Description)
+        and `suggested_slots[selected_slot_index]` are used; `duration_minutes`,
+        `range_start`, `range_end`, `preferred_times` and `avoid_times` are
+        ignored here. On success an audit row `nlp_confirmed` is written and the
+        raw Google Calendar event is returned.
+      x-uncertain: >
+        The bounds check is `len(SuggestedSlots) == 0 || SelectedSlotIndex >= len(...)`.
+        A NEGATIVE `selected_slot_index` passes validation and then indexes the
+        slice out of range, which panics. The panic is re-raised by
+        sentryMiddleware and becomes a generic 500 from net/http - it is not a
+        400. A human should confirm whether this is intended before the spec
+        documents a 400 for negative indexes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NLPConfirmRequest'
+      responses:
+        '200':
+          description: The created Google Calendar event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleCalendarEvent'
+        '400':
+          description: >
+            `invalid JSON`, or `invalid selected_slot_index` (empty slot list, or
+            index >= len). JSON error shape (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            CreateMeeting error as text/plain (http.Error), or an empty-body
+            panic-derived 500 for a negative index (see x-uncertain).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/llm/test:
+    post:
+      operationId: testLLMConnection
+      tags: [llm]
+      summary: Probe the configured LLM provider
+      description: >
+        Takes NO request body: the handler reads the stored settings
+        (storage.GetSettings) and never touches r.Body. It builds a client via
+        nlp.NewLLMClientFromSettings and issues a fixed completion
+        (system "You are a helpful assistant.", user "Say hello").
+      responses:
+        '200':
+          description: Provider reachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMTestResult'
+        '500':
+          description: >
+            Two different encodings share this code. Settings load failure ->
+            text/plain (http.Error). Client construction failure (e.g.
+            `LLM not configured - set API key in Settings`) -> JSON error shape
+            (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: >
+            The provider call failed. JSON error shape (writeError) carrying the
+            upstream error string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+
+  /api/settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Read the settings document
+      description: >
+        Registered as `r.Route("/api/settings", ...)` + `r.Get("/", ...)`, so chi
+        serves both `/api/settings` and `/api/settings/`.
+        storage.GetSettings reads `WHERE id = 1` - a SINGLETON row, not the
+        authenticated user's row, even though the table has a `user_id` column
+        and a `GetSettingsByUser` helper exists. When no row exists one is
+        inserted with the SQL defaults and returned.
+        `llmApiKey` is returned in cleartext.
+      responses:
+        '200':
+          description: The settings document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '500':
+          description: DB failure, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+    put:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Replace the settings document
+      description: >
+        FULL REPLACE, not a patch. The body is decoded into a zero-valued
+        storage.Settings, so every field the client omits is written as its Go
+        zero value (empty string / 0 / false) - omitting `llmApiKey` wipes the
+        stored key, omitting `recapEnabled` disables the recap, and so on. Two
+        stored columns are exempt because SaveSettings does not list them:
+        `microsoft_tokens` and `zoom_tokens` (both `json:"-"`) are preserved.
+        `updatedAt` in the request is ignored (the server writes NOW()).
+        The response is a fresh GetSettings read, so it reflects normalisation
+        (e.g. `workingHours` defaulting) rather than the submitted body.
+        Validation is partial - see the Settings schema for which fields are
+        actually checked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsUpdate'
+      responses:
+        '200':
+          description: The re-read settings document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '400':
+          description: >
+            `invalid JSON: <err>` or a validation message. JSON error shape
+            (writeError). Known messages:
+            `<field> must be in HH:MM format` (workStart/workEnd/lunchStart/lunchEnd);
+            `focusMinBlockMinutes must be positive`;
+            `focusMaxBlockMinutes must be positive`;
+            `focusDailyTargetMinutes must be positive`;
+            `outOfHoursMeetingsPerWeek must be zero or positive`;
+            `bufferBeforeMinutes must be positive`;
+            `bufferAfterMinutes must be positive`;
+            `autoScheduleCron must be a 5-part cron expression`;
+            `autoScheduleCron is invalid: <err>`;
+            `llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex`;
+            `workingHours.mode must be all_days or by_day`;
+            `workingHours.mode is required when day-specific hours are provided`;
+            `workingHours.days.<day> is not a valid weekday`;
+            `lunchBreaks.<day> is not a valid weekday`;
+            `<field> requires start and end when enabled`;
+            `<field> start and end must be in HH:MM format`;
+            `<field> end must be after start`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Save or re-read failure, text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/settings/daily-recap:
+    get:
+      operationId: getDailyRecapSettings
+      tags: [daily-recap]
+      summary: Read daily-recap settings
+      description: >
+        A snake_case projection of seven `recap*` fields of the same singleton
+        settings row that GET /api/settings exposes in camelCase. The two
+        representations are hand-maintained and can drift
+        (`recapIncludeFocus` <-> `include_focus_blocks`).
+      responses:
+        '200':
+          description: Daily-recap settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRecapSettings'
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+    patch:
+      operationId: patchDailyRecapSettings
+      tags: [daily-recap]
+      summary: Partially update daily-recap settings
+      description: >
+        A genuine partial update: every field is a pointer, and only non-null
+        fields are applied on top of a fresh GetSettings read before SaveSettings
+        is called. Returns 204 with an EMPTY body on success - it does not echo
+        the new state.
+        Caution: SaveSettings is a full-row write, so this PATCH also rewrites
+        every non-recap settings column from the values it just read back; the
+        `workingHours`/`lunchBreaks` normalisation in saveScheduleFields runs too.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailyRecapPatch'
+      responses:
+        '204':
+          description: Updated. No body.
+        '400':
+          description: >
+            `invalid JSON`, or `send_to must be 'dm' or 'channel'`. Written with
+            http.Error, so these are text/plain, NOT the JSON error shape.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/settings/daily-recap/preview:
+    post:
+      operationId: previewDailyRecap
+      tags: [daily-recap]
+      summary: Render today's recap without sending it
+      description: >
+        Builds the Slack Block Kit payload for the authenticated user at
+        `time.Now()` and returns it. No request body is read. Nothing is sent to
+        Slack and no Slack connection is required.
+      responses:
+        '200':
+          description: Rendered Slack blocks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRecapPreview'
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/settings/daily-recap/test:
+    post:
+      operationId: sendDailyRecapTest
+      tags: [daily-recap]
+      summary: Send a test recap to Slack
+      description: >
+        Requires a stored `slack` workspace connection for the authenticated
+        user. Destination comes from the stored settings (`recapSendTo`,
+        `recapChannelId`), not from the request - no request body is read.
+        The Slack call is bounded by a 10s context timeout.
+      responses:
+        '200':
+          description: Sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRecapTestResult'
+        '400':
+          description: >
+            `Slack not connected` (also returned when the workspace-connection
+            lookup errors for any other reason). text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: '`send error: <err>` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  schemas:
+
+    # ---------------------------------------------------------------- errors
+
+    SchedulingErrorResponse:
+      type: object
+      description: >
+        The JSON error shape produced by api.writeError (handlers_settings.go:206).
+        Emitted with `Content-Type: application/json`. Handlers that use the Go
+        stdlib `http.Error` instead return text/plain and do NOT use this shape;
+        each response above says which applies.
+        The 401 from requireAuth is a hybrid: the body text is
+        `{"error":"unauthorized"}` but it is written through http.Error, which
+        overwrites the Content-Type to `text/plain; charset=utf-8`.
+      properties:
+        error:
+          type: string
+      required: [error]
+      additionalProperties: false
+
+    # ----------------------------------------------------------------- focus
+
+    FocusRunRequest:
+      type: object
+      description: >
+        Optional. A malformed body is silently treated as `{}`.
+      properties:
+        week:
+          type: string
+          format: date
+          description: >
+            `YYYY-MM-DD`. Empty or absent -> current week (`time.Now()`).
+            Not snapped to Monday by the handler.
+          example: '2025-01-06'
+      additionalProperties: true
+
+    FocusRunResult:
+      type: object
+      description: engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+      properties:
+        weekStart:
+          type: string
+          format: date-time
+          description: RFC3339 (Go time.Time).
+        createdBlocks:
+          type: array
+          nullable: true
+          description: '`null` when the engine created nothing.'
+          items:
+            $ref: '#/components/schemas/FocusRunBlock'
+        skippedDays:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >
+            x-uncertain at field level - the format of each entry is not pinned
+            by a struct tag; it is whatever the engine appends.
+        totalMinutes:
+          type: integer
+        errors:
+          type: array
+          nullable: true
+          items:
+            type: string
+      required: [weekStart, createdBlocks, skippedDays, totalMinutes, errors]
+      additionalProperties: false
+
+    FocusRunBlock:
+      type: object
+      description: >
+        engine.FocusBlock. This struct has NO json tags, so the encoder emits
+        exported Go field names verbatim. It is a DIFFERENT shape from
+        FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+      properties:
+        GoogleEventID:
+          type: string
+        Start:
+          type: string
+          format: date-time
+        End:
+          type: string
+          format: date-time
+        Date:
+          type: string
+          format: date
+          description: '`YYYY-MM-DD`.'
+      required: [GoogleEventID, Start, End, Date]
+      additionalProperties: false
+
+    FocusBlockRecord:
+      type: object
+      description: >
+        storage.FocusBlock (backend/storage/models.go). No json tags either, so
+        the wire field names are the Go field names.
+      properties:
+        ID:
+          type: integer
+          format: int64
+        GoogleEventID:
+          type: string
+        StartTime:
+          type: string
+          format: date-time
+        EndTime:
+          type: string
+          format: date-time
+        Date:
+          type: string
+          format: date
+        CreatedAt:
+          type: string
+          format: date-time
+      required: [ID, GoogleEventID, StartTime, EndTime, Date, CreatedAt]
+      additionalProperties: false
+
+    FocusClearResult:
+      type: object
+      description: 'Literal `map[string]int{"deleted": n}`.'
+      properties:
+        deleted:
+          type: integer
+      required: [deleted]
+      additionalProperties: false
+
+    # ----------------------------------------------------------- compression
+
+    CompressionRequest:
+      type: object
+      description: >
+        Both fields optional; `week` takes precedence over `date` when non-empty.
+      properties:
+        date:
+          type: string
+          format: date
+          description: '`YYYY-MM-DD`. Used only when `week` is empty. Default: today.'
+        week:
+          type: string
+          format: date
+          description: >
+            `YYYY-MM-DD`. Snapped back to that week's Monday by startOfWeek(),
+            then Mon..Fri (5 days) are evaluated.
+      additionalProperties: true
+
+    CompressionResult:
+      type: object
+      description: engine.CompressionResult. camelCase.
+      properties:
+        date:
+          type: string
+          description: '`YYYY-MM-DD` as produced by the engine.'
+        proposals:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/MoveProposal'
+        totalFocusGainMinutes:
+          type: integer
+      required: [date, proposals, totalFocusGainMinutes]
+      additionalProperties: false
+
+    MoveProposal:
+      type: object
+      description: engine.MoveProposal - the RESPONSE shape (camelCase).
+      properties:
+        eventId:
+          type: string
+        eventTitle:
+          type: string
+        currentStart:
+          type: string
+          format: date-time
+        currentEnd:
+          type: string
+          format: date-time
+        proposedStart:
+          type: string
+          format: date-time
+        proposedEnd:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        focusGainMinutes:
+          type: integer
+      required:
+        - eventId
+        - eventTitle
+        - currentStart
+        - currentEnd
+        - proposedStart
+        - proposedEnd
+        - reason
+        - focusGainMinutes
+      additionalProperties: false
+
+    CompressionApplyRequest:
+      type: object
+      properties:
+        proposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompressionApplyProposal'
+      additionalProperties: true
+
+    CompressionApplyProposal:
+      type: object
+      description: >
+        The anonymous struct in api.applyRequest. snake_case, and only these
+        three fields are read - unknown members are ignored by encoding/json.
+      properties:
+        event_id:
+          type: string
+        proposed_start:
+          type: string
+          format: date-time
+          description: RFC3339. Unparseable -> the proposal lands in `failed`, no error.
+        proposed_end:
+          type: string
+          format: date-time
+      additionalProperties: true
+
+    CompressionApplyResult:
+      type: object
+      description: 'Literal map with keys `applied` and `failed`.'
+      properties:
+        applied:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Event ids the engine moved.
+        failed:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >
+            Mixed contents: handler-side entries read
+            `"<event_id>: invalid time format"`, engine-side entries are appended
+            verbatim by Compressor.Apply.
+      required: [applied, failed]
+      additionalProperties: false
+
+    # ------------------------------------------------------- smart scheduling
+
+    ScheduleSuggestRequest:
+      type: object
+      description: Anonymous struct in scheduleHandlers.suggestMeeting. snake_case.
+      properties:
+        duration_minutes:
+          type: integer
+          description: Not validated by the handler; 0 is accepted.
+        attendees:
+          type: array
+          items:
+            type: string
+            format: email
+        range_start:
+          type: string
+          format: date-time
+          description: RFC3339. Required in practice - a parse failure is a 400.
+        range_end:
+          type: string
+          format: date-time
+          description: RFC3339. Required in practice.
+        title:
+          type: string
+      required: [range_start, range_end]
+      additionalProperties: true
+
+    ScheduleSuggestions:
+      type: object
+      description: engine.ScheduleSuggestions.
+      properties:
+        slots:
+          type: array
+          nullable: true
+          description: At most 3 entries; `null` when no candidate survived.
+          items:
+            $ref: '#/components/schemas/SuggestedSlot'
+      required: [slots]
+      additionalProperties: false
+
+    SuggestedSlot:
+      type: object
+      description: engine.SuggestedSlot.
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        score:
+          type: integer
+          description: >
+            Integer score from scoreCandidate + adjustScoreForPreferences.
+            No documented range or normalisation.
+        reasons:
+          type: array
+          nullable: true
+          items:
+            type: string
+      required: [start, end, score, reasons]
+      additionalProperties: false
+
+    ScheduleCreateRequest:
+      type: object
+      description: Anonymous struct in scheduleHandlers.createMeeting. snake_case.
+      properties:
+        title:
+          type: string
+          description: Becomes the Google event Summary. Not required by the handler.
+        start:
+          type: string
+          format: date-time
+          description: RFC3339. Parse failure -> 400.
+        end:
+          type: string
+          format: date-time
+          description: RFC3339. Parse failure -> 400.
+        attendees:
+          type: array
+          items:
+            type: string
+            format: email
+        description:
+          type: string
+        location:
+          type: string
+      required: [start, end]
+      additionalProperties: true
+
+    GoogleCalendarEvent:
+      type: object
+      description: >
+        The raw `google.golang.org/api/calendar/v3.Event` returned by the
+        calendar client and re-encoded as-is. Only the members this repo sets or
+        reads are listed; the real payload carries the full Google Calendar
+        event resource and omits empty fields (the generated struct uses
+        `omitempty` almost everywhere).
+      x-uncertain: >
+        This schema is deliberately open (`additionalProperties: true`) and
+        partial. The exact member set is fixed by the vendored Google API client
+        version, not by this repo. A human should decide whether the contract
+        pins a normalised subset instead of leaking the vendor struct.
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        status:
+          type: string
+        htmlLink:
+          type: string
+        hangoutLink:
+          type: string
+        start:
+          $ref: '#/components/schemas/GoogleEventDateTime'
+        end:
+          $ref: '#/components/schemas/GoogleEventDateTime'
+        attendees:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoogleEventAttendee'
+      additionalProperties: true
+
+    GoogleEventDateTime:
+      type: object
+      description: calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
+      properties:
+        dateTime:
+          type: string
+          format: date-time
+        date:
+          type: string
+          format: date
+        timeZone:
+          type: string
+      additionalProperties: true
+
+    GoogleEventAttendee:
+      type: object
+      description: calendar/v3.EventAttendee. This repo only ever sets `email`.
+      properties:
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        organizer:
+          type: boolean
+        responseStatus:
+          type: string
+        optional:
+          type: boolean
+      additionalProperties: true
+
+    # ------------------------------------------------------------------- nlp
+
+    NLPParseRequest:
+      type: object
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: Empty string -> 400 `missing text field`.
+      required: [text]
+      additionalProperties: true
+
+    NLPParseResult:
+      type: object
+      description: >
+        nlp.ParseResult. snake_case - the only snake_case RESPONSE body in this
+        domain. Every field except `intent` carries `omitempty`, so absent
+        members are normal.
+      properties:
+        intent:
+          type: string
+          description: >
+            Values observed in the code and prompts: `schedule_meeting`,
+            `schedule_focus`, `unknown`. The field is a plain string with no
+            server-side validation, and the value ultimately comes from the LLM,
+            so other values are possible.
+          examples: [schedule_meeting, schedule_focus, unknown]
+        title:
+          type: string
+        duration_minutes:
+          type: integer
+        attendees:
+          type: array
+          items:
+            type: string
+        range_start:
+          type: string
+          format: date-time
+          description: >
+            Go `time.Time` with omitempty - which does NOT omit the zero time,
+            so a missing value may still serialise as `0001-01-01T00:00:00Z`.
+        range_end:
+          type: string
+          format: date-time
+          description: Same zero-time caveat as range_start.
+        preferred_times:
+          type: array
+          items:
+            type: string
+          description: 'Free-form windows, e.g. `"10:00-12:00"`.'
+        avoid_times:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: string
+          description: Reused as the event Description by /api/nlp/confirm.
+        timezone_notes:
+          type: string
+        error:
+          type: string
+          description: >
+            Set (with intent `unknown`) when the LLM call fails or returns
+            invalid JSON - still HTTP 200.
+        suggested_slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/SuggestedSlot'
+        participant_infos:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParticipantInfo'
+      required: [intent]
+      additionalProperties: false
+
+    ParticipantInfo:
+      type: object
+      description: calendar.ParticipantInfo (backend/calendar/participants.go).
+      properties:
+        email:
+          type: string
+          format: email
+        timezone:
+          type: string
+          description: Empty string = unknown.
+        workStart:
+          type: string
+          description: '`HH:MM` or empty.'
+        workEnd:
+          type: string
+          description: '`HH:MM` or empty.'
+      required: [email, timezone, workStart, workEnd]
+      additionalProperties: false
+
+    NLPConfirmRequest:
+      type: object
+      properties:
+        parse_result:
+          $ref: '#/components/schemas/NLPParseResult'
+        selected_slot_index:
+          type: integer
+          description: >
+            Index into `parse_result.suggested_slots`. Only the upper bound is
+            checked; see the operation's x-uncertain note about negatives.
+      required: [parse_result, selected_slot_index]
+      additionalProperties: true
+
+    # ------------------------------------------------------------------- llm
+
+    LLMTestResult:
+      type: object
+      description: 'Literal map: `{"ok": true, "response": ..., "provider": ...}`.'
+      properties:
+        ok:
+          type: boolean
+          description: Always literal `true` on the 200 path.
+        response:
+          type: string
+          description: The provider's completion text for the fixed "Say hello" prompt.
+        provider:
+          type: string
+          description: Echo of the stored `llmProvider`; empty string when unset.
+      required: [ok, response, provider]
+      additionalProperties: false
+
+    # -------------------------------------------------------------- settings
+
+    DaySchedule:
+      type: object
+      description: storage.DaySchedule. No omitempty - all three always serialise.
+      properties:
+        enabled:
+          type: boolean
+        start:
+          type: string
+          pattern: '^[0-9]{2}:[0-9]{2}$'
+          description: >
+            `HH:MM`, validated with `^\d{2}:\d{2}$` AND `time.Parse("15:04")`,
+            so `25:00` is rejected. Empty string allowed when `enabled` is false.
+        end:
+          type: string
+          pattern: '^[0-9]{2}:[0-9]{2}$'
+      required: [enabled, start, end]
+      additionalProperties: false
+
+    WorkingHoursSchedule:
+      type: object
+      description: >
+        storage.WorkingHoursSchedule. Normalised on read: an empty `mode` is
+        rewritten to `{mode: all_days, default: {enabled: true, start: workStart
+        or 09:00, end: workEnd or 18:00}, days: {}}`, and a nil `days` map
+        becomes `{}`. So GET never returns an empty mode.
+      properties:
+        mode:
+          type: string
+          enum: [all_days, by_day]
+          description: >
+            Compared case-insensitively after trimming during validation, but
+            the persisted/returned value is whatever was sent. `""` is accepted
+            on write only when `days` is empty.
+        default:
+          $ref: '#/components/schemas/DaySchedule'
+          description: >
+            Only validated when `mode == "all_days"` and at least one of
+            enabled/start/end is set. Ignored by WorkWindow() in by_day mode.
+        days:
+          type: object
+          description: >
+            Keys must be lowercase English weekday names
+            (monday..sunday); the validator lowercases before checking, but
+            WorkWindow() looks up `strings.ToLower(day.Weekday().String())`, so
+            a non-lowercase key that passed validation will never match at read
+            time. In `by_day` mode a missing weekday means "not working".
+          additionalProperties:
+            $ref: '#/components/schemas/DaySchedule'
+      required: [mode, default, days]
+      additionalProperties: false
+
+    LunchBreakSchedule:
+      type: object
+      description: >
+        storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name.
+        Normalised to `{}` (never null) on read. A per-day entry overrides the
+        legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including
+        disabling lunch for that day.
+      additionalProperties:
+        $ref: '#/components/schemas/DaySchedule'
+
+    SettingsFields:
+      type: object
+      description: >
+        The property set shared by the GET response (`Settings`) and the PUT body
+        (`SettingsUpdate`). Field names come straight from the json tags on
+        storage.Settings - camelCase throughout. `ID`, `MicrosoftTokens` and
+        `ZoomTokens` are `json:"-"` and never appear on the wire.
+        No field carries omitempty, so the GET response always contains all of
+        them.
+      properties:
+        workStart:
+          type: string
+          pattern: '^[0-9]{2}:[0-9]{2}$'
+          description: '`HH:MM`. Validated only for format. DB default `09:00`.'
+        workEnd:
+          type: string
+          pattern: '^[0-9]{2}:[0-9]{2}$'
+          description: 'DB default `18:00`. No check that workEnd > workStart.'
+        timezone:
+          type: string
+          description: >
+            IANA name, e.g. `Europe/Paris`. NOT validated on write; engines fall
+            back to UTC when time.LoadLocation fails. DB default `UTC`.
+        focusMinBlockMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 25.'
+        focusMaxBlockMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 120. No min<=max check.'
+        focusDailyTargetMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 240.'
+        outOfHoursMeetingsPerWeek:
+          type: integer
+          minimum: 0
+          description: >
+            Weekly allowance of meetings outside working hours. 0 disables
+            out-of-hours scheduling entirely (canScheduleOutOfHours returns
+            false when <= 0).
+        autoDeclineOutsideWorkingHours:
+          type: boolean
+        focusLabel:
+          type: string
+          description: 'DB default `Focus Time`.'
+        focusColor:
+          type: string
+          description: 'Hex colour string. Not validated. DB default `#4F46E5`.'
+        lunchStart:
+          type: string
+          pattern: '^[0-9]{2}:[0-9]{2}$'
+          description: 'DB default `12:00`. Legacy global; overridden per-day by lunchBreaks.'
+        lunchEnd:
+          type: string
+          pattern: '^[0-9]{2}:[0-9]{2}$'
+          description: 'DB default `13:00`.'
+        protectLunch:
+          type: boolean
+          description: 'DB default true.'
+        bufferBeforeMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 5.'
+        bufferAfterMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 5.'
+        bufferEnabled:
+          type: boolean
+        bufferMinMeetingMinutes:
+          type: integer
+          description: Not range-validated (a negative value is accepted).
+        bufferSkipBackToBack:
+          type: boolean
+        workingHours:
+          $ref: '#/components/schemas/WorkingHoursSchedule'
+        lunchBreaks:
+          $ref: '#/components/schemas/LunchBreakSchedule'
+        compressionEnabled:
+          type: boolean
+        autoScheduleEnabled:
+          type: boolean
+        autoScheduleCron:
+          type: string
+          description: >
+            5-field cron (minute hour dom month dow), parsed with
+            robfig/cron v3 using exactly those five fields. Empty string skips
+            validation. DB default `0 8 * * *`.
+        llmProvider:
+          type: string
+          enum: ['', openai, anthropic, ollama, bedrock, azure_openai, vertex]
+          description: Empty string is explicitly allowed by validLLMProviders.
+        llmModel:
+          type: string
+          description: >
+            Provider default applied at call time when empty: `gpt-4o-mini`
+            (openai), `claude-haiku-4-5-20251001` (anthropic).
+        llmApiKey:
+          type: string
+          description: >
+            Returned in CLEARTEXT by GET /api/settings, and wiped by any PUT that
+            omits it. Required for openai and anthropic.
+        llmBaseUrl:
+          type: string
+          description: Also the legacy fallback for the ollama base URL.
+        awsRegion:
+          type: string
+        awsProfile:
+          type: string
+        bedrockModel:
+          type: string
+        azureEndpoint:
+          type: string
+        azureDeployment:
+          type: string
+        azureApiVersion:
+          type: string
+        gcpProject:
+          type: string
+        gcpLocation:
+          type: string
+        vertexModel:
+          type: string
+        ollamaBaseUrl:
+          type: string
+          description: 'Falls back to llmBaseUrl, then `http://localhost:11434`.'
+        ollamaModel:
+          type: string
+          description: 'Falls back to llmModel, then `llama3.2`.'
+        calendarProvider:
+          type: string
+          description: >
+            DB default `google`. Not validated by this handler.
+          x-uncertain: >
+            The set of accepted values is not enforced anywhere in the settings
+            path; `google` / `outlook` / `webcal` are what the frontend uses.
+        webcalUrl:
+          type: string
+        calendarEmail:
+          type: string
+        conferencingProvider:
+          type: string
+          description: >
+            Read with `COALESCE(conferencing_provider,'meet')`; conference.NewProvider
+            switches on `zoom`, `teams`, and treats everything else as `meet`.
+            So the wire values are `meet` / `zoom` / `teams`, not the frontend's
+            `google_meet` / `zoom` / `teams` / `custom`.
+        recapEnabled:
+          type: boolean
+        recapSendTime:
+          type: string
+          description: >
+            Read from a Postgres `TIME` column via `recap_send_time::TEXT`, so
+            the value is `HH:MM:SS` (e.g. `08:00:00`) despite the Go comment
+            saying "HH:MM". Empty -> `08:00` is substituted on write.
+          x-uncertain: >
+            Confirm the exact rendered form against a live Postgres; `::TEXT` on
+            TIME yields `08:00:00` (and can include fractional seconds), which
+            contradicts the struct comment and would break an `HH:MM` client.
+        recapSendTo:
+          type: string
+          enum: [dm, channel]
+          description: >
+            DB CHECK constraint enforces this. PUT /api/settings does NOT validate
+            it (only the daily-recap PATCH does), so a bad value fails at the DB
+            and surfaces as a 500.
+        recapChannelId:
+          type: string
+        recapIncludeBriefs:
+          type: boolean
+          description: 'DB default true.'
+        recapIncludeFocus:
+          type: boolean
+          description: >
+            DB default true. Exposed as `include_focus_blocks` by the daily-recap
+            endpoints.
+        recapIncludeHabits:
+          type: boolean
+          description: 'DB default true.'
+        updatedAt:
+          type: string
+          format: date-time
+          description: Server-managed; ignored on write.
+      additionalProperties: false
+
+    Settings:
+      description: >
+        GET/PUT /api/settings response. Every property is always present because
+        no field carries omitempty.
+      allOf:
+        - $ref: '#/components/schemas/SettingsFields'
+      required:
+        - workStart
+        - workEnd
+        - timezone
+        - focusMinBlockMinutes
+        - focusMaxBlockMinutes
+        - focusDailyTargetMinutes
+        - outOfHoursMeetingsPerWeek
+        - autoDeclineOutsideWorkingHours
+        - focusLabel
+        - focusColor
+        - lunchStart
+        - lunchEnd
+        - protectLunch
+        - bufferBeforeMinutes
+        - bufferAfterMinutes
+        - bufferEnabled
+        - bufferMinMeetingMinutes
+        - bufferSkipBackToBack
+        - workingHours
+        - lunchBreaks
+        - compressionEnabled
+        - autoScheduleEnabled
+        - autoScheduleCron
+        - llmProvider
+        - llmModel
+        - llmApiKey
+        - llmBaseUrl
+        - awsRegion
+        - awsProfile
+        - bedrockModel
+        - azureEndpoint
+        - azureDeployment
+        - azureApiVersion
+        - gcpProject
+        - gcpLocation
+        - vertexModel
+        - ollamaBaseUrl
+        - ollamaModel
+        - calendarProvider
+        - webcalUrl
+        - calendarEmail
+        - conferencingProvider
+        - recapEnabled
+        - recapSendTime
+        - recapSendTo
+        - recapChannelId
+        - recapIncludeBriefs
+        - recapIncludeFocus
+        - recapIncludeHabits
+        - updatedAt
+
+    SettingsUpdate:
+      description: >
+        PUT /api/settings body. Nothing is required by the decoder, but every
+        omitted field is persisted as its Go zero value - this is a replace, not
+        a merge.
+      allOf:
+        - $ref: '#/components/schemas/SettingsFields'
+
+    # ----------------------------------------------------------- daily recap
+
+    DailyRecapSettings:
+      type: object
+      description: >
+        Hand-built map in dailyRecapHandlers.getSettings. snake_case, and the
+        key names do not mirror the camelCase Settings keys one-to-one.
+      properties:
+        enabled:
+          type: boolean
+          description: settings.recapEnabled
+        send_time:
+          type: string
+          description: 'settings.recapSendTime - see that field''s HH:MM:SS caveat.'
+        send_to:
+          type: string
+          enum: [dm, channel]
+          description: settings.recapSendTo
+        channel_id:
+          type: string
+          description: settings.recapChannelId
+        include_briefs:
+          type: boolean
+          description: settings.recapIncludeBriefs
+        include_focus_blocks:
+          type: boolean
+          description: settings.recapIncludeFocus (name differs)
+        include_habits:
+          type: boolean
+          description: settings.recapIncludeHabits
+      required:
+        - enabled
+        - send_time
+        - send_to
+        - channel_id
+        - include_briefs
+        - include_focus_blocks
+        - include_habits
+      additionalProperties: false
+
+    DailyRecapPatch:
+      type: object
+      description: >
+        api.recapSettingsBody - all fields are Go pointers, so `null` and
+        omission both mean "leave unchanged". Only `send_to` is validated.
+      properties:
+        enabled:
+          type: boolean
+          nullable: true
+        send_time:
+          type: string
+          nullable: true
+          description: >
+            NOT validated by the handler. A value Postgres cannot cast to TIME
+            fails during SaveSettings and surfaces as a 500 `db error`.
+        send_to:
+          type: string
+          nullable: true
+          enum: [dm, channel]
+          description: Anything else -> 400 (text/plain).
+        channel_id:
+          type: string
+          nullable: true
+        include_briefs:
+          type: boolean
+          nullable: true
+        include_focus_blocks:
+          type: boolean
+          nullable: true
+        include_habits:
+          type: boolean
+          nullable: true
+      additionalProperties: true
+
+    DailyRecapPreview:
+      type: object
+      description: 'Literal `{"blocks": [...]}`.'
+      properties:
+        blocks:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/SlackBlock'
+      required: [blocks]
+      additionalProperties: false
+
+    SlackBlock:
+      type: object
+      description: >
+        engine.slackBlock is `map[string]interface{}` - an untyped Slack Block Kit
+        object. Observed block `type` values built by
+        engine.DailyRecapService.BuildMessage include `header` and `context`;
+        nested values are themselves slackBlocks or arrays of them.
+      x-uncertain: >
+        The full set of block types and their inner members is not pinned by any
+        Go type. Read engine/daily_recap.go BuildMessage end to end (or capture a
+        live preview) before publishing a stricter schema.
+      additionalProperties: true
+
+    DailyRecapTestResult:
+      type: object
+      description: 'Literal `{"ok": true, "slack_message_ts": "..."}`.'
+      properties:
+        ok:
+          type: boolean
+          description: Always literal `true` on the 200 path.
+        slack_message_ts:
+          type: string
+          description: Slack message timestamp returned by chat.postMessage.
+      required: [ok, slack_message_ts]
+      additionalProperties: false

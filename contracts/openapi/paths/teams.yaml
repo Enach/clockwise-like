@@ -1,0 +1,1602 @@
+# Domain: teams
+# Source of truth: backend/api/routes.go, backend/api/handlers_manager.go,
+# backend/api/handlers_teams.go, backend/storage/manager.go, backend/storage/teams.go,
+# backend/engine/manager.go, backend/engine/team_availability.go.
+# Contract tests consulted: backend/api/manager_contract_test.go,
+# backend/storage/manager_contract_test.go, backend/api/handlers_teams_test.go,
+# backend/api/handlers_manager_test.go.
+#
+# All routes below are registered inside the `requireAuth` group in routes.go and
+# therefore inherit the global default security scheme. This includes
+# GET /api/teams/invites/{token}, whose handler comment says "(public)" but which is
+# in fact mounted behind JWT auth (see teams.notes.md).
+#
+# TWO ERROR SHAPES EXIST. `writeError` (handlers_settings.go:206) emits
+# application/json {"error": "..."}; `http.Error` emits text/plain with a bare
+# message and no JSON envelope. Each response below names which one applies.
+
+paths:
+  /api/manager/profile:
+    get:
+      operationId: getManagerProfile
+      tags: [manager]
+      summary: Manager flag, detection timestamp and global roster size.
+      description: >
+        Not team-scoped. `team_member_count` counts rows in manager_team_members for the
+        caller (the global identity table), not assignments to any one formal team.
+      responses:
+        "200":
+          description: Manager profile summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagerProfileSummary" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+    post:
+      operationId: setManagerProfile
+      tags: [manager]
+      summary: Set the caller's is_manager flag; may trigger background detection.
+      description: >
+        When `is_manager` is true and the profile has no `detected_at` yet, the handler
+        spawns a background goroutine running DetectTeam with a 30s timeout. That
+        background run persists detected members into the GLOBAL manager_team_members
+        table only; it never creates team assignments. The response is written before
+        the goroutine completes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManagerProfileUpdate" }
+      responses:
+        "200":
+          description: >
+            The persisted storage.UserProfile Go struct. That struct carries NO json
+            tags, so encoding/json emits Go field names in PascalCase. This is
+            inconsistent with the snake_case GET response on the same path.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserProfileGoStruct" }
+        "400":
+          $ref: "#/components/responses/JsonError"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/manager/detect:
+    post:
+      operationId: previewManagerDetection
+      tags: [manager]
+      summary: Preview detected 1:1 candidates for a team. Assigns nothing.
+      description: >
+        PREVIEW half of the preview-then-confirm flow. Runs DetectTeam (which does write
+        the global manager_team_members identity rows and one_on_one_occurrences as a side
+        effect of scanning the calendar) and then reports, per candidate, whether that
+        email is ALREADY assigned to the selected team. `assigned` is hard-coded to 0:
+        this endpoint never creates a manager_team_member_assignments row for any team.
+        `team_id` is REQUIRED here and the caller must be the team OWNER.
+      parameters:
+        - $ref: "#/components/parameters/RequiredTeamIdQuery"
+      requestBody:
+        required: false
+        description: Body is ignored entirely.
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Detection preview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanPreview" }
+        "400":
+          description: >
+            JSON error. "team_id is required" when the query param is absent or blank;
+            "team_id must be a valid UUID" when unparseable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          description: >
+            text/plain. Either "detection error: <wrapped engine error>" (calendar/OAuth
+            failure) or "db error" from the per-candidate assignment lookup.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/manager/detect/confirm:
+    post:
+      operationId: confirmManagerDetection
+      tags: [manager]
+      summary: Explicitly assign selected candidate emails to one team.
+      description: >
+        CONFIRM half of the preview-then-confirm flow. The only endpoint that creates
+        manager_team_member_assignments rows from detection. Runs in a single transaction
+        (storage.ConfirmManagerTeamMembers) and is idempotent: a second confirm of the same
+        email counts as skipped, not assigned. Emails are lowercased/trimmed by the handler
+        before storage sees them. The request decoder uses DisallowUnknownFields, so any
+        field other than `emails` yields 400 "invalid JSON".
+      parameters:
+        - $ref: "#/components/parameters/RequiredTeamIdQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScanConfirmRequest" }
+      responses:
+        "200":
+          description: Assignment counts. `total` is the post-commit assignment count for this team.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanConfirmation" }
+        "400":
+          description: >
+            JSON error. "team_id is required", "team_id must be a valid UUID", or
+            "invalid JSON" (malformed body OR an unknown field, via DisallowUnknownFields).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "422":
+          description: >
+            JSON error. "emails is required" when the key is absent or JSON null (an empty
+            array is accepted and returns assigned=0, skipped=0); "email is required" for a
+            blank entry; "email must be a valid email address" for an unparseable entry.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/manager/team:
+    get:
+      operationId: getManagerRoster
+      tags: [manager]
+      summary: Team-scoped manager roster with this-week / last-week stats.
+      description: >
+        `team_id` is REQUIRED (unlike the member-mutation routes below), and membership —
+        not ownership — suffices. The roster is the union of (a) manager assignments for
+        this team and (b) formal team_members of this team that have no assignment yet,
+        synthesised with source="formal" and cadence="none". The caller is always excluded
+        from (b). Sorted case-insensitively by display_name. `members` is always an array,
+        never null.
+      parameters:
+        - $ref: "#/components/parameters/RequiredTeamIdQuery"
+        - name: week
+          in: query
+          required: false
+          description: >
+            Monday of the target week, YYYY-MM-DD, parsed as UTC midnight. Defaults to the
+            current ISO week's Monday in UTC. Not validated to actually be a Monday.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Manager roster.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagerRoster" }
+        "400":
+          description: >
+            JSON error. "team_id is required", "team_id must be a valid UUID", or
+            "week must be YYYY-MM-DD".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/manager/team/members:
+    post:
+      operationId: addManagerTeamMember
+      tags: [manager]
+      summary: Add or upsert a roster member, optionally scoped to a team.
+      description: >
+        `team_id` is OPTIONAL here. Without it the member is written to the global
+        manager_team_members table only. With it the write is transactional across
+        manager_team_members plus manager_team_member_assignments, and the caller must
+        be the team OWNER. Adding a member never creates a team_invites row (asserted by
+        TestManagerTeam_AddMemberCreatesOnlySelectedTeamAssignment).
+      parameters:
+        - $ref: "#/components/parameters/OptionalTeamIdQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddManagerMemberRequest" }
+      responses:
+        "201":
+          description: >
+            The in-memory storage.ManagerTeamMember Go struct. It has NO json tags, so the
+            body is PascalCase and its `ID`/`CreatedAt`/`UpdatedAt` are the Go zero values
+            (all-zero UUID, "0001-01-01T00:00:00Z") because the upsert does not read the
+            row back. Clients must re-fetch the roster instead of using this body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagerTeamMemberGoStruct" }
+        "400":
+          description: JSON error — "team_id must be a valid UUID" or "invalid JSON".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "422":
+          description: >
+            JSON error. "email is required"; "email must be a valid email address";
+            "cadence must be weekly, biweekly, monthly, custom, or none";
+            "custom_cadence_days must be between 1 and 365";
+            "custom_cadence_days is only valid with custom cadence".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/manager/team/members/{email}:
+    parameters:
+      - $ref: "#/components/parameters/MemberEmailPath"
+    delete:
+      operationId: removeManagerTeamMember
+      tags: [manager]
+      summary: Remove a member globally, or unassign them from one team.
+      description: >
+        Without `team_id`: deletes the global manager_team_members row outright.
+        With `team_id` (owner required): removes the formal team_members row if the email
+        maps to a Paceday user, deletes the manager assignment for this team only, deletes
+        pending team_invites for this email on this team, and LEAVES the global
+        manager_team_members identity row and its 1:1 history intact. Every storage error
+        on this path is swallowed, so a failed delete still returns 204.
+      parameters:
+        - $ref: "#/components/parameters/OptionalTeamIdQuery"
+      responses:
+        "204":
+          description: Deleted (or silently no-op). Empty body.
+        "400":
+          description: JSON error — "team_id must be a valid UUID".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "422":
+          description: JSON error — "the team owner cannot be removed".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    patch:
+      operationId: patchManagerTeamMember
+      tags: [manager]
+      summary: Update display name and/or cadence for a roster member.
+      description: >
+        Omitted fields keep their current value. Supplying `cadence` as anything other
+        than "custom" clears cadence_custom_days; omitting `cadence` preserves it
+        (TestManagerPatchMember_PreservesOmittedCustomDays). A blank display_name falls
+        back to the local part of the email. With `team_id`, only team-scoped preferences
+        change (display_name_override, cadence, cadence_custom_days on the assignment row);
+        the canonical global display name is never overwritten. Also, with `team_id`, a
+        formal team member with no assignment yet is materialised into an assignment on
+        first patch.
+      parameters:
+        - $ref: "#/components/parameters/OptionalTeamIdQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchManagerMemberRequest" }
+      responses:
+        "200":
+          description: >
+            The re-read storage.ManagerTeamMember, PascalCase (no json tags). The read
+            error is discarded, so this body can legitimately be the JSON literal `null`
+            when the re-read fails.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ManagerTeamMemberGoStruct"
+                  - type: "null"
+        "400":
+          description: JSON error — "team_id must be a valid UUID" or "invalid JSON".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "404":
+          description: text/plain "not found" — no such member in scope.
+          content:
+            text/plain:
+              schema: { type: string }
+        "422":
+          description: JSON error — cadence validation, same messages as addManagerTeamMember.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/manager/team/members/{email}/schedule:
+    post:
+      operationId: scheduleManagerOneOnOne
+      tags: [manager]
+      summary: Build a server-side /app prefill URL for a 1:1 with this member.
+      description: >
+        Creates nothing on any calendar. Returns a relative URL of the form
+        `/app?attendees=<email>&duration=30&title=1%3A1+with+<display_name>` plus
+        `&date=<suggested_date>` when supplied (query params are Go url.Values-encoded, so
+        alphabetically ordered). An empty body is accepted (io.EOF is tolerated).
+      parameters:
+        - $ref: "#/components/parameters/OptionalTeamIdQuery"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScheduleOneOnOneRequest" }
+      responses:
+        "200":
+          description: Prefill URL.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrefillUrlResponse" }
+        "400":
+          description: JSON error — "team_id must be a valid UUID" or "invalid JSON".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "404":
+          description: text/plain "not found".
+          content:
+            text/plain:
+              schema: { type: string }
+        "422":
+          description: JSON error — "suggested_date must be YYYY-MM-DD".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/manager/gaps:
+    get:
+      operationId: getManagerCadenceGaps
+      tags: [manager]
+      summary: Members whose 1:1 cadence is overdue or due within 7 days.
+      description: >
+        The engine always computes gaps over the manager's GLOBAL roster; when `team_id`
+        is supplied the handler post-filters that list to emails present in the team-scoped
+        roster (case-insensitive). Members with cadence="none" never appear. A member with
+        a recorded 1:1 occurrence in the next 14 days is suppressed. Sorted by
+        days_overdue descending. `gaps` is always an array, never null.
+      parameters:
+        - $ref: "#/components/parameters/OptionalTeamIdQuery"
+      responses:
+        "200":
+          description: Cadence gaps.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CadenceGapList" }
+        "400":
+          description: JSON error — "team_id must be a valid UUID".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          description: 'text/plain — "gap detection error: <err>" or "db error".'
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/manager/analytics:
+    get:
+      operationId: getManagerAnalytics
+      tags: [manager]
+      summary: Twelve weeks of per-member focus/meeting/free minutes.
+      description: >
+        Returns exactly 12 week buckets per member (months=3 is hard-coded and numWeeks =
+        months*4), ordered NEWEST FIRST: weeks[0].week_start == the resolved `week`, each
+        subsequent entry is 7 days earlier. A member with no data still gets 12 buckets of
+        zeroes with data_available=false. `members` is always an array, never null.
+      parameters:
+        - $ref: "#/components/parameters/OptionalTeamIdQuery"
+        - name: week
+          in: query
+          required: false
+          description: Monday of the newest week, YYYY-MM-DD. Defaults to the current UTC ISO week's Monday.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Per-member weekly analytics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ManagerAnalytics" }
+        "400":
+          description: JSON error — "team_id must be a valid UUID" or "week must be YYYY-MM-DD".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams:
+    post:
+      operationId: createTeam
+      tags: [teams]
+      summary: Create a formal team; the caller becomes its owner.
+      description: >
+        Registered via chi `r.Route("/api/teams")` + `r.Post("/")`, so both `/api/teams`
+        and `/api/teams/` route here. The owner team_members row is inserted with its
+        error discarded, so a failed AddTeamMember still returns 201 with an ownerless team.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TeamNameRequest" }
+      responses:
+        "201":
+          description: Created team.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Team" }
+        "400":
+          description: >
+            JSON error "name is required" — covers both a malformed body and a blank/
+            whitespace-only name (one branch, one message).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          $ref: "#/components/responses/JsonUnauthorized"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+    get:
+      operationId: listTeams
+      tags: [teams]
+      summary: All teams the caller belongs to, newest first.
+      description: >
+        Bare JSON array (no envelope), ordered by teams.created_at DESC. Always an array,
+        never null.
+      responses:
+        "200":
+          description: Teams.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Team" }
+        "401":
+          $ref: "#/components/responses/JsonUnauthorized"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/invites/{token}:
+    get:
+      operationId: getTeamInvite
+      tags: [teams]
+      summary: Preview a pending team invite by token.
+      description: >
+        Despite the "(public)" comment on the handler, this route is registered inside the
+        requireAuth group and therefore requires a valid JWT. Calls ExpireOldInvites first,
+        so an invite past expires_at is reported as 410 "invite is expired" rather than 200.
+        The response deliberately omits team_id, token and expires_at.
+      parameters:
+        - $ref: "#/components/parameters/InviteTokenPath"
+      responses:
+        "200":
+          description: Invite preview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamInvitePreview" }
+        "404":
+          description: JSON error "invite not found".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "410":
+          description: >
+            JSON error "invite is <status>" where status is accepted, declined or expired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/invites/{token}/accept:
+    post:
+      operationId: acceptTeamInvite
+      tags: [teams]
+      summary: Accept a pending invite as the logged-in user.
+      description: >
+        The authenticated user's email must case-insensitively equal invitee_email.
+        Membership is added with role "member" via an ON CONFLICT DO NOTHING insert, so
+        accepting twice cannot demote an existing owner. Returns no body.
+      parameters:
+        - $ref: "#/components/parameters/InviteTokenPath"
+      responses:
+        "204":
+          description: Invite accepted; membership created. Empty body.
+        "401":
+          $ref: "#/components/responses/JsonUnauthorized"
+        "403":
+          description: JSON error "this invite is for a different email address".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: JSON error "invite not found".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "410":
+          description: JSON error "invite is <status>".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TeamIdPath"
+    get:
+      operationId: getTeam
+      tags: [teams]
+      summary: One team plus its members.
+      description: >
+        Membership required. `members` is the raw result of ListTeamMembers with its error
+        discarded, ordered by joined_at ASC, and is JSON `null` (not []) whenever the list
+        is empty or the query failed.
+      responses:
+        "200":
+          description: Team detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamDetail" }
+        "400":
+          description: JSON error "invalid team id".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "404":
+          description: >
+            JSON error "not found".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+          x-uncertain: >
+            Practically unreachable: the membership check runs first and a team_members row
+            cannot exist without its team (FK + ON DELETE CASCADE), so a missing team yields
+            403 before this branch. Kept because the code path exists.
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+    patch:
+      operationId: renameTeam
+      tags: [teams]
+      summary: Rename a team. Owner only.
+      responses:
+        "200":
+          description: >
+            The re-read team. GetTeam's error is discarded, so the body can be the JSON
+            literal `null` on a read failure even though the rename committed.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Team"
+                  - type: "null"
+        "400":
+          description: JSON error "invalid team id" or "name is required".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TeamNameRequest" }
+    delete:
+      operationId: deleteTeam
+      tags: [teams]
+      summary: Delete a team. Owner only.
+      description: >
+        Cascades to team_members, team_invites, no_meeting_zones and
+        manager_team_member_assignments via FK ON DELETE CASCADE.
+      responses:
+        "204":
+          description: Deleted. Empty body.
+        "400":
+          description: JSON error "invalid team id".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}/members/invite:
+    post:
+      operationId: inviteTeamMember
+      tags: [teams]
+      summary: Create a 7-day team invite and email it. Owner only.
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InviteEmailRequest" }
+      responses:
+        "201":
+          description: >
+            The created invite INCLUDING its raw `token`, so the owner can share the link
+            out of band. expires_at is now + 7 days. Email delivery is fire-and-forget and
+            silently skipped when SMTP_HOST/SMTP_FROM are unset.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamInvite" }
+        "400":
+          description: JSON error "invalid team id" or "email is required".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "422":
+          description: JSON error "email must be a valid email address".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}/members/{userId}:
+    delete:
+      operationId: removeTeamMember
+      tags: [teams]
+      summary: Remove a member by user id. Owner, or the member themselves.
+      description: >
+        Self-removal skips the ownership check entirely, so a team owner can remove
+        themselves and leave the team ownerless. There is no last-owner guard here — the
+        owner-protection rule lives only on DELETE /api/manager/team/members/{email}.
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+        - name: userId
+          in: path
+          required: true
+          description: The Paceday user id (UUID) of the member to remove.
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Removed (idempotent — removing a non-member also returns 204). Empty body.
+        "400":
+          description: JSON error "invalid team id" or "invalid user id".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}/no-meeting-zones:
+    parameters:
+      - $ref: "#/components/parameters/TeamIdPath"
+    post:
+      operationId: createNoMeetingZone
+      tags: [teams]
+      summary: Create a recurring weekly no-meeting zone. Owner only.
+      description: >
+        The WIRE weekday convention is Monday=1 .. Sunday=7. Storage uses Go's
+        Sunday=0 .. Saturday=6; the handler converts 7 -> 0 on write and 0 -> 7 on read
+        (TestNoMeetingZone_ValidatesAndConvertsWeekdayAtBoundary asserts both halves).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NoMeetingZoneRequest" }
+      responses:
+        "201":
+          description: Created zone, dayOfWeek already converted back to the 1..7 wire convention.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NoMeetingZone" }
+        "400":
+          description: JSON error "invalid team id" or "invalid JSON".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "422":
+          description: >
+            JSON error. "dayOfWeek must be between 1 and 7" (note: 0 is rejected, so an
+            omitted dayOfWeek always fails); "startTime and endTime are required";
+            "startTime must be HH:MM"; "endTime must be HH:MM";
+            "startTime must be before endTime" (equal times are rejected).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+    get:
+      operationId: listNoMeetingZones
+      tags: [teams]
+      summary: All no-meeting zones for a team. Membership required.
+      description: >
+        Bare JSON array, always present (never null), ordered by the STORED day_of_week
+        then start_time — which means Sunday sorts FIRST because it is stored as 0, even
+        though it is emitted as dayOfWeek 7.
+      responses:
+        "200":
+          description: Zones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/NoMeetingZone" }
+        "400":
+          description: JSON error "invalid team id".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}/no-meeting-zones/{zoneId}:
+    parameters:
+      - $ref: "#/components/parameters/TeamIdPath"
+      - name: zoneId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      operationId: updateNoMeetingZone
+      tags: [teams]
+      summary: Replace a no-meeting zone. Owner only.
+      description: >
+        PATCH by name, PUT by behaviour: every field is taken from the body with no merge
+        against the stored row, so an omitted dayOfWeek becomes 0 and fails validation with
+        422. The update is scoped by BOTH zone id and team id, so a zone belonging to
+        another team returns 404. Ownership is checked before the zoneId is even parsed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NoMeetingZoneRequest" }
+      responses:
+        "200":
+          description: Updated zone.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NoMeetingZone" }
+        "400":
+          description: JSON error "invalid team id", "invalid zone id" or "invalid JSON".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "404":
+          description: JSON error "zone not found".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: JSON error — same validation messages as createNoMeetingZone.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+    delete:
+      operationId: deleteNoMeetingZone
+      tags: [teams]
+      summary: Delete a no-meeting zone. Owner only.
+      responses:
+        "204":
+          description: Deleted (idempotent — deleting an unknown zone also returns 204). Empty body.
+        "400":
+          description: JSON error "invalid team id" or "invalid zone id".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}/availability:
+    get:
+      operationId: getTeamAvailability
+      tags: [teams]
+      summary: Slots on one day where every team member is free.
+      description: >
+        Membership required. The engine searches a fixed 09:00-18:00 UTC window on `date`,
+        steps the cursor in 15-minute increments, treats no-meeting zones and busy calendar
+        events as hard blocks, and scores each slot 0-100 by how few members' focus blocks
+        it disrupts. A member whose calendar token is missing or whose calendar call fails
+        contributes no busy intervals and is silently treated as fully free. `slots` is
+        always an array, never null.
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+        - name: date
+          in: query
+          required: true
+          description: Day to search, YYYY-MM-DD, interpreted in UTC. Missing or malformed yields 400.
+          schema: { type: string, format: date }
+        - name: duration
+          in: query
+          required: false
+          description: Slot length in minutes. Defaults to 60. Must be 1..1440.
+          schema: { type: integer, minimum: 1, maximum: 1440, default: 60 }
+      responses:
+        "200":
+          description: Candidate slots.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamSlotList" }
+        "400":
+          description: >
+            JSON error "invalid team id", "date must be YYYY-MM-DD", or
+            "duration must be a positive integer (minutes)".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+  /api/teams/{id}/analytics:
+    get:
+      operationId: getFormalTeamAnalytics
+      tags: [teams]
+      summary: Aggregate meeting/focus minutes across a formal team for one week.
+      description: >
+        Membership required. Unlike GET /api/manager/analytics this reads the
+        analytics_weeks table directly per team member, with no consent check and no
+        FreeBusy fallback. Averages divide by the member count (or by 1 when the team is
+        empty) using integer division.
+      parameters:
+        - $ref: "#/components/parameters/TeamIdPath"
+        - name: date
+          in: query
+          required: false
+          description: >
+            Any date in the target week, YYYY-MM-DD. Snapped to that week's Monday in the
+            parsed value's location (UTC). Defaults to the current local week's Monday.
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Team analytics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamAnalytics" }
+        "400":
+          description: JSON error "invalid team id" or "date must be YYYY-MM-DD".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          $ref: "#/components/responses/JsonForbidden"
+        "500":
+          $ref: "#/components/responses/PlainTextServerError"
+
+components:
+  parameters:
+    RequiredTeamIdQuery:
+      name: team_id
+      in: query
+      required: true
+      description: >
+        Formal team UUID. Required on this route: a missing or whitespace-only value is
+        400 "team_id is required".
+      schema: { type: string, format: uuid }
+
+    OptionalTeamIdQuery:
+      name: team_id
+      in: query
+      required: false
+      description: >
+        Formal team UUID. Optional on this route. When ABSENT the handler operates on the
+        manager's global (un-scoped) roster and performs NO authorization check beyond
+        JWT. When present it must parse as a UUID and the caller must be a member (reads)
+        or the owner (writes) of that team.
+      schema: { type: string, format: uuid }
+
+    TeamIdPath:
+      name: id
+      in: path
+      required: true
+      description: Formal team UUID.
+      schema: { type: string, format: uuid }
+
+    InviteTokenPath:
+      name: token
+      in: path
+      required: true
+      description: >
+        Opaque invite token — a UUID string generated by CreateTeamInvite. Not validated
+        as a UUID by the handler; any string is looked up verbatim.
+      schema: { type: string }
+
+    MemberEmailPath:
+      name: email
+      in: path
+      required: true
+      description: >
+        The roster member's email address, percent-encoded in the path (the `@` MUST be
+        sent as %40 — chi splits on `/` only, but the frontend and the Go tests both use
+        encodeURIComponent/%40 form). The handler applies url.PathUnescape to the raw chi
+        param and falls back to the raw value if unescaping fails. Storage lowercases and
+        trims before matching, so lookup is case-insensitive even though this path segment
+        is not normalized by the handler itself.
+      schema: { type: string, format: email }
+      examples:
+        encoded:
+          value: "member%40example.com"
+
+  responses:
+    JsonError:
+      description: JSON error envelope from writeError.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    JsonForbidden:
+      description: >
+        JSON error "forbidden". Emitted when the caller is not a member of `team_id`, when
+        the route requires ownership and the caller's role is not "owner", AND when the
+        team simply does not exist — the membership lookup error is not distinguished from
+        a role mismatch.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    JsonUnauthorized:
+      description: >
+        JSON error "unauthorized" from the handler's own uuid.Nil check. In production
+        this is shadowed by the requireAuth middleware, which emits its own
+        `{"error":"unauthorized"}` via http.Error with a Content-Type of application/json.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+    PlainTextServerError:
+      description: >
+        text/plain; charset=utf-8. Written by http.Error, NOT by writeError, so there is no
+        JSON envelope. Typical bodies: "db error", or a raw wrapped storage/engine error
+        string on the /api/teams routes.
+      content:
+        text/plain:
+          schema: { type: string }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: The shared error envelope produced by writeError.
+      properties:
+        error: { type: string }
+      required: [error]
+      additionalProperties: false
+
+    Cadence:
+      type: string
+      description: 1:1 cadence. "none" disables gap detection for that member.
+      enum: [weekly, biweekly, monthly, custom, none]
+
+    ManagerMemberSource:
+      type: string
+      description: >
+        "auto" = created by calendar detection, "manual" = created by an explicit add,
+        "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members
+        row that has no manager assignment yet. "formal" is never persisted (the
+        manager_team_members CHECK constraint permits only auto/manual).
+      enum: [auto, manual, formal]
+
+    ManagerProfileSummary:
+      type: object
+      properties:
+        is_manager: { type: boolean }
+        detected_at:
+          type: [string, "null"]
+          format: date-time
+          description: RFC3339 UTC timestamp of the last successful detection, or null.
+        team_member_count:
+          type: integer
+          description: >
+            COUNT(*) over manager_team_members for this manager — the GLOBAL roster size,
+            not the size of any one team. The query's error is discarded, so a failed count
+            is reported as 0.
+      required: [is_manager, detected_at, team_member_count]
+      additionalProperties: false
+
+    ManagerProfileUpdate:
+      type: object
+      properties:
+        is_manager: { type: boolean }
+      required: [is_manager]
+      additionalProperties: true
+      description: >
+        Unknown fields are ignored (the decoder does not call DisallowUnknownFields here).
+        A missing is_manager decodes to false and will clear the flag.
+
+    UserProfileGoStruct:
+      type: object
+      description: >
+        storage.UserProfile marshalled with no json tags — Go field names verbatim. Do not
+        rename these keys in the spec; they are literally what the server sends.
+      properties:
+        UserID: { type: string, format: uuid }
+        IsManager: { type: boolean }
+        DetectedAt:
+          type: [string, "null"]
+          format: date-time
+        AnalyticsSharedWithManager:
+          type: boolean
+          description: Member-side consent flag, defaulting to true. No endpoint in this domain sets it.
+        UpdatedAt:
+          type: string
+          format: date-time
+          description: The value read BEFORE the upsert, not the newly written now().
+      required: [UserID, IsManager, DetectedAt, AnalyticsSharedWithManager, UpdatedAt]
+      additionalProperties: false
+
+    ManagerTeamMemberGoStruct:
+      type: object
+      description: >
+        storage.ManagerTeamMember marshalled with no json tags — Go field names verbatim.
+        Returned by addManagerTeamMember (201) and patchManagerTeamMember (200).
+      properties:
+        ID:
+          type: string
+          format: uuid
+          description: >
+            On the 201 add response this is the zero UUID
+            "00000000-0000-0000-0000-000000000000" because the struct is echoed back
+            without re-reading the row.
+        ManagerUserID: { type: string, format: uuid }
+        MemberEmail: { type: string, format: email }
+        MemberUserID:
+          type: [string, "null"]
+          format: uuid
+          description: Set when the email matches a Paceday user; null for external members.
+        DisplayName: { type: string }
+        Source: { $ref: "#/components/schemas/ManagerMemberSource" }
+        Cadence: { $ref: "#/components/schemas/Cadence" }
+        CadenceCustomDays:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 365
+        LastOneOnOneAt:
+          type: [string, "null"]
+          format: date-time
+        CreatedAt:
+          type: string
+          format: date-time
+          description: Zero value "0001-01-01T00:00:00Z" on the 201 add response.
+        UpdatedAt:
+          type: string
+          format: date-time
+          description: Zero value "0001-01-01T00:00:00Z" on the 201 add response.
+      required:
+        [ID, ManagerUserID, MemberEmail, MemberUserID, DisplayName, Source, Cadence,
+         CadenceCustomDays, LastOneOnOneAt, CreatedAt, UpdatedAt]
+      additionalProperties: false
+
+    AddManagerMemberRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          description: >
+            Lowercased and trimmed, then validated with net/mail.ParseAddress; the parsed
+            address must equal the normalized input, so display-name forms like
+            "A <a@b.com>" are rejected.
+        display_name:
+          type: string
+          description: Trimmed. When blank, defaults to the local part of the email.
+        cadence:
+          allOf: [{ $ref: "#/components/schemas/Cadence" }]
+          description: Lowercased and trimmed. Defaults to "none" when omitted or empty.
+        cadence_custom_days:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 365
+          description: Required iff cadence == "custom"; must be absent/null otherwise.
+      required: [email]
+      additionalProperties: true
+
+    PatchManagerMemberRequest:
+      type: object
+      description: >
+        All fields optional. Present-but-null is indistinguishable from absent for
+        cadence_custom_days (both decode to a nil *int and preserve the stored value).
+      properties:
+        display_name: { type: [string, "null"] }
+        cadence: { $ref: "#/components/schemas/Cadence" }
+        cadence_custom_days:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 365
+      additionalProperties: true
+
+    ScanCandidate:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        display_name:
+          type: string
+          description: >
+            Taken from the calendar attendee's displayName; can be the empty string when
+            the provider supplied none.
+        already_assigned:
+          type: boolean
+          description: True when this email already has an assignment on the selected team.
+      required: [email, display_name, already_assigned]
+      additionalProperties: false
+
+    ScanPreview:
+      type: object
+      properties:
+        team_id: { type: string, format: uuid }
+        scanned_at:
+          type: string
+          format: date-time
+          description: RFC3339 UTC, set by the engine at the start of the scan.
+        detected:
+          type: integer
+          minimum: 0
+          description: Total candidates returned by the scan (== candidates.length).
+        eligible:
+          type: integer
+          minimum: 0
+          description: Candidates not already assigned to this team.
+        assigned:
+          type: integer
+          const: 0
+          description: Always 0. Preview assigns nothing; see POST /api/manager/detect/confirm.
+        skipped:
+          type: integer
+          minimum: 0
+          description: detected - eligible, i.e. candidates already assigned to this team.
+        candidates:
+          type: array
+          description: Always an array (the engine initialises it to an empty slice). Sorted by email ascending.
+          items: { $ref: "#/components/schemas/ScanCandidate" }
+      required: [team_id, scanned_at, detected, eligible, assigned, skipped, candidates]
+      additionalProperties: false
+
+    ScanConfirmRequest:
+      type: object
+      properties:
+        emails:
+          type: array
+          description: >
+            Required and non-null; an empty array is legal. Each entry is lowercased,
+            trimmed and validated. Decoded with DisallowUnknownFields.
+          items: { type: string, format: email }
+      required: [emails]
+      additionalProperties: false
+
+    ScanConfirmation:
+      type: object
+      properties:
+        team_id: { type: string, format: uuid }
+        assigned:
+          type: integer
+          minimum: 0
+          description: Assignments newly created by THIS call.
+        skipped:
+          type: integer
+          minimum: 0
+          description: >
+            Counts blank entries, duplicates within this request, emails with no global
+            manager_team_members identity, and emails already assigned to this team.
+        total:
+          type: integer
+          minimum: 0
+          description: Total assignments for this manager+team after the transaction commits.
+      required: [team_id, assigned, skipped, total]
+      additionalProperties: false
+
+    MemberWeekStats:
+      type: object
+      description: >
+        engine.MemberWeekStats. When data_available is false the three minute counters are
+        all 0 — callers must branch on data_available rather than treating 0 as measured.
+      properties:
+        focus_minutes:
+          type: integer
+          description: Always 0 for an external (non-Paceday) member; FreeBusy yields no focus signal.
+        meeting_minutes: { type: integer }
+        free_minutes:
+          type: integer
+          description: >
+            For an external member, 2400 (5 days x 8h) minus busy minutes, floored at 0.
+            For a Paceday member, the stored analytics_weeks value.
+        data_available: { type: boolean }
+      required: [focus_minutes, meeting_minutes, free_minutes, data_available]
+      additionalProperties: false
+
+    ManagerRosterMember:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        display_name: { type: string }
+        source: { $ref: "#/components/schemas/ManagerMemberSource" }
+        cadence: { $ref: "#/components/schemas/Cadence" }
+        cadence_custom_days:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 365
+        last_one_on_one_at:
+          type: [string, "null"]
+          format: date-time
+        is_paceday_user:
+          type: boolean
+          description: True iff member_user_id resolved to a Paceday user row.
+        this_week:
+          allOf: [{ $ref: "#/components/schemas/MemberWeekStats" }]
+          description: >
+            Never null — the handler substitutes a zero-valued MemberWeekStats when the
+            engine returns nil or errors (the engine error is discarded).
+        last_week:
+          allOf: [{ $ref: "#/components/schemas/MemberWeekStats" }]
+          description: Same nil-substitution as this_week; the week 7 days before `week`.
+        focus_trend_pct:
+          type: number
+          description: >
+            engine.TrendPct(this_week.focus, last_week.focus). Clamped to [-200, 200],
+            rounded to one decimal. Returns exactly 200 when prior is 0 and current is
+            non-zero, and 0 when both are 0. Never NaN or Inf.
+          minimum: -200
+          maximum: 200
+      required:
+        [email, display_name, source, cadence, cadence_custom_days, last_one_on_one_at,
+         is_paceday_user, this_week, last_week, focus_trend_pct]
+      additionalProperties: false
+
+    ManagerRoster:
+      type: object
+      properties:
+        team_id:
+          type: string
+          format: uuid
+          description: >
+            Echo of the requested team_id. The frontend treats a mismatch as a stale
+            response and discards it.
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/ManagerRosterMember" }
+      required: [team_id, members]
+      additionalProperties: false
+
+    CadenceGap:
+      type: object
+      description: engine.CadenceGap.
+      properties:
+        member_email: { type: string, format: email }
+        display_name: { type: string }
+        cadence: { $ref: "#/components/schemas/Cadence" }
+        last_one_on_one_at:
+          type: [string, "null"]
+          format: date-time
+        next_expected_by:
+          type: string
+          format: date-time
+          description: >
+            last_one_on_one_at (or now, when never met) plus the cadence interval. Monthly
+            uses calendar-month arithmetic; the rest use day addition.
+        days_overdue:
+          type: integer
+          minimum: 0
+          description: >
+            0 when the next 1:1 is still upcoming within the 7-day warning window; positive
+            when already past due. Never negative — upcoming-ness is not encoded here.
+      required: [member_email, display_name, cadence, last_one_on_one_at, next_expected_by, days_overdue]
+      additionalProperties: false
+
+    CadenceGapList:
+      type: object
+      properties:
+        gaps:
+          type: array
+          items: { $ref: "#/components/schemas/CadenceGap" }
+      required: [gaps]
+      additionalProperties: false
+
+    ManagerAnalyticsWeek:
+      type: object
+      properties:
+        week_start:
+          type: string
+          format: date
+          description: YYYY-MM-DD, the Monday of this bucket.
+        focus_minutes: { type: integer }
+        meeting_minutes: { type: integer }
+        free_minutes: { type: integer }
+        data_available:
+          type: boolean
+          description: False when the member's week could not be measured (see degraded-analytics invariant).
+      required: [week_start, focus_minutes, meeting_minutes, free_minutes, data_available]
+      additionalProperties: false
+
+    ManagerAnalyticsMember:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        display_name: { type: string }
+        weeks:
+          type: array
+          minItems: 12
+          maxItems: 12
+          description: Exactly 12 buckets, newest first.
+          items: { $ref: "#/components/schemas/ManagerAnalyticsWeek" }
+      required: [email, display_name, weeks]
+      additionalProperties: false
+
+    ManagerAnalytics:
+      type: object
+      properties:
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/ManagerAnalyticsMember" }
+      required: [members]
+      additionalProperties: false
+
+    ScheduleOneOnOneRequest:
+      type: object
+      properties:
+        suggested_date:
+          type: string
+          format: date
+          description: >
+            YYYY-MM-DD. Optional; when present it is appended to the prefill URL as `date`.
+            An empty string is treated as absent.
+      additionalProperties: true
+
+    PrefillUrlResponse:
+      type: object
+      properties:
+        prefill_url:
+          type: string
+          description: Relative URL beginning with "/app?".
+      required: [prefill_url]
+      additionalProperties: false
+
+    TeamNameRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Trimmed before storage. No maximum length is enforced by the backend.
+      required: [name]
+      additionalProperties: true
+
+    InviteEmailRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          description: Lowercased, trimmed and validated with net/mail.ParseAddress.
+      required: [email]
+      additionalProperties: true
+
+    Team:
+      type: object
+      description: storage.Team. Note the camelCase json tags — unlike the manager domain's snake_case.
+      properties:
+        id: { type: string, format: uuid }
+        orgId:
+          type: string
+          format: uuid
+          description: Omitted entirely when the team has no organization (omitempty on a *uuid.UUID).
+        name: { type: string }
+        createdBy: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+      required: [id, name, createdBy, createdAt]
+      additionalProperties: false
+
+    TeamMember:
+      type: object
+      description: storage.TeamMember, as returned inside TeamDetail.
+      properties:
+        teamId: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        role:
+          type: string
+          enum: [owner, member]
+        joinedAt: { type: string, format: date-time }
+        name:
+          type: string
+          description: >
+            Joined from users.name via COALESCE(...,''), and tagged omitempty — so a user
+            with no name causes the key to be OMITTED, not sent as "".
+        email:
+          type: string
+          format: email
+          description: Joined from users.email, also omitempty.
+      required: [teamId, userId, role, joinedAt]
+      additionalProperties: false
+
+    TeamDetail:
+      type: object
+      properties:
+        team: { $ref: "#/components/schemas/Team" }
+        members:
+          type: ["array", "null"]
+          description: JSON null (not []) when the team has no members or the query failed.
+          items: { $ref: "#/components/schemas/TeamMember" }
+      required: [team, members]
+      additionalProperties: false
+
+    TeamInvite:
+      type: object
+      description: storage.TeamInvite, returned in full (token included) by inviteTeamMember.
+      properties:
+        id: { type: string, format: uuid }
+        teamId: { type: string, format: uuid }
+        inviteeEmail: { type: string, format: email }
+        invitedBy: { type: string, format: uuid }
+        token:
+          type: string
+          description: A freshly generated UUID string used as the invite link path segment.
+        status:
+          type: string
+          enum: [pending, accepted, declined, expired]
+        createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: createdAt + 7 days (computed in Go, not by the database).
+      required: [id, teamId, inviteeEmail, invitedBy, token, status, createdAt, expiresAt]
+      additionalProperties: false
+
+    TeamInvitePreview:
+      type: object
+      description: >
+        A deliberately narrow projection — NOT a TeamInvite. Built as a map[string]string,
+        so every value is a plain string and a missing team or inviter yields "" rather
+        than null.
+      properties:
+        teamName:
+          type: string
+          description: Empty string when the team row could not be read.
+        inviterName:
+          type: string
+          description: >
+            The inviter's DISPLAY NAME, not their email. Empty string when the user row
+            could not be read.
+        email:
+          type: string
+          format: email
+          description: The invitee email the invite was issued to.
+      required: [teamName, inviterName, email]
+      additionalProperties: false
+
+    NoMeetingZoneRequest:
+      type: object
+      properties:
+        dayOfWeek:
+          type: integer
+          minimum: 1
+          maximum: 7
+          description: Monday=1 .. Sunday=7. 0 is rejected, so this field is effectively required.
+        startTime:
+          type: string
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+          description: HH:MM, 24-hour, parsed with Go layout "15:04". Trimmed before use.
+        endTime:
+          type: string
+          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+          description: HH:MM. Must be strictly after startTime.
+        label:
+          type: string
+          description: Trimmed. Optional; the column defaults to an empty string.
+      required: [dayOfWeek, startTime, endTime]
+      additionalProperties: true
+
+    NoMeetingZone:
+      type: object
+      description: storage.NoMeetingZone after the handler's storage->wire weekday conversion.
+      properties:
+        id: { type: string, format: uuid }
+        teamId: { type: string, format: uuid }
+        dayOfWeek:
+          type: integer
+          minimum: 1
+          maximum: 7
+          description: Monday=1 .. Sunday=7 on the wire (0 in the database).
+        startTime:
+          type: string
+          description: Rendered by the Postgres driver from a TIME column.
+          x-uncertain: >
+            Request format is strictly HH:MM, but the response is the driver's text form of
+            a TIME column, which is "HH:MM:SS" (e.g. "09:00:00"). No test asserts the
+            response string, so the exact shape is unconfirmed. Clients must not assume
+            request and response formats are identical.
+        endTime:
+          type: string
+          x-uncertain: Same TIME-column formatting question as startTime.
+        label: { type: string }
+        createdAt: { type: string, format: date-time }
+      required: [id, teamId, dayOfWeek, startTime, endTime, label, createdAt]
+      additionalProperties: false
+
+    TeamSlot:
+      type: object
+      description: engine.TeamSlot.
+      properties:
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        quality_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 100 - (members_with_disrupted_focus / total_members) * 100, integer division.
+      required: [start, end, quality_score]
+      additionalProperties: false
+
+    TeamSlotList:
+      type: object
+      properties:
+        slots:
+          type: array
+          items: { $ref: "#/components/schemas/TeamSlot" }
+      required: [slots]
+      additionalProperties: false
+
+    MemberAnalyticsSummary:
+      type: object
+      description: engine.MemberAnalyticsSummary.
+      properties:
+        user_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: >
+            The user's display name, which may be "" (COALESCE default). No email is
+            included, which is why the frontend has to match breakdown rows by name or
+            positional index.
+        meeting_minutes: { type: integer }
+        focus_minutes: { type: integer }
+        focus_score: { type: integer }
+      required: [user_id, name, meeting_minutes, focus_minutes, focus_score]
+      additionalProperties: false
+
+    TeamAnalytics:
+      type: object
+      description: engine.TeamAnalytics.
+      properties:
+        avg_meeting_minutes:
+          type: integer
+          description: Integer division by member count (or by 1 for an empty team).
+        avg_focus_minutes: { type: integer }
+        member_breakdown:
+          type: ["array", "null"]
+          description: >
+            JSON null (not []) when the team has no members — the slice is appended to
+            without pre-initialisation and has no omitempty.
+          items: { $ref: "#/components/schemas/MemberAnalyticsSummary" }
+      required: [avg_meeting_minutes, avg_focus_minutes, member_breakdown]
+      additionalProperties: false

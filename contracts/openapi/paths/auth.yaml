@@ -1,0 +1,874 @@
+# Domain: auth
+# Extracted from backend/api/{routes,middleware,handlers_auth,handlers_sso,handlers_me,
+# handlers_health,integration_availability,handlers_microsoft_auth}.go and
+# backend/auth/*.go + backend/storage/{users,orgs,sso_providers}.go.
+#
+# Auth transport note (backend/api/middleware.go requireAuth):
+#   the JWT is read from the `auth_token` cookie FIRST; only if that cookie is
+#   absent/empty is `Authorization: Bearer <jwt>` consulted. Both work.
+#   Protected operations below carry no `security:` key and therefore inherit the
+#   global scheme (`bearerAuth`); `cookieAuth` is the transport the shipped
+#   frontend actually uses (it never sets an Authorization header).
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [auth]
+      summary: Liveness probe
+      description: |
+        Static JSON. Never touches the database. Source: handlers_health.go —
+        the version string "0.1.0" is hardcoded in the handler.
+      security: []
+      responses:
+        '200':
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/auth/google:
+    get:
+      operationId: startGoogleOAuth
+      tags: [auth]
+      summary: Begin Google OAuth
+      description: |
+        Sets an httpOnly `oauth_state` cookie (MaxAge 300, SameSite=Lax) and
+        redirects to Google's consent screen. Never returns a body.
+      security: []
+      parameters:
+        - name: login_hint
+          in: query
+          required: false
+          schema:
+            type: string
+            format: email
+          description: |
+            Sent by the frontend (src/components/auth/AuthDialog.tsx) but the Go
+            handler (authHandlers.startOAuth) reads no query parameters at all,
+            so it is silently discarded and NOT forwarded to Google.
+      responses:
+        '302':
+          description: Redirect to Google's authorization endpoint.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+              description: auth.GetAuthURL(oauthConfig, state)
+            Set-Cookie:
+              schema:
+                type: string
+              description: 'oauth_state=<32 hex chars>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
+
+  /api/auth/callback:
+    get:
+      operationId: googleOAuthCallback
+      tags: [auth]
+      summary: Google OAuth callback
+      description: |
+        Validates the `oauth_state` cookie against the `state` query param,
+        exchanges the code, upserts the user, stores the OAuth token, associates
+        the org, issues the `auth_token` JWT cookie, then redirects to
+        `<FRONTEND_URL>/auth/callback`.
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: Success — JWT cookie issued, redirect to the SPA.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: '<FRONTEND_URL>/auth/callback (no query string, unlike the Microsoft/SSO callbacks)'
+            Set-Cookie:
+              schema:
+                type: string
+              description: |
+                auth_token=<HS256 JWT>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax.
+                NOTE: if jwtSecret is empty, authHandlers.issueJWT returns silently
+                and NO cookie is set — the 302 still happens and the user lands
+                logged-out.
+        '400':
+          description: Missing or mismatched `oauth_state` cookie ("invalid state").
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: |
+            Token exchange, userinfo fetch, user upsert or token save failed.
+            Body is the bare message + ": " + err.Error().
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+
+  /api/auth/microsoft:
+    get:
+      operationId: startMicrosoftOAuth
+      tags: [auth]
+      summary: Begin Microsoft OAuth
+      description: |
+        Sets an httpOnly `ms_oauth_state` cookie and redirects to Microsoft.
+        Configuration is read from env at request time (MICROSOFT_CLIENT_ID);
+        if the client id is blank the route 503s.
+      security: []
+      parameters:
+        - name: login_hint
+          in: query
+          required: false
+          schema:
+            type: string
+            format: email
+          description: Sent by the frontend; ignored by the handler (same as /api/auth/google).
+      responses:
+        '302':
+          description: Redirect to Microsoft's authorization endpoint.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            Set-Cookie:
+              schema: { type: string }
+              description: 'ms_oauth_state=<32 hex chars>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
+        '503':
+          description: '`MICROSOFT_CLIENT_ID` is unset — "Microsoft OAuth not configured".'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/microsoft/callback:
+    get:
+      operationId: microsoftOAuthCallback
+      tags: [auth]
+      summary: Microsoft OAuth callback
+      description: |
+        Validates `ms_oauth_state`, exchanges the code, saves the Microsoft token
+        on the GLOBAL settings row, best-effort fetches the Graph profile and
+        upserts the user, then redirects.
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: |
+            Redirect to `<FRONTEND_URL>/auth/callback?provider=outlook`.
+            The `auth_token` cookie is only set when the Graph profile fetch AND
+            the user upsert both succeed — the redirect is identical either way,
+            so a caller cannot tell from the response whether it is logged in.
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              schema: { type: string }
+              description: auth_token JWT — conditional, see description.
+        '400':
+          description: Missing or mismatched `ms_oauth_state` cookie ("invalid state").
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Token exchange, settings read or token save failed (text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '503':
+          description: '`MICROSOFT_CLIENT_ID` unset — JSON error, unlike the other failures here.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/detect:
+    post:
+      operationId: detectAuthProvider
+      tags: [auth]
+      summary: Detect which auth provider an email address should use
+      description: |
+        Rate limited to 20 requests per minute per client IP (sliding window,
+        in-process map keyed by X-Real-IP / first X-Forwarded-For / RemoteAddr).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SsoDetectRequest'
+      responses:
+        '200':
+          description: Detection result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoDetectResponse'
+        '400':
+          description: Body is not JSON, or `email` is empty ("email required").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: '"rate limit exceeded" — more than 20 detects/minute from this IP.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: '"detection failed: <err>" — the SSO provider lookup errored.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/sso/{domain}:
+    get:
+      operationId: startSsoLogin
+      tags: [auth]
+      summary: Begin OIDC SSO login for a configured domain
+      description: |
+        Looks up the SSO provider row for `{domain}`, builds the OIDC redirect
+        URL as `os.Getenv("APP_URL") + "/api/auth/callback/oidc/" + domain`, sets
+        an `sso_state` cookie of the form `<state>|<domain>`, and redirects.
+      security: []
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema: { type: string }
+          description: Email domain, e.g. "acme.com".
+      responses:
+        '302':
+          description: Redirect to the identity provider.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            Set-Cookie:
+              schema: { type: string }
+              description: 'sso_state=<32 hex chars>|<domain>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
+        '404':
+          description: '"SSO not configured for this domain" — no provider row (also returned when the lookup errors).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: '"OIDC setup: <err>" — issuer discovery failed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '501':
+          description: '"SAML not yet supported" — the stored provider_type is "saml".'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/callback/oidc/{domain}:
+    get:
+      operationId: ssoOidcCallback
+      tags: [auth]
+      summary: OIDC SSO callback
+      description: |
+        Verifies `sso_state` (both the random half and the embedded domain),
+        re-discovers the OIDC client, exchanges the code, upserts the user with
+        provider="sso", and issues the JWT cookie.
+        Inconsistent error encoding: the 404 uses the JSON helper while every
+        other failure in this handler uses http.Error (text/plain).
+      security: []
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: Redirect to `<FRONTEND_URL>/auth/callback?provider=sso`.
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              schema: { type: string }
+              description: auth_token JWT cookie (skipped silently when jwtSecret is empty).
+        '400':
+          description: '"missing state cookie", "invalid state", or "no email in OIDC token claims".'
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: '"SSO not configured for this domain" — JSON, unlike the other errors here.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: '"OIDC setup: <err>", "OIDC exchange: <err>" or "upsert user: <err>".'
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+
+  /api/auth/status:
+    get:
+      operationId: getAuthStatus
+      tags: [auth]
+      summary: Calendar connection status for the current session
+      description: |
+        Protected by requireAuth (cookie `auth_token` or `Authorization: Bearer`).
+        Branches on the GLOBAL settings row's calendar_provider, not on anything
+        user-scoped; only the "google" branch uses the authenticated user id.
+        On an internal failure it does NOT error — it 200s with
+        {connected:false, provider:"google", email:""}.
+      responses:
+        '200':
+          description: Connection status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStatusResponse'
+        '401':
+          description: |
+            No/invalid JWT. Body is the literal JSON text `{"error":"unauthorized"}`
+            but Content-Type is `text/plain; charset=utf-8` because http.Error
+            overwrites the header the middleware just set.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+
+  /api/auth/disconnect:
+    delete:
+      operationId: disconnectCalendar
+      tags: [auth]
+      summary: Delete the stored calendar OAuth token and clear the session cookie
+      description: |
+        Deletes the current user's OAuth token row and expires the `auth_token`
+        cookie — i.e. this also logs the user out, which the name does not suggest.
+      responses:
+        '204':
+          description: Disconnected. No body.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: 'auth_token=; Path=/; Max-Age=-1; HttpOnly; SameSite=Lax'
+        '401':
+          description: No/invalid JWT (text/plain body carrying JSON text).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: Token delete failed — body is the raw err.Error() string.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+
+  /api/auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: The authenticated user
+      responses:
+        '200':
+          description: The user row (with its org when one is associated).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUserResponse'
+        '401':
+          description: |
+            No/invalid JWT. Returned by requireAuth, or by the handler itself when
+            the context user id is uuid.Nil. Body text is `{"error":"unauthorized"}`
+            served as text/plain.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '404':
+          description: |
+            Valid JWT but no matching users row — body text is
+            `{"error":"user not found"}` served as text/plain.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+
+  /api/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Clear the session cookie
+      description: |
+        Expires the `auth_token` cookie. Note it is behind requireAuth, so logging
+        out with an already-expired token returns 401 rather than succeeding.
+      responses:
+        '200':
+          description: |
+            Logged out. Empty body and NO Content-Type header (w.WriteHeader(200)
+            with nothing written) — a 204 would be the honest status.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: 'auth_token=; Path=/; Max-Age=-1; HttpOnly; SameSite=Lax'
+        '401':
+          description: No/invalid JWT.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+
+  /api/integrations/availability:
+    get:
+      operationId: getIntegrationAvailability
+      tags: [auth]
+      summary: Which OAuth providers this server is configured to start
+      description: |
+        Public by design (routes.go comment) so the login screen can hide
+        providers the server cannot start. Derived purely from environment
+        variables; never returns credential values.
+      security: []
+      responses:
+        '200':
+          description: Availability snapshot — all six keys are always present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationAvailabilityResponse'
+
+  /api/admin/sso:
+    post:
+      operationId: createSsoProvider
+      tags: [auth]
+      summary: Create or update the SSO provider for a domain
+      description: |
+        Upsert keyed on domain. The caller must belong to an org and the supplied
+        domain must match that org's domain (domain.DomainMatchesOrg).
+        `enabled` is always forced to true — there is no way to disable a provider
+        through this API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SsoProviderCreateRequest'
+      responses:
+        '201':
+          description: The stored provider row.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoProviderResponse'
+        '400':
+          description: '"invalid JSON"; "domain, provider_name and provider_type are required"; "provider_type must be ''oidc'' or ''saml''".'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: '"org membership required"; "org not found"; "can only configure SSO for your own domain".'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: '"save failed: <err>".'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      operationId: listSsoProviders
+      tags: [auth]
+      summary: List the SSO providers belonging to the caller's org
+      responses:
+        '200':
+          description: Providers for the caller's org; `[]` when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SsoProviderResponse'
+        '401':
+          description: No/invalid JWT (text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: '"org membership required" — the user has no org_id.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Query failed — body is the raw err.Error() in the JSON error envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/{domain}:
+    delete:
+      operationId: deleteSsoProvider
+      tags: [auth]
+      summary: Delete the SSO provider for a domain
+      description: |
+        Deletes by domain after checking the domain belongs to the caller's org.
+        Deleting a domain that has no provider row still returns 204 — the
+        storage layer does not check rows-affected.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Deleted (or nothing existed). No body.
+        '401':
+          description: No/invalid JWT (text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: '"org membership required"; "org not found"; "can only delete SSO for your own domain".'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Delete failed — raw err.Error() in the JSON error envelope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        HS256 JWT issued by backend/auth/jwt.go GenerateToken. Claims: `sub`
+        (user uuid, string), `email`, `exp` (+7 days), `iat`.
+        middleware.requireAuth accepts it as `Authorization: Bearer <jwt>` ONLY
+        when the `auth_token` cookie is absent or empty — the cookie wins.
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth_token
+      description: |
+        The same HS256 JWT, set httpOnly / SameSite=Lax / Max-Age=604800 / Path=/
+        by the OAuth and OIDC callbacks. This is the transport the shipped
+        frontend uses (both fetch wrappers send `credentials: "include"` and
+        never set an Authorization header). It is checked before bearerAuth.
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: |
+        The shared JSON error envelope, written by writeError()
+        (backend/api/handlers_settings.go:206). Content-Type: application/json.
+      required: [error]
+      properties:
+        error:
+          type: string
+      additionalProperties: false
+
+    PlainTextError:
+      type: string
+      description: |
+        Several handlers (and requireAuth) use Go's http.Error instead of
+        writeError. http.Error forces `Content-Type: text/plain; charset=utf-8`
+        and appends a newline, so these responses are NOT JSON documents even
+        when the message text happens to be JSON-shaped
+        (e.g. `{"error":"unauthorized"}` from requireAuth and handlers_me.go).
+
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+          const: 0.1.0
+          description: Hardcoded literal in handlers_health.go, not a build-injected value.
+      additionalProperties: false
+
+    AuthStatusResponse:
+      type: object
+      description: |
+        Assembled from map[string]interface{} literals in authHandlers.status —
+        all three keys are always emitted (no omitempty).
+      required: [connected, provider, email]
+      properties:
+        connected:
+          type: boolean
+        provider:
+          type: string
+          enum: [google, outlook, webcal]
+          description: |
+            Settings.calendar_provider, defaulting to "google" when blank. The
+            error/fallback paths also report "google", so "google" does not prove
+            Google was configured.
+        email:
+          type: string
+          description: |
+            For outlook/webcal this is settings.calendar_email verbatim. For
+            google it is fetched live from the Google userinfo endpoint and is
+            the empty string when that call fails.
+      additionalProperties: false
+
+    CurrentUserResponse:
+      type: object
+      description: storage.User (backend/storage/users.go) serialized directly.
+      required: [id, email, name, avatarUrl, provider, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        avatarUrl:
+          type: string
+          description: |
+            May be the empty string (Microsoft and SSO logins always upsert "").
+            Not omitempty, so the key is always present.
+        provider:
+          type: string
+          description: |
+            Login provider recorded at upsert time.
+            x-uncertain applies — see property-level note.
+          x-uncertain: >-
+            Observed writers pass "google", "microsoft" and "sso", but the column
+            is free text with no CHECK constraint found, so this is not a closed
+            enum in the spec.
+        org:
+          description: |
+            Present only when the user has an org_id AND the org row loads
+            (json tag "org,omitempty"). org_id itself is `json:"-"` and never
+            serialized.
+          $ref: '#/components/schemas/OrgSummary'
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    OrgSummary:
+      type: object
+      description: storage.Org (backend/storage/orgs.go).
+      required: [id, name, domain, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        domain:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    SsoDetectRequest:
+      type: object
+      description: Anonymous struct in ssoHandlers.detect.
+      required: [email]
+      properties:
+        email:
+          type: string
+          description: Rejected with 400 when empty; not otherwise validated server-side.
+      additionalProperties: true
+
+    SsoDetectResponse:
+      type: object
+      description: auth.DetectResult (backend/auth/sso_detect.go).
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [google, microsoft, sso, generic]
+          description: |
+            "generic" for consumer/unparseable domains, "sso" when a provider row
+            exists for the domain, "microsoft" from a live tenant probe against
+            login.microsoftonline.com (2s timeout, 1h cache), else "google".
+        provider_name:
+          type: string
+          description: Display name of the SSO provider. Omitted unless type == "sso".
+        redirect_url:
+          type: string
+          description: |
+            Relative path `/api/auth/sso/<domain>`. Omitted unless type == "sso".
+      additionalProperties: false
+
+    IntegrationAvailabilityResponse:
+      type: object
+      description: |
+        map[string]integrationAvailability from
+        integrationAvailabilitySnapshot(); the six keys below are always present.
+      required: [google, microsoft, zoom, slack, notion, webcal]
+      properties:
+        google:
+          $ref: '#/components/schemas/IntegrationAvailabilityStatus'
+        microsoft:
+          $ref: '#/components/schemas/IntegrationAvailabilityStatus'
+        zoom:
+          $ref: '#/components/schemas/IntegrationAvailabilityStatus'
+        slack:
+          $ref: '#/components/schemas/IntegrationAvailabilityStatus'
+        notion:
+          $ref: '#/components/schemas/IntegrationAvailabilityStatus'
+        webcal:
+          $ref: '#/components/schemas/IntegrationAvailabilityStatus'
+      additionalProperties: false
+
+    IntegrationAvailabilityStatus:
+      type: object
+      required: [available]
+      properties:
+        available:
+          type: boolean
+        reason:
+          type: string
+          enum: [configured, missing_credentials, invalid_redirect_uri, built_in]
+          description: |
+            `reason,omitempty` — in practice one of the four values is always set
+            by the current code paths, so the key is never actually omitted.
+      additionalProperties: false
+
+    SsoProviderCreateRequest:
+      type: object
+      description: Anonymous struct in ssoHandlers.createSSOProvider.
+      required: [domain, provider_name, provider_type]
+      properties:
+        domain:
+          type: string
+          description: Must match the caller's org domain or the request is 403'd.
+        provider_name:
+          type: string
+        provider_type:
+          type: string
+          enum: [oidc, saml]
+          description: |
+            "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
+            with 501 — a SAML row can be created that can never be used to log in.
+        oidc_issuer:
+          type: string
+        oidc_client_id:
+          type: string
+        oidc_client_secret:
+          type: string
+        saml_entry_point:
+          type: string
+        saml_issuer:
+          type: string
+        saml_cert:
+          type: string
+      additionalProperties: false
+      x-uncertain: >-
+        No field beyond the three required ones is validated, so an oidc provider
+        can be created with an empty issuer/client_id; the failure only surfaces
+        later as a 500 from /api/auth/sso/{domain}.
+
+    SsoProviderResponse:
+      type: object
+      description: |
+        storage.SSOProvider (backend/storage/sso_providers.go) marshalled directly.
+        The struct has NO json tags, so encoding/json emits the exact Go field
+        names below — PascalCase, and including the client secret and SAML cert.
+      required:
+        - ID
+        - Domain
+        - ProviderName
+        - ProviderType
+        - Enabled
+        - OIDCIssuer
+        - OIDCClientID
+        - OIDCClientSecret
+        - SAMLEntryPoint
+        - SAMLIssuer
+        - SAMLCert
+        - CreatedAt
+        - UpdatedAt
+      properties:
+        ID:
+          type: string
+          format: uuid
+        Domain:
+          type: string
+        ProviderName:
+          type: string
+        ProviderType:
+          type: string
+          enum: [oidc, saml]
+        Enabled:
+          type: boolean
+        OIDCIssuer:
+          type: string
+        OIDCClientID:
+          type: string
+        OIDCClientSecret:
+          type: string
+          description: >-
+            Returned in plaintext to any org member by both POST and GET
+            /api/admin/sso. Documented because it is what the code does, not
+            because it is intended.
+        SAMLEntryPoint:
+          type: string
+        SAMLIssuer:
+          type: string
+        SAMLCert:
+          type: string
+        CreatedAt:
+          type: string
+          format: date-time
+        UpdatedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+      x-uncertain: >-
+        No frontend code consumes /api/admin/sso, so the PascalCase key casing is
+        unverified against any real consumer; it is inferred from the absence of
+        json tags on storage.SSOProvider.

@@ -3,6 +3,12 @@ backend/server
 backend/*.test
 *.exe
 
+# Coverage profiles written by `make coverage` / backend/Makefile
+coverage.out
+
+# Scratch space for the `make verify` summary
+.verify/
+
 # Node
 frontend/node_modules/
 frontend/dist/

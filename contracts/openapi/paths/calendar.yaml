@@ -1,0 +1,1322 @@
+# Domain: calendar
+# Source of truth: backend/api/routes.go, handlers_calendar.go, handlers_events.go,
+# handlers_freebusy.go, handlers_personal.go, handlers_org.go, handlers_audit.go,
+# backend/calendar/*.go, backend/engine/freebusy_service.go, backend/storage/*.go
+#
+# All routes below are registered inside the `requireAuth(jwtSecret)` chi group in
+# routes.go, so they inherit the globally-declared security scheme. No `security`
+# key is written here on purpose.
+#
+# Two DIFFERENT error bodies exist in this domain and they are NOT interchangeable:
+#   * writeError() (backend/api/handlers_settings.go:206) -> Content-Type: application/json,
+#     body {"error": "<msg>"}  -> schema ErrorResponse
+#   * http.Error() (net/http) -> Content-Type: text/plain; charset=utf-8, body is the
+#     message plus a trailing "\n" -> schema PlainTextError
+# Each operation below records which one it actually emits.
+#
+# The 401 produced by the requireAuth middleware itself (middleware.go:36-52) is a
+# special case: the handler sets Content-Type: application/json, but http.Error
+# overwrites it with text/plain; charset=utf-8 while the body stays the JSON literal
+# `{"error":"unauthorized"}\n`. That is modelled as MiddlewareUnauthorized.
+
+paths:
+  /api/calendar/events:
+    get:
+      operationId: listCalendarEvents
+      tags: [calendar]
+      summary: List Google Calendar events in a time window
+      description: >-
+        Reads the authenticated user's primary Google calendar
+        (calendar.CalendarClient.CalendarID, hardcoded to "primary" in
+        backend/calendar/client.go) and flattens each event into the frontend-facing
+        CalendarEvent shape. Room resource attendees
+        (`*@resource.calendar.google.com`) are dropped from both `attendees` and
+        `attendee_details`.
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: >-
+            Window start. Parsed with time.Parse(time.RFC3339, ...). Missing or
+            unparseable -> 400. There is no default, so it is effectively required.
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: true
+          description: >-
+            Window end. Parsed with time.Parse(time.RFC3339, ...). Missing or
+            unparseable -> 400.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Events in the window. Always a JSON array, `[]` when empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarEvent"
+        "400":
+          description: >-
+            `invalid start param` or `invalid end param`. Emitted with http.Error,
+            so the body is plain text, not JSON.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+        "401":
+          description: >-
+            Either the requireAuth middleware rejected the request
+            (MiddlewareUnauthorized), or the handler could not build a calendar
+            client because no OAuth token is stored for this user — in that case the
+            body is the plain-text string `not connected: <err>`.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+        "500":
+          description: Google Calendar API error, verbatim error text via http.Error.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+
+  /api/calendar/freebusy:
+    get:
+      operationId: getCalendarFreeBusy
+      tags: [calendar]
+      summary: Raw Google free/busy lookup for a comma-separated attendee list
+      description: >-
+        Thin passthrough over calendar.CalendarClient.GetFreeBusy. NOTE: the response
+        is `map[string][]calendar.TimeSlot` and calendar.TimeSlot (backend/calendar/freebusy.go:10)
+        has NO json struct tags, so the window keys serialize as Go field names —
+        `Start` / `End`, capitalized. This is NOT the same shape as POST /api/freebusy.
+        No frontend code calls this endpoint.
+      x-uncertain: >-
+        This endpoint appears to be dead: nothing in smart-calendar-flow/src references
+        /api/calendar/freebusy. Confirm whether it should be kept, aligned with
+        POST /api/freebusy, or removed.
+      parameters:
+        - name: start
+          in: query
+          required: true
+          description: RFC3339. Missing or unparseable -> 400.
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: true
+          description: RFC3339. Missing or unparseable -> 400.
+          schema:
+            type: string
+            format: date-time
+        - name: attendees
+          in: query
+          required: false
+          description: >-
+            Comma-separated email addresses, split on "," with no trimming and no
+            validation. An empty or absent value produces an empty email list, which
+            is forwarded to Google as a free/busy query with zero items.
+          schema:
+            type: string
+          example: alice@example.com,bob@example.com
+      responses:
+        "200":
+          description: >-
+            Object keyed by the calendar id echoed back by Google (normally the email).
+            Emails that Google does not return are simply absent from the map.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RawGoogleFreeBusyMap"
+        "400":
+          description: "`invalid start param` / `invalid end param` (plain text)."
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+        "401":
+          description: "`not connected: <err>` (plain text), or MiddlewareUnauthorized."
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+        "500":
+          description: Google Calendar API error (plain text).
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+
+  /api/freebusy:
+    post:
+      operationId: queryFreeBusy
+      tags: [calendar]
+      summary: Participant free/busy with coverage classification
+      description: >-
+        Backed by engine.FreeBusyService. Emails on known consumer domains
+        (gmail.com, googlemail.com, outlook.com, hotmail.com, yahoo.com, icloud.com,
+        live.com, msn.com, proton.me, protonmail.com) are never queried and come back
+        with coverage/status "unknown" and an empty busy list. Emails are lowercased
+        and trimmed before lookup. Results are cached for 15 minutes per
+        (userID, email, UTC date of start). External lookups run under a 5s timeout;
+        a timeout or provider failure degrades to "unknown" rather than an error.
+        The response carries the same data three times for backwards compatibility.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FreeBusyQueryRequest"
+      responses:
+        "200":
+          description: Free/busy result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreeBusyQueryResponse"
+        "400":
+          description: >-
+            JSON error (writeError). One of: `invalid JSON: <err>`,
+            `emails is required` (empty or missing array), `max 20 emails per request`,
+            `start_time must be RFC3339`, `end_time must be RFC3339`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: >-
+            `{"error":"unauthorized"}` as JSON via writeError when the user id is
+            missing from the request context, or MiddlewareUnauthorized from the
+            middleware (text/plain content type).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: >-
+            engine.FreeBusyService.Query failure — in practice only a settings-read
+            failure. Emitted with http.Error, so PLAIN TEXT, unlike every other
+            error path in this handler.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/PlainTextError"
+
+  /api/events/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Google Calendar event id, taken verbatim from the URL. Not validated or
+          decoded by the handler.
+        schema:
+          type: string
+    patch:
+      operationId: patchEvent
+      tags: [calendar]
+      summary: Partially update a Google Calendar event
+      description: >-
+        Fetches the event, applies only the non-null fields from the body, and writes
+        it back with calendar.CalendarClient.UpdateEvent. Every field is a Go pointer,
+        so an ABSENT key and an explicit `null` are indistinguishable and both mean
+        "leave unchanged". `start` / `end` are decoded as time.Time and re-emitted as
+        UTC RFC3339 `dateTime` — patching either one CONVERTS AN ALL-DAY EVENT INTO A
+        TIMED EVENT. Supplying `attendees` REPLACES the whole attendee list with
+        email-only entries, discarding display names and RSVP status, and also
+        discards any room resource attendee that the previous list contained.
+      x-uncertain: >-
+        The 200 body is the raw google.golang.org/api/calendar/v3.Event returned by
+        the Google API, NOT the flattened CalendarEvent DTO used by GET
+        /api/calendar/events. The frontend types this call as CalendarEvent. A human
+        must decide which side is wrong. No handler test covers the success body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventPatchRequest"
+      responses:
+        "200":
+          description: The updated event, serialized by the Google API client library.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarEventRaw"
+        "400":
+          description: "`invalid body` — the request body is not valid JSON."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: "`not authenticated` (no stored OAuth token), or MiddlewareUnauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: >-
+            `event not found: <err>`. Any GetEvent failure maps to 404, including
+            transport and permission errors, not only a genuine 404 from Google.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: "`update failed: <err>`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteEvent
+      tags: [calendar]
+      summary: Delete a Google Calendar event
+      description: >-
+        Deletes the event from the user's primary calendar. The handler reads no
+        query parameters — in particular the `send_updates` parameter the frontend
+        sends is ignored.
+      responses:
+        "204":
+          description: Deleted. Empty body, no Content-Type header set.
+        "401":
+          description: "`not authenticated`, or MiddlewareUnauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: >-
+            `delete failed: <err>`. Deleting an already-deleted or non-existent event
+            surfaces here as 500, never as 404.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/rooms:
+    get:
+      operationId: listRooms
+      tags: [calendar]
+      summary: List Google Workspace room resources
+      description: >-
+        Enumerates the user's Google CalendarList and keeps entries whose id contains
+        `resource.calendar.google.com`, optionally filtered by a case-insensitive
+        substring match against the summary or the id. Returns `[]` rather than null
+        when nothing matches.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: >-
+            Case-insensitive substring filter, lowercased by the handler before
+            matching. Absent or empty means no filtering. Not trimmed.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Matching rooms, capped only by what Google returns.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarRoom"
+        "401":
+          description: "`not authenticated`, or MiddlewareUnauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Google CalendarList API error, message passed through verbatim.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/attendees/suggest:
+    get:
+      operationId: suggestAttendees
+      tags: [calendar]
+      summary: Suggest attendees seen on recent events
+      description: >-
+        Scans the user's primary calendar over a FIXED 30-day lookback ending now
+        (the window is not configurable via query parameters), de-duplicates attendees
+        by lowercased email, sorts ascending by the original-cased email, and returns
+        at most 20 entries. Unlike GET /api/calendar/events, room resource attendees
+        are NOT filtered out here.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: >-
+            Case-insensitive substring filter matched against the attendee email or
+            display name, lowercased by the handler. Absent or empty means no filtering.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Up to 20 suggestions. `[]` when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendeeSuggestion"
+        "401":
+          description: "`not authenticated`, or MiddlewareUnauthorized."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Google Calendar API error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/personal-calendars:
+    get:
+      operationId: listPersonalCalendars
+      tags: [calendar]
+      summary: List the caller's personal calendars
+      description: >-
+        Rows from `personal_calendars` owned by the authenticated user, ordered by id
+        ascending. Always an array, `[]` when empty.
+      responses:
+        "200":
+          description: Personal calendars.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PersonalCalendar"
+        "401":
+          description: MiddlewareUnauthorized (text/plain body containing JSON).
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "500":
+          description: Database error, message passed through verbatim.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createPersonalCalendar
+      tags: [calendar]
+      summary: Connect a personal calendar
+      description: >-
+        Inserts a row owned by the authenticated user. `name` defaults to the literal
+        string "Personal" when empty or absent. `enabled` has no default handling, so
+        an omitted key becomes the Go zero value `false`. `credentials_json` is never
+        settable through this endpoint and is never returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PersonalCalendarCreateRequest"
+      responses:
+        "201":
+          description: Created calendar.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalCalendar"
+        "400":
+          description: "`invalid body` (unparseable JSON) or `provider required`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "500":
+          description: Insert failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/personal-calendars/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >-
+          Personal calendar id. Parsed with strconv.ParseInt(..., 10, 64); a
+          non-integer path segment yields 400 `invalid id`. Note the response DTO
+          returns this same id as a STRING.
+        schema:
+          type: integer
+          format: int64
+    patch:
+      operationId: updatePersonalCalendar
+      tags: [calendar]
+      summary: Rename, re-point or enable/disable a personal calendar
+      description: >-
+        Applies COALESCE semantics in SQL: a null or absent field leaves the column
+        unchanged. `provider` cannot be changed. The UPDATE is scoped by
+        `user_id`, so another user's calendar behaves exactly like a missing one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PersonalCalendarPatchRequest"
+      responses:
+        "200":
+          description: Updated calendar.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalCalendar"
+        "400":
+          description: "`invalid id` or `invalid body`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "404":
+          description: "`personal calendar not found` — unknown id, or owned by another user."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Database error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deletePersonalCalendar
+      tags: [calendar]
+      summary: Disconnect a personal calendar
+      description: >-
+        Deletes the row scoped by `user_id`. Note this removes only the
+        personal_calendars row; associated personal_blockers rows are not touched by
+        this handler.
+      responses:
+        "204":
+          description: Deleted. Empty body.
+        "400":
+          description: "`invalid id`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "404":
+          description: "`personal calendar not found` — nothing was deleted."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Database error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/personal-calendars/{id}/preview:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: previewPersonalCalendar
+      tags: [calendar]
+      summary: Preview the events a personal calendar would block
+      description: >-
+        Reads events through engine.PersonalBlocker.Preview over a FIXED window of
+        `time.Now().Truncate(24h)` to that value plus 14 days. The window is not
+        configurable and Truncate operates on the Unix epoch, so the start is a UTC
+        midnight regardless of the caller's timezone. Returns `[]` rather than null
+        when the provider yields nothing.
+      responses:
+        "200":
+          description: >-
+            Preview events. WARNING: the element type is calendar.GenericEvent
+            (backend/calendar/provider.go:13), which has NO json struct tags, so keys
+            are the Go field names `ID`, `Title`, `Start`, `End` — capitalized and
+            inconsistent with every other response in this domain.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PersonalCalendarPreviewEvent"
+        "400":
+          description: "`invalid id`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "404":
+          description: >-
+            `personal calendar not found`. Also returned when the ownership lookup
+            itself errors, since any error from ownedCalendar maps to 404.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Preview failed (e.g. the webcal/ICS fetch errored).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/personal-calendars/{id}/sync:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    post:
+      operationId: syncPersonalCalendar
+      tags: [calendar]
+      summary: Run a personal-calendar sync now
+      description: >-
+        Runs engine.PersonalBlocker.Sync, stamps `last_synced_at = NOW()`, then
+        re-reads and returns the calendar. Takes no request body.
+      responses:
+        "200":
+          description: The calendar after syncing; `last_synced_at` is always populated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalCalendar"
+        "400":
+          description: "`invalid id`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "404":
+          description: "`personal calendar not found` (before or after the sync)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: >-
+            The blocker's Sync returned an error, or the last_synced_at update failed.
+            Verified by TestPersonalCalendarSyncPropagatesBlockerError.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/org/members:
+    get:
+      operationId: listOrgMembers
+      tags: [calendar]
+      summary: List users in the caller's organization
+      description: >-
+        Returns all `users` rows sharing the caller's `org_id`, ordered by
+        `created_at` ascending. If the caller cannot be loaded, or has no `org_id`,
+        the handler returns 200 with `[]` rather than an error.
+      responses:
+        "200":
+          description: >-
+            Org members, or `[]` when the caller has no organization. The `org`
+            property is never populated by this endpoint — storage.GetOrgMembers
+            does not hydrate it, so it is always omitted.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgMember"
+        "401":
+          description: >-
+            Body is the JSON literal `{"error":"unauthorized"}` but http.Error
+            overwrites Content-Type with text/plain; charset=utf-8. Also reachable as
+            MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "500":
+          description: >-
+            Body is the JSON literal `{"error":"internal"}` served as
+            text/plain; charset=utf-8 (http.Error).
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+
+  /api/audit:
+    get:
+      operationId: listAuditEntries
+      tags: [calendar]
+      summary: Recent audit-log entries
+      description: >-
+        Returns rows from `audit_log` ordered by `created_at DESC, id DESC`. The
+        query is NOT scoped to the calling user or organization — every authenticated
+        caller sees the same global log.
+      x-uncertain: >-
+        The audit log is global rather than per-user/per-org. Confirm this is
+        intentional and not a data-exposure bug before publishing the spec.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Parsed with strconv.Atoi and the error is discarded, so a non-numeric or
+            absent value becomes 0. storage.ListAuditLog then clamps: any value <= 0
+            or > 500 is replaced by 100. So the effective default is 100 and the
+            effective maximum is 500; out-of-range values silently become 100 rather
+            than being rejected or capped.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Audit entries, `[]` when the table is empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEntry"
+        "401":
+          description: MiddlewareUnauthorized.
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/MiddlewareUnauthorized"
+        "500":
+          description: "`audit: <err>` as JSON via writeError."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    # ---------------------------------------------------------------- errors
+
+    ErrorResponse:
+      type: object
+      description: >-
+        The shared JSON error body produced by writeError
+        (backend/api/handlers_settings.go:206). Exactly one key.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable message; frequently wraps a raw Go error string.
+
+    PlainTextError:
+      type: string
+      description: >-
+        Body produced by net/http's http.Error: the message followed by a newline,
+        served as `text/plain; charset=utf-8` with `X-Content-Type-Options: nosniff`.
+        It is NOT JSON, so a client that blindly JSON-parses error bodies will throw.
+      example: "invalid start param\n"
+
+    MiddlewareUnauthorized:
+      type: string
+      description: >-
+        A JSON literal delivered with a text/plain Content-Type, because the handler
+        sets application/json and http.Error then overwrites the header. Seen from
+        requireAuth (middleware.go) and from handlers_org.go.
+      example: "{\"error\":\"unauthorized\"}\n"
+
+    # ------------------------------------------------------- calendar events
+
+    CalendarEvent:
+      type: object
+      description: >-
+        api.calendarEventDTO — the flattened event shape returned by
+        GET /api/calendar/events.
+      required: [id, title, start, end]
+      properties:
+        id:
+          type: string
+          description: Google Calendar event id. Always present as a key; may be "".
+        title:
+          type: string
+          description: Google `summary`. Always present as a key; may be "".
+        start:
+          type: string
+          description: >-
+            Either an RFC3339 date-time (timed event, Google `start.dateTime`,
+            preserving the event's original UTC offset) OR a bare `YYYY-MM-DD` date
+            (all-day event, Google `start.date`). Callers must handle both. Empty
+            string when Google returned no start at all.
+          examples:
+            - "2026-05-01T10:00:00+02:00"
+            - "2026-05-01"
+        end:
+          type: string
+          description: Same dual format as `start`. For all-day events this is the exclusive end date.
+          examples:
+            - "2026-05-01T10:30:00+02:00"
+            - "2026-05-02"
+        color:
+          type: string
+          description: >-
+            Hex colour mapped from Google's numeric `colorId` via a fixed 11-entry
+            table. Omitted when the event has no colorId or an unrecognised one.
+          enum:
+            - "#7986CB"
+            - "#33B679"
+            - "#8E24AA"
+            - "#E67C73"
+            - "#F6BF26"
+            - "#F4511E"
+            - "#039BE5"
+            - "#3F51B5"
+            - "#0B8043"
+            - "#D50000"
+            - "#616161"
+        attendees:
+          type: array
+          description: >-
+            Attendee emails with room resources (`*@resource.calendar.google.com`)
+            removed. Omitted entirely when the event has no non-resource attendees.
+          items:
+            type: string
+            format: email
+        attendee_details:
+          type: array
+          description: Parallel to `attendees`, same ordering and same filtering. Omitted when empty.
+          items:
+            $ref: "#/components/schemas/CalendarEventAttendee"
+        is_personal_block:
+          type: boolean
+          description: >-
+            Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO,
+            so it is always omitted from responses from this endpoint.
+          x-uncertain: >-
+            Dead field on this path. Either the personal-block tagging logic is
+            missing, or the field should be dropped from the DTO.
+        description:
+          type: string
+          description: Omitted when empty.
+        location:
+          type: string
+          description: Omitted when empty.
+        conference:
+          $ref: "#/components/schemas/CalendarEventConference"
+
+    CalendarEventAttendee:
+      type: object
+      description: api.attendeeDTO.
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          description: Google `displayName`. Omitted when empty.
+        rsvp:
+          type: string
+          description: >-
+            Mapped from Google `responseStatus`. Anything other than
+            accepted/declined/tentative — including Google's `needsAction` and an
+            empty value — collapses to `pending`. Because `pending` is a non-empty
+            string it is always emitted despite the omitempty tag.
+          enum: [accepted, declined, tentative, pending]
+        organizer:
+          type: boolean
+          description: Omitted when false.
+
+    CalendarEventConference:
+      type: object
+      description: >-
+        api.conferenceDTO. Populated from `hangoutLink` first; otherwise from the
+        conferenceData entry point or the Paceday-private extended properties.
+      required: [provider, url]
+      properties:
+        provider:
+          type: string
+          description: >-
+            `google_meet` when derived from a Google hangout link or conference entry
+            point, otherwise whatever string was stored in the event's private
+            extended properties by the conferencing handlers (e.g. `zoom`, `custom`).
+            Not constrained by an enum in Go.
+        url:
+          type: string
+          format: uri
+        label:
+          type: string
+          description: >-
+            "Google Meet" for hangout links, otherwise the provider string uppercased
+            (e.g. "ZOOM", "CUSTOM"). Omitted when empty.
+
+    EventPatchRequest:
+      type: object
+      description: >-
+        Body of PATCH /api/events/{id}. Every field is optional; only non-null fields
+        are applied. Unknown keys are silently ignored by encoding/json.
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          nullable: true
+          description: Maps to Google `summary`. Null or absent leaves it unchanged.
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        start:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Decoded as Go time.Time (RFC3339) and re-emitted as UTC RFC3339 in
+            `start.dateTime`. Setting this on an all-day event converts it to a timed
+            event.
+        end:
+          type: string
+          format: date-time
+          nullable: true
+          description: Same handling as `start`.
+        attendees:
+          type: array
+          nullable: true
+          description: >-
+            FULL REPLACEMENT of the attendee list with email-only entries. Sending
+            `[]` clears all attendees, including room resources.
+          items:
+            type: string
+            format: email
+
+    GoogleCalendarEventRaw:
+      type: object
+      description: >-
+        The raw google.golang.org/api/calendar/v3.Event returned unmodified by
+        PATCH /api/events/{id}. Its keys are Google's own camelCase API names
+        (`summary`, `start.dateTime`, `htmlLink`, `hangoutLink`, `attendees[].responseStatus`,
+        …), not the CalendarEvent shape. Only the most load-bearing fields are listed;
+        the object carries the full Google event payload.
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        htmlLink:
+          type: string
+        hangoutLink:
+          type: string
+        start:
+          type: object
+          additionalProperties: true
+          description: Google EventDateTime — has `dateTime`, `date` and/or `timeZone`.
+        end:
+          type: object
+          additionalProperties: true
+        attendees:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    # ------------------------------------------------------------- free/busy
+
+    RawGoogleFreeBusyMap:
+      type: object
+      description: >-
+        Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot`
+        keyed by the calendar id Google echoed back (normally the attendee email).
+      additionalProperties:
+        type: array
+        items:
+          $ref: "#/components/schemas/RawGoogleBusyWindow"
+
+    RawGoogleBusyWindow:
+      type: object
+      description: >-
+        calendar.TimeSlot serialized WITHOUT json tags, hence capitalized Go field
+        names. A Google timestamp that fails to parse becomes the Go zero time
+        `0001-01-01T00:00:00Z` because the parse error is discarded.
+      required: [Start, End]
+      additionalProperties: false
+      properties:
+        Start:
+          type: string
+          format: date-time
+        End:
+          type: string
+          format: date-time
+
+    FreeBusyQueryRequest:
+      type: object
+      description: Body of POST /api/freebusy.
+      required: [emails, start_time, end_time]
+      additionalProperties: false
+      properties:
+        emails:
+          type: array
+          description: >-
+            1 to 20 addresses. Empty or absent -> 400 `emails is required`;
+            more than 20 -> 400 `max 20 emails per request`. Each entry is trimmed
+            and lowercased before lookup. No format validation is performed.
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            format: email
+        start_time:
+          type: string
+          format: date-time
+          description: RFC3339. Must parse or the request is rejected with 400.
+        end_time:
+          type: string
+          format: date-time
+          description: >-
+            RFC3339. Must parse or the request is rejected with 400. The handler does
+            NOT check that end_time is after start_time.
+
+    FreeBusyQueryResponse:
+      type: object
+      description: >-
+        The same free/busy data is returned three ways for compatibility:
+        `participants` (canonical), `busy` (map form) and `results` (legacy, and with
+        different key casing). All three are always present.
+      required: [start_time, end_time, participants, busy, results]
+      additionalProperties: false
+      properties:
+        start_time:
+          type: string
+          format: date-time
+          description: Echo of the parsed request start, marshalled from Go time.Time.
+        end_time:
+          type: string
+          format: date-time
+        participants:
+          type: array
+          description: One entry per requested email, in the order personal-domain/cached entries were resolved.
+          items:
+            $ref: "#/components/schemas/FreeBusyParticipant"
+        busy:
+          type: object
+          description: >-
+            Busy windows keyed by the lowercased email. Same data as
+            `participants[].busy`. Always an object; a participant with no busy time
+            maps to `[]`.
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/FreeBusyWindow"
+        results:
+          type: array
+          description: >-
+            Legacy view. Uses `coverage` instead of `status`, and its busy windows are
+            engine/calendar.TimeSlot values with CAPITALIZED `Start`/`End` keys.
+          items:
+            $ref: "#/components/schemas/FreeBusyLegacyResult"
+
+    FreeBusyParticipant:
+      type: object
+      description: api.freeBusyParticipantDTO.
+      required: [email, status, busy]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          description: Lowercased and trimmed form of the requested address.
+        status:
+          type: string
+          description: >-
+            `known` when the provider returned data for this address; `unknown` when
+            the domain is a known consumer domain, when no calendar credentials are
+            stored, or when the provider call failed or timed out.
+          enum: [known, unknown]
+        busy:
+          type: array
+          description: Always present; `[]` when the participant is free or status is unknown.
+          items:
+            $ref: "#/components/schemas/FreeBusyWindow"
+
+    FreeBusyWindow:
+      type: object
+      description: api.freeBusyWindowDTO — the lowercase-keyed busy window.
+      required: [start, end]
+      additionalProperties: false
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+
+    FreeBusyLegacyResult:
+      type: object
+      description: engine.ParticipantBusy, as emitted under the `results` key.
+      required: [email, coverage, busy]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+        coverage:
+          type: string
+          enum: [known, unknown]
+        busy:
+          type: array
+          items:
+            $ref: "#/components/schemas/RawGoogleBusyWindow"
+
+    # ----------------------------------------------------- rooms / attendees
+
+    CalendarRoom:
+      type: object
+      description: calendar.Room — only two fields exist server-side.
+      required: [id, name]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: >-
+            The Google resource calendar id, which is also the room's bookable email
+            address (contains `resource.calendar.google.com`).
+        name:
+          type: string
+          description: The calendar list entry's `summary`.
+
+    AttendeeSuggestion:
+      type: object
+      description: >-
+        calendar.AttendeeSuggestion. Both keys are always emitted (no omitempty);
+        `name` is "" when Google supplied no display name.
+      required: [email, name]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          description: Original casing from the Google event, not the lowercased dedupe key.
+        name:
+          type: string
+
+    # ---------------------------------------------------- personal calendars
+
+    PersonalCalendar:
+      type: object
+      description: api.personalCalendarDTO.
+      required: [id, label, type, enabled]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: >-
+            The int64 database id rendered as a decimal STRING. Path parameters for
+            this resource are integers, so clients must convert.
+        label:
+          type: string
+          description: Renamed from the storage column `name`.
+        type:
+          type: string
+          description: >-
+            Renamed from the storage column `provider`. Stored as a free-form string
+            — the backend enforces only that it is non-empty on create, so values
+            outside google/outlook/webcal are accepted and echoed back.
+        url:
+          type: string
+          description: Subscription URL (webcal/ICS). Omitted when empty.
+        enabled:
+          type: boolean
+        last_synced_at:
+          type: string
+          format: date-time
+          description: >-
+            UTC RFC3339. Omitted entirely (not null) when the calendar has never
+            been synced.
+
+    PersonalCalendarCreateRequest:
+      type: object
+      description: Body of POST /api/personal-calendars. Note these are storage-side names, not DTO names.
+      required: [provider]
+      additionalProperties: false
+      properties:
+        provider:
+          type: string
+          description: >-
+            Required and must be non-empty, otherwise 400 `provider required`. Any
+            non-empty string is accepted; there is no allow-list.
+        name:
+          type: string
+          description: Defaults to the literal "Personal" when empty or absent.
+        url:
+          type: string
+          description: Optional; stored as "" when absent.
+        enabled:
+          type: boolean
+          default: false
+          description: >-
+            Not a pointer in Go, so an ABSENT key becomes `false` — the calendar is
+            created disabled. Clients that want it active must send `true` explicitly.
+
+    PersonalCalendarPatchRequest:
+      type: object
+      description: >-
+        Body of PATCH /api/personal-calendars/{id}. Pointer fields with SQL COALESCE,
+        so null and absent both mean "unchanged". `provider` is not patchable.
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          nullable: true
+        url:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+          nullable: true
+
+    PersonalCalendarPreviewEvent:
+      type: object
+      description: >-
+        calendar.GenericEvent serialized WITHOUT json tags — capitalized Go field
+        names. All four keys are always present.
+      required: [ID, Title, Start, End]
+      additionalProperties: false
+      properties:
+        ID:
+          type: string
+        Title:
+          type: string
+        Start:
+          type: string
+          format: date-time
+        End:
+          type: string
+          format: date-time
+
+    # ------------------------------------------------------------- org / audit
+
+    OrgMember:
+      type: object
+      description: storage.User as returned by GET /api/org/members.
+      required: [id, email, name, avatarUrl, provider, createdAt]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        avatarUrl:
+          type: string
+          description: camelCase, unlike most other fields in this domain. May be "".
+        provider:
+          type: string
+          description: >-
+            The identity/calendar provider the user signed in with, e.g. `google` or
+            `microsoft`. Not constrained by an enum in Go.
+          x-uncertain: >-
+            Exact set of provider values written at signup was not traced; confirm
+            against handlers_auth.go / handlers_microsoft_auth.go.
+        org:
+          $ref: "#/components/schemas/Org"
+        createdAt:
+          type: string
+          format: date-time
+
+    Org:
+      type: object
+      description: >-
+        storage.Org. Present in the User struct with `omitempty`, but
+        storage.GetOrgMembers never hydrates it, so it never appears on
+        GET /api/org/members responses.
+      required: [id, name, domain, createdAt]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        domain:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    AuditEntry:
+      type: object
+      description: storage.AuditEntry.
+      required: [id, action, details, created_at]
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+          format: int64
+        action:
+          type: string
+          description: Dotted action key, e.g. `settings.update`, `event.delete`.
+        details:
+          type: string
+          description: >-
+            Scanned from the DB into a Go `string`, so this is ALWAYS a JSON string
+            server-side — even when the stored text happens to contain JSON.
+        created_at:
+          type: string
+          format: date-time

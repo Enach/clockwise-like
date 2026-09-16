@@ -1,0 +1,502 @@
+# Proposed work items from docs/factory/api-audit.md section 6.
+# Each entry becomes one Linear issue. `body` is paste-ready.
+# severity = the highest severity of any finding in finding_ids.
+# requires_contract_change = true when the published wire shape in
+# contracts/openapi/openapi.yaml must be regenerated and consumers re-checked.
+
+work_items:
+  - title: "Set Secure on every cookie in backend/ and SameSite on the Slack and Notion OAuth state cookies"
+    severity: high
+    finding_ids: [API-007, API-027]
+    repos: [backend]
+    requires_contract_change: false
+    body: |
+      The string `Secure` does not appear in any non-test Go file in `backend/`. That
+      includes the 7-day session cookie `auth_token` (handlers_auth.go:147-153), so the
+      session token crosses the wire in the clear on any plaintext HTTP request and is
+      replayable by a network attacker.
+      Separately, `slack_oauth_state` and `notion_oauth_state` (handlers_integrations.go:41,174)
+      set only Path/MaxAge/HttpOnly - no SameSite - while every other state cookie in the
+      codebase (oauth_state, ms_oauth_state, sso_state, zoom_oauth_state) sets SameSiteLaxMode.
+      Add `Secure` to all ten SetCookie sites behind a config flag so local HTTP dev still
+      works, and add SameSiteLaxMode to the two integrations cookies.
+      No response body changes. This is the cheapest security win in the audit - ship it first.
+
+  - title: "Stop echoing raw Go and provider error strings (including internal user UUIDs) in 5xx response bodies"
+    severity: medium
+    finding_ids: [API-054]
+    repos: [backend]
+    requires_contract_change: false
+    body: |
+      Error bodies across every domain interpolate `err.Error()` directly: "not connected: ",
+      "event not found: ", "update failed: ", "audit: ", and every `writeError(w, err.Error(), 500)`.
+      Worst case: GET /api/analytics/meetings returns `"internal error: no token for user <uuid>"`
+      to a user with no connected calendar, echoing an internal user id - and it should be a
+      4xx telling them to connect a calendar, not a 500.
+      Replace interpolated errors with a fixed client-facing message plus a server-side log.
+      Land this before the error-envelope unification so the messages being moved are already
+      sanitised. Documented response shapes do not change, only their content.
+
+  - title: "Add an SsoProviderDTO that omits OIDCClientSecret and SAMLCert, and gate /api/admin/sso behind a real admin check"
+    severity: critical
+    finding_ids: [API-001, API-060, API-066, API-067]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      GET and POST /api/admin/sso encode `storage.SSOProvider` whole (storage/sso_providers.go:12-25).
+      It has no json tags and carries OIDCClientSecret and SAMLCert. The only gate is
+      `user.OrgID != nil` (handlers_sso.go:258-276) - there is no admin role anywhere in the
+      codebase. Any authenticated org member reads the org's OIDC client secret and SAML
+      signing cert in plaintext; one compromised low-privilege account yields IdP impersonation.
+      Introduce a tagged DTO that omits both secret fields, add an admin authorization check,
+      add dependentRequired validation so an oidc provider cannot be created with an empty
+      issuer/client_id (today that fails later as a 500 from /api/auth/sso/{domain}), add a
+      RowsAffected check to DeleteSSOProvider so a missing domain is 404 not 204, and make
+      `enabled` settable instead of hardcoded true. Resolves x-uncertain U-21 and U-22.
+
+  - title: "Add user_id to the audit_log table and scope GET /api/audit to the calling user"
+    severity: critical
+    finding_ids: [API-005]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      `storage.ListAuditLog(db, limit)` has no user or org predicate, and `audit_log` has no
+      user column to add one to - the INSERT is `(action, details, created_at)` only
+      (storage/focus_blocks.go:62). So GET /api/audit is not merely unscoped, it is unscopable
+      without a migration.
+      The `details` column carries meeting titles (handlers_schedule.go:188) and the raw text of
+      natural-language scheduling prompts (nlp/parser.go:221). Any authenticated user reads
+      every colleague's meeting titles and typed prompts with one request.
+      Work: migration adding user_id, a backfill decision (hard-deleting pre-migration rows is
+      safest - they cannot be attributed), a WriteAuditLog signature change at all seven call
+      sites, and a predicate on ListAuditLog. Largest single item in the audit; do not bundle it.
+
+  - title: "Switch /api/settings and the daily-recap handlers to per-user settings, make llmApiKey write-only, and make PUT a merge"
+    severity: critical
+    finding_ids: [API-002, API-003, API-004, API-009, API-081, API-082, API-037]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      `GetSettings` and `SaveSettings` are hard-coded to `WHERE id = 1` / `VALUES (1, ...)`
+      (storage/settings.go:227,269) while every route sits behind requireAuth. `GetSettingsByUser`
+      (:420) already exists and is used elsewhere; migration 018 added the user_id column and its
+      own comment says the singleton path "doesn't yet supply a user_id".
+      Consequences: every user reads and overwrites the same row; `llmApiKey` (json:"llmApiKey",
+      no redaction) is readable in cleartext by every account; PUT decodes into a zero-valued
+      struct and lists every column in the INSERT, so a partial PUT wipes the stored API key,
+      timezone, focus config and recap config - data loss reachable by normal use.
+      GET /api/auth/status has the same root cause and leaks the global CalendarEmail.
+      Work: move all six handlers to the per-user functions, finish migration 018's NOT NULL
+      tightening, make llmApiKey accept-on-write / never-return (expose `llmApiKeySet: bool`),
+      make PUT a merge, and fill the validateSettings gaps (workEnd > workStart on the legacy
+      fields, focusMin <= focusMax, bufferMinMeetingMinutes >= 0, timezone, recapSendTo on PUT).
+      Touches migrations - do not release alongside the audit_log migration.
+      Include POST /api/llm/test while here: it never reads the posted body and always tests the
+      *stored* settings, so "Test connection" in the settings UI tests the saved config rather
+      than what the user just typed.
+
+  - title: "Add the missing owner check to GET /api/scheduling-links/{id} and a last-owner guard to DELETE /api/teams/{id}/members/{userId}"
+    severity: high
+    finding_ids: [API-006, API-023]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      Two independent broken access controls, grouped because they are one review conversation.
+      GET /api/scheduling-links/{id} (handlers_scheduling_links.go:414-431) is the only route in
+      its family with no ownership check - PATCH, DELETE, /bookings and /hosts all enforce
+      `OwnerUserID != userID -> 403`. It returns includeHosts=true, i.e. every host's email, name
+      and avatar URL. Rated high rather than critical because the public booking surface keys on
+      `slug` and never emits the link UUID (publicLinkDTO, handlers_booking.go:37-45).
+      DELETE /api/teams/{id}/members/{userId} skips requireOwner entirely for self-removal and
+      has no last-owner guard, so a sole owner can leave and strand the team with no
+      administrator - recoverable only by direct DB access. The 422 "the team owner cannot be
+      removed" rule exists only on the manager-domain delete.
+      Adds a 403 and a 422 to the spec. Resolves x-uncertain U-08.
+
+  - title: "Add json tags to the seven wire-exposed untagged Go structs so /api/focus/blocks, /api/freebusy and the manager routes stop emitting PascalCase keys"
+    severity: high
+    finding_ids: [API-014, API-028, API-029, API-030, API-031, API-032]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      A sweep found 44 exported structs with zero json tags; seven are encoded directly into a
+      response body: storage.FocusBlock (models.go:14, GET /api/focus/blocks), engine.FocusBlock
+      (focus_time.go:17, FocusRunResult.createdBlocks - a *different* field set), calendar.TimeSlot
+      (freebusy.go:10, GET /api/calendar/freebusy and POST /api/freebusy results[].busy),
+      calendar.GenericEvent (provider.go:13, personal-calendars preview), storage.UserProfile and
+      storage.ManagerTeamMember (manager.go, three manager routes), and storage.SSOProvider.
+      Sharpest instance: POST /api/freebusy emits both casings in one body - participants[].busy
+      is {"start","end"} from freeBusyWindowDTO while results[].busy is {"Start","End"} from
+      calendar.TimeSlot (handlers_freebusy.go:90-99, engine/freebusy_service.go:32-36).
+      Focus time is the live break: storage.FocusBlock, engine.FocusBlock and the frontend type
+      agree on nothing, so every field the focus UI reads is undefined.
+      Also read the manager member row back after Upsert - the 201 currently returns the
+      pre-insert struct, so ID is the zero UUID and timestamps are 0001-01-01.
+      Omit storage.SSOProvider if the SSO DTO issue lands first; it deletes that encoding path.
+      Same class, same PR: patchMember and patchTeam both discard the re-read error
+      (`updated, _ := ...`) and encode the result anyway, so either can return 200 with the JSON
+      literal `null` after a *successful* write.
+
+  - title: "Replace all 111 http.Error call sites in backend/api with writeError so every error response is JSON"
+    severity: medium
+    finding_ids: [API-036, API-038, API-034]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      Two error encodings coexist: writeError (handlers_settings.go:206) emits
+      application/json {"error": "..."}, http.Error emits text/plain. There are 274 writeError
+      sites and 111 http.Error sites, and eleven files use both - handlers_freebusy.go is JSON
+      for 400/401 and text for 500; handlers_llm.go is text for a settings-load 500 and JSON for
+      the far more common "LLM not configured" 500.
+      The frontend cannot cope: requestApi attempts res.json() on a non-2xx and passes undefined
+      to ApiHttpError when that fails, so a text/plain 500 reaches the UI with no message at all.
+      Four sites are worse - middleware.go:36-52 (the requireAuth 401, reported independently by
+      five of the six audit agents), handlers_me.go and handlers_org.go:21,33 set
+      Content-Type: application/json and then call http.Error, which overwrites the header. The
+      body is JSON; the header says it is not.
+      Also: collapse SchedulingErrorResponse into the single global ErrorResponse (all four
+      fragment definitions were checked and are structurally identical), and reclassify the
+      out-of-hours refusal from 500 to 409/422 - it is a policy rejection, currently
+      indistinguishable from a calendar outage.
+      Mechanical, large diff, low risk. Land after the raw-error-string cleanup.
+
+  - title: "Initialise the ~15 nil response slices with make([]T, 0) and drop nullable:true from the spec"
+    severity: medium
+    finding_ids: [API-033]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      Nil slices encode as `null` rather than `[]` on GET /api/focus/blocks,
+      POST /api/schedule/compress (whole body in week mode), ScheduleSuggestions.slots,
+      FocusRunResult.createdBlocks/skippedDays/errors, CompressionResult.proposals,
+      CompressionApplyResult.applied/failed, DailyRecapPreview.blocks, GET /api/teams/{id}
+      members, GET /api/teams/{id}/analytics member_breakdown, and
+      AnalyticsWeekRow.top_meeting_titles.
+      The inconsistency is the actual defect: in the same teams domain, the manager roster
+      `members`, `gaps`, `candidates`, `slots`, the zones array and the teams array *are*
+      explicitly normalised to []. Two adjacent endpoints, two conventions, and the spec
+      currently papers over it with nullable: true.
+      Mechanical and independent of the other batches.
+
+  - title: "Route PATCH /api/events/{id}, POST /api/schedule/create and POST /api/nlp/confirm through toCalendarEventDTO instead of leaking calendar/v3.Event"
+    severity: high
+    finding_ids: [API-017, API-018, API-043, API-044, API-045, API-042]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      Three endpoints encode the vendored Google struct instead of the CalendarEvent DTO the
+      frontend types them as (handlers_events.go:87 encodes `updated`, the *googlecalendar.Event
+      from UpdateEvent). Wire keys are summary / start.dateTime / hangoutLink; the frontend reads
+      title / start / end / attendees: string[]. Only `id` lines up.
+      TestToCalendarEventDTO_JSONShape already pins the flattened DTO for GET /api/calendar/events,
+      so the list and the mutations disagree about the same object, and no test covers any of the
+      three success bodies.
+      While in this handler, fix the adjacent PATCH defects: the body struct accepts only
+      title/description/location/start/end/attendees, so send_updates, room_resource_email and
+      attendee_details are discarded silently (room changes and attendee edits are no-ops and
+      guests are never notified); setting start/end always writes EventDateTime{DateTime}, never
+      Date, so editing an all-day event's time destroys its all-day-ness; writing `attendees`
+      wholesale strips the room resource that the list endpoint deliberately filters out; PATCH
+      maps every GetEvent failure to 404 while DELETE maps every failure to 500; and DELETE
+      ignores send_updates entirely.
+      Add the PATCH analogue of TestToCalendarEventDTO_JSONShape and delete the
+      GoogleCalendarEvent schema. Resolves x-uncertain U-04 and U-14.
+
+  - title: "Add RowsAffected checks to RespondToHostInvite and RemoveLinkHost so co-host accept/decline/leave stop silently succeeding"
+    severity: high
+    finding_ids: [API-020, API-069, API-048]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      storage.RespondToHostInvite (scheduling_links.go:291) and RemoveLinkHost (:285) run a bare
+      UPDATE/DELETE ... WHERE and return only the driver error. The handlers
+      (handlers_scheduling_links.go:669-690) have no 403 and no 404 branch at all.
+      Accepting a co-host invite with the wrong id returns 200 {"status":"accepted"} having
+      changed nothing, and the user believes they joined. The wrong id is easy to pick up: the
+      /host-invites/{id}/accept spelling reads as "accept invite {id}" but {id} is the
+      scheduling-link id, and the id field of the SchedulingLinkHostRecord returned by
+      POST /{id}/hosts is the host-row id. The list payload's link_id is the correct value.
+      Not a security hole - the UPDATE is keyed on user_id = $2, so no cross-user write is possible.
+      Work: RowsAffected checks returning 404 when nothing matched; deprecate the duplicate
+      /host-invites/{id}/accept|decline routes (routes.go:159-160 and :166-167 bind the same
+      handlers twice) whose {id} semantics cause the mistake; and stop POST /{id}/hosts demoting
+      an already-accepted co-host back to pending via ON CONFLICT DO UPDATE SET status.
+
+  - title: "Align the frontend Settings type with the backend camelCase shape and reconcile the conferencingProvider and LLMProvider enums"
+    severity: high
+    finding_ids: [API-013, API-039]
+    repos: [backend, frontend]
+    requires_contract_change: true
+    body: |
+      Backend Settings is camelCase (workStart, focusMinBlockMinutes, llmApiKey); the frontend
+      Settings type in src/api/types.ts is snake_case. normalizeSettings() bridges exactly four
+      keys - workingHours, lunchBreaks, outOfHoursMeetingsPerWeek, autoDeclineOutsideWorkingHours -
+      and casts the rest through untouched, so every other field reads as undefined.
+      settingsRequestBody() has the mirror problem: it spreads the snake_case object into the PUT
+      body, which the camelCase decoder ignores, writing zero values instead. The audit called
+      this the highest-risk drift in the scheduling domain.
+      Preferred fix: delete the adapter and make the frontend type camelCase, rather than growing
+      a 40-field mapping.
+      Also reconcile two enums: backend conferencingProvider is meet|zoom|teams while the frontend
+      is google_meet|zoom|teams|custom (so Google Meet never matches), and backend LLMProvider
+      accepts `vertex` and `""` (the DB default) which the frontend enum omits entirely.
+      Blocked on the per-user settings work, or it gets rewritten twice.
+
+  - title: "Align the frontend FocusBlock, FocusRunResult and MoveProposal types with the backend keys once json tags land"
+    severity: high
+    finding_ids: [API-015, API-016]
+    repos: [frontend]
+    requires_contract_change: false
+    body: |
+      FocusRunResult is camelCase on the wire (weekStart, createdBlocks, skippedDays, totalMinutes);
+      the frontend type is snake_case and only `errors` lines up, so the focus-run summary renders
+      blank. engine.MoveProposal is camelCase in the compression *preview* response (eventId,
+      proposedStart, focusGainMinutes) while the frontend type is snake_case - so the preview shows
+      nothing, and the *apply* request happens to be snake_case, which means pressing Apply posts
+      fields the user was never shown.
+      Frontend-only once the backend struct tags are settled. Blocked on the json-tags issue -
+      do not start until the final key names for storage.FocusBlock and engine.FocusBlock are
+      merged, since the frontend type must follow whatever that PR chooses.
+
+  - title: "Map storage.Booking through a DTO on GET /api/scheduling-links/{id}/bookings so the owner's bookings list stops rendering undefined and NaN"
+    severity: high
+    finding_ids: [API-019]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      The endpoint returns raw storage.Booking rows: {id, link_id, booker_name, booker_email,
+      start_time, end_time, status, notes, created_at}. schedulingLinks.ts::listBookings reads
+      b.start, b.end, b.link_slug, b.title, b.duration_minutes and b.hosts - none of which exist
+      on that payload. Against the real backend every row comes out with start: undefined,
+      end: undefined, title: "Booking", link_slug: "", hosts: [] and duration_minutes: NaN.
+      The frontend's BackendBooking type declares start and end as required because it was written
+      against the *public* bookingConfirmationDTO (handlers_booking.go:52-62), which does use
+      start/end, and was then reused for the owner-facing list, which does not.
+      Fix on the backend rather than the frontend: add a bookings DTO with
+      start/end/title/duration_minutes/hosts. That makes the two booking payloads in this domain
+      consistent, instead of documenting two shapes for one concept.
+
+  - title: "Add team_id, expires_at and inviter_email to the invite preview, and data_available plus is_paceday_user to GET /api/manager/analytics"
+    severity: high
+    finding_ids: [API-021, API-022, API-086]
+    repos: [backend, frontend]
+    requires_contract_change: true
+    body: |
+      GET /api/teams/invites/{token} returns only {teamName, inviterName, email}, while
+      teams.ts::normalizeInvite reads team_id, token, expires_at and inviter_email. So team_id is
+      always "", expires_at is always undefined (the UI cannot show "expires in N days" even
+      though the invite email promises "expires in 7 days"), and the inviter is silently dropped -
+      the backend sends a display name under inviterName, which no branch of normalizeInvite reads.
+      src/api/teamInvites.test.ts asserts a hand-written {teamId, teamName, email} fixture the
+      backend never produces, so the test passes while the integration is broken. Fix the test too.
+      GET /api/manager/analytics is the more consequential half: memberAnalytics emits only
+      {email, display_name, weeks}, and manager.ts::normalizeAnalytics defaults the missing
+      data_available to **true** while its weeks mapper drops the per-week data_available the
+      backend does send. The degraded-analytics signal is lost in the unsafe direction, so the
+      manager chart renders zeroes as measured data - directly contradicting backend invariant I7,
+      which computes that signal deliberately.
+      Also drop or scope team_member_count on GET /api/manager/profile: nothing reads it and it is
+      a global roster count, not the count for the team the UI is showing.
+
+  - title: "Repair the broken auth flows: SSO detect redirect, login_hint, silent issueJWT failure, disconnect logging you out"
+    severity: high
+    finding_ids: [API-010, API-011, API-012, API-061, API-063, API-064, API-065]
+    repos: [backend, frontend]
+    requires_contract_change: true
+    body: |
+      Seven defects in one flow, best fixed together.
+      Backend auth.DetectResult returns {type, provider_name?, redirect_url?}; the frontend
+      declares {type, domain?} and gates the SSO redirect on res.domain (AuthDialog.tsx:32,111),
+      which is never sent. An SSO-configured user therefore falls through to the password step and
+      can never log in - make the frontend read redirect_url.
+      issueJWT returns without setting a cookie when jwtSecret == "" or token generation fails,
+      and every callback still 302s to /auth/callback, so the user lands on the success page
+      logged out. The Microsoft callback is the same class: a failed Graph profile fetch or user
+      upsert skips issueJWT but still redirects with ?provider=outlook, indistinguishable from
+      success. Both should redirect to an error state.
+      Also: login_hint is sent to /api/auth/google and /api/auth/microsoft and read by neither
+      handler, so the user still sees an account chooser; DELETE /api/auth/disconnect clears the
+      auth_token cookie as well as the calendar token, so "disconnect calendar" logs you out;
+      POST /api/auth/logout returns 200 with an empty body and no Content-Type (204 is correct and
+      safe for both frontend fetch wrappers); and the avatar field has three names across two
+      files - backend avatarUrl vs AuthContext `avatar?` vs schedulingLinks.ts omitting it.
+
+  - title: "Fix the validation and status-code defects: negative selected_slot_index panic, malformed JSON returning 200, week-mode compression swallowing every error"
+    severity: high
+    finding_ids: [API-024, API-035, API-034, API-025, API-053, API-077, API-059, API-079, API-080]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      Seven small independent handler fixes that share a theme but no code. Grouped as one chore PR.
+      POST /api/nlp/confirm: the bounds check is `len(...) == 0 || SelectedSlotIndex >= len(...)`
+      (handlers_nlp.go:49), so a negative index passes and then indexes out of range. sentryMiddleware
+      repanics, so it surfaces as a bare 500 from net/http, not the documented 400. Resolves U-06.
+      POST /api/focus/run and POST /api/schedule/compress swallow malformed JSON - one resets `week`
+      to "", the other discards the decode error with `_ = json.NewDecoder(...)` - and both return
+      200 for garbage while every sibling endpoint returns 400.
+      POST /api/schedule/compress in week mode `continue`s past every engine error and returns 200
+      with body null; single-day mode with the same error returns 500. A fully failed run looks
+      like "nothing to compress".
+      workingHours.days key casing: the validator lowercases the key before checking, so "Monday"
+      validates, but WorkWindow() looks up strings.ToLower(weekday.String()), so a stored "Monday"
+      never matches and that day is silently non-working for focus, compression and scheduling.
+      Plus: the `days` alias silently empties the list for unrecognised tokens and then reports
+      "at least one day is required"; POST /api/freebusy does not check end_time > start_time; and
+      PATCH on a no-meeting-zone is a full replace, so an omitted dayOfWeek decodes to 0 and 422s.
+      Two more in the same family: POST /api/schedule/compress snaps `week` to Monday via
+      startOfWeek() while GET/DELETE /api/focus/blocks use the supplied date verbatim (so passing a
+      Wednesday returns Wed-Tue, not Mon-Sun); and nlp.ParseResult.range_start/range_end are
+      time.Time with omitempty, which does not omit the zero time, so a missing range serialises as
+      "0001-01-01T00:00:00Z" rather than being absent.
+
+  - title: "Resolve the 23 x-uncertain markers in openapi.yaml, starting with one integration test for the five Postgres TIME formatting questions"
+    severity: medium
+    finding_ids: [API-057, API-076, API-088, API-087, API-089, API-090, API-092]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      openapi.yaml carries 23 x-uncertain keys. Nine are answered by resolving a finding elsewhere
+      in this audit. Six need only reading one file: U-12 (the provider string set in meet.go /
+      zoom.go / teams.go), U-13 and U-17 (the users.provider value set - the same question about
+      the same column, resolve once), U-23 (the SkippedDays append sites), U-20 (BuildMessage
+      block types), U-11 (whether is_personal_block tagging logic is missing or the field should go).
+      Five need an observed response: U-15, U-16 (NoMeetingZone startTime/endTime), U-19
+      (recapSendTime), and the booking window_start/window_end note. **All five are the same
+      question about how Postgres renders a TIME column, and one integration test against the
+      testcontainers setup this repo already uses answers all of them.**
+      Three need a product decision: U-03 (delete or align GET /api/calendar/freebusy), U-07 (was a
+      15-minute increment rule intended on /api/schedule/suggest - the scheduler steps 30 minutes
+      and the only 15-minute stepping is in booking/habits/team-availability), U-14.
+      Two are dead branches to delete once confirmed: U-01 and U-05, plus U-09 which needs the FK
+      cascade read in the migration.
+      Also fold in the small cosmetic rows this unblocks: buffer_minutes is always 0 because
+      AnalyticsEngine.compute never sets it; is_personal_block is never assigned; listZones orders
+      by the stored Sunday=0 while emitting Sunday=7; the "(public)" comment on
+      GET /api/teams/invites/{token} contradicts its requireAuth registration; team invites have no
+      uniqueness constraint so duplicates accumulate; and the team_id parameter is required on three
+      manager routes and optional on six. Note the audit corrects the teams report here: the
+      team_id-less calls are self-scoped via ManagerUserID: userID (handlers_manager.go:291), so
+      that asymmetry is an API-shape inconsistency, not a vulnerability.
+      Finally: /api/auth/detect, /api/auth/sso/{domain}, /api/auth/callback/oidc/{domain},
+      /api/auth/me, /api/auth/logout and all three /api/admin/sso routes have zero Go test coverage,
+      so every status code documented for them is read off handler source rather than an assertion -
+      relevant to the 75-80% coverage band in CLAUDE.md.
+
+  - title: "Decide whether to build frontends for or delete the 31 API operations with no consumer anywhere in smart-calendar-flow/src"
+    severity: low
+    finding_ids: [API-091, API-052, API-070, API-071, API-072, API-084, API-085, API-026]
+    repos: [backend, frontend]
+    requires_contract_change: true
+    body: |
+      An exhaustive grep of smart-calendar-flow/src finds no call to: the entire habits /
+      analytics / meeting-briefs / Slack / Notion domain (22 operations), all four daily-recap
+      endpoints, all three /api/admin/sso methods, GET /api/calendar/freebusy,
+      GET /api/org/members, and POST /api/conference/create.
+      These are not defects in themselves, but they have no second opinion on their shapes and no
+      tests - and API-001, an org-wide secret leak, sat undetected in exactly this category.
+      Publishing a contract for surfaces nobody calls and nobody tests is how that happened.
+      Specific hazards if they stay: POST /api/conference/create validates nothing, so a {}
+      request reaches Zoom/Meet with a blank title and the year 1; the Slack and Notion OAuth
+      *callbacks* sit inside the requireAuth group and call userIDFromCtx, so the browser must
+      carry auth_token across the provider's cross-site redirect - this works today only because
+      the cookie is Lax and the callback is a top-level GET, and any tightening turns the connect
+      flow into a 401; both callbacks redirect to a hard-coded /app/settings?tab=integrations path
+      rather than the frontendURL config the auth handlers use; the 503 guard on connect keys on
+      the client id only, so an empty SLACK_REDIRECT_URI 302s to the provider with redirect_uri=
+      empty; GET /api/conference/providers returns 1-4 entries depending on env config while
+      handlers_conferencing_test.go:117 indexes [0] as google_meet; and inviteHost returns 404 for
+      both "link not found" and "no account with that email".
+      A product decision, not an engineering one - but it gates how much of the json-tag,
+      error-envelope and nil-slice work is worth doing.
+
+  - title: "Make requireAuth prefer the Authorization header over the auth_token cookie, and fix the spoofable in-memory rate limiter on /api/auth/detect"
+    severity: high
+    finding_ids: [API-008, API-062, API-068]
+    repos: [backend]
+    requires_contract_change: false
+    body: |
+      requireAuth reads the auth_token cookie first and only falls back to Authorization: Bearer,
+      so a stale cookie shadows a valid bearer token and a user with a poisoned cookie cannot
+      recover by presenting a good one - they must clear site data. It also means a bearer-only
+      client cannot start the Slack and Notion OAuth flows at all, since those routes sit inside
+      the auth group. Prefer the header when both are present.
+      Separately, detectLimiter on POST /api/auth/detect is a per-process map[string]*ipBucket that
+      is never swept and keys on a client-supplied X-Real-IP / X-Forwarded-For when present. The
+      documented 20/min limit is therefore 20/min x replicas, trivially bypassed by setting a
+      header, and the map grows without bound. Key on the trusted proxy hop and add eviction, or
+      move the limiter to shared storage.
+      Also trivial and in the same file group: GET /api/health reports the literal version "0.1.0"
+      from the handler rather than a build-time injected value, so the endpoint cannot be used to
+      confirm which build is deployed.
+
+  - title: "Fix the scheduling-link lifecycle defects: soft delete visible in two of three read paths, inverted alias precedence, uses_count recomputed from live bookings"
+    severity: medium
+    finding_ids: [API-049, API-050, API-051, API-073]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      DeleteSchedulingLink sets active = false. GetSchedulingLinkBySlug filters `AND active = true`
+      so the public page starts 404ing, but GetSchedulingLinkByID does not filter (so
+      GET /api/scheduling-links/{id} keeps returning the "deleted" link with active: false) and
+      ListSchedulingLinksByUser does not either, so deactivated links stay in the owner's list
+      forever. Pick one semantic and apply it to all three read paths.
+      Alias precedence is inverted between the verbs: create (schedulingLinkInput.normalized)
+      resolves duration_options over durations and days_of_week over days, while PATCH (updateLink)
+      applies the aliases in sequence so durations overwrites duration_options and days overwrites
+      days_of_week. Sending both spellings gives different results depending on the verb.
+      uses_count is a SELECT COUNT(*) FROM bookings WHERE status <> 'cancelled' subquery computed on
+      every read rather than a stored counter, so cancelling a booking silently re-opens an
+      exhausted single_use link.
+      Also remove the dead code in createBooking: the `if err != nil` re-check at
+      handlers_booking.go:281-284 cannot be non-nil on any reachable path, and linkExhausted runs
+      twice for the same 410.
+
+  - title: "Decide the Room contract and remove the unreachable freebusy coverage states the frontend declares"
+    severity: medium
+    finding_ids: [API-040, API-041, API-046, API-047, API-074, API-075, API-078]
+    repos: [backend, frontend]
+    requires_contract_change: true
+    body: |
+      calendar.Room (rooms_attendees.go:11) is {id, name}. The frontend Room type declares
+      email as **required** plus building, floor, capacity and available - so any live
+      (non-mock) room list renders undefined for five of seven fields, and those four extras only
+      ever exist in MOCK_ROOMS. In practice the room's email *is* the backend id (the Google
+      resource calendar id), so the frontend is reading id where it means email. Either widen the
+      backend Room or shrink the frontend type; do not leave it as is.
+      GET /api/rooms also accepts start and end from the client (client.ts:1198) and the handler
+      reads only q (handlers_events.go:106), so the availability filtering the signature implies
+      does not exist against the real backend.
+      On POST /api/freebusy the frontend ParticipantCoverage declares a `provider` field the
+      backend never emits, and CoverageStatus includes "paceday_user", which
+      engine/freebusy_service.go:143-146 can never produce. Delete both or implement them.
+      Smaller items in the same domain: GET /api/org/members returns 200 [] when the user lookup
+      errors rather than 500, so "no organization" and "we could not read your org" are
+      indistinguishable; the frontend's DEFAULT_AUDIT_LIMIT is 50 while the backend default is 100;
+      POST /api/personal-calendars creates a *disabled* calendar when `enabled` is omitted because
+      Enabled is a bool not a pointer (masked only because the frontend always sends true); and
+      GET /api/attendees/suggest does not filter room resources while GET /api/calendar/events does,
+      so conference rooms appear in the people-suggestion list.
+
+  - title: "Unify week_start formatting across /api/analytics/week and /trends, and fix the 0..1 vs 0..100 unit clash in one response"
+    severity: medium
+    finding_ids: [API-055, API-056, API-058, API-083]
+    repos: [backend]
+    requires_contract_change: true
+    body: |
+      GET /api/analytics/week builds a map[string]any and formats week_start as "2006-01-02"
+      (handlers_analytics.go:137), while GET /api/analytics/trends returns the raw
+      storage.AnalyticsWeek whose WeekStart time.Time marshals to RFC3339. The same logical field
+      has two types on two endpoints, which is why the audit had to model it as two schemas
+      (AnalyticsWeekWithBreakdown vs AnalyticsWeekRow). Pick one. Note HabitOccurrence.scheduled_date
+      has the same problem - a DATE column typed as time.Time, so ?from=2026-03-01 comes back as
+      "2026-03-01T00:00:00Z".
+      `breakdown` exists only on /analytics/week, so /trends cannot render the same chart without
+      the client recomputing percentages.
+      Within the /analytics/week response, habit_completion_rate is a 0..1 fraction while
+      AnalyticsBreakdownEntry.percentage is 0..100 - a client that formats both the same way is off
+      by 100x.
+      Two smaller consistency fixes: habit ownership failures return 403 forbidden on
+      PATCH/DELETE /api/habits/{id} and GET /api/habits/{id}/occurrences (leaking that the id
+      exists) but 404 on PATCH .../occurrences/{occurrenceId}, which scopes inside the SQL; and the
+      two ack endpoints do the same thing (a detached goroutine) with different status codes -
+      POST /api/habits/reoptimize returns 200 while POST /api/analytics/recompute returns 202.

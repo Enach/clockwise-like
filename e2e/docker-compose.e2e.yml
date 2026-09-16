@@ -1,0 +1,130 @@
+# Paceday e2e stack.
+#
+# This is a SELF-CONTAINED compose file, not an override of the root
+# docker-compose.yml. It is deliberately standalone because the root file
+# pulls a published frontend image, mounts a named postgres volume and binds
+# port 80 — none of which a test run should touch.
+#
+# Run it from the repository root:
+#   docker compose -p paceday-e2e -f e2e/docker-compose.e2e.yml up -d --build
+#
+# Ports (all non-default, so a dev stack can run at the same time):
+#   nginx     -> 127.0.0.1:8088   (the ONLY entrypoint the tests use)
+#   postgres  -> 127.0.0.1:15433  (seeding + assertions only)
+# The backend is intentionally NOT published: the tests must go through nginx,
+# which is what proves the /api/ proxy rule in nginx/nginx.conf works.
+#
+# HERMETICITY: the backend container maps every external provider host to
+# 127.0.0.1 (see `extra_hosts`). There is no seam that lets a fake Google
+# Calendar be injected (see SEAM-REQUIRED.md), so instead of pretending to
+# fake it we make any real outbound calendar call fail INSTANTLY with
+# "connection refused" rather than hang for 30s or leak to the internet.
+# This is what keeps a broken feature from looking like a slow one.
+
+name: paceday-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: paceday_e2e
+      POSTGRES_USER: paceday_e2e
+      POSTGRES_PASSWORD: paceday_e2e
+      # Deterministic collation so ORDER BY in roster queries is stable.
+      LANG: C
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - timezone=UTC
+    ports:
+      - "127.0.0.1:15433:5432"
+    # tmpfs: the database is ephemeral by construction. `docker compose down`
+    # cannot leave a stale volume that makes the next run non-deterministic.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paceday_e2e -d paceday_e2e"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+
+  backend:
+    build:
+      context: ../backend
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://paceday_e2e:paceday_e2e@postgres:5432/paceday_e2e?sslmode=disable
+      # REQUIRED — main.go log.Fatal's without it. This exact value is what
+      # e2e/auth.ts signs session JWTs with. Keep the two in sync.
+      JWT_SECRET: ${E2E_JWT_SECRET:-e2e-only-jwt-secret-not-for-any-real-deployment}
+      SESSION_SECRET: e2e-only-session-secret
+      # Same-origin through nginx, so CORS must not be restrictive.
+      ALLOWED_ORIGIN: "*"
+      FRONTEND_URL: http://localhost:8088
+      # Google OAuth is configured with unusable values on purpose. The
+      # sign-in journey never drives the consent screen (see auth.ts); leaving
+      # these empty would make /api/integrations/availability report Google as
+      # unavailable, which is a different UI state than production.
+      GOOGLE_CLIENT_ID: e2e-google-client-id
+      GOOGLE_CLIENT_SECRET: e2e-google-client-secret
+      GOOGLE_REDIRECT_URL: http://localhost:8088/api/auth/callback
+      # Monitoring off: an empty DSN degrades to "monitoring disabled" and the
+      # server still boots (backend/sentry.go). A test run must not ship events.
+      SENTRY_DSN: ""
+      SENTRY_ENVIRONMENT: e2e
+      # SMTP deliberately unset: engine/booking.go sendConfirmationEmail()
+      # returns early when SMTP_HOST/SMTP_FROM are empty, so booking never
+      # blocks on a mail server.
+      TZ: UTC
+    extra_hosts:
+      # See the HERMETICITY note above.
+      - "www.googleapis.com:127.0.0.1"
+      - "oauth2.googleapis.com:127.0.0.1"
+      - "accounts.google.com:127.0.0.1"
+      - "graph.microsoft.com:127.0.0.1"
+      - "login.microsoftonline.com:127.0.0.1"
+      - "slack.com:127.0.0.1"
+      - "api.notion.com:127.0.0.1"
+      - "zoom.us:127.0.0.1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  frontend:
+    # Built from the real production Dockerfile so the suite exercises the
+    # actual bundle, not a dev server. It needs the smart-calendar-flow
+    # checkout at <repo-root>/frontend — see e2e/README.md "Prerequisites".
+    # Set E2E_FRONTEND_IMAGE to skip the build and use a published image.
+    image: ${E2E_FRONTEND_IMAGE:-paceday-frontend-e2e:local}
+    build:
+      context: ..
+      dockerfile: docker/frontend.dockerfile
+    environment:
+      # Left EMPTY on purpose. docker/fileserver/main.go only injects
+      # window.__API_BASE_URL__ when API_BASE_URL is non-empty; with it unset
+      # both src/api/client.ts and src/lib/api.ts fall back to a same-origin
+      # relative "/api", which is exactly what nginx serves.
+      API_BASE_URL: ""
+    restart: "no"
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      # The production routing rules, unmodified. If this file breaks, the
+      # suite must break.
+      - ../nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: "no"
