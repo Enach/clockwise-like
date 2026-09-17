@@ -1,0 +1,30 @@
+{
+  "name": "paceday-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end suite for Paceday, run against the full docker compose stack.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:debug": "PWDEBUG=1 playwright test",
+    "report": "playwright show-report playwright-report",
+    "typecheck": "tsc --noEmit",
+    "seed": "tsx seed/seed.ts",
+    "stack:up": "docker compose -p paceday-e2e -f docker-compose.e2e.yml --project-directory .. up -d --build --wait",
+    "stack:down": "docker compose -p paceday-e2e -f docker-compose.e2e.yml --project-directory .. down -v --remove-orphans",
+    "stack:logs": "docker compose -p paceday-e2e -f docker-compose.e2e.yml --project-directory .. logs -f"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1",
+    "@types/node": "22.10.2",
+    "@types/pg": "8.11.10",
+    "pg": "8.13.1",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2"
+  }
+}

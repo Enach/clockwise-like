@@ -1,0 +1,1770 @@
+# Domain: booking
+# Source of truth: backend/api/routes.go, handlers_booking.go,
+# handlers_scheduling_links.go, handlers_conferencing.go,
+# backend/storage/scheduling_links.go, backend/conference/*.go
+# Every field below is traceable to a Go json tag, a chi route, or a handler write.
+paths:
+
+  # ---------------------------------------------------------------------------
+  # PUBLIC booking surface (registered outside requireAuth in routes.go:24-27)
+  # ---------------------------------------------------------------------------
+
+  /api/book/{slug}:
+    parameters:
+      - name: slug
+        in: path
+        required: true
+        description: Scheduling-link slug (chi URLParam "slug"). Lookup is `slug = $1 AND active = true`.
+        schema:
+          type: string
+    get:
+      operationId: getPublicLinkInfo
+      tags: [booking]
+      summary: Public metadata for a bookable scheduling link.
+      security: []
+      responses:
+        '200':
+          description: Link is bookable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicLinkInfo'
+        '404':
+          description: 'No active link with that slug. Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '410':
+          description: 'Link exhausted (single_use with >=1 use, or recurring at max_uses). Body: {"error":"link is no longer accepting bookings"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: 'Storage failure. Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+    post:
+      operationId: createPublicBooking
+      tags: [booking]
+      summary: Book a slot on a public scheduling link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePublicBookingRequest'
+      responses:
+        '201':
+          description: Booking confirmed and host calendar events written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicBookingConfirmation'
+        '400':
+          description: >-
+            Validation failure. Messages: "invalid request body";
+            "name, email, and start are required"; "invalid start time, use RFC3339";
+            "invalid end time, use RFC3339"; "duration does not match end time";
+            "invalid duration".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'No active link with that slug. Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '409':
+          description: 'An overlapping non-cancelled booking already exists. Body: {"error":"slot is no longer available"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '410':
+          description: 'Link exhausted. Body: {"error":"link is no longer accepting bookings"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '422':
+          description: 'Start is inside the min_notice_minutes window. Body: {"error":"booking is too soon"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: >-
+            Storage or engine failure. Messages: "internal error";
+            "booking conflict check failed"; "booking failed: <engine error>".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/book/{slug}/slots:
+    get:
+      operationId: getPublicBookingSlots
+      tags: [booking]
+      summary: Available slots for a date, or the list of dates that have any slot.
+      description: >-
+        Two distinct modes. With `date`: `slots` is populated and `available_dates` is
+        always the empty array. Without `date`: the handler probes the next 60 calendar
+        days from `time.Now()` and returns those day strings in `available_dates`, with
+        `slots` always the empty array. Both keys are always present in both modes.
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: date
+          in: query
+          required: false
+          description: Day to enumerate, parsed with Go layout "2006-01-02". Omit for the 60-day availability summary.
+          schema:
+            type: string
+            format: date
+            example: '2026-08-12'
+        - name: duration
+          in: query
+          required: false
+          description: >-
+            Meeting length in minutes. Must be one of the link's `durations`
+            (or exactly 30 when the link has none). Default is `durations[0]`, else 30.
+          schema:
+            type: integer
+            minimum: 1
+            example: 30
+      responses:
+        '200':
+          description: Slot list or availability summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSlotsResponse'
+        '400':
+          description: >-
+            "invalid duration" (non-numeric or not in the link's duration set) or
+            "invalid date format, use YYYY-MM-DD".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'No active link with that slug. Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '410':
+          description: 'Link exhausted. Body: {"error":"link is no longer accepting bookings"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: 'Storage or engine failure. Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  # ---------------------------------------------------------------------------
+  # PUBLIC Zoom OAuth (routes.go:37-38, inside /api/auth but OUTSIDE the
+  # requireAuth sub-group at routes.go:44-48 -> no JWT required)
+  # ---------------------------------------------------------------------------
+
+  /api/auth/zoom:
+    get:
+      operationId: startZoomOAuth
+      tags: [conferencing]
+      summary: Begin the Zoom OAuth authorization-code flow.
+      description: >-
+        Sets a 300-second HttpOnly `zoom_oauth_state` cookie (SameSite=Lax, Path=/)
+        and 302-redirects to Zoom's authorize endpoint. Not a JSON endpoint.
+      security: []
+      responses:
+        '302':
+          description: Redirect to Zoom's authorize URL.
+          headers:
+            Location:
+              description: >-
+                Zoom authorize URL with query params response_type=code, client_id,
+                redirect_uri (ZOOM_REDIRECT_URL), state (32 hex chars).
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              description: 'zoom_oauth_state=<32 hex chars>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
+              schema:
+                type: string
+        '503':
+          description: 'ZOOM_CLIENT_ID is unset. Body: {"error":"Zoom OAuth not configured"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/auth/zoom/callback:
+    get:
+      operationId: handleZoomOAuthCallback
+      tags: [conferencing]
+      summary: Zoom OAuth redirect target; exchanges the code and stores tokens.
+      description: >-
+        Compares `state` against the `zoom_oauth_state` cookie, clears that cookie,
+        exchanges `code` for tokens, persists them, then 302-redirects to the app root.
+        Error bodies here use `http.Error`, i.e. `text/plain; charset=utf-8` plain text,
+        NOT the shared JSON error envelope.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: Authorization code from Zoom. Absent/blank values are forwarded to the token exchange, which then fails with 500.
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          description: Must equal the `zoom_oauth_state` cookie value, otherwise 400.
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Tokens stored; redirect back to the app.
+          headers:
+            Location:
+              description: Always the literal string `/?connected=true&provider=zoom`.
+              schema:
+                type: string
+                const: /?connected=true&provider=zoom
+            Set-Cookie:
+              description: 'zoom_oauth_state=; Path=/; Max-Age=0 (clears the state cookie)'
+              schema:
+                type: string
+        '400':
+          description: Missing cookie or state mismatch.
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: "invalid state\n"
+        '500':
+          description: Token exchange or token persistence failed.
+          content:
+            text/plain:
+              schema:
+                type: string
+                examples:
+                  - "zoom token exchange: <error>\n"
+                  - "save zoom token: <error>\n"
+
+  # ---------------------------------------------------------------------------
+  # PROTECTED scheduling links (routes.go:153-169, inside requireAuth group)
+  # ---------------------------------------------------------------------------
+
+  /api/scheduling-links:
+    post:
+      operationId: createSchedulingLink
+      tags: [scheduling-links]
+      summary: Create a scheduling link owned by the caller.
+      description: >-
+        The caller is inserted as an `accepted` host. Each entry of `co_host_emails`
+        is resolved by lowercased email; unknown emails are silently skipped (no error,
+        no host row). An empty/omitted `slug` is auto-generated from the owner's name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSchedulingLinkRequest'
+      responses:
+        '201':
+          description: Link created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLink'
+        '400':
+          description: 'Body is not valid JSON. Body: {"error":"invalid request body"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '409':
+          description: 'Explicit slug collides with an existing link. Body: {"error":"slug already exists"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '422':
+          $ref: '#/components/responses/SchedulingLinkValidationError'
+        '500':
+          description: >-
+            Messages: "user not found"; "slug generation failed"; "slug check failed";
+            "create failed: <err>"; "owner host failed: <err>".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+    get:
+      operationId: listSchedulingLinks
+      tags: [scheduling-links]
+      summary: Links the caller owns or co-hosts with an accepted status.
+      responses:
+        '200':
+          description: Partitioned into owned vs shared by `is_owner`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkListResponse'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/host-invites:
+    get:
+      operationId: listSchedulingLinkHostInvites
+      tags: [scheduling-links]
+      summary: Pending co-host invitations addressed to the caller.
+      description: >-
+        Invites whose link or owner can no longer be loaded are silently dropped from
+        the list. Returns `[]` (never null) when there are none.
+      responses:
+        '200':
+          description: Pending invites.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SchedulingLinkHostInvite'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/invites:
+    get:
+      operationId: listSchedulingLinkInvitesAlias
+      tags: [scheduling-links]
+      summary: Alias of GET /api/scheduling-links/host-invites (identical handler).
+      description: >-
+        routes.go:157-158 registers `slh.listHostInvites` at BOTH `/host-invites` and
+        `/invites`. Byte-for-byte identical behaviour and response; neither is
+        deprecated in code. The frontend only ever calls `/host-invites`.
+      responses:
+        '200':
+          description: Pending invites (same payload as listSchedulingLinkHostInvites).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SchedulingLinkHostInvite'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/host-invites/{id}/accept:
+    post:
+      operationId: acceptSchedulingLinkHostInvite
+      tags: [scheduling-links]
+      summary: Accept a co-host invitation.
+      description: >-
+        `{id}` is the SCHEDULING LINK id, not the invite/host-row id -- the handler runs
+        `UPDATE scheduling_link_hosts SET status=... WHERE link_id=$1 AND user_id=$2`.
+        This matches the `link_id` field of the invite list payload. The UPDATE affecting
+        zero rows is NOT an error: a caller with no invite for that link still gets 200.
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      responses:
+        '200':
+          description: Host status set to `accepted`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkInviteResponse'
+              example:
+                status: accepted
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"update failed: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/host-invites/{id}/decline:
+    post:
+      operationId: declineSchedulingLinkHostInvite
+      tags: [scheduling-links]
+      summary: Decline a co-host invitation.
+      description: Same handler as accept, with status `declined`. `{id}` is the scheduling-link id.
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      responses:
+        '200':
+          description: Host status set to `declined`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkInviteResponse'
+              example:
+                status: declined
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"update failed: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/{id}:
+    parameters:
+      - $ref: '#/components/parameters/SchedulingLinkIdPath'
+    get:
+      operationId: getSchedulingLink
+      tags: [scheduling-links]
+      summary: Fetch one scheduling link by id.
+      description: >-
+        No ownership or membership check: any authenticated user who knows the UUID
+        receives the full link including every host's email, name and avatar.
+        `is_owner` is computed against the caller and `my_status` is only emitted when
+        the caller is one of the hosts.
+      x-uncertain: >-
+        Missing authorization looks unintentional next to PATCH/DELETE/bookings which
+        all enforce owner-only; treating it as deliberate would be a guess.
+      responses:
+        '200':
+          description: The link, with hosts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLink'
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '404':
+          description: 'Body: {"error":"not found"}. Also returned for soft-deleted (active=false) links only if the row was hard-removed; GetSchedulingLinkByID ignores `active`, so a soft-deleted link still returns 200.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: 'Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+    patch:
+      operationId: updateSchedulingLink
+      tags: [scheduling-links]
+      summary: Partially update a scheduling link (owner only).
+      description: >-
+        Every field is optional; absent fields keep their stored value. The whole
+        merged record is re-validated, so a patch can fail 422 on a field it did not
+        touch. When `co_host_emails` is present (even `[]`) ALL non-owner hosts are
+        deleted first, then the listed emails are re-added as `pending` -- accepted
+        co-hosts are silently reset to pending.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSchedulingLinkRequest'
+      responses:
+        '200':
+          description: Updated link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLink'
+        '400':
+          description: '"invalid id" or "invalid request body"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '403':
+          description: 'Caller is not the owner. Body: {"error":"forbidden"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '409':
+          description: 'New slug collides with another link. Body: {"error":"slug already exists"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '422':
+          $ref: '#/components/responses/SchedulingLinkValidationError'
+        '500':
+          description: '"internal error", "slug check failed", or "update failed: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+    delete:
+      operationId: deleteSchedulingLink
+      tags: [scheduling-links]
+      summary: Deactivate a scheduling link (owner only).
+      description: >-
+        Soft delete -- `UPDATE scheduling_links SET active=false`. The row and its
+        bookings survive; the public `/api/book/{slug}` lookup filters on `active=true`
+        and will start returning 404, while `GET /api/scheduling-links/{id}` still
+        returns the link.
+      responses:
+        '204':
+          description: Deactivated. Empty body.
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '403':
+          description: 'Caller is not the owner. Body: {"error":"forbidden"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: '"internal error" or "delete failed: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/{id}/bookings:
+    get:
+      operationId: listSchedulingLinkBookings
+      tags: [scheduling-links]
+      summary: Bookings made on a link (owner only).
+      description: >-
+        Returns the raw `storage.Booking` rows, ordered by `start_time DESC`, never
+        null. NOTE the field names differ from the public booking confirmation DTO
+        (`start_time`/`end_time` here vs `start`/`end` there).
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      responses:
+        '200':
+          description: Booking rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SchedulingLinkBookingRecord'
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '403':
+          description: 'Caller is not the owner. Body: {"error":"forbidden"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: 'Body: {"error":"internal error"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/{id}/hosts:
+    post:
+      operationId: inviteSchedulingLinkHost
+      tags: [scheduling-links]
+      summary: Invite an existing user as a co-host (owner only).
+      description: >-
+        The invitee must already have an account; the email is lowercased and trimmed.
+        Upsert on (link_id, user_id), so re-inviting an accepted host resets them to
+        `pending`. Response is the raw `storage.LinkHost` row, not the host DTO used
+        inside SchedulingLink.
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteSchedulingLinkHostRequest'
+      responses:
+        '201':
+          description: Host row created or reset to pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkHostRecord'
+        '400':
+          description: '"invalid id", or "email is required" (also returned when the JSON body is malformed).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '403':
+          description: 'Caller is not the owner. Body: {"error":"forbidden"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: '"not found" (no such link) or "user not found" (no account with that email).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: '"internal error" or "invite failed: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/{id}/accept:
+    post:
+      operationId: acceptSchedulingLinkInviteByLink
+      tags: [scheduling-links]
+      summary: Accept a co-host invitation, addressed by link id.
+      description: >-
+        routes.go:166 binds the SAME `slh.acceptInvite` handler already bound at
+        `/host-invites/{id}/accept` (routes.go:159). Because both handlers key on the
+        link id, the two paths are exactly equivalent -- this is a second spelling of
+        the same operation, not a different resource. The frontend only uses the
+        `/host-invites/...` form.
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      responses:
+        '200':
+          description: Host status set to `accepted`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkInviteResponse'
+              example:
+                status: accepted
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"update failed: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/{id}/decline:
+    post:
+      operationId: declineSchedulingLinkInviteByLink
+      tags: [scheduling-links]
+      summary: Decline a co-host invitation, addressed by link id.
+      description: Equivalent to POST /api/scheduling-links/host-invites/{id}/decline (same handler, same key).
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      responses:
+        '200':
+          description: Host status set to `declined`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingLinkInviteResponse'
+              example:
+                status: declined
+        '400':
+          description: '`{id}` is not a UUID. Body: {"error":"invalid id"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"update failed: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/scheduling-links/{id}/leave:
+    post:
+      operationId: leaveSchedulingLink
+      tags: [scheduling-links]
+      summary: Remove the caller from a link's host list.
+      description: >-
+        Deletes the caller's `scheduling_link_hosts` row. Deleting zero rows is not an
+        error, so a non-host caller also gets 204. The owner is rejected with 400.
+      parameters:
+        - $ref: '#/components/parameters/SchedulingLinkIdPath'
+      responses:
+        '204':
+          description: Caller removed (or was never a host). Empty body.
+        '400':
+          description: '"invalid id" or "owner cannot leave link"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '404':
+          description: 'Body: {"error":"not found"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: '"internal error" or "leave failed: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  # ---------------------------------------------------------------------------
+  # PROTECTED conferencing (routes.go:123-128)
+  # ---------------------------------------------------------------------------
+
+  /api/conference/create:
+    post:
+      operationId: createConferenceLink
+      tags: [conferencing]
+      summary: Create a standalone conference meeting with the configured provider.
+      description: >-
+        Provider comes from stored settings (`ConferencingProvider`), not from the
+        request. No field validation at all: a missing `title`, `start` or `end`
+        decodes to the Go zero value and is forwarded to the provider as-is.
+        Not referenced anywhere in the frontend.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConferenceRequest'
+      responses:
+        '200':
+          description: Meeting created. Note the camelCase keys, unlike every other schema in this domain.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConferenceMeetingDetails'
+        '400':
+          description: >-
+            "invalid body"; "teams: not connected - visit /api/auth/microsoft to
+            authenticate"; or a provider-construction error such as "zoom: not
+            connected - visit /api/auth/zoom to authenticate".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: '"settings: <err>" or "create meeting: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/conference/providers:
+    get:
+      operationId: listConferenceProviders
+      tags: [conferencing]
+      summary: Conferencing providers this server can offer, and their connection state.
+      description: >-
+        Order is fixed: google_meet (only when Google OAuth env is configured), zoom
+        (only when Zoom env is configured), teams (only when Microsoft env is
+        configured), then `custom`, which is always last and always `connected: true`.
+        Length is therefore 1..4.
+      responses:
+        '200':
+          description: Provider statuses.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConferenceProviderStatus'
+                minItems: 1
+                maxItems: 4
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"settings: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/conference/zoom/disconnect:
+    post:
+      operationId: disconnectZoom
+      tags: [conferencing]
+      summary: Clear the stored Zoom tokens.
+      description: Takes no request body. Tokens are server-wide, not per user.
+      responses:
+        '204':
+          description: Tokens cleared. Empty body.
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
+        '500':
+          description: 'Body: {"error":"disconnect zoom: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+  /api/events/{id}/conference:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Provider calendar event id (an opaque Google Calendar event id string, not a UUID - it is never parsed).
+        schema:
+          type: string
+    post:
+      operationId: addEventConference
+      tags: [conferencing]
+      summary: Attach a conference link to an existing calendar event.
+      description: >-
+        Four branches. (1) The event already has a conference: returns 200 with the
+        EXISTING link when the stored provider matches, or when `provider` is
+        `custom`; otherwise 409. (2) `custom`: stores the supplied `url` in the event's
+        private extended properties. (3) `google_meet`: asks Google to mint a Meet link.
+        (4) anything else (`zoom`, `teams`): creates a meeting through the provider
+        factory and stores the join URL in extended properties.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddEventConferenceRequest'
+      responses:
+        '200':
+          description: >-
+            Conference attached, or the pre-existing conference echoed back. `label` is
+            the stored provider string on the echo branch, "Custom link" for custom,
+            "Google Meet" for google_meet, and the uppercased provider name otherwise.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventConferenceLink'
+        '400':
+          description: >-
+            "invalid body"; "provider is required"; "url is required for custom
+            conferences"; "event has no time"; or an unsupported-provider message from
+            the factory such as 'unsupported conference provider "whereby"'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '401':
+          description: >-
+            The calendar client could not be built (no Google token). Unlike the
+            middleware 401 this one IS the shared JSON envelope with the underlying
+            error text.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'Body: {"error":"event not found: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '409':
+          description: 'Event already has a conference from a different provider. Body: {"error":"event already has a conference"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: '"create Google Meet: <err>", "settings: <err>", or "update failed: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '502':
+          description: >-
+            Upstream provider problem: "Google Meet creation is still pending",
+            "create meeting: <err>", or "conference provider returned no join URL".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+    delete:
+      operationId: removeEventConference
+      tags: [conferencing]
+      summary: Remove any conference from a calendar event.
+      description: >-
+        Clears a Google Meet if present and strips the `paceday_conference_provider` /
+        `paceday_conference_url` private extended properties. Idempotent: an event with
+        no conference also returns 204 without writing anything.
+      responses:
+        '204':
+          description: Conference removed (or there was none). Empty body.
+        '401':
+          description: 'Calendar client could not be built. JSON envelope with the underlying error text.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '404':
+          description: 'Body: {"error":"event not found: <err>"}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+        '500':
+          description: '"remove Google Meet: <err>" or "remove conference: <err>"'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingError'
+
+components:
+
+  parameters:
+    SchedulingLinkIdPath:
+      name: id
+      in: path
+      required: true
+      description: Scheduling-link UUID. Parsed with uuid.Parse; a non-UUID value yields 400 "invalid id".
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BookingUnauthorized:
+      description: >-
+        Emitted by the requireAuth middleware when the `auth_token` cookie and the
+        `Authorization: Bearer` header are both absent or invalid. The body is the JSON
+        text `{"error":"unauthorized"}` but the response is sent with `http.Error`, so
+        the Content-Type header is `text/plain; charset=utf-8`, not application/json.
+      content:
+        text/plain:
+          schema:
+            type: string
+            const: "{\"error\":\"unauthorized\"}\n"
+
+    SchedulingLinkValidationError:
+      description: >-
+        Validation failure from validateSchedulingLink / parseClock. Messages:
+        "title is required"; "at least one duration is required"; "durations must be
+        positive integers"; "at least one day is required"; "days_of_week must contain
+        values between 0 and 6"; "window times must use HH:MM"; "window_start must be
+        before window_end"; "buffers must be zero or positive"; "min_notice_minutes
+        must be zero or positive"; "usage_type must be reusable, recurring, or
+        single_use"; "max_uses must be set to a positive integer for recurring links";
+        "slug cannot be empty" (PATCH only).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BookingError'
+
+  schemas:
+
+    BookingError:
+      type: object
+      description: >-
+        Shared error envelope written by api.writeError (handlers_settings.go:206):
+        Content-Type application/json, body `{"error": "<message>"}`. The two
+        exceptions in this domain are the requireAuth 401 and the Zoom OAuth callback,
+        both of which use http.Error and therefore send text/plain.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          description: Human-readable message. Several 500s concatenate the underlying Go error text.
+
+    # ---- Public booking ------------------------------------------------------
+
+    PublicHost:
+      type: object
+      description: A host shown on the public booking page. Only accepted hosts appear.
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          description: Omitted when the user record has no name (json `name,omitempty`).
+        avatar_url:
+          type: string
+          description: Omitted when empty (json `avatar_url,omitempty`).
+
+    PublicLinkCoverage:
+      type: object
+      description: >-
+        How many accepted hosts had a loadable calendar token when the page was
+        rendered. `total` counts accepted hosts whose user record resolved; `checked`
+        counts those with a usable OAuth token. Always present, even as {0,0}.
+      required: [total, checked]
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+        checked:
+          type: integer
+
+    PublicLinkInfo:
+      type: object
+      description: backend/api/handlers_booking.go publicLinkDTO.
+      required: [slug, title, durations, hosts, min_notice_minutes, usage_type, coverage]
+      additionalProperties: false
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        durations:
+          type: array
+          description: Allowed meeting lengths in minutes, straight from the link's duration_options column.
+          items:
+            type: integer
+        hosts:
+          type: array
+          description: Accepted hosts only. Always an array, never null.
+          items:
+            $ref: '#/components/schemas/PublicHost'
+        min_notice_minutes:
+          type: integer
+        usage_type:
+          type: string
+          description: Defaults to `reusable` when the stored value is empty.
+          enum: [reusable, recurring, single_use]
+        coverage:
+          $ref: '#/components/schemas/PublicLinkCoverage'
+
+    PublicBookingSlot:
+      type: object
+      description: engine.AvailableSlot. Times are Go time.Time marshalled as RFC3339 with nanoseconds.
+      required: [start, end]
+      additionalProperties: false
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+
+    PublicSlotsResponse:
+      type: object
+      description: >-
+        Both keys are always present. Exactly one is populated depending on whether the
+        `date` query parameter was supplied.
+      required: [slots, available_dates]
+      additionalProperties: false
+      properties:
+        slots:
+          type: array
+          description: Populated only when `date` was given; otherwise the empty array.
+          items:
+            $ref: '#/components/schemas/PublicBookingSlot'
+        available_dates:
+          type: array
+          description: >-
+            Populated only when `date` was omitted; YYYY-MM-DD strings for days within
+            the next 60 that have at least one bookable slot. Otherwise the empty array.
+          items:
+            type: string
+            format: date
+
+    CreatePublicBookingRequest:
+      type: object
+      description: >-
+        Anonymous request body of POST /api/book/{slug}. `name`, `email` and `start`
+        are required by the handler; `end`, `duration` and `duration_minutes` are three
+        overlapping ways to express the length.
+      required: [name, email, start]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Trimmed; must be non-empty after trimming.
+          minLength: 1
+        email:
+          type: string
+          description: Trimmed; must be non-empty after trimming. Never validated as an email address.
+          minLength: 1
+        start:
+          type: string
+          format: date-time
+          description: RFC3339. Must be at least `min_notice_minutes` in the future, else 422.
+        end:
+          type: string
+          format: date-time
+          description: >-
+            RFC3339, optional. When present it wins: the resulting length must equal
+            `duration`/`duration_minutes` if either was also sent, else 400. When
+            absent, end = start + resolved duration.
+        notes:
+          type: string
+          description: Free text; no length limit enforced.
+        duration:
+          type: integer
+          nullable: true
+          description: >-
+            Minutes. Takes precedence over `duration_minutes` when both are sent. This
+            is the field the frontend actually populates.
+        duration_minutes:
+          type: integer
+          nullable: true
+          description: >-
+            Minutes. Overridden by `duration` when both are present. When neither is
+            sent and `end` is absent, the length falls back to durations[0] (else 30).
+            The resolved value must be in the link's duration set, else 400.
+
+    PublicBookingConfirmation:
+      type: object
+      description: >-
+        backend/api/handlers_booking.go bookingConfirmationDTO, returned by
+        POST /api/book/{slug} with 201.
+      required: [id, link_slug, title, start, end, duration_minutes, hosts, booker_name, booker_email]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        link_slug:
+          type: string
+        title:
+          type: string
+          description: The link's title, not a per-booking title.
+        start:
+          type: string
+          format: date-time
+          description: UTC, formatted with time.RFC3339 (second precision, always a `Z` offset).
+        end:
+          type: string
+          format: date-time
+          description: UTC, formatted with time.RFC3339.
+        duration_minutes:
+          type: integer
+          description: Computed as end-start, truncated to whole minutes.
+        hosts:
+          type: array
+          description: Accepted hosts. Always an array, never null.
+          items:
+            $ref: '#/components/schemas/PublicHost'
+        booker_name:
+          type: string
+        booker_email:
+          type: string
+        notes:
+          type: string
+          description: Omitted when empty (json `notes,omitempty`).
+
+    # ---- Scheduling links ----------------------------------------------------
+
+    SchedulingLinkHost:
+      type: object
+      description: >-
+        backend/api/handlers_scheduling_links.go schedulingHostDTO - the host shape
+        embedded in SchedulingLink. Distinct from SchedulingLinkHostRecord, which is
+        the raw DB row returned by POST /{id}/hosts.
+      required: [user_id, email, is_owner, status]
+      additionalProperties: false
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          description: >-
+            Declared `user_id,omitempty` but always populated from a uuid.UUID, so in
+            practice always present.
+        email:
+          type: string
+          format: email
+          description: Empty string when the user record could not be loaded.
+        name:
+          type: string
+          description: Omitted when empty.
+        avatar_url:
+          type: string
+          description: Omitted when empty.
+        is_owner:
+          type: boolean
+        status:
+          type: string
+          enum: [pending, accepted, declined]
+          description: Not constrained by the DB layer; these are the only three values the handlers write.
+
+    SchedulingLink:
+      type: object
+      description: >-
+        backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field
+        names deliberately differ from the storage json tags (`durations` vs
+        `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`,
+        `window_start` vs `window_start_time`).
+      required:
+        [id, owner_id, title, slug, durations, days, window_start, window_end,
+         buffer_before, buffer_after, min_notice_minutes, usage_type, uses_count,
+         active, hosts, created_at, is_owner]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        slug:
+          type: string
+          description: Lowercase alphanumerics separated by single dashes (normalizeSlug).
+        durations:
+          type: array
+          items:
+            type: integer
+        days:
+          type: array
+          description: Weekday abbreviations mapped from the stored 0-6 integers, Sunday = "sun".
+          items:
+            type: string
+            enum: [sun, mon, tue, wed, thu, fri, sat]
+        window_start:
+          type: string
+          description: >-
+            Read back from the Postgres TIME column, so it comes out as "HH:MM:SS"
+            even though the handler normalises the input to "HH:MM" before writing
+            (confirmed by handlers_scheduling_links_test.go:91 expecting "10:00:00").
+          example: '09:00:00'
+        window_end:
+          type: string
+          example: '17:00:00'
+        buffer_before:
+          type: integer
+          minimum: 0
+        buffer_after:
+          type: integer
+          minimum: 0
+        min_notice_minutes:
+          type: integer
+          minimum: 0
+        usage_type:
+          type: string
+          enum: [reusable, recurring, single_use]
+        max_uses:
+          type: integer
+          description: >-
+            Present only for `recurring` links. Forced to null (and therefore omitted,
+            json `max_uses,omitempty`) for reusable and single_use.
+        uses_count:
+          type: integer
+          description: Count of non-cancelled bookings, computed by subquery at read time.
+        active:
+          type: boolean
+        hosts:
+          type: array
+          description: Every host regardless of status, ordered by invited_at. Always an array, never null.
+          items:
+            $ref: '#/components/schemas/SchedulingLinkHost'
+        created_at:
+          type: string
+          format: date-time
+          description: UTC, Go layout "2006-01-02T15:04:05.000Z07:00" (millisecond precision).
+          example: '2026-08-12T10:00:00.000Z'
+        is_owner:
+          type: boolean
+          description: True when owner_id equals the authenticated caller.
+        my_status:
+          type: string
+          enum: [pending, accepted, declined]
+          description: >-
+            The caller's own host status. Omitted (json `my_status,omitempty`) when the
+            caller is not among the link's hosts.
+
+    SchedulingLinkListResponse:
+      type: object
+      description: GET /api/scheduling-links. Both arrays are always present, never null.
+      required: [owned, shared]
+      additionalProperties: false
+      properties:
+        owned:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchedulingLink'
+        shared:
+          type: array
+          description: Links where the caller is an accepted co-host but not the owner.
+          items:
+            $ref: '#/components/schemas/SchedulingLink'
+
+    CreateSchedulingLinkRequest:
+      type: object
+      description: >-
+        backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields
+        have two accepted spellings; the canonical one wins when both are sent.
+        Nothing is required at the JSON level, but validation rejects an empty title.
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          description: Trimmed. Required in effect - an empty title is a 422.
+        slug:
+          type: string
+          description: >-
+            Normalised to lowercase alphanumerics and dashes. When it normalises to
+            the empty string a slug is generated from the owner's name plus the first
+            duration.
+        duration_options:
+          type: array
+          description: Canonical spelling. Wins over `durations`. Defaults to [30] when both are absent (a present-but-empty array is a 422).
+          items:
+            type: integer
+            minimum: 1
+        durations:
+          type: array
+          description: Alias for duration_options, used only when duration_options is absent.
+          items:
+            type: integer
+            minimum: 1
+        days_of_week:
+          type: array
+          description: Canonical spelling, 0=Sunday..6=Saturday. Wins over `days`. Defaults to [1,2,3,4,5] when both are absent.
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        days:
+          type: array
+          description: >-
+            Alias for days_of_week, used only when days_of_week is absent. Accepts
+            "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently
+            dropped, which can turn a non-empty list into a 422 "at least one day".
+          items:
+            type: string
+        window_start_time:
+          type: string
+          description: Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00".
+          example: '09:00'
+        window_start:
+          type: string
+          description: Alias, used only when window_start_time is empty.
+        window_end_time:
+          type: string
+          description: Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00".
+          example: '17:00'
+        window_end:
+          type: string
+          description: Alias, used only when window_end_time is empty.
+        buffer_before:
+          type: integer
+          minimum: 0
+          default: 0
+        buffer_after:
+          type: integer
+          minimum: 0
+          default: 0
+        min_notice_minutes:
+          type: integer
+          minimum: 0
+          default: 0
+        usage_type:
+          type: string
+          enum: [reusable, recurring, single_use]
+          default: reusable
+          description: Lowercased and trimmed before validation; an empty string becomes `reusable`.
+        max_uses:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Required and must be positive when usage_type is `recurring`. Ignored (forced to null) otherwise.
+        co_host_emails:
+          type: array
+          description: >-
+            Emails are lowercased and trimmed, then resolved to existing accounts and
+            added as `pending` hosts. Addresses with no account are skipped silently -
+            the response gives no indication that an invite was dropped.
+          items:
+            type: string
+            format: email
+
+    UpdateSchedulingLinkRequest:
+      type: object
+      description: >-
+        backend/api/handlers_scheduling_links.go schedulingLinkPatch. Scalars are Go
+        pointers, so an absent key leaves the stored value alone; slices are plain
+        slices, so an absent key and an explicit `null` are indistinguishable and both
+        mean "leave unchanged", while `[]` means "clear" (and then usually fails 422).
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          nullable: true
+        slug:
+          type: string
+          nullable: true
+          description: Normalised. If it normalises to empty the request is a 422 "slug cannot be empty".
+        duration_options:
+          type: array
+          items:
+            type: integer
+        durations:
+          type: array
+          description: Applied AFTER duration_options, so when both are sent `durations` wins - the opposite precedence from create.
+          items:
+            type: integer
+        days_of_week:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        days:
+          type: array
+          description: Applied after days_of_week, so `days` wins when both are sent - again the opposite of create.
+          items:
+            type: string
+        window_start_time:
+          type: string
+          nullable: true
+        window_start:
+          type: string
+          nullable: true
+          description: Alias, applied only when window_start_time is absent.
+        window_end_time:
+          type: string
+          nullable: true
+        window_end:
+          type: string
+          nullable: true
+          description: Alias, applied only when window_end_time is absent.
+        buffer_before:
+          type: integer
+          nullable: true
+          minimum: 0
+        buffer_after:
+          type: integer
+          nullable: true
+          minimum: 0
+        min_notice_minutes:
+          type: integer
+          nullable: true
+          minimum: 0
+        usage_type:
+          type: string
+          nullable: true
+          enum: [reusable, recurring, single_use]
+        max_uses:
+          type: integer
+          nullable: true
+          description: >-
+            An explicit null is indistinguishable from an absent key (both leave the
+            stored value), so max_uses cannot be cleared by PATCH except by switching
+            usage_type away from `recurring`.
+        active:
+          type: boolean
+          nullable: true
+          description: Setting false is the same soft-deactivation that DELETE performs.
+        co_host_emails:
+          type: array
+          description: >-
+            Destructive when present: every non-owner host row is deleted first, then
+            these emails are added as `pending`. Unknown emails are skipped silently.
+          items:
+            type: string
+            format: email
+
+    SchedulingLinkHostInvite:
+      type: object
+      description: backend/api/handlers_scheduling_links.go hostInviteDTO.
+      required: [link_id, link_title, owner_name, owner_email, invited_at]
+      additionalProperties: false
+      properties:
+        link_id:
+          type: string
+          format: uuid
+          description: The value to pass as `{id}` when accepting or declining.
+        link_title:
+          type: string
+        owner_name:
+          type: string
+          description: May be the empty string if the owner record has no name.
+        owner_email:
+          type: string
+          format: email
+        invited_at:
+          type: string
+          format: date-time
+          description: UTC, Go layout "2006-01-02T15:04:05.000Z07:00".
+
+    SchedulingLinkInviteResponse:
+      type: object
+      description: Echo of the status that was written. The only body accept/decline ever returns.
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [accepted, declined]
+
+    InviteSchedulingLinkHostRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          description: Must be non-empty after trimming and must match an existing account (lowercased before lookup).
+
+    SchedulingLinkHostRecord:
+      type: object
+      description: >-
+        Raw backend/storage/scheduling_links.go LinkHost row, returned by
+        POST /api/scheduling-links/{id}/hosts. Not the same shape as the `hosts[]`
+        entries inside SchedulingLink.
+      required: [id, link_id, user_id, status, invited_at]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Host-row id. Note that accept/decline key on link_id, so this id is never used as a path parameter.
+        link_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, accepted, declined]
+        invited_at:
+          type: string
+          format: date-time
+          description: Raw time.Time marshalling (RFC3339 with nanoseconds and the DB offset), not the DTO millisecond format.
+        responded_at:
+          type: string
+          format: date-time
+          description: Omitted while null (json `responded_at,omitempty`). Set by accept/decline.
+
+    SchedulingLinkBookingRecord:
+      type: object
+      description: >-
+        Raw backend/storage/scheduling_links.go Booking row, returned by
+        GET /api/scheduling-links/{id}/bookings. Field names differ from
+        PublicBookingConfirmation.
+      required: [id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        link_id:
+          type: string
+          format: uuid
+        booker_name:
+          type: string
+        booker_email:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        status:
+          type: string
+          description: DB default is `confirmed`; `cancelled` rows are excluded from uses_count and from conflict checks.
+          examples: [confirmed, cancelled]
+        notes:
+          type: string
+          description: No omitempty - always present, possibly the empty string.
+        created_at:
+          type: string
+          format: date-time
+
+    # ---- Conferencing --------------------------------------------------------
+
+    CreateConferenceRequest:
+      type: object
+      description: >-
+        POST /api/conference/create. No handler-side validation; every field silently
+        defaults to the Go zero value when absent.
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        start:
+          type: string
+          format: date-time
+          description: Decoded into time.Time. Absent means the zero time, which is forwarded to the provider.
+        end:
+          type: string
+          format: date-time
+
+    ConferenceMeetingDetails:
+      type: object
+      description: >-
+        backend/conference/provider.go Details. camelCase json tags, unlike every other
+        response in this domain.
+      required: [provider, joinUrl]
+      additionalProperties: false
+      properties:
+        provider:
+          type: string
+          description: Provider-supplied label.
+        joinUrl:
+          type: string
+          format: uri
+        meetingId:
+          type: string
+          description: Omitted when empty.
+        password:
+          type: string
+          description: Omitted when empty.
+      x-uncertain: >-
+        `provider` is whatever the concrete provider implementation puts there; the
+        exact string set was not verified against meet.go / zoom.go / teams.go.
+
+    ConferenceProviderStatus:
+      type: object
+      description: backend/api/handlers_conferencing.go conferenceProviderStatus.
+      required: [provider, connected]
+      additionalProperties: false
+      properties:
+        provider:
+          type: string
+          enum: [google_meet, zoom, teams, custom]
+        connected:
+          type: boolean
+          description: Always present. `custom` is hardcoded to true.
+        email:
+          type: string
+          description: Set only for google_meet (the configured calendar email); omitted when empty.
+        enabled:
+          type: boolean
+          description: >-
+            json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key
+            only ever appears as `true`, and only for teams. Absence must be read as false.
+        auto_with:
+          type: string
+          enum: [google, outlook]
+          description: '"google" for google_meet, "outlook" for teams. Omitted for zoom and custom.'
+
+    AddEventConferenceRequest:
+      type: object
+      description: POST /api/events/{id}/conference.
+      required: [provider]
+      additionalProperties: false
+      properties:
+        provider:
+          type: string
+          description: >-
+            Lowercased and trimmed. `custom` and `google_meet` are handled inline;
+            `zoom` and `teams` go through the provider factory; anything else is a 400
+            from the factory.
+          enum: [google_meet, zoom, teams, custom]
+        url:
+          type: string
+          format: uri
+          description: >-
+            Required (non-empty after trimming) when provider is `custom`, ignored for
+            every other provider. Never validated as a URL by the backend.
+
+    EventConferenceLink:
+      type: object
+      description: backend/api/handlers_conferencing.go conferenceLinkResponse.
+      required: [provider, url]
+      additionalProperties: false
+      properties:
+        provider:
+          type: string
+          description: >-
+            The requested provider, EXCEPT on the already-has-a-conference echo branch,
+            where it is the provider already stored on the event (which can differ from
+            the requested one when `custom` was requested).
+        url:
+          type: string
+          format: uri
+        label:
+          type: string
+          description: >-
+            Omitted when empty. "Custom link" for custom, "Google Meet" for google_meet,
+            the uppercased provider name (e.g. "ZOOM", "TEAMS") for factory providers,
+            and the bare stored provider string on the echo branch.

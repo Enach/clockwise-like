@@ -31,9 +31,15 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+# Extra `go test` flags, e.g. the coverage profile `make coverage` asks for.
+# Empty by default, so a bare run of this script behaves exactly as before.
+# Word-split deliberately inside the container, hence the unquoted expansion there.
+GO_TEST_FLAGS="${PACEDAY_GO_TEST_FLAGS:-}"
+
 docker run --rm --network host \
   -e "PACEDAY_TEST_DATABASE_URL=postgres://test:test@127.0.0.1:${DB_PORT}/testdb?sslmode=disable" \
+  -e "GO_TEST_FLAGS=$GO_TEST_FLAGS" \
   -v "$MODULE_DIR:/app" \
   -w /app \
   golang:1.25-alpine \
-  sh -c 'go test -p 1 ./...'
+  sh -c 'go test -p 1 $GO_TEST_FLAGS ./...'

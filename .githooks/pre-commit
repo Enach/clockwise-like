@@ -10,6 +10,8 @@ fail() { echo -e "${RED}✗ $*${NC}" >&2; exit 1; }
 ok()   { echo -e "${GREEN}✓ $*${NC}"; }
 info() { echo -e "${YELLOW}» $*${NC}"; }
 
+ROOT="$(git rev-parse --show-toplevel)"
+
 # Only check files that are staged
 changed_dirs() {
   git diff --cached --name-only | grep -E "^$1/" | head -1
@@ -43,4 +45,18 @@ if changed_dirs mcp; then
   else
     echo "  (golangci-lint not found — skipping mcp lint)"
   fi
+fi
+
+# ── Contract ──────────────────────────────────────────────────────────────────
+# A committed bundle that does not match its fragments, or generated code that
+# does not match the bundle, is the one failure mode the whole factory is built
+# to prevent — and it is cheap to catch here rather than in `make verify`.
+#
+# WEB= deliberately empties the web repo path: this hook gates *this* repo, and
+# regenerating the sibling frontend would need its node_modules installed. The
+# cross-repo half of factory §2 gate 4 runs in `make verify`.
+if changed_dirs contracts || changed_dirs "backend/api/gen"; then
+  info "contract: openapi-check"
+  make -f "$ROOT/Makefile" WEB= openapi-check || fail "openapi-check failed — run \`make openapi\` and stage the result"
+  ok "contract in sync"
 fi

@@ -1,0 +1,34 @@
+# oapi-codegen v2 configuration — Go types + chi server interface from the contract.
+#
+# Run it through `make openapi` (never by hand): that target assembles the
+# bundle first, and passes oapi-codegen a 3.0-shaped copy of it, because the
+# bundle is OpenAPI 3.1 and oapi-codegen's parser (kin-openapi) does not read
+# 3.1. See scripts/openapi_downconvert.py.
+#
+# Why the *whole* type set and the *whole* ServerInterface are generated while
+# almost no handler implements them yet: docs/factory/README.md §4 makes
+# adoption incremental — new and modified endpoints use the generated server
+# interface, untouched endpoints stay hand-written. If generation were scoped to
+# the endpoints that have adopted it, the generated file would change shape on
+# every migration and each one-endpoint migration would land in review as a
+# whole-file rewrite. Generating everything up front makes a migration a single
+# row flip in contracts/openapi/MIGRATION.md plus a handler that now satisfies
+# an interface method which already existed and already compiled.
+#
+# Nothing here is wired into the running server: api/gen compiles but is
+# unreferenced until the first handler adopts StrictServerInterface.
+
+package: gen
+output: api/gen/paceday.gen.go
+
+generate:
+  models: true # the 145 component schemas, as Go types
+  chi-server: true # ServerInterface + HandlerFromMux — chi is already the router in api/routes.go
+  strict-server: true # typed request/response wrappers; handlers adopt these, not the raw interface
+  embedded-spec: false # the bundle is served from contracts/, not baked into the binary
+
+output-options:
+  # Without this, oapi-codegen emits only the schemas reachable from the
+  # operations it generated. The type set would then depend on migration
+  # progress, which is exactly the coupling the incremental plan avoids.
+  skip-prune: true
