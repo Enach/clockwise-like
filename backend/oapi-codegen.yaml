@@ -19,7 +19,10 @@
 # unreferenced until the first handler adopts StrictServerInterface.
 
 package: gen
-output: api/gen/paceday.gen.go
+# No `output:` here. When it is set it overrides the -o flag, so
+# `openapi_gen_go.sh --check` would overwrite the committed file instead of
+# writing to its temp dir, and the check could never pass. The script always
+# passes -o.
 
 generate:
   models: true # the 145 component schemas, as Go types
