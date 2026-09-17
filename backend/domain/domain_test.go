@@ -55,6 +55,35 @@ func TestDomainMatchesOrg(t *testing.T) {
 	}
 }
 
+func TestEmailBelongsToDomain(t *testing.T) {
+	cases := []struct {
+		email, d string
+		want     bool
+	}{
+		{"alice@acme.com", "acme.com", true},
+		{"Alice@ACME.com", "acme.com", true},
+		{"alice@acme.com", " ACME.COM ", true},
+		// An IdP configured for acme.com asserting another domain's account.
+		{"victim@example.com", "acme.com", false},
+		// Subdomains and look-alikes are separate provider rows.
+		{"alice@eu.acme.com", "acme.com", false},
+		{"alice@acme.com", "eu.acme.com", false},
+		{"alice@notacme.com", "acme.com", false},
+		// Smuggling a second address past the domain extraction.
+		{"victim@example.com@acme.com", "acme.com", false},
+		{"victim@acme.com@example.com", "acme.com", false},
+		{"acme.com", "acme.com", false},
+		{"", "acme.com", false},
+		{"alice@", "", false},
+	}
+	for _, c := range cases {
+		got := EmailBelongsToDomain(c.email, c.d)
+		if got != c.want {
+			t.Errorf("EmailBelongsToDomain(%q, %q) = %v, want %v", c.email, c.d, got, c.want)
+		}
+	}
+}
+
 func TestDeriveOrgName(t *testing.T) {
 	cases := []struct {
 		domain string

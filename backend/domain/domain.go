@@ -25,6 +25,20 @@ func IsGenericDomain(domain string) bool {
 	return genericDomains[domain]
 }
 
+// EmailBelongsToDomain reports whether email's domain is exactly d, compared
+// case-insensitively. Subdomains do not match: an SSO provider row is keyed by
+// one exact domain, and sign-in detection routes a user to the provider for
+// their exact email domain, so an assertion for any other domain did not come
+// from that domain's IdP. An address with more than one "@" never matches.
+func EmailBelongsToDomain(email, d string) bool {
+	if strings.Count(email, "@") != 1 {
+		return false
+	}
+	emailDomain := ExtractDomain(email)
+	d = strings.ToLower(strings.TrimSpace(d))
+	return emailDomain != "" && emailDomain == d
+}
+
 // DeriveOrgName turns a domain base segment into a display name.
 // "gorgias.com" → "Gorgias", "acme-corp.io" → "Acme Corp"
 // DomainMatchesOrg returns true if d is equal to orgDomain or a subdomain of it.
