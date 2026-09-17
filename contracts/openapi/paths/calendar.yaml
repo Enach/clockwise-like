@@ -697,32 +697,50 @@ paths:
     get:
       operationId: listAuditEntries
       tags: [calendar]
-      summary: Recent audit-log entries
+      summary: The calling user's own activity entries
       description: >-
-        Returns rows from `audit_log` ordered by `created_at DESC, id DESC`. The
-        query is NOT scoped to the calling user or organization — every authenticated
-        caller sees the same global log.
-      x-uncertain: >-
-        The audit log is global rather than per-user/per-org. Confirm this is
-        intentional and not a data-exposure bug before publishing the spec.
+        Returns the calling user's own `audit_log` rows, ordered by
+        `created_at DESC, id DESC`. The query is scoped by the authenticated user id
+        taken from the request context (`requireAuth`, backend/api/middleware.go:53);
+        there is no parameter that widens it, and no caller can address another
+        user's entries.
+
+
+        Rows written before the PAC-23 migration have no subject (`user_id IS NULL`)
+        and are therefore returned to **nobody**. They are retained in storage rather
+        than deleted — they cannot be attributed and inferring an audit record's
+        subject after the fact is not acceptable (spec §3.3). The practical effect is
+        that on the release of PAC-23 every user's log appears to start empty and
+        refills as they use the product.
+
+
+        This log is a **per-user activity feed**, not a security audit trail: it has
+        no authentication or configuration events, no client address, and no actor
+        distinct from the subject, and it is readable only by its subject. See
+        docs/specs/PAC-23.md §3.5 — do not build anything on it that needs a third
+        party to be able to review it.
       parameters:
         - name: limit
           in: query
           required: false
           description: >-
-            Parsed with strconv.Atoi and the error is discarded, so a non-numeric or
-            absent value becomes 0. storage.ListAuditLog then clamps: any value <= 0
-            or > 500 is replaced by 100. So the effective default is 100 and the
-            effective maximum is 500; out-of-range values silently become 100 rather
-            than being rejected or capped.
+            Maximum number of entries to return. Absent, unparseable or out of range
+            resolves to the default of 50; a value above the maximum is capped at the
+            maximum rather than being rejected or silently reset to a smaller number.
+            PAC-23 resolves API-074, under which the server's default was 100 while
+            the only shipped client defined its own default of 50 and always sent it:
+            there is now one default, declared here, and the client takes it from the
+            generated contract instead of declaring a second one.
           schema:
             type: integer
             minimum: 1
             maximum: 500
-            default: 100
+            default: 50
       responses:
         "200":
-          description: Audit entries, `[]` when the table is empty.
+          description: >-
+            The caller's own audit entries, `[]` when they have none — which is also
+            what a user sees for activity recorded before the PAC-23 migration.
           content:
             application/json:
               schema:
@@ -1302,7 +1320,11 @@ components:
 
     AuditEntry:
       type: object
-      description: storage.AuditEntry.
+      description: >-
+        storage.AuditEntry. One recorded action, always about the calling user's own
+        calendar — the subject is the scoping predicate and is deliberately NOT echoed
+        back as a field, because it is the same value on every entry of every response
+        (see contracts/features/PAC-23.md §3 for the rejected alternative).
       required: [id, action, details, created_at]
       additionalProperties: false
       properties:
@@ -1317,6 +1339,15 @@ components:
           description: >-
             Scanned from the DB into a Go `string`, so this is ALWAYS a JSON string
             server-side — even when the stored text happens to contain JSON.
+
+
+            It is NOT guaranteed to be parseable JSON. Three writers build it by
+            concatenating untrusted text without escaping
+            (backend/engine/smart_schedule.go:323,
+            backend/api/handlers_schedule.go:188, backend/engine/compression.go:178),
+            so a meeting title containing `"` produces a malformed payload. PAC-23
+            does not fix this — it is filed as docs/specs/PAC-23.md OQ-6. Treat this
+            field as opaque text; do not parse it.
         created_at:
           type: string
           format: date-time

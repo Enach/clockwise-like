@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **119**
+- operations: **120**
 - generated: **0**
-- handwritten: **119**
+- handwritten: **120**
 
 ## Register
 
@@ -151,6 +151,7 @@ from the contract and any edit is reported as drift.
 | inviteSchedulingLinkHost          | POST   | /api/scheduling-links/{id}/hosts                | scheduling-links | handwritten | |
 | leaveSchedulingLink               | POST   | /api/scheduling-links/{id}/leave                | scheduling-links | handwritten | |
 | getSettings                       | GET    | /api/settings                                   | settings         | handwritten | |
+| patchSettings                     | PATCH  | /api/settings                                   | settings         | handwritten | |
 | updateSettings                    | PUT    | /api/settings                                   | settings         | handwritten | |
 | listTeams                         | GET    | /api/teams                                      | teams            | handwritten | |
 | createTeam                        | POST   | /api/teams                                      | teams            | handwritten | |

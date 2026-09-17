@@ -1,0 +1,113 @@
+{
+  "featureId": "PAC-23",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the",
+  "status": "draft",
+  "contractRevision": "1",
+  "contractHash": "2ae421142e7d17eca73c625af3b8f1bb2c397e8bfd92f1fedde4d29377804965",
+  "contractDoc": "contracts/features/PAC-23.md",
+  "specDoc": "docs/specs/PAC-23.md",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/storage/migrations",
+        "backend/storage/audit_log.go",
+        "backend/storage/focus_blocks.go",
+        "backend/storage/models.go",
+        "backend/api/handlers_audit.go",
+        "backend/api/handlers_nlp.go",
+        "backend/api/handlers_schedule.go",
+        "backend/engine/focus_time.go",
+        "backend/engine/focus_time_cleaner.go",
+        "backend/engine/smart_schedule.go",
+        "backend/engine/compression.go",
+        "backend/nlp/parser.go",
+        "contracts",
+        "docs/specs",
+        "docs/factory",
+        "e2e"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated",
+        "src/api/client.ts",
+        "src/api/audit.test.ts",
+        "src/pages/Audit.tsx"
+      ]
+    }
+  },
+  "gates": {
+    "contractApproval": "GitHub PR approval on this contract PR",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "operationsChanged": [
+    {
+      "operationId": "listAuditEntries",
+      "method": "GET",
+      "path": "/api/audit",
+      "change": "Response becomes scoped to the authenticated caller. limit default 100 -> 50; out-of-range now caps at the maximum instead of resetting to 100. x-uncertain U-02 removed. Response schema unchanged.",
+      "breaking": "Behaviourally yes for any caller that relied on reading other users' entries. That is the defect (API-005), not a capability. No schema field is added or removed, so no generated type changes shape.",
+      "migrationStatus": "handwritten (see PAC-23.md section 6 and spec OQ-5)"
+    }
+  ],
+  "schemasChanged": [
+    {
+      "name": "AuditEntry",
+      "change": "Documentation only. No property added, removed or retyped. Records why the subject is not echoed back, and that `details` is not guaranteed to be parseable JSON."
+    }
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "Enach/smart-calendar-flow src/pages/Audit.tsx, src/components/QuickActions.tsx via src/hooks/useAudit.ts",
+      "effect": "Sees fewer rows (its own only). No code change required for the scope change - the page already advertises 'actions Paceday performed on your calendar'. One change required for API-074: DEFAULT_AUDIT_LIMIT must come from the generated contract default rather than being a hand-written 50 in src/api/client.ts:404."
+    },
+    {
+      "consumer": "Enach/clockwise-like mcp/",
+      "effect": "None. No reference to /api/audit or the word audit anywhere under mcp/."
+    },
+    {
+      "consumer": "Enach/clockwise-like e2e/",
+      "effect": "None today. The only e2e/ matches for 'audit' are prose in e2e/auth.ts:29 and e2e/SEAM-REQUIRED.md:209. A new journey is required by spec AC-5 and AC-13."
+    },
+    {
+      "consumer": "Out-of-tree callers (operator scripts, saved requests)",
+      "effect": "Unknown - spec OQ-4. Such a caller would see only its own entries. It fails closed: strictly less data, never more."
+    }
+  ],
+  "acceptanceTests": [
+    "AC-1 [contract] Two users with recorded activity: each retrieval returns only the caller's entries, including at the maximum limit.",
+    "AC-2 [contract] A user with no activity receives an empty list, not an error.",
+    "AC-3 [contract] Another user's meeting title and typed prompt appear in no response under any parameter combination.",
+    "AC-4 [contract] The result is determined by the caller identity: two users making the identical request get different results.",
+    "AC-5 [e2e] All six recordable user actions appear in the acting user's own log.",
+    "AC-6 [unit] A cron-initiated focus run appears in the affected user's log and no other user's.",
+    "AC-7 [unit] An attempt to record an entry with no subject stores nothing, is logged, and does not fail the user-facing action.",
+    "AC-8 [contract] Pre-migration entries are returned to no user.",
+    "AC-9 [unit] Pre-migration entries still exist in storage, unaltered, distinguishable by a null subject.",
+    "AC-10 [contract] The default with no limit parameter equals the contract default, and the shipped client uses that same number.",
+    "AC-11 [contract] A request above the maximum returns at most the maximum, not a smaller silently-chosen number.",
+    "AC-12 [contract] An unauthenticated caller is refused exactly as today.",
+    "AC-13 [e2e] The existing page still renders timestamp, action and details in reverse chronological order.",
+    "AC-14 [unit] Every action recorded today is still recorded.",
+    "AC-15 [contract] An entry whose details contain a double quote round-trips to its subject without a serialisation or render failure."
+  ],
+  "resolvesFindings": [
+    "API-005 (critical) - GET /api/audit unscoped and unscopable.",
+    "API-074 (low) - frontend default limit 50 vs backend default 100."
+  ],
+  "resolvesUncertain": [
+    "U-02 (/api/audit -> get) - the global audit log is NOT intentional. Resolved by determining the answer, not by deleting the marker: the register already rates it API-005 critical, and the only consumer (smart-calendar-flow/src/pages/Audit.tsx:39-40) advertises per-user scope. x-uncertain count in the bundle falls 22 -> 21."
+  ],
+  "openDecisions": [
+    "OQ-1 should any non-subject ever read another user's log (product; recommendation: no, and there is no admin concept to gate it on)",
+    "OQ-2 one subject column or subject + actor (product; recommendation: one)",
+    "OQ-3 how users are told their log appears to empty out on release day (product/release)",
+    "OQ-5 whether listAuditEntries must move handwritten -> generated, when zero operations are generated and backend/api/gen/ does not exist (owner of contracts/openapi/MIGRATION.md)"
+  ],
+  "rollback": "Code-only. Revert the backend and frontend PRs and LEAVE the audit_log.user_id column in place; the reverted code neither reads nor writes it and the accumulated attribution survives. Running 024_audit_log_user_id.down.sql drops the column and irrecoverably destroys every attribution written since the up migration - no rows are lost, but a down-then-up cycle leaves the entire table unattributed and every user's log permanently empty. Drop the column only if the feature is abandoned. Note that reverting restores the API-005 disclosure in full."
+}

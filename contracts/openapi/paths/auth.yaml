@@ -342,10 +342,22 @@ paths:
       summary: Calendar connection status for the current session
       description: |
         Protected by requireAuth (cookie `auth_token` or `Authorization: Bearer`).
-        Branches on the GLOBAL settings row's calendar_provider, not on anything
-        user-scoped; only the "google" branch uses the authenticated user id.
+        Reports the CALLER'S own calendar connection: it branches on the caller's
+        `calendarProvider` and, on the outlook branch, reads the caller's own
+        stored Microsoft credential.
         On an internal failure it does NOT error — it 200s with
         {connected:false, provider:"google", email:""}.
+
+        PAC-24 resolves API-009. Before it, this branched on the SINGLETON
+        settings row's calendar_provider and returned that row's
+        `calendar_email`, and `auth.LoadMicrosoftToken` took no user id at all
+        (`backend/auth/microsoft_oauth.go:61`, `WHERE id = 1`) — so one user's
+        Outlook address and connection state were reported to everybody, and
+        only the google branch consulted the caller.
+        The response shape is unchanged; what changes is whose state it
+        describes. See `docs/specs/PAC-24.md` §2.5 for the wider problem the same
+        singleton created on the write side, which is in PAC-24's scope but is
+        not visible on this operation.
       responses:
         '200':
           description: Connection status.
@@ -652,9 +664,11 @@ components:
         email:
           type: string
           description: |
-            For outlook/webcal this is settings.calendar_email verbatim. For
-            google it is fetched live from the Google userinfo endpoint and is
-            the empty string when that call fails.
+            For outlook/webcal this is the caller's own settings.calendar_email
+            verbatim. For google it is fetched live from the Google userinfo
+            endpoint and is the empty string when that call fails.
+            Before PAC-24 the outlook/webcal value came from the shared settings
+            row and was therefore some other user's address (API-009).
       additionalProperties: false
 
     CurrentUserResponse:
