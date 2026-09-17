@@ -719,18 +719,58 @@ paths:
         distinct from the subject, and it is readable only by its subject. See
         docs/specs/PAC-23.md §3.5 — do not build anything on it that needs a third
         party to be able to review it.
+
+
+        The subject of an entry is whose calendar it happened to, which is not
+        necessarily who caused it. Every entry this operation can return today has
+        actor = subject, and that is true for a narrow reason worth stating: the one
+        path where they differ writes no entry at all. `POST /api/book/{slug}` is
+        registered outside the `requireAuth` group (backend/api/routes.go:26) and
+        reaches `calClient.CreateEvent` at backend/engine/booking.go:267, so an
+        unauthenticated third party puts a real event on a host's calendar and
+        nothing is recorded. If booking is ever recorded — PAC-23 does not add it —
+        the subject is the host, which is already in scope as `h.UserID` at
+        booking.go:250-269; the booker is not a user of this system and gets no
+        identity here, because a fabricated actor in a record whose purpose is
+        attribution is worse than an absent one (spec §3.2). The feed would then say
+        that a meeting appeared on your calendar and would still be unable to say who
+        put it there. Do not read the absence of an actor field as a claim that the
+        subject acted.
       parameters:
         - name: limit
           in: query
           required: false
           description: >-
-            Maximum number of entries to return. Absent, unparseable or out of range
-            resolves to the default of 50; a value above the maximum is capped at the
-            maximum rather than being rejected or silently reset to a smaller number.
-            PAC-23 resolves API-074, under which the server's default was 100 while
-            the only shipped client defined its own default of 50 and always sent it:
-            there is now one default, declared here, and the client takes it from the
-            generated contract instead of declaring a second one.
+            Maximum number of entries to return. Every input resolves; nothing here
+            is ever rejected with a 4xx. Each of the four cases below has exactly one
+            outcome, stated once.
+
+
+            Absent — 50. Present but not a base-10 integer (`?limit=abc`) — 50.
+            Present and below `minimum`, which includes `0` and every negative value
+            — 50. Present and above `maximum` — 500, i.e. the maximum itself, never a
+            smaller number chosen silently.
+
+
+            `minimum`/`maximum` therefore constrain what a conforming client may
+            send, and the four cases above define what the server does with the
+            non-conforming request that the wire still permits.
+
+
+            CURRENT SERVER BEHAVIOUR, which differs and which PAC-23 is fixing
+            (finding API-074): `backend/api/handlers_audit.go:14` discards
+            `strconv.Atoi`'s error, so an absent or unparseable value arrives as `0`,
+            and `backend/storage/audit_log.go:16-18` is
+            `if limit <= 0 || limit > 500 { limit = 100 }`. All four cases above
+            therefore collapse today to the single value **100** — including
+            `?limit=10000`, which returns 100, a number below the declared maximum.
+            The paragraph above is what stage 4 implements and what spec AC-10 and
+            AC-11 test; this paragraph is what it replaces. No third number is in
+            play: the 50 comes from the only shipped client
+            (`smart-calendar-flow/src/api/client.ts:403-404`, which also renders it
+            into the page subtitle at `src/pages/Audit.tsx:38`), and after PAC-23 that
+            client takes the default from the generated contract instead of declaring
+            a second one.
           schema:
             type: integer
             minimum: 1
@@ -1330,24 +1370,100 @@ components:
       properties:
         id:
           type: integer
-          format: int64
+          format: int32
+          description: >-
+            `audit_log.id`, declared `SERIAL` at
+            backend/storage/migrations/001_initial.up.sql:45 — a 32-bit signed
+            sequence. `storage.AuditEntry.ID` is a Go `int64`
+            (backend/storage/audit_log.go:9), but that widening is a Go type choice,
+            not a range the table can reach, so `int64` here would over-declare the
+            server. `int32` is declared instead because the sole consumer coerces
+            with `Number(e.id)` (smart-calendar-flow/src/api/client.ts:432) and uses
+            the result as a React list key (src/pages/Audit.tsx:95): every `int32` is
+            exactly representable as a JS number, so the coercion is lossless and
+            keys stay distinct. Values above 2^53 would collide into one key and drop
+            rows — the table cannot produce them, and this declaration is what keeps
+            that true for a generated client.
         action:
           type: string
-          description: Dotted action key, e.g. `settings.update`, `event.delete`.
+          description: >-
+            What was recorded. Underscore-separated, lower-case; there is no dotted
+            key convention on this endpoint and never was.
+
+
+            This is the complete set the server can emit, enumerated from every
+            `storage.WriteAuditLog` call site in `backend/` (the action argument is a
+            string literal at all seven, and `storage.WriteAuditLog`,
+            backend/storage/focus_blocks.go:61-63, holds the only INSERT against the
+            table): `focus_created` (backend/engine/focus_time.go:106),
+            `focus_cleared` (backend/engine/focus_time_cleaner.go:39),
+            `meeting_scheduled` (backend/engine/smart_schedule.go:323),
+            `meeting_moved` (backend/engine/compression.go:178), `meeting_created`
+            (backend/api/handlers_schedule.go:188), `nlp_parsed`
+            (backend/nlp/parser.go:221), `nlp_confirmed`
+            (backend/api/handlers_nlp.go:67).
+
+
+            The enum is closed on purpose. `audit_log.action` is an unconstrained
+            `TEXT` column, so the set is held by this contract rather than by the
+            database: adding an eighth action is a contract change, and a writer
+            added without one makes the contract test fail, which is the intended
+            alarm. Spec AC-14 requires that this set never shrinks.
+
+
+            It names WHAT happened, not WHO did it. Every entry's subject is the
+            calling user (see the operation description); no entry carries an actor,
+            and no value in this enum distinguishes an action a person took from one
+            the scheduler took on their behalf.
+          enum:
+            - focus_created
+            - focus_cleared
+            - meeting_scheduled
+            - meeting_moved
+            - meeting_created
+            - nlp_parsed
+            - nlp_confirmed
         details:
           type: string
           description: >-
-            Scanned from the DB into a Go `string`, so this is ALWAYS a JSON string
-            server-side — even when the stored text happens to contain JSON.
+            Scanned from the DB into a Go `string`, so on the wire this is ALWAYS a
+            JSON string — even when the text inside it happens to be JSON. A
+            generator should emit `string`, and that is correct and complete for the
+            transport.
 
 
-            It is NOT guaranteed to be parseable JSON. Three writers build it by
-            concatenating untrusted text without escaping
-            (backend/engine/smart_schedule.go:323,
-            backend/api/handlers_schedule.go:188, backend/engine/compression.go:178),
-            so a meeting title containing `"` produces a malformed payload. PAC-23
-            does not fix this — it is filed as docs/specs/PAC-23.md OQ-6. Treat this
-            field as opaque text; do not parse it.
+            Whether the text inside parses as JSON depends on which `action` produced
+            it, so the useful statement is per-writer rather than a blanket warning.
+            ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a struct
+            with `encoding/json` (backend/engine/focus_time.go:101-106,
+            backend/engine/focus_time_cleaner.go:33-39); `nlp_parsed` uses
+            `fmt.Sprintf` with `%q`, which escapes (backend/nlp/parser.go:221). NOT
+            GUARANTEED: `meeting_scheduled`, `meeting_created`, `meeting_moved` and
+            `nlp_confirmed` are built by concatenating values into a JSON literal
+            with no escaping (backend/engine/smart_schedule.go:323,
+            backend/api/handlers_schedule.go:188,
+            backend/engine/compression.go:178, backend/api/handlers_nlp.go:67).
+
+
+            The interpolated value differs by site and so does the severity. At
+            smart_schedule.go:323 and handlers_schedule.go:188 it is a meeting title
+            from the request body, so a title containing `"`, `\` or a newline yields
+            malformed JSON. At compression.go:178 there is no title: the values are a
+            client-supplied `event_id`, copied unvalidated from the request body
+            (backend/api/handlers_schedule.go:80-93), and an RFC3339 timestamp — so a
+            caller can write JSON STRUCTURE, not merely a stray quote, into its own
+            row. At handlers_nlp.go:67 the value is a Google-issued event id, which in
+            practice contains no JSON metacharacter; the construction is the same
+            defect, the input simply is not attacker-controlled.
+
+
+            Consequence for a consumer: parse the four safe actions if you want to;
+            for the other four, treat the value as opaque text, as the shipped client
+            does (`formatAuditDetails`, smart-calendar-flow/src/api/client.ts:410-419,
+            never calls JSON.parse). PAC-23 does not fix the concatenation — it is
+            docs/specs/PAC-23.md OQ-6, and the spec challenge argues for splitting the
+            escaping defect out of it. When that lands, the NOT GUARANTEED list
+            empties and this description loses two paragraphs.
         created_at:
           type: string
           format: date-time

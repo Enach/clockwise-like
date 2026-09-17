@@ -1,9 +1,17 @@
 # Implementation plan — PAC-23: the activity log must belong to the person it is about
 
 - **Spec**: `docs/specs/PAC-23.md`
-- **Contract**: `contracts/features/PAC-23.yaml` (revision 1, hash
-  `2ae421142e7d17eca73c625af3b8f1bb2c397e8bfd92f1fedde4d29377804965`);
-  rationale in `contracts/features/PAC-23.md`
+- **Contract**: `contracts/features/PAC-23.yaml` (revision 2, bundle hash
+  `23099fbcacc5efbdd18af03ca73ef98534f44e2464e384716eeb5219020a627c`, fragment hash
+  `568941e4687ef1e9ebd38a21dc2a0037fa459665368bac9c8d0883be7b4c2bb5` over
+  `contracts/openapi/paths/calendar.yaml`); rationale in `contracts/features/PAC-23.md`
+  - *Corrected by `contract-author` at revision 2, factual only — this line previously
+    pinned `2ae42114…` against revision 1, which never matched any assembled bundle.
+    Nothing else in this plan was touched; §2 and §5 remain `plan-author`'s to revise,
+    and the `limit` behaviour they assume is now stated disjointly in the contract
+    (absent / unparseable / `< minimum` → 50, `> maximum` → 500), which matches what
+    §5's `TestListAuditLog_DefaultAndClamping` and
+    `TestListAuditEntries_OverMaximumLimitCaps` already assert.*
 - **Resolves**: API-005 (critical), API-074 (low), `x-uncertain` U-02
 - **Status of inputs**: the spec is `draft` and the contract has not been through
   `contract-challenger`. Per the plan-author rules this plan should not be started

@@ -2,8 +2,11 @@
   "featureId": "PAC-23",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the",
   "status": "draft",
-  "contractRevision": "1",
-  "contractHash": "2ae421142e7d17eca73c625af3b8f1bb2c397e8bfd92f1fedde4d29377804965",
+  "contractRevision": "2",
+  "contractHash": "23099fbcacc5efbdd18af03ca73ef98534f44e2464e384716eeb5219020a627c",
+  "contractHashOf": "contracts/openapi/openapi.yaml, sha256 over the file's raw bytes, as written by scripts/openapi_assemble.py at revision 2. Reproduce with: python3 scripts/openapi_assemble.py && sha256sum contracts/openapi/openapi.yaml. Assembler output at that revision: 98 paths, 119 operations (14 public, 105 authenticated), 146 schemas, 11 responses, 8 parameters, 2 securitySchemes, 18 x-uncertain. Revision 1 recorded 2ae421142e7d17eca73c625af3b8f1bb2c397e8bfd92f1fedde4d29377804965 against 119 operations and 21 markers; all three numbers were stale and are corrected here.",
+  "contractFragmentHash": "568941e4687ef1e9ebd38a21dc2a0037fa459665368bac9c8d0883be7b4c2bb5",
+  "contractFragmentHashOf": "contracts/openapi/paths/calendar.yaml, sha256 over the file's raw bytes. This is the hash to check. PAC-23 owns one fragment and cannot keep a hash of a document other features edit concurrently - the whole-bundle hash above was already wrong by the time the challenger read it, for edits PAC-23 did not make (PAC-24 is editing paths/scheduling.yaml in this tree right now). The bundle hash is recorded because the manifest schema requires contractHash; the fragment hash is the one that falsifies a change to THIS feature's surface. See contracts/features/PAC-23.md Revision 2 for the argument.",
   "contractDoc": "contracts/features/PAC-23.md",
   "specDoc": "docs/specs/PAC-23.md",
   "sourceOfTruth": "Enach/clockwise-like",
@@ -50,7 +53,7 @@
       "operationId": "listAuditEntries",
       "method": "GET",
       "path": "/api/audit",
-      "change": "Response becomes scoped to the authenticated caller. limit default 100 -> 50; out-of-range now caps at the maximum instead of resetting to 100. x-uncertain U-02 removed. Response schema unchanged.",
+      "change": "Response becomes scoped to the authenticated caller. limit: the four out-of-band cases (absent, unparseable, below minimum, above maximum) are now stated disjointly with one outcome each - 50, 50, 50, 500 - replacing a revision-1 description that gave 10000 two different answers. The server's current single answer for all four (100) is recorded in the same description as the API-074 defect being closed. x-uncertain U-02 removed. Response schema: no property added or removed; action gains an enum and id narrows int64 -> int32.",
       "breaking": "Behaviourally yes for any caller that relied on reading other users' entries. That is the defect (API-005), not a capability. No schema field is added or removed, so no generated type changes shape.",
       "migrationStatus": "handwritten (see PAC-23.md section 6 and spec OQ-5)"
     }
@@ -58,13 +61,19 @@
   "schemasChanged": [
     {
       "name": "AuditEntry",
-      "change": "Documentation only. No property added, removed or retyped. Records why the subject is not echoed back, and that `details` is not guaranteed to be parseable JSON."
+      "change": "No property added or removed. Three property-level changes, all narrowing or correcting: (1) action gains enum [focus_created, focus_cleared, meeting_scheduled, meeting_moved, meeting_created, nlp_parsed, nlp_confirmed], replacing a revision-1 description that claimed a dotted key convention and gave two examples (settings.update, event.delete) that exist nowhere in backend/; (2) id narrows from format int64 to format int32 to match audit_log.id SERIAL; (3) details keeps type string but replaces the blanket 'do not parse' warning with a per-action statement of which writers emit valid JSON.",
+      "breaking": "The action enum is a narrowing of a response field. No current value is excluded - the seven are the complete set the server can emit - so no conforming response becomes non-conforming. Generated TypeScript for action changes from `string` to a seven-member union; the only consumer coerces it to string with a fallback (smart-calendar-flow/src/api/client.ts:433) and never compares it to a literal, so the union is assignable where it is used. id narrowing from int64 to int32 does not change the generated TS type (number) and narrows the Go type; audit_log.id is SERIAL so no stored value falls outside int32."
     }
   ],
   "consumersAffected": [
     {
       "consumer": "Enach/smart-calendar-flow src/pages/Audit.tsx, src/components/QuickActions.tsx via src/hooks/useAudit.ts",
       "effect": "Sees fewer rows (its own only). No code change required for the scope change - the page already advertises 'actions Paceday performed on your calendar'. One change required for API-074: DEFAULT_AUDIT_LIMIT must come from the generated contract default rather than being a hand-written 50 in src/api/client.ts:404."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow src/api/audit.test.ts:50,54",
+      "effect": "MUST CHANGE. The 'maps the audit response shape' case mocks fetch with { id: 3, action: \"focus.run\", ... }. No writer in backend/ emits focus.run; it is downstream of the revision-1 action description that this revision deletes. It is not a type error - the literal is untyped input to a fetch mock - and it mocks the network, so it will keep passing indefinitely while teaching the wrong response shape to every reader. Replace focus.run with focus_created, a member of the new enum.",
+      "stream": "This feature's frontend stream, NOT a separate issue. Three reasons: the file is already in this manifest's frontend allowedPaths and the frontend stream must open it anyway for the DEFAULT_AUDIT_LIMIT change (AC-10); factory section 7 rule 1 (touch it, fix it) applies because the fiction sits on the one operation this feature modifies; and filing it separately would delete the source of the error in this PR while leaving the copy of it alive in a test that can never fail, which is strictly worse than either fixing or not touching it. The cost is one string literal. Noted explicitly: no acceptance criterion in the spec covers this, so it is carried here as a manifest-required consumer change rather than as a test - the contract-author cannot add an AC."
     },
     {
       "consumer": "Enach/clockwise-like mcp/",
@@ -101,7 +110,7 @@
     "API-074 (low) - frontend default limit 50 vs backend default 100."
   ],
   "resolvesUncertain": [
-    "U-02 (/api/audit -> get) - the global audit log is NOT intentional. Resolved by determining the answer, not by deleting the marker: the register already rates it API-005 critical, and the only consumer (smart-calendar-flow/src/pages/Audit.tsx:39-40) advertises per-user scope. x-uncertain count in the bundle falls 22 -> 21."
+    "U-02 (/api/audit -> get) - the global audit log is NOT intentional. Resolved by determining the answer, not by deleting the marker: the register already rates it API-005 critical, and the only consumer (smart-calendar-flow/src/pages/Audit.tsx:39-40) advertises per-user scope. The marker is already absent from paths/calendar.yaml, which now carries four. Revision 1 claimed the bundle's x-uncertain count falls 22 -> 21; that was wrong. scripts/openapi_assemble.py reports 18 for the current bundle and reported 18 before this revision's edits, because other features have removed markers concurrently and because the assembler walks the assembled document (count_uncertain, scripts/openapi_assemble.py:228-242) rather than grepping the fragments, which contain 22 occurrences. This manifest no longer predicts a bundle-wide count it does not control; the falsifiable claim is that calendar.yaml carries no marker on /api/audit."
   ],
   "openDecisions": [
     "OQ-1 should any non-subject ever read another user's log (product; recommendation: no, and there is no admin concept to gate it on)",
