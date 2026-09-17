@@ -32,6 +32,17 @@ the deployment operator — remains deferred to its own issue (§5, OQ-1).
 
 ### This spec's precondition on PAC-45
 
+> **Erratum, 2026-09-17 (local verification).** The paragraph below is wrong.
+> PR #172 was squash-merged at 09:50 UTC as `5c5f34f`, which is on `origin/main`
+> (`git merge-base --is-ancestor 5c5f34f origin/main`; `gh pr view 172` →
+> `MERGED`). `git branch -r --contains b1a07bb` finds nothing on `main` because a
+> squash merge never puts the branch commit there. **The bounded world applies**
+> (answering OQ-3). Citations against `6f7a856` still hold as written.
+> `5c5f34f` adds eight lines to `backend/api/handlers_sso.go` after line 176, so
+> any citation into that file past 176 is eight lower than the same line on
+> current `main`. Nothing else under `backend/` has changed since then except
+> generator config.
+
 **PAC-45 is not merged.** `origin/main` is at `6f7a856`; the fix is one commit
 (`b1a07bb`) on `nihochart/pac-45-oidc-email-domain-binding` with a pull request
 open, and `git branch -r --contains b1a07bb` lists only that branch. Every
@@ -716,3 +727,8 @@ challenge: `origin/main` is still `6f7a856`, PR #172 is still open, and the
 Linear PAC-45 issue's "Done" status was a bookkeeping error independent of the
 code — the underlying fix is genuinely unmerged. No change needed here; flagging
 only so a future reader doesn't waste time re-verifying it.
+
+> **Erratum, 2026-09-17.** This confirmation is wrong, for the same reason as
+> the precondition section: #172 had already been squash-merged as `5c5f34f`, and
+> Linear's "Done" was correct. See the erratum under "This spec's precondition
+> on PAC-45".
