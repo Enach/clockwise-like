@@ -79,7 +79,7 @@ def structural(node):
 def load_fragments() -> list[tuple[str, dict]]:
     frags = []
     for path in sorted(FRAGMENT_DIR.glob("*.yaml")):
-        with path.open() as fh:
+        with path.open(encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
         if not isinstance(doc, dict):
             raise MergeError(f"{path.name}: expected a mapping at the top level")
@@ -282,7 +282,7 @@ def main() -> int:
         if not BUNDLE.exists():
             print(f"FAIL: {BUNDLE} does not exist; run `make openapi`", file=sys.stderr)
             return 1
-        if BUNDLE.read_text() != rendered:
+        if BUNDLE.read_text(encoding="utf-8") != rendered:
             print(
                 "FAIL: contracts/openapi/openapi.yaml is out of date with its fragments.\n"
                 "      Run `make openapi` and commit the result.",
@@ -292,7 +292,7 @@ def main() -> int:
         print(f"OK: bundle is in sync ({len(spec['paths'])} paths)")
         return 0
 
-    BUNDLE.write_text(rendered)
+    BUNDLE.write_text(rendered, encoding="utf-8", newline="\n")
 
     ops = sum(
         1
