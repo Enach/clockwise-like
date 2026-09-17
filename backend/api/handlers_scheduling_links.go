@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -200,13 +199,6 @@ func (in schedulingLinkInput) normalized() (storage.SchedulingLink, error) {
 	return link, nil
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func parseClock(value string) (time.Time, error) {
 	trimmed := strings.TrimSpace(value)
 	for _, layout := range []string{"15:04", "15:04:05"} {
@@ -277,21 +269,6 @@ func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
 	link.WindowStart = start.Format("15:04")
 	link.WindowEnd = end.Format("15:04")
 	return nil
-}
-
-func parseOptionalInt(value *string) (*int, error) {
-	if value == nil {
-		return nil, nil
-	}
-	trimmed := strings.TrimSpace(*value)
-	if trimmed == "" {
-		return nil, nil
-	}
-	parsed, err := strconv.Atoi(trimmed)
-	if err != nil {
-		return nil, &httpError{Code: http.StatusUnprocessableEntity, Msg: "max_uses must be a positive integer"}
-	}
-	return &parsed, nil
 }
 
 func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {

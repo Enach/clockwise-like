@@ -21,9 +21,8 @@ import (
 )
 
 type managerHandlers struct {
-	db          *sql.DB
-	oauthConfig *oauth2.Config
-	newEngine   func() ManagerWorkflow
+	db        *sql.DB
+	newEngine func() ManagerWorkflow
 }
 
 func newManagerHandlers(db *sql.DB, oauthConfig *oauth2.Config) *managerHandlers {
