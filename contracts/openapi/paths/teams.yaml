@@ -319,6 +319,8 @@ paths:
           $ref: "#/components/responses/PlainTextServerError"
 
   /api/manager/team/members/{email}/schedule:
+    parameters:
+      - $ref: "#/components/parameters/MemberEmailPath"
     post:
       operationId: scheduleManagerOneOnOne
       tags: [manager]
