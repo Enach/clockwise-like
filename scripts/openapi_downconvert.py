@@ -97,7 +97,7 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 1
     src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-    spec = yaml.safe_load(src.read_text())
+    spec = yaml.safe_load(src.read_text(encoding="utf-8"))
 
     spec = convert(spec)
     spec["openapi"] = "3.0.3"
@@ -111,7 +111,9 @@ def main() -> int:
     dst.write_text(
         "# GENERATED BUILD INPUT - DO NOT EDIT, DO NOT COMMIT.\n"
         "# 3.0.3 rendering of contracts/openapi/openapi.yaml for oapi-codegen only.\n"
-        + yaml.safe_dump(spec, sort_keys=False, width=100, allow_unicode=True)
+        + yaml.safe_dump(spec, sort_keys=False, width=100, allow_unicode=True),
+        encoding="utf-8",
+        newline="\n",
     )
     return 0
 

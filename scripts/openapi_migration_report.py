@@ -153,6 +153,7 @@ def committed_generated_count() -> int | None:
             cwd=ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
     except OSError:
@@ -170,15 +171,15 @@ def main() -> int:
     if not BUNDLE.exists():
         print(f"FAIL: no bundle at {BUNDLE}; run `make openapi`", file=sys.stderr)
         return 1
-    spec = yaml.safe_load(BUNDLE.read_text())
+    spec = yaml.safe_load(BUNDLE.read_text(encoding="utf-8"))
     ops = operations(spec)
 
-    existing_text = REGISTER.read_text() if REGISTER.exists() else ""
+    existing_text = REGISTER.read_text(encoding="utf-8") if REGISTER.exists() else ""
     known = parse_existing(existing_text)
     rendered = render(ops, known)
 
     if not args.check:
-        REGISTER.write_text(rendered)
+        REGISTER.write_text(rendered, encoding="utf-8", newline="\n")
         generated = sum(1 for s, _ in known.values() if s == "generated")
         print(f"wrote {REGISTER.relative_to(ROOT)}")
         print(f"  operations : {len(ops)}  ({generated} generated, {len(ops) - generated} handwritten)")

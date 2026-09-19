@@ -1,0 +1,3 @@
+# The OpenAPI contract is generated and gated byte-for-byte; keep it LF on every
+# platform so core.autocrlf=true checkouts never look out of date.
+contracts/openapi/** text eol=lf
