@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Git Bash (MSYS) rewrites POSIX-looking arguments for native Windows programs,
+# so `-w /app` reaches docker as `C:/Program Files/Git/app` and docker refuses
+# it. Docker Desktop accepts the unconverted /c/... mount source. No effect
+# elsewhere.
+export MSYS_NO_PATHCONV=1
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE_DIR="$ROOT_DIR/backend"
 DB_CONTAINER="paceday-test-postgres-$$"
