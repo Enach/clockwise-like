@@ -26,6 +26,14 @@
 
 ## 1. Approach
 
+> **Renumbered to 025, 2026-10-04.** This plan was written against `024`, but
+> PAC-24's spec, contract, plan and PAC-49's spec all refer to *their* migration
+> as `024` by number, and the highest migration on `main` is `023`. Whichever
+> landed second would have collided, so this feature takes `025`: one plan
+> corrected here instead of four artifacts elsewhere. No file has been created
+> under either number yet — nothing is renamed, only this plan.
+
+
 The change is a schema change with a very small surface above it. `audit_log` gains a
 nullable `user_id` that every **new** row is required to populate, the read gains a
 `WHERE user_id = $1`, and the seven writers learn to pass the subject. Nothing about
@@ -110,8 +118,8 @@ existing test references `WriteAuditLog` or `ListAuditLog`.
 
 | File | Change | Risk |
 |---|---|---|
-| `backend/storage/migrations/024_audit_log_user_id.up.sql` *(new)* | Column, index, `NOT VALID` check | The `ALTER TABLE ADD COLUMN` of a nullable column with no default is metadata-only on PG11+; the index build is the only real work. See §2/Migration |
-| `backend/storage/migrations/024_audit_log_user_id.down.sql` *(new)* | Reverses it, losing the attribution | See §6 |
+| `backend/storage/migrations/025_audit_log_user_id.up.sql` *(new)* | Column, index, `NOT VALID` check | The `ALTER TABLE ADD COLUMN` of a nullable column with no default is metadata-only on PG11+; the index build is the only real work. See §2/Migration |
+| `backend/storage/migrations/025_audit_log_user_id.down.sql` *(new)* | Reverses it, losing the attribution | See §6 |
 | `backend/storage/focus_blocks.go:61-63` | `WriteAuditLog` gains a `userID uuid.UUID` second parameter, refuses `uuid.Nil` before touching the database, and logs the insert error instead of discarding it | Low. The function is 3 lines. Consider moving it to `audit_log.go` where it belongs — it is in `focus_blocks.go` for no reason — but that is a rename in the same package and must not be bundled if it makes the diff harder to read |
 | `backend/storage/audit_log.go:15-34` | `ListAuditLog` gains `userID uuid.UUID`, the query gains `WHERE user_id = $1`, the clamp becomes default 50 / cap 500 | Low, but this is the security-critical line. The predicate must be a bound parameter |
 | `backend/storage/models.go:23-28` | `AuditLog` gains `UserID` | Trivial; the struct appears unused by the read path |
@@ -128,7 +136,7 @@ existing test references `WriteAuditLog` or `ListAuditLog`.
 
 ### Migration
 
-- **Up**: `backend/storage/migrations/024_audit_log_user_id.up.sql`
+- **Up**: `backend/storage/migrations/025_audit_log_user_id.up.sql`
   1. `ALTER TABLE audit_log ADD COLUMN user_id UUID REFERENCES users(id) ON DELETE CASCADE;`
      — nullable, no default. `ON DELETE CASCADE` matches how `006_auth.up.sql:14-16`
      attached `oauth_tokens`, `settings` and `focus_blocks` to `users`, and is correct
@@ -143,7 +151,7 @@ existing test references `WriteAuditLog` or `ListAuditLog`.
      — `NOT VALID` means existing rows are not checked and never will be, while every
      insert and update from now on is. This is the mechanism that makes spec §3.2
      enforced by the database rather than by discipline.
-- **Down**: `backend/storage/migrations/024_audit_log_user_id.down.sql` — drop the
+- **Down**: `backend/storage/migrations/025_audit_log_user_id.down.sql` — drop the
   constraint, drop the index, drop the column.
   **This loses data.** No rows are lost, but every subject recorded since the up
   migration ran is destroyed irrecoverably, and there is nothing to reconstruct it from
@@ -293,7 +301,7 @@ recorded so far sit there unused until the code returns.
 **If the column genuinely must go** — the feature is abandoned, not merely paused:
 
 ```
-psql "$DATABASE_URL" -f backend/storage/migrations/024_audit_log_user_id.down.sql
+psql "$DATABASE_URL" -f backend/storage/migrations/025_audit_log_user_id.down.sql
 ```
 
 **This is not reversible without loss.** In those words: dropping the column destroys
