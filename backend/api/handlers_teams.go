@@ -20,7 +20,6 @@ import (
 
 type teamHandlers struct {
 	db                 *sql.DB
-	oauthConfig        *oauth2.Config
 	availabilityEngine TeamAvailability
 }
 

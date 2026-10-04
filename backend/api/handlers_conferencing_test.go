@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/Enach/paceday/backend/conference"
 	"github.com/Enach/paceday/backend/storage"
@@ -52,15 +51,6 @@ func (f *fakeConferenceEventClient) ClearGoogleMeet(_ context.Context, _ string,
 		return nil, f.clearMeetErr
 	}
 	return f.clearMeetResult, nil
-}
-
-type fakeConferenceProvider struct {
-	details *conference.Details
-	err     error
-}
-
-func (f fakeConferenceProvider) CreateMeeting(context.Context, string, time.Time, time.Time) (*conference.Details, error) {
-	return f.details, f.err
 }
 
 type fakeConferenceProviderFactory struct {

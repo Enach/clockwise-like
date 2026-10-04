@@ -18,6 +18,13 @@ Conversions (each is the standard 3.1 -> 3.0 mapping):
   oneOf: [X, {type: 'null'}]     -> X (allOf-wrapped if X is a $ref) + nullable: true
   const: V                       -> enum: [V]
   examples: [a, b]  (in schemas) -> example: a
+
+One workaround for oapi-codegen itself, not a 3.1 -> 3.0 mapping:
+  an operation response that is a $ref to a component response with any
+  non-JSON media type is replaced by a copy of that component. oapi-codegen
+  v2.4.1's strict server wraps a referenced text/plain response in a struct and
+  then writes it with []byte(response), which does not compile. Inlining gives
+  it a plain string type. The documents mean the same thing either way.
 Anything else is copied verbatim. When oapi-codegen gains 3.1 support this
 script and its call site in scripts/openapi_gen_go.sh both go away.
 
@@ -27,6 +34,7 @@ Exit codes: 0 ok, 1 unconvertible construct found (message names it).
 
 from __future__ import annotations
 
+import copy
 import pathlib
 import sys
 
@@ -92,6 +100,23 @@ def convert(node, trail: str = ""):
     return out
 
 
+def inline_non_json_response_refs(spec) -> None:
+    components = spec.get("components", {}).get("responses", {})
+    for path_item in spec.get("paths", {}).values():
+        for operation in path_item.values():
+            if not isinstance(operation, dict):
+                continue
+            responses = operation.get("responses", {})
+            for status, response in responses.items():
+                ref = response.get("$ref", "")
+                if not ref.startswith("#/components/responses/"):
+                    continue
+                target = components[ref.rsplit("/", 1)[1]]
+                media_types = target.get("content", {})
+                if any(not mt.endswith("json") for mt in media_types):
+                    responses[status] = copy.deepcopy(target)
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print(__doc__, file=sys.stderr)
@@ -100,6 +125,7 @@ def main() -> int:
     spec = yaml.safe_load(src.read_text(encoding="utf-8"))
 
     spec = convert(spec)
+    inline_non_json_response_refs(spec)
     spec["openapi"] = "3.0.3"
 
     if problems:
