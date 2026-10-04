@@ -375,9 +375,20 @@ paths:
       - calendar
       summary: The calling user's own activity entries
       description: 'Returns the calling user''s own `audit_log` rows, ordered by `created_at DESC, id
-        DESC`. The query is scoped by the authenticated user id taken from the request context (`requireAuth`,
-        backend/api/middleware.go:53); there is no parameter that widens it, and no caller can address
-        another user''s entries.
+        DESC`. The query is scoped by the authenticated user id that `requireAuth` puts in the request
+        context under `auth.UserIDKey` (backend/api/middleware.go) and that handlers read back with `userIDFromCtx`
+        or `auth.UserIDFromContext`; there is no parameter that widens it, and no caller can address another
+        user''s entries.
+
+
+        A NOTE ON CITATIONS, because two revisions of this contract have now been rejected for stale ones.
+        Every `file:line` below was re-derived against the tree at revision 4 **after** regenerating the
+        bundle and `backend/api/gen/paceday.gen.go`. Three kinds of reference are deliberately NOT given
+        as line numbers: anything in `backend/api/gen/paceday.gen.go` is cited by Go **symbol**, because
+        this very description is emitted into that file as a doc comment and so editing it moves every
+        line it could cite; anything in `docs/factory/PAC-23-plan.md` is cited by **section**, because
+        that document is edited by other features; and anything in the `Makefile` is cited by **target**.
+        Where a claim is cheap to check by command, the command is given instead of a citation.
 
 
         Entries recorded before the PAC-23 migration have no subject and are therefore returned to **nobody**.
@@ -386,12 +397,13 @@ paths:
         is the migration''s business: a conforming server returns an entry only to its subject, and an
         entry with no subject has none. This description deliberately no longer spells that predicate
         `user_id IS NULL`, because the identification "no subject ⟺ pre-migration" is exact under only
-        one of two delete actions that docs/factory/PAC-23-plan.md §7 item 1 (:312-317) leaves open —
-        `ON DELETE CASCADE`, as drafted at :132, keeps it exact, while `ON DELETE SET NULL` would give
-        a deleted user''s rows the same marker and make the sentence false. The contract must not be the
-        artifact that goes stale when a plan question resolves. The observable effect is the same either
-        way: on the release of PAC-23 every user''s log appears to start empty and refills as they use
-        the product.
+        one of two delete actions that docs/factory/PAC-23-plan.md §7 item 1 leaves open — `ON DELETE
+        CASCADE`, as drafted in that plan''s §2 up-migration step 1 (`ALTER TABLE audit_log ADD COLUMN
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE`), keeps it exact, while `ON DELETE SET NULL`
+        would give a deleted user''s rows the same marker and make the sentence false. The contract must
+        not be the artifact that goes stale when a plan question resolves. The observable effect is the
+        same either way: on the release of PAC-23 every user''s log appears to start empty and refills
+        as they use the product.
 
 
         This log is a **per-user activity feed**, not a security audit trail: it has no authentication
@@ -403,26 +415,30 @@ paths:
         The subject of an entry is whose calendar it happened to, which is not necessarily who caused
         it. Every entry this operation can return today has actor = subject, and that is true for a narrow
         reason worth stating: the one path where they differ writes no entry at all. `POST /api/book/{slug}`
-        is registered outside the `requireAuth` group (backend/api/routes.go:26) and reaches `calClient.CreateEvent`
-        at backend/engine/booking.go:267, so an unauthenticated third party puts a real event on a host''s
-        calendar and nothing is recorded. If booking is ever recorded — PAC-23 does not add it — the subject
-        is the host, which is already in scope as `h.UserID` at booking.go:250-269; the booker is not
-        a user of this system and gets no identity here, because a fabricated actor in a record whose
-        purpose is attribution is worse than an absent one (spec §3.2). The feed would then say that a
-        meeting appeared on your calendar and would still be unable to say who put it there. Do not read
-        the absence of an actor field as a claim that the subject acted.
+        is registered outside the `requireAuth` group (backend/api/routes.go:27 — `:26` is the `GET .../slots`
+        route, not this one) and reaches `calClient.CreateEvent` at backend/engine/booking.go:267, so
+        an unauthenticated third party puts a real event on a host''s calendar and nothing is recorded.
+        If booking is ever recorded — PAC-23 does not add it — the subject is the host, which is already
+        in scope as `h.UserID` at booking.go:250-269; the booker is not a user of this system and gets
+        no identity here, because a fabricated actor in a record whose purpose is attribution is worse
+        than an absent one (spec §3.2). The feed would then say that a meeting appeared on your calendar
+        and would still be unable to say who put it there. Do not read the absence of an actor field as
+        a claim that the subject acted.
 
 
         The scoping guarantees who may READ a row, not that the row''s contents originated with the reader.
-        `details` carries free text supplied by whoever made the request (a meeting title from the request
-        body at backend/engine/smart_schedule.go:323 and backend/api/handlers_schedule.go:188, a typed
-        prompt at backend/nlp/parser.go:221), so a writer whose actor is not the subject would place a
-        third party''s words in the subject''s feed. No writer does that today — all seven have actor
-        = subject — but this contract is the artifact that makes subject ≠ actor a legal shape, so it
-        states the rule rather than leaving the direction unguarded: a writer whose actor is not the subject
-        must not put text supplied by the actor in `details`; where that is unavoidable the entry needs
-        the redacted projection spec §3.5 describes, not this operation. Spec AC-3 forbids only the mirror
-        image, another user''s text reaching a non-subject.
+        `details` carries free text supplied by whoever made the request, at four of the seven writers:
+        a meeting title from the request body at backend/engine/smart_schedule.go:323 and backend/api/handlers_schedule.go:188,
+        a typed prompt at backend/nlp/parser.go:221, and a client-supplied `event_id` copied unvalidated
+        from the request body at backend/engine/compression.go:178 — the fourth is the one the `details`
+        schema below calls the worst of them, because the value can carry JSON structure rather than merely
+        a stray quote. So a writer whose actor is not the subject would place a third party''s words in
+        the subject''s feed. No writer does that today — all seven have actor = subject — but this contract
+        is the artifact that makes subject ≠ actor a legal shape, so it states the rule rather than leaving
+        the direction unguarded: a writer whose actor is not the subject must not put text supplied by
+        the actor in `details`; where that is unavoidable the entry needs the redacted projection spec
+        §3.5 describes, not this operation. Spec AC-3 forbids only the mirror image, another user''s text
+        reaching a non-subject.
 
 
         There is no pagination — no `offset`, no cursor, no `before`. Entries older than the most recent
@@ -435,65 +451,124 @@ paths:
         WHICH SERVER ANSWERS THIS, because the `limit` description below depends on it: the hand-written
         `auditHandler` (backend/api/handlers_audit.go:12-23), registered directly on chi at backend/api/routes.go:179.
         `backend/api/gen/paceday.gen.go` — generated from this bundle, committed, and drift-checked by
-        `make openapi-check` — also contains a complete server surface for this operation (`ServerInterface.ListAuditEntries`,
-        `ListAuditEntriesParams`, a request wrapper that binds `limit`, a chi mount and the strict response
-        types), and **none of it is mounted**. One command falsifies that claim rather than leaving a
-        reader to trust it: `grep -rn "HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen" --include=*.go
-        backend/ | grep -v "^backend/api/gen/"` — it returns nothing today. `contracts/openapi/MIGRATION.md:75`
-        records this operation as `handwritten` and PAC-23 does not move it (contracts/features/PAC-23.md
-        §6). Where the two servers would answer the same request differently, the `limit` description
-        says so explicitly.'
+        the `openapi-check` make target — also contains a complete server surface for this operation (`ServerInterface.ListAuditEntries`,
+        `ListAuditEntriesParams`, `ServerInterfaceWrapper.ListAuditEntries` binding `limit`, a `/api/audit`
+        route inside `HandlerWithOptions` (which `HandlerFromMux` delegates to), and `ListAuditEntries200JSONResponse`
+        / `401TextResponse` / `500JSONResponse`), and **none of it is mounted**. One command falsifies
+        that claim rather than leaving a reader to trust it: `grep -rn "HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen"
+        --include=*.go backend/ | grep -v "^backend/api/gen/"` — it returns nothing today. `contracts/openapi/MIGRATION.md`
+        records this operation as `handwritten`, and its `notes` cell carries the precondition for moving
+        it; PAC-23 does not move it (contracts/features/PAC-23.md §6). Where the two servers would answer
+        the same request differently, the `limit` description says so explicitly, and it is the only place
+        in this contract where they do.'
       parameters:
       - name: limit
         in: query
         required: false
         description: 'Maximum number of entries to return. Against the server that answers this operation
           — the hand-written `auditHandler`, see the operation description — every input resolves and
-          none is rejected with a 4xx. The five cases below are exhaustive and each has exactly one outcome,
-          stated once.
+          none is rejected with a 4xx. Revisions 1, 2 and 3 of this description each enumerated "cases"
+          and each claimed a completeness it did not have, so it is written here as a two-step RESOLUTION
+          PROCEDURE instead: step 1 picks one piece of text, step 2 maps any piece of text to one number.
+          Together they resolve every request that can be sent, including the ordinary one.
 
 
-          Absent — 50. Present but not a base-10 integer (`?limit=abc`, `?limit=`, `?limit=50.5`, `?limit=1e2`)
-          — 50. Present and below `minimum`, which includes `0` and every negative value — 50. Present
-          and above `maximum` — 500, i.e. the maximum itself, never a smaller number chosen silently.
-          Supplied more than once (`?limit=10&limit=500`) — the first value is used and the rest are ignored,
-          because the handler reads `r.URL.Query().Get("limit")` (backend/api/handlers_audit.go:14), which
-          returns `values[0]`; the chosen value then runs through the four cases above, so `?limit=10&limit=500`
-          resolves to 10 and `?limit=abc&limit=10` to 50.
+          STEP 1 — WHICH TEXT IS READ. The handler reads `r.URL.Query().Get("limit")` (backend/api/handlers_audit.go:14).
+          `URL.Query()` is `url.ParseQuery` with its error discarded, and `ParseQuery` DROPS any `key=value`
+          pair it cannot URL-unescape and carries on; `Get` then returns the first of the surviving values,
+          or `""` if none survive. So the text read is **the first `limit` value that URL-decodes**, not
+          the first one supplied, and multiplicity is settled here rather than being a case of its own.
+          `?limit=10&limit=500` reads `10`. `?limit=500&limit=10` reads `500`. `?limit=%zz&limit=10` reads
+          **`10`**, because the `%zz` pair is dropped — NOT `%zz`, and so not the default. `?limit=%zz`
+          on its own leaves no surviving value and is therefore read as absent. Only a request with two
+          or more DECODABLE values is "supplied more than once", and for it the later ones are ignored.
 
 
-          `minimum`/`maximum` therefore constrain what a conforming client may send, and the five cases
-          above define what the server does with the non-conforming request that the wire still permits.
+          STEP 2 — WHAT THAT TEXT RESOLVES TO. Five outcomes, and they partition every possible string,
+          so there is no sixth:
+
+
+          (a) nothing was read — the parameter is absent, or empty (`?limit=`), or bare (`?limit`), or
+          every pair was undecodable — **50**.
+
+          (b) text was read and is not a base-10 integer (`?limit=abc`, `?limit=50.5`, `?limit=1e2`, `?limit=+50`,
+          which URL-decodes to `" 50"`) — **50**.
+
+          (c) a base-10 integer below `minimum`, i.e. `0` or any negative value (`?limit=0`, `?limit=-5`)
+          — **50**.
+
+          (d) a base-10 integer from `minimum` to `maximum` inclusive — **that value**. This is the conforming
+          request and the ONLY case the shipped client exercises (`?limit=50`); `?limit=10` returns at
+          most 10 entries and `?limit=500` at most 500. Revisions 1-3 omitted it, which is why (e) had
+          nothing to compose over.
+
+          (e) a base-10 integer above `maximum` (`?limit=501`, `?limit=10000`) — **500**, the maximum
+          itself, never a smaller number chosen silently. This includes a value too large for `int64`
+          (`?limit=99999999999999999999`): `strconv.Atoi` saturates to `MaxInt64` and returns `ErrRange`,
+          and the clamp then caps it, so the outcome is 500. An implementation that checks `Atoi`''s error
+          must still resolve an overflowing value here and not into (b) — `ErrRange` means "above `maximum`",
+          not "unparseable".
+
+
+          `minimum`/`maximum` therefore constrain what a conforming client may send — (d) is the whole
+          of what they permit — and (a), (b), (c) and (e) define what the server does with the non-conforming
+          request that the wire still allows.
 
 
           ON MIGRATION TO THE GENERATED SERVER — which has not happened, which PAC-23 does not do, and
-          which changes two of those five answers: cases two and five would stop resolving and start returning
-          `400 Bad Request`. The generated wrapper binds `limit` with `runtime.BindQueryParameter` (backend/api/gen/paceday.gen.go:6287-6292);
-          an unparseable value yields `InvalidParamFormatError` and a repeated one `multiple values for
-          single value parameter`, and the default `ErrorHandlerFunc` (paceday.gen.go:9792-9794) answers
-          both with `http.Error(w, err.Error(), 400)`, i.e. plain text with `charset=utf-8`, `X-Content-Type-Options:
-          nosniff` and a trailing newline. This operation declares no `400`, and must not while nothing
-          emits one: factory §7 rule 2 means the contract describes what IS, so a declared-but- unreachable
-          `400` would be a promise about a server that does not exist, would appear in every generated
-          client as a branch no response can take, and would generate a `ListAuditEntries400TextResponse`
-          inviting a handler to return it. The consequence is recorded here instead, as a precondition:
-          adopting the generated wrapper for `listAuditEntries` is a CONTRACT change, not just a handler
-          change, and the `400` (with `PlainTextError`, the convention this fragment already uses for
-          `listCalendarEvents` at :63-70) must be added in the same change, never after it. `?limit=10000`
-          is not affected — it binds as an integer and still resolves to 500. The 400 is a parse failure,
-          not a range one.
+          which changes three of the five outcomes above. The generated `ServerInterfaceWrapper.ListAuditEntries`
+          binds this parameter with `runtime.BindQueryParameter` into a `*int`, and on any bind error
+          hands an `InvalidParamFormatError` to the default `ErrorHandlerFunc` set up in `HandlerWithOptions`,
+          which is `http.Error(w, err.Error(), http.StatusBadRequest)` — plain text with `charset=utf-8`,
+          `X-Content-Type-Options: nosniff` and a trailing newline (all symbols in backend/api/gen/paceday.gen.go;
+          cited by name because this paragraph is emitted into that file). What changes:
 
 
-          CURRENT SERVER BEHAVIOUR, which differs and which PAC-23 is fixing (finding API-074): `backend/api/handlers_audit.go:14`
-          discards `strconv.Atoi`''s error, so an absent or unparseable value arrives as `0`, and `backend/storage/audit_log.go:16-18`
-          is `if limit <= 0 || limit > 500 { limit = 100 }`. Cases one to four above therefore collapse
-          today to the single value **100** — including `?limit=10000`, which returns 100, a number below
-          the declared maximum. Case five is answered today exactly as stated above, by `Query().Get`,
-          and the first value then meets that same clamp: `?limit=10&limit=500` returns 10 both today
-          and after PAC-23. The paragraph above is what stage 4 implements and what spec AC-10 and AC-11
-          test; this paragraph is what it replaces. No third number is in play: the 50 comes from the
-          only shipped client (`smart-calendar-flow/src/api/client.ts:403-404`, which also renders it
-          into the page subtitle at `src/pages/Audit.tsx:38`). After PAC-23 that client still declares
+
+          — (a) splits. Absent stays absent and still resolves. But EMPTY and BARE (`?limit=`, `?limit`)
+          become `400`, because `BindStringToObject` runs `strconv.ParseInt("", 10, 64)`. `?limit=%zz`
+          keeps resolving, because the binder sees no value at all.
+
+          — (b) becomes `400` in full: `strconv.ParseInt: … invalid syntax`.
+
+          — (e) becomes `400` **only for a value that overflows `int64`**: `strconv.ParseInt: … value
+          out of range`, through the same `InvalidParamFormatError`. `?limit=10000` is unaffected and
+          still resolves to 500. So the `400` is NOT "a parse failure, not a range one" — a range failure
+          produces it too, and `maximum: 500` is not what guards the upper end.
+
+          — step 1 changes. Two or more decodable values become `400` (`multiple values for single value
+          parameter ''limit''`) instead of the first being used. `?limit=%zz&limit=10` still resolves
+          to 10, because `ParseQuery` drops the undecodable pair before the binder sees it — the one input
+          class on which both servers agree and revision 3 did not.
+
+          — (c) and (d) are unaffected. The binder parses but does not enforce `minimum`/`maximum`, so
+          `?limit=0`, `?limit=-5` and `?limit=10000` all reach the handler and remain the handler''s business.
+
+
+          This operation declares no `400`, and must not while nothing emits one: factory §7 rule 2 means
+          the contract describes what IS, so a declared-but- unreachable `400` would be a promise about
+          a server that does not exist, would appear in any generated client as a branch no response can
+          take, and would generate a `ListAuditEntries400TextResponse` inviting a handler to return it.
+          The consequence is recorded instead, as a precondition: adopting the generated wrapper for `listAuditEntries`
+          is a CONTRACT change, not just a handler change, and the `400` (with `PlainTextError`, the convention
+          this fragment already uses for `listCalendarEvents`) must be added in the same change, never
+          after it. That precondition is also in the `notes` cell of this operation''s row in `contracts/openapi/MIGRATION.md`,
+          which is the file whose "Moving a row" procedure the migrating author follows — this description
+          is where an author wiring `ListAuditEntriesParams` will read it, and that register is where
+          an author deciding to wire it at all will.
+
+
+          CURRENT SERVER BEHAVIOUR, which differs and which PAC-23 is fixing (finding API-074): step 1
+          is already exactly as described — it is the current code — and step 2 is not. `backend/api/handlers_audit.go:14`
+          discards `strconv.Atoi`''s error, so an unreadable or non-integer value arrives as `0`, and
+          `backend/storage/audit_log.go:16-18` is `if limit <= 0 || limit > 500 { limit = 100 }`. So today
+          (a), (b), (c) and (e) all collapse to the single value **100** — including `?limit=10000`, which
+          returns 100, a number below the declared `maximum`. Only (d) is already right: a conforming
+          value passes through untouched, which is why nothing was ever observed to be broken — the one
+          shipped client only ever sends `?limit=50`. The paragraph above is what stage 4 implements and
+          what spec AC-10 and AC-11 test; this paragraph is what it replaces. No third number is in play:
+          the 50 comes from that client (`smart-calendar-flow/src/api/client.ts:403-404`, which also renders
+          it into the page subtitle at `src/pages/Audit.tsx:38`). After PAC-23 that client still declares
           the number by hand, because neither pinned frontend generator can hand it over as a value —
           `openapi-typescript` 7.4.4 emits `limit?: number` and carries this `default` only as prose in
           a JSDoc comment, verified by generating it. The client''s literal is pinned against this `default`
@@ -509,10 +584,12 @@ paths:
             never `null`. The bundle is `openapi: 3.1.0`, where `type: array` already excludes `null`,
             so a `null` body is non-conforming and spec AC-2 is expressible; what makes it true at runtime
             is the single line `entries := make([]AuditEntry, 0)` at backend/storage/audit_log.go:25,
-            and docs/factory/PAC-23-plan.md:116 rewrites exactly that function — `var entries []AuditEntry`
-            in its place emits `null` and breaks this guarantee. Stated here because the empty case is
-            the release-day case for every user: `[]` is also what a user sees for activity recorded before
-            the PAC-23 migration.'
+            and docs/factory/PAC-23-plan.md §2 rewrites exactly that function — its "files to change"
+            row for `backend/storage/audit_log.go` says "`ListAuditLog` gains `userID uuid.UUID`, the
+            query gains `WHERE user_id = $1`, the clamp becomes default 50 / cap 500" — and `var entries
+            []AuditEntry` in place of the `make` emits `null` and breaks this guarantee. Stated here because
+            the empty case is the release-day case for every user: `[]` is also what a user sees for activity
+            recorded before the PAC-23 migration.'
           content:
             application/json:
               schema:
@@ -5381,10 +5458,21 @@ components:
             WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added
             without a contract change, or one restored backup, and a validating consumer rejects six good
             rows along with the odd one. That is the intended alarm in a test and the wrong behaviour
-            in a UI, so the expected handling is stated rather than left to each consumer: coerce an unrecognised
-            value to `unknown` and render the row, as the shipped client already does (smart-calendar-flow/src/api/client.ts:435),
-            instead of discarding the response. Factory §4 mandates a generated zod `schemas.ts` in the
-            frontend, which is where this would otherwise bite.
+            in a UI, so the expected handling is stated rather than left to each consumer: **render the
+            row, substituting a placeholder such as `unknown` for the unrecognised value, rather than
+            discarding the response.**
+
+
+            No consumer implements that today, and the correction matters because an earlier revision
+            of this paragraph claimed one did. The shipped client''s normaliser is `action: typeof e.action
+            === "string" && e.action ? e.action : "unknown"` (smart-calendar-flow/src/api/client.ts:435).
+            It substitutes `unknown` only for an action that is MISSING, NON-STRING or EMPTY; an unrecognised
+            non-empty string — `focus.run`, `weird_action` — passes through verbatim. The row still renders,
+            but for a different reason: that client''s `AuditEntry` is hand-written with `action: string`
+            (smart-calendar-flow/src/api/types.ts:221), so nothing validates against this enum at all.
+            A stage-4 frontend implementer must not read this paragraph as describing work already done.
+            Factory §4 mandates a generated zod `schemas.ts` in that repo; it does not exist yet, and
+            when it does it will not be so forgiving, which is the case this paragraph is for.
 
 
             It names WHAT happened, not WHO did it. Every entry''s subject is the calling user (see the
@@ -7428,8 +7516,14 @@ components:
     MiddlewareUnauthorized:
       type: string
       description: 'A JSON literal delivered with a text/plain Content-Type, because the handler sets
-        application/json and http.Error then overwrites the header. Seen from requireAuth (backend/api/middleware.go:36-38,
-        :41-43, :46-48) and from handlers_org.go.
+        application/json and http.Error then overwrites the header. Every producer of this exact body
+        in backend/api/ is an `http.Error` with the literal `{"error":"unauthorized"}`: the three in `requireAuth`
+        (backend/api/middleware.go:38, :44 and :50 — one per rejection reason), `orgHandlers.members`
+        (backend/api/handlers_org.go:21), and `meHandlers.me` (backend/api/handlers_me.go:19, reached
+        at `GET /api/auth/me`). The falsifying command, excluding the generated package, is `grep -rn
+        error.:.unauthorized --include=*.go backend/api/`. The third is listed for completeness only:
+        `getCurrentUser` declares its 401 against `PlainTextError`, not this schema, and lives in paths/auth.yaml,
+        which PAC-23 does not own and does not touch.
 
 
         Precisely, because PAC-23 AC-12 requires this response to be unchanged: as net/http''s `http.Error`
@@ -7439,11 +7533,12 @@ components:
         them and "exactly as today" includes them.
 
 
-        The trailing newline is part of the VALUE a generated handler must supply. oapi-codegen''s `…401TextResponse`
-        sets `Content-Type: text/plain` with no charset, does not set `nosniff`, and writes the value
-        verbatim without appending anything (see `ListAuditEntries401TextResponse`, backend/api/gen/paceday.gen.go:10519-10527).
-        A handler adopting the generated interface must therefore include the `\n` in the string and set
-        both headers itself, or its 401 is not byte-identical to the middleware''s.'
+        The trailing newline is part of the VALUE a generated handler must supply. oapi-codegen''s per-operation
+        `…401TextResponse` types set `Content-Type: text/plain` with no charset, do not set `nosniff`,
+        and write the value verbatim without appending anything (see `ListAuditEntries401TextResponse`
+        in backend/api/gen/paceday.gen.go; cited by symbol because this description is emitted into that
+        file). A handler adopting the generated interface must therefore include the `\n` in the string
+        and set both headers itself, or its 401 is not byte-identical to the middleware''s.'
       example: '{"error":"unauthorized"}
 
         '
