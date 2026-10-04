@@ -2078,3 +2078,22 @@ typecheck was run.
 6. **Two recommendations are made and deliberately not implemented**: the per-feature
    assembled-projection hash (§H) and `codeClaims` (§F3). Both are factory changes and
    both exist because this contract has now been wrong twice about facts nothing pinned.
+
+### Addendum to Revision 3 — the migration number, after #180
+
+Revision 3 §F13 declined to name a migration number, because the renumbering it was
+told about could not be reproduced: `main` said `024` in all five places. That was
+correct at the time — the renumber was sitting in an unmerged pull request, and the
+instruction that described it as landed was wrong.
+
+[#180](https://github.com/Enach/clockwise-like/pull/180) has since merged.
+`docs/factory/PAC-23-plan.md` on `main` now says `025_audit_log_user_id` in all five
+places, with the reason inline at `:29-35`, so the manifest's `rollback` names
+`025_audit_log_user_id.down.sql` again rather than nothing.
+
+The stage-7 precondition is unchanged and still matters: nothing exists under any
+number yet — the highest on disk is `023_manager_team_member_preferences` — so stage 7
+confirms the number against `backend/storage/migrations/` before rehearsing a
+rollback. Revision 3's reasoning for refusing to record an unverifiable number was
+right, and is kept above rather than edited away; this addendum records only that the
+fact became checkable.
