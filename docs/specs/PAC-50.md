@@ -1,7 +1,7 @@
 # Spec — PAC-50: SSO configuration must not be writable by every employee, nor for domains that are not the caller's
 
 - **Linear**: https://linear.app/paceday/issue/PAC-50/sso-configuration-is-writable-by-any-employee-and-for-any-subdomain
-- **Status**: draft (v1)
+- **Status**: challenged (v1 + challenge, awaiting spec-author response)
 - **Author**: spec-author
 - **Inherited scope**:
   - **Resolved here**: API-001 (authorization half — see "Scope"), and PAC-46's
@@ -31,6 +31,17 @@ in-product administrator concept — an organisation administering itself, witho
 the deployment operator — remains deferred to its own issue (§5, OQ-1).
 
 ### This spec's precondition on PAC-45
+
+> **Erratum, 2026-09-17 (local verification).** The paragraph below is wrong.
+> PR #172 was squash-merged at 09:50 UTC as `5c5f34f`, which is on `origin/main`
+> (`git merge-base --is-ancestor 5c5f34f origin/main`; `gh pr view 172` →
+> `MERGED`). `git branch -r --contains b1a07bb` finds nothing on `main` because a
+> squash merge never puts the branch commit there. **The bounded world applies**
+> (answering OQ-3). Citations against `6f7a856` still hold as written.
+> `5c5f34f` adds eight lines to `backend/api/handlers_sso.go` after line 176, so
+> any citation into that file past 176 is eight lower than the same line on
+> current `main`. Nothing else under `backend/` has changed since then except
+> generator config.
 
 **PAC-45 is not merged.** `origin/main` is at `6f7a856`; the fix is one commit
 (`b1a07bb`) on `nihochart/pac-45-oidc-email-domain-binding` with a pull request
@@ -662,3 +673,62 @@ self-refuting case for designation (§3.1, restated on granularity alone), the
 stranded configurations (§3.3, AC-10, AC-11, §7), the criteria that could not be
 written until a human answered a question (§3.1 and §3.4 answer them), and PAC-46
 (§5).
+
+
+## Challenge (2026-09-17, stage-1 challenger, cloud session)
+
+Verdict: **accept-with-changes**. The authorization model (§3.1–§3.4) is sound and
+the two decisions it makes (operator designation, exact-domain confinement) are
+correctly justified. Two gaps below should be closed before stage 2; neither
+changes §3's decisions.
+
+### Finding 1 — AC-9's uniqueness guarantee can be violated by data that predates it
+
+§3.2 states domain comparison is case-insensitive and whitespace-trimmed, and that
+"what is stored is the normalised form." AC-9 concludes "exactly one configuration
+exists for that organisation, not two" once this lands.
+
+That conclusion depends on every *existing* row already being in normalised form.
+`sso_providers.domain` is `NOT NULL UNIQUE` (`008_sso_providers.up.sql:3`) as a raw
+Postgres text column — the uniqueness constraint is exact-byte, not
+case/whitespace-folded. Nothing cited anywhere in §2 shows domains were normalised
+before storage prior to this spec. If two rows already exist for the same logical
+domain in different casing (e.g. planted by the suffix-match bug in §2.4, which by
+construction writes to whatever string the caller supplied), normalising
+comparisons at read/write time does not merge them — it makes both rows match the
+same lookup, and which one sign-in and the listing return becomes an ordering
+artifact of the query rather than a decided outcome. AC-9 tests the forward case
+(one caller, one submission) and would pass even if this backlog exists.
+
+Add to §7 (Rollback) or as a release requirement alongside the two already there: an
+inventory of `sso_providers` rows whose domain differs from its own
+lowercased/trimmed form, before release, with the same disposition options §3.3
+already establishes for stranded rows (matched to an organisation, or flagged
+unexplained). This is the same shape of gap PAC-49 was for PAC-24 — a migration
+comment or an acceptance criterion assumed a data invariant nothing enforces.
+
+### Finding 2 — AC-1 doesn't state the designated-but-orgless case
+
+§3.1 designates principals; §3.2 confines each to their own organisation's domain.
+Nothing in §4 states the outcome for a principal who is *designated* but has no
+organisation (`OrgID == nil`) — e.g. named by email before ever signing up, or after
+their org association is cleared. By §2.1's existing gate this should fail the same
+"org membership required" branch AC-1 already covers for the undesignated case, but
+AC-1 as written only exercises "no one designated," and AC-2/AC-3 assume the actor
+has an organisation. Suggest folding this into AC-1 or adding AC-1b: a designated
+principal with no organisation is refused for the same reason and by the same
+mechanism as an undesignated one, not a new third error path that would violate the
+distinguishability requirement in §6.
+
+### Not a finding, confirmed correct
+
+The PAC-45 hedge (both-worlds framing, OQ-3) matches ground truth as of this
+challenge: `origin/main` is still `6f7a856`, PR #172 is still open, and the
+Linear PAC-45 issue's "Done" status was a bookkeeping error independent of the
+code — the underlying fix is genuinely unmerged. No change needed here; flagging
+only so a future reader doesn't waste time re-verifying it.
+
+> **Erratum, 2026-09-17.** This confirmation is wrong, for the same reason as
+> the precondition section: #172 had already been squash-merged as `5c5f34f`, and
+> Linear's "Done" was correct. See the erratum under "This spec's precondition
+> on PAC-45".

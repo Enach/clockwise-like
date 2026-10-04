@@ -38,6 +38,13 @@ fix is one commit (`b1a07bb`) on `nihochart/pac-45-oidc-email-domain-binding`
 with a pull request open. If PAC-45 never merges, nothing in this spec changes.
 What does change is PAC-50's severity, and PAC-50 states both cases.
 
+> **Erratum, 2026-09-17 (local verification).** PAC-45 *is* merged: PR #172 was
+> squash-merged at 09:50 UTC as `5c5f34f`, which is on `origin/main`. The
+> `--contains b1a07bb` check cannot see a squash merge. This spec's claims are
+> unaffected, as it says above. Citations against `6f7a856` still hold. On
+> current `main`, lines past 176 in `backend/api/handlers_sso.go` sit eight
+> lower.
+
 ## 1. Problem
 
 Paceday lets an organisation replace password login with its own identity
