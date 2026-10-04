@@ -2,19 +2,28 @@
 
 - **Linear issue**: [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)
 - **Spec**: `docs/specs/PAC-23.md`
-- **Manifest**: `contracts/features/PAC-23.yaml` (revision 2; bundle
-  `23099fbcacc5efbdd18af03ca73ef98534f44e2464e384716eeb5219020a627c`, fragment
-  `568941e4687ef1e9ebd38a21dc2a0037fa459665368bac9c8d0883be7b4c2bb5`). Revision 1's
-  `2ae42114…` was stale — see Revision 2 §U2 below.
-- **Stage**: contract-author → contract-challenger (revision 2, after a `reject`)
+- **Manifest**: `contracts/features/PAC-23.yaml` (revision 3; bundle
+  `28e8a5100d6eefcedcc3df70eca26662b95ca13db5c66eb62b1f65b3d85a3dcc`, fragment
+  `d4679029c872a735374021c09a3b5db9aae9b5a743c25e78093dfebcf4a656d7`). Revision 2's
+  `23099fbc…` and revision 1's `2ae42114…` were both falsified by edits PAC-23 did not
+  make — see Revision 2 §U2 and the hash ruling answered in Revision 3 §H.
+- **Stage**: contract-author → contract-challenger (revision 3, after a second
+  `reject`)
 - **Source of truth repo**: `Enach/clockwise-like`
 - **Resolves**: API-005 (critical), API-074 (low), `x-uncertain` U-02
 - **Operations changed**: exactly one — `listAuditEntries` (`GET /api/audit`)
 
-> Nothing in this document was verified by executing the backend; the module proxy is
-> blocked in this sandbox. `python3 scripts/openapi_assemble.py` and
-> `scripts/openapi_migration_report.py` were run and their output is in the Linear
-> comment. Everything else is from reading source.
+> **Revisions 1 and 2** were written in a cloud session: nothing in §1–§7 or in the
+> Revision 2 section below was verified by executing the backend, the module proxy was
+> blocked, and only the assembler and the migration report were run. Those sections are
+> left as written, except where revision 3 had to correct a statement that is false
+> about the tree — there is exactly one such place, **§6**, and it is marked in place
+> because a lying passage left standing is the thing factory §7 rule 2 exists to
+> prevent.
+>
+> **Revision 3** was written locally with Docker up and the toolchain working. Every
+> gate was run and every output is pasted verbatim in **Revision 3 §V**. Where revision
+> 3 asserts something about code it ran the command; where it could not, it says so.
 
 ---
 
@@ -108,6 +117,13 @@ first place; the described behaviour covers the non-conforming one.
 **Not done:** rejecting an out-of-range `limit` with a 400. It would add a response
 code to an operation whose only consumer never sends one, for no benefit over capping.
 
+> **Revision 3 note.** That still holds for an out-of-*range* value. A different 400 —
+> for a value that does not *parse*, and for `limit` supplied twice — exists in the
+> generated binder, was raised as F1/F2, and is decided in Revision 3 §F1–§F2. The
+> answer is still no `400` on this operation, for a different and sharper reason: no
+> deployed server emits one. The five-case list and the migration consequence now live
+> in the parameter description.
+
 ## 5. What the contract does not say, on purpose
 
 - **It does not describe the column, the migration, or `WriteAuditLog`'s signature.**
@@ -128,21 +144,79 @@ code to an operation whose only consumer never sends one, for no benefit over ca
 
 ## 6. Generated-code status
 
-`listAuditEntries` stays `handwritten` in `contracts/openapi/MIGRATION.md:75`.
+> **Rewritten at revision 3.** The version of this section carried by revisions 1 and 2
+> asserted that `backend/api/gen/` does not exist and priced OQ-5 on that premise. The
+> directory exists and has since `e9d01cc`, which landed after revision 1 was written.
+> The old text is not preserved here, because a contract keeps one statement of what is
+> true and §7 rule 2 is precisely about not leaving the false one in the document; the
+> full account of what was wrong, what it hid, and what it should have cost is Revision
+> 3 §F3. Everything below is the corrected statement.
 
-Factory §4 says a modified endpoint moves to the generated server interface. Zero of
-119 operations are `generated` today and `backend/api/gen/` does not exist, so
-honouring that rule here means introducing `oapi-codegen`, the generated
-`StrictServerInterface`, the mounting wrapper and the first migrated handler **inside a
-critical security fix** — which is the kind of bundling that makes a revert dangerous
-and a review impossible.
+`listAuditEntries` stays `handwritten` in `contracts/openapi/MIGRATION.md:75`, and the
+conclusion is unchanged. The reason is not.
 
-This contract therefore leaves the row as `handwritten` and escalates rather than
-decides: spec OQ-5, owner = whoever owns `MIGRATION.md`. If the answer is "no
-exception", stage 3's plan grows a whole workstream and the sequencing in
-`docs/factory/PAC-23-plan.md` §5 has to be redone before implementation starts. The
-`make openapi-check` gate compares the generated-row count against the committed file
-and only fails when it *decreases*, so leaving it handwritten does not break the gate.
+**What exists.** `backend/api/gen/paceday.gen.go` is 697 KB of committed generated code,
+produced from the bundle by `scripts/openapi_gen_go.sh` (oapi-codegen v2.4.1, pinned in
+the script) and drift-checked by `make openapi-check` (`Makefile:96`). Its own README
+states the policy in as many words: the package is generated in full from day one and
+handlers adopt `StrictServerInterface` one endpoint at a time. For this operation it
+already contains the seven-value `AuditEntryAction` (`:46-54`), `AuditEntry` with
+`Id int32` (`:500-523`), `ListAuditEntriesParams` (`:2570-2580`),
+`ServerInterface.ListAuditEntries` (`:4971`), the request wrapper that binds `limit`
+(`:6270-6296`), a chi mount (`:9828`) and the strict response types (`:10510-10535`).
+So the generator, the types, the interface and the wrapper are **already paid for**, and
+they regenerate on every `make openapi`.
+
+**What is not mounted.** Nothing uses any of it. One command settles that and it is in
+the fragment's own description so a reader need not take it on trust:
+
+```
+grep -rn 'HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen' \
+  --include=*.go backend/ | grep -v '^backend/api/gen/'
+```
+
+It returns nothing. `/api/audit` is served by the hand-written `auditHandler`
+(`backend/api/handlers_audit.go:12-23`), registered directly on chi at
+`backend/api/routes.go:179`. `python3 scripts/openapi_migration_report.py --check`
+prints `0 generated` for all 119 operations.
+
+**The corrected cost of adopting the generated server for this one operation.** Not
+"introduce `oapi-codegen` and a mounting wrapper inside a security fix" — that part is
+done. What remains is four things, and only the first is large:
+
+1. **The first mounting of generated routing anywhere in this codebase.** `routes.go`
+   registers ~119 handlers directly on chi. Adopting the generated surface means either
+   calling `HandlerFromMux`/`NewStrictHandler` for one operation beside 118 direct
+   registrations, or hand-wiring the single `ServerInterfaceWrapper` method. Whichever
+   is chosen becomes the pattern every later operation follows, so it is a routing
+   decision for the whole backend being taken inside a critical security fix. That is
+   the real objection, and it survives the correction.
+2. **A contract change, in the same PR.** The generated binder answers `?limit=abc` and
+   a repeated `?limit` with `400` (Revision 3 §F1/§F2). This operation declares no
+   `400` and must not while nothing emits one, so the adoption PR has to add it.
+   Adopting the wrapper without touching the contract would make the contract wrong on
+   the day of the merge.
+3. **Re-establishing the 401 byte for byte.** `ListAuditEntries401TextResponse`
+   (`paceday.gen.go:10519-10527`) sets `Content-Type: text/plain` with no charset, sets
+   no `nosniff`, and appends no newline. The middleware's 401 has all three. Spec AC-12
+   says "exactly as it is today", so a generated handler must supply the `\n` inside the
+   value and set both headers itself.
+4. **Keeping `requireAuth` as the enforcement point.** The generated wrapper's
+   `BearerAuthScopes`/`CookieAuthScopes` (`:6280`) only place scope slices in the request
+   context; they enforce nothing. Adoption must not read the presence of those keys as
+   authentication.
+
+**Still escalated, now better evidenced.** Spec OQ-5, owner = whoever owns
+`MIGRATION.md`, restated in the manifest's `openDecisions`. Recommendation: no. Spec
+§2.9 establishes this operation has **no test at the HTTP boundary**, which makes it the
+worst available pilot for item 1 — the first mount should land on an operation that has
+a test to catch what the mount broke. On the gate, correcting a second error in the old
+text: `scripts/openapi_migration_report.py:55-57` is the part that compares the
+generated-row count and only fails when it decreases, but `make openapi-check` is three
+more things as well — the assembler's `--check`, the Go codegen drift check
+(`Makefile:96`) and, when `WEB` is set, the frontend repo's own `openapi-check`
+(`Makefile:98-99`). Leaving the row `handwritten` does not break any of them, which
+revision 3 verified by running all of them.
 
 ## 7. What a challenger should attack
 
@@ -1496,3 +1570,530 @@ citations into `contracts/openapi/paths/calendar.yaml`, `backend/` and
 `smart-calendar-flow/` are against files that did not move. This is the same
 concurrent-edit problem revision 2 §U2 is about, observed a third time, and it is a
 further argument for the per-feature projection hash suggested above.
+
+---
+
+## Revision 3 — 2026-10-04
+
+*By `contract-author`, answering the `reject` at "Challenge, revision 2 — 2026-10-04":
+4 blocking, 9 non-blocking. Written locally, with Docker up and the toolchain working —
+the first revision of this contract that could run its own gate. Every command and its
+exact output is in §V. Where I verified something the challenger could not, I say which
+command did it; where I disagree with the challenger, I say so and argue, because
+adopting a correction I think is wrong would be worse than the finding.*
+
+**Changed in this revision**: `contracts/openapi/paths/calendar.yaml` (the only
+hand-edited file), `contracts/openapi/openapi.yaml` (assembler),
+`backend/api/gen/paceday.gen.go` (generator, comment-only diff),
+`contracts/features/PAC-23.yaml`, and this document. `contracts/openapi/MIGRATION.md`
+was regenerated and came out byte-identical, so it is not in the diff. No hand-written
+Go, no spec, no plan.
+
+**Accepted**: F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F13, the hash ruling, and both
+citation corrections (`client.ts:435`, `Audit.tsx:94`). **Not accepted as proposed**:
+the *remedy* for F1/F2 — the finding is right, the proposed `400` is not, and §F1 argues
+it. F11 and F12 are confirmations with nothing to change beyond carrying their caveats
+forward, which the manifest now does.
+
+### F3 — the premise. `backend/api/gen/` exists, and this is what it costs
+
+Taken first because the challenger is right that it is the finding that hid the others.
+
+Verified, not conceded. `backend/api/gen/paceday.gen.go` is present, `git log --oneline
+-1 -- backend/api/gen/paceday.gen.go` prints `e9d01cc`, and every artifact the challenge
+tabulated for this operation is where it said. The assertion in §6 was true when
+revision 1 was written and became false when `e9d01cc` landed; it was then carried
+forward into revision 2 unchecked, which is the actual failure. §6 is rewritten in place
+rather than annotated, and the corrected cost of adoption — four items, of which only
+"the first mounting of generated routing anywhere in this codebase" is large — is there
+rather than here. OQ-5 is restated in the manifest against the tree as it is. The
+recommendation does not change; the reason it does not change is now a real one.
+
+**One thing I checked that the challenge did not, and it matters to F1.** The generated
+code exists. It is **not mounted**. Nothing in `backend/` outside the generated file
+references `HandlerFromMux`, `gen.ServerInterface`, `gen.Strict` or imports `api/gen`;
+`/api/audit` is served by `auditHandler` at `backend/api/routes.go:179`. See §F1.
+
+**On what nothing pins — the general problem F3 is an instance of, and the cheap fix.**
+A contract pins hashes of *documents*: `contractHash` over the bundle,
+`contractFragmentHash` over the fragment. Nothing whatever pins the assertions a
+contract makes about *code*, and this operation's description is dense with them — a
+`SERIAL` column, seven call sites, four concatenating writers, a discarded `Atoi` error,
+`make([]AuditEntry, 0)`, a chi registration, the absence of a mount. Every one of those
+is exactly the kind of statement that silently rotted into F3. The cheap fix is not a
+new tool: it is to write each such assertion in a form that a **one-line command
+falsifies**, and to put the command in the document next to the claim. Revision 3 does
+that for the load-bearing one — the "nothing mounts the generated server" claim carries
+its own `grep` inside the operation description, so a reader or a reviewer settles it in
+one paste rather than by trusting an author. The mechanical version, which belongs in a
+factory issue and not here, is a `codeClaims` list in the manifest of
+`{claim, command, expected}` triples that `make contract` runs; its whole value is that
+it turns "the author read the source once, months ago" into a gate. I am recommending it
+rather than inventing it in this manifest, because a mechanism one feature invents is a
+mechanism no other feature runs.
+
+### F1 and F2 — the five cases, and why this operation still declares no `400`
+
+**The finding is right and the proposed remedy is wrong**, and the second half needs the
+argument, so here it is in full.
+
+**What I verified, by command, that the challenge could not.** The challenge says
+`GET /api/audit?limit=abc` is answered `400`, "making the contract's 'nothing here is
+ever rejected with a 4xx' false". Against the running server that is **not true**:
+
+- The generated binder is never reached, because the generated server is **not mounted**.
+  `grep -rn "HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen" --include=*.go
+  backend/ | grep -v "^backend/api/gen/"` returns nothing (exit 1, no output).
+- `/api/audit` is registered at `backend/api/routes.go:179` as
+  `r.Get("/api/audit", auditHandler(db))`.
+- `auditHandler` does `limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))`
+  (`backend/api/handlers_audit.go:14`) and **discards the error**, so `?limit=abc`
+  yields `0`, which `backend/storage/audit_log.go:16-18` turns into the default. The
+  response is `200`.
+- `?limit=10&limit=500` goes through `Query().Get`, which returns `values[0]`, so the
+  answer is `10`. Also `200`.
+
+So the contract's present-tense claim was **correct**, and factory §7 rule 2 forbids me
+from replacing it with a `400` the server does not return. The challenger's own proposed
+description admits this in its own last sentence — *"the hand-written handler in place
+today does not produce this"* — which is a description of a response the operation would
+be declaring and no server would be giving.
+
+**What the contract was actually guilty of**, and it is two things, both now fixed:
+
+1. **A universal claim where only a scoped one is true.** *"Every input resolves;
+   nothing here is ever rejected with a 4xx"* reads as a property of the operation for
+   all time. It is a property of the server that answers it. The sentence now begins
+   *"Against the server that answers this operation — the hand-written `auditHandler`"*,
+   and the operation description carries a new `WHICH SERVER ANSWERS THIS` paragraph
+   naming the handler, the registration line and the unmounted generated surface, with
+   the falsifying `grep` inline.
+2. **Silence about migration.** This is the part the challenge is really right about, and
+   revision 2 had nothing on it. Whoever moves this operation onto the generated wrapper
+   inherits a document promising no 4xx and a binder that gives one. The parameter
+   description now carries an `ON MIGRATION TO THE GENERATED SERVER` paragraph: cases two
+   and five stop resolving and start returning `400`, via
+   `runtime.BindQueryParameter` (`paceday.gen.go:6287-6292`) →
+   `InvalidParamFormatError` or `multiple values for single value parameter` → the
+   default `ErrorHandlerFunc`'s `http.Error(w, err.Error(), 400)` (`:9792-9794`), as
+   plain text with `charset=utf-8`, `nosniff` and a trailing newline. And it states the
+   consequence as a precondition: **adopting the generated wrapper for
+   `listAuditEntries` is a contract change, not merely a handler change**, and the `400`
+   must be added in the same change, never after it. The manifest repeats it under
+   `operationsChanged.declaredResponses` and `openDecisions` OQ-5, because the manifest
+   is what the next author and stage 7 read.
+
+**The decision, argued.** The challenge offers two shapes and asks me to pick one
+deliberately: declare the `400` now and document it as not-yet-reachable, or keep the
+declared responses and record the migration consequence in prose. **I keep 200/401/500.**
+
+- Factory §7 rule 2 is the whole reason: the contract describes what **is**. A declared
+  `400` would describe a server that does not exist. The rule's own justification
+  applies symmetrically — specifying intended behaviour and leaving the server as it is
+  makes the contract a lie — and a response code is the most machine-readable statement
+  in the document, so a false one there is the most expensive kind.
+- It is not inert. `oapi-codegen` would emit `ListAuditEntries400TextResponse`, which is
+  an invitation to a handler to return it, and the operation currently has no handler
+  that could legitimately decide to. `openapi-typescript` would emit a `400` branch into
+  every generated client for a response no response can take, and the frontend's
+  not-yet-existing zod schemas would gain a variant nothing produces.
+- The exposure the challenge is protecting against is a *future* author's, and prose plus
+  a manifest precondition protects them better than a declared code does: a declared
+  `400` tells them the response exists; the paragraph tells them it does not exist yet,
+  exactly which two inputs produce it, which three lines of the generator produce it, and
+  that they must edit this contract in the same PR. That is strictly more information.
+- PAC-23's plan keeps the operation handwritten (`MIGRATION.md:75`, plan §5), so the
+  `400` would be unreachable for the entire life of this contract revision — not for a
+  sprint, for as long as this document stands.
+
+**Rejected alternative I — declare the `400` now, marked "not currently reachable".** The
+above. The honest version of that marking would be a sentence saying no deployed server
+emits it, which is the sentence I wrote; the difference is only whether a false
+`responses` key sits above it.
+
+**Rejected alternative J — make the `400` reachable now, by having `auditHandler` stop
+discarding `Atoi`'s error.** This would make the contract and the server agree and would
+be a genuine improvement to input handling. It is out of scope and I may not do it: it
+is a behaviour change the spec does not ask for, it would break any out-of-tree caller
+that sends a non-numeric `limit` (spec OQ-4, unknowable from here), and PAC-23 is a
+security fix whose revert must stay surgical. It is a Linear issue, not a quiet addition
+— and it is the right one to file, because it is the cheap way to close the divergence
+permanently.
+
+**F2 specifically.** The four-case list claimed exhaustiveness and omitted the repeated
+parameter; the claim was false, which is the same defect revision 1 was rejected for.
+There are now **five** cases and the fifth is stated with its mechanism and its
+composition: the first value is used, the rest ignored, and the chosen value then meets
+the same clamp — so `?limit=10&limit=500` resolves to 10 and `?limit=abc&limit=10` to 50.
+The `CURRENT SERVER BEHAVIOUR` paragraph is corrected with it: *cases one to four*
+collapse to 100 today, not all five, because case five passes its first value through and
+`?limit=10&limit=500` returns 10 both today and after PAC-23. Revision 2's table was
+right about the four; it was the fifth that had no row.
+
+### F4 — the API-074 consumer requirement, replaced with one that can be met
+
+The challenge is right that `smart-calendar-flow/src/api/generated/` holds only
+`README.md` and `.gitkeep`, so AC-10's second clause was unsatisfiable as written. It
+also named, as something it could not settle, whether a generated artifact could hand the
+client the default **as a value** even once the files existed. Both generators are
+installed in that tree, so I settled it — read-only, generating into a scratch directory,
+writing nothing to the web repo:
+
+- **`openapi-typescript` 7.4.4 succeeds** against this revision's bundle and emits, for
+  this parameter, exactly `limit?: number`. The `default: 50` survives **only as prose
+  inside a JSDoc comment**. There is no value to import. Output in §V.
+- **`typed-openapi` 1.1.0 — the one generator that could plausibly emit a zod
+  `.default(50)` — cannot run in that tree at all.** It dies with `Cannot find module
+  'ajv/dist/core'`, raised from `ajv-draft-04` inside `@apidevtools/swagger-parser`:
+  the same broken dependency tree that has `eslint@10` installed against
+  `eslint-plugin-react-hooks@5.2.0`. Full stack in §V.
+
+So the revision-2 requirement was unsatisfiable twice over: the files do not exist, and
+the one that can be produced would not carry the number anyway. That is worth stating
+plainly because it means "wait for the files" is not a plan.
+
+**The replacement, in the manifest's `consumersAffected`.** `DEFAULT_AUDIT_LIMIT` stays a
+hand-written constant and the client keeps sending it explicitly on every request, so no
+user-visible behaviour depends on either side's default. What changes is that the number
+becomes **pinned** rather than coincidentally equal:
+
+- its doc comment at `src/api/client.ts:403` names the contract, the parameter and the
+  revision the number came from, replacing today's bare "matches `GET /api/audit?limit=50`";
+- `src/api/audit.test.ts` — already in `allowedPaths`, already being opened for the
+  `focus.run` fix — gains one assertion that `DEFAULT_AUDIT_LIMIT === 50` whose failure
+  message names `paths./api/audit.get.parameters[limit].schema.default`, so changing the
+  literal forces a reader back to this contract;
+- the e2e journey spec AC-5/AC-13 already requires asserts that the Audit page's request
+  carries `limit=50` and that at most 50 entries come back. **That is the real pin**: it
+  is the only place the two repos are observed together, and therefore the only test that
+  can actually falsify "the shipped client uses that same number".
+
+**Rejected alternative K — the challenge's own cheapest-honest version: a frontend test
+that reads `paths["/api/audit"].get.parameters[limit].schema.default` out of the
+committed bundle.** It is the most direct expression of the criterion and I nearly took
+it. It fails on availability: the web repo commits **no copy** of the bundle
+(`git ls-files` in that repo returns no `openapi.yaml`), so such a test must read
+`../clockwise-like/contracts/openapi/openapi.yaml`. The web repo's `openapi:check`
+already depends on that sibling path, but it is a `make` target that prints a specific
+"clone it as a sibling" error; a `vitest` case in `npm test` that fails whenever the
+sibling is absent is a unit test that fails for a reason unrelated to the code under
+test, and the only ways out are a skip (factory §3 rule 4 forbids an unexplained one) or
+a conditional assertion, which is a test that cannot fail. The literal assertion always
+runs; the e2e assertion actually crosses the repos. Together they cover what alternative
+K would have covered, without a test whose result depends on the layout of someone's
+disk.
+
+**Not claimed.** Making the client *import* the default is not deferred vaguely, it is
+blocked on two concrete things — `src/api/generated/{types.ts,schemas.ts}` existing, and
+a generator that emits defaults as values. Both are a separate issue; this manifest no
+longer assumes either. AC-10's tag stays `[contract]` because a contract-author may not
+retag a spec criterion, with a note that only its first clause is observable at this
+repo's boundary.
+
+### F5 to F10 — all accepted, with the wording actually used
+
+- **F5** (the `user_id IS NULL` ⟺ pre-migration identification, in a document that says
+  it describes no storage). Accepted; the challenge is right that the contract should not
+  be the artifact that goes stale when a plan question resolves. The paragraph now says
+  entries recorded before the migration have no subject, that how "no subject" is
+  represented is the migration's business, and that a conforming server returns an entry
+  only to its subject. I went one sentence further than the supplied wording and named
+  *why* the predicate is gone: the identification is exact under `ON DELETE CASCADE` (as
+  drafted at `PAC-23-plan.md:132`) and false under `ON DELETE SET NULL`, which the plan's
+  §7 item 1 (`:312-317`) leaves open. A reader who meets this paragraph after the plan
+  resolves should be able to see which way it resolved and why it did not matter here.
+- **F6** (a third party's typed text in a subject's feed). Accepted, and the supplied
+  sentence is used almost verbatim, with the three writers that carry request-supplied
+  text cited so the shape is concrete rather than hypothetical. The challenge's framing
+  is the part worth keeping: the contract is the artifact that makes subject ≠ actor a
+  legal shape, and spec AC-3 forbids only the mirror image.
+- **F7** (closed enum, no stated degradation; one bad row invalidates the array).
+  Accepted. The enum stays closed — the challenger did not ask otherwise and revision 2's
+  argument stands. The `action` description now states that an out-of-enum value makes
+  the whole response non-conforming because the body is an array of this schema, and
+  states the expected handling: coerce to `unknown` and render the row, as
+  `client.ts:435` already does, rather than discard the response. Citation corrected to
+  `:435` in the fragment and in the manifest; `:432` for `Number(e.id)` was right.
+- **F8** (`200 []`, never `null`, resting on one line the plan rewrites). Accepted. The
+  `200` description now says ALWAYS a JSON array, never `null`, gives the 3.1.0 reason it
+  is already non-conforming, names `make([]AuditEntry, 0)` at `audit_log.go:25` as what
+  makes it true at runtime, and names `PAC-23-plan.md:116` as the line that rewrites that
+  function with the warning that `var entries []AuditEntry` would emit `null`. (The
+  challenge cited `:124` for that rewrite; in this tree it is `:116` — `:124` is the
+  `compression.go` row. Corrected, not disputed.)
+- **F9** (no pagination, on what is now the only reader). Accepted, with the supplied
+  sentence plus the fact that makes it final rather than merely absent: this operation is
+  the only reader of the table in the codebase — one `SELECT`
+  (`storage/audit_log.go:19`), one `INSERT` (`storage/focus_blocks.go:61-63`), no view,
+  no join — so the 501st entry is unreachable by any route, not just by this one.
+- **F10** (the 401). Both clauses accepted, in `MiddlewareUnauthorized` because that is
+  where the `example` lives. The description now states `text/plain; charset=utf-8`,
+  `X-Content-Type-Options: nosniff`, the `Fprintln` newline and the resulting 25-byte
+  body, with the three `middleware.go` sites; and a second paragraph states that the
+  newline is part of the **value** a generated handler must supply, because
+  `ListAuditEntries401TextResponse` (`paceday.gen.go:10519-10527`) sets `text/plain` with
+  no charset, no `nosniff`, and writes the value verbatim. Noted that this schema is
+  shared, so the clarification reaches every operation that `$ref`s it; it is
+  description-only and factually corrective, and this operation's own 401 is why it was
+  looked at.
+
+### F11 and F12 — confirmations, carried forward rather than re-argued
+
+Neither asks for a change and I am not manufacturing one.
+
+**F11.** The challenger adopts the previous ruling that factory §7 rule 2 governs defects
+a feature is not fixing, and adds that the rule is satisfied *by the `CURRENT SERVER
+BEHAVIOUR` paragraph inside the parameter description*, not by the reading alone. That is
+the right construction and I have preserved it exactly: the machine-readable part
+(`default: 50`) is what stage 4 implements, and the prose states the deployed `100` with
+both citations and the finding id. Revision 3 extends the same construction to the new
+divergence — the `400` — for the same reason.
+
+**F12.** U-02 is resolved rather than deleted, and the manifest keeps the determination
+with its evidence. The caveats are carried forward rather than quietly dropped: nothing
+*pins* it, because AC-1/AC-3/AC-4 do not exist yet, which is acceptable at stage 2 and not
+at stage 4; and `docs/factory/api-audit.md` still carries API-005 as `Confirmed` (`:239`),
+API-074 as `Reported` (`:308`) and U-02 as open (`:446`), so `resolvesFindings` claims a
+resolution the register does not yet reflect. The plan schedules that bookkeeping for
+stage 4 (`PAC-23-plan.md:127`, and `:260` item g), which is the right place; the
+challenge cited `:135`, which is not that row. It is now also written into the
+manifest's `resolvesFindings` as a standing note for the stage-6 reviewer rather than
+living only in a challenge section.
+
+I re-ran the marker check after my edits: `grep -n x-uncertain
+contracts/openapi/paths/calendar.yaml` still returns four, none on `/api/audit` or
+`AuditEntry`, and the assembler still reports 18 for the bundle.
+
+### H — the hash ruling
+
+Accepted in full, including that the remedy overclaimed.
+
+The clause *"the fragment hash is the one that falsifies a change to THIS feature's
+surface"* is gone. It falsifies a change to this feature's **fragment**. The hole the
+challenger found is real and I verified it at source: `/api/audit` carries no `security`
+key and inherits the document-level requirement; that requirement is in **no fragment**,
+because `scripts/openapi_assemble.py:168-172` synthesises it, conditionally on
+`"cookieAuth" in security_schemes`; and `cookieAuth` is defined at
+`contracts/openapi/paths/auth.yaml:604`, a fragment PAC-23 does not own. A feature that
+drops or renames that scheme silently removes cookie auth from this operation — which is
+how the shipped client authenticates it, and what produces this operation's
+`CookieAuthScopes` in the generated wrapper — without moving `calendar.yaml`'s hash by one
+bit. The same holds for an edit to the assembler, to `backend/oapi-codegen.yaml`, or to a
+component this operation `$ref`s that later moves to another fragment.
+
+Both hashes are kept, with the honest statement of what each does and does not catch: the
+bundle hash over-reports (other features move it — revision 2's value was falsified
+within the session that recorded it, and revision 3's will be too), the fragment hash
+under-reports (the synthesised parts are outside it). Neither is sufficient alone, and
+`.claude/agents/contract-author.md:53` requires `contractHash`, so deleting one was never
+an option.
+
+The factory-level fix is **recorded as a recommendation, not implemented**: a hash over
+the **assembled projection** of a feature's operations — the `paths` subtrees the manifest
+names, the components those transitively `$ref`, and the effective `security` — computed
+from the bundle. That falsifies exactly the feature's surface, including the
+assembler-synthesised parts, and is immune to concurrent edits elsewhere. It belongs in a
+factory issue with `MIGRATION.md`'s owner, for the same reason as the `codeClaims` idea in
+§F3: a mechanism one feature invents is a mechanism no other feature runs, and a manifest
+key that only PAC-23 writes is not a gate.
+
+### F13 — the migration number, and what I could not reproduce
+
+Accepted in substance, and the correction is not the one I was asked for, so this needs
+stating precisely.
+
+What I was told: the migration was renumbered to **025** on `main`. What I observe:
+`git show main:docs/factory/PAC-23-plan.md | grep -n '02[45]_audit'` returns
+`024_audit_log_user_id` at five places and no `025` anywhere;
+`docs/factory/PAC-24-plan.md:160,182` says `024_settings_per_user`;
+`docs/specs/PAC-49.md:1013` references PAC-24's `024_`; and the highest migration on disk
+is `023_manager_team_member_preferences`. The working tree and `main` agree. The
+renumbering the challenge saw in an uncommitted tree is not in this one. I cannot
+reproduce it, and I will not record a number on the strength of a report I cannot
+reproduce — that is the shape of F3.
+
+The collision is real, though: two features claim `024` and neither file exists yet. So I
+took the second option the challenge itself offered and **named no number**. `rollback`
+now says "the PAC-23 down migration", records the collision with all three citations, says
+the number is the plan's to assign at stage 3, and adds a stage-7 precondition to confirm
+it against `backend/storage/migrations/` before rehearsing. A manifest that names no
+number cannot name the wrong one, and stage 7 reads this entry.
+
+### V — gate output, verbatim
+
+Run from the repo root, `PATH="$HOME/go/bin:$PATH"`, Docker up. Write mode first, then
+the three `--check`s, then the Go gates, then the tests.
+
+```
+$ python3 scripts/openapi_assemble.py
+wrote contracts\openapi\openapi.yaml
+  paths      : 98
+  operations : 119  (14 public, 105 authenticated)
+  schemas    : 146
+  responses  : 11
+  parameters : 8
+  securitySchemes: 2
+  x-uncertain: 18
+EXIT=0
+
+$ python3 scripts/openapi_migration_report.py
+wrote contracts\openapi\MIGRATION.md
+  operations : 119  (0 generated, 119 handwritten)
+EXIT=0
+
+$ bash scripts/openapi_gen_go.sh
+wrote backend/api/gen/paceday.gen.go
+EXIT=0
+```
+
+```
+$ python3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)
+EXIT=0
+
+$ python3 scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 119 operations (0 generated)
+EXIT=0
+
+$ bash scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract
+EXIT=0
+```
+
+```
+$ cd backend && go build ./...
+EXIT=0
+
+$ cd backend && go vet ./...
+EXIT=0
+
+$ cd backend && golangci-lint run --config ../.golangci.yml ./...
+EXIT=0
+```
+
+```
+$ MSYS_NO_PATHCONV=1 bash scripts/test-backend.sh
+ok  	github.com/Enach/paceday/backend	0.006s
+ok  	github.com/Enach/paceday/backend/api	1.737s
+?   	github.com/Enach/paceday/backend/api/gen	[no test files]
+ok  	github.com/Enach/paceday/backend/auth	11.001s
+ok  	github.com/Enach/paceday/backend/calendar	0.006s
+?   	github.com/Enach/paceday/backend/conference	[no test files]
+ok  	github.com/Enach/paceday/backend/domain	0.003s
+ok  	github.com/Enach/paceday/backend/engine	8.757s
+?   	github.com/Enach/paceday/backend/internal/testdb	[no test files]
+ok  	github.com/Enach/paceday/backend/nlp	9.912s
+ok  	github.com/Enach/paceday/backend/scheduler	5.827s
+ok  	github.com/Enach/paceday/backend/storage	24.870s
+EXIT=0
+```
+
+Hashes, reproduced exactly as `contractHashOf` and `contractFragmentHashOf` say to:
+
+```
+$ sha256sum contracts/openapi/openapi.yaml contracts/openapi/paths/calendar.yaml
+28e8a5100d6eefcedcc3df70eca26662b95ca13db5c66eb62b1f65b3d85a3dcc *contracts/openapi/openapi.yaml
+d4679029c872a735374021c09a3b5db9aae9b5a743c25e78093dfebcf4a656d7 *contracts/openapi/paths/calendar.yaml
+```
+
+Shape of the diff — the generated Go is comment-only, which is the claim behind
+`operationsChanged.breaking`:
+
+```
+$ git diff --numstat -- backend/api/gen contracts/openapi
+17	7	backend/api/gen/paceday.gen.go
+123	24	contracts/openapi/openapi.yaml
+152	27	contracts/openapi/paths/calendar.yaml
+# (contracts/features/PAC-23.{md,yaml} are also in the diff; their counts are
+#  excluded here only because they move as this section is written.)
+
+$ git diff -U0 backend/api/gen/paceday.gen.go | grep -E '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-]\s*//'
+(no output)
+```
+
+The F1 evidence, as a command rather than as a claim:
+
+```
+$ grep -rn "HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen" --include=*.go backend/ | grep -v "^backend/api/gen/"
+EXIT=1   (no output: nothing mounts or imports the generated server)
+
+$ grep -n audit backend/api/routes.go
+179:		r.Get("/api/audit", auditHandler(db))
+
+$ git log --oneline -1 -- backend/api/gen/paceday.gen.go
+e9d01cc fix: make the Go codegen, its drift check, lint and the test script actually run (#177)
+```
+
+The F4 evidence. Both generators run against this revision's bundle from the web repo's
+own `node_modules`, output into a scratch directory outside both repos — nothing in
+`smart-calendar-flow` was written:
+
+```
+$ ./node_modules/.bin/openapi-typescript ../clockwise-like/contracts/openapi/openapi.yaml -o $TMP/types.ts
+openapi-typescript 7.4.4
+../clockwise-like/contracts/openapi/openapi.yaml -> $TMP/types.ts [208.6ms]
+EXIT=0
+
+# what it emits for this parameter, after the JSDoc that carries the description:
+                limit?: number;
+
+$ ./node_modules/.bin/typed-openapi ../clockwise-like/contracts/openapi/openapi.yaml -o $TMP/schemas.ts --runtime zod
+Error: Cannot find module 'ajv/dist/core'
+Require stack:
+- .../node_modules/ajv-draft-04/dist/index.js
+- .../node_modules/@apidevtools/swagger-parser/lib/validators/schema.js
+- .../node_modules/@apidevtools/swagger-parser/lib/index.js
+  code: 'MODULE_NOT_FOUND'
+EXIT=1
+```
+
+**Not run, and not claimed.** `make openapi-check`, `make contract`, `make verify`,
+`make e2e`, `make lint`, `make coverage` — **there is no `make` on this machine**
+(`which make` finds nothing). The three scripts `make openapi-check` composes
+(`Makefile:94-97`) were each run directly, in both modes, above. Its fourth step, the web
+repo's own `openapi-check` (`Makefile:98-99`), cannot pass: `typed-openapi` is broken in
+that tree, so `src/api/generated/schemas.ts` cannot be produced at all. Factory §2 gate 4
+("generated code is in sync in both repos") is therefore green in this repo and red in
+the other, for a reason that is not this contract's and is recorded in F4. Nothing npm
+was run beyond the two read-only generator invocations above; no frontend test, lint or
+typecheck was run.
+
+### Still unresolved after revision 3
+
+1. **Factory §2 gate 4 cannot go green until the web repo's dependency tree is fixed.**
+   `typed-openapi` cannot run; `src/api/generated/{types.ts,schemas.ts}` do not exist.
+   Not PAC-23's to fix, and PAC-23's frontend stream no longer assumes it (`allowedPaths`
+   drops `src/api/generated`). Needs an issue.
+2. **The parse-failure `400` divergence is recorded, not closed.** It closes either when
+   `auditHandler` stops discarding `Atoi`'s error (rejected alternative J — a Linear
+   issue) or when the operation adopts the generated wrapper and declares the `400` in the
+   same PR (OQ-5). Until one happens, two servers in this repo answer the same request
+   differently and only one of them is mounted.
+3. **OQ-5 is restated, not decided.** Owner: whoever owns `MIGRATION.md`.
+4. **OQ-1, OQ-2, OQ-3, OQ-4, OQ-6** are unchanged and are product or spec questions.
+5. **AC-1, AC-3, AC-4, AC-8, AC-15 are still unpinned**, because the tests do not exist —
+   correct for stage 2, and the thing stage 4 must not ship without. Revision 3 ran the
+   contract's own gates; it ran no test of the behaviour this contract describes, because
+   none exists to run.
+6. **Two recommendations are made and deliberately not implemented**: the per-feature
+   assembled-projection hash (§H) and `codeClaims` (§F3). Both are factory changes and
+   both exist because this contract has now been wrong twice about facts nothing pinned.
+
+### Addendum to Revision 3 — the migration number, after #180
+
+Revision 3 §F13 declined to name a migration number, because the renumbering it was
+told about could not be reproduced: `main` said `024` in all five places. That was
+correct at the time — the renumber was sitting in an unmerged pull request, and the
+instruction that described it as landed was wrong.
+
+[#180](https://github.com/Enach/clockwise-like/pull/180) has since merged.
+`docs/factory/PAC-23-plan.md` on `main` now says `025_audit_log_user_id` in all five
+places, with the reason inline at `:29-35`, so the manifest's `rollback` names
+`025_audit_log_user_id.down.sql` again rather than nothing.
+
+The stage-7 precondition is unchanged and still matters: nothing exists under any
+number yet — the highest on disk is `023_manager_team_member_preferences` — so stage 7
+confirms the number against `backend/storage/migrations/` before rehearsing a
+rollback. Revision 3's reasoning for refusing to record an unverifiable number was
+right, and is kept above rather than edited away; this addendum records only that the
+fact became checkable.
