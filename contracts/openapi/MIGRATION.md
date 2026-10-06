@@ -47,7 +47,7 @@ from the contract and any edit is reported as drift.
 ## Register
 
 | operationId                       | method | path                                            | tag              | status      | notes |
-|-----------------------------------|--------|-------------------------------------------------|------------------|-------------|-------|
+|-----------------------------------|--------|-------------------------------------------------|------------------|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | listAnalyticsMeetings             | GET    | /api/analytics/meetings                         | analytics        | handwritten | |
 | recomputeAnalytics                | POST   | /api/analytics/recompute                        | analytics        | handwritten | |
 | listAnalyticsTrends               | GET    | /api/analytics/trends                           | analytics        | handwritten | |
@@ -72,7 +72,7 @@ from the contract and any edit is reported as drift.
 | createPublicBooking               | POST   | /api/book/{slug}                                | booking          | handwritten | |
 | getPublicBookingSlots             | GET    | /api/book/{slug}/slots                          | booking          | handwritten | |
 | suggestAttendees                  | GET    | /api/attendees/suggest                          | calendar         | handwritten | |
-| listAuditEntries                  | GET    | /api/audit                                      | calendar         | handwritten | |
+| listAuditEntries                  | GET    | /api/audit                                      | calendar         | handwritten | PAC-23: moving this row to `generated` is a CONTRACT change. The generated binder answers an empty, non-integer, int64-overflowing or repeated `limit` with 400, which this operation does not declare. Declare the 400 in the same PR — see `listAuditEntries.parameters.limit` in contracts/openapi/paths/calendar.yaml. The binder does not enforce minimum/maximum. |
 | listCalendarEvents                | GET    | /api/calendar/events                            | calendar         | handwritten | |
 | getCalendarFreeBusy               | GET    | /api/calendar/freebusy                          | calendar         | handwritten | |
 | deleteEvent                       | DELETE | /api/events/{id}                                | calendar         | handwritten | |
