@@ -144,6 +144,7 @@ whole point of having one entrypoint rather than a CI config.
 ```
 make verify        # everything below, in order, fail-fast
 ├── make lint      # golangci-lint / eslint
+├── make design-check    # frontend only: Impeccable detector, ratcheted
 ├── make openapi-check   # bundle matches fragments; generated code matches bundle
 ├── make test      # unit + contract tests
 ├── make coverage  # >= 75% backend, >= 70% frontend
@@ -157,8 +158,34 @@ make verify        # everything below, in order, fail-fast
    unavailable" is an acceptable PR note; silence is not.
 3. You may not edit a generated file. If a generated file is wrong, the contract
    is wrong — go back to stage 2.
-4. You may not add a `//nolint`, `eslint-disable`, `t.Skip` or `test.skip`
-   without a comment naming the issue that will remove it.
+4. You may not add a `//nolint`, `eslint-disable`, `impeccable-disable`,
+   `t.Skip` or `test.skip` without a comment naming the issue that will remove
+   it. For `impeccable-disable` the frontend gate checks this itself.
+
+### The design gate (frontend)
+
+`make design-check` runs the [Impeccable](https://github.com/pbakaus/impeccable)
+detector — deterministic rules for generic AI-generated UI and basic design
+quality, no LLM — over `src/` in the web repo, pinned to one version in
+`scripts/design-check.mjs`. It ratchets against `.impeccable/baseline.json`
+rather than demanding zero findings, so it could land on a frontend that already
+had them. It fails on:
+
+- a finding not in the baseline (fingerprint `rule|file|snippet`, line-insensitive);
+- an incomplete scan — detector exit 1 is a failure, never a pass;
+- an `impeccable-disable` comment with no PAC issue on the line;
+- a baseline entry new relative to `origin/main` with no `"issue": "PAC-NN"`.
+
+The last one is the point. Regenerating the baseline (`make design-baseline`) is
+how a finding is *accepted*, so accepting one must name who removes it, and the
+reviewer sees it in the diff. The gate exists as code rather than as a sentence
+in an agent definition because Lovable's agent edits the web repo and reads no
+agent definition — the Makefile is the only rule both agents obey.
+
+The gate is the floor, not the review. The judgement half of Impeccable — the
+`/impeccable critique` and `/impeccable audit` skill commands — is LLM work and is
+used by `frontend-implementer` and `reviewer` (see their definitions), never as
+a gate: a gate whose verdict changes between two runs is not a gate.
 
 ## 4. What is generated, and from what
 

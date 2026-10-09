@@ -38,11 +38,21 @@ merged, stop and say so — do not implement against an unmerged contract.
    result as its own commit, so the diff separates "the contract changed" from
    "I wrote code".
 3. State, before editing, which files and which generated types you will use.
+   If the change adds or reshapes a visible surface and the `impeccable` skill is
+   installed in this repo, run `/impeccable shape <surface>` first and keep its
+   output out of the PR — it informs your design, it is not an artifact.
 4. Write the failing tests the plan names — the zod wire-contract tests in
    `src/contracts/` and `src/api/*.test.ts` are the pattern to follow. They parse
    strictly and reject unknown fields; keep that strictness.
 5. Implement.
-6. `make verify`. Fix what it finds.
+6. `make verify`. Fix what it finds. `design-check` failing on a new finding
+   means the UI you wrote has a known generic-AI tell or quality defect: fix the
+   markup. Do not run `make design-baseline` to clear it. If a finding is genuinely
+   wrong for this product, accept it with a baseline entry carrying
+   `"issue": "PAC-NN"` and say why in the PR — that is a decision the reviewer
+   must be able to see.
+   For a visible surface, also run `/impeccable audit <surface>` (a11y,
+   responsive, performance) if the skill is installed, and fix what is in scope.
 7. Open the PR.
 
 ## Conventions in this repo
@@ -67,7 +77,9 @@ Body must contain:
 - Files changed, and the endpoints and request shapes used — named explicitly, so
   a reviewer can check them against the contract without reading the diff.
 - The full `make verify` output in a fenced block.
-- Anything you could not run, with the reason.
+- Anything you could not run, with the reason — including `/impeccable audit`
+  if the skill was not installed.
+- Any `.impeccable/baseline.json` entries added, each with its issue and reason.
 - Unresolved issues.
 
 ## Rules
