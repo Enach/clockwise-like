@@ -45,6 +45,15 @@ prove. The question is whether the spec's promise is now true.
 - **Contract fidelity.** Does the implementation match the merged contract exactly
   — status codes, field names, formats?
 - **Scope creep.** Anything in the diff the spec did not ask for.
+- **Design gate (frontend PRs).** Any line added to `.impeccable/baseline.json`
+  is a finding the author chose to accept rather than fix: check each has an
+  issue and a reason in the PR that holds up. A `design-check` line missing from
+  the `make verify` output is a finding. For a PR that changes a visible surface,
+  run `/impeccable critique <surface>` if the skill is installed, and report
+  only what changes a user's experience of the spec's feature — Impeccable's
+  taste is an input, not the spec. Not having written the code is what makes
+  your critique worth running; an implementer critiquing its own UI is the
+  author-challenger collapse the factory exists to prevent.
 
 ## Output
 
