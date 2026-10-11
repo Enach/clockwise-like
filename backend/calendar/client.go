@@ -13,8 +13,19 @@ type CalendarClient struct {
 	CalendarID string
 }
 
+// NewClient is the single entry point every calendar call site uses, in every
+// deployment. It builds the client on the shared construction path (see
+// transport.go): the caller's token source attaches the bearer itself, over
+// the configured base transport, redirects are refused, and requests go to the
+// configured address. option.WithHTTPClient makes the library use this client
+// as it is, so neither of its own credential stacks, its redirect-following
+// nor its proxy handling is involved.
 func NewClient(ctx context.Context, tokenSource oauth2.TokenSource) (*CalendarClient, error) {
-	svc, err := googlecalendar.NewService(ctx, option.WithTokenSource(tokenSource))
+	s := current()
+	svc, err := googlecalendar.NewService(ctx,
+		option.WithHTTPClient(newHTTPClient(s, tokenSource)),
+		option.WithEndpoint(s.endpoint),
+	)
 	if err != nil {
 		return nil, err
 	}
