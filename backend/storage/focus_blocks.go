@@ -3,19 +3,53 @@ package storage
 import (
 	"database/sql"
 	"time"
+
+	"github.com/google/uuid"
 )
 
-func SaveFocusBlock(db *sql.DB, googleEventID, date string, start, end time.Time) error {
+// SaveFocusBlock records a focus block created on userID's calendar. The owner
+// is stored so readers can scope blocks to the user they belong to (PAC-64).
+func SaveFocusBlock(db *sql.DB, userID uuid.UUID, googleEventID, date string, start, end time.Time) error {
 	_, err := db.Exec(`
-		INSERT INTO focus_blocks (google_event_id, start_time, end_time, date, created_at)
-		VALUES ($1, $2, $3, $4, NOW())
+		INSERT INTO focus_blocks (user_id, google_event_id, start_time, end_time, date, created_at)
+		VALUES ($5, $1, $2, $3, $4, NOW())
 		ON CONFLICT (google_event_id) DO NOTHING`,
 		googleEventID,
 		start.UTC(),
 		end.UTC(),
 		date,
+		userID,
 	)
 	return err
+}
+
+// ListFocusBlocksForUserWeek returns userID's focus blocks for the 7 days from
+// weekStart. Blocks saved before owners were recorded (user_id NULL) belong to
+// nobody and are not returned.
+func ListFocusBlocksForUserWeek(db *sql.DB, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
+	weekEnd := weekStart.AddDate(0, 0, 7)
+	rows, err := db.Query(`
+		SELECT id, google_event_id, start_time, end_time, date, created_at
+		FROM focus_blocks WHERE user_id = $1 AND date >= $2 AND date < $3
+		ORDER BY start_time`,
+		userID,
+		weekStart.Format("2006-01-02"),
+		weekEnd.Format("2006-01-02"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var blocks []FocusBlock
+	for rows.Next() {
+		var b FocusBlock
+		if err := rows.Scan(&b.ID, &b.GoogleEventID, &b.StartTime, &b.EndTime, &b.Date, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, rows.Err()
 }
 
 func ListFocusBlocksForWeek(db *sql.DB, weekStart time.Time) ([]FocusBlock, error) {

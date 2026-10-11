@@ -335,7 +335,13 @@ func TestClearWeek_WithMock(t *testing.T) {
 
 	start := time.Date(2025, 1, 6, 9, 0, 0, 0, time.UTC)
 	end := start.Add(time.Hour)
-	storage.SaveFocusBlock(db, "evt-to-delete", "2025-01-06", start, end)
+	owner, err := storage.UpsertUser(db, "clearweek@example.com", "Clear Week", "", "google", "clearweek")
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	if err := storage.SaveFocusBlock(db, owner.ID, "evt-to-delete", "2025-01-06", start, end); err != nil {
+		t.Fatalf("save focus block: %v", err)
+	}
 
 	mock := &mockCalOps{calID: "primary"}
 	eng := &FocusTimeEngine{DB: db, calOps: mock}
