@@ -13,7 +13,14 @@
 
 import { test as base, expect, type APIRequestContext, type Page } from '@playwright/test';
 
-import { PRIMARY_SESSION, SECOND_SESSION, BASE_URL, mintSessionToken } from './auth';
+import {
+  PRIMARY_SESSION,
+  SECOND_SESSION,
+  BASE_URL,
+  mintSessionToken,
+  storageStateFor,
+  type SessionUser,
+} from './auth';
 import { query, queryOne } from './db';
 import { USERS } from './seed/ids';
 
@@ -75,6 +82,14 @@ type Fixtures = {
   db: Db;
   /** Asserts the frontend is talking to the real backend, not its demo data. */
   assertNotDemo: (page: Page) => Promise<void>;
+  /**
+   * API client authenticated as any seeded user, via Bearer. Used for the
+   * PAC-43 connected users (seed/ids.ts CONNECTED), whose calendar is the
+   * stand-in's.
+   */
+  apiAs: (user: SessionUser) => ApiClient;
+  /** A page signed in as any seeded user; its context closes after the test. */
+  pageAs: (user: SessionUser, opts?: { isManager?: boolean }) => Promise<Page>;
 };
 
 export const test = base.extend<Fixtures>({
@@ -120,6 +135,22 @@ export const test = base.extend<Fixtures>({
         await query('DELETE FROM focus_blocks');
       },
     });
+  },
+
+  apiAs: async ({ playwright }, use) => {
+    const request = await playwright.request.newContext();
+    await use((user: SessionUser) => new ApiClient(request, mintSessionToken(user)));
+    await request.dispose();
+  },
+
+  pageAs: async ({ browser }, use) => {
+    const contexts: Array<Awaited<ReturnType<typeof browser.newContext>>> = [];
+    await use(async (user: SessionUser, opts: { isManager?: boolean } = {}) => {
+      const context = await browser.newContext({ storageState: storageStateFor(user, opts) });
+      contexts.push(context);
+      return context.newPage();
+    });
+    for (const c of contexts) await c.close();
   },
 
   assertNotDemo: async ({}, use) => {

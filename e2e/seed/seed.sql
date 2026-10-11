@@ -51,21 +51,47 @@ DELETE FROM focus_blocks;
 DELETE FROM users WHERE email LIKE 'e2e.%@paceday.test';
 
 -- ── Users ────────────────────────────────────────────────────────────────────
--- No oauth_tokens rows are created for ANY of these users, and that is
--- deliberate, not an omission:
+-- The first four users have NO oauth_tokens row, and that is deliberate:
 --   * auth.LoadUserToken() returning nil is the cheap, deterministic "calendar
 --     not connected" path. Every calendar-touching code path checks it first
 --     and skips the network entirely.
---   * Seeding a fake token would instead send the backend at
---     www.googleapis.com, which the compose file blackholes — a slower and
---     less honest failure.
--- The consequence is documented per journey in e2e/README.md.
+--   * AC-24's scenarios (tests/calendar.spec.ts "the disconnected state",
+--     tests/focus-time.spec.ts "fails loudly") depend on it.
+--
+-- The five 5…–9… users DO have one (PAC-43). Their calendar traffic goes to
+-- the stand-in (e2e/fake-google), which accepts the access tokens below (see
+-- seed/ids.ts ACCEPTED_CREDENTIALS) — except the 9… user's, which it never
+-- accepts (AC-21). Each journey owns one of them; see seed/ids.ts CONNECTED.
+-- Their expiry is far in the future ON PURPOSE: auth.TokenSource refreshes
+-- only an invalid token, and a refresh would go to oauth2.googleapis.com,
+-- which is mapped to the recording sink — an AC-23 failure that would look
+-- like a broken seam.
 
 INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('11111111-1111-4111-8111-111111111111', 'e2e.primary@paceday.test', 'E2E Primary Owner',  '', 'google', 'e2e-primary'),
   ('22222222-2222-4222-8222-222222222222', 'e2e.second@paceday.test',  'E2E Second User',    '', 'google', 'e2e-second'),
   ('33333333-3333-4333-8333-333333333333', 'e2e.report@paceday.test',  'E2E Alpha Report',   '', 'google', 'e2e-report'),
-  ('44444444-4444-4444-8444-444444444444', 'e2e.beta@paceday.test',    'E2E Beta Report',    '', 'google', 'e2e-beta');
+  ('44444444-4444-4444-8444-444444444444', 'e2e.beta@paceday.test',    'E2E Beta Report',    '', 'google', 'e2e-beta'),
+  ('55555555-5555-4555-8555-555555555555', 'e2e.connected@paceday.test', 'E2E Connected User',      '', 'google', 'e2e-connected'),
+  ('66666666-6666-4666-8666-666666666666', 'e2e.focus@paceday.test',     'E2E Focus User',          '', 'google', 'e2e-focus'),
+  ('77777777-7777-4777-8777-777777777777', 'e2e.manager@paceday.test',   'E2E Connected Manager',   '', 'google', 'e2e-manager'),
+  ('88888888-8888-4888-8888-888888888888', 'e2e.seam@paceday.test',      'E2E Seam User',           '', 'google', 'e2e-seam'),
+  ('99999999-9999-4999-8999-999999999999', 'e2e.rejected@paceday.test',  'E2E Rejected Credential', '', 'google', 'e2e-rejected');
+
+-- ON DELETE CASCADE from users removes these on the next run.
+INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
+  ('55555555-5555-4555-8555-555555555555', 'e2e-connected-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('66666666-6666-4666-8666-666666666666', 'e2e-focus-work',     'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('77777777-7777-4777-8777-777777777777', 'e2e-manager-work',   'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('88888888-8888-4888-8888-888888888888', 'e2e-seam-work',      'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('99999999-9999-4999-8999-999999999999', 'e2e-rejected-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+
+-- AC-25: a google personal calendar for the seam user. credentials_json is an
+-- oauth2.Token as backend/calendar/personal_reader.go tokenFromJSON reads it.
+-- The fixed id is far above anything the SERIAL would hand out in a run.
+INSERT INTO personal_calendars (id, user_id, provider, name, credentials_json, enabled) VALUES
+  (4301, '88888888-8888-4888-8888-888888888888', 'google', 'E2E Seam Personal',
+   '{"access_token":"e2e-seam-personal","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}', true);
 
 -- ── Settings ─────────────────────────────────────────────────────────────────
 -- Every other settings column carries a NOT NULL DEFAULT (migrations 001, 012,
@@ -81,7 +107,12 @@ VALUES
   ('11111111-1111-4111-8111-111111111111', 'UTC', '09:00', '18:00', 240, 'google'),
   ('22222222-2222-4222-8222-222222222222', 'UTC', '09:00', '18:00', 240, 'google'),
   ('33333333-3333-4333-8333-333333333333', 'UTC', '09:00', '18:00', 240, 'google'),
-  ('44444444-4444-4444-8444-444444444444', 'UTC', '09:00', '18:00', 240, 'google')
+  ('44444444-4444-4444-8444-444444444444', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('55555555-5555-4555-8555-555555555555', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('66666666-6666-4666-8666-666666666666', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('77777777-7777-4777-8777-777777777777', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('88888888-8888-4888-8888-888888888888', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('99999999-9999-4999-8999-999999999999', 'UTC', '09:00', '18:00', 240, 'google')
 ON CONFLICT (user_id) DO UPDATE SET
   timezone = EXCLUDED.timezone,
   work_start = EXCLUDED.work_start,
@@ -102,7 +133,12 @@ INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_wi
   ('11111111-1111-4111-8111-111111111111', true,  '2024-01-01T00:00:00Z', true),
   ('22222222-2222-4222-8222-222222222222', false, '2024-01-01T00:00:00Z', true),
   ('33333333-3333-4333-8333-333333333333', false, '2024-01-01T00:00:00Z', true),
-  ('44444444-4444-4444-8444-444444444444', false, '2024-01-01T00:00:00Z', true)
+  ('44444444-4444-4444-8444-444444444444', false, '2024-01-01T00:00:00Z', true),
+  ('55555555-5555-4555-8555-555555555555', false, '2024-01-01T00:00:00Z', true),
+  ('66666666-6666-4666-8666-666666666666', false, '2024-01-01T00:00:00Z', true),
+  ('77777777-7777-4777-8777-777777777777', true,  '2024-01-01T00:00:00Z', true),
+  ('88888888-8888-4888-8888-888888888888', true,  '2024-01-01T00:00:00Z', true),
+  ('99999999-9999-4999-8999-999999999999', false, '2024-01-01T00:00:00Z', true)
 ON CONFLICT (user_id) DO UPDATE SET
   is_manager = EXCLUDED.is_manager,
   detected_at = EXCLUDED.detected_at,
@@ -116,13 +152,19 @@ ON CONFLICT (user_id) DO UPDATE SET
 
 INSERT INTO teams (id, name, created_by) VALUES
   ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'E2E Team Alpha', '11111111-1111-4111-8111-111111111111'),
-  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'E2E Team Beta',  '11111111-1111-4111-8111-111111111111');
+  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'E2E Team Beta',  '11111111-1111-4111-8111-111111111111'),
+  -- PAC-43: the connected manager's own team (AC-20 detects into it, so it
+  -- starts with no roster) and the seam user's (AC-22).
+  ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'E2E Team Detected', '77777777-7777-4777-8777-777777777777'),
+  ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'E2E Team Seam',     '88888888-8888-4888-8888-888888888888');
 
 INSERT INTO team_members (team_id, user_id, role) VALUES
   ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '11111111-1111-4111-8111-111111111111', 'owner'),
   ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '33333333-3333-4333-8333-333333333333', 'member'),
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '11111111-1111-4111-8111-111111111111', 'owner'),
-  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '44444444-4444-4444-8444-444444444444', 'member');
+  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', '44444444-4444-4444-8444-444444444444', 'member'),
+  ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', '77777777-7777-4777-8777-777777777777', 'owner'),
+  ('dddddddd-dddd-4ddd-8ddd-dddddddddddd', '88888888-8888-4888-8888-888888888888', 'owner');
 
 -- ── Manager roster ───────────────────────────────────────────────────────────
 -- member_email must be lower(btrim(...)): migration 023 added a CHECK for it.
@@ -196,6 +238,11 @@ VALUES
   -- Read-only link the authenticated owner sees on /app/links.
   ('c4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111',
    'e2e-owned-45min', 'E2E Owned Link', '{45}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
+  -- PAC-43 AC-22: hosted by the seam user, whose calendar is on the stand-in,
+  -- so its slots and its booking confirmation reach the stand-in.
+  ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888',
+   'e2e-seam-30min', 'E2E Seam Link', '{30}', '{1,2,3,4,5}',
    '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true);
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
@@ -204,7 +251,8 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('c1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'accepted', NOW()),
   ('c2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'accepted', NOW()),
   ('c3333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', 'accepted', NOW()),
-  ('c4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'accepted', NOW());
+  ('c4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'accepted', NOW()),
+  ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.

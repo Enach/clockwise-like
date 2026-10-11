@@ -148,6 +148,8 @@ test:
 	$(ROOT)/scripts/test-backend.sh
 	@echo "-> test mcp"
 	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' go test ./...
+	@echo "-> test e2e/fake-google (the PAC-43 calendar stand-in and sink)"
+	cd $(ROOT)/e2e/fake-google && go vet ./... && go test ./...
 
 ## The same suites with coverage profiles, gated
 coverage:

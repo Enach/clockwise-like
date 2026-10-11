@@ -14,14 +14,39 @@
 # The backend is intentionally NOT published: the tests must go through nginx,
 # which is what proves the /api/ proxy rule in nginx/nginx.conf works.
 #
-# HERMETICITY: the backend container maps every external provider host to
-# 127.0.0.1 (see `extra_hosts`). There is no seam that lets a fake Google
-# Calendar be injected (see SEAM-REQUIRED.md), so instead of pretending to
-# fake it we make any real outbound calendar call fail INSTANTLY with
-# "connection refused" rather than hang for 30s or leak to the internet.
-# This is what keeps a broken feature from looking like a slow one.
+# CALENDAR STAND-IN (PAC-43): the backend's Google Calendar traffic goes to
+# `fake-google` (e2e/fake-google), selected by GOOGLE_CALENDAR_API_BASE_URL
+# and allowed only because PACEDAY_ALLOW_STANDINS=true. With both set the
+# backend guards every calendar connection: it connects only to loopback,
+# RFC 1918 or IPv6 unique-local addresses. The stand-in sits at a fixed
+# address on the pinned RFC 1918 network below, so it is permitted. Moving it
+# to a routable address makes every calendar call fail closed at connect time;
+# the fix for that is to move the stand-in, never to widen the backend's set.
+#
+# HERMETICITY: every real provider host name maps, inside the backend
+# container, to the recording `sink` (see `extra_hosts`), NOT to 127.0.0.1:
+# inside the single-process backend container 127.0.0.1 is the backend itself.
+# Token refresh, sign-in and the second provider are deliberately NOT
+# redirected, so this mapping is what keeps a refresh credential on the test
+# host. It is load-bearing for safety, not only for hermeticity, and
+# tests/hermeticity.spec.ts (AC-23) reads the sink after the whole run and
+# fails if anything at all connected to it.
+#
+# Extra host ports (127.0.0.1 only, test-side control planes):
+#   fake-google -> 127.0.0.1:18090  (/__fixture/ control plane, e2e/fake.ts)
+#   sink        -> 127.0.0.1:18091  (GET /connections)
 
 name: paceday-e2e
+
+# Pinned, so the stand-in's address is known to be inside the backend's
+# permitted set (spec §V3-5). A daemon whose default pool were not RFC 1918
+# would otherwise make the stack fail closed, which is safe but confusing.
+networks:
+  default:
+    name: paceday-e2e-net
+    ipam:
+      config:
+        - subnet: 10.143.43.0/24
 
 services:
   postgres:
@@ -84,19 +109,67 @@ services:
       # returns early when SMTP_HOST/SMTP_FROM are empty, so booking never
       # blocks on a mail server.
       TZ: UTC
+      # PAC-43: the test-mode declaration and the calendar stand-in. Neither
+      # is ever set by a production deployment; the address without the
+      # declaration makes the server refuse to start (tests/startup.spec.ts).
+      PACEDAY_ALLOW_STANDINS: "true"
+      GOOGLE_CALENDAR_API_BASE_URL: http://fake-google:8080/calendar/v3/
     extra_hosts:
-      # See the HERMETICITY note above.
-      - "www.googleapis.com:127.0.0.1"
-      - "oauth2.googleapis.com:127.0.0.1"
-      - "accounts.google.com:127.0.0.1"
-      - "graph.microsoft.com:127.0.0.1"
-      - "login.microsoftonline.com:127.0.0.1"
-      - "slack.com:127.0.0.1"
-      - "api.notion.com:127.0.0.1"
-      - "zoom.us:127.0.0.1"
+      # See the HERMETICITY note above. Every name goes to the sink's fixed
+      # address. Keep this list identical to SINK_HOSTS in e2e/fake.ts.
+      - "www.googleapis.com:10.143.43.20"
+      - "oauth2.googleapis.com:10.143.43.20"
+      - "accounts.google.com:10.143.43.20"
+      - "graph.microsoft.com:10.143.43.20"
+      - "login.microsoftonline.com:10.143.43.20"
+      - "slack.com:10.143.43.20"
+      - "api.notion.com:10.143.43.20"
+      - "zoom.us:10.143.43.20"
     depends_on:
       postgres:
         condition: service_healthy
+      fake-google:
+        condition: service_healthy
+      sink:
+        condition: service_healthy
+    restart: "no"
+
+  fake-google:
+    # The Google Calendar API stand-in (e2e/fake-google). No nginx route: only
+    # the backend (on the network) and the tests (on 127.0.0.1) reach it.
+    build:
+      context: ./fake-google
+    image: paceday-e2e-fake-google:local
+    networks:
+      default:
+        ipv4_address: 10.143.43.10
+    ports:
+      - "127.0.0.1:18090:8080"
+    healthcheck:
+      test: ["CMD", "/fake-google", "-healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+
+  sink:
+    # The recording sink (e2e/fake-google/sink): the address every real
+    # provider host resolves to inside the backend. Same build context as
+    # fake-google, so the second build is a layer-cache hit.
+    build:
+      context: ./fake-google
+    image: paceday-e2e-sink:local
+    command: ["/sink"]
+    networks:
+      default:
+        ipv4_address: 10.143.43.20
+    ports:
+      - "127.0.0.1:18091:9090"
+    healthcheck:
+      test: ["CMD", "/sink", "-healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     restart: "no"
 
   frontend:

@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 
 import { exec, query, waitForSchema, closePool } from '../db';
 import { isoDate, mondayOf, DAY_MS } from '../lib/dates';
-import { LINKS, TEAMS, USERS } from './ids';
+import { CONNECTED, LINKS, PERSONAL_CALENDAR, SEAM_LINK, TEAMS, USERS } from './ids';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -51,8 +51,8 @@ export async function seed(): Promise<void> {
  */
 async function verify(): Promise<void> {
   const checks: Array<[string, string, unknown[], number]> = [
-    ['users', 'SELECT 1 FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], 4],
-    ['teams', 'SELECT 1 FROM teams WHERE name LIKE $1', ['E2E %'], 2],
+    ['users', 'SELECT 1 FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], 9],
+    ['teams', 'SELECT 1 FROM teams WHERE name LIKE $1', ['E2E %'], 4],
     [
       'team members',
       'SELECT 1 FROM team_members WHERE team_id = ANY($1::uuid[])',
@@ -71,13 +71,13 @@ async function verify(): Promise<void> {
       [USERS.primary.id],
       2,
     ],
-    ['scheduling links', 'SELECT 1 FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], 4],
+    ['scheduling links', 'SELECT 1 FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], 5],
     [
       'accepted hosts',
       `SELECT 1 FROM scheduling_link_hosts
         WHERE status = 'accepted' AND link_id = ANY($1::uuid[])`,
-      [[LINKS.uiBooking.id, LINKS.apiBooking.id, LINKS.exhausted.id, LINKS.owned.id]],
-      4,
+      [[LINKS.uiBooking.id, LINKS.apiBooking.id, LINKS.exhausted.id, LINKS.owned.id, SEAM_LINK.id]],
+      5,
     ],
     [
       'exhausting booking',
@@ -94,6 +94,28 @@ async function verify(): Promise<void> {
       'no oauth tokens (intentional)',
       'SELECT 1 FROM oauth_tokens WHERE user_id = ANY($1::uuid[])',
       [[USERS.primary.id, USERS.second.id, USERS.alphaReport.id, USERS.betaReport.id]],
+      0,
+    ],
+    // PAC-43: exactly the connected users have a credential, each one far
+    // from expiry (a refresh would leave the test host — see seed.sql).
+    [
+      'connected users have one unexpired token each',
+      `SELECT 1 FROM oauth_tokens
+        WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
+      [Object.values(CONNECTED).map((u) => u.id)],
+      5,
+    ],
+    [
+      'the seam user has one google personal calendar',
+      `SELECT 1 FROM personal_calendars
+        WHERE id = $1 AND user_id = $2 AND provider = 'google' AND enabled`,
+      [PERSONAL_CALENDAR.id, CONNECTED.seam.id],
+      1,
+    ],
+    [
+      'the deployment-wide provider setting is google (AC-17 precondition)',
+      `SELECT 1 FROM settings WHERE calendar_provider <> 'google'`,
+      [],
       0,
     ],
     // Focus blocks are global busy time for booking (storage.ListFocusBlocksForWeek

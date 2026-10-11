@@ -19,8 +19,9 @@ npx playwright install --with-deps chromium   # first time only
 npm test
 ```
 
-That single command builds the images, starts four containers, waits for
-`/api/health`, seeds the database, runs the suite, and tears the stack down.
+That single command builds the images, starts six containers, waits for
+`/api/health`, seeds the database, prepares the calendar stand-in, runs the
+suite, and tears the stack down.
 
 ---
 
@@ -31,7 +32,8 @@ That single command builds the images, starts four containers, waits for
 | **Docker** with Compose v2 | the suite runs the whole stack | `docker compose version` |
 | **Node ≥ 20.11** | Playwright, and `tsx` for the seeder | `node -v` |
 | **The frontend checkout at `<repo-root>/frontend/`** | `docker/frontend.dockerfile` builds the SPA from there | `ls ../frontend/package.json` |
-| Free ports **8088** and **15433** on 127.0.0.1 | deliberately non-default, so a dev stack can run beside this one | `lsof -i :8088 -i :15433` |
+| Free ports **8088**, **15433**, **18090**, **18091** and **18101–18110** on 127.0.0.1 | deliberately non-default, so a dev stack can run beside this one. 18090/18091 are the stand-in's and the sink's control planes; 18101–18110 are the bare backend containers `tests/startup.spec.ts` starts | `lsof -i :8088 -i :15433 -i :18090` |
+| Free subnet **10.143.43.0/24** | the stack's network is pinned (§3) | `docker network ls` |
 
 ### The frontend checkout
 
@@ -66,6 +68,9 @@ persistent named volume and binds port 80, none of which a test run should do.
 
 ```
 127.0.0.1:8088 ──► nginx ──/api/──► backend ──► postgres (tmpfs, 127.0.0.1:15433)
+                      │                │
+                      │                ├── calendar traffic ──► fake-google  10.143.43.10 (control 127.0.0.1:18090)
+                      │                └── every real provider host ──► sink 10.143.43.20 (log 127.0.0.1:18091)
                       └───/────► frontend (production bundle, Go fileserver)
 ```
 
@@ -78,13 +83,29 @@ persistent named volume and binds port 80, none of which a test run should do.
 - **Migrations run themselves.** `storage.Open()` runs golang-migrate at boot,
   so the schema is always at head; the seeder waits for
   `schema_migrations` to be clean before it touches anything.
-- **Outbound provider hosts are blackholed.** `www.googleapis.com` and friends
-  resolve to `127.0.0.1` inside the backend container. A leaked call fails in
-  milliseconds instead of hanging, and a test run can never reach the real
-  internet. See [`SEAM-REQUIRED.md`](./SEAM-REQUIRED.md) §4.
+- **Google Calendar is a stand-in (PAC-43).** The backend runs with
+  `PACEDAY_ALLOW_STANDINS=true` and
+  `GOOGLE_CALENDAR_API_BASE_URL=http://fake-google:8080/calendar/v3/`, so every
+  calendar call — all ten `calendar.NewClient` call sites and the
+  personal-calendar sync — goes to `fake-google` (§5a) with the real client
+  library and the user's real stored credential. With both set the backend
+  connects calendar traffic only to loopback / RFC 1918 / IPv6 unique-local
+  addresses and never follows a redirect; the stand-in's fixed address is
+  inside that set. **That is not a mock of the backend**: the stand-in is the
+  external provider.
+- **Every other provider host goes to a recording sink.** `www.googleapis.com`,
+  `oauth2.googleapis.com` (token refresh), `accounts.google.com` and the rest
+  resolve, inside the backend container, to the `sink` service, which records
+  every connection it is offered and serves nothing. (They used to map to
+  `127.0.0.1`, which inside the backend container is the backend itself.)
+  `tests/hermeticity.spec.ts` (AC-23) reads the sink after the whole run.
+- **The network is pinned** to `10.143.43.0/24` so the stand-in's address is
+  known to be private. Moving the stand-in to a routable address makes every
+  calendar call fail closed; the fix is to move it back, never to widen the
+  backend's permitted set.
 
 **Timing**: roughly 4–8 minutes cold (Go and npm builds dominate), 60–90 seconds
-warm with cached layers. The suite itself is about 25 seconds.
+warm with cached layers. The suite itself is about 30 seconds.
 
 ---
 
@@ -116,15 +137,59 @@ reasons in `SEAM-REQUIRED.md` item B, and is marked `test.fixme` in
 | Create a scheduling link, then book it anonymously through the public route | **covered, API round trip** | `tests/scheduling-links.spec.ts` |
 | Sign in and land authenticated; cookie and Bearer branches; expired and forged tokens; logout | **covered** | `tests/auth-session.spec.ts` |
 | Manager roster scoped to the selected team, exact per-member figures, cross-team leak, 403/400 | **covered, UI + API** | `tests/manager-team.spec.ts` |
-| View the calendar — the *disconnected* contract, and the UI surfacing it rather than faking it | **covered** | `tests/calendar.spec.ts` |
-| View the calendar — with events | **`test.fixme`** — needs a fake Google Calendar; see `SEAM-REQUIRED.md` item A |
-| Run focus time and see blocks appear | **`test.fixme`** — same seam; focus blocks *are* Google events |
-| Manager 1:1 detection ("re-scan calendar") | **`test.fixme`** — same seam |
-| The real Google OAuth callback | **`test.fixme`** — `SEAM-REQUIRED.md` item B |
-| Creating a link through the Links **page** | **`test.fixme`** — needs test ids, not a seam; `TESTIDS-REQUIRED.md` §2 |
+| View the calendar — the *disconnected* contract, and the UI surfacing it rather than faking it (AC-24) | **covered** | `tests/calendar.spec.ts` |
+| View the calendar — with events (AC-16) | **covered, UI + API + stand-in log** | `tests/calendar.spec.ts` |
+| Free/busy for an attendee is known and exact (AC-17) | **covered, API + stand-in log** | `tests/calendar.spec.ts` |
+| A credential the provider rejects is refused (AC-21) | **covered, UI + API** | `tests/calendar.spec.ts` |
+| Run focus time and see blocks appear (AC-18) | **covered, DB + provider + UI** | `tests/focus-time.spec.ts` |
+| Clear a focus week from the DB *and* the calendar (AC-19) | **covered, DB + provider** | `tests/focus-time.spec.ts` |
+| Manager 1:1 detection — scan and proposal (AC-20) | **covered, UI + API** | `tests/manager-team.spec.ts` |
+| A redirection from the provider is not followed (AC-11) | **covered, UI + API + sink** | `tests/seam.spec.ts` |
+| Every redirected behaviour reaches the stand-in (AC-22) | **covered, one test per member** | `tests/seam.spec.ts` |
+| Personal-calendar sync reaches the stand-in (AC-25) | **covered** | `tests/seam.spec.ts` |
+| Startup: production env boots; unsafe calendar settings refuse to boot; the redirect is announced (AC-3, 12, 13, 14, 26) | **covered, on the built image** | `tests/startup.spec.ts` |
+| Nothing reached a real provider during the run (AC-23) | **covered except the status lookup**; the strict form is **`test.fixme`** — `GET /api/auth/status` calls Google userinfo for a connected user (see the file) | `tests/hermeticity.spec.ts` |
+| The real Google OAuth callback | **`test.fixme`** — `SEAM-REQUIRED.md` item B | `tests/auth-session.spec.ts` |
+| Auto-decline reaching the stand-in | **not exercised** — spec AG-5: it only runs on its 15-minute cron | — |
 
 Every `test.fixme` carries a comment naming what blocks it, as
 `docs/factory/README.md` §3 rule 4 requires.
+
+### 5a. The calendar stand-in and the sink
+
+`fake-google/` is a small Go service (its own module, `go test ./...` there)
+that imports `google.golang.org/api/calendar/v3`, so it marshals the exact
+structs the backend's client unmarshals. It serves the seven operations the
+backend calls under `/calendar/v3/` (events list/insert/get/update/delete —
+writes are `PUT` only — `freeBusy`, `users/me/calendarList`) and refuses any
+request without an accepted bearer with Google's 401 envelope. "primary"
+means the calendar of the credential's owner.
+
+Its control plane, `/__fixture/` on 127.0.0.1:18090, is driven through
+`e2e/fake.ts`: seed or read a calendar's events, read the **request log**
+(every product request, with the label of the credential it carried —
+never the credential), and arm a **redirect** for one credential label.
+`global-setup.ts` resets it and installs the seeded credentials
+(`seed/ids.ts ACCEPTED_CREDENTIALS`).
+
+**Isolation.** Specs run in parallel against one stand-in, so nothing resets
+it per test. The seeded users with a credential (`seed/ids.ts CONNECTED`) are
+one per journey; a scenario owns its user's calendar and its own week, and
+reads the log by its own label after a mark it took. Focus blocks are global
+busy time for every booking host, so each focus scenario uses a week no
+booking spec touches (`lib/dates.ts weekDay`).
+
+The `sink` (same image, `sink/main.go`) listens on :80 and :443 at
+10.143.43.20, records peer, TLS SNI or request head and whether an
+`Authorization` header was presented (never its value), and closes. Its log
+is `GET http://127.0.0.1:18091/connections`; it covers the stack's lifetime,
+so with `E2E_SKIP_COMPOSE=1` it spans earlier runs too.
+
+**Project order.** `playwright.config.ts` has three projects: `stand-in`
+(`tests/stand-in.setup.ts`, a precondition check), `chromium` (everything,
+depends on `stand-in`) and `hermeticity` (`tests/hermeticity.spec.ts`), the
+teardown of `stand-in` — Playwright runs it after every dependent test has
+finished, pass or fail, which is what makes AC-23 a whole-run assertion.
 
 ### Deterministic clock
 
@@ -205,6 +270,8 @@ npm run stack:down                    # stop and remove
 | `fixture verification failed` | `seed/seed.ts verify()` found the database is not what the tests assume. The message names the row count that was wrong. Usually a schema change that dropped a seeded column. |
 | A UI test sees "Sarah Chen" or "showing demo data" | the frontend could not reach `/api` and fell back to demo fixtures. The nginx proxy or the backend is down; the test is telling you the truth. |
 | 401 everywhere | `E2E_JWT_SECRET` and the compose file's `JWT_SECRET` have drifted apart. They must match. |
+| `[stand-in]` setup fails, or calendar scenarios get 500 "peer address refused" | the stand-in is down or not on its pinned address. `docker compose -p paceday-e2e -f e2e/docker-compose.e2e.yml logs fake-google backend`. "refusing to start" in the backend log means the two calendar variables are inconsistent — the message names which. |
+| A calendar scenario sees "no matching arrival" | the backend answered without reaching the stand-in. The failure message lists what did arrive under that credential label; `GET http://127.0.0.1:18090/__fixture/requests` shows everything. |
 | `could not find <Month> <day> in the booking calendar` | react-day-picker's day-button label format changed. `lib/ui.ts pickBookingDate` explains the two selectors it tries; the real fix is `TESTIDS-REQUIRED.md` §1. |
 
 Inspect the database directly while the stack is up:
@@ -219,10 +286,12 @@ psql postgres://paceday_e2e:paceday_e2e@127.0.0.1:15433/paceday_e2e
 
 1. **Find out whether it is reachable.** Follow the handler in
    `backend/api/routes.go` down to the engine. If any step calls
-   `calendar.NewClient`, the journey needs a Google Calendar and cannot be
-   tested today — write it as `test.fixme` with a comment naming the call site,
-   and add it to the table in §5. Do not invent a way around it; read
-   `SEAM-REQUIRED.md` first.
+   `calendar.NewClient`, the journey needs a Google Calendar: use the stand-in
+   (§5a) with a user from `seed/ids.ts CONNECTED` — add a new one if your
+   journey writes to a calendar or a week another journey reads. Anything else
+   that reaches a real provider (sign-in, token refresh, Microsoft Graph,
+   Slack, Notion) is still unreachable; write it as `test.fixme` naming the
+   blocker and read `SEAM-REQUIRED.md` first.
 2. **Add fixtures to `seed/seed.sql`**, with a fixed UUID, and export the ids
    from `seed/ids.ts`. Delete before you insert, so the file stays idempotent.
    If your scenario mutates a scheduling link, give it **its own link and its
@@ -252,19 +321,23 @@ psql postgres://paceday_e2e:paceday_e2e@127.0.0.1:15433/paceday_e2e
 | `E2E_KEEP_STACK` | unset | `1` = leave the stack up after the run |
 | `E2E_FRONTEND_IMAGE` | build locally | use a published frontend image instead |
 | `E2E_RETRIES` | `0` | see rule 5 |
+| `E2E_FAKE_GOOGLE_URL` | `http://127.0.0.1:18090` | the stand-in's control plane |
+| `E2E_SINK_URL` | `http://127.0.0.1:18091` | the sink's log |
+| `E2E_BACKEND_IMAGE` | `paceday-e2e-backend` | the image `tests/startup.spec.ts` runs; point it at another build to check the startup scenarios against it |
+
+Set on the **backend** by `docker-compose.e2e.yml`, never by a production
+deployment (the root and prod compose files deliberately do not mention them):
+
+| Variable | e2e value | Meaning |
+|---|---|---|
+| `PACEDAY_ALLOW_STANDINS` | `true` | the test-mode declaration; alone it changes nothing |
+| `GOOGLE_CALENDAR_API_BASE_URL` | `http://fake-google:8080/calendar/v3/` | where calendar traffic goes. Without the declaration, or not ending in `/calendar/v3/`, the server refuses to start |
 
 ---
 
 ## 10. Wiring into `make verify`
 
-`docs/factory/README.md` §3 makes `make e2e` part of the one gate. There is no
-`e2e` target in the root `Makefile` yet; the intended body is:
-
-```make
-.PHONY: e2e
-e2e:
-	cd e2e && npm ci && npx playwright install --with-deps chromium && npm test
-```
-
-Adding it is a one-line change to the root `Makefile` and is left to whoever
-lands the `make verify` target, so that this directory does not half-create it.
+`docs/factory/README.md` §3 makes `make e2e` part of the one gate, and the
+root `Makefile` has the target: it runs `npm test` here (or `npm run test:e2e`
+if this package ever defines one). That includes `tests/startup.spec.ts`, so
+the process-level startup criteria are gated by `make e2e` too.
