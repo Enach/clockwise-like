@@ -148,7 +148,9 @@ func (e *BookingEngine) hostBusy(
 	}
 
 	// Focus blocks from DB.
-	blocks, err := storage.ListFocusBlocksForWeek(e.DB, start)
+	// Only this host's focus blocks (PAC-64): another user's focus time does
+	// not make this host busy.
+	blocks, err := storage.ListFocusBlocksForUserWeek(e.DB, userID, start)
 	if err == nil {
 		for _, fb := range blocks {
 			busy = append(busy, interval{start: fb.StartTime, end: fb.EndTime})

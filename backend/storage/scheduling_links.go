@@ -399,16 +399,23 @@ func GetBookingsByLink(db *sql.DB, linkID uuid.UUID) ([]*Booking, error) {
 }
 
 // GetConfirmedBookingsForUser returns all confirmed booking time ranges for a user
-// across any scheduling link they host.
+// across any scheduling link they host: links they own, and links where they
+// are an accepted co-host. It does not depend on a calendar event having been
+// created for the booking (booking_events), so a host with no calendar
+// connected, or whose event creation failed, is still busy at a booked time
+// (PAC-64).
 func GetConfirmedBookingsForUser(db *sql.DB, userID uuid.UUID, start, end time.Time) ([]time.Time, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT b.start_time, b.end_time
 		FROM bookings b
-		JOIN booking_events be ON be.booking_id = b.id
-		WHERE be.user_id = $1
-		  AND b.status = 'confirmed'
+		JOIN scheduling_links l ON l.id = b.link_id
+		WHERE b.status = 'confirmed'
 		  AND b.start_time < $3
 		  AND b.end_time   > $2
+		  AND (l.owner_user_id = $1
+		       OR EXISTS (SELECT 1 FROM scheduling_link_hosts h
+		                  WHERE h.link_id = l.id AND h.user_id = $1 AND h.status = 'accepted'))
+		ORDER BY b.start_time
 	`, userID, start, end)
 	if err != nil {
 		return nil, err

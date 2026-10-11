@@ -187,7 +187,7 @@ func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, s 
 			continue
 		}
 
-		if err := storage.SaveFocusBlock(e.DB, created.Id, dateStr, blockStart, blockEnd); err != nil {
+		if err := storage.SaveFocusBlock(e.DB, auth.UserIDFromContext(ctx), created.Id, dateStr, blockStart, blockEnd); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("save block %s: %v", dateStr, err))
 		}
 
