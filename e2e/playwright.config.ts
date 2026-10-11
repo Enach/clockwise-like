@@ -56,10 +56,26 @@ export default defineConfig({
     ignoreHTTPSErrors: false,
   },
 
+  // PAC-43. `stand-in` checks the calendar stand-in before anything uses it;
+  // its teardown, `hermeticity` (AC-23), reads the recording sink after every
+  // test of every dependent project has finished — pass or fail — so it
+  // covers the whole run. A plain `dependencies` edge would skip AC-23 as
+  // soon as any other test failed.
   projects: [
+    {
+      name: 'stand-in',
+      testMatch: /stand-in\.setup\.ts$/,
+      teardown: 'hermeticity',
+    },
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      dependencies: ['stand-in'],
+      testIgnore: [/stand-in\.setup\.ts$/, /hermeticity\.spec\.ts$/],
+    },
+    {
+      name: 'hermeticity',
+      testMatch: /hermeticity\.spec\.ts$/,
     },
   ],
 });

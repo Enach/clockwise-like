@@ -69,6 +69,8 @@ export interface FakeRequest {
   time_min?: string;
   time_max?: string;
   freebusy_ids?: string[];
+  /** The title an insert or update carried. */
+  summary?: string;
   /** The label of the presented credential; "" for none, "rejected" if unknown. */
   credential: string;
   status: number;
@@ -155,9 +157,14 @@ export const fake = {
     return credentialLabel === undefined ? all : all.filter((r) => r.credential === credentialLabel);
   },
 
-  /** Arm one 302 for the next product request carrying `label`. */
-  async redirectNext(label: string, location: string): Promise<void> {
-    await call('POST', `${FAKE_GOOGLE_URL}/__fixture/redirect-next`, { label, location });
+  /** Arm a 302 for the next `count` (default 1) product requests carrying `label`. */
+  async redirectNext(label: string, location: string, count = 1): Promise<void> {
+    await call('POST', `${FAKE_GOOGLE_URL}/__fixture/redirect-next`, { label, location, count });
+  },
+
+  /** Disarm any redirect still armed for `label`. */
+  async disarmRedirect(label: string): Promise<void> {
+    await call('POST', `${FAKE_GOOGLE_URL}/__fixture/redirect-next`, { label, count: 0 });
   },
 };
 
@@ -168,6 +175,31 @@ export const sink = {
     return (await res.json()) as SinkConnection[];
   },
 };
+
+/**
+ * The sink connections NOT explained by the one known escape: GET
+ * /api/auth/status, for a user with a stored credential, looks the user up at
+ * https://www.googleapis.com/oauth2/v2/userinfo (backend/api/handlers_auth.go
+ * fetchUserEmail, called from status()). That host is not redirected (spec
+ * §V2-3 "the identity lookup"), so every page load by a connected user offers
+ * the sink one TLS connection with SNI www.googleapis.com, which the sink
+ * refuses before any credential is sent. It is the defect that keeps AC-23's
+ * strict form fixme'd (tests/hermeticity.spec.ts).
+ *
+ * Anything else — plain HTTP, a credential presented, any other host (token
+ * refresh goes to oauth2.googleapis.com) — is unexplained.
+ */
+export function unexplainedSinkConnections(conns: SinkConnection[]): SinkConnection[] {
+  return conns.filter(
+    (c) =>
+      !(
+        c.listener === ':443' &&
+        c.sni === 'www.googleapis.com' &&
+        !c.credential_presented &&
+        c.method === undefined
+      ),
+  );
+}
 
 /**
  * Global-setup hook: a clean stand-in that accepts exactly the seeded

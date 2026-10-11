@@ -108,11 +108,13 @@ func (s *Server) registerFixture() {
 		})
 	})
 
-	// POST arms one 302 for the next product request carrying the label.
+	// POST arms a 302 for the next `count` (default 1) product requests
+	// carrying the label; count 0 disarms.
 	s.mux.HandleFunc("POST /__fixture/redirect-next", func(w http.ResponseWriter, r *http.Request) {
 		var body Redirect
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Label == "" || body.Location == "" {
-			http.Error(w, "body must be {label, location}", http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Label == "" ||
+			(body.Location == "" && (body.Count == nil || *body.Count != 0)) {
+			http.Error(w, "body must be {label, location, count?}", http.StatusBadRequest)
 			return
 		}
 		s.store.ArmRedirect(body)

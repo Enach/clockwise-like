@@ -34,19 +34,27 @@ type LogEntry struct {
 	TimeMin    string    `json:"time_min,omitempty"`
 	TimeMax    string    `json:"time_max,omitempty"`
 	FreeBusy   []string  `json:"freebusy_ids,omitempty"`
+	// Summary is the title of the event an insert or update carried.
+	Summary string `json:"summary,omitempty"`
 	// Credential is the label of the presented bearer, "" when none was
 	// presented and "rejected" when the bearer is not in the accepted set.
 	Credential string `json:"credential"`
 	Status     int    `json:"status"`
 }
 
-// Redirect arms a single 302 for the next product-route request that
-// presents the credential with the given label. It is scoped to a label so a
-// scenario running in parallel with others can never consume or be consumed
-// by someone else's arming.
+// Redirect arms a 302 for the next Count product-route requests (default 1)
+// that present the credential with the given label; Count 0 disarms. It is
+// scoped to a label so a scenario running in parallel with others can never
+// consume, or be consumed by, someone else's arming.
 type Redirect struct {
 	Label    string `json:"label"`
 	Location string `json:"location"`
+	Count    *int   `json:"count,omitempty"`
+}
+
+type armedRedirect struct {
+	location  string
+	remaining int
 }
 
 // calendarMeta is what calendarList returns for a calendar.
@@ -63,7 +71,7 @@ type Store struct {
 	calendars map[string][]*googlecalendar.Event
 	meta      map[string]calendarMeta
 	log       []LogEntry
-	redirects map[string]string // label -> location
+	redirects map[string]armedRedirect // by label
 }
 
 // NewStore returns an empty store: no accepted credentials, no calendars.
@@ -81,7 +89,7 @@ func (s *Store) Reset() {
 	s.calendars = map[string][]*googlecalendar.Event{}
 	s.meta = map[string]calendarMeta{}
 	s.log = nil
-	s.redirects = map[string]string{}
+	s.redirects = map[string]armedRedirect{}
 }
 
 // SetTokens replaces the accepted credential set.
@@ -102,22 +110,37 @@ func (s *Store) Lookup(token string) (Credential, bool) {
 	return c, ok
 }
 
-// ArmRedirect arms one redirect for a label.
+// ArmRedirect arms (or, with Count 0, disarms) the redirect for a label.
 func (s *Store) ArmRedirect(r Redirect) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.redirects[r.Label] = r.Location
+	n := 1
+	if r.Count != nil {
+		n = *r.Count
+	}
+	if n <= 0 {
+		delete(s.redirects, r.Label)
+		return
+	}
+	s.redirects[r.Label] = armedRedirect{location: r.Location, remaining: n}
 }
 
-// TakeRedirect returns, and disarms, the redirect armed for a label.
+// TakeRedirect consumes one armed redirect for a label, disarming it when
+// none remain.
 func (s *Store) TakeRedirect(label string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	loc, ok := s.redirects[label]
-	if ok {
-		delete(s.redirects, label)
+	a, ok := s.redirects[label]
+	if !ok {
+		return "", false
 	}
-	return loc, ok
+	a.remaining--
+	if a.remaining <= 0 {
+		delete(s.redirects, label)
+	} else {
+		s.redirects[label] = a
+	}
+	return a.location, true
 }
 
 // Record appends a log entry and assigns its sequence number.

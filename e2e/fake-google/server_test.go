@@ -179,3 +179,19 @@ func TestFixture_RequestsSince(t *testing.T) {
 		t.Fatalf("unexpected log %+v", body)
 	}
 }
+
+// A counted arming fires that many times; count 0 disarms early.
+func TestRedirectNext_CountAndDisarm(t *testing.T) {
+	store, srv := newTestServer(t)
+	three, zero := 3, 0
+	store.ArmRedirect(Redirect{Label: "a-work", Location: "http://elsewhere.example.test/", Count: &three})
+	for i := 0; i < 2; i++ {
+		if _, err := client(t, srv.URL, "tok-a").Events.List("primary").Do(); !errors.Is(err, errRedirect) {
+			t.Fatalf("request %d must be redirected, got %v", i, err)
+		}
+	}
+	store.ArmRedirect(Redirect{Label: "a-work", Count: &zero})
+	if _, err := client(t, srv.URL, "tok-a").Events.List("primary").Do(); err != nil {
+		t.Fatalf("count 0 must disarm: %v", err)
+	}
+}

@@ -77,6 +77,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
 		os.Exit(healthcheck("http://127.0.0.1" + ctlAddr + "/health"))
 	}
+	// `sink -probe URL` sends one credentialed GET to URL and exits. AC-23's
+	// positive control runs it from a throwaway container mapped like the
+	// backend, to prove the sink records what reaches it.
+	if len(os.Args) > 2 && os.Args[1] == "-probe" {
+		os.Exit(probe(os.Args[2]))
+	}
 
 	go serve(httpAddr, func(c net.Conn) { handlePlain(rec, httpAddr, c) })
 	go serve(tlsAddr, func(c net.Conn) { handleTLS(rec, tlsAddr, c) })
@@ -105,6 +111,24 @@ func healthcheck(url string) int {
 	if resp.StatusCode != http.StatusOK {
 		return 1
 	}
+	return 0
+}
+
+func probe(url string) int {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		log.Printf("sink probe: %v", err)
+		return 2
+	}
+	req.Header.Set("Authorization", "Bearer sink-probe-not-a-credential")
+	c := &http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Do(req)
+	if err != nil {
+		log.Printf("sink probe: %v", err)
+		return 1
+	}
+	_ = resp.Body.Close()
+	log.Printf("sink probe: %s answered %d", url, resp.StatusCode)
 	return 0
 }
 

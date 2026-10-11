@@ -53,6 +53,7 @@ func (s *Server) insertEvent(w http.ResponseWriter, r *http.Request, c *call) {
 		writeGoogleError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "required", "Missing time.")
 		return
 	}
+	c.entry.Summary = ev.Summary
 	writeJSON(w, http.StatusOK, s.store.Insert(c.calendarID, &ev))
 }
 
@@ -83,6 +84,7 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request, c *call) {
 		ev.HangoutLink = link
 		ev.ConferenceData.EntryPoints = []*googlecalendar.EntryPoint{{EntryPointType: "video", Uri: link}}
 	}
+	c.entry.Summary = ev.Summary
 	updated, ok := s.store.Update(c.calendarID, c.eventID, &ev)
 	if !ok {
 		writeGoogleError(w, http.StatusNotFound, "NOT_FOUND", "notFound", "Not Found")
