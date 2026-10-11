@@ -82,6 +82,12 @@ test.describe('focus time — what is reachable without a calendar provider', ()
 });
 
 test.describe('focus time — with a connected calendar (PAC-43, through the stand-in)', () => {
+  // Both scenarios act as the same user and read the stand-in's log by its
+  // credential label, so they must not overlap in time: in order, in one
+  // worker. ('default' rather than 'serial': a failure does not skip the
+  // other.)
+  test.describe.configure({ mode: 'default' });
+
   const USER = CONNECTED.focus;
 
   test('AC-18: running focus time creates blocks and they appear on the calendar', async ({
@@ -127,7 +133,9 @@ test.describe('focus time — with a connected calendar (PAC-43, through the sta
         }
       }
       const asked = await fake.requests(mark, USER.label);
-      expect(asked.filter((r) => r.operation === 'events.list')).toHaveLength(5);
+      expect(
+        asked.filter((r) => r.operation === 'events.list' && inWeek(r.time_min, monday)),
+      ).toHaveLength(5);
       expect(asked.filter((r) => r.operation === 'events.insert')).toHaveLength(rows.length);
 
       // 3. The user sees them on that week.
@@ -199,6 +207,10 @@ async function seedTwoMeetings(
   weekOffset: number,
   tag: string,
 ): Promise<Array<FakeEvent & { id: string }>> {
+  // Start from an empty calendar: a previous run against a kept stack, or a
+  // failed attempt, may have left meetings or blocks behind. Safe because the
+  // two scenarios using this calendar run one after the other (above).
+  await fake.clearCalendar(calendarId);
   const run = Date.now();
   return fake.seedEvents(calendarId, [
     {
