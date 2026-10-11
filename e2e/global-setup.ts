@@ -18,6 +18,7 @@ import { dirname, resolve } from 'node:path';
 import { BASE_URL } from './auth';
 import { seed } from './seed/seed';
 import { closePool } from './db';
+import { prepareStandIn } from './fake';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(here, '..');
@@ -116,8 +117,8 @@ export default async function globalSetup(): Promise<void> {
       // A published frontend image replaces the frontend build (README
       // "Prerequisites"). `up --build` would still build every service that
       // has a build section, frontend included, and fail without a frontend/
-      // checkout — so build the backend alone, then start without building.
-      await runCompose(composeArgs('build', 'backend'));
+      // checkout — so build every other service, then start without building.
+      await runCompose(composeArgs('build', 'backend', 'fake-google', 'sink'));
       await runCompose(composeArgs('up', '-d', '--no-build', '--wait'));
     } else {
       await runCompose(composeArgs('up', '-d', '--build', '--wait'));
@@ -127,5 +128,9 @@ export default async function globalSetup(): Promise<void> {
   await waitForHealth();
   await waitForFrontend();
   await seed();
+  // The calendar stand-in starts each run empty and accepting exactly the
+  // seeded credentials (PAC-43). Its compose healthcheck already passed, or
+  // the backend would not be up.
+  await prepareStandIn();
   await closePool();
 }
