@@ -86,13 +86,11 @@ paths:
       responses:
         '200':
           description: >
-            Focus block rows. `null` (not `[]`) when the week has no rows,
-            because the handler encodes a nil slice.
+            Focus block rows. `[]` when the week has no rows (PAC-28).
           content:
             application/json:
               schema:
                 type: array
-                nullable: true
                 items:
                   $ref: '#/components/schemas/FocusBlockRecord'
         '400':
@@ -151,7 +149,7 @@ paths:
         If `week` is set it wins over `date`: the handler snaps the parsed date to
         Monday (startOfWeek) and iterates Mon..Fri, appending one CompressionResult
         per day and SILENTLY SKIPPING days whose engine call errors - so week mode
-        never returns 500, and can return `null` if all five days error.
+        never returns 500, and returns `[]` if all five days error.
         If `week` is empty, `date` (or today) produces a single-element array and
         an engine error becomes a 500.
       requestBody:
@@ -163,13 +161,12 @@ paths:
       responses:
         '200':
           description: >
-            Array of per-day results. `null` when the slice stayed empty
+            Array of per-day results. `[]` when the slice stayed empty
             (week mode with every day failing).
           content:
             application/json:
               schema:
                 type: array
-                nullable: true
                 items:
                   $ref: '#/components/schemas/CompressionResult'
         '400':
@@ -905,13 +902,11 @@ components:
           description: RFC3339 (Go time.Time).
         createdBlocks:
           type: array
-          nullable: true
-          description: '`null` when the engine created nothing.'
+          description: '`[]` when the engine created nothing.'
           items:
             $ref: '#/components/schemas/FocusRunBlock'
         skippedDays:
           type: array
-          nullable: true
           items:
             type: string
           description: >
@@ -921,7 +916,6 @@ components:
           type: integer
         errors:
           type: array
-          nullable: true
           items:
             type: string
       required: [weekStart, createdBlocks, skippedDays, totalMinutes, errors]
@@ -1012,7 +1006,6 @@ components:
           description: '`YYYY-MM-DD` as produced by the engine.'
         proposals:
           type: array
-          nullable: true
           items:
             $ref: '#/components/schemas/MoveProposal'
         totalFocusGainMinutes:
@@ -1087,13 +1080,11 @@ components:
       properties:
         applied:
           type: array
-          nullable: true
           items:
             type: string
           description: Event ids the engine moved.
         failed:
           type: array
-          nullable: true
           items:
             type: string
           description: >
@@ -1136,8 +1127,7 @@ components:
       properties:
         slots:
           type: array
-          nullable: true
-          description: At most 3 entries; `null` when no candidate survived.
+          description: At most 3 entries; `[]` when no candidate survived.
           items:
             $ref: '#/components/schemas/SuggestedSlot'
       required: [slots]
@@ -2093,7 +2083,6 @@ components:
       properties:
         blocks:
           type: array
-          nullable: true
           items:
             $ref: '#/components/schemas/SlackBlock'
       required: [blocks]
