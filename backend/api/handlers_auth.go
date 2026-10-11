@@ -115,8 +115,15 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 			return
 		}
-		ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
-		email := fetchUserEmail(r.Context(), ts)
+		// The Google token is stored by the sign-in callback against the user it
+		// upserted by that same Google email, so the connected account's email
+		// is the user's own. Answer from it: this endpoint runs on every
+		// dashboard load, and asking Google's userinfo endpoint each time sent
+		// the user's access token outside the calendar seam (PAC-65).
+		email := ""
+		if u, err := storage.GetUserByID(h.db, userID); err == nil && u != nil {
+			email = u.Email
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"connected": true,
 			"provider":  "google",
@@ -183,27 +190,4 @@ func fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token, cfg *oauth2.C
 		return nil, err
 	}
 	return &info, nil
-}
-
-func fetchUserEmail(ctx context.Context, ts oauth2.TokenSource) string {
-	token, err := ts.Token()
-	if err != nil {
-		return ""
-	}
-	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
-	client.Timeout = 5 * time.Second
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	var info struct {
-		Email string `json:"email"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&info)
-	return info.Email
 }
