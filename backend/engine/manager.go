@@ -418,6 +418,18 @@ const analyticsCache4h = 4 * time.Hour
 const totalWorkMinutesPerWeek = 5 * 8 * 60 // Mon–Fri, 8h/day
 
 func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, weekStart time.Time) (*MemberWeekStats, error) {
+	// A Paceday user's minutes are visible only to an owner of a team that user
+	// is on. Without this, anyone could add a colleague's email to their 1:1
+	// list and read their week (PAC-60). Checked before the cache, so figures
+	// cached before this gate existed are never served, and failing closed:
+	// a lookup error shows no data rather than someone else's.
+	if member.MemberUserID != nil {
+		allowed, err := storage.OwnsTeamWithMember(e.DB, managerID, *member.MemberUserID)
+		if err != nil || !allowed {
+			return &MemberWeekStats{}, nil
+		}
+	}
+
 	// Check cache (4h TTL)
 	cached, err := storage.GetTeamAnalytics(e.DB, managerID, member.MemberEmail, weekStart)
 	if err == nil && time.Since(cached.ComputedAt) < analyticsCache4h {

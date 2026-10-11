@@ -261,3 +261,20 @@ func scanZone(row *sql.Row) (*NoMeetingZone, error) {
 	}
 	return &z, nil
 }
+
+// OwnsTeamWithMember reports whether ownerID owns at least one team that
+// memberID belongs to. It is the gate for showing one Paceday user's minutes to
+// another: per-person analytics are only ever visible to an owner of a team
+// the person is on (PAC-60).
+func OwnsTeamWithMember(db *sql.DB, ownerID, memberID uuid.UUID) (bool, error) {
+	var ok bool
+	err := db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM team_members o
+			JOIN team_members m ON m.team_id = o.team_id
+			WHERE o.user_id = $1 AND o.role = 'owner'
+			  AND m.user_id = $2 AND m.user_id <> o.user_id
+		)`, ownerID, memberID).Scan(&ok)
+	return ok, err
+}
