@@ -170,7 +170,7 @@ func (e *TeamAvailabilityEngine) GetTeamAnalytics(_ context.Context, teamID uuid
 	}
 
 	var totalMeeting, totalFocus int
-	var breakdown []MemberAnalyticsSummary
+	breakdown := make([]MemberAnalyticsSummary, 0, len(members))
 
 	for _, m := range members {
 		row, _ := storage.GetAnalyticsWeek(e.DB, m.UserID, weekStart)

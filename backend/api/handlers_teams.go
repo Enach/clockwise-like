@@ -102,10 +102,19 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	members, _ := storage.ListTeamMembers(h.db, teamID)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(teamDetailBody(team, members))
+}
+
+// teamDetailBody is the GET /api/teams/{id} response (TeamDetail).
+// members is nil when ListTeamMembers failed; it still encodes as [].
+func teamDetailBody(team *storage.Team, members []*storage.TeamMember) map[string]interface{} {
+	if members == nil {
+		members = make([]*storage.TeamMember, 0)
+	}
+	return map[string]interface{}{
 		"team":    team,
 		"members": members,
-	})
+	}
 }
 
 // PATCH /api/teams/:id

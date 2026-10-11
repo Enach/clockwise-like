@@ -145,12 +145,16 @@ Only `writeError()` responses (most 400s, plus the LLM 502) are JSON.
 5. **Week-mode compression cannot fail.** The Mon–Fri loop `continue`s past any engine
    error, so a fully broken calendar returns HTTP 200 with body `null` (nil slice).
    Single-day mode with the same error returns 500. Same input class, two outcomes.
+   (Since PAC-28 the week-mode body is `[]`, not `null`; the 200-vs-500 split remains.)
 
 6. **Nil slices encode as `null`, not `[]`.** Affects `GET /api/focus/blocks`,
    `POST /api/schedule/compress`, `ScheduleSuggestions.slots`,
    `FocusRunResult.createdBlocks/skippedDays/errors`, `CompressionResult.proposals`,
    `CompressionApplyResult.applied/failed`, `DailyRecapPreview.blocks`. Marked
    `nullable: true` throughout the spec.
+   **Resolved by PAC-28:** every one of these is now initialised to `[]` and
+   `nullable: true` is dropped. (`DailyRecapPreview.blocks` was never actually
+   empty — BuildMessage always appends a header — so only its spec changed.)
 
 7. **`selected_slot_index` has no lower bound.** `handlers_nlp.go:49` checks
    `len(SuggestedSlots) == 0 || SelectedSlotIndex >= len(...)`. A negative index passes and

@@ -223,6 +223,8 @@ Uncertainties not expressible as an inline `x-uncertain` on a single node:
    only; the `/analytics/week` map path passes the same nil slice through, so that response
    can emit `null` too — I did **not** mark it nullable there because the value always comes
    from a freshly computed `make([...], 0, 5)` on the compute path. Confidence: medium.
+   **Resolved by PAC-28:** the storage scanners normalise a nil slice to `[]`, so both
+   paths always emit an array; `nullable: true` is dropped from `AnalyticsWeekRow`.
 5. **`MeetingBriefResponse.generated_at` omission semantics.** `omitempty` on a
    pre-formatted string; the only path that omits it is GET's `sql.ErrNoRows` branch. The
    refresh path always emits it, potentially as `"0001-01-01T00:00:00Z"`. Not covered by
