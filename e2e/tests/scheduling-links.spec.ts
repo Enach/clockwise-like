@@ -145,14 +145,47 @@ test.describe('scheduling links', () => {
     expect(res.status()).toBe(401);
   });
 
-  test.fixme(
-    'a link created through the Links page appears on the public booking page',
-    // BLOCKED ON TEST IDS, not on a seam. pages/Links.tsx builds its create
-    // form from unlabelled inputs and class-styled toggle buttons; there is no
-    // role or test id that identifies the title field, the duration chips, the
-    // window pickers or the resulting slug. Writing this against CSS classes
-    // would violate the suite's selector policy. See TESTIDS-REQUIRED.md #2.
-    // The API round trip above covers the same behaviour meanwhile.
-    async () => {},
-  );
+  // Driven entirely through roles and labels: since smart-calendar-flow#91 the
+  // create drawer's inputs have <label htmlFor> and its toggles aria-pressed,
+  // which TESTIDS-REQUIRED.md #2 accepts in place of test ids.
+  test('a link created through the Links page appears on the public booking page', async ({
+    authedPage,
+    authedApi,
+    page,
+    db,
+  }) => {
+    const title = `E2E UI Link ${Date.now()}`;
+    try {
+      await authedPage.goto('/app/links');
+      await authedPage.getByRole('button', { name: /new link/i }).click();
+      const drawer = authedPage.getByRole('dialog', { name: /new scheduling link/i });
+      await expect(drawer).toBeVisible();
+
+      await drawer.getByLabel('Title', { exact: true }).fill(title);
+      const thirty = drawer.getByRole('button', { name: '30 min', exact: true });
+      if ((await thirty.getAttribute('aria-pressed')) !== 'true') await thirty.click();
+      await expect(thirty).toHaveAttribute('aria-pressed', 'true');
+      await drawer.getByLabel('Start', { exact: true }).fill('09:00');
+      await drawer.getByLabel('End', { exact: true }).fill('17:00');
+
+      await drawer.getByRole('button', { name: /create link/i }).click();
+      await expect(drawer).toBeHidden();
+
+      // The server has it, owned by this user.
+      const res = await authedApi.get('/api/scheduling-links');
+      expect(res.status()).toBe(200);
+      const { owned } = (await res.json()) as { owned: { slug: string; title: string }[] };
+      const created = owned.find((l) => l.title === title);
+      expect(created).toBeDefined();
+
+      // The card shows the URL Copy puts on the clipboard (smart-calendar-flow#89).
+      await expect(authedPage.getByText(`/book/${created!.slug}`)).toBeVisible();
+
+      // And an anonymous visitor reaches it.
+      await page.goto(`/book/${created!.slug}`);
+      await expect(page.getByRole('heading', { name: title })).toBeVisible();
+    } finally {
+      await db.query('DELETE FROM scheduling_links WHERE title = $1', [title]);
+    }
+  });
 });
