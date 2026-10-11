@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -261,8 +262,13 @@ func TestGuard_NameRowsNeverTrusted(t *testing.T) {
 			// guard refused the peer, or the resolver refused the name
 			// (all-numeric labels are not domain names to Go's resolver).
 			// A server's answer, such as a 401, means a connection was made.
+			// Or the platform resolved the name before the double was asked:
+			// on Linux, /etc/hosts maps localhost to ::1 and 127.0.0.1. Those
+			// are permitted peers, so a connection attempt to them is the guard
+			// judging the address, not trusting the name — acceptable only if
+			// every attempt went to a permitted address (plan §7 item 4).
 			var dnsErr *net.DNSError
-			if !errors.Is(err, ErrPeerRefused) && !errors.As(err, &dnsErr) {
+			if !errors.Is(err, ErrPeerRefused) && !errors.As(err, &dnsErr) && !allPermitted(rec.all()) {
 				t.Errorf("failed for the wrong reason (not a guard or resolver refusal): %v", err)
 			}
 			if rec.sawHost(publicAddr) {
@@ -272,4 +278,19 @@ func TestGuard_NameRowsNeverTrusted(t *testing.T) {
 			t.Logf("%q: attempts %v; error: %v", host, rec.all(), err)
 		})
 	}
+}
+
+// allPermitted reports whether there was at least one attempt and every
+// attempt went to an address the guard permits.
+func allPermitted(attempts []string) bool {
+	if len(attempts) == 0 {
+		return false
+	}
+	for _, a := range attempts {
+		ap, err := netip.ParseAddrPort(a)
+		if err != nil || !config.PermittedPeer(ap.Addr().Unmap()) {
+			return false
+		}
+	}
+	return true
 }
