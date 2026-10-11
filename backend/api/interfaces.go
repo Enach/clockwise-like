@@ -42,7 +42,7 @@ type PersonalCalendarBlocker interface {
 // calls while preserving the production engine implementation.
 type ManagerWorkflow interface {
 	DetectTeam(ctx context.Context, managerID uuid.UUID) (*engine.DetectResult, error)
-	GetGaps(ctx context.Context, managerID uuid.UUID) ([]engine.CadenceGap, error)
+	GetGaps(ctx context.Context, managerID uuid.UUID, members []*storage.ManagerTeamMember) ([]engine.CadenceGap, error)
 	GetMemberWeek(ctx context.Context, managerID uuid.UUID, member *storage.ManagerTeamMember, weekStart time.Time) (*engine.MemberWeekStats, error)
 }
 

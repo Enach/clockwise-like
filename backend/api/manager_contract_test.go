@@ -20,7 +20,7 @@ type pace023PreviewWorkflow struct {
 func (f *pace023PreviewWorkflow) DetectTeam(context.Context, uuid.UUID) (*engine.DetectResult, error) {
 	return &engine.DetectResult{Candidates: f.candidates, ScannedAt: time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)}, nil
 }
-func (*pace023PreviewWorkflow) GetGaps(context.Context, uuid.UUID) ([]engine.CadenceGap, error) {
+func (*pace023PreviewWorkflow) GetGaps(context.Context, uuid.UUID, []*storage.ManagerTeamMember) ([]engine.CadenceGap, error) {
 	return nil, nil
 }
 func (*pace023PreviewWorkflow) GetMemberWeek(context.Context, uuid.UUID, *storage.ManagerTeamMember, time.Time) (*engine.MemberWeekStats, error) {
