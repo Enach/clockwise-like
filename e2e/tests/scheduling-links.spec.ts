@@ -20,7 +20,7 @@
 
 import { test, expect } from '../fixtures';
 import { LINKS, USERS } from '../seed/ids';
-import { atUtc, isoDate, nextBookableWeekday } from '../lib/dates';
+import { atUtc, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 
 test.describe('scheduling links', () => {
   test('a user creates a link and an anonymous visitor books it', async ({
@@ -79,7 +79,7 @@ test.describe('scheduling links', () => {
       const { slots } = await slotsRes.json();
       // 16:00–17:00 at a 15-minute stride with a 30-minute duration => 16:00,
       // 16:15, 16:30. Exact, because the arithmetic is deterministic.
-      expect(slots.map((s: { start: string }) => s.start)).toEqual([
+      expect(slots.map((s: { start: string }) => instant(s.start))).toEqual([
         atUtc(date, '16:00'),
         atUtc(date, '16:15'),
         atUtc(date, '16:30'),
@@ -93,7 +93,7 @@ test.describe('scheduling links', () => {
       });
       expect(booked.status()).toBe(201);
       const confirmation = await booked.json();
-      expect(confirmation.end).toBe(atUtc(date, '16:30'));
+      expect(instant(confirmation.end)).toBe(atUtc(date, '16:30'));
 
       // ── back on the owner's side ────────────────────────────────────────
       const bookings = await authedApi.get(`/api/scheduling-links/${link.id}/bookings`);
@@ -116,10 +116,14 @@ test.describe('scheduling links', () => {
   }) => {
     const res = await authedApi.get('/api/scheduling-links');
     expect(res.status()).toBe(200);
-    const slugs = (await res.json()).map((l: { slug: string }) => l.slug);
+    // The list is {owned, shared} (contract: listSchedulingLinks). Check both
+    // halves so a leaked link is caught wherever it would appear.
+    const body = (await res.json()) as { owned: { slug: string }[]; shared: { slug: string }[] };
+    const owned = body.owned.map((l) => l.slug);
+    const slugs = [...owned, ...body.shared.map((l) => l.slug)];
 
-    expect(slugs).toContain(LINKS.owned.slug);
-    expect(slugs).toContain(LINKS.uiBooking.slug);
+    expect(owned).toContain(LINKS.owned.slug);
+    expect(owned).toContain(LINKS.uiBooking.slug);
     // Owned by the second user — must not leak across accounts.
     expect(slugs).not.toContain(LINKS.apiBooking.slug);
   });

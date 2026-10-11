@@ -60,11 +60,14 @@ test.describe('calendar — the disconnected state', () => {
     await expect(authedPage.getByRole('group', { name: 'Calendar view' })).toBeVisible();
     await expect(authedPage.getByRole('group', { name: 'Calendar navigation' })).toBeVisible();
 
-    // pages/Dashboard.tsx renders <InlineError title="Couldn't load your
-    // calendar"> when the events query errors and there are no cached events.
-    // src/api/client.ts only falls back to demo data on ApiUnreachableError,
-    // and a 401 is an ApiHttpError, so the error MUST be visible.
-    await expect(authedPage.getByText(/couldn't load your calendar/i)).toBeVisible();
+    // With no calendar connected, /api/calendar/events answers 401 "not
+    // connected". Since smart-calendar-flow#82 the dashboard says so plainly
+    // ("Connect your calendar…") instead of misreporting it as an expired
+    // session. src/api/client.ts only falls back to demo data on
+    // ApiUnreachableError, and a 401 is an ApiHttpError, so the prompt MUST be
+    // visible.
+    await expect(authedPage.getByText(/connect your calendar to see your week/i)).toBeVisible();
+    await expect(authedPage.getByText(/session expired/i)).toHaveCount(0);
 
     // The crucial half: it must not have quietly substituted fixtures.
     await assertNotDemo(authedPage);

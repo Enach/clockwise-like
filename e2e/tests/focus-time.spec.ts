@@ -40,7 +40,10 @@ test.describe('focus time — what is reachable without a calendar provider', ()
     // storage.ListFocusBlocksForWeek reads the table directly, no calendar
     // involved. The seed asserts the table is empty, so this is an exact
     // expectation rather than a shape check.
-    expect(await res.json()).toEqual([]);
+    // The contract still allows `null` for an empty list (PAC-28 will make
+    // every list endpoint return [] and drop nullable). Until then an empty
+    // week is `[]` or `null`; anything else is a failure.
+    expect((await res.json()) ?? []).toEqual([]);
   });
 
   test('an invalid week parameter is rejected before any work happens', async ({ authedApi }) => {
@@ -69,7 +72,8 @@ test.describe('focus time — what is reachable without a calendar provider', ()
     const blocks = await authedApi.get('/api/focus/blocks', {
       week: isoDate(mondayOf(new Date())),
     });
-    expect(await blocks.json()).toEqual([]);
+    // `null` is still contract-legal for an empty list until PAC-28.
+    expect((await blocks.json()) ?? []).toEqual([]);
   });
 
   test.fixme(

@@ -11,7 +11,12 @@
  * have caused it.
  */
 
-import { Pool, type QueryResultRow } from 'pg';
+// pg is CommonJS: under this ES-module suite Node exposes it only as a default
+// export, so `import { Pool } from 'pg'` fails at load time (PAC-62).
+import pg, { type QueryResultRow } from 'pg';
+
+const { Pool } = pg;
+type Pool = InstanceType<typeof Pool>;
 
 export const DATABASE_URL =
   process.env.E2E_DATABASE_URL ??

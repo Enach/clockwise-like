@@ -34,7 +34,7 @@
 
 import { test, expect } from '../fixtures';
 import { LINKS, MISSING_SLUG, USERS } from '../seed/ids';
-import { atUtc, isoDate, nextBookableWeekday } from '../lib/dates';
+import { atUtc, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 import { pickBookingDate, slotButtons } from '../lib/ui';
 
 test.describe('public booking — link info', () => {
@@ -108,8 +108,8 @@ test.describe('public booking — slots', () => {
     const expected = ['09:00', '09:15', '09:30', '09:45', '10:00', '10:15', '10:30'].map((t) =>
       atUtc(date, t),
     );
-    expect(slots.map((s: { start: string }) => s.start)).toEqual(expected);
-    expect(slots[0].end).toBe(atUtc(date, '09:30'));
+    expect(slots.map((s: { start: string }) => instant(s.start))).toEqual(expected);
+    expect(instant(slots[0].end)).toBe(atUtc(date, '09:30'));
   });
 
   test('rejects a duration the link does not offer', async ({ api }) => {
@@ -138,11 +138,11 @@ test.describe('public booking — booking through the API', () => {
     expect(res.status()).toBe(201);
 
     const conf = await res.json();
+    expect(instant(conf.start)).toBe(start);
+    expect(instant(conf.end)).toBe(end);
     expect(conf).toMatchObject({
       link_slug: LINKS.apiBooking.slug,
       title: LINKS.apiBooking.title,
-      start,
-      end,
       duration_minutes: 30,
       booker_email: bookerEmail,
       notes: 'booked by the e2e suite',

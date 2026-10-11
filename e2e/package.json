@@ -20,7 +20,7 @@
     "stack:logs": "docker compose -p paceday-e2e -f docker-compose.e2e.yml --project-directory .. logs -f"
   },
   "devDependencies": {
-    "@playwright/test": "1.49.1",
+    "@playwright/test": "1.63.0",
     "@types/node": "22.10.2",
     "@types/pg": "8.11.10",
     "pg": "8.13.1",

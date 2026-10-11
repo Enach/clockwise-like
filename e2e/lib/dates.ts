@@ -53,4 +53,13 @@ export function atUtc(date: Date, hhmm: string): string {
   ).toISOString();
 }
 
+/**
+ * Normalise an RFC3339 instant to one spelling, so a server "…T09:00:00Z" and
+ * a client "…T09:00:00.000Z" for the same instant compare equal. Compare
+ * instants, never strings.
+ */
+export function instant(s: string): string {
+  return new Date(s).toISOString();
+}
+
 export { DAY_MS };
