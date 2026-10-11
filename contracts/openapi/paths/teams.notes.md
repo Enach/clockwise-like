@@ -92,6 +92,9 @@ Three arrays in this domain are `nil`-encoded (no `omitempty`, no pre-initialisa
   storage.ListTeamMembers`). Frontend absorbs it with `detail.members ?? []`.
 - `GET /api/teams/{id}/analytics` → `member_breakdown: null` for an empty team.
   Frontend uses `raw.member_breakdown?.find(...)`, so it survives.
+
+**Resolved by PAC-28** for `members` and `member_breakdown`: both now encode `[]` and
+the spec types are plain `array`.
 - The `Team.orgId` field is `omitempty` on a `*uuid.UUID`, so the key is **absent**, not
   `null`, for a team with no org.
 
@@ -411,6 +414,7 @@ Two `x-uncertain` markers are in `teams.yaml`, plus the open questions below.
      body.
    - `TeamDetail.members` and `TeamAnalytics.member_breakdown` being JSON `null` rather than
      `[]`. Follows from nil slices without `omitempty`; no test asserts the raw JSON.
+     (Resolved by PAC-28: both are now `[]`, pinned by raw-JSON tests.)
    - `TeamMember.name`/`email` being **absent** (not `""`) for a nameless user, due to
      `omitempty` on a `string`.
 

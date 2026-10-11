@@ -558,8 +558,8 @@ paths:
       summary: One team plus its members.
       description: >
         Membership required. `members` is the raw result of ListTeamMembers with its error
-        discarded, ordered by joined_at ASC, and is JSON `null` (not []) whenever the list
-        is empty or the query failed.
+        discarded, ordered by joined_at ASC, and is `[]` whenever the list is empty or the
+        query failed (PAC-28).
       responses:
         "200":
           description: Team detail.
@@ -1453,8 +1453,8 @@ components:
       properties:
         team: { $ref: "#/components/schemas/Team" }
         members:
-          type: ["array", "null"]
-          description: JSON null (not []) when the team has no members or the query failed.
+          type: array
+          description: "`[]` when the team has no members or the query failed."
           items: { $ref: "#/components/schemas/TeamMember" }
       required: [team, members]
       additionalProperties: false
@@ -1601,10 +1601,8 @@ components:
           description: Integer division by member count (or by 1 for an empty team).
         avg_focus_minutes: { type: integer }
         member_breakdown:
-          type: ["array", "null"]
-          description: >
-            JSON null (not []) when the team has no members — the slice is appended to
-            without pre-initialisation and has no omitempty.
+          type: array
+          description: "`[]` when the team has no members."
           items: { $ref: "#/components/schemas/MemberAnalyticsSummary" }
       required: [avg_meeting_minutes, avg_focus_minutes, member_breakdown]
       additionalProperties: false

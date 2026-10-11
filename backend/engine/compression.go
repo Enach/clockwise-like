@@ -59,7 +59,7 @@ func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (
 	}
 	workStartRaw, workEndRaw, workEnabled := s.WorkWindow(date.In(loc))
 	lunchStartRaw, lunchEndRaw, lunchEnabled := s.LunchWindow(date.In(loc))
-	result := &CompressionResult{Date: date.Format("2006-01-02")}
+	result := &CompressionResult{Date: date.Format("2006-01-02"), Proposals: make([]MoveProposal, 0)}
 	if !workEnabled {
 		return result, nil
 	}

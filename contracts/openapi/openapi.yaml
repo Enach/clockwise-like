@@ -1798,15 +1798,13 @@ paths:
           example: '2025-01-06'
       responses:
         '200':
-          description: 'Focus block rows. `null` (not `[]`) when the week has no rows, because the handler
-            encodes a nil slice.
+          description: 'Focus block rows. `[]` when the week has no rows (PAC-28).
 
             '
           content:
             application/json:
               schema:
                 type: array
-                nullable: true
                 items:
                   $ref: '#/components/schemas/FocusBlockRecord'
         '400':
@@ -3658,8 +3656,8 @@ paths:
         JSON behaves like an empty body and yields 200 for today. If `week` is set it wins over `date`:
         the handler snaps the parsed date to Monday (startOfWeek) and iterates Mon..Fri, appending one
         CompressionResult per day and SILENTLY SKIPPING days whose engine call errors - so week mode never
-        returns 500, and can return `null` if all five days error. If `week` is empty, `date` (or today)
-        produces a single-element array and an engine error becomes a 500.
+        returns 500, and returns `[]` if all five days error. If `week` is empty, `date` (or today) produces
+        a single-element array and an engine error becomes a 500.
 
         '
       requestBody:
@@ -3670,7 +3668,7 @@ paths:
               $ref: '#/components/schemas/CompressionRequest'
       responses:
         '200':
-          description: 'Array of per-day results. `null` when the slice stayed empty (week mode with every
+          description: 'Array of per-day results. `[]` when the slice stayed empty (week mode with every
             day failing).
 
             '
@@ -3678,7 +3676,6 @@ paths:
             application/json:
               schema:
                 type: array
-                nullable: true
                 items:
                   $ref: '#/components/schemas/CompressionResult'
         '400':
@@ -4710,8 +4707,8 @@ paths:
       - teams
       summary: One team plus its members.
       description: 'Membership required. `members` is the raw result of ListTeamMembers with its error
-        discarded, ordered by joined_at ASC, and is JSON `null` (not []) whenever the list is empty or
-        the query failed.
+        discarded, ordered by joined_at ASC, and is `[]` whenever the list is empty or the query failed
+        (PAC-28).
 
         '
       responses:
@@ -5295,9 +5292,8 @@ components:
           type: integer
         top_meeting_titles:
           type: array
-          description: 'May serialise as `null` rather than `[]`: it is populated by a failure-swallowing
-            `json.Unmarshal` of the JSONB column into a nil slice.'
-          nullable: true
+          description: '`[]` when the week has no titles, including when the JSONB column holds `null`
+            or fails to unmarshal (PAC-28).'
           maxItems: 5
           items:
             $ref: '#/components/schemas/MeetingTitle'
@@ -5810,13 +5806,11 @@ components:
       properties:
         applied:
           type: array
-          nullable: true
           items:
             type: string
           description: Event ids the engine moved.
         failed:
           type: array
-          nullable: true
           items:
             type: string
           description: 'Mixed contents: handler-side entries read `"<event_id>: invalid time format"`,
@@ -5854,7 +5848,6 @@ components:
           description: '`YYYY-MM-DD` as produced by the engine.'
         proposals:
           type: array
-          nullable: true
           items:
             $ref: '#/components/schemas/MoveProposal'
         totalFocusGainMinutes:
@@ -6156,7 +6149,6 @@ components:
       properties:
         blocks:
           type: array
-          nullable: true
           items:
             $ref: '#/components/schemas/SlackBlock'
       required:
@@ -6405,13 +6397,11 @@ components:
           description: RFC3339 (Go time.Time).
         createdBlocks:
           type: array
-          nullable: true
-          description: '`null` when the engine created nothing.'
+          description: '`[]` when the engine created nothing.'
           items:
             $ref: '#/components/schemas/FocusRunBlock'
         skippedDays:
           type: array
-          nullable: true
           items:
             type: string
           description: 'x-uncertain at field level - the format of each entry is not pinned by a struct
@@ -6422,7 +6412,6 @@ components:
           type: integer
         errors:
           type: array
-          nullable: true
           items:
             type: string
       required:
@@ -8350,8 +8339,7 @@ components:
       properties:
         slots:
           type: array
-          nullable: true
-          description: At most 3 entries; `null` when no candidate survived.
+          description: At most 3 entries; `[]` when no candidate survived.
           items:
             $ref: '#/components/schemas/SuggestedSlot'
       required:
@@ -9311,13 +9299,8 @@ components:
         avg_focus_minutes:
           type: integer
         member_breakdown:
-          type:
-          - array
-          - 'null'
-          description: 'JSON null (not []) when the team has no members — the slice is appended to without
-            pre-initialisation and has no omitempty.
-
-            '
+          type: array
+          description: '`[]` when the team has no members.'
           items:
             $ref: '#/components/schemas/MemberAnalyticsSummary'
       required:
@@ -9331,10 +9314,8 @@ components:
         team:
           $ref: '#/components/schemas/Team'
         members:
-          type:
-          - array
-          - 'null'
-          description: JSON null (not []) when the team has no members or the query failed.
+          type: array
+          description: '`[]` when the team has no members or the query failed.'
           items:
             $ref: '#/components/schemas/TeamMember'
       required:

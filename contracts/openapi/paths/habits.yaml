@@ -1235,8 +1235,7 @@ components:
           type: integer
         top_meeting_titles:
           type: array
-          description: 'May serialise as `null` rather than `[]`: it is populated by a failure-swallowing `json.Unmarshal` of the JSONB column into a nil slice.'
-          nullable: true
+          description: '`[]` when the week has no titles, including when the JSONB column holds `null` or fails to unmarshal (PAC-28).'
           maxItems: 5
           items:
             $ref: '#/components/schemas/MeetingTitle'

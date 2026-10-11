@@ -439,8 +439,8 @@ type AnalyticsWeekRow struct {
 	MeetingMinutes           int                `json:"meeting_minutes"`
 	PersonalMinutes          int                `json:"personal_minutes"`
 
-	// TopMeetingTitles May serialise as `null` rather than `[]`: it is populated by a failure-swallowing `json.Unmarshal` of the JSONB column into a nil slice.
-	TopMeetingTitles    *[]MeetingTitle    `json:"top_meeting_titles"`
+	// TopMeetingTitles `[]` when the week has no titles, including when the JSONB column holds `null` or fails to unmarshal (PAC-28).
+	TopMeetingTitles    []MeetingTitle     `json:"top_meeting_titles"`
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
@@ -687,10 +687,10 @@ type CompressionApplyRequest struct {
 // CompressionApplyResult Literal map with keys `applied` and `failed`.
 type CompressionApplyResult struct {
 	// Applied Event ids the engine moved.
-	Applied *[]string `json:"applied"`
+	Applied []string `json:"applied"`
 
 	// Failed Mixed contents: handler-side entries read `"<event_id>: invalid time format"`, engine-side entries are appended verbatim by Compressor.Apply.
-	Failed *[]string `json:"failed"`
+	Failed []string `json:"failed"`
 }
 
 // CompressionRequest Both fields optional; `week` takes precedence over `date` when non-empty.
@@ -706,9 +706,9 @@ type CompressionRequest struct {
 // CompressionResult engine.CompressionResult. camelCase.
 type CompressionResult struct {
 	// Date `YYYY-MM-DD` as produced by the engine.
-	Date                  string          `json:"date"`
-	Proposals             *[]MoveProposal `json:"proposals"`
-	TotalFocusGainMinutes int             `json:"totalFocusGainMinutes"`
+	Date                  string         `json:"date"`
+	Proposals             []MoveProposal `json:"proposals"`
+	TotalFocusGainMinutes int            `json:"totalFocusGainMinutes"`
 }
 
 // ConferenceMeetingDetails backend/conference/provider.go Details. camelCase json tags, unlike every other response in this domain.
@@ -868,7 +868,7 @@ type DailyRecapPatchSendTo string
 
 // DailyRecapPreview Literal `{"blocks": [...]}`.
 type DailyRecapPreview struct {
-	Blocks *[]SlackBlock `json:"blocks"`
+	Blocks []SlackBlock `json:"blocks"`
 }
 
 // DailyRecapSettings Hand-built map in dailyRecapHandlers.getSettings. snake_case, and the key names do not mirror the camelCase Settings keys one-to-one.
@@ -982,13 +982,13 @@ type FocusRunRequest struct {
 
 // FocusRunResult engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
 type FocusRunResult struct {
-	// CreatedBlocks `null` when the engine created nothing.
-	CreatedBlocks *[]FocusRunBlock `json:"createdBlocks"`
-	Errors        *[]string        `json:"errors"`
+	// CreatedBlocks `[]` when the engine created nothing.
+	CreatedBlocks []FocusRunBlock `json:"createdBlocks"`
+	Errors        []string        `json:"errors"`
 
 	// SkippedDays x-uncertain at field level - the format of each entry is not pinned by a struct tag; it is whatever the engine appends.
-	SkippedDays  *[]string `json:"skippedDays"`
-	TotalMinutes int       `json:"totalMinutes"`
+	SkippedDays  []string `json:"skippedDays"`
+	TotalMinutes int      `json:"totalMinutes"`
 
 	// WeekStart RFC3339 (Go time.Time).
 	WeekStart time.Time `json:"weekStart"`
@@ -1908,8 +1908,8 @@ type ScheduleSuggestRequest struct {
 
 // ScheduleSuggestions engine.ScheduleSuggestions.
 type ScheduleSuggestions struct {
-	// Slots At most 3 entries; `null` when no candidate survived.
-	Slots *[]SuggestedSlot `json:"slots"`
+	// Slots At most 3 entries; `[]` when no candidate survived.
+	Slots []SuggestedSlot `json:"slots"`
 }
 
 // SchedulingErrorResponse The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Handlers that use the Go stdlib `http.Error` instead return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
@@ -2342,14 +2342,14 @@ type TeamAnalytics struct {
 	// AvgMeetingMinutes Integer division by member count (or by 1 for an empty team).
 	AvgMeetingMinutes int `json:"avg_meeting_minutes"`
 
-	// MemberBreakdown JSON null (not []) when the team has no members — the slice is appended to without pre-initialisation and has no omitempty.
-	MemberBreakdown *[]MemberAnalyticsSummary `json:"member_breakdown"`
+	// MemberBreakdown `[]` when the team has no members.
+	MemberBreakdown []MemberAnalyticsSummary `json:"member_breakdown"`
 }
 
 // TeamDetail defines model for TeamDetail.
 type TeamDetail struct {
-	// Members JSON null (not []) when the team has no members or the query failed.
-	Members *[]TeamMember `json:"members"`
+	// Members `[]` when the team has no members or the query failed.
+	Members []TeamMember `json:"members"`
 
 	// Team storage.Team. Note the camelCase json tags — unlike the manager domain's snake_case.
 	Team Team `json:"team"`

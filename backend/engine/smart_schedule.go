@@ -254,7 +254,7 @@ func sortSlotsByScore(slots []SuggestedSlot) {
 }
 
 func pickTopUnique(slots []SuggestedSlot, n int, minGap time.Duration) []SuggestedSlot {
-	var result []SuggestedSlot
+	result := make([]SuggestedSlot, 0, n)
 	for _, s := range slots {
 		if len(result) >= n {
 			break
