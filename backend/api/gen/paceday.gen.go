@@ -1487,7 +1487,7 @@ type MemberAnalyticsSummary struct {
 	UserId openapi_types.UUID `json:"user_id"`
 }
 
-// MemberWeekStats engine.MemberWeekStats. When data_available is false the three minute counters are all 0 — callers must branch on data_available rather than treating 0 as measured.
+// MemberWeekStats engine.MemberWeekStats. When data_available is false the three minute counters are all 0 — callers must branch on data_available rather than treating 0 as measured. For a Paceday member, data_available is also false unless the caller owns a team the member belongs to (PAC-60); see getManagerAnalytics.
 type MemberWeekStats struct {
 	DataAvailable bool `json:"data_available"`
 
