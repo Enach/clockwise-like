@@ -1,22 +1,31 @@
 # Spec — PAC-43: calendar-dependent behaviour must be verifiable before release
 
 - **Linear**: https://linear.app/paceday/issue/PAC-43/add-a-base-url-seam-to-backendcalendar-so-external-calendar-providers
-- **Status**: **v2 — revised after challenge.** v1 was `draft`; `spec-challenger`
-  returned *accept-with-changes* with four blocking findings on 2026-09-17.
+- **Status**: accepted (v3 + V3-7), 2026-10-11
 - **Author**: spec-author
 
 > ## ⚠ READ THIS FIRST — document layout
 >
-> This file contains three things, in this order:
+> This file contains these parts, in this order (the 2026-10-11 settlement
+> note and challenge sit between v2 and v3):
 >
 > 1. **§0–§8 — the v1 spec.** Retained for the record. **§3, §4, §6 and §8 are
->    superseded** and are marked as such at their headings. §0, §1, §2, §5 and §7
->    survive v1 unchanged except where §2 is *extended* by v2 §V2-2.
+>    superseded** and are marked as such at their headings. §1, §2 and §5 survive
+>    (§2 *extended* by v2 §V2-2); §0 and §7 survive except where §V3-7 overrides them.
 > 2. **`## Challenge — 2026-09-17` — the challenger's review. It applies to v1.**
 > 3. **`# Revision v2` at the end of the file — the binding text.** Where v2
 >    disagrees with v1, v2 wins. The acceptance criteria that stages 2–5 must build
 >    against are **v2 AC-1 through AC-25**, not v1 AC-1 through AC-14. A mapping
 >    table from v1 numbers to v2 numbers is at v2 §V2-5.
+> 4. **`# Revision v3`** amends v2 after the 2026-10-11 challenge. It rewrites some
+>    v2 criteria and adds AC-26 to AC-28; where v3 and v2 disagree, v3 wins.
+> 5. **`## V3-7. Amendments after the v3 challenge` at the very end** wins over
+>    everything above it. It retires the v1/v2 statements that production is
+>    unchanged (§0.1, §0 point 3, §7's "unaffected", §V2-3's opening, §V2-6's first
+>    bullet, V3-6) and names the only production changes, E1–E4.
+>
+> **Binding set: AC-1 through AC-28 as amended by v3 and §V3-7.** §0 and §7 of v1
+> no longer survive unchanged: §V3-7 overrides the parts it names.
 >
 > The one-line summary of what changed: **v1 tried to make redirection safe by
 > validating a host string once at startup, and the challenger showed five ways
@@ -1777,3 +1786,475 @@ bug itself. A green criterion there is a test asserting that the fall-through an
 from the primary provider, which is correct for a primary-provider user and is the
 exact line PAC-47 must change. AC-17 is therefore narrowed in its own text to the
 primary-provider case. The question is answered; the narrowing is the answer.
+
+---
+
+## OQ-1 settled by reading the pinned source — 2026-10-11
+
+Plan §5 step 1 and plan §7 items 1–2, settled by reading the source at the pinned versions:
+
+- `google.golang.org/api` **v0.292.0**: `option/option.go`, `internal/settings.go`, `internal/cba.go`, `transport/http/dial.go`, `calendar/v3/calendar-gen.go`, `googleapi/googleapi.go`
+- `golang.org/x/oauth2` **v0.36.0**: `transport.go`
+
+Nothing here was run.
+
+- **(c) Which credential stack `option.WithTokenSource` selects.** It selects **the newer `cloud.google.com/go/auth` library.**
+  - The generated `calendar.NewService` appends `internaloption.EnableNewAuthLibrary()` to every call (`calendar/v3/calendar-gen.go:186`). That sets `DialSettings.EnableNewAuthLibrary`, so `IsNewAuthLibraryEnabled()` returns true (`internal/settings.go:123-125`), and `dial.go:48-53` takes `newClientNewAuth`.
+  - The only way back to the legacy `golang.org/x/oauth2` transport is the environment variable `GOOGLE_API_GO_EXPERIMENTAL_DISABLE_NEW_AUTH_LIB=true` (`settings.go:27,120`).
+  - *Correction:* the first version of this note said "legacy" and named the ENABLE variable. That was wrong. It read `dial.go` and `settings.go` without the generated service's own option list. The v2 challenge (2026-10-11) caught it.
+  - **Consequence:** a client built with `WithHTTPClient` + `oauth2.Transport` (plan §1.3) attaches the credential with **different code from today's production path**. The spec has to choose:
+    - build production the same way, so both deployments share one credential path;
+    - or accept the difference and say what AC-21 then proves.
+- **(a) Does `option.WithEndpoint` accept a non-TLS scheme?** **Yes, verbatim.** `internal/cba.go` `getEndpoint` returns `settings.Endpoint` unchanged whenever it contains `://`, with no scheme check (`:174-176`). So `http://…` is accepted.
+- **(b) Is a bearer credential attached over plain HTTP?** **Yes.** `oauth2.Transport.RoundTrip` clones the request and calls `token.SetAuthHeader` on every round trip, whatever the scheme. *(Added 2026-10-11 after the v3 challenge: the same holds on the new-auth path production actually takes — `cloud.google.com/go/auth@v0.22.0/httptransport/transport.go:550` sets the header on a clone on every round trip, with no scheme check.)*
+- **Redirects (spec challenge, blocking finding 2).** This is the library's default:
+  - On the legacy path `NewClient` returns `&http.Client{Transport: trans}` with **no `CheckRedirect`**, so Go follows up to 10 redirects. *(Added after the v3 challenge: the new-auth path production actually takes is the same — no `CheckRedirect` at `auth@v0.22.0/httptransport/httptransport.go:243-245` — so the conclusions below hold on both paths.)*
+  - Because the credential is added inside `RoundTrip`, it is **re-attached on every hop, including a hop to a different host**. Go's stripping of `Authorization` on cross-host redirects applies only to headers on the original request, not to ones a transport adds per hop.
+  - So a configured endpoint that redirects elsewhere would receive, and forward, the user's Google token.
+- **`option.WithHTTPClient` displaces both.** `NewClient` returns `settings.HTTPClient` as is (`dial.go:44-46`): no credential transport and no redirect policy are added. Plan §1.3 is therefore sound. The backend's own client must:
+  - wrap `oauth2.Transport` around the guarded dialler itself;
+  - set `CheckRedirect` to refuse.
+- **Plan §7 item 2: replace or join, and is the trailing slash required?** It **replaces**: `calendar-gen.go:201` sets `s.BasePath = endpoint`. URLs are built with `googleapi.ResolveRelative(BasePath, "calendars/…")`, which is RFC 3986 reference resolution, so **the trailing `/calendar/v3/` is required**. Without it, the last segment (`v3`) is dropped. The configured value must end with `/calendar/v3/`, and the startup check should reject one that doesn't.
+
+**OQ-2 (permitted addresses), stated as an assumption rather than asked.** The only stack that runs the stand-in is the e2e Docker Compose stack, where it is a service on the compose bridge network, so a private-range address. Loopback plus the RFC 1918 private ranges covers it. No other topology runs the stand-in today.
+
+---
+
+## Challenge — 2026-10-11 (v2)
+
+> *`spec-challenger`'s review of **Revision v2** and of the section "OQ-1 settled by
+> reading the pinned source — 2026-10-11". The OQ-1 claims were checked against the
+> module source on disk (`go env GOMODCACHE` = `C:\Users\jouzu\go\pkg\mod`:
+> `google.golang.org/api@v0.292.0`, `cloud.google.com/go/auth@v0.22.0`,
+> `golang.org/x/oauth2@v0.36.0`). The §2 citations were checked on current `main`
+> (`0c75490`, which includes PAC-62's e2e changes); this branch differs from `main`
+> only in this file. Nothing was run except `go env` and reads.*
+
+**Verdict**: accept-with-changes
+
+v2 is a real repair. The connection-time rule, the refusal to follow redirects, the
+unit/e2e split and the positive-arrival criterion each answer the v1 finding they
+target, and I could not reopen any of the four as written. Two things block: the
+OQ-1 settlement gets part (c) backwards, which is the part v2 itself said "can change
+this spec", and the per-connection peer-address property, which is the whole safety
+case, is defeated by an ordinary proxy setting in the environment. Both are fixed by
+editing the spec text. Neither needs a redesign.
+
+### Status of the four v1 blocking findings
+
+| v1 finding | Resolved? | v2 text that resolves it |
+|---|---|---|
+| 1. Host restriction not structural | **Yes, for name resolution.** The control moved off the name: "judged on the address, never on the name", "immediately before each connection", "fail-closed" (§V2-3), tested by AC-6 to AC-9 and AC-15. The bucket that let unparseable values become trusted no longer exists (§V2-1). Search domains, rebinding, loopback spellings and numeric forms are all covered. **But see new Blocking 2**: the property is about the TCP peer, and a forward proxy defeats it by a route v1's finding didn't name. | §V2-1, §V2-3, AC-6, AC-7, AC-8, AC-9, AC-15 |
+| 2. Redirects unaddressed | **Yes.** "a response directing the client somewhere else is never followed. It surfaces as a failure", including inside the permitted set (§V2-3). In-process proof in AC-10, in-binary proof in AC-11. The settlement section confirms the library default follows redirects and re-attaches the credential, so this requirement is necessary, not just defensive. | §V2-3 "Redirection is not followed", AC-10, AC-11 |
+| 3. `[unit]` ACs assert "does not begin serving" | **Yes.** Each decision is `[unit]` (AC-4, AC-5, AC-6, AC-15) and each refusal to serve is `[e2e]` against the built image (AC-12, AC-13, AC-14). New AC-3 guards a production boot. | §V2-4 preamble and groups B and D |
+| 4. AC-13 cannot fail; §3's universal is false | **Yes, with a falsifiability caveat** (Non-blocking 1). AC-22 needs positive arrivals at the stand-in. §V2-3 narrows the universal and lists both what is redirected and what is not. §V2-2.1 records the swallowed errors, and AC-17 and AC-21 are worded around them. | §V2-2.1, §V2-3 "What is redirected, exactly", AC-22, AC-23 |
+
+### OQ-1 settlement, checked against the source
+
+| Claim in "OQ-1 settled…" | Verdict | Evidence |
+|---|---|---|
+| (c) `WithTokenSource` selects the legacy `x/oauth2` transport; `IsNewAuthLibraryEnabled()` is false unless `GOOGLE_API_GO_EXPERIMENTAL_ENABLE_NEW_AUTH_LIB=true` | **Wrong.** | `calendar/v3/calendar-gen.go:186` has the generated `NewService` append `internaloption.EnableNewAuthLibrary()` to every call. That option sets `ds.EnableNewAuthLibrary = true` (`option/internaloption/internaloption.go:249-257`), so `IsNewAuthLibraryEnabled()` returns true at `internal/settings.go:123-125`. `dial.go:48-53` then takes `newClientNewAuth`, which adapts the token source (`dial.go:72-80`) and builds the client with `cloud.google.com/go/auth@v0.22.0/httptransport`. **Production today attaches the credential with `cloud.google.com/go/auth`, not `x/oauth2`.** The only environment switch that matters is the *other* one: `GOOGLE_API_GO_EXPERIMENTAL_DISABLE_NEW_AUTH_LIB=true` (`settings.go:27,120`) forces the legacy path. The ENABLE variable the settlement names has no effect, because the flag is already set. |
+| `newTransport` wraps the base in `&oauth2.Transport{Source: ts}` | True of the legacy path, which production does not take. It also wraps `parameterTransport` and OpenTelemetry first (`dial.go:167-197`). | — |
+| (a) `WithEndpoint` accepts `http://` verbatim | **Correct.** | `internal/cba.go:174-176`. The new-auth path does not re-check the scheme either. |
+| (b) Bearer is attached over plain HTTP | **Correct on both stacks.** | Legacy: `x/oauth2@v0.36.0/transport.go:45-55`. Production's actual stack: `auth@v0.22.0/httptransport/transport.go:533-551`, `SetAuthHeader` on a clone, every round trip, with no scheme check. |
+| Redirects: no `CheckRedirect`, credential re-attached on every hop | **Correct on both stacks.** | Legacy: `dial.go:59`. New: `auth@v0.22.0/httptransport/httptransport.go:243-245`. On both, the credential is added inside `RoundTrip`, so Go's cross-host header stripping never sees it. |
+| `WithHTTPClient` displaces the library's credential transport and redirect policy | **Correct.** | `dial.go:44-46` returns `settings.HTTPClient` before either credential path. `Validate` (`internal/settings.go:166-236`) does not reject `HTTPClient` together with `TokenSource`. Endpoint resolution still runs first (`dial.go:39`), so `WithEndpoint` still applies. |
+| Base path is replaced, trailing `/calendar/v3/` required | **Correct.** | `calendar-gen.go:200-202`. `googleapi.ResolveRelative` (`googleapi/googleapi.go:377-400`) is `url.ResolveReference`, which drops the last segment when the base has no trailing slash. |
+
+### Blocking
+
+1. **OQ-1(c) is settled with the wrong answer, and v2 had already said the right answer changes the spec.**
+   - **What is wrong.** Production's credential is attached by `cloud.google.com/go/auth` (`authTransport.RoundTrip`, which also runs universe-domain validation at `transport.go:538-547`), not by `x/oauth2` (see the table above).
+   - **What it does to the spec.** The settlement's own conclusion is that `WithHTTPClient` displaces the library's credential stack and that the backend must attach the credential itself. v2 §V2-8 OQ-1(c) says that outcome means "§V2-3's 'talked to exactly as the real service is' acquires a second exception that AC-21 must be written around". The spec body was not changed to match:
+     - §V2-3 still claims one exception.
+     - AG-2 still describes the redirected path as "production-plus-two-guards".
+     - AC-21 still reads as proof that "the credential is still being sent" in general.
+   - **Why it matters.** With the correct (c), the gap is wider than AG-2 admits. The redirected path's credential attachment is a different implementation from production's, not production's plus guards. So AC-21 proves the redirected deployment's attachment and says nothing about the code that attaches the credential in production.
+   - *What resolves it*:
+     - Correct (c) in the settlement section and name the variable that actually switches stacks.
+     - Restate the §V2-3 exception and AG-2 to say the redirected deployment supplies its own credential attachment in place of the library's.
+     - State in AC-21 that it covers the redirected path's attachment only, and state what (if anything) covers production's.
+     - Decide whether a production deployment that inherits `GOOGLE_API_GO_EXPERIMENTAL_DISABLE_NEW_AUTH_LIB` is in scope for AC-1/AC-3. Today it silently changes which stack production uses.
+
+2. **The connection-time property does not stop a credential reaching a public host through a forward proxy.**
+   - **What §V2-3 guarantees.** The credential is "only ever written onto a connection whose peer address lies inside" the permitted ranges. §V2-6 adds "by any route", naming "a copied environment file" and "an inherited resolver configuration".
+   - **How a proxy defeats it.** If the redirected deployment's HTTP stack honours `HTTP_PROXY`/`HTTPS_PROXY` from the environment, the TCP peer is the proxy. An ordinary corporate or Docker-daemon-injected egress proxy sits on an RFC 1918 address, so it passes the rule. It then receives the full request, including the bearer in clear text on an `http://` stand-in, and resolves and forwards to the configured name itself.
+   - **Which cases it reopens.** That is the search-domain case of v1 finding 1 again, plus a public relay, with no attacker involved and with every one of AC-7 to AC-10 green.
+   - **Why it is not AG-3.** AG-3 accepts a *hostile* private network. A benign egress proxy configured by environment is exactly the failure mode §V2-6 names, and it is not hostile.
+   - **Why nothing catches it today.** Nothing in the spec states whether ambient proxy configuration applies to redirected calendar traffic, and no criterion would fail if it did.
+   - *What resolves it*:
+     - State that the guarantee covers the endpoint the request is delivered to, not only the TCP peer. Either redirected calendar traffic never goes through an intermediary taken from ambient configuration, or a deployment where one is present is refused.
+     - Add a falsifiable criterion: with a proxy configured in the environment, a redirected calendar request does not reach the proxy.
+     - Alternatively, record a proxy-carried credential as an accepted residual risk with its reason. That is the weaker option, and it contradicts "by any route".
+
+### Non-blocking
+
+1. **AC-22 and AC-25 include members that an e2e run cannot trigger in bounded time.**
+   - **Auto-decline.** It has no HTTP route. It runs only from the `@every 15m` cron in `backend/main.go:85-96` (via `RunAll`), and it acts only for users who opted in. The clock is out of scope (§V2-7), so AC-22's auto-decline member needs a run of 15 minutes or more.
+   - **AC-25's "when the personal-calendar background sync runs on its own schedule".** That schedule is `@every 30m` (`main.go:60`).
+   - **What already works.** The personal sync's primary-provider branch can be reached on demand through `/api/personal-calendars/{id}/sync` (`backend/api/handlers_personal.go:191`), so AC-25 is falsifiable if it is reworded to that trigger.
+   - **What to do.** For auto-decline, either accept the wait explicitly or move it out of AC-22's exercised set into an accepted gap. Otherwise stage 5 will quietly reinterpret the list.
+2. **The trailing-slash requirement is in the settlement section but not in any AC.**
+   - The settlement says a configured value not ending in `/calendar/v3/` should be rejected at startup.
+   - AC-5 enumerates the refusal classes and does not include it, so as written nothing has to fail on that input. Add it to AC-5's table or drop the sentence.
+3. **OQ-2 assumption: it holds by default, but it is not pinned.**
+   - `e2e/docker-compose.e2e.yml` declares no `networks:`, so the stand-in gets an address from the daemon's `default-address-pools`. Stock Docker Engine and Docker Desktop allocate from 172.17–31.0.0/16 and 192.168.0.0/16, which are RFC 1918, so the assumption holds today.
+   - A daemon configured with a non-RFC 1918 pool (100.64.0.0/10 is a common choice) would fail closed. That is safe, but it is confusing.
+   - The settlement says "loopback plus RFC 1918" while AC-7 also permits IPv6 unique-local. Make the two agree.
+   - AC-23's recording sink cannot sit at `127.0.0.1` as `extra_hosts` maps it today (`docker-compose.e2e.yml:87-96`). Inside the single-process `scratch` backend container that is the backend's own loopback, so AC-23 implies the provider names map to an address where another service listens. That is a constraint the stage-5 author must honour, and the spec should say it exists.
+4. **AC-17's precondition is phrased per user, but the setting is global.** "A requesting user whose stored work-calendar provider is the primary one" is read from `storage.GetSettings`, which is pinned to `WHERE id = 1` (`backend/engine/freebusy_service.go:75`, `backend/storage/settings.go:227`). The precondition is deployment-wide, and the criterion should say so.
+5. **Free/busy failures are cached.** `freebusy_service.go:140-151` caches an `"unknown"` result for 15 minutes exactly as it caches a real one. Within one run, a scenario that hits the free/busy path before the stand-in is seeded poisons that key for the rest of the run. That is a sharper consequence of AG-1 than "isolation, not coverage", and it is worth one sentence.
+6. **AC-11 should name a screen whose path surfaces errors.** On the free/busy path, the redirect failure becomes `coverage: "unknown"` and a 200 (§V2-2.1), so "the user is shown a failure" cannot fail there.
+
+### Criteria I could not falsify
+
+- **AC-6, second clause**: "asserting that the code path taken carries no notion of a trusted host name". No test can observe the absence of a concept.
+  - The table half is falsifiable only once each row has an expected outcome. "Either understood … or refused" with no per-row answer gives a test nothing to compare against.
+  - Give the expected outcome per row (AC-15 already implies it: names are accepted, refusals are named) and drop the clause.
+- **AC-1, "no connection guard is installed … the shape of its request path"**: `googlecalendar.Service.client` is unexported. The only observable parts of the constructed object are `BasePath` and the backend's own construction decision. Restate the criterion in those terms, or it will be reinterpreted at stage 4. This is the same issue as the 2026-09-17 AC-1 note, moved rather than closed.
+- **AC-8 and AC-9, "a recording listener at that address"**: a portable in-process test cannot bind a listener at a non-permitted address. Loopback and private addresses are permitted, link-local and public addresses cannot be bound, and dialling `0.0.0.0` reaches a local listener on Linux but not on Windows. Phrase the observation as "no connection is attempted to that address", which is observable.
+- **AC-3, "exactly the configuration a production deployment supplies today"**: no artifact defines that configuration. Name the reference environment (for example the root compose file's backend environment) so the test has an input.
+
+### Citations I checked and found wrong
+
+- **OQ-1 settlement (c)**: the legacy `x/oauth2` path is not what `WithTokenSource` selects. The generated `NewService` forces the new auth library (`calendar-gen.go:186` → `internal/settings.go:123-125` → `dial.go:48-53`). See Blocking 1.
+- **OQ-1 settlement**, "unless `GOOGLE_API_GO_EXPERIMENTAL_ENABLE_NEW_AUTH_LIB=true`": inverted. The variable that changes behaviour is `…_DISABLE_NEW_AUTH_LIB` (`settings.go:120`).
+- **v1 §2.7**, "`e2e/tests/` contains seven disabled scenarios", plus the line numbers carried into AC-16 to AC-19:
+  - On current `main` there are six. `scheduling-links.spec.ts:144` no longer has a `test.fixme`.
+  - The five in scope have moved: `calendar.spec.ts:73`→`:76`, `:83`→`:86`; `focus-time.spec.ts:75`→`:79`, `:86`→`:90`.
+  - v1 §6's `focus-time.spec.ts:56` is now `:59`.
+  - `manager-team.spec.ts:137`, `auth-session.spec.ts:115` and `calendar.spec.ts:25,42,52` are unchanged.
+- **Header "Inherited scope"**, "U-14, U-15, U-16, U-19, U-23 (all five say 'observe a response'…)": per `docs/factory/api-audit.md:458-467`, U-14 says "Decide" and U-23 says "Read one file". U-15, U-16 and U-19 are `NoMeetingZone` times and `recapSendTime`, not calendar-provider paths, and the register says they are resolvable today by a testcontainers integration test (`api-audit.md:459,463,605`).
+- **v1 §0/§2.4 and header**, "PAC-47 carries `x-uncertain` U-18" and "`scheduling.yaml:1380-1386` describes `calendarProvider`":
+  - The contract now says `calendarProvider` "Resolves U-18" with `enum: [google, outlook, webcal]` (`contracts/openapi/paths/scheduling.yaml:1804-1815`, PAC-24).
+  - `:1380` is now the `/api/llm/test` body.
+  - The audit register row (`api-audit.md:462`) is stale.
+  - U-18 is not open for PAC-47 to carry. Note that the contract's resolution cites the dead `calendar.NewProvider` as a live consumer, which is PAC-47's problem.
+- **§V2-8 OQ-1**, "`backend/go.mod:22` … `:26`", "`go.sum:184-185`": now `go.mod:23` and `:27`, and `go.sum:192-193`. The versions are correct.
+- **§V2-2.4**, "`freebusy_service.go:49` declares `Clock`": it is `:50`.
+- **§V2-2.2 / AG-1**, "keyed … (`freebusy_service.go:98`)": it is `:96`.
+- **§V2-2.2**, "`webcal_client.go:50-56` returns the cached slice": the check is at `:53`.
+- **Checked and correct**:
+  - The ten external `calendar.NewClient` call sites.
+  - `client_factory.go:13-34` has no callers.
+  - `personal_reader.go:16-17,30`.
+  - `freebusy_service.go:121-138`, the swallowed errors.
+  - `Dockerfile:9-12`.
+  - `outlook_client.go:15`, `conference/teams.go:13`, `handlers_auth.go:172,195`.
+  - `handlers_auth.go:91-125`.
+  - `integration_availability.go:26`.
+  - `storage/settings.go:227`.
+  - `main.go`'s seven variables and `:26`/`:34-35`.
+  - `docker-compose.e2e.yml:87-96`.
+  - `e2e/README.md:81-84,92-107,129-139`.
+
+### Consumers this breaks
+
+- **None found.** `googlecalendar.NewService` is still constructed only at `backend/calendar/client.go:17`, and `mcp/` does not import `backend/calendar`.
+- With no configuration the production path is untouched by design (AC-1, AC-3).
+- One latent interaction to note, not a breakage: any production environment carrying `GOOGLE_API_GO_EXPERIMENTAL_DISABLE_NEW_AUTH_LIB` already runs a different credential stack from the default, and AC-1's "indistinguishable from today's" should say which "today" it means.
+
+---
+
+# Revision v3 — 2026-10-11
+
+- **Supersedes**: the exception paragraph in §V2-3 "The stand-in is talked to exactly as the real service is"; AG-2; V2-8 OQ-1(c); the OQ-2 assumption in the settlement section; and the text of AC-1, AC-3, AC-6, AC-8, AC-9, AC-11, AC-17, AC-21, AC-22 and AC-25. Adds AC-26 to AC-28. Everything else in v2 stands. **Extended by §V3-7** (after the v3 challenge) to supersede every sentence that says production does not change.
+- **Author**: spec-author, revising after the v2 challenge (accept-with-changes, two blocking findings).
+- **Evidence**: I re-opened the corrected citations in §V3-1 on this branch. Nothing was compiled or run.
+
+## V3-1. Citations corrected (current behaviour)
+
+- **There are six disabled scenarios, not seven** (v1 §2.7). `e2e/tests/scheduling-links.spec.ts:144` no longer carries a `test.fixme`. The five in scope are now at `calendar.spec.ts:76` and `:86`, `focus-time.spec.ts:79` and `:90`, and `manager-team.spec.ts:137` (unchanged). The sixth is `auth-session.spec.ts:115`. v1 §6's `focus-time.spec.ts:56` is now `:59`. Read AC-16 to AC-19's scenario references with the new line numbers.
+- **The "Inherited scope" line in the header was wrong.**
+  - Per `docs/factory/api-audit.md:458-467`, U-14 is a *decision* (whether to pin a normalised event) and U-23 is *read one file*. Neither needs a response observed.
+  - U-15, U-16 and U-19 concern meeting-zone times and the recap send time. They are not calendar-provider paths, and an integration test can resolve them today.
+  - **This spec makes no `x-uncertain` marker resolvable.** The verification half of API-014, API-015, API-016, API-017, API-028, API-029, API-041 and API-044 stands.
+- **U-18 is already resolved, by PAC-24.** `contracts/openapi/paths/scheduling.yaml:1804-1815` enumerates the provider values and says it resolves U-18, so PAC-47 does not carry it. Two things are left for PAC-47 to correct: the audit register row at `api-audit.md:462` is stale, and the contract's resolution cites the dead provider factory as a live consumer.
+- **Line numbers have moved:**
+  - `backend/go.mod:23` pins `google.golang.org/api v0.292.0`, and `:27` pins `cloud.google.com/go/auth v0.22.0` (indirect). The checksums are at `backend/go.sum:192-193` and `:1-2`.
+  - In `backend/engine/freebusy_service.go`, the clock field is at `:50`, the cache key at `:96` and the cache write at `:140-150`.
+  - In `backend/calendar/webcal_client.go`, the cache check is at `:53`.
+- **The provider's API root (used by AC-26).** Requests are built by resolving relative paths against the configured address (settlement section, `calendar-gen.go:200-202`). So the configured address must end in `/calendar/v3/`, including the trailing slash.
+- **The production reference environment (used by AC-3)** is the backend service's `environment:` block in `docker-compose.prod.yml:33` onward, with every `${…}` filled by a placeholder. It sets no proxy variable and no auth-library switch.
+
+## V3-2. Desired behaviour: one construction path for every deployment
+
+*Resolves Blocking 1. Replaces the exception paragraph in §V2-3, and AG-2.*
+
+**Production and the test deployment build their calendar client the same way.** Every deployment uses one construction path. That path owns the two things that matter for safety: it attaches the user's credential itself, and it refuses to follow redirection.
+
+**Deployments differ only in the configured provider address and in whether the connection-time address guard is active.** Production uses the provider's published address with the guard off, because the guard would refuse the provider's public addresses. A redirected deployment uses the stand-in's address with the guard on. Nothing else varies.
+
+**As a consequence, production's credential attachment moves off the provider library's default stack.** Today the library attaches the credential through its newer auth library (settlement section, item (c)). After this work, the shared path attaches it. This is acceptable because the credential *source* does not change: it is the same refreshing token source production uses today. The token, its refresh and the header it produces are therefore the same.
+
+Production does lose whatever the library's default stack adds around the credential:
+- its universe-domain check, which only matters outside the default universe, and this product never leaves it;
+- its instrumentation wrapper.
+
+A further consequence: the environment switch that selects the library's legacy credential stack no longer affects calendar traffic. That answers the challenger's question about a production environment that inherits the switch.
+
+**Redirection is refused in production too.** This changes behaviour in principle, but it should not be visible, because the provider's API is not expected to answer these calls with a redirection. If that expectation is wrong, the failure is loud (an error on the calendar surface), not silent.
+
+**What AC-21 now proves.** Because the path is shared, an end-to-end run against the stand-in exercises the code that attaches production's credential. The one thing it does not exercise is the guard being *off*; AC-1 and AC-27 cover that.
+
+## V3-3. Desired behaviour: no ambient proxy
+
+*Resolves Blocking 2. Amends "The guarantee" in §V2-3.*
+
+**Calendar-provider traffic never goes through a proxy taken from the environment, in any deployment.** The process ignores proxy variables in its environment for this traffic. The guarantee therefore covers the endpoint the request is delivered to, not merely the TCP peer: with no intermediary, the peer the guard judges is the endpoint.
+
+- **Production.** No deployment descriptor in the repository sets a proxy variable (§V3-1), so nothing observable changes. An operator who later needs an egress proxy for calendar traffic would find it bypassed. That would be a new requirement, to be specified with its own guard.
+- **Residual risks, out of scope:**
+  - A transparent proxy configured at system level, outside the process and intercepting connections beneath it, is not addressed. It is in the same class as AG-3.
+  - Sign-in, token exchange and token refresh are not calendar-provider traffic. This work does not change them, and they still honour ambient proxy configuration. They belong to the sign-in seam issue (§V2-7).
+
+## V3-4. Acceptance criteria: changed and added
+
+**AC-1 (rewritten).** Given no test-mode declaration and no redirection, when the configuration is evaluated, then the decision is the provider's published address (ending in the API root of §V3-1) with the address guard **off**, and the constructed client's base address equals that published address.
+*Falsified by*: a unit test over the configuration decision and the constructed client's base address. It fails if anyone gives the redirection a default or turns the guard on unconditionally. AC-27 and AC-28 prove the shared path's other properties; this criterion does not. `[unit]`
+
+**AC-2** is read against the rewritten AC-1 and is otherwise unchanged.
+
+**AC-3 (rewritten).** Given the built server image started with the production reference environment of §V3-1, when it starts, then it binds its port and answers the health request successfully within the suite's startup timeout.
+*Falsified by*: the process exiting, the port refusing connections, or the health request failing. `[e2e]`
+
+**AC-6 (rewritten).** Given each configured host below, with an otherwise valid redirection and the test-mode declaration, when the configuration is evaluated, then the outcome is exactly as listed:
+
+| Host | Startup outcome |
+|---|---|
+| `2130706433`, `0x7f000001`, `017700000001`, `127.1`, `0x7f.0.0.1` | accepted as a **name**, because none parses as an address literal |
+| `fake-google`, `localhost`, `evil.example.com` | accepted as a name |
+| `[::1]`, `[0:0:0:0:0:0:0:1]`, `[::ffff:127.0.0.1]` | accepted as a permitted literal |
+| `[::1%25lo]` | refused, naming the value: a zone-scoped literal cannot be understood here |
+| `0.0.0.0`, `[::]` | refused, naming the value (AC-15) |
+| `fake-google@evil.example.com` | refused, naming the value: it carries user information (AC-5) |
+
+In addition, for every row accepted as a name, when a calendar operation runs with a resolution answer that is a public address, then no connection is attempted to that address.
+*Falsified by*: the table, row by row, plus the resolution case. The second half is what turns "an unparseable value is never trusted" into a test failure. `[unit]`
+
+**AC-8 (rewritten).** Given a redirected deployment whose stand-in name resolves to an address outside the permitted set, when any calendar operation is attempted, then it fails, the failure says the peer address was refused, and **no connection is attempted to that address**.
+*Falsified by*: an in-process test that installs a resolution answer and records every connection attempt; any attempt to that address fails it. The answer can be a public or link-local address, because the test never needs to bind it. `[unit]`
+
+**AC-9 (rewritten).** As AC-8, but with a resolution answer that is permitted on the first call and not permitted on the second. The first request reaches an in-process listener. The second fails, with no connection attempted to the non-permitted address. `[unit]`
+
+**AC-11 (amended).** "A calendar-dependent screen" means the week view of the user's calendar, whose failures reach the user (AC-24's path). The free/busy path does not qualify (§V2-2.1). `[e2e]`
+
+**AC-17 (amended).** The precondition "the requesting user's stored provider is the primary one" is **deployment-wide**, because the setting is read from the single settings row (`freebusy_service.go:75`, `storage/settings.go:227`). Read the criterion as "given the deployment's provider setting is the primary one". `[e2e]`
+
+**AC-21 (rewritten).** Given a redirected deployment whose stand-in refuses any request without a valid credential, when AC-16, AC-18, AC-19 and AC-20 run, then each succeeds. And given a user whose stored credential the stand-in rejects, when their calendar is requested, then they are refused.
+**Because there is one construction path (§V3-2), this proves the credential attachment that production uses**, not a test-only substitute. It does not cover the guard being off (AC-1 and AC-27 do), and it still does not cover AC-17's path (§V2-2.1). `[e2e]`
+
+**AC-22 (amended).** Auto-decline is removed from the exercised set: it has no on-demand trigger and runs only on a fifteen-minute schedule, for opted-in users (challenge, non-blocking 1). It becomes AG-5 (§V3-5). Every other member stands.
+
+**AC-25 (rewritten).** Given a redirected deployment and a user with a personal calendar, when that calendar's sync is triggered on demand, then its primary-provider branch reaches the stand-in (the stand-in's record shows the arrival), and the AC-23 sink records nothing. `[e2e]`
+
+**AC-26 (new).** Given the test-mode declaration and a redirection whose address does not end in the provider's API root with its trailing slash (§V3-1) — no path, the root without the trailing slash, or a different path — when the configuration is evaluated, then it is refused, and the refusal names the value and the required ending. Given the same input, the built image exits without serving; this adds one refusal class to AC-13. `[unit]` + `[e2e]`
+
+**AC-27 (new): production through the shared path.** Given a client built through the shared path with production's settings (guard off, redirection refused, published address), **except that the address is an in-process listener's**, and given a token source that yields a known token:
+- when a calendar operation runs, then the listener receives the request carrying that token as a bearer credential;
+- when the listener answers with a redirection to a second in-process listener, then the operation fails and the second listener records nothing.
+
+Both hold with the library's legacy-stack environment switch set as well.
+*Falsified by*: building production's client through the path production actually calls. A production build that still used the library's default stack fails the redirection half, because that stack follows redirection and re-attaches the credential (settlement section). The criterion is `[unit]` rather than `[e2e]` because a test cannot reach the real provider; the address is the only setting the test substitutes. `[unit]`
+
+**AC-28 (new): no ambient proxy.** Given each of the conventional proxy variables (upper- and lower-case, for plain and TLS traffic) set to a listening in-process recorder, and a calendar client built through the shared path whose configured address is a **name** that resolves to an in-process stand-in, when a calendar operation runs, then the stand-in receives the request directly and the recorder sees no connection. Run the test once with the guard on and once with it off.
+*Falsified by*: the recorder recording anything. The name must not be `localhost` or a loopback literal: the standard proxy rules exempt both, so a test that addressed the stand-in that way would pass even if the proxy were honoured. `[unit]`
+
+## V3-5. Test-design constraints and accepted gaps (added to §V2-8)
+
+- **A free/busy failure poisons the cache for fifteen minutes.** `freebusy_service.go:140-150` caches an `unknown` result exactly as it caches a known one. So every scenario that requests free/busy must:
+  - seed the stand-in **before** its first free/busy request;
+  - use an attendee-and-date key that no other scenario in the run uses.
+
+  A scenario that breaks either rule fails AC-17 for a reason unrelated to the product. This sharpens AG-1.
+- **OQ-2 now agrees with AC-7.** The permitted set is exactly AC-7's: IPv4 loopback, IPv6 loopback, the three RFC 1918 ranges, and IPv6 unique-local. This supersedes the settlement section's "loopback plus RFC 1918". The stage-5 author should pin the e2e stack's network to an RFC 1918 subnet. Today it takes the Docker daemon's default pool, which is RFC 1918 on stock installs; a daemon using a non-RFC 1918 pool would fail closed, which is safe but confusing.
+- **AC-23's sink must not be the backend's own loopback.** Inside the single-process backend container, mapping provider names to the loopback address reaches the backend itself, not a sink. The provider names must map to the address of a separate listening service on the stack's network.
+- **AG-5: auto-decline is not exercised end-to-end.** It runs only on its fifteen-minute schedule (`backend/main.go:85-96`), and the clock is out of scope (§V2-7). It reaches the provider through the shared path like every other member, so AC-27 and AC-28 cover how it connects. Whether it reaches the stand-in in a running stack stays unproven until a clock issue lands.
+- **AG-2 is withdrawn.** There is no longer a test-only request path. The redirected path differs from production only in the configured address and the guard (§V3-2).
+
+## V3-6. Rollback — **superseded by §V3-7 item 2**
+
+v1 §7 is unchanged, with one addition: reverting this work also returns production's credential attachment, redirection behaviour and proxy behaviour to the library's defaults. There is no migration, and no stored data changes.
+
+---
+
+## Challenge — 2026-10-11 (v3)
+
+> *Narrow re-check of `# Revision v3 — 2026-10-11` and of the corrected OQ-1
+> settlement, by `spec-challenger`. The text is judged as written. Citations were
+> re-opened on this branch, which is `main` `0c75490` plus this file. Nothing was run.*
+
+**Verdict**: accept-with-changes
+
+### Do §V3-2 and §V3-3 resolve the two v2 blocking findings?
+
+- **Blocking 1 (OQ-1(c) backwards, credential-path gap): resolved.**
+  - The settlement now states (c) correctly: `calendar-gen.go:186`, `settings.go:123-125`, `dial.go:48-53`, and the DISABLE variable at `settings.go:27,120`.
+  - §V3-2 removes the gap rather than documenting it. Every deployment uses one construction path that attaches the credential itself and refuses redirection. Deployments differ only in the address and the guard.
+  - AG-2 is withdrawn. AC-21 now honestly claims to cover production's credential attachment, and names what it does not cover.
+  - The losses on production are named: the universe-domain check, and the instrumentation wrapper. I checked the second. The backend configures no OpenTelemetry SDK (no `otel.SetTracerProvider` or `otel/sdk` import under `backend/`), so losing that wrapper changes nothing observable.
+- **Blocking 2 (ambient proxy): resolved.**
+  - §V3-3 makes the guarantee about the endpoint the request is delivered to, not merely the TCP peer.
+  - It removes ambient proxies from calendar traffic in every deployment, names the transparent-proxy residual (same class as AG-3), and names the sign-in and refresh carve-out.
+  - AC-28 turns this into a test, subject to non-blocking 1 below.
+
+### New and changed criteria: is each one falsifiable?
+
+| AC | Falsifiable? | The test that fails today |
+|---|---|---|
+| AC-1 | Yes | A unit test asks the configuration decision for its result with no environment and expects "published address, guard off", then checks the constructed client's `BasePath`. It fails today because no decision exists to call. Limit: `BasePath` is identical on the library default stack, so AC-1 alone cannot show production uses the shared path. AC-27 has to carry that (non-blocking 2). |
+| AC-3 | Yes | Start the image with `docker-compose.prod.yml`'s backend `environment:` (`:33` onward), with placeholders, and expect `GET /api/health` (`backend/api/routes.go:21`) to answer within the timeout. This passes today and must stay green, so it is a regression guard. That is legitimate for this criterion. |
+| AC-6 | Yes, now | The per-row table supplies the expected outcomes v2 lacked. The second half (a name resolving to a public address gets no connection attempt) is the observable form of "never trusted". It fails today because no evaluator or guard exists. |
+| AC-8, AC-9 | Yes, now | Connection attempts are recorded, not served by a listener, so no unbindable address is needed. AC-9's first call reaching an in-process listener is a positive control, which is good. Both fail today: no guard exists, and the library dials whatever resolution returns. |
+| AC-21 | Yes | Against a stand-in that demands a credential, AC-16/18/19/20 succeed, and a rejected credential is refused. This fails today because no stand-in can be reached. |
+| **AC-26** (new) | Yes | Unit: evaluate `http://fake-google:8080`, `http://fake-google:8080/calendar/v3` (no trailing slash) and `http://fake-google:8080/other/`, and expect each refused with the value and the required ending named. E2e: the image started with one of these exits without serving. Both fail today because no evaluation exists and the variable is ignored. |
+| **AC-27** (new) | Yes, with a caveat | Point a client built through the production construction path at in-process listener A, with the guard off and a static token source yielding `T`. Expect A to see `Authorization: Bearer T`. A answers `302` to listener B: expect the operation to fail and B to record nothing. Repeat with `GOOGLE_API_GO_EXPERIMENTAL_DISABLE_NEW_AUTH_LIB=true`. It fails today: today's `NewClient` cannot be pointed anywhere, and the library default follows the 302 and re-sends `T` to B (`auth@v0.22.0/httptransport/httptransport.go:243-245`, `transport.go:550`). Caveat in non-blocking 2. |
+| **AC-28** (new) | Yes, with a caveat | Set `HTTP_PROXY`/`http_proxy`/`HTTPS_PROXY`/`https_proxy` to recorder R. Build a shared-path client for a non-loopback name resolved in-process to stand-in S. Run an operation with the guard on, then off. Expect S to receive the request and R nothing. It fails today because the library's default transport uses `http.ProxyFromEnvironment`. Caveat in non-blocking 1. |
+
+### Blocking
+
+1. **v3 changes production behaviour, but the binding text still says production does not change, and v3 supersedes none of those sentences.**
+   - **What v3 changes in production.** §V3-2 and §V3-3 deliberately alter production for every user:
+     - a different credential-attachment stack;
+     - redirection refused;
+     - ambient proxy ignored;
+     - the legacy-stack switch made inert.
+   - **What still says otherwise.** v3's "Supersedes" list does not include:
+     - §V2-3's first paragraph: "A deployment that is not being tested behaves identically before and after" (line 1154);
+     - v1 §7: "A production deployment is unaffected in either direction, because it never sets either of the two values" (lines 615-616). V3-6 says v1 §7 "is unchanged, with one addition", so this sentence is reaffirmed while V3-6's addition contradicts it;
+     - v1 §0.1's "It changes no behaviour anybody can see" and §0 point 3's "The seam is revertable by deleting configuration", both still unsuperseded.
+   - **Why it blocks.** The binding text now asserts both "production is identical" and "production's credential path, redirect and proxy behaviour change". The plan as it stands follows the first reading: `PAC-43-plan.md:142-143` says "the production path stays exactly as it is today … Two construction paths", and `:269` says the same. Stage 6 has nothing unambiguous to review the diff against.
+   - *What resolves it*:
+     - Add §V2-3's opening paragraph, §V2-6's first bullet, v1 §0.1/§0 point 3 and v1 §7's "unaffected in either direction" sentence to v3's supersede list.
+     - Restate the invariant as what v3 actually guarantees: same address, same credential source, same responses and same user-visible behaviour, with the internal changes listed in §V3-2/§V3-3 as the only exceptions.
+     - Make V3-6 say that reverting changes production back as well.
+
+### Non-blocking
+
+1. **AC-28 can pass vacuously inside one test process.**
+   - Go's `http.ProxyFromEnvironment` reads the proxy variables once per process and caches them (`net/http/transport.go:955-961`, `envProxyOnce`).
+   - A test that sets them with `t.Setenv` after anything in the same test binary has consulted the default proxy policy will see "no proxy" whatever the code under test does, so it passes over the very defect it exists to catch.
+   - The criterion needs one of these:
+     - a positive control in the same process: a client using the default proxy policy *does* reach R under that environment;
+     - or the environment set before the process starts.
+2. **AC-27 must be tied to the entry point the ten call sites use.**
+   - "Built through the shared path with production's settings, except that the address is an in-process listener's" can be met by a test that calls a lower-level builder, while production's `NewClient` still calls the library default.
+   - AC-1 cannot catch that, because the base path is identical on both stacks.
+   - State that AC-27 constructs the client through the same entry point the call sites in §2.2 use, with only the configuration decision substituted. Or add one assertion that the client the production entry point returns, given production's decision, refuses a redirection.
+3. **"No deployment descriptor sets a proxy" is evidence from the repository, not from the host.**
+   - That is true of `docker-compose.prod.yml` (checked).
+   - A Docker daemon or client `proxies` configuration on the production host injects `HTTP(S)_PROXY` into containers without appearing in any repo file. If the production host reaches Google through such a proxy, §V3-3 turns calendar traffic into connection failures at deploy.
+   - Name this as a stage-7 check, for example the release-manager inspecting the running container's environment, rather than asserting it away.
+4. **The settlement section's redirect and (b) bullets still describe only the legacy path** ("On the legacy path `NewClient` returns…", `oauth2.Transport.RoundTrip`).
+   - Their conclusions also hold on the new-auth path production actually uses (`httptransport.go:243-245`, `transport.go:550`).
+   - One clause saying so would stop a reader inferring the default path behaves differently.
+
+### Criteria I could not falsify
+
+- None outright. AC-27 and AC-28 are falsifiable once non-blocking 2 and 1 are applied. As worded, each admits a test that passes over the defect.
+
+### Citations v3 says it fixed: spot-checked
+
+All correct on this branch:
+- six `test.fixme`s, at `calendar.spec.ts:76,86`, `focus-time.spec.ts:79,90`, `manager-team.spec.ts:137` and `auth-session.spec.ts:115`, with `focus-time.spec.ts:59`;
+- `api-audit.md:458-467` for U-14/15/16/19/23;
+- `scheduling.yaml:1804-1815`, "Resolves U-18";
+- `go.mod:23,27` and `go.sum:192-193,1-2`;
+- `freebusy_service.go:50` (Clock), `:96` (key), `:140-150` (cache write), `:75` (`GetSettings`);
+- `webcal_client.go:53`;
+- `storage/settings.go:227`;
+- `docker-compose.prod.yml:33` (the backend `environment:` block, no proxy variables);
+- `main.go:85-96` (auto-decline cron);
+- `calendar-gen.go:186,200-202`, `internal/settings.go:27,120,123-125`, `dial.go:48-53`.
+
+v1 §2.7's table still shows the old line numbers. V3-1 tells the reader to substitute the new ones, which is acceptable.
+
+### Consumers this breaks
+
+- **In this repository: none.** `googlecalendar.NewService` is still built only at `backend/calendar/client.go:17`, and `mcp/` does not import it.
+- **Behavioural consumers that v3 itself creates:**
+  - Any production host that routes Google egress through an injected proxy (non-blocking 3).
+  - The plan, `docs/factory/PAC-43-plan.md:137-150` and `:269`, which specifies two construction paths and a production path "exactly as it is today". It contradicts §V3-2 and must be revised before stage 4.
+
+---
+
+## V3-7. Amendments after the v3 challenge — 2026-10-11
+
+*Answers `## Challenge — 2026-10-11 (v3)`: one blocking finding and four non-blocking ones. Where this section and anything earlier disagree, this section wins.*
+
+### 1. The production invariant, restated (blocking 1)
+
+**v3 changes production. These earlier statements claimed it does not, and are superseded:**
+- §V2-3, opening paragraph: "A deployment that is not being tested behaves identically before and after" (and v1 §3's "byte for byte on the wire", already superseded with v1 §3).
+- §V2-6, first bullet, insofar as it implies the production path is untouched. Its concern, where production sends calendar traffic, is kept in the invariant below.
+- v1 §0.1: "It changes no behaviour anybody can see."
+- v1 §0 point 3: "The seam is revertable by deleting configuration." The shared path is code that runs in production; deleting configuration does not remove it.
+- v1 §7: "A production deployment is unaffected in either direction" (replaced by item 2 below).
+- V3-6 in full (replaced by item 2 below).
+
+**What a production deployment keeps, unchanged:**
+- **The same configured address**: the provider's published address.
+- **The same credential source**: the same refreshing token source and the same stored token, sent as the same bearer credential.
+- **The same responses and user-visible behaviour**: no screen, response body, error text or status code changes. §V2-6's other bullets stand.
+
+**What changes in production. These are the only exceptions, and each is deliberate:**
+- **(E1) Credential attachment.** The shared path attaches the credential instead of the library's default stack (§V3-2). The challenger confirmed that dropping the instrumentation wrapper changes nothing observable, because the backend configures no tracing SDK.
+- **(E2) Redirection is refused** instead of followed (§V3-2).
+- **(E3) Ambient proxy variables are ignored** for calendar-provider traffic (§V3-3).
+- **(E4) The library's legacy-stack environment switch has no effect** on calendar traffic (§V3-2).
+
+None of E1 to E4 is expected to be visible to a user. If E2 or E3 is wrong about the production host, the failure is loud: a calendar error, not wrong data. **The plan (`docs/factory/PAC-43-plan.md`, which still describes two construction paths and a production path "exactly as it is today") contradicts §V3-2 and must be revised before stage 4.**
+
+### 2. Rollback (replaces V3-6 and v1 §7's "unaffected" sentence)
+
+There is no migration and no stored data changes, so nothing is lost. **But a revert changes production too:** it puts back the library's default credential stack, the library's redirect-following, honouring of ambient proxy variables, and the effect of the legacy-stack switch, which is E1 to E4 in reverse. The revert is a code deployment, not a configuration change. v1 §7's two companion steps still apply: re-disable the enabled scenarios (now AC-16 to AC-20, not v1's AC-7 to AC-11), and remove the stand-in from the test stack.
+
+### 3. Criteria and checks tightened (non-blocking)
+
+**AC-28 (amended), against a vacuous pass.** The process reads its proxy variables once and caches them. A test that sets them after anything in the same process has consulted the default proxy policy therefore sees "no proxy", whatever the code under test does. So AC-28 must do one of the following:
+- set the variables before the test process starts;
+- include, in the same process and under the same environment, a positive control: a client using the default proxy policy **does** reach the recorder.
+
+A run without one of these does not count as evidence for AC-28.
+
+**AC-27 (amended), tied to the real entry point.** The client must be obtained through **the same entry point the ten production call sites use** (v1 §2.2), with only the configuration decision substituted to supply the listener's address. A test that calls a lower-level builder does not satisfy AC-27, because AC-1 cannot tell the shared path from the library's default stack: the base address is identical on both.
+
+**Stage-7 release check (new).** Before the first release that contains this work, the release manager confirms that **no host-level proxy is configured for the backend container**. That means inspecting the running container's environment for proxy variables, which a daemon- or client-level proxy setting can inject without appearing in any repository file. The repository-level evidence in §V3-1 is not sufficient. If a proxy is present and is the production host's only route to the provider, E3 breaks calendar traffic at deploy. The release is then held, and the proxy requirement goes back to spec (§V3-3).
+
+**OQ-1 settlement, (b) and redirects.** The conclusions hold on the new-auth path production actually takes, not only on the legacy path. A clause saying so has been added in place in the settlement section, citing `auth@v0.22.0/httptransport/transport.go:550` and `httptransport.go:243-245`.
+
+---
+
+## Challenge — 2026-10-11 (V3-7)
+
+> *A narrow re-check of §V3-7 and its three pointer edits, by `spec-challenger`. The text is judged as written. Nothing was run.*
+
+**Verdict**: accept
+
+### Blocking
+
+None. The v3 blocking item is resolved:
+
+- **Supersede list.** §V3-7 item 1 supersedes every sentence I named: §V2-3's opening, §V2-6's first bullet as far as it implies the path is untouched, v1 §0.1, v1 §0 point 3, v1 §7's "unaffected" sentence, and V3-6. The v3 Supersedes line and the V3-6 heading point to it.
+- **Production invariant.** It is restated as what actually holds: the same address, the same credential source and the same user-visible behaviour. The four internal changes are enumerated as the only exceptions (E1 to E4).
+- **Plan.** It is named as contradicting §V3-2 and must be revised before stage 4.
+- **Rollback.** Item 2 now says a revert is a code deployment that changes production back, and it corrects the scenario numbers to AC-16 to AC-20.
+
+### Non-blocking
+
+1. **The AC-28 amendment is sound.** A run counts only if the proxy variables are set before the process starts, or if a positive control shows the default proxy policy reaching the recorder under the same environment. Either closes the vacuous pass caused by the per-process cache.
+2. **The AC-27 amendment is sound.** It must go through the entry point the ten call sites use, with only the configuration decision substituted. That closes the gap AC-1 cannot see.
+3. **The stage-7 proxy check is sound.** It includes a hold-and-return-to-spec exit.
+4. **The settlement clauses are correct.** I verified them earlier against `auth@v0.22.0/httptransport/transport.go:550` and `httptransport.go:243-245`.
+5. **The layout box at the top of the file is now stale (lines 8-20).**
+   - It still says "§0, §1, §2, §5 and §7 survive v1 unchanged". §V3-7 has since superseded parts of §0 and §7.
+   - It names "v2 AC-1 through AC-25" as the binding set. The binding set is now AC-1 to AC-28, with the v3 and V3-7 texts.
+   - §V3-7's "this section wins" makes the precedence unambiguous, so this does not block. The box should still be updated so a reader starting cold is not misled.
+
+### No new contradictions
+
+E1 to E4 match §V3-2 and §V3-3. §V2-6's remaining bullets and §V2-7's prohibition on redirection in a production build are unaffected: production can still reach a stand-in only through the test-mode declaration.
+
+### Consumers this breaks
+
+None beyond those already named: the plan, which must be revised, and any production host that has an injected proxy (now covered by the stage-7 check).
