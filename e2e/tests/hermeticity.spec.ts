@@ -16,13 +16,13 @@
 import { test, expect } from '@playwright/test';
 
 import { SINK_ADDRESS, SINK_HOSTS, sink, unexplainedSinkConnections } from '../fake';
-import { docker, E2E_NETWORK } from '../lib/docker';
+import { docker, E2E_NETWORK, stackBackendLogs } from '../lib/docker';
 import { COMPOSE_FILE, COMPOSE_PROJECT } from '../global-setup';
 
 /** The positive control's own request, recognisable in the sink log. */
 const PROBE_PATH = '/__pac43-sink-probe__';
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: 'default' });
 
 test.describe('AC-23 — the recording sink after the whole run', () => {
   test('every provider host name maps to the sink inside the backend container', async () => {
@@ -63,6 +63,20 @@ test.describe('AC-23 — the recording sink after the whole run', () => {
     // The connections the status lookup did make never got as far as a
     // credential: the sink refused the TLS handshake.
     expect(all.filter((c) => c.credential_presented && c.path !== PROBE_PATH)).toEqual([]);
+
+    // The excused signature (TLS, SNI www.googleapis.com) is also what a
+    // calendar call to the PUBLISHED address would look like. So bound it:
+    // there can be at most one such connection per GET /api/auth/status the
+    // backend served. A calendar path that bypassed the stand-in adds
+    // connections no status call explains, and fails here.
+    const excused = all.length - unexplainedSinkConnections(all).length;
+    const statusCalls = (await stackBackendLogs())
+      .split('\n')
+      .filter((l) => /\bGET \/api\/auth\/status\b/.test(l)).length;
+    expect(
+      excused,
+      `${excused} TLS connections to www.googleapis.com, but only ${statusCalls} status calls to explain them`,
+    ).toBeLessThanOrEqual(statusCalls);
   });
 
   test('positive control: the sink records a credentialed request that reaches it', async () => {
