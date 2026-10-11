@@ -106,17 +106,21 @@ func TestNextExpectedDate_CustomZeroDays(t *testing.T) {
 	}
 }
 
+// PAC-54: a member never met is due now, not always one interval away.
 func TestNextExpectedDate_NoLastDate(t *testing.T) {
-	m := newMemberWithCadence("weekly", nil, nil)
-	e := &ManagerEngine{}
-	before := time.Now().UTC()
-	got := e.nextExpectedDate(m)
-	after := time.Now().UTC()
-	// base is now(), so expected is now()+7d; just check it's roughly 7 days out
-	minExpected := before.AddDate(0, 0, 7)
-	maxExpected := after.AddDate(0, 0, 7)
-	if got.Before(minExpected) || got.After(maxExpected) {
-		t.Errorf("no last date weekly: got %v, expected roughly %v", got, minExpected)
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	e := &ManagerEngine{Clock: FixedClock{T: now}}
+	for _, cadence := range []string{"weekly", "biweekly", "monthly"} {
+		if got := e.nextExpectedDate(newMemberWithCadence(cadence, nil, nil)); !got.Equal(now) {
+			t.Errorf("never met %s: got %v, want now %v", cadence, got, now)
+		}
+	}
+	days := 10
+	if got := e.nextExpectedDate(newMemberWithCadence("custom", nil, &days)); !got.Equal(now) {
+		t.Errorf("never met custom: got %v, want now", got)
+	}
+	if got := e.nextExpectedDate(newMemberWithCadence("custom", nil, nil)); !got.IsZero() {
+		t.Errorf("never met custom without days: got %v, want zero", got)
 	}
 }
 

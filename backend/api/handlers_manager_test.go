@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 type fakeManagerWorkflow struct {
 	detectCalls int
 	gaps        []engine.CadenceGap
+	gapsRoster  []*storage.ManagerTeamMember
 }
 
 func (f *fakeManagerWorkflow) DetectTeam(context.Context, uuid.UUID) (*engine.DetectResult, error) {
@@ -26,7 +28,8 @@ func (f *fakeManagerWorkflow) DetectTeam(context.Context, uuid.UUID) (*engine.De
 	return &engine.DetectResult{MembersAdded: 1, IsManager: true}, nil
 }
 
-func (f *fakeManagerWorkflow) GetGaps(context.Context, uuid.UUID) ([]engine.CadenceGap, error) {
+func (f *fakeManagerWorkflow) GetGaps(_ context.Context, _ uuid.UUID, members []*storage.ManagerTeamMember) ([]engine.CadenceGap, error) {
+	f.gapsRoster = members
 	return f.gaps, nil
 }
 
@@ -399,5 +402,48 @@ func TestManagerDetect_PreviewDoesNotAssignEitherTeam(t *testing.T) {
 	otherMembers, err := storage.ListManagerTeamMembersForTeam(db, managerID, other.ID)
 	if err != nil || len(otherMembers) != 0 {
 		t.Fatalf("other assignments = %d, err=%v", len(otherMembers), err)
+	}
+}
+
+// PAC-54: with a team in scope, gaps are computed over that team's roster and
+// its cadences, not the global roster filtered afterwards.
+func TestManagerGaps_ComputesOverTheRosterInScope(t *testing.T) {
+	workflow := &fakeManagerWorkflow{}
+	r := setupManagerRoutes(t, workflow)
+	ownerID := createTestUser(t, "manager-gaps-scope@example.com")
+	team := createManagerTestTeam(t, ownerID, "Gaps Scope")
+	db := openTestDB(t)
+	member := &storage.ManagerTeamMember{
+		ManagerUserID: ownerID, MemberEmail: "team-report@example.com", DisplayName: "Team Report",
+		Source: "manual", Cadence: "weekly",
+	}
+	if err := storage.UpsertManagerTeamMemberForTeam(db, team.ID, member); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	other := &storage.ManagerTeamMember{
+		ManagerUserID: ownerID, MemberEmail: "other-report@example.com", DisplayName: "Other Report",
+		Source: "manual", Cadence: "weekly",
+	}
+	if err := storage.UpsertManagerTeamMember(db, other); err != nil {
+		t.Fatalf("upsert global: %v", err)
+	}
+
+	scoped := managerRequest(t, r, http.MethodGet, "/api/manager/gaps?team_id="+team.ID.String(), ownerID, nil)
+	if scoped.Code != http.StatusOK {
+		t.Fatalf("scoped status = %d; body: %s", scoped.Code, scoped.Body.String())
+	}
+	if len(workflow.gapsRoster) != 1 || workflow.gapsRoster[0].MemberEmail != member.MemberEmail || workflow.gapsRoster[0].Cadence != "weekly" {
+		t.Fatalf("team-scoped roster = %+v, want only %s with its team cadence", workflow.gapsRoster, member.MemberEmail)
+	}
+
+	global := managerRequest(t, r, http.MethodGet, "/api/manager/gaps", ownerID, nil)
+	if global.Code != http.StatusOK {
+		t.Fatalf("global status = %d; body: %s", global.Code, global.Body.String())
+	}
+	if len(workflow.gapsRoster) != 2 {
+		t.Fatalf("global roster has %d member(s), want 2", len(workflow.gapsRoster))
+	}
+	if got := strings.TrimSpace(global.Body.String()); got != `{"gaps":[]}` {
+		t.Fatalf("no gaps body = %s, want an empty array", got)
 	}
 }

@@ -408,32 +408,20 @@ func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	eng := h.newEngine()
-	gaps, err := eng.GetGaps(r.Context(), userID)
+	// Compute over the roster in scope, so a team's own members and cadences
+	// are what count (PAC-54).
+	members, err := h.listManagerMembers(userID, teamID)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	gaps, err := h.newEngine().GetGaps(r.Context(), userID, members)
 	if err != nil {
 		http.Error(w, "gap detection error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if gaps == nil {
 		gaps = []engine.CadenceGap{}
-	}
-	if teamID != nil {
-		members, listErr := h.listManagerMembers(userID, teamID)
-		if listErr != nil {
-			http.Error(w, "db error", http.StatusInternalServerError)
-			return
-		}
-		allowed := make(map[string]bool, len(members))
-		for _, member := range members {
-			allowed[strings.ToLower(member.MemberEmail)] = true
-		}
-		filtered := gaps[:0]
-		for _, gap := range gaps {
-			if allowed[strings.ToLower(gap.MemberEmail)] {
-				filtered = append(filtered, gap)
-			}
-		}
-		gaps = filtered
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"gaps": gaps})

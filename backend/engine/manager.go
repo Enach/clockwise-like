@@ -318,13 +318,10 @@ type CadenceGap struct {
 	DaysOverdue    int        `json:"days_overdue"`
 }
 
-// GetGaps returns members whose 1:1 cadence is at risk or overdue.
-func (e *ManagerEngine) GetGaps(ctx context.Context, managerID uuid.UUID) ([]CadenceGap, error) {
-	members, err := storage.ListManagerTeamMembers(e.DB, managerID)
-	if err != nil {
-		return nil, err
-	}
-
+// GetGaps returns the members of the given roster whose 1:1 cadence is at
+// risk or overdue. The caller chooses the roster: the manager's global one, or
+// a team's, whose cadences can differ from the global ones (PAC-54).
+func (e *ManagerEngine) GetGaps(ctx context.Context, managerID uuid.UUID, members []*storage.ManagerTeamMember) ([]CadenceGap, error) {
 	now := e.now().UTC()
 	var gaps []CadenceGap
 
@@ -372,13 +369,17 @@ func (e *ManagerEngine) GetGaps(ctx context.Context, managerID uuid.UUID) ([]Cad
 	return gaps, nil
 }
 
-// nextExpectedDate returns the date the next 1:1 with m should occur.
+// nextExpectedDate returns the date the next 1:1 with m should occur, or the
+// zero time when m has no cadence. A member never met is due now (PAC-54).
 // Uses calendar-month arithmetic for "monthly" cadence; day-based addition for the rest.
 func (e *ManagerEngine) nextExpectedDate(m *storage.ManagerTeamMember) time.Time {
-	base := e.now().UTC()
-	if m.LastOneOnOneAt != nil {
-		base = *m.LastOneOnOneAt
+	if m.LastOneOnOneAt == nil {
+		if !hasCadence(m) {
+			return time.Time{}
+		}
+		return e.now().UTC()
 	}
+	base := *m.LastOneOnOneAt
 	switch m.Cadence {
 	case "weekly":
 		return base.AddDate(0, 0, 7)
@@ -392,6 +393,16 @@ func (e *ManagerEngine) nextExpectedDate(m *storage.ManagerTeamMember) time.Time
 		}
 	}
 	return time.Time{}
+}
+
+func hasCadence(m *storage.ManagerTeamMember) bool {
+	switch m.Cadence {
+	case "weekly", "biweekly", "monthly":
+		return true
+	case "custom":
+		return m.CadenceCustomDays != nil && *m.CadenceCustomDays > 0
+	}
+	return false
 }
 
 func (e *ManagerEngine) hasFutureEvent(_ context.Context, managerID uuid.UUID, memberEmail string, from, to time.Time) bool {

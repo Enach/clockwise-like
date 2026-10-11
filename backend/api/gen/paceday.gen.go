@@ -584,7 +584,7 @@ type CadenceGap struct {
 	LastOneOnOneAt *time.Time          `json:"last_one_on_one_at"`
 	MemberEmail    openapi_types.Email `json:"member_email"`
 
-	// NextExpectedBy last_one_on_one_at (or now, when never met) plus the cadence interval. Monthly uses calendar-month arithmetic; the rest use day addition.
+	// NextExpectedBy last_one_on_one_at plus the cadence interval; now when the member was never met. Monthly uses calendar-month arithmetic; the rest use day addition.
 	NextExpectedBy time.Time `json:"next_expected_by"`
 }
 

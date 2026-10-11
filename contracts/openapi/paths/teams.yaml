@@ -369,9 +369,9 @@ paths:
       tags: [manager]
       summary: Members whose 1:1 cadence is overdue or due within 7 days.
       description: >
-        The engine always computes gaps over the manager's GLOBAL roster; when `team_id`
-        is supplied the handler post-filters that list to emails present in the team-scoped
-        roster (case-insensitive). Members with cadence="none" never appear. A member with
+        Gaps are computed over the roster in scope: the manager's global roster, or, when
+        `team_id` is supplied, the team-scoped roster with that team's cadences. Members
+        with cadence="none" never appear. A member never met is due now. A member with
         a recorded 1:1 occurrence in the next 14 days is suppressed. Sorted by
         days_overdue descending. `gaps` is always an array, never null.
       parameters:
@@ -1312,8 +1312,8 @@ components:
           type: string
           format: date-time
           description: >
-            last_one_on_one_at (or now, when never met) plus the cadence interval. Monthly
-            uses calendar-month arithmetic; the rest use day addition.
+            last_one_on_one_at plus the cadence interval; now when the member was never met.
+            Monthly uses calendar-month arithmetic; the rest use day addition.
         days_overdue:
           type: integer
           minimum: 0
