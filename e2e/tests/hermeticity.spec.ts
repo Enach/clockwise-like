@@ -36,7 +36,7 @@ test.describe('AC-23 — the recording sink after the whole run', () => {
 
   test.fixme(
     'AC-23 (strict): the sink records no connection at all',
-    // BLOCKED by a backend defect, to be filed as a PAC-43 follow-up in Linear
+    // BLOCKED by PAC-65 (backend defect)
     // ("GET /api/auth/status sends the user's calendar credential to Google
     // userinfo, outside the calendar seam"). For a user with a stored
     // credential, backend/api/handlers_auth.go status() calls fetchUserEmail,
