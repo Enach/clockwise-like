@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -82,7 +83,8 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 		loc = time.UTC
 	}
 
-	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, req.RangeStart)
+	// The requester's own focus blocks; calClient uses the same user.
+	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, auth.UserIDFromContext(ctx), req.RangeStart)
 	allowOutOfHours, err := canScheduleOutOfHours(ctx, client, s, req.RangeStart)
 	if err != nil {
 		return nil, fmt.Errorf("count out-of-hours meetings: %w", err)

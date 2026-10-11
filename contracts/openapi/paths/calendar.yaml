@@ -788,7 +788,7 @@ paths:
         than the most recent `limit` (at most 500) cannot be retrieved through this API
         at all, and because this operation is the only reader of the table in the whole
         codebase (one SELECT, backend/storage/audit_log.go:19; one INSERT,
-        backend/storage/focus_blocks.go:61-63; no view, no join, no second reader) they
+        backend/storage/focus_blocks.go:74-76; no view, no join, no second reader) they
         cannot be retrieved any other way either.
 
 
@@ -1615,7 +1615,7 @@ components:
             This is the complete set the server can emit, enumerated from every
             `storage.WriteAuditLog` call site in `backend/` (the action argument is a
             string literal at all seven, and `storage.WriteAuditLog`,
-            backend/storage/focus_blocks.go:61-63, holds the only INSERT against the
+            backend/storage/focus_blocks.go:74-76, holds the only INSERT against the
             table): `focus_created` (backend/engine/focus_time.go:106),
             `focus_cleared` (backend/engine/focus_time_cleaner.go:39),
             `meeting_scheduled` (backend/engine/smart_schedule.go:323),

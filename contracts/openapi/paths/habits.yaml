@@ -382,7 +382,7 @@ paths:
       description: |
         Live Google Calendar read for the Monday-anchored week containing `date`.
         Only events with `start.dateTime` set (all-day events skipped) and at least one
-        attendee are included; events matching a focus block or a habit occurrence's
+        attendee are included; events matching one of the user's focus blocks or a habit occurrence's
         calendar_event_id are excluded. Sorted by `duration_minutes` descending.
         A nil slice is normalised to `[]`.
       parameters:

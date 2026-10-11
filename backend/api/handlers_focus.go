@@ -56,7 +56,7 @@ func (h *focusHandlers) listBlocks(w http.ResponseWriter, r *http.Request) {
 		weekStart = parsed
 	}
 
-	blocks, err := storage.ListFocusBlocksForWeek(h.db, weekStart)
+	blocks, err := storage.ListFocusBlocksForUserWeek(h.db, userIDFromCtx(r.Context()), weekStart)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -77,7 +77,7 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 	}
 
 	// Build focus event ID set.
-	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, weekStart)
+	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, userID, weekStart)
 	focusIDs := make(map[string]struct{}, len(focusBlocks))
 	for _, fb := range focusBlocks {
 		focusIDs[fb.GoogleEventID] = struct{}{}
@@ -227,7 +227,7 @@ func (e *AnalyticsEngine) WeekMeetings(ctx context.Context, userID uuid.UUID, da
 	weekEnd := weekStart.AddDate(0, 0, 7)
 
 	// Build skip-sets.
-	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, weekStart)
+	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, userID, weekStart)
 	focusIDs := make(map[string]struct{}, len(focusBlocks))
 	for _, fb := range focusBlocks {
 		focusIDs[fb.GoogleEventID] = struct{}{}
