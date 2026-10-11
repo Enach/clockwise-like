@@ -302,3 +302,94 @@ func TestSchedulingLinksValidationErrorsUse422(t *testing.T) {
 		})
 	}
 }
+
+// PAC-61: re-inviting or re-saving co-hosts must never change an existing
+// host's status. Before the fix both paths reset accepted hosts to pending,
+// which silently dropped their calendars from the link's slots.
+
+func hostStatuses(t *testing.T, linkID uuid.UUID) map[uuid.UUID]string {
+	t.Helper()
+	hosts, err := storage.GetLinkHosts(openTestDB(t), linkID)
+	if err != nil {
+		t.Fatalf("get hosts: %v", err)
+	}
+	out := make(map[uuid.UUID]string, len(hosts))
+	for _, h := range hosts {
+		out[h.UserID] = h.Status
+	}
+	return out
+}
+
+func TestSchedulingLinksReinviteKeepsExistingHostStatus(t *testing.T) {
+	r := setupSchedulingLinkRoutes(t)
+	ownerID := createTestUser(t, "pac61-owner@example.com")
+	acceptedID := createTestUser(t, "pac61-accepted@example.com")
+	declinedID := createTestUser(t, "pac61-declined@example.com")
+	link := createSchedulingLinkRecord(t, ownerID, "pac61-reinvite", "Reinvite")
+	db := openTestDB(t)
+	for id, status := range map[uuid.UUID]string{acceptedID: "accepted", declinedID: "declined"} {
+		if _, err := storage.AddLinkHost(db, link.ID, id, "pending"); err != nil {
+			t.Fatalf("add host: %v", err)
+		}
+		if err := storage.RespondToHostInvite(db, link.ID, id, status); err != nil {
+			t.Fatalf("respond: %v", err)
+		}
+	}
+
+	for _, email := range []string{"pac61-accepted@example.com", "pac61-declined@example.com"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", bytes.NewBufferString(`{"email":"`+email+`"}`))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, withUser(req, ownerID))
+		if w.Code != http.StatusOK {
+			t.Fatalf("re-invite %s: status = %d, want 200 (already a host); body: %s", email, w.Code, w.Body.String())
+		}
+	}
+
+	got := hostStatuses(t, link.ID)
+	if got[acceptedID] != "accepted" {
+		t.Errorf("accepted co-host is now %q after a re-invite, want accepted", got[acceptedID])
+	}
+	if got[declinedID] != "declined" {
+		t.Errorf("declined co-host is now %q after a re-invite, want declined", got[declinedID])
+	}
+}
+
+func TestSchedulingLinksPatchCoHostsSetsListByDifference(t *testing.T) {
+	r := setupSchedulingLinkRoutes(t)
+	ownerID := createTestUser(t, "pac61-patch-owner@example.com")
+	keptID := createTestUser(t, "pac61-kept@example.com")
+	droppedID := createTestUser(t, "pac61-dropped@example.com")
+	newID := createTestUser(t, "pac61-new@example.com")
+	link := createSchedulingLinkRecord(t, ownerID, "pac61-patch", "Patch")
+	db := openTestDB(t)
+	for _, id := range []uuid.UUID{keptID, droppedID} {
+		if _, err := storage.AddLinkHost(db, link.ID, id, "pending"); err != nil {
+			t.Fatalf("add host: %v", err)
+		}
+		if err := storage.RespondToHostInvite(db, link.ID, id, "accepted"); err != nil {
+			t.Fatalf("accept: %v", err)
+		}
+	}
+
+	body := `{"co_host_emails":["pac61-kept@example.com","pac61-new@example.com"]}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/scheduling-links/"+link.ID.String(), bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withUser(req, ownerID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+
+	got := hostStatuses(t, link.ID)
+	if got[keptID] != "accepted" {
+		t.Errorf("a listed, accepted co-host is now %q, want accepted", got[keptID])
+	}
+	if _, still := got[droppedID]; still {
+		t.Errorf("an unlisted co-host is still a host (%q), want removed", got[droppedID])
+	}
+	if got[newID] != "pending" {
+		t.Errorf("a newly listed co-host is %q, want pending", got[newID])
+	}
+	if got[ownerID] != "accepted" {
+		t.Errorf("the owner is now %q, want accepted", got[ownerID])
+	}
+}

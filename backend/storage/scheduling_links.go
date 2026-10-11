@@ -206,12 +206,6 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 
 // --- LinkHost CRUD ---------------------------------------------------------
 
-func RemoveNonOwnerLinkHosts(db *sql.DB, linkID, ownerID uuid.UUID) error {
-	_, err := db.ExecContext(context.Background(),
-		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id <> $2`, linkID, ownerID)
-	return err
-}
-
 func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
@@ -220,6 +214,47 @@ func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost
 		RETURNING id, link_id, user_id, status, invited_at, responded_at
 	`, linkID, userID, status)
 	return scanLinkHost(row)
+}
+
+// InviteLinkHost adds userID to linkID as a pending co-host. If the user is
+// already a host of the link, their row is returned unchanged and created is
+// false: an invite never changes an existing host's status, so re-inviting an
+// accepted co-host cannot drop their calendar from the link's slots (PAC-61).
+func InviteLinkHost(db *sql.DB, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
+	row := db.QueryRowContext(context.Background(), `
+		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
+		VALUES ($1, $2, 'pending')
+		ON CONFLICT (link_id, user_id) DO NOTHING
+		RETURNING id, link_id, user_id, status, invited_at, responded_at
+	`, linkID, userID)
+	host, err = scanLinkHost(row)
+	if err != nil {
+		return nil, false, err
+	}
+	if host != nil {
+		return host, true, nil
+	}
+	// DO NOTHING returned no row: the user is already a host. Return them as is.
+	row = db.QueryRowContext(context.Background(), `
+		SELECT id, link_id, user_id, status, invited_at, responded_at
+		FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
+	`, linkID, userID)
+	host, err = scanLinkHost(row)
+	return host, false, err
+}
+
+// RemoveLinkHostsExcept deletes every non-owner host of linkID whose user is
+// not in keep. Hosts in keep are left exactly as they are.
+func RemoveLinkHostsExcept(db *sql.DB, linkID, ownerID uuid.UUID, keep []uuid.UUID) error {
+	ids := make([]string, len(keep))
+	for i, id := range keep {
+		ids[i] = id.String()
+	}
+	_, err := db.ExecContext(context.Background(), `
+		DELETE FROM scheduling_link_hosts
+		WHERE link_id = $1 AND user_id <> $2 AND NOT (user_id::text = ANY($3::text[]))
+	`, linkID, ownerID, pq.Array(ids))
+	return err
 }
 
 func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
