@@ -23,7 +23,7 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	var results []*engine.CompressionResult
+	results := make([]*engine.CompressionResult, 0)
 
 	if body.Week != "" {
 		weekStart, err := time.Parse("2006-01-02", body.Week)
@@ -78,7 +78,7 @@ func (h *scheduleHandlers) applyCompress(w http.ResponseWriter, r *http.Request)
 	}
 
 	var proposals []engine.MoveProposal
-	var failed []string
+	failed := make([]string, 0)
 	for _, p := range req.Proposals {
 		start, err1 := time.Parse(time.RFC3339, p.ProposedStart)
 		end, err2 := time.Parse(time.RFC3339, p.ProposedEnd)
@@ -99,6 +99,9 @@ func (h *scheduleHandlers) applyCompress(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	failed = append(failed, engineFailed...)
+	if applied == nil {
+		applied = make([]string, 0)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{

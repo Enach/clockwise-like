@@ -66,7 +66,7 @@ func ListFocusBlocksForWeek(db *sql.DB, weekStart time.Time) ([]FocusBlock, erro
 	}
 	defer rows.Close()
 
-	var blocks []FocusBlock
+	blocks := make([]FocusBlock, 0)
 	for rows.Next() {
 		var b FocusBlock
 		if err := rows.Scan(&b.ID, &b.GoogleEventID, &b.StartTime, &b.EndTime, &b.Date, &b.CreatedAt); err != nil {

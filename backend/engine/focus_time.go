@@ -87,7 +87,12 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 	}
 
 	monday := startOfWeek(targetWeek)
-	result := &FocusRunResult{WeekStart: monday}
+	result := &FocusRunResult{
+		WeekStart:     monday,
+		CreatedBlocks: make([]FocusBlock, 0),
+		SkippedDays:   make([]string, 0),
+		Errors:        make([]string, 0),
+	}
 
 	for i := 0; i < 5; i++ {
 		day := monday.AddDate(0, 0, i)

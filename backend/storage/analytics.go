@@ -138,7 +138,16 @@ func scanAnalyticsWeek(row *sql.Row) (*AnalyticsWeek, error) {
 	}
 	a.WeekStart, _ = time.Parse("2006-01-02", weekStartStr)
 	_ = json.Unmarshal(titlesJSON, &a.TopMeetingTitles)
+	normaliseMeetingTitles(&a)
 	return &a, nil
+}
+
+// normaliseMeetingTitles turns a nil top_meeting_titles (a JSONB `null`, or a
+// failed unmarshal) into an empty slice so it encodes as [] (PAC-28).
+func normaliseMeetingTitles(a *AnalyticsWeek) {
+	if a.TopMeetingTitles == nil {
+		a.TopMeetingTitles = make([]MeetingTitle, 0)
+	}
 }
 
 func scanAnalyticsWeekRow(rows *sql.Rows) (*AnalyticsWeek, error) {
@@ -156,5 +165,6 @@ func scanAnalyticsWeekRow(rows *sql.Rows) (*AnalyticsWeek, error) {
 	}
 	a.WeekStart, _ = time.Parse("2006-01-02", weekStartStr)
 	_ = json.Unmarshal(titlesJSON, &a.TopMeetingTitles)
+	normaliseMeetingTitles(&a)
 	return &a, nil
 }
