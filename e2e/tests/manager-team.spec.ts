@@ -21,8 +21,9 @@
 
 import { test, expect } from '../fixtures';
 import { BASE_URL, mintSessionToken } from '../auth';
-import { ANALYTICS, TEAMS, USERS } from '../seed/ids';
-import { isoDate, mondayOf } from '../lib/dates';
+import { ANALYTICS, CONNECTED, TEAMS, USERS } from '../seed/ids';
+import { atUtc, DAY_MS, isoDate, mondayOf } from '../lib/dates';
+import { fake, type FakeEvent } from '../fake';
 import { switchTeam } from '../lib/ui';
 
 const thisWeek = () => isoDate(mondayOf(new Date()));
@@ -134,14 +135,100 @@ test.describe('manager roster — in the browser', () => {
     await expect(authedPage.getByText(USERS.alphaReport.name)).toHaveCount(0);
   });
 
-  test.fixme(
-    'rescanning the calendar detects 1:1s and proposes team members',
-    // BLOCKED: the "Re-scan calendar for team members" action posts to
-    // /api/manager/detect -> engine.ManagerEngine.DetectTeam(), which begins
-    // with calendar.NewClient() and returns "calendar client"/"list events"
-    // errors without one. Detection is defined entirely in terms of recurring
-    // two-person events on the manager's Google Calendar, so it cannot be
-    // exercised without SEAM-REQUIRED.md item A.
-    async () => {},
-  );
+});
+
+test.describe('manager 1:1 detection — with a connected calendar (PAC-43, through the stand-in)', () => {
+  const MANAGER = CONNECTED.manager;
+
+  test('AC-20: scanning the calendar detects 1:1s and proposes exactly those team members', async ({
+    pageAs,
+    assertNotDemo,
+  }) => {
+    // POST /api/manager/detect -> engine.ManagerEngine.DetectTeam: list the
+    // manager's events for now ± 42 days and keep recurring meetings with
+    // exactly one other person, 15–90 minutes long (engine/manager.go
+    // collectOneOnOneCandidates). The stand-in holds, as Google returns them
+    // with singleEvents=true, expanded instances carrying recurringEventId:
+    const run = Date.now();
+    const ada = { email: `e2e.ada.${run}@colleague.e2e.test`, displayName: 'E2E Ada Colleague' };
+    const bob = { email: `e2e.bob.${run}@colleague.e2e.test`, displayName: 'E2E Bob Colleague' };
+    const cyd = { email: `e2e.cyd.${run}@colleague.e2e.test`, displayName: 'E2E Cyd Group' };
+    const dan = { email: `e2e.dan.${run}@colleague.e2e.test`, displayName: 'E2E Dan OneOff' };
+    const eve = { email: `e2e.eve.${run}@colleague.e2e.test`, displayName: 'E2E Eve Workshop' };
+    const me = { email: MANAGER.email, self: true, responseStatus: 'accepted' };
+    const daysAgo = (n: number, hhmm: string) => atUtc(new Date(Date.now() - n * DAY_MS), hhmm);
+    const instance = (
+      series: string,
+      n: number,
+      start: string,
+      minutes: number,
+      who: Array<{ email: string; displayName?: string }>,
+    ): FakeEvent => ({
+      summary: `E2E ${series}`,
+      recurringEventId: `${series}-${run}`,
+      start: { dateTime: daysAgo(n, start) },
+      end: { dateTime: new Date(Date.parse(daysAgo(n, start)) + minutes * 60_000).toISOString() },
+      attendees: [me, ...who.map((w) => ({ ...w, responseStatus: 'accepted' }))],
+    });
+
+    await fake.clearCalendar(MANAGER.email);
+    await fake.seedEvents(MANAGER.email, [
+      // Weekly 1:1 with Ada: proposed.
+      instance('ada-1on1', 7, '10:00', 30, [ada]),
+      instance('ada-1on1', 14, '10:00', 30, [ada]),
+      instance('ada-1on1', 21, '10:00', 30, [ada]),
+      // Biweekly 1:1 with Bob: proposed.
+      instance('bob-1on1', 10, '14:00', 45, [bob]),
+      instance('bob-1on1', 24, '14:00', 45, [bob]),
+      // A recurring three-person meeting: not a 1:1.
+      instance('group-sync', 8, '11:00', 30, [ada, cyd]),
+      instance('group-sync', 15, '11:00', 30, [ada, cyd]),
+      // A single, non-recurring two-person meeting: not a series.
+      {
+        summary: 'E2E one-off coffee',
+        start: { dateTime: daysAgo(5, '15:00') },
+        end: { dateTime: daysAgo(5, '15:30') },
+        attendees: [me, { ...dan, responseStatus: 'accepted' }],
+      },
+      // A recurring two-person meeting longer than 90 minutes: not a 1:1.
+      instance('eve-workshop', 9, '13:00', 120, [eve]),
+      instance('eve-workshop', 16, '13:00', 120, [eve]),
+    ]);
+
+    const mark = await fake.mark();
+    const page = await pageAs(MANAGER, { isManager: true });
+    await page.goto('/app/team');
+    await assertNotDemo(page);
+
+    // The team was seeded with nobody in it, so the page offers a scan.
+    const detect = page.waitForResponse(
+      (r) => r.url().includes('/api/manager/detect') && r.request().method() === 'POST',
+    );
+    await page.getByRole('button', { name: 'Scan calendar now' }).click();
+    const res = await detect;
+    expect(res.status(), await res.text()).toBe(200);
+
+    // Exactly the two colleagues, and nobody else, are proposed — in the API...
+    const body = (await res.json()) as { candidates: Array<{ email: string }> };
+    expect(body.candidates.map((c) => c.email).sort()).toEqual([ada.email, bob.email].sort());
+
+    // ...and on screen, in the preview the manager confirms from.
+    const dialog = page.getByRole('dialog', { name: 'Choose people to add' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('checkbox')).toHaveCount(2);
+    await expect(dialog.getByText(ada.email)).toBeVisible();
+    await expect(dialog.getByText(bob.email)).toBeVisible();
+    for (const other of [cyd, dan, eve]) {
+      await expect(dialog.getByText(other.email)).toHaveCount(0);
+    }
+
+    // Detection read the manager's calendar over the six-week window, with
+    // the manager's credential.
+    const asked = (await fake.requests(mark, MANAGER.label)).filter(
+      (r) => r.operation === 'events.list' && r.calendar_id === MANAGER.email,
+    );
+    expect(asked).toHaveLength(1);
+    const spanDays = (Date.parse(asked[0]!.time_max!) - Date.parse(asked[0]!.time_min!)) / DAY_MS;
+    expect(Math.round(spanDays)).toBe(84);
+  });
 });
