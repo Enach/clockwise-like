@@ -3,7 +3,7 @@
  *
  * Why globalSetup and not playwright's `webServer`: `webServer` is built around
  * one command that owns one port and is killed when the run ends. This stack is
- * four containers, and a developer debugging a failure wants to leave it up.
+ * six containers, and a developer debugging a failure wants to leave it up.
  * globalSetup runs `docker compose up -d --wait`, and global-teardown.ts tears
  * it down unless E2E_KEEP_STACK=1.
  *

@@ -67,8 +67,14 @@ is better for users as well, and the suite would then need no ids here.
 
 ## 4. Dashboard calendar — `src/pages/Dashboard.tsx`
 
-Not blocking anything today (the calendar journey is blocked on the backend
-seam, see `SEAM-REQUIRED.md`), but will be needed the moment that lands.
+Needed now (PAC-44): the backend seam landed in PAC-43, and the calendar
+journeys run. Until these ids exist, `tests/calendar.spec.ts` (AC-16),
+`tests/focus-time.spec.ts` (AC-18) and `tests/seam.spec.ts` (AC-11) find
+events by their **title text** — user-visible content, but FullCalendar gives
+an event no role — and AC-18 counts focus blocks with
+`/^\W*Focus Time$/` because the dashboard prefixes the title with an icon
+("🎯 "). A change to that decoration, or a second element repeating a title,
+breaks those selectors without breaking the feature.
 
 | Test id | Element |
 |---|---|

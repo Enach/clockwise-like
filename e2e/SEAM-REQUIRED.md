@@ -1,7 +1,28 @@
 # SEAM-REQUIRED — what the backend needs before external calendars can be faked
 
-**Status**: factory work item. Stage 0 intake, ready for a spec.
+**Status**: **item A is done (PAC-43)**; items B and C remain open.
 **Raised by**: `e2e-author`, while building `e2e/`.
+
+> **PAC-43 update.** Item A landed as specified in `docs/specs/PAC-43.md`
+> (v3 + §V3-7) and `docs/factory/PAC-43-plan.md` v3, not as sketched below:
+> two settings instead of one (`PACEDAY_ALLOW_STANDINS` must accompany
+> `GOOGLE_CALENDAR_API_BASE_URL`, or the server refuses to start), a
+> connection-time guard that confines calendar traffic to loopback / RFC 1918 /
+> IPv6 unique-local peers, redirects never followed, no ambient proxy, and one
+> construction path for every deployment through `calendar.NewClient`. The
+> stand-in described in §3 exists at `e2e/fake-google/`, with a recording sink
+> in place of §4's 127.0.0.1 blackhole; see `e2e/README.md` §3 and §5a. The
+> five calendar journeys that were `test.fixme` are real scenarios now.
+>
+> **Found while doing it, relevant to item B:** `GET /api/auth/status` calls
+> `https://www.googleapis.com/oauth2/v2/userinfo` with a connected user's
+> access token on **every** call (`backend/api/handlers_auth.go` `status()` →
+> `fetchUserEmail`), not only at sign-in. It is not redirected, so in the e2e
+> stack every dashboard load by a connected user offers the sink a TLS
+> connection (refused before any credential is sent). It keeps AC-23's strict
+> form `test.fixme` in `tests/hermeticity.spec.ts`. Item B's
+> `GOOGLE_USERINFO_URL` would cover it; so would `status()` not calling
+> userinfo at all.
 **Problem statement (stage 0 form)**: *the majority of Paceday's user-visible
 behaviour cannot be verified before release, because every calendar-dependent
 journey can only be exercised against a live Google account.*
@@ -116,7 +137,12 @@ server-side session store. See `e2e/auth.ts`.)
 Three items, independent, in priority order. Item **A** alone unblocks the
 majority of the fixme'd journeys.
 
-### Item A — `GOOGLE_CALENDAR_API_BASE_URL` (unblocks 8 journeys)
+### Item A — `GOOGLE_CALENDAR_API_BASE_URL` (unblocks 8 journeys) — **DONE in PAC-43**
+
+*Kept for the record. What shipped differs; see the PAC-43 update at the top.
+In particular `docker-compose.yml` was deliberately **not** given the key: a
+commented-out redirection in a production file is one uncomment away from
+being set (plan §2.6).*
 
 **Interface**: keep `calendar.Provider` out of it. Change one function.
 
@@ -196,8 +222,13 @@ the two are not conflated: fixing C does not remove the need for A.
 
 ## 3. What the fake provider would then look like
 
-Not built, because it would have nothing to attach to. When item A lands, build
-it as a **Go** service under `e2e/fake-google/`, not Node:
+**Built in PAC-43** at `e2e/fake-google/`. Correction to the table below: every
+write is `PUT` — `UpdateEvent`, `DeclineEvent`, `AddGoogleMeet` and
+`ClearGoogleMeet` all go through `Events.Update`; nothing uses `PATCH`.
+`ListRooms` is `GET /users/me/calendarList`, and `SuggestAttendees` is an
+ordinary events list. The original design notes follow.
+
+Build it as a **Go** service under `e2e/fake-google/`, not Node:
 
 - the repo already builds two small Go binaries into scratch images
   (`backend/Dockerfile`, `docker/fileserver`), so the pattern, the base image
@@ -234,6 +265,13 @@ broken token path fails rather than silently working.
 ---
 
 ## 4. Meanwhile: how this suite stays honest
+
+**Superseded by PAC-43.** The provider host names now map to a recording sink
+(`e2e/fake-google/sink`), not to `127.0.0.1` — which inside the backend
+container was the backend itself — and four of the seeded users are still
+credential-less for the "not connected" scenarios, while five new ones have a
+credential for the stand-in. `tests/hermeticity.spec.ts` reads the sink after
+the run. The original text:
 
 `e2e/docker-compose.e2e.yml` maps `www.googleapis.com`, `oauth2.googleapis.com`,
 `accounts.google.com`, `graph.microsoft.com` and the other provider hosts to
