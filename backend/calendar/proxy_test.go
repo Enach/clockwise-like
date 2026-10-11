@@ -136,7 +136,11 @@ func TestNoAmbientProxy_Child(t *testing.T) {
 	// (1) Positive control: the default proxy policy, under this environment,
 	// in this process, reaches the recorder.
 	pc := &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment}, Timeout: 10 * time.Second}
-	resp, err := pc.Get(standIn + "/positive-control")
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, standIn+"/positive-control", nil)
+	if err != nil {
+		t.Fatalf("positive control request: %v", err)
+	}
+	resp, err := pc.Do(req)
 	if err != nil {
 		t.Fatalf("positive control request: %v", err)
 	}
