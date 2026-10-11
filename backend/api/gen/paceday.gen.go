@@ -2427,7 +2427,7 @@ type UpdateSchedulingLinkRequest struct {
 	BufferAfter  *int  `json:"buffer_after"`
 	BufferBefore *int  `json:"buffer_before"`
 
-	// CoHostEmails Destructive when present: every non-owner host row is deleted first, then these emails are added as `pending`. Unknown emails are skipped silently.
+	// CoHostEmails When present, the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Unknown emails are skipped silently.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
 	// Days Applied after days_of_week, so `days` wins when both are sent - again the opposite of create.
@@ -14397,6 +14397,15 @@ type InviteSchedulingLinkHostRequestObject struct {
 
 type InviteSchedulingLinkHostResponseObject interface {
 	VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error
+}
+
+type InviteSchedulingLinkHost200JSONResponse SchedulingLinkHostRecord
+
+func (response InviteSchedulingLinkHost200JSONResponse) VisitInviteSchedulingLinkHostResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type InviteSchedulingLinkHost201JSONResponse SchedulingLinkHostRecord

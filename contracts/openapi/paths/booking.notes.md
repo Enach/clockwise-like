@@ -50,9 +50,10 @@ is unreachable from this frontend.
 
 The frontend instead loops `POST /scheduling-links/{id}/hosts` per email
 (`Promise.allSettled`, so failures are swallowed). Consequence: the backend's
-`co_host_emails` skip-unknown-email behaviour and the PATCH "delete all non-owner hosts
-then re-add as pending" behaviour are both untested by the real client. Anyone who does
-send `co_host_emails` on PATCH will demote accepted co-hosts back to `pending`.
+`co_host_emails` skip-unknown-email behaviour and the PATCH co-host diff are both
+untested by the real client. Since PAC-61 neither path changes an existing co-host's
+status: PATCH sets the list by difference, and re-inviting an existing host returns
+200 with their row unchanged.
 
 ### 4. `window_start` / `window_end` shape
 
