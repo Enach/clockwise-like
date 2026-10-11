@@ -112,7 +112,16 @@ export default async function globalSetup(): Promise<void> {
   if (process.env.E2E_SKIP_COMPOSE !== '1') {
     // --wait blocks until every service with a healthcheck is healthy; the
     // explicit polls below cover the services that have none.
-    await runCompose(composeArgs('up', '-d', '--build', '--wait'));
+    if (process.env.E2E_FRONTEND_IMAGE) {
+      // A published frontend image replaces the frontend build (README
+      // "Prerequisites"). `up --build` would still build every service that
+      // has a build section, frontend included, and fail without a frontend/
+      // checkout — so build the backend alone, then start without building.
+      await runCompose(composeArgs('build', 'backend'));
+      await runCompose(composeArgs('up', '-d', '--no-build', '--wait'));
+    } else {
+      await runCompose(composeArgs('up', '-d', '--build', '--wait'));
+    }
   }
 
   await waitForHealth();

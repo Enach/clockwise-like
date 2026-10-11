@@ -155,8 +155,12 @@ func TestPersonalCalendarPreviewUsesInjectedBlocker(t *testing.T) {
 	if blocker.previewID != calendarID {
 		t.Fatalf("preview blocker id = %d, want %d", blocker.previewID, calendarID)
 	}
-	if blocker.previewEnd.Sub(blocker.previewStart) != 14*24*time.Hour {
-		t.Fatalf("preview range = %v, want 14 days", blocker.previewEnd.Sub(blocker.previewStart))
+	// 14 calendar days, not 336 hours: across a daylight-saving change in the
+	// local zone the span is 335 or 337 hours, and the handler is right to use
+	// calendar days (AddDate). Comparing durations made this test fail twice a
+	// year on any machine outside UTC.
+	if want := blocker.previewStart.AddDate(0, 0, 14); !blocker.previewEnd.Equal(want) {
+		t.Fatalf("preview range = %v .. %v, want 14 calendar days (end %v)", blocker.previewStart, blocker.previewEnd, want)
 	}
 	var events []calendar.GenericEvent
 	if err := json.NewDecoder(w.Body).Decode(&events); err != nil {

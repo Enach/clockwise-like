@@ -30,6 +30,11 @@ Highest priority: this is the suite's most valuable journey.
 
 ## 2. Links page create form — `src/pages/Links.tsx`
 
+> **Resolved (2026-10-11) by the "acceptable alternative" below.** Since
+> smart-calendar-flow#91 every input has a real `<label htmlFor>` and every toggle
+> `aria-pressed`; the test in `tests/scheduling-links.spec.ts` now runs against
+> roles and labels, with no test ids. Kept for the record.
+
 Blocking one `test.fixme` in `e2e/tests/scheduling-links.spec.ts`
 ("a link created through the Links page appears on the public booking page").
 The create form's inputs are not associated with `<label for>` and the duration

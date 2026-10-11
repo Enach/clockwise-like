@@ -20,7 +20,7 @@
 
 import { test, expect } from '../fixtures';
 import { LINKS, USERS } from '../seed/ids';
-import { atUtc, isoDate, nextBookableWeekday } from '../lib/dates';
+import { atUtc, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 
 test.describe('scheduling links', () => {
   test('a user creates a link and an anonymous visitor books it', async ({
@@ -79,7 +79,7 @@ test.describe('scheduling links', () => {
       const { slots } = await slotsRes.json();
       // 16:00–17:00 at a 15-minute stride with a 30-minute duration => 16:00,
       // 16:15, 16:30. Exact, because the arithmetic is deterministic.
-      expect(slots.map((s: { start: string }) => s.start)).toEqual([
+      expect(slots.map((s: { start: string }) => instant(s.start))).toEqual([
         atUtc(date, '16:00'),
         atUtc(date, '16:15'),
         atUtc(date, '16:30'),
@@ -93,7 +93,7 @@ test.describe('scheduling links', () => {
       });
       expect(booked.status()).toBe(201);
       const confirmation = await booked.json();
-      expect(confirmation.end).toBe(atUtc(date, '16:30'));
+      expect(instant(confirmation.end)).toBe(atUtc(date, '16:30'));
 
       // ── back on the owner's side ────────────────────────────────────────
       const bookings = await authedApi.get(`/api/scheduling-links/${link.id}/bookings`);
@@ -116,10 +116,14 @@ test.describe('scheduling links', () => {
   }) => {
     const res = await authedApi.get('/api/scheduling-links');
     expect(res.status()).toBe(200);
-    const slugs = (await res.json()).map((l: { slug: string }) => l.slug);
+    // The list is {owned, shared} (contract: listSchedulingLinks). Check both
+    // halves so a leaked link is caught wherever it would appear.
+    const body = (await res.json()) as { owned: { slug: string }[]; shared: { slug: string }[] };
+    const owned = body.owned.map((l) => l.slug);
+    const slugs = [...owned, ...body.shared.map((l) => l.slug)];
 
-    expect(slugs).toContain(LINKS.owned.slug);
-    expect(slugs).toContain(LINKS.uiBooking.slug);
+    expect(owned).toContain(LINKS.owned.slug);
+    expect(owned).toContain(LINKS.uiBooking.slug);
     // Owned by the second user — must not leak across accounts.
     expect(slugs).not.toContain(LINKS.apiBooking.slug);
   });
@@ -141,14 +145,47 @@ test.describe('scheduling links', () => {
     expect(res.status()).toBe(401);
   });
 
-  test.fixme(
-    'a link created through the Links page appears on the public booking page',
-    // BLOCKED ON TEST IDS, not on a seam. pages/Links.tsx builds its create
-    // form from unlabelled inputs and class-styled toggle buttons; there is no
-    // role or test id that identifies the title field, the duration chips, the
-    // window pickers or the resulting slug. Writing this against CSS classes
-    // would violate the suite's selector policy. See TESTIDS-REQUIRED.md #2.
-    // The API round trip above covers the same behaviour meanwhile.
-    async () => {},
-  );
+  // Driven entirely through roles and labels: since smart-calendar-flow#91 the
+  // create drawer's inputs have <label htmlFor> and its toggles aria-pressed,
+  // which TESTIDS-REQUIRED.md #2 accepts in place of test ids.
+  test('a link created through the Links page appears on the public booking page', async ({
+    authedPage,
+    authedApi,
+    page,
+    db,
+  }) => {
+    const title = `E2E UI Link ${Date.now()}`;
+    try {
+      await authedPage.goto('/app/links');
+      await authedPage.getByRole('button', { name: /new link/i }).click();
+      const drawer = authedPage.getByRole('dialog', { name: /new scheduling link/i });
+      await expect(drawer).toBeVisible();
+
+      await drawer.getByLabel('Title', { exact: true }).fill(title);
+      const thirty = drawer.getByRole('button', { name: '30 min', exact: true });
+      if ((await thirty.getAttribute('aria-pressed')) !== 'true') await thirty.click();
+      await expect(thirty).toHaveAttribute('aria-pressed', 'true');
+      await drawer.getByLabel('Start', { exact: true }).fill('09:00');
+      await drawer.getByLabel('End', { exact: true }).fill('17:00');
+
+      await drawer.getByRole('button', { name: /create link/i }).click();
+      await expect(drawer).toBeHidden();
+
+      // The server has it, owned by this user.
+      const res = await authedApi.get('/api/scheduling-links');
+      expect(res.status()).toBe(200);
+      const { owned } = (await res.json()) as { owned: { slug: string; title: string }[] };
+      const created = owned.find((l) => l.title === title);
+      expect(created).toBeDefined();
+
+      // The card shows the URL Copy puts on the clipboard (smart-calendar-flow#89).
+      await expect(authedPage.getByText(`/book/${created!.slug}`)).toBeVisible();
+
+      // And an anonymous visitor reaches it.
+      await page.goto(`/book/${created!.slug}`);
+      await expect(page.getByRole('heading', { name: title })).toBeVisible();
+    } finally {
+      await db.query('DELETE FROM scheduling_links WHERE title = $1', [title]);
+    }
+  });
 });
