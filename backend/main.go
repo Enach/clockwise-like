@@ -9,6 +9,8 @@ import (
 
 	"github.com/Enach/paceday/backend/api"
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/scheduler"
 	"github.com/Enach/paceday/backend/storage"
@@ -29,6 +31,22 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+
+	// Calendar-provider decision (PAC-43). This runs before the database is
+	// opened and before any cron or route exists, so an unsafe configuration
+	// refuses to start before it touches anything. Configure is called in
+	// every deployment, production included.
+	calDecision, err := config.DecideCalendarEndpoint(
+		os.Getenv(config.EnvCalendarBaseURL),
+		os.Getenv(config.EnvAllowStandins),
+	)
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+	if calDecision.Notice != "" {
+		log.Printf("WARNING: %s", calDecision.Notice)
+	}
+	calendar.Configure(calDecision)
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
