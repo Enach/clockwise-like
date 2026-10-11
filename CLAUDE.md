@@ -2,11 +2,11 @@
 
 ## Test coverage requirement
 
-**Target: 75–80% test coverage for `backend/` and `mcp/`. Enforced floors today: backend 38%, mcp 75%.**
+**Target: 75–80% test coverage for `backend/` and `mcp/`. Enforced floors today: backend 39%, mcp 75%.**
 
 The floors in the `Makefile` are what the suites actually hold, measured, not the
-target. `mcp` is at 84.0% and clears its floor. The backend is at 38.0% once
-generated code is excluded (19.6% with it), so its floor is 38% and the gap to the
+target. `mcp` is at 84.0% and clears its floor. The backend is at 39.2% once
+generated code is excluded (19.6% with it), so its floor is 39% (raised from 38% when PAC-43 took it to 39.2%) and the gap to the
 target is real work rather than a number nobody meets. Generated files
 (`backend/api/gen/**`) are excluded from the measurement by
 `scripts/coverage-gate.sh`.
