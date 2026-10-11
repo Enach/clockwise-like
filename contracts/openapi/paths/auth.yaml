@@ -665,8 +665,11 @@ components:
           type: string
           description: |
             For outlook/webcal this is the caller's own settings.calendar_email
-            verbatim. For google it is fetched live from the Google userinfo
-            endpoint and is the empty string when that call fails.
+            verbatim. For google it is the caller's own account email: the Google
+            token is stored by the sign-in callback against the user it upserted by
+            that same Google email, so they are the same account. No outbound call
+            is made (PAC-65; before it, this was fetched live from Google's
+            userinfo endpoint with the caller's access token on every request).
             Before PAC-24 the outlook/webcal value came from the shared settings
             row and was therefore some other user's address (API-009).
       additionalProperties: false

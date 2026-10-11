@@ -15,8 +15,8 @@
 
 import { test, expect } from '@playwright/test';
 
-import { SINK_ADDRESS, SINK_HOSTS, sink, unexplainedSinkConnections } from '../fake';
-import { docker, E2E_NETWORK, stackBackendLogs } from '../lib/docker';
+import { SINK_ADDRESS, SINK_HOSTS, sink } from '../fake';
+import { docker, E2E_NETWORK } from '../lib/docker';
 import { COMPOSE_FILE, COMPOSE_PROJECT } from '../global-setup';
 
 /** The positive control's own request, recognisable in the sink log. */
@@ -34,49 +34,15 @@ test.describe('AC-23 — the recording sink after the whole run', () => {
     expect(mapped).toEqual(SINK_HOSTS.map((h) => `${h}:${SINK_ADDRESS}`).sort());
   });
 
-  test.fixme(
-    'AC-23 (strict): the sink records no connection at all',
-    // BLOCKED by PAC-65 (backend defect)
-    // ("GET /api/auth/status sends the user's calendar credential to Google
-    // userinfo, outside the calendar seam"). For a user with a stored
-    // credential, backend/api/handlers_auth.go status() calls fetchUserEmail,
-    // which GETs https://www.googleapis.com/oauth2/v2/userinfo with that
-    // user's access token on EVERY status request — every dashboard load.
-    // Spec §V2-3 treats the identity lookup as a sign-in-time call; it is not.
-    // In this stack the sink refuses the TLS handshake before any credential
-    // is sent (the non-strict test below asserts exactly that), but the strict
-    // criterion cannot pass. Unblocks when status() stops calling userinfo,
-    // or when SEAM-REQUIRED.md item B (GOOGLE_USERINFO_URL) redirects it.
-    async () => {
-      expect(await sink.connections()).toEqual([]);
-    },
-  );
-
-  test('AC-23 (all but the status lookup): no other connection, and no credential, reached the sink', async () => {
+  // AC-23: nothing in the run reached a real Google host. Before PAC-65 the
+  // status endpoint called Google userinfo on every dashboard load and this
+  // had to excuse those connections; it no longer does, so none are excused.
+  // The only connections allowed are the positive control's own probe.
+  test('AC-23: the sink records no connection at all', async () => {
     const all = await sink.connections();
-    const others = unexplainedSinkConnections(all).filter((c) => c.path !== PROBE_PATH);
-
-    // Token refresh (oauth2.googleapis.com), sign-in (accounts.google.com),
-    // the second provider, and any calendar call that bypassed the seam to
-    // the published address over plain HTTP: none of them.
-    expect(others, `unexplained sink connections:\n${JSON.stringify(others, null, 2)}`).toEqual([]);
-    // The connections the status lookup did make never got as far as a
-    // credential: the sink refused the TLS handshake.
-    expect(all.filter((c) => c.credential_presented && c.path !== PROBE_PATH)).toEqual([]);
-
-    // The excused signature (TLS, SNI www.googleapis.com) is also what a
-    // calendar call to the PUBLISHED address would look like. So bound it:
-    // there can be at most one such connection per GET /api/auth/status the
-    // backend served. A calendar path that bypassed the stand-in adds
-    // connections no status call explains, and fails here.
-    const excused = all.length - unexplainedSinkConnections(all).length;
-    const statusCalls = (await stackBackendLogs())
-      .split('\n')
-      .filter((l) => /\bGET \/api\/auth\/status\b/.test(l)).length;
-    expect(
-      excused,
-      `${excused} TLS connections to www.googleapis.com, but only ${statusCalls} status calls to explain them`,
-    ).toBeLessThanOrEqual(statusCalls);
+    const escaped = all.filter((c) => c.path !== PROBE_PATH);
+    expect(escaped, `connections reached the sink:
+${JSON.stringify(escaped, null, 2)}`).toEqual([]);
   });
 
   test('positive control: the sink records a credentialed request that reaches it', async () => {
