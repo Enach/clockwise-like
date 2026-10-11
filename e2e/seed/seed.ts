@@ -118,8 +118,8 @@ async function verify(): Promise<void> {
       [],
       0,
     ],
-    // Focus blocks are global busy time for booking (storage.ListFocusBlocksForWeek
-    // takes no user id), so a leftover block would silently shrink slot lists.
+    // A focus block is busy time for its owner, and the e2e users host the
+    // booking links, so a leftover block would silently shrink slot lists.
     ['no focus blocks', 'SELECT 1 FROM focus_blocks', [], 0],
   ];
 
