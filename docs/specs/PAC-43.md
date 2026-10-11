@@ -1777,3 +1777,32 @@ bug itself. A green criterion there is a test asserting that the fall-through an
 from the primary provider, which is correct for a primary-provider user and is the
 exact line PAC-47 must change. AC-17 is therefore narrowed in its own text to the
 primary-provider case. The question is answered; the narrowing is the answer.
+
+---
+
+## OQ-1 settled by reading the pinned source — 2026-10-11
+
+Plan §5 step 1 and plan §7 items 1–2, settled by reading the source at the pinned versions:
+
+- `google.golang.org/api` **v0.292.0**: `option/option.go`, `internal/settings.go`, `internal/cba.go`, `transport/http/dial.go`, `calendar/v3/calendar-gen.go`, `googleapi/googleapi.go`
+- `golang.org/x/oauth2` **v0.36.0**: `transport.go`
+
+Nothing here was run.
+
+- **(c) Which credential stack `option.WithTokenSource` selects.** It selects **the legacy `golang.org/x/oauth2` transport.**
+  - `transport/http/dial.go` `NewClient` goes to `newTransport` unless `settings.HTTPClient != nil`, or unless `IsNewAuthLibraryEnabled()` returns true.
+  - With only `WithTokenSource` set, `IsNewAuthLibraryEnabled()` (`internal/settings.go:117-139`) is false, *unless* `GOOGLE_API_GO_EXPERIMENTAL_ENABLE_NEW_AUTH_LIB=true` is in the environment.
+  - `newTransport` then wraps the base transport in `&oauth2.Transport{Source: ts}`.
+  - The environment-variable exception is real, and the backend should not inherit it unknowingly. It doesn't matter once the client is built with `WithHTTPClient` (see below).
+- **(a) Does `option.WithEndpoint` accept a non-TLS scheme?** **Yes, verbatim.** `internal/cba.go` `getEndpoint` returns `settings.Endpoint` unchanged whenever it contains `://`, with no scheme check (`:174-176`). So `http://…` is accepted.
+- **(b) Is a bearer credential attached over plain HTTP?** **Yes.** `oauth2.Transport.RoundTrip` clones the request and calls `token.SetAuthHeader` on every round trip, whatever the scheme.
+- **Redirects (spec challenge, blocking finding 2).** This is the library's default:
+  - On the legacy path `NewClient` returns `&http.Client{Transport: trans}` with **no `CheckRedirect`**, so Go follows up to 10 redirects.
+  - Because the credential is added inside `RoundTrip`, it is **re-attached on every hop, including a hop to a different host**. Go's stripping of `Authorization` on cross-host redirects applies only to headers on the original request, not to ones a transport adds per hop.
+  - So a configured endpoint that redirects elsewhere would receive, and forward, the user's Google token.
+- **`option.WithHTTPClient` displaces both.** `NewClient` returns `settings.HTTPClient` as is (`dial.go:44-46`): no credential transport and no redirect policy are added. Plan §1.3 is therefore sound. The backend's own client must:
+  - wrap `oauth2.Transport` around the guarded dialler itself;
+  - set `CheckRedirect` to refuse.
+- **Plan §7 item 2: replace or join, and is the trailing slash required?** It **replaces**: `calendar-gen.go:201` sets `s.BasePath = endpoint`. URLs are built with `googleapi.ResolveRelative(BasePath, "calendars/…")`, which is RFC 3986 reference resolution, so **the trailing `/calendar/v3/` is required**. Without it, the last segment (`v3`) is dropped. The configured value must end with `/calendar/v3/`, and the startup check should reject one that doesn't.
+
+**OQ-2 (permitted addresses), stated as an assumption rather than asked.** The only stack that runs the stand-in is the e2e Docker Compose stack, where it is a service on the compose bridge network, so a private-range address. Loopback plus the RFC 1918 private ranges covers it. No other topology runs the stand-in today.
