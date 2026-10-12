@@ -278,14 +278,6 @@ var validScheduleWeekdays = map[string]bool{
 	"friday": true, "saturday": true, "sunday": true,
 }
 
-// validateSchedulePreferences checks both per-day schedules.
-func validateSchedulePreferences(s *storage.Settings) error {
-	if err := validateWorkingHours(s); err != nil {
-		return err
-	}
-	return validateLunchBreaks(s)
-}
-
 // validateWorkingHours compares mode and weekday keys exactly (PAC-24): a
 // "BY_DAY" mode or a "Monday" key used to pass after lower-casing, be stored,
 // and never match WorkWindow's lowercase lookup.
