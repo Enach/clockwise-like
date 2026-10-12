@@ -189,8 +189,9 @@ func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, 
 	todayEnd := todayStart.Add(24 * time.Hour)
 
 	meetings := s.fetchMeetings(ctx, userID, todayStart, todayEnd)
-	focusBlocks := s.fetchFocusBlocks(userID, todayStart)
-	habits := s.fetchHabits(userID, todayStart)
+	// Times are shown in the zone the recap is built for, the one in its header.
+	focusBlocks := s.fetchFocusBlocks(userID, todayStart, now.Location())
+	habits := s.fetchHabits(userID, todayStart, now.Location())
 	briefs := s.fetchBriefs(ctx, userID, meetings)
 
 	// Summary line
@@ -373,7 +374,7 @@ func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, s
 	return meetings
 }
 
-func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []recapFocusBlock {
+func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time, loc *time.Location) []recapFocusBlock {
 	rows, err := s.DB.Query(`
 		SELECT start_time, end_time
 		FROM focus_blocks
@@ -390,7 +391,7 @@ func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []
 		if err := rows.Scan(&st, &et); err != nil {
 			continue
 		}
-		st, et = st.UTC(), et.UTC() // the same rendering on every host
+		st, et = st.In(loc), et.In(loc) // never the host's zone
 		dur := et.Sub(st)
 		blocks = append(blocks, recapFocusBlock{
 			Start:    st.Format("15:04"),
@@ -401,7 +402,7 @@ func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []
 	return blocks
 }
 
-func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time) []recapHabit {
+func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time, loc *time.Location) []recapHabit {
 	rows, err := s.DB.Query(`
 		SELECT h.title, ho.start_time, ho.end_time
 		FROM habit_occurrences ho
@@ -419,7 +420,7 @@ func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time) []recap
 		if err := rows.Scan(&title, &st, &et); err != nil {
 			continue
 		}
-		ws, we := st.UTC().Format("15:04"), et.UTC().Format("15:04")
+		ws, we := st.In(loc).Format("15:04"), et.In(loc).Format("15:04")
 		habits = append(habits, recapHabit{Emoji: "🎯", Title: title, WindowStart: ws, WindowEnd: we})
 	}
 	return habits

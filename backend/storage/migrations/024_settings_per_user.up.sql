@@ -60,6 +60,25 @@ UPDATE settings SET lunch_breaks = COALESCE(
            AND COALESCE(d.value->>'end', '') ~ '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'),
         '{}'::jsonb)
     WHERE jsonb_typeof(lunch_breaks) = 'object';
+-- The half of working_hours the mode ignores is never used by WorkWindow but is
+-- returned and checked on save, so an inverted or incomplete enabled entry
+-- there would refuse a later edit (contract challenge r4, finding 1). In
+-- all_days rows such day entries are removed; in by_day rows such a default
+-- becomes the product default. Neither changes what WorkWindow returns.
+UPDATE settings SET working_hours = jsonb_set(working_hours, '{days}', COALESCE(
+        (SELECT jsonb_object_agg(d.key, d.value) FROM jsonb_each(working_hours->'days') d
+         WHERE NOT (COALESCE((d.value->>'enabled')::boolean, false)
+                    AND (COALESCE(d.value->>'start', '') = '' OR COALESCE(d.value->>'end', '') = ''
+                         OR (d.value->>'end') <= (d.value->>'start')))),
+        '{}'::jsonb))
+    WHERE COALESCE(working_hours->>'mode', '') <> 'by_day'
+      AND jsonb_typeof(working_hours->'days') = 'object';
+UPDATE settings SET working_hours = jsonb_set(working_hours, '{default}',
+        '{"enabled":true,"start":"09:00","end":"18:00"}'::jsonb)
+    WHERE working_hours->>'mode' = 'by_day'
+      AND COALESCE((working_hours->'default'->>'enabled')::boolean, false)
+      AND (COALESCE(working_hours->'default'->>'start', '') = '' OR COALESCE(working_hours->'default'->>'end', '') = ''
+           OR (working_hours->'default'->>'end') <= (working_hours->'default'->>'start'));
 -- A default whose start or end is not a clock becomes the product default.
 UPDATE settings SET working_hours = jsonb_set(working_hours, '{default}',
         '{"enabled":true,"start":"09:00","end":"18:00"}'::jsonb)

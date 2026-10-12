@@ -271,3 +271,31 @@ func TestMigration024_NormalisesLegacyValues(t *testing.T) {
 		t.Errorf("lunch breaks = %s, want only the lowercase key kept", lunch)
 	}
 }
+
+// Contract challenge r4, finding 1: an enabled entry in the half of
+// workingHours the mode ignores, inverted or incomplete, would refuse a later
+// edit; the migration clears it without changing what WorkWindow returns.
+func TestMigration024_ClearsTheIgnoredHalfOfWorkingHours(t *testing.T) {
+	db, to := migrationTestDB(t)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	allDays := seedMigrationUser(t, db, "m24f-all@example.com", base)
+	byDay := seedMigrationUser(t, db, "m24f-by@example.com", base.Add(time.Hour))
+	if _, err := db.Exec(`INSERT INTO settings (id, user_id, working_hours) VALUES
+		(70, $1, '{"mode":"all_days","default":{"enabled":true,"start":"08:00","end":"17:00"},"days":{"monday":{"enabled":true,"start":"17:00","end":"08:00"},"tuesday":{"enabled":false,"start":"17:00","end":"08:00"}}}'),
+		(71, $2, '{"mode":"by_day","default":{"enabled":true,"start":"17:00","end":"08:00"},"days":{"monday":{"enabled":true,"start":"07:00","end":"15:00"}}}')`,
+		allDays, byDay); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	to(24)
+
+	var allDaysDays, allDaysDefault, byDayDefault, byDayDays string
+	_ = db.QueryRow(`SELECT working_hours->'days', working_hours->'default'->>'start' FROM settings WHERE user_id = $1`, allDays).Scan(&allDaysDays, &allDaysDefault)
+	_ = db.QueryRow(`SELECT working_hours->'default'->>'start', working_hours->'days' FROM settings WHERE user_id = $1`, byDay).Scan(&byDayDefault, &byDayDays)
+	if strings.Contains(allDaysDays, "monday") || !strings.Contains(allDaysDays, "tuesday") || allDaysDefault != "08:00" {
+		t.Errorf("all_days row: days %s (want the inverted enabled monday gone, the disabled tuesday kept), default start %q", allDaysDays, allDaysDefault)
+	}
+	if byDayDefault != "09:00" || !strings.Contains(byDayDays, "07:00") {
+		t.Errorf("by_day row: default start %q (want the product default), days %s (want unchanged)", byDayDefault, byDayDays)
+	}
+}
