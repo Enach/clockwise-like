@@ -390,6 +390,7 @@ func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []
 		if err := rows.Scan(&st, &et); err != nil {
 			continue
 		}
+		st, et = st.UTC(), et.UTC() // the same rendering on every host
 		dur := et.Sub(st)
 		blocks = append(blocks, recapFocusBlock{
 			Start:    st.Format("15:04"),
@@ -418,7 +419,7 @@ func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time) []recap
 		if err := rows.Scan(&title, &st, &et); err != nil {
 			continue
 		}
-		ws, we := st.Format("15:04"), et.Format("15:04")
+		ws, we := st.UTC().Format("15:04"), et.UTC().Format("15:04")
 		habits = append(habits, recapHabit{Emoji: "🎯", Title: title, WindowStart: ws, WindowEnd: we})
 	}
 	return habits

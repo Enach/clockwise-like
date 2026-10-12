@@ -232,7 +232,7 @@ func TestMigration024_NormalisesLegacyValues(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO settings (id, user_id, calendar_provider, conferencing_provider,
 			buffer_min_meeting_minutes, work_start, lunch_end, working_hours, lunch_breaks)
 		VALUES (60, $1, '', 'webex', -5, '99:99', '',
-			'{"mode":"BY_DAY","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"Monday":{"enabled":true,"start":"07:00","end":"11:00"},"tuesday":{"enabled":true,"start":"10:00","end":"16:00"}}}',
+			'{"mode":"BY_DAY","default":{"enabled":true,"start":"99:99","end":"17:00"},"days":{"Monday":{"enabled":true,"start":"07:00","end":"11:00"},"tuesday":{"enabled":true,"start":"10:00","end":"16:00"},"wednesday":{"enabled":true,"start":"99:99","end":"x"}}}',
 			'{"Friday":{"enabled":false,"start":"","end":""},"monday":{"enabled":true,"start":"12:30","end":"13:00"}}')`, user); err != nil {
 		t.Fatalf("seed legacy row: %v", err)
 	}
@@ -241,11 +241,12 @@ func TestMigration024_NormalisesLegacyValues(t *testing.T) {
 
 	var calendar, conferencing, recapTo, workStart, lunchEnd, mode string
 	var bufferMin int
-	var days, lunch string
+	var days, lunch, defaultStart string
 	if err := db.QueryRow(`SELECT calendar_provider, conferencing_provider, recap_send_to, buffer_min_meeting_minutes,
-			work_start, lunch_end, working_hours->>'mode', working_hours->'days', lunch_breaks
+			work_start, lunch_end, working_hours->>'mode', working_hours->'days', lunch_breaks,
+			working_hours->'default'->>'start'
 		FROM settings WHERE user_id = $1`, user).Scan(&calendar, &conferencing, &recapTo, &bufferMin,
-		&workStart, &lunchEnd, &mode, &days, &lunch); err != nil {
+		&workStart, &lunchEnd, &mode, &days, &lunch, &defaultStart); err != nil {
 		t.Fatal(err)
 	}
 	if calendar != "google" || conferencing != "meet" || recapTo != "dm" || bufferMin != 0 {
@@ -259,6 +260,12 @@ func TestMigration024_NormalisesLegacyValues(t *testing.T) {
 	}
 	if strings.Contains(days, "Monday") || !strings.Contains(days, "tuesday") {
 		t.Errorf("working days = %s, want only the lowercase key kept", days)
+	}
+	if strings.Contains(days, "wednesday") {
+		t.Errorf("a day whose times are not clocks was kept: %s", days)
+	}
+	if defaultStart != "09:00" {
+		t.Errorf("default start = %q, want the product default", defaultStart)
 	}
 	if strings.Contains(lunch, "Friday") || !strings.Contains(lunch, "monday") {
 		t.Errorf("lunch breaks = %s, want only the lowercase key kept", lunch)

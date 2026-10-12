@@ -220,20 +220,24 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 		add("lunchEnd must be after lunchStart", "lunchStart", "lunchEnd")
 	}
 	if _, err := time.LoadLocation(s.Timezone); err != nil {
-		add("timezone is not a known time zone", "timezone")
+		add("timezone is not a known IANA location", "timezone")
 	}
 
+	// Messages as catalogued in the contract's SettingsValidationError.
 	for _, f := range []struct {
-		prop string
-		val  int
+		prop, msg string
+		val       int
 	}{
-		{"focusMinBlockMinutes", s.FocusMinBlockMinutes}, {"focusMaxBlockMinutes", s.FocusMaxBlockMinutes},
-		{"focusDailyTargetMinutes", s.FocusDailyTargetMinutes}, {"outOfHoursMeetingsPerWeek", s.OutOfHoursMeetingsPerWeek},
-		{"bufferBeforeMinutes", s.BufferBeforeMinutes}, {"bufferAfterMinutes", s.BufferAfterMinutes},
-		{"bufferMinMeetingMinutes", s.BufferMinMeetingMinutes},
+		{"focusMinBlockMinutes", "must be positive", s.FocusMinBlockMinutes},
+		{"focusMaxBlockMinutes", "must be positive", s.FocusMaxBlockMinutes},
+		{"focusDailyTargetMinutes", "must be positive", s.FocusDailyTargetMinutes},
+		{"outOfHoursMeetingsPerWeek", "must be zero or positive", s.OutOfHoursMeetingsPerWeek},
+		{"bufferBeforeMinutes", "must be positive", s.BufferBeforeMinutes},
+		{"bufferAfterMinutes", "must be positive", s.BufferAfterMinutes},
+		{"bufferMinMeetingMinutes", "must be zero or positive", s.BufferMinMeetingMinutes},
 	} {
 		if f.val < 0 {
-			add(f.prop+" must be zero or positive", f.prop)
+			add(f.prop+" "+f.msg, f.prop)
 		}
 	}
 	if s.FocusMinBlockMinutes > s.FocusMaxBlockMinutes {
@@ -289,22 +293,22 @@ func validateWorkingHours(s *storage.Settings) error {
 	if mode == "" && len(s.WorkingHours.Days) > 0 {
 		return &validationError{"workingHours.mode is required when day-specific hours are provided"}
 	}
-	if mode == "all_days" && scheduleHasValues(s.WorkingHours.Default) {
+	// default and days are checked whatever the mode: either can be stored
+	// and returned, and a GET must satisfy the contract (PAC-24 revision 4).
+	if scheduleHasValues(s.WorkingHours.Default) {
 		if err := validateDaySchedule("workingHours.default", s.WorkingHours.Default); err != nil {
 			return err
 		}
 	}
-	if mode == "by_day" {
-		if len(s.WorkingHours.Days) == 0 {
-			return &validationError{"workingHours.days must contain at least one weekday when mode is by_day"}
+	if mode == "by_day" && len(s.WorkingHours.Days) == 0 {
+		return &validationError{"workingHours.days must contain at least one weekday when mode is by_day"}
+	}
+	for day, schedule := range s.WorkingHours.Days {
+		if !validScheduleWeekdays[day] {
+			return &validationError{"workingHours.days." + day + " is not a valid weekday"}
 		}
-		for day, schedule := range s.WorkingHours.Days {
-			if !validScheduleWeekdays[day] {
-				return &validationError{"workingHours.days." + day + " is not a valid weekday"}
-			}
-			if err := validateDaySchedule("workingHours.days."+day, schedule); err != nil {
-				return err
-			}
+		if err := validateDaySchedule("workingHours.days."+day, schedule); err != nil {
+			return err
 		}
 	}
 	return nil

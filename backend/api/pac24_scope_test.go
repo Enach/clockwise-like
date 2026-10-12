@@ -189,4 +189,14 @@ func TestPatchSettings_LegacyValuesDoNotLockTheUserOut(t *testing.T) {
 	if w := settingsRequest(t, h, http.MethodPatch, user, `{"workingHours":{"mode":"BY_DAY","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"Monday":{"enabled":true,"start":"09:00","end":"17:00"}}}}`); w.Code != http.StatusBadRequest {
 		t.Errorf("an upper-case mode or weekday key: %d, want 400", w.Code)
 	}
+	// Contract challenge r3, finding 1: days and default are checked whatever the mode.
+	for name, body := range map[string]string{
+		"bad day in all_days":     `{"workingHours":{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"Monday":{"enabled":true,"start":"99:99","end":"x"}}}}`,
+		"bad clock in all_days":   `{"workingHours":{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"monday":{"enabled":true,"start":"99:99","end":"10:00"}}}}`,
+		"bad default in by_day":   `{"workingHours":{"mode":"by_day","default":{"enabled":true,"start":"99:99","end":"17:00"},"days":{"monday":{"enabled":true,"start":"09:00","end":"17:00"}}}}`,
+	} {
+		if w := settingsRequest(t, h, http.MethodPatch, user, body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400; body %s", name, w.Code, w.Body.String())
+		}
+	}
 }
