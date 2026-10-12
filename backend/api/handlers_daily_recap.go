@@ -136,7 +136,7 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow(`SELECT name FROM users WHERE id = $1`, userID).Scan(&userName)
 
 	svc := &engine.DailyRecapService{DB: h.db}
-	now := time.Now()
+	now := time.Now().In(recapLocation(s))
 	blocks := svc.BuildMessage(r.Context(), userID, userName, now, s)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -161,7 +161,7 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow(`SELECT name FROM users WHERE id = $1`, userID).Scan(&userName)
 
 	svc := &engine.DailyRecapService{DB: h.db}
-	now := time.Now()
+	now := time.Now().In(recapLocation(s))
 	blocks := svc.BuildMessage(r.Context(), userID, userName, now, s)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -174,4 +174,13 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "slack_message_ts": ts})
+}
+
+// recapLocation is the caller's zone, as the scheduled recap uses
+// (engine.DailyRecapService.RunForUser), or UTC when it cannot be resolved.
+func recapLocation(s *storage.Settings) *time.Location {
+	if loc, err := time.LoadLocation(s.Timezone); err == nil {
+		return loc
+	}
+	return time.UTC
 }

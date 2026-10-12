@@ -200,3 +200,24 @@ func TestPatchSettings_LegacyValuesDoNotLockTheUserOut(t *testing.T) {
 		}
 	}
 }
+
+// Contract challenge r5, finding 2: the preview is built in the caller's zone.
+func TestDailyRecapPreview_UsesTheCallersTimezone(t *testing.T) {
+	db := openTestDB(t)
+	h := &dailyRecapHandlers{db: db}
+	user := createTestUser(t, "pac24-recap-tz@example.com")
+	s, err := storage.GetOrCreateSettingsByUser(db, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Timezone = "Pacific/Kiritimati"
+	if err := storage.SaveSettingsForUser(db, user, s); err != nil {
+		t.Fatal(err)
+	}
+	req := withUser(httptest.NewRequest(http.MethodPost, "/api/settings/daily-recap/preview", nil), user)
+	w := httptest.NewRecorder()
+	h.preview(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Pacific/Kiritimati") {
+		t.Errorf("preview = %d %s, want a header in Pacific/Kiritimati", w.Code, w.Body.String())
+	}
+}

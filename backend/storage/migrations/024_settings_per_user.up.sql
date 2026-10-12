@@ -67,7 +67,7 @@ UPDATE settings SET lunch_breaks = COALESCE(
 -- becomes the product default. Neither changes what WorkWindow returns.
 UPDATE settings SET working_hours = jsonb_set(working_hours, '{days}', COALESCE(
         (SELECT jsonb_object_agg(d.key, d.value) FROM jsonb_each(working_hours->'days') d
-         WHERE NOT (COALESCE((d.value->>'enabled')::boolean, false)
+         WHERE NOT ((d.value->>'enabled') = 'true'
                     AND (COALESCE(d.value->>'start', '') = '' OR COALESCE(d.value->>'end', '') = ''
                          OR (d.value->>'end') <= (d.value->>'start')))),
         '{}'::jsonb))
@@ -76,7 +76,7 @@ UPDATE settings SET working_hours = jsonb_set(working_hours, '{days}', COALESCE(
 UPDATE settings SET working_hours = jsonb_set(working_hours, '{default}',
         '{"enabled":true,"start":"09:00","end":"18:00"}'::jsonb)
     WHERE working_hours->>'mode' = 'by_day'
-      AND COALESCE((working_hours->'default'->>'enabled')::boolean, false)
+      AND (working_hours->'default'->>'enabled') = 'true'
       AND (COALESCE(working_hours->'default'->>'start', '') = '' OR COALESCE(working_hours->'default'->>'end', '') = ''
            OR (working_hours->'default'->>'end') <= (working_hours->'default'->>'start'));
 -- A default whose start or end is not a clock becomes the product default.
