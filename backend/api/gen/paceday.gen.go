@@ -1365,7 +1365,7 @@ type LLMTestResult struct {
 type LLMTestResultProvider string
 
 // LunchBreakSchedule storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name. Normalised to `{}` (never null) on read (`backend/storage/settings.go:103-105`). A per-day entry overrides the legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including disabling lunch for that day. Replaced whole by a PATCH that mentions it; `lunchBreaks: {}` clears every per-day override (spec AC-9).
-// Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration 024 removes stored keys that are not one of the seven lowercase names. `propertyNames` is added by PAC-24 for the same reason as on `WorkingHoursSchedule.days`: the validator lowercases the key before checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks it up already-lowercased (`backend/storage/settings.go:138`), so a `"Monday"` key validates, stores, and never matches.
+// Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration 024 removes stored keys that are not one of the seven lowercase names, or whose `start`/`end` are neither empty nor a clock. Before PAC-24 the validator lower-cased the key, so a `"Monday"` key was stored and never matched `LunchWindow`'s lookup.
 type LunchBreakSchedule map[string]DaySchedule
 
 // ManagerAnalytics defines model for ManagerAnalytics.
@@ -2087,7 +2087,7 @@ type SchedulingLinkListResponse struct {
 
 // Settings The settings document for ONE user, returned by GET and by PATCH. Every property is always present. It has NO `llmApiKey` property at all: the key is write-only and is never returned (spec AC-11); `llmApiKeySet` reports whether one is on file. Property names come straight from the json tags on storage.Settings, camelCase throughout. `ID`, `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear.
 // PAC-24 revision 3 makes this a concrete schema rather than an `allOf` over a shared field set with `readOnly`/`writeOnly` markers: all three generators (oapi-codegen, openapi-typescript, typed-openapi) dropped those markers and generated a response type carrying `llmApiKey`, and typed-openapi also dropped the `required` list (contract challenge, revision 2, finding 1). The property map is shared with `SettingsUpdate` through a YAML anchor, so the two cannot drift; every `Settings` document is a valid `SettingsUpdate` body.
-// Every value this schema forbids has been normalised away in storage by migration 024 (see `SettingsUpdate` and contracts/features/PAC-24.md, Revision 3), so a GET always satisfies it.
+// Every value this schema forbids has been normalised away in storage by migration 024 (see `SettingsUpdate` and contracts/features/PAC-24.md, Revisions 3 and 4), so a GET always satisfies it.
 type Settings struct {
 	AutoDeclineOutsideWorkingHours bool `json:"autoDeclineOutsideWorkingHours"`
 
@@ -2155,7 +2155,7 @@ type Settings struct {
 	LlmProvider SettingsLlmProvider `json:"llmProvider"`
 
 	// LunchBreaks storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name. Normalised to `{}` (never null) on read (`backend/storage/settings.go:103-105`). A per-day entry overrides the legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including disabling lunch for that day. Replaced whole by a PATCH that mentions it; `lunchBreaks: {}` clears every per-day override (spec AC-9).
-	// Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration 024 removes stored keys that are not one of the seven lowercase names. `propertyNames` is added by PAC-24 for the same reason as on `WorkingHoursSchedule.days`: the validator lowercases the key before checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks it up already-lowercased (`backend/storage/settings.go:138`), so a `"Monday"` key validates, stores, and never matches.
+	// Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration 024 removes stored keys that are not one of the seven lowercase names, or whose `start`/`end` are neither empty nor a clock. Before PAC-24 the validator lower-cased the key, so a `"Monday"` key was stored and never matched `LunchWindow`'s lookup.
 	LunchBreaks LunchBreakSchedule `json:"lunchBreaks"`
 
 	// LunchEnd `HH:MM` or `""`, as `lunchStart`. DB default `13:00`. PAC-24 adds the cross-property check lunchEnd > lunchStart as a 400 (API-082), applied only when both values are non-empty.
@@ -2313,7 +2313,7 @@ type SettingsUpdate struct {
 	LlmProvider *SettingsUpdateLlmProvider `json:"llmProvider,omitempty"`
 
 	// LunchBreaks storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name. Normalised to `{}` (never null) on read (`backend/storage/settings.go:103-105`). A per-day entry overrides the legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including disabling lunch for that day. Replaced whole by a PATCH that mentions it; `lunchBreaks: {}` clears every per-day override (spec AC-9).
-	// Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration 024 removes stored keys that are not one of the seven lowercase names. `propertyNames` is added by PAC-24 for the same reason as on `WorkingHoursSchedule.days`: the validator lowercases the key before checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks it up already-lowercased (`backend/storage/settings.go:138`), so a `"Monday"` key validates, stores, and never matches.
+	// Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration 024 removes stored keys that are not one of the seven lowercase names, or whose `start`/`end` are neither empty nor a clock. Before PAC-24 the validator lower-cased the key, so a `"Monday"` key was stored and never matched `LunchWindow`'s lookup.
 	LunchBreaks *LunchBreakSchedule `json:"lunchBreaks,omitempty"`
 
 	// LunchEnd `HH:MM` or `""`, as `lunchStart`. DB default `13:00`. PAC-24 adds the cross-property check lunchEnd > lunchStart as a 400 (API-082), applied only when both values are non-empty.
@@ -2653,7 +2653,7 @@ type UserProfileGoStruct struct {
 // **So `{"mode":"all_days","default":{"enabled":false,"start":"","end":""}, "days":{}}` is NOT a document GET can return** - the `:95-99` branch rewrites it before it reaches the wire. That matters because it is the one document the shipped consumer cannot render: `normalizeInterval` rejects an empty `start`/`end` and returns `undefined` (`smart-calendar-flow/src/api/client.ts:477-488`), `normalizeWorkingHours` then returns `undefined` because `default` is undefined and `days` is empty (`:505-517`), and `normalizeSettings` reaches `delete out.working_hours` (`:543`) - the per-day section disappears with no error and no empty state, which is the silent blank spec AC-20 exists to end.
 // The `by_day` arm of the same shape IS reachable, because `:95-99` guards on `mode == "all_days"`: `{"mode":"by_day", …, "days":{}}` normalises to itself and produces the identical `undefined` in the consumer. PAC-24 closes it at the point of entry rather than describing it - a `by_day` document must carry at least one weekday (400: `workingHours.days must contain at least one weekday when mode is by_day`). `by_day` with no days also means "this user never works", which no consumer intends and which `WorkWindow` already renders as `enabled:false` for every day (`:117-121`).
 type WorkingHoursSchedule struct {
-	// Days Keys are lowercase English weekday names, and PAC-24 makes that a constraint THE HANDLER ENFORCES (revision 3): `propertyNames` below documents it, but no generator carries `propertyNames` into a validator, so the server's exact-match check is the enforcement point (contract challenge r2, finding 4). Migration 024 removes stored keys that are not exactly one of the seven names - they never matched `WorkWindow`'s lookup, so removing them changes no behaviour. `validateSchedulePreferences` lowercases before checking (`backend/api/handlers_settings.go:145`, `validScheduleWeekdays[strings.ToLower(day)]`), so `"Monday"` passes validation and is stored - but `WorkWindow` looks the day up as `strings.ToLower(day.Weekday().String())` (`backend/storage/settings.go:117`), so the entry can never match and the user's Monday hours are silently inert forever. Under the whole-object replace this is worse than it was: the write that installs the dead key also deletes the live key it replaced. `propertyNames` makes the dead key a 400 instead of a document that says so. In `by_day` mode a missing weekday means "not working".
+	// Days Keys are lowercase English weekday names, and PAC-24 makes that a constraint THE HANDLER ENFORCES (revision 3): `propertyNames` below documents it, but no generator carries `propertyNames` into a validator, so the server's exact-match check is the enforcement point (contract challenge r2, finding 4). Migration 024 removes stored keys that are not exactly one of the seven names - they never matched `WorkWindow`'s lookup, so removing them changes no behaviour; it also removes entries whose `start`/`end` are neither empty nor a clock. Keys and entries are checked WHATEVER THE MODE (revision 4): a `days` map stored under `all_days` is still returned by GET. Before PAC-24 the validator lower-cased keys and only looked at `days` in `by_day` mode, so `"Monday"` was stored and never matched. In `by_day` mode a missing weekday means "not working".
 	Days map[string]DaySchedule `json:"days"`
 
 	// Default storage.DaySchedule. No omitempty - all three always serialise.
@@ -6850,6 +6850,14 @@ func (siw *ServerInterfaceWrapper) GetAuthStatus(w http.ResponseWriter, r *http.
 // StartZoomOAuth operation middleware
 func (siw *ServerInterfaceWrapper) StartZoomOAuth(w http.ResponseWriter, r *http.Request) {
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.StartZoomOAuth(w, r)
 	}))
@@ -6865,6 +6873,14 @@ func (siw *ServerInterfaceWrapper) StartZoomOAuth(w http.ResponseWriter, r *http
 func (siw *ServerInterfaceWrapper) HandleZoomOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params HandleZoomOAuthCallbackParams
@@ -11094,6 +11110,16 @@ func (response MicrosoftOAuthCallback500TextResponse) VisitMicrosoftOAuthCallbac
 	return err
 }
 
+type MicrosoftOAuthCallback502TextResponse PlainTextError
+
+func (response MicrosoftOAuthCallback502TextResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(502)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
 type MicrosoftOAuthCallback503JSONResponse ErrorResponse
 
 func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
@@ -11203,6 +11229,16 @@ func (response StartZoomOAuth302Response) VisitStartZoomOAuthResponse(w http.Res
 	return nil
 }
 
+type StartZoomOAuth401TextResponse string
+
+func (response StartZoomOAuth401TextResponse) VisitStartZoomOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
 type StartZoomOAuth503JSONResponse BookingError
 
 func (response StartZoomOAuth503JSONResponse) VisitStartZoomOAuthResponse(w http.ResponseWriter) error {
@@ -11241,6 +11277,16 @@ type HandleZoomOAuthCallback400TextResponse string
 func (response HandleZoomOAuthCallback400TextResponse) VisitHandleZoomOAuthCallbackResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(400)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type HandleZoomOAuthCallback401TextResponse string
+
+func (response HandleZoomOAuthCallback401TextResponse) VisitHandleZoomOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
