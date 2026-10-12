@@ -55,7 +55,7 @@ func (e *AnalyticsEngine) ForceCompute(ctx context.Context, userID uuid.UUID, da
 func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*storage.AnalyticsWeek, error) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
 
-	settings, err := storage.GetSettings(e.DB)
+	settings, err := storage.GetOrCreateSettingsByUser(e.DB, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get settings: %w", err)
 	}

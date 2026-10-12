@@ -61,3 +61,32 @@ func TestDailyRecap_OnlyTheUsersOwnData(t *testing.T) {
 		t.Errorf("alice's meetings = %+v, want only her brief", meetings)
 	}
 }
+
+// PAC-24: only users who enabled the recap on their own settings get one.
+func TestDailyRecap_RecapUsersOnlyThoseWhoEnabledIt(t *testing.T) {
+	db := openTestDB(t)
+	on, err := storage.UpsertUser(db, "recap-on@example.com", "On", "", "google", "recap-on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	off, err := storage.UpsertUser(db, "recap-off@example.com", "Off", "", "google", "recap-off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := storage.GetOrCreateSettingsByUser(db, on.ID)
+	s.RecapEnabled = true
+	if err := storage.SaveRecapSettingsForUser(db, on.ID, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.GetOrCreateSettingsByUser(db, off.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := (&DailyRecapService{DB: db}).recapUsers(context.Background())
+	if err != nil {
+		t.Fatalf("recapUsers: %v", err)
+	}
+	if len(users) != 1 || users[0].id != on.ID {
+		t.Errorf("recap users = %+v, want only %s", users, on.ID)
+	}
+}

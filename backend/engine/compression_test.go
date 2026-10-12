@@ -2,10 +2,12 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/Enach/paceday/backend/calendar"
+	"github.com/google/uuid"
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
@@ -213,7 +215,7 @@ func TestCompressionEngine_SuggestForDay_WithMock(t *testing.T) {
 	}
 
 	eng := &CompressionEngine{DB: db, calOps: mock}
-	result, err := eng.SuggestForDay(context.Background(), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
+	result, err := eng.SuggestForDay(compressionCtx(t, db), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("SuggestForDay: %v", err)
 	}
@@ -303,7 +305,7 @@ func TestCompressionEngine_SuggestForDay_WithMoveableEvents(t *testing.T) {
 	}
 
 	eng := &CompressionEngine{DB: db, calOps: mock}
-	result, err := eng.SuggestForDay(context.Background(), base)
+	result, err := eng.SuggestForDay(compressionCtx(t, db), base)
 	if err != nil {
 		t.Fatalf("SuggestForDay with moveable events: %v", err)
 	}
@@ -337,11 +339,19 @@ func TestCompressionEngine_SuggestForDay_WithAttendees(t *testing.T) {
 	mock := &mockCalOps{calID: "primary", events: []*googlecalendar.Event{ev}}
 	eng := &CompressionEngine{DB: db, calOps: mock}
 
-	result, err := eng.SuggestForDay(context.Background(), base)
+	result, err := eng.SuggestForDay(compressionCtx(t, db), base)
 	if err != nil {
 		t.Fatalf("SuggestForDay with attendees: %v", err)
 	}
 	if result == nil {
 		t.Fatal("result should not be nil")
 	}
+}
+
+// compressionCtx carries a new user: compression reads the caller's own
+// settings (PAC-24).
+func compressionCtx(t *testing.T, db *sql.DB) context.Context {
+	t.Helper()
+	ctx, _ := smartScheduleUser(t, db, "compression-"+uuid.NewString()+"@example.com")
+	return ctx
 }

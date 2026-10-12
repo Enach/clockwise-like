@@ -34,8 +34,9 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Get("/callback", ah.callback)
 		r.Get("/microsoft", ah.startMicrosoftOAuth)
 		r.Get("/microsoft/callback", ah.microsoftCallback)
-		r.Get("/zoom", (newConferencingHandlers(db, oauthConfig)).startZoomOAuth)
-		r.Get("/zoom/callback", (newConferencingHandlers(db, oauthConfig)).zoomCallback)
+		// Connecting Zoom attaches it to the signed-in user's settings (PAC-24).
+		r.With(requireAuth(jwtSecret)).Get("/zoom", (newConferencingHandlers(db, oauthConfig)).startZoomOAuth)
+		r.With(requireAuth(jwtSecret)).Get("/zoom/callback", (newConferencingHandlers(db, oauthConfig)).zoomCallback)
 		r.Post("/detect", ssoh.detect)
 		r.Get("/sso/{domain}", ssoh.startSSO)
 		r.Get("/callback/oidc/{domain}", ssoh.oidcCallback)
@@ -72,7 +73,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		sh := &settingsHandlers{db: db}
 		r.Route("/api/settings", func(r chi.Router) {
 			r.Get("/", sh.getSettings)
-			r.Put("/", sh.putSettings)
+			r.Patch("/", sh.patchSettings)
 		})
 
 		fh := newFocusHandlers(db, oauthConfig)

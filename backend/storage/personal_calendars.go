@@ -2,10 +2,11 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
-	"time"
 )
 
 type PersonalCalendar struct {
@@ -151,11 +152,20 @@ func DeletePersonalBlocker(db *sql.DB, calID int64, personalEventID string) erro
 	return err
 }
 
-func SaveZoomTokens(db *sql.DB, accessToken, refreshToken string) error {
-	_, err := db.Exec(
-		`UPDATE settings SET zoom_tokens = $1, conferencing_provider = 'zoom' WHERE id = 1`,
-		`{"access_token":"`+accessToken+`","refresh_token":"`+refreshToken+`"}`,
-	)
+// SaveZoomTokens stores userID's Zoom credential on their own settings row
+// and makes Zoom their conferencing provider (PAC-24).
+func SaveZoomTokens(db *sql.DB, userID uuid.UUID, accessToken, refreshToken string) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("SaveZoomTokens: userID is required")
+	}
+	data, err := json.Marshal(map[string]string{"access_token": accessToken, "refresh_token": refreshToken})
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE settings SET zoom_tokens = $2, conferencing_provider = 'zoom' WHERE user_id = $1`, userID, string(data))
 	return err
 }
 

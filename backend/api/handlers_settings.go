@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,12 +28,19 @@ var validLLMProviders = map[string]bool{
 	"":             true,
 }
 
+var validCalendarProviders = map[string]bool{"google": true, "outlook": true, "webcal": true}
+var validConferencingProviders = map[string]bool{"meet": true, "zoom": true, "teams": true}
+var validRecapSendTo = map[string]bool{"dm": true, "channel": true}
+
 type settingsHandlers struct {
 	db *sql.DB
 }
 
+// getSettings returns the caller's settings, creating their row on first read
+// (PAC-24). The provider key is never in the body; llmApiKeySet says whether
+// one is on file.
 func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := storage.GetSettings(h.db)
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -38,24 +49,96 @@ func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s)
 }
 
-func (h *settingsHandlers) putSettings(w http.ResponseWriter, r *http.Request) {
-	var s storage.Settings
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+// settingsPatchProperties is every property PATCH /api/settings accepts: the
+// JSON names of storage.Settings plus the write-only llmApiKey, which the
+// struct never encodes.
+var settingsPatchProperties = func() map[string]bool {
+	props := map[string]bool{"llmApiKey": true}
+	t := reflect.TypeOf(storage.Settings{})
+	for i := 0; i < t.NumField(); i++ {
+		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
+		if name != "" && name != "-" {
+			props[name] = true
+		}
+	}
+	return props
+}()
+
+// patchSettings merges the body into the caller's own settings (PAC-24):
+// an absent property is unchanged, a present one is set exactly, null and
+// unknown properties are a 400, workingHours and lunchBreaks are replaced
+// whole, and llmApiKeySet and updatedAt are accepted and ignored.
+func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	if err := validateSettings(&s); err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		writeError(w, "invalid JSON: the body must be an object", http.StatusBadRequest)
 		return
 	}
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !settingsPatchProperties[name] {
+			writeError(w, "unknown property: "+name, http.StatusBadRequest)
+			return
+		}
+		if bytes.Equal(bytes.TrimSpace(fields[name]), []byte("null")) {
+			writeError(w, name+" must not be null", http.StatusBadRequest)
+			return
+		}
+	}
 
-	if err := storage.SaveSettings(h.db, &s); err != nil {
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	stored, err := json.Marshal(s)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Decoding onto the stored record is the merge; maps would be merged into,
+	// so the two schedule properties are emptied first to be replaced whole.
+	if _, ok := fields["workingHours"]; ok {
+		s.WorkingHours = storage.WorkingHoursSchedule{}
+	}
+	if _, ok := fields["lunchBreaks"]; ok {
+		s.LunchBreaks = storage.LunchBreakSchedule{}
+	}
+	if err := json.Unmarshal(raw, s); err != nil {
+		writeError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if key, ok := fields["llmApiKey"]; ok {
+		if err := json.Unmarshal(key, &s.LLMAPIKey); err != nil {
+			writeError(w, "llmApiKey must be a string", http.StatusBadRequest)
+			return
+		}
+	}
 
-	updated, err := storage.GetSettings(h.db)
+	changed, err := changedSettingsProperties(stored, s)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := validateChangedSettings(s, changed); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	updated, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,59 +147,130 @@ func (h *settingsHandlers) putSettings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(updated)
 }
 
+// settingsProblem is one validation failure and the properties it is about.
+type settingsProblem struct {
+	props []string
+	msg   string
+}
+
+// validateSettings returns the first problem with s, whatever it is about.
 func validateSettings(s *storage.Settings) error {
-	timeFields := map[string]string{
-		"workStart":  s.WorkStart,
-		"workEnd":    s.WorkEnd,
-		"lunchStart": s.LunchStart,
-		"lunchEnd":   s.LunchEnd,
+	return validateChangedSettings(s, nil)
+}
+
+// changedSettingsProperties lists the properties whose encoded value differs
+// between the stored document and the merged one. The write-only key is never
+// validated, so it is not compared.
+func changedSettingsProperties(stored []byte, merged *storage.Settings) (map[string]bool, error) {
+	after, err := json.Marshal(merged)
+	if err != nil {
+		return nil, err
 	}
-	for field, val := range timeFields {
-		if val != "" && !timePattern.MatchString(val) {
-			return &validationError{field + " must be in HH:MM format"}
+	var a, b map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &a); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(after, &b); err != nil {
+		return nil, err
+	}
+	changed := map[string]bool{}
+	for k, v := range b {
+		if !bytes.Equal(a[k], v) {
+			changed[k] = true
 		}
 	}
+	return changed, nil
+}
 
-	if s.FocusMinBlockMinutes < 0 {
-		return &validationError{"focusMinBlockMinutes must be positive"}
+// validateChangedSettings returns the first problem that concerns a property
+// in changed, or any problem when changed is nil. PATCH validates only what the
+// body changes (PAC-24, contract revision 3), so a stored value that a newer
+// rule rejects never stops a user saving something else, and a document read
+// from GET can always be submitted back unchanged.
+func validateChangedSettings(s *storage.Settings, changed map[string]bool) error {
+	for _, p := range settingsProblems(s) {
+		if changed == nil {
+			return &validationError{p.msg}
+		}
+		for _, prop := range p.props {
+			if changed[prop] {
+				return &validationError{p.msg}
+			}
+		}
 	}
-	if s.FocusMaxBlockMinutes < 0 {
-		return &validationError{"focusMaxBlockMinutes must be positive"}
+	return nil
+}
+
+func settingsProblems(s *storage.Settings) []settingsProblem {
+	var out []settingsProblem
+	add := func(msg string, props ...string) { out = append(out, settingsProblem{props, msg}) }
+
+	for _, f := range []struct{ prop, val string }{
+		{"workStart", s.WorkStart}, {"workEnd", s.WorkEnd},
+		{"lunchStart", s.LunchStart}, {"lunchEnd", s.LunchEnd},
+	} {
+		if f.val != "" && !validClockTime(f.val) {
+			add(f.prop+" must be in HH:MM format", f.prop)
+		}
 	}
-	if s.FocusDailyTargetMinutes < 0 {
-		return &validationError{"focusDailyTargetMinutes must be positive"}
+	if validClockTime(s.WorkStart) && validClockTime(s.WorkEnd) && s.WorkEnd <= s.WorkStart {
+		add("workEnd must be after workStart", "workStart", "workEnd")
+	}
+	if validClockTime(s.LunchStart) && validClockTime(s.LunchEnd) && s.LunchEnd <= s.LunchStart {
+		add("lunchEnd must be after lunchStart", "lunchStart", "lunchEnd")
+	}
+	if _, err := time.LoadLocation(s.Timezone); err != nil {
+		add("timezone is not a known time zone", "timezone")
 	}
 
-	if s.OutOfHoursMeetingsPerWeek < 0 {
-		return &validationError{"outOfHoursMeetingsPerWeek must be zero or positive"}
+	for _, f := range []struct {
+		prop string
+		val  int
+	}{
+		{"focusMinBlockMinutes", s.FocusMinBlockMinutes}, {"focusMaxBlockMinutes", s.FocusMaxBlockMinutes},
+		{"focusDailyTargetMinutes", s.FocusDailyTargetMinutes}, {"outOfHoursMeetingsPerWeek", s.OutOfHoursMeetingsPerWeek},
+		{"bufferBeforeMinutes", s.BufferBeforeMinutes}, {"bufferAfterMinutes", s.BufferAfterMinutes},
+		{"bufferMinMeetingMinutes", s.BufferMinMeetingMinutes},
+	} {
+		if f.val < 0 {
+			add(f.prop+" must be zero or positive", f.prop)
+		}
 	}
-	if s.BufferBeforeMinutes < 0 {
-		return &validationError{"bufferBeforeMinutes must be positive"}
-	}
-	if s.BufferAfterMinutes < 0 {
-		return &validationError{"bufferAfterMinutes must be positive"}
+	if s.FocusMinBlockMinutes > s.FocusMaxBlockMinutes {
+		add("focusMinBlockMinutes must not exceed focusMaxBlockMinutes", "focusMinBlockMinutes", "focusMaxBlockMinutes")
 	}
 
 	if s.AutoScheduleCron != "" {
-		parts := strings.Fields(s.AutoScheduleCron)
-		if len(parts) != 5 {
-			return &validationError{"autoScheduleCron must be a 5-part cron expression"}
-		}
-		p := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err := p.Parse(s.AutoScheduleCron); err != nil {
-			return &validationError{"autoScheduleCron is invalid: " + err.Error()}
+		if len(strings.Fields(s.AutoScheduleCron)) != 5 {
+			add("autoScheduleCron must be a 5-part cron expression", "autoScheduleCron")
+		} else if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(s.AutoScheduleCron); err != nil {
+			add("autoScheduleCron is invalid: "+err.Error(), "autoScheduleCron")
 		}
 	}
 
-	if s.LLMProvider != "" && !validLLMProviders[s.LLMProvider] {
-		return &validationError{"llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex"}
+	if !validLLMProviders[s.LLMProvider] {
+		add("llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex", "llmProvider")
+	}
+	if !validCalendarProviders[s.CalendarProvider] {
+		add("calendarProvider must be one of: google, outlook, webcal", "calendarProvider")
+	}
+	if !validConferencingProviders[s.ConferencingProvider] {
+		add("conferencingProvider must be one of: meet, zoom, teams", "conferencingProvider")
+	}
+	if !validRecapSendTo[s.RecapSendTo] {
+		add("recapSendTo must be dm or channel", "recapSendTo")
+	}
+	if !validClockTime(s.RecapSendTime) {
+		add("recapSendTime must be in HH:MM format", "recapSendTime")
 	}
 
-	if err := validateSchedulePreferences(s); err != nil {
-		return err
+	if err := validateWorkingHours(s); err != nil {
+		add(err.Error(), "workingHours")
 	}
-
-	return nil
+	if err := validateLunchBreaks(s); err != nil {
+		add(err.Error(), "lunchBreaks")
+	}
+	return out
 }
 
 var validScheduleWeekdays = map[string]bool{
@@ -124,25 +278,36 @@ var validScheduleWeekdays = map[string]bool{
 	"friday": true, "saturday": true, "sunday": true,
 }
 
+// validateSchedulePreferences checks both per-day schedules.
 func validateSchedulePreferences(s *storage.Settings) error {
-	mode := strings.ToLower(strings.TrimSpace(s.WorkingHours.Mode))
+	if err := validateWorkingHours(s); err != nil {
+		return err
+	}
+	return validateLunchBreaks(s)
+}
+
+// validateWorkingHours compares mode and weekday keys exactly (PAC-24): a
+// "BY_DAY" mode or a "Monday" key used to pass after lower-casing, be stored,
+// and never match WorkWindow's lowercase lookup.
+func validateWorkingHours(s *storage.Settings) error {
+	mode := s.WorkingHours.Mode
 	if mode != "" && mode != "all_days" && mode != "by_day" {
 		return &validationError{"workingHours.mode must be all_days or by_day"}
 	}
 	if mode == "" && len(s.WorkingHours.Days) > 0 {
 		return &validationError{"workingHours.mode is required when day-specific hours are provided"}
 	}
-
-	if mode == "all_days" {
-		if scheduleHasValues(s.WorkingHours.Default) {
-			if err := validateDaySchedule("workingHours.default", s.WorkingHours.Default); err != nil {
-				return err
-			}
+	if mode == "all_days" && scheduleHasValues(s.WorkingHours.Default) {
+		if err := validateDaySchedule("workingHours.default", s.WorkingHours.Default); err != nil {
+			return err
 		}
 	}
 	if mode == "by_day" {
+		if len(s.WorkingHours.Days) == 0 {
+			return &validationError{"workingHours.days must contain at least one weekday when mode is by_day"}
+		}
 		for day, schedule := range s.WorkingHours.Days {
-			if !validScheduleWeekdays[strings.ToLower(day)] {
+			if !validScheduleWeekdays[day] {
 				return &validationError{"workingHours.days." + day + " is not a valid weekday"}
 			}
 			if err := validateDaySchedule("workingHours.days."+day, schedule); err != nil {
@@ -150,8 +315,12 @@ func validateSchedulePreferences(s *storage.Settings) error {
 			}
 		}
 	}
+	return nil
+}
+
+func validateLunchBreaks(s *storage.Settings) error {
 	for day, schedule := range s.LunchBreaks {
-		if !validScheduleWeekdays[strings.ToLower(day)] {
+		if !validScheduleWeekdays[day] {
 			return &validationError{"lunchBreaks." + day + " is not a valid weekday"}
 		}
 		if err := validateDaySchedule("lunchBreaks."+day, schedule); err != nil {

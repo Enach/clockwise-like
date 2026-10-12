@@ -149,6 +149,7 @@ func TestAddConferenceErrorsContract(t *testing.T) {
 	client := &fakeConferenceEventClient{calendarID: "primary", event: &googlecalendar.Event{Summary: "Planning", Start: &googlecalendar.EventDateTime{DateTime: start}, End: &googlecalendar.EventDateTime{DateTime: end}}}
 	factory := &fakeConferenceProviderFactory{err: errors.New("unsupported conference provider \"whereby\"")}
 	r := setupConferencingRoutes(t, client, factory)
+	user := createTestUser(t, "conference-errors@example.com") // settings are the caller's (PAC-24)
 	tests := []struct {
 		name, body, wantContains string
 		want                     int
@@ -159,7 +160,7 @@ func TestAddConferenceErrorsContract(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/events/evt-1/conference", bytes.NewBufferString(tc.body))
+			req := withUser(httptest.NewRequest(http.MethodPost, "/api/events/evt-1/conference", bytes.NewBufferString(tc.body)), user)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 			if w.Code != tc.want {

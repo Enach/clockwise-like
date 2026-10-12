@@ -69,7 +69,7 @@ func insertRecapSend(db *sql.DB, r RecapSend) error {
 // RunForUser checks whether it's time to send a recap to a single user and
 // sends if so.  Designed to be called every minute from a cron job.
 func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, userName string) {
-	settings, err := storage.GetSettings(s.DB)
+	settings, err := storage.GetOrCreateSettingsByUser(s.DB, userID)
 	if err != nil || !settings.RecapEnabled {
 		return
 	}
@@ -121,25 +121,44 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 // RunAll iterates all users with recap_enabled and calls RunForUser.
 // Called every minute by the cron in main.go.
 func (s *DailyRecapService) RunAll(ctx context.Context) {
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT u.id, u.name
-		FROM users u
-		INNER JOIN settings st ON st.id = 1
-		WHERE st.recap_enabled = true`)
+	users, err := s.recapUsers(ctx)
 	if err != nil {
 		log.Printf("daily recap: list users error: %v", err)
 		return
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id uuid.UUID
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
-			continue
-		}
-		go s.RunForUser(ctx, id, name)
+	for _, u := range users {
+		go s.RunForUser(ctx, u.id, u.name)
 		time.Sleep(time.Second) // stagger sends to respect Slack rate limits
 	}
+}
+
+type recapUser struct {
+	id   uuid.UUID
+	name string
+}
+
+// recapUsers returns the users who enabled the recap on their own settings
+// (PAC-24: this joined every user to the shared row, so one user enabling it
+// sent a recap to everyone).
+func (s *DailyRecapService) recapUsers(ctx context.Context) ([]recapUser, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT u.id, u.name
+		FROM users u
+		INNER JOIN settings st ON st.user_id = u.id
+		WHERE st.recap_enabled = true`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []recapUser
+	for rows.Next() {
+		var u recapUser
+		if err := rows.Scan(&u.id, &u.name); err != nil {
+			continue
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
 }
 
 // ── Message construction ──────────────────────────────────────────────────────

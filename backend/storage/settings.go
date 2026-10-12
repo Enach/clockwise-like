@@ -169,7 +169,11 @@ type Settings struct {
 	AutoScheduleCron        string               `json:"autoScheduleCron"`
 	LLMProvider             string               `json:"llmProvider"`
 	LLMModel                string               `json:"llmModel"`
-	LLMAPIKey               string               `json:"llmApiKey"`
+	// LLMAPIKey is write-only (PAC-24): never encoded in a response. Writes go
+	// through the settings handler, which reads it from the request itself.
+	LLMAPIKey               string               `json:"-"`
+	// LLMAPIKeySet reports whether a key is on file. Read-only; never stored.
+	LLMAPIKeySet            bool                 `json:"llmApiKeySet"`
 	LLMBaseURL              string               `json:"llmBaseUrl"`
 	// AWS Bedrock
 	AWSRegion    string `json:"awsRegion"`
@@ -205,8 +209,9 @@ type Settings struct {
 	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
-func GetSettings(db *sql.DB) (*Settings, error) {
-	row := db.QueryRow(`SELECT
+// settingsColumns is the one column list every settings read uses.
+// recap_send_time is rendered HH:MM (PAC-24, U-19), never Postgres's HH:MM:SS.
+const settingsColumns = `
 		id, work_start, work_end, timezone,
 		focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
 		out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
@@ -221,13 +226,24 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		ollama_base_url, ollama_model,
 		calendar_provider, COALESCE(microsoft_tokens,''), webcal_url, calendar_email,
 		COALESCE(conferencing_provider,'meet'), COALESCE(zoom_tokens,''),
-		recap_enabled, COALESCE(recap_send_time::TEXT,''), COALESCE(recap_send_to,''),
+		recap_enabled, to_char(recap_send_time, 'HH24:MI'), COALESCE(recap_send_to,''),
 		COALESCE(recap_channel_id,''), recap_include_briefs, recap_include_focus, recap_include_habits,
-		updated_at
-		FROM settings WHERE id = 1`)
+		COALESCE(working_hours, '{}'::jsonb), COALESCE(lunch_breaks, '{}'::jsonb),
+		updated_at`
 
+// GetOrCreateSettingsByUser returns userID's settings, creating the row with
+// the product defaults the first time (PAC-24). Settings always belong to a
+// user: there is no shared row and no way to read one without a user id.
+func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("GetOrCreateSettingsByUser: userID is required")
+	}
+	// ON CONFLICT makes two concurrent first reads safe.
+	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return nil, err
+	}
 	s := &Settings{}
-	err := row.Scan(
+	err := db.QueryRow(`SELECT`+settingsColumns+` FROM settings WHERE user_id = $1`, userID).Scan(
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
 		&s.OutOfHoursMeetingsPerWeek, &s.AutoDeclineOutsideWorkingHours,
@@ -244,32 +260,30 @@ func GetSettings(db *sql.DB) (*Settings, error) {
 		&s.ConferencingProvider, &s.ZoomTokens,
 		&s.RecapEnabled, &s.RecapSendTime, &s.RecapSendTo,
 		&s.RecapChannelID, &s.RecapIncludeBriefs, &s.RecapIncludeFocus, &s.RecapIncludeHabits,
+		&s.WorkingHours, &s.LunchBreaks,
 		&s.UpdatedAt,
 	)
-	if err == sql.ErrNoRows {
-		return insertDefaultSettings(db)
-	}
 	if err != nil {
 		return nil, err
 	}
-	if err := loadScheduleFields(db, s, nil); err != nil {
-		return nil, err
-	}
+	s.LLMAPIKeySet = s.LLMAPIKey != ""
+	s.UpdatedAt = s.UpdatedAt.UTC()
+	s.normalizeSchedules()
 	return s, nil
 }
 
-func insertDefaultSettings(db *sql.DB) (*Settings, error) {
-	_, err := db.Exec(`INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`)
-	if err != nil {
-		return nil, err
+// SaveSettingsForUser writes every user-editable column of userID's row and
+// no other user's. The calendar and conferencing credentials
+// (microsoft_tokens, zoom_tokens) are not written here: they have their own
+// writers.
+func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("SaveSettingsForUser: userID is required")
 	}
-	return GetSettings(db)
-}
-
-func SaveSettings(db *sql.DB, s *Settings) error {
+	s.normalizeSchedules()
 	_, err := db.Exec(`
 		INSERT INTO settings (
-			id, work_start, work_end, timezone,
+			user_id, work_start, work_end, timezone,
 			focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
 			focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
 			buffer_before_minutes, buffer_after_minutes,
@@ -285,13 +299,14 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			recap_enabled, recap_send_time, recap_send_to, recap_channel_id,
 			recap_include_briefs, recap_include_focus, recap_include_habits,
 			out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
+			working_hours, lunch_breaks,
 			updated_at
 		) VALUES (
-			1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
-			$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,
-			$39,$40,$41,$42,$43,$44,$45,$46,$47,NOW()
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
+			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,NOW()
 		)
-		ON CONFLICT (id) DO UPDATE SET
+		ON CONFLICT (user_id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
 			timezone=EXCLUDED.timezone,
 			focus_min_block_minutes=EXCLUDED.focus_min_block_minutes,
@@ -329,7 +344,10 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 			recap_include_briefs=EXCLUDED.recap_include_briefs,
 			recap_include_focus=EXCLUDED.recap_include_focus,
 			recap_include_habits=EXCLUDED.recap_include_habits,
+			working_hours=EXCLUDED.working_hours,
+			lunch_breaks=EXCLUDED.lunch_breaks,
 			updated_at=NOW()`,
+		userID,
 		s.WorkStart, s.WorkEnd, s.Timezone,
 		s.FocusMinBlockMinutes, s.FocusMaxBlockMinutes, s.FocusDailyTargetMinutes,
 		s.FocusLabel, s.FocusColor, s.LunchStart, s.LunchEnd, s.ProtectLunch,
@@ -346,11 +364,25 @@ func SaveSettings(db *sql.DB, s *Settings) error {
 		s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo), s.RecapChannelID,
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
 		s.OutOfHoursMeetingsPerWeek, s.AutoDeclineOutsideWorkingHours,
+		s.WorkingHours, s.LunchBreaks,
 	)
-	if err != nil {
-		return err
+	return err
+}
+
+// SaveRecapSettingsForUser writes only the seven recap columns of userID's
+// row (PAC-24): the recap PATCH no longer rewrites the rest of the row.
+func SaveRecapSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("SaveRecapSettingsForUser: userID is required")
 	}
-	return saveScheduleFields(db, s)
+	_, err := db.Exec(`UPDATE settings SET
+			recap_enabled = $2, recap_send_time = $3, recap_send_to = $4, recap_channel_id = $5,
+			recap_include_briefs = $6, recap_include_focus = $7, recap_include_habits = $8,
+			updated_at = NOW()
+		WHERE user_id = $1`,
+		userID, s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo),
+		s.RecapChannelID, s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits)
+	return err
 }
 
 func recapSendTimeOrDefault(v string) string {
@@ -413,97 +445,4 @@ func ListUsersWithAutoDecline(db *sql.DB) ([]uuid.UUID, error) {
 		out = append(out, userID)
 	}
 	return out, rows.Err()
-}
-
-// GetSettingsByUser returns the settings row for a specific user.
-// Returns an error if userID is uuid.Nil. Returns (nil, nil) if no row exists.
-func GetSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
-	if userID == uuid.Nil {
-		return nil, fmt.Errorf("GetSettingsByUser: userID is required")
-	}
-	row := db.QueryRow(`SELECT
-		id, work_start, work_end, timezone,
-		focus_min_block_minutes, focus_max_block_minutes, focus_daily_target_minutes,
-		out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
-		focus_label, focus_color, lunch_start, lunch_end, protect_lunch,
-		buffer_before_minutes, buffer_after_minutes,
-		buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
-		compression_enabled, auto_schedule_enabled, auto_schedule_cron,
-		llm_provider, llm_model, llm_api_key, llm_base_url,
-		aws_region, aws_profile, bedrock_model,
-		azure_endpoint, azure_deployment, azure_api_version,
-		gcp_project, gcp_location, vertex_model,
-		ollama_base_url, ollama_model,
-		calendar_provider, COALESCE(microsoft_tokens,''), webcal_url, calendar_email,
-		COALESCE(conferencing_provider,'meet'), COALESCE(zoom_tokens,''),
-		recap_enabled, COALESCE(recap_send_time::TEXT,''), COALESCE(recap_send_to,''),
-		COALESCE(recap_channel_id,''), recap_include_briefs, recap_include_focus, recap_include_habits,
-		updated_at
-		FROM settings WHERE user_id = $1`, userID)
-	s := &Settings{}
-	err := row.Scan(
-		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
-		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
-		&s.OutOfHoursMeetingsPerWeek, &s.AutoDeclineOutsideWorkingHours,
-		&s.FocusLabel, &s.FocusColor, &s.LunchStart, &s.LunchEnd, &s.ProtectLunch,
-		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
-		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,
-		&s.CompressionEnabled, &s.AutoScheduleEnabled, &s.AutoScheduleCron,
-		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL,
-		&s.AWSRegion, &s.AWSProfile, &s.BedrockModel,
-		&s.AzureEndpoint, &s.AzureDeployment, &s.AzureAPIVersion,
-		&s.GCPProject, &s.GCPLocation, &s.VertexModel,
-		&s.OllamaBaseURL, &s.OllamaModel,
-		&s.CalendarProvider, &s.MicrosoftTokens, &s.WebcalURL, &s.CalendarEmail,
-		&s.ConferencingProvider, &s.ZoomTokens,
-		&s.RecapEnabled, &s.RecapSendTime, &s.RecapSendTo,
-		&s.RecapChannelID, &s.RecapIncludeBriefs, &s.RecapIncludeFocus, &s.RecapIncludeHabits,
-		&s.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := loadScheduleFields(db, s, &userID); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func loadScheduleFields(db *sql.DB, s *Settings, userID *uuid.UUID) error {
-	var row *sql.Row
-	if userID == nil {
-		row = db.QueryRow(`SELECT COALESCE(working_hours, '{}'::jsonb), COALESCE(lunch_breaks, '{}'::jsonb)
-			FROM settings WHERE id = 1`)
-	} else {
-		row = db.QueryRow(`SELECT COALESCE(working_hours, '{}'::jsonb), COALESCE(lunch_breaks, '{}'::jsonb)
-			FROM settings WHERE user_id = $1`, *userID)
-	}
-
-	var working WorkingHoursSchedule
-	var lunch LunchBreakSchedule
-	if err := row.Scan(&working, &lunch); err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return err
-	}
-	s.WorkingHours = working
-	s.LunchBreaks = lunch
-	s.normalizeSchedules()
-	return nil
-}
-
-func saveScheduleFields(db *sql.DB, s *Settings) error {
-	s.normalizeSchedules()
-	id := s.ID
-	if id == 0 {
-		id = 1
-	}
-	_, err := db.Exec(`UPDATE settings
-		SET working_hours = $1, lunch_breaks = $2, updated_at = NOW()
-		WHERE id = $3`, s.WorkingHours, s.LunchBreaks, id)
-	return err
 }

@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
@@ -44,7 +46,13 @@ type microsoftTokenRecord struct {
 	Expiry       time.Time `json:"expiry"`
 }
 
-func SaveMicrosoftToken(db *sql.DB, token *oauth2.Token) error {
+// SaveMicrosoftToken stores userID's Outlook credential on their own settings
+// row and makes Outlook their calendar provider (PAC-24: it was one shared
+// credential for every user).
+func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("SaveMicrosoftToken: userID is required")
+	}
 	rec := microsoftTokenRecord{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
@@ -54,12 +62,17 @@ func SaveMicrosoftToken(db *sql.DB, token *oauth2.Token) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`UPDATE settings SET microsoft_tokens = $1, calendar_provider = 'outlook' WHERE id = 1`, string(data))
+	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook' WHERE user_id = $1`, userID, string(data))
 	return err
 }
 
-func LoadMicrosoftToken(db *sql.DB) (*oauth2.Token, error) {
-	row := db.QueryRow(`SELECT microsoft_tokens FROM settings WHERE id = 1`)
+// LoadMicrosoftToken returns userID's Outlook credential, or nil when they
+// have none.
+func LoadMicrosoftToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+	row := db.QueryRow(`SELECT microsoft_tokens FROM settings WHERE user_id = $1`, userID)
 	var raw sql.NullString
 	if err := row.Scan(&raw); err != nil || !raw.Valid || raw.String == "" {
 		return nil, nil

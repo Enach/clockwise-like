@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
@@ -170,7 +171,7 @@ type NLPService struct {
 const attendeeExtractionPrompt = `Extract email addresses from the user's text. Return ONLY JSON: {"attendees": ["email@example.com"]}. If none found, return {"attendees": []}.`
 
 func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, error) {
-	settings, err := storage.GetSettings(s.DB)
+	settings, err := storage.GetOrCreateSettingsByUser(s.DB, auth.UserIDFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}

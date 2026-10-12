@@ -63,11 +63,11 @@ func (s *AutoDeclineService) RunForUser(ctx context.Context, userID uuid.UUID, n
 	if s == nil || s.DB == nil {
 		return 0, fmt.Errorf("auto-decline: database is required")
 	}
-	settings, err := storage.GetSettingsByUser(s.DB, userID)
+	settings, err := storage.GetOrCreateSettingsByUser(s.DB, userID)
 	if err != nil {
 		return 0, err
 	}
-	if settings == nil || !settings.AutoDeclineOutsideWorkingHours {
+	if !settings.AutoDeclineOutsideWorkingHours {
 		return 0, nil
 	}
 	if s.OAuthConfig == nil {
