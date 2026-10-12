@@ -44,8 +44,8 @@ DELETE FROM manager_team_members
 
 DELETE FROM teams WHERE name LIKE 'E2E %';
 
--- focus_blocks has NO user_id filter in storage.ListFocusBlocksForWeek, so a
--- stray block is global busy time for every booking host. Clear them all.
+-- A stray focus block is busy time for its owner, and the e2e users host the
+-- booking links, so a leftover would shrink slot lists. Clear them all.
 DELETE FROM focus_blocks;
 
 DELETE FROM users WHERE email LIKE 'e2e.%@paceday.test';

@@ -100,8 +100,8 @@ func (e *TeamAvailabilityEngine) FindSlots(ctx context.Context, teamID uuid.UUID
 			}
 		}
 
-		// Focus blocks for the day (soft-busy for scoring).
-		fbs, _ := storage.ListFocusBlocksForWeek(e.DB, day)
+		// The member's own focus blocks for the day (soft-busy for scoring).
+		fbs, _ := storage.ListFocusBlocksForUserWeek(e.DB, m.UserID, day)
 		for _, fb := range fbs {
 			if fb.StartTime.Year() == day.Year() && fb.StartTime.Month() == day.Month() && fb.StartTime.Day() == day.Day() {
 				md.focus = append(md.focus, interval{fb.StartTime, fb.EndTime})

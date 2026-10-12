@@ -142,7 +142,7 @@ func (e *HabitsEngine) scheduleDay(
 	}
 
 	// Focus blocks.
-	focusBlocks, _ := storage.ListFocusBlocksForWeek(e.DB, day)
+	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, userID, day)
 	for _, fb := range focusBlocks {
 		if fb.StartTime.Year() == day.Year() &&
 			fb.StartTime.Month() == day.Month() &&

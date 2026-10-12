@@ -28,9 +28,9 @@ import { CONNECTED } from '../seed/ids';
 /** settings.focus_label's default (migration 001); seed.sql does not set it. */
 const FOCUS_LABEL = 'Focus Time';
 
-// Each scenario owns its week. focus_blocks is global busy time for every
-// booking host (seed.sql), so these stay clear of the booking specs (7–18 days
-// ahead), of seam.spec.ts (weeks 5 and 6) and of each other.
+// Each scenario owns its week. A focus block is busy time for its owner, who
+// may also host a booking link (seed.sql), so these stay clear of the booking
+// specs (7–18 days ahead), of seam.spec.ts (weeks 5 and 6) and of each other.
 const AC18_WEEK = 4;
 const AC19_WEEK = 8;
 
@@ -251,6 +251,6 @@ async function focusRows(
 async function clearFocusWeek(api: ApiClient, db: Db, week: string): Promise<void> {
   await api.delete(`/api/focus/blocks?week=${week}`);
   const end = isoDate(new Date(Date.parse(`${week}T00:00:00Z`) + 7 * DAY_MS));
-  // focus_blocks is global busy time for every booking host: never leave one.
+  // A leftover block is busy time for its owner, who may host a booking link: never leave one.
   await db.query('DELETE FROM focus_blocks WHERE date >= $1 AND date < $2', [week, end]);
 }

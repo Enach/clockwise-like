@@ -170,8 +170,8 @@ func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, 
 	todayEnd := todayStart.Add(24 * time.Hour)
 
 	meetings := s.fetchMeetings(ctx, userID, todayStart, todayEnd)
-	focusBlocks := s.fetchFocusBlocks(todayStart)
-	habits := s.fetchHabits(todayStart)
+	focusBlocks := s.fetchFocusBlocks(userID, todayStart)
+	habits := s.fetchHabits(userID, todayStart)
 	briefs := s.fetchBriefs(ctx, userID, meetings)
 
 	// Summary line
@@ -305,7 +305,8 @@ func (s *DailyRecapService) buildMeetingBlocks(m recapMeeting, brief *storage.Me
 // ── Data fetching stubs ───────────────────────────────────────────────────────
 // These call the relevant storage functions. In production the calendar data
 // would be fetched from the synced event store; here we use the focus_blocks
-// table and habits for the non-calendar parts.
+// table and habits for the non-calendar parts. Every query is scoped to the
+// user the recap is for: a recap shows nobody else's data.
 
 type recapMeeting struct {
 	ID        string
@@ -328,13 +329,13 @@ type recapHabit struct {
 	WindowEnd   string
 }
 
-func (s *DailyRecapService) fetchMeetings(_ context.Context, _ uuid.UUID, start, end time.Time) []recapMeeting {
+func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, start, end time.Time) []recapMeeting {
 	rows, err := s.DB.Query(`
 		SELECT calendar_event_id, brief_text
 		FROM meeting_briefs
-		WHERE user_id IS NOT NULL
-		  AND generated_at >= $1 AND generated_at < $2
-		LIMIT 20`, start, end)
+		WHERE user_id = $1
+		  AND generated_at >= $2 AND generated_at < $3
+		LIMIT 20`, userID, start, end)
 	if err != nil {
 		return nil
 	}
@@ -353,12 +354,13 @@ func (s *DailyRecapService) fetchMeetings(_ context.Context, _ uuid.UUID, start,
 	return meetings
 }
 
-func (s *DailyRecapService) fetchFocusBlocks(day time.Time) []recapFocusBlock {
+func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []recapFocusBlock {
 	rows, err := s.DB.Query(`
 		SELECT start_time, end_time
 		FROM focus_blocks
-		WHERE date_trunc('day', start_time) = date_trunc('day', $1::timestamptz)
-		ORDER BY start_time`, day)
+		WHERE user_id = $1
+		  AND date_trunc('day', start_time) = date_trunc('day', $2::timestamptz)
+		ORDER BY start_time`, userID, day)
 	if err != nil {
 		return nil
 	}
@@ -379,23 +381,25 @@ func (s *DailyRecapService) fetchFocusBlocks(day time.Time) []recapFocusBlock {
 	return blocks
 }
 
-func (s *DailyRecapService) fetchHabits(day time.Time) []recapHabit {
+func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time) []recapHabit {
 	rows, err := s.DB.Query(`
-		SELECT h.title, h.color, ho.window_start, ho.window_end
+		SELECT h.title, ho.start_time, ho.end_time
 		FROM habit_occurrences ho
 		JOIN habits h ON h.id = ho.habit_id
-		WHERE ho.scheduled_date = $1 AND ho.status = 'scheduled'
-		ORDER BY ho.window_start`, day.Format("2006-01-02"))
+		WHERE h.user_id = $1 AND ho.scheduled_date = $2 AND ho.status = 'scheduled'
+		ORDER BY ho.start_time`, userID, day.Format("2006-01-02"))
 	if err != nil {
 		return nil
 	}
 	defer rows.Close()
 	var habits []recapHabit
 	for rows.Next() {
-		var title, color, ws, we string
-		if err := rows.Scan(&title, &color, &ws, &we); err != nil {
+		var title string
+		var st, et time.Time
+		if err := rows.Scan(&title, &st, &et); err != nil {
 			continue
 		}
+		ws, we := st.Format("15:04"), et.Format("15:04")
 		habits = append(habits, recapHabit{Emoji: "🎯", Title: title, WindowStart: ws, WindowEnd: we})
 	}
 	return habits

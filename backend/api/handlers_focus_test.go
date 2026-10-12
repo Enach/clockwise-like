@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/storage"
 )
 
 // mockFocusEngine implements FocusEngine.
@@ -178,5 +180,36 @@ func TestClearBlocks_InvalidWeek(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// GET /api/focus/blocks lists the caller's blocks only.
+func TestListBlocks_OnlyTheCallersBlocks(t *testing.T) {
+	db := openTestDB(t)
+	alice := createTestUser(t, "focus-list-alice@example.com")
+	bob := createTestUser(t, "focus-list-bob@example.com")
+	monday := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
+	if err := storage.SaveFocusBlock(db, alice, "evt-list-alice", "2026-10-19", monday.Add(9*time.Hour), monday.Add(10*time.Hour)); err != nil {
+		t.Fatalf("save alice: %v", err)
+	}
+	if err := storage.SaveFocusBlock(db, bob, "evt-list-bob", "2026-10-20", monday.Add(33*time.Hour), monday.Add(34*time.Hour)); err != nil {
+		t.Fatalf("save bob: %v", err)
+	}
+	h := &focusHandlers{eng: &mockFocusEngine{}, db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/focus/blocks?week=2026-10-19", nil)
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserIDKey, alice))
+	w := httptest.NewRecorder()
+	h.listBlocks(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var blocks []storage.FocusBlock
+	if err := json.Unmarshal(w.Body.Bytes(), &blocks); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].GoogleEventID != "evt-list-alice" {
+		t.Errorf("alice's list = %+v, want only her block", blocks)
 	}
 }

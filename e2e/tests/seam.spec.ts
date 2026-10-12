@@ -34,8 +34,8 @@ test.describe.configure({ mode: 'default' });
 const SEAM = CONNECTED.seam;
 const LABEL = SEAM.label;
 
-// The seam user's weeks. Focus blocks are global busy time (seed.sql), so the
-// focus week must be clear of the booking specs (7–18 days ahead) and of
+// The seam user's weeks. A focus block is its owner's busy time (seed.sql), so the
+// focus week stays clear of the booking specs (7–18 days ahead) and of
 // focus-time.spec.ts (week +4).
 const FOCUS_WEEK = () => weekDay(5);
 const EXERCISE_DAY = (weekday: number) => weekDay(6, weekday);
@@ -441,6 +441,6 @@ async function clearFocusWeek(
 ): Promise<void> {
   await api.delete(`/api/focus/blocks?week=${week}`);
   const end = isoDate(new Date(Date.parse(`${week}T00:00:00Z`) + 7 * 86_400_000));
-  // focus_blocks is global busy time for every booking host: never leave one.
+  // A leftover block is busy time for its owner, who may host a booking link: never leave one.
   await db.query('DELETE FROM focus_blocks WHERE date >= $1 AND date < $2', [week, end]);
 }

@@ -98,7 +98,7 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 		day := monday.AddDate(0, 0, i)
 		dateStr := day.Format("2006-01-02")
 
-		if err := e.processDay(ctx, client, s, day, dateStr, result); err != nil {
+		if err := e.processDay(ctx, client, userID, s, day, dateStr, result); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", dateStr, err))
 		}
 	}
@@ -113,8 +113,8 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 	return result, nil
 }
 
-func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, s *storage.Settings, day time.Time, dateStr string, result *FocusRunResult) error {
-	existingMinutes, _ := storage.FocusMinutesForDay(e.DB, dateStr)
+func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, userID uuid.UUID, s *storage.Settings, day time.Time, dateStr string, result *FocusRunResult) error {
+	existingMinutes, _ := storage.FocusMinutesForDay(e.DB, userID, dateStr)
 	if existingMinutes >= s.FocusDailyTargetMinutes {
 		result.SkippedDays = append(result.SkippedDays, dateStr)
 		return nil

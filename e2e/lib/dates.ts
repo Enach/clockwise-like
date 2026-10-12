@@ -56,9 +56,9 @@ export function atUtc(date: Date, hhmm: string): string {
 /**
  * Monday 00:00 UTC of the week `offsetWeeks` from this one, plus `weekday`
  * days (0 = Monday). Used to give each calendar journey its own week:
- * the booking specs use 7–18 days ahead, and focus blocks are global busy
- * time for every booking host, so a journey that writes focus blocks must stay
- * out of those weeks (seed.sql, focus_blocks).
+ * the booking specs use 7–18 days ahead, and a focus block is busy time for
+ * its owner, who may also host a booking link, so a journey that writes focus
+ * blocks stays out of those weeks (seed.sql, focus_blocks).
  */
 export function weekDay(offsetWeeks: number, weekday = 0, now = new Date()): Date {
   return new Date(mondayOf(now).getTime() + (offsetWeeks * 7 + weekday) * DAY_MS);

@@ -33,7 +33,7 @@ func TestSaveFocusBlock_Idempotent(t *testing.T) {
 	}
 }
 
-func TestListFocusBlocksForWeek(t *testing.T) {
+func TestListFocusBlocksForUserWeek(t *testing.T) {
 	db := openTestDB(t)
 	owner := mustUser(t, db, "focus-owner-3@example.com")
 
@@ -51,9 +51,9 @@ func TestListFocusBlocksForWeek(t *testing.T) {
 	outEnd := monday.AddDate(0, 0, 7).Add(10 * time.Hour)
 	SaveFocusBlock(db, owner, "evt-003", "2025-01-13", outStart, outEnd)
 
-	blocks, err := ListFocusBlocksForWeek(db, monday)
+	blocks, err := ListFocusBlocksForUserWeek(db, owner, monday)
 	if err != nil {
-		t.Fatalf("ListFocusBlocksForWeek: %v", err)
+		t.Fatalf("ListFocusBlocksForUserWeek: %v", err)
 	}
 	if len(blocks) != 2 {
 		t.Errorf("got %d blocks, want 2", len(blocks))
@@ -68,11 +68,20 @@ func TestDeleteFocusBlock(t *testing.T) {
 	end := time.Date(2025, 1, 6, 10, 0, 0, 0, time.UTC)
 	SaveFocusBlock(db, owner, "evt-001", "2025-01-06", start, end)
 
-	if err := DeleteFocusBlock(db, "evt-001"); err != nil {
+	// Another user cannot delete it.
+	other := mustUser(t, db, "focus-other-4@example.com")
+	if err := DeleteFocusBlock(db, other, "evt-001"); err != nil {
+		t.Fatalf("DeleteFocusBlock (other user): %v", err)
+	}
+	if blocks, _ := ListFocusBlocksForUserWeek(db, owner, time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)); len(blocks) != 1 {
+		t.Fatalf("another user's delete removed the block: %d left, want 1", len(blocks))
+	}
+
+	if err := DeleteFocusBlock(db, owner, "evt-001"); err != nil {
 		t.Fatalf("DeleteFocusBlock: %v", err)
 	}
 
-	blocks, _ := ListFocusBlocksForWeek(db, time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
+	blocks, _ := ListFocusBlocksForUserWeek(db, owner, time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
 	if len(blocks) != 0 {
 		t.Errorf("expected 0 blocks after delete, got %d", len(blocks))
 	}
@@ -86,7 +95,11 @@ func TestFocusMinutesForDay(t *testing.T) {
 	end := time.Date(2025, 1, 6, 10, 30, 0, 0, time.UTC)
 	SaveFocusBlock(db, owner, "evt-001", "2025-01-06", start, end)
 
-	mins, err := FocusMinutesForDay(db, "2025-01-06")
+	// Another user's block on the same day does not count.
+	other := mustUser(t, db, "focus-other-5@example.com")
+	SaveFocusBlock(db, other, "evt-other", "2025-01-06", start, end)
+
+	mins, err := FocusMinutesForDay(db, owner, "2025-01-06")
 	if err != nil {
 		t.Fatalf("FocusMinutesForDay: %v", err)
 	}
@@ -95,7 +108,7 @@ func TestFocusMinutesForDay(t *testing.T) {
 	}
 
 	// Empty day returns 0
-	mins2, err := FocusMinutesForDay(db, "2025-01-07")
+	mins2, err := FocusMinutesForDay(db, owner, "2025-01-07")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -65,8 +65,9 @@ paths:
       tags: [focus]
       summary: List persisted focus blocks for a week
       description: >
-        Returns rows from the `focus_blocks` table where
-        `date >= week AND date < week+7days`, ordered by start_time.
+        Returns the caller's rows from the `focus_blocks` table (`user_id` = the
+        authenticated user) where `date >= week AND date < week+7days`, ordered by
+        start_time. Other users' blocks are never listed.
         NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
         emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`,
         `Date`, `CreatedAt`) - not snake_case and not camelCase.
@@ -109,6 +110,10 @@ paths:
       operationId: clearFocusBlocks
       tags: [focus]
       summary: Delete the focus blocks of a week
+      description: >
+        Deletes the caller's focus blocks for the Monday-anchored week containing
+        `week`, from the caller's calendar and from storage. Other users' blocks
+        are not touched and not counted.
       parameters:
         - name: week
           in: query

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/internal/testdb"
 	"github.com/Enach/paceday/backend/storage"
@@ -330,6 +331,8 @@ func TestFocusRun_WithMock(t *testing.T) {
 	}
 }
 
+// ClearWeek clears the requesting user's blocks only: another user's block in
+// the same week stays, in storage and on their calendar.
 func TestClearWeek_WithMock(t *testing.T) {
 	db := openTestDB(t)
 
@@ -339,14 +342,23 @@ func TestClearWeek_WithMock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert user: %v", err)
 	}
+	other, err := storage.UpsertUser(db, "clearweek-other@example.com", "Other", "", "google", "clearweek-other")
+	if err != nil {
+		t.Fatalf("upsert other: %v", err)
+	}
 	if err := storage.SaveFocusBlock(db, owner.ID, "evt-to-delete", "2025-01-06", start, end); err != nil {
 		t.Fatalf("save focus block: %v", err)
+	}
+	if err := storage.SaveFocusBlock(db, other.ID, "evt-someone-else", "2025-01-07", start.AddDate(0, 0, 1), end.AddDate(0, 0, 1)); err != nil {
+		t.Fatalf("save other's focus block: %v", err)
 	}
 
 	mock := &mockCalOps{calID: "primary"}
 	eng := &FocusTimeEngine{DB: db, calOps: mock}
+	monday := time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)
 
-	n, err := eng.ClearWeek(context.Background(), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
+	ctx := context.WithValue(context.Background(), auth.UserIDKey, owner.ID)
+	n, err := eng.ClearWeek(ctx, monday)
 	if err != nil {
 		t.Fatalf("ClearWeek: %v", err)
 	}
@@ -354,7 +366,14 @@ func TestClearWeek_WithMock(t *testing.T) {
 		t.Errorf("expected 1 block cleared, got %d", n)
 	}
 	if len(mock.deletedEvts) != 1 || mock.deletedEvts[0] != "evt-to-delete" {
-		t.Errorf("expected event evt-to-delete deleted, got %v", mock.deletedEvts)
+		t.Errorf("expected only event evt-to-delete deleted, got %v", mock.deletedEvts)
+	}
+	if left, _ := storage.ListFocusBlocksForUserWeek(db, other.ID, monday); len(left) != 1 {
+		t.Errorf("other user's blocks after clear = %d, want 1", len(left))
+	}
+
+	if _, err := eng.ClearWeek(context.Background(), monday); err == nil {
+		t.Error("ClearWeek without a user: want an error")
 	}
 }
 

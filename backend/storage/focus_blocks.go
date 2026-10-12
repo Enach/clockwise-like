@@ -24,7 +24,8 @@ func SaveFocusBlock(db *sql.DB, userID uuid.UUID, googleEventID, date string, st
 }
 
 // ListFocusBlocksForUserWeek returns userID's focus blocks for the 7 days from
-// weekStart. Blocks saved before owners were recorded (user_id NULL) belong to
+// weekStart, never nil. Every reader goes through this: focus blocks belong to
+// the user whose calendar holds them. Blocks saved before owners were recorded (user_id NULL) belong to
 // nobody and are not returned.
 func ListFocusBlocksForUserWeek(db *sql.DB, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
@@ -33,31 +34,6 @@ func ListFocusBlocksForUserWeek(db *sql.DB, userID uuid.UUID, weekStart time.Tim
 		FROM focus_blocks WHERE user_id = $1 AND date >= $2 AND date < $3
 		ORDER BY start_time`,
 		userID,
-		weekStart.Format("2006-01-02"),
-		weekEnd.Format("2006-01-02"),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var blocks []FocusBlock
-	for rows.Next() {
-		var b FocusBlock
-		if err := rows.Scan(&b.ID, &b.GoogleEventID, &b.StartTime, &b.EndTime, &b.Date, &b.CreatedAt); err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, b)
-	}
-	return blocks, rows.Err()
-}
-
-func ListFocusBlocksForWeek(db *sql.DB, weekStart time.Time) ([]FocusBlock, error) {
-	weekEnd := weekStart.AddDate(0, 0, 7)
-	rows, err := db.Query(`
-		SELECT id, google_event_id, start_time, end_time, date, created_at
-		FROM focus_blocks WHERE date >= $1 AND date < $2
-		ORDER BY start_time`,
 		weekStart.Format("2006-01-02"),
 		weekEnd.Format("2006-01-02"),
 	)
@@ -77,16 +53,19 @@ func ListFocusBlocksForWeek(db *sql.DB, weekStart time.Time) ([]FocusBlock, erro
 	return blocks, rows.Err()
 }
 
-func DeleteFocusBlock(db *sql.DB, googleEventID string) error {
-	_, err := db.Exec(`DELETE FROM focus_blocks WHERE google_event_id = $1`, googleEventID)
+// DeleteFocusBlock removes userID's focus block for googleEventID. Another
+// user's block with that event ID is left alone.
+func DeleteFocusBlock(db *sql.DB, userID uuid.UUID, googleEventID string) error {
+	_, err := db.Exec(`DELETE FROM focus_blocks WHERE user_id = $1 AND google_event_id = $2`, userID, googleEventID)
 	return err
 }
 
-func FocusMinutesForDay(db *sql.DB, date string) (int, error) {
+// FocusMinutesForDay sums the minutes of userID's focus blocks on date.
+func FocusMinutesForDay(db *sql.DB, userID uuid.UUID, date string) (int, error) {
 	row := db.QueryRow(`
 		SELECT COALESCE(SUM(
 			EXTRACT(EPOCH FROM (end_time - start_time)) / 60
-		)::INTEGER, 0) FROM focus_blocks WHERE date = $1`, date)
+		)::INTEGER, 0) FROM focus_blocks WHERE user_id = $1 AND date = $2`, userID, date)
 	var total int
 	err := row.Scan(&total)
 	return total, err

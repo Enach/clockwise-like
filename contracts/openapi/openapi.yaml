@@ -162,7 +162,7 @@ paths:
 
         Only events with `start.dateTime` set (all-day events skipped) and at least one
 
-        attendee are included; events matching a focus block or a habit occurrence''s
+        attendee are included; events matching one of the user''s focus blocks or a habit occurrence''s
 
         calendar_event_id are excluded. Sorted by `duration_minutes` descending.
 
@@ -444,7 +444,7 @@ paths:
         There is no pagination — no `offset`, no cursor, no `before`. Entries older than the most recent
         `limit` (at most 500) cannot be retrieved through this API at all, and because this operation
         is the only reader of the table in the whole codebase (one SELECT, backend/storage/audit_log.go:19;
-        one INSERT, backend/storage/focus_blocks.go:61-63; no view, no join, no second reader) they cannot
+        one INSERT, backend/storage/focus_blocks.go:74-76; no view, no join, no second reader) they cannot
         be retrieved any other way either.
 
 
@@ -1777,10 +1777,11 @@ paths:
       tags:
       - focus
       summary: List persisted focus blocks for a week
-      description: 'Returns rows from the `focus_blocks` table where `date >= week AND date < week+7days`,
-        ordered by start_time. NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
-        emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`, `CreatedAt`) - not
-        snake_case and not camelCase.
+      description: 'Returns the caller''s rows from the `focus_blocks` table (`user_id` = the authenticated
+        user) where `date >= week AND date < week+7days`, ordered by start_time. Other users'' blocks
+        are never listed. NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder emits
+        Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`, `CreatedAt`) - not snake_case
+        and not camelCase.
 
         '
       parameters:
@@ -1824,6 +1825,10 @@ paths:
       tags:
       - focus
       summary: Delete the focus blocks of a week
+      description: 'Deletes the caller''s focus blocks for the Monday-anchored week containing `week`,
+        from the caller''s calendar and from storage. Other users'' blocks are not touched and not counted.
+
+        '
       parameters:
       - name: week
         in: query
@@ -5448,7 +5453,7 @@ components:
 
             This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog`
             call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`,
-            backend/storage/focus_blocks.go:61-63, holds the only INSERT against the table): `focus_created`
+            backend/storage/focus_blocks.go:74-76, holds the only INSERT against the table): `focus_created`
             (backend/engine/focus_time.go:106), `focus_cleared` (backend/engine/focus_time_cleaner.go:39),
             `meeting_scheduled` (backend/engine/smart_schedule.go:323), `meeting_moved` (backend/engine/compression.go:178),
             `meeting_created` (backend/api/handlers_schedule.go:188), `nlp_parsed` (backend/nlp/parser.go:221),
