@@ -571,6 +571,13 @@ duration, a timezone the product cannot resolve, a summary destination outside
 the permitted set, or a calendar kind outside the permitted set, then in each
 case the request is refused with a client error naming the offending setting,
 and nothing is stored.  `[contract]`
+*Amended 2026-10-12 (contract challenge, revision 3, finding 2):* "supplies"
+means the request changes the setting. A setting sent back with exactly the
+value already stored is not re-checked, so a combination stored before these
+rules existed (for example a working day ending before it starts) never stops
+the user saving anything else, and a document read from the product can always
+be saved back unchanged. Changing such a setting to another refused value is
+still refused.
 
 **What must keep working**
 
@@ -1006,6 +1013,13 @@ change ships with the backend change.
 **OQ-4 (told?) / OQ-7 — no notice.** Users are not shown an upgrade notice; the
 settings page's empty key field and "not connected" states are the explanation.
 A notice can be a follow-up.
+
+**Stage-2 amendments (2026-10-12), pending the product owner's confirmation.**
+AC-7 (four settings with no empty state refuse `""`) and AC-17 (rules apply to
+what a request changes) were amended in response to the contract challenges of
+revisions 2 and 3. Both narrow what the contract can promise; neither changes a
+product decision above. They are recorded here so the owner can confirm or
+overrule them before merge.
 
 Still open and not blocking implementation: OQ-5 (who rotates the shared LLM key,
 a human action for the deployment owner) and OQ-6 (settled by

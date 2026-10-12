@@ -848,13 +848,11 @@ components:
         `all_days` equivalent is already normalised away on read
         (`backend/storage/settings.go:95-99`). Serves spec AC-20.
 
-        Two messages in the list above become UNREACHABLE via the HTTP boundary
-        and remain only as defence in depth, because `propertyNames` now rejects
-        the request at schema validation:
         `workingHours.days.<day> is not a valid weekday` and
-        `lunchBreaks.<day> is not a valid weekday`. The handler checks stay -
-        they are what `handlers_settings_schedule_test.go:41-49` asserts, and
-        spec §6 requires that test to keep passing unchanged.
+        `lunchBreaks.<day> is not a valid weekday` are how a weekday key that is
+        not exactly one of the seven lowercase names is refused: generators drop
+        `propertyNames`, so the handler is the only enforcement point
+        (revision 3/4).
 
         `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart`
         or `lunchEnd`. It is a valid value for all four, on read and on write
@@ -1541,8 +1539,8 @@ components:
         default:
           $ref: '#/components/schemas/DaySchedule'
           description: >
-            Only validated when `mode == "all_days"` and at least one of
-            enabled/start/end is set. Ignored by WorkWindow() in by_day mode.
+            Validated whenever at least one of enabled/start/end is set, in
+            either mode (revision 4). Ignored by WorkWindow() in by_day mode.
         days:
           type: object
           description: >
@@ -1552,18 +1550,13 @@ components:
             validator, so the server's exact-match check is the enforcement point
             (contract challenge r2, finding 4). Migration 024 removes stored keys
             that are not exactly one of the seven names - they never matched
-            `WorkWindow`'s lookup, so removing them changes no behaviour. `validateSchedulePreferences`
-            lowercases before checking
-            (`backend/api/handlers_settings.go:145`,
-            `validScheduleWeekdays[strings.ToLower(day)]`), so `"Monday"` passes
-            validation and is stored - but `WorkWindow` looks the day up as
-            `strings.ToLower(day.Weekday().String())`
-            (`backend/storage/settings.go:117`), so the entry can never match and
-            the user's Monday hours are silently inert forever. Under the
-            whole-object replace this is worse than it was: the write that
-            installs the dead key also deletes the live key it replaced.
-            `propertyNames` makes the dead key a 400 instead of a document that
-            says so. In `by_day` mode a missing weekday means "not working".
+            `WorkWindow`'s lookup, so removing them changes no behaviour; it also
+            removes entries whose `start`/`end` are neither empty nor a clock.
+            Keys and entries are checked WHATEVER THE MODE (revision 4): a
+            `days` map stored under `all_days` is still returned by GET. Before
+            PAC-24 the validator lower-cased keys and only looked at `days` in
+            `by_day` mode, so `"Monday"` was stored and never matched. In
+            `by_day` mode a missing weekday means "not working".
           propertyNames:
             enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
           additionalProperties:
@@ -1583,11 +1576,9 @@ components:
 
         Keys are enforced EXACTLY by the handler (revision 3; generators drop
         `propertyNames`), and migration 024 removes stored keys that are not one
-        of the seven lowercase names. `propertyNames` is added by PAC-24 for the
-        same reason as on `WorkingHoursSchedule.days`: the validator lowercases the key before
-        checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks
-        it up already-lowercased (`backend/storage/settings.go:138`), so a
-        `"Monday"` key validates, stores, and never matches.
+        of the seven lowercase names, or whose `start`/`end` are neither empty
+        nor a clock. Before PAC-24 the validator lower-cased the key, so a
+        `"Monday"` key was stored and never matched `LunchWindow`'s lookup.
       propertyNames:
         enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
       additionalProperties:
@@ -1614,7 +1605,7 @@ components:
 
         Every value this schema forbids has been normalised away in storage by
         migration 024 (see `SettingsUpdate` and contracts/features/PAC-24.md,
-        Revision 3), so a GET always satisfies it.
+        Revisions 3 and 4), so a GET always satisfies it.
       properties: &settingsProperties
         workStart:
           type: string

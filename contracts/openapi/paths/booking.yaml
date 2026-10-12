@@ -190,8 +190,12 @@ paths:
       description: >-
         Sets a 300-second HttpOnly `zoom_oauth_state` cookie (SameSite=Lax, Path=/)
         and 302-redirects to Zoom's authorize endpoint. Not a JSON endpoint.
-      security: []
+        Requires a signed-in user since PAC-24: Zoom is connected to the
+        caller's own settings, so there must be a caller (session cookie, which
+        the browser sends on this top-level navigation).
       responses:
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
         '302':
           description: Redirect to Zoom's authorize URL.
           headers:
@@ -220,10 +224,12 @@ paths:
       summary: Zoom OAuth redirect target; exchanges the code and stores tokens.
       description: >-
         Compares `state` against the `zoom_oauth_state` cookie, clears that cookie,
-        exchanges `code` for tokens, persists them, then 302-redirects to the app root.
+        exchanges `code` for tokens, persists them on the CALLER'S OWN settings row
+        (making Zoom the caller's conferencing provider, and nobody else's), then
+        302-redirects to the app root. Requires a signed-in user since PAC-24 (401
+        otherwise); before PAC-24 it wrote the single shared settings row.
         Error bodies here use `http.Error`, i.e. `text/plain; charset=utf-8` plain text,
         NOT the shared JSON error envelope.
-      security: []
       parameters:
         - name: code
           in: query
@@ -238,6 +244,8 @@ paths:
           schema:
             type: string
       responses:
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
         '302':
           description: Tokens stored; redirect back to the app.
           headers:
@@ -816,8 +824,9 @@ paths:
       tags: [conferencing]
       summary: Create a standalone conference meeting with the configured provider.
       description: >-
-        Provider comes from stored settings (`ConferencingProvider`), not from the
-        request. No field validation at all: a missing `title`, `start` or `end`
+        Provider comes from the CALLER'S stored settings (`ConferencingProvider`),
+        not from the request; the Teams credential is the caller's own (PAC-24;
+        before it, both came from the single shared settings row). No field validation at all: a missing `title`, `start` or `end`
         decodes to the Go zero value and is forwarded to the provider as-is.
         Not referenced anywhere in the frontend.
       requestBody:
@@ -860,6 +869,8 @@ paths:
         Order is fixed: google_meet (only when Google OAuth env is configured), zoom
         (only when Zoom env is configured), teams (only when Microsoft env is
         configured), then `custom`, which is always last and always `connected: true`.
+        Connection state and the Meet email describe the CALLER'S own settings and
+        credentials (PAC-24).
         Length is therefore 1..4.
       responses:
         '200':
@@ -886,7 +897,10 @@ paths:
       operationId: disconnectZoom
       tags: [conferencing]
       summary: Clear the stored Zoom tokens.
-      description: Takes no request body. Tokens are server-wide, not per user.
+      description: >-
+        Takes no request body. Clears the CALLER'S Zoom tokens and returns the
+        caller's conferencing provider to `meet`; other users are untouched.
+        Before PAC-24 the tokens were server-wide.
       responses:
         '204':
           description: Tokens cleared. Empty body.
@@ -912,7 +926,8 @@ paths:
       tags: [conferencing]
       summary: Attach a conference link to an existing calendar event.
       description: >-
-        Four branches. (1) The event already has a conference: returns 200 with the
+        Uses the CALLER'S stored settings and credentials (PAC-24). Four branches.
+        (1) The event already has a conference: returns 200 with the
         EXISTING link when the stored provider matches, or when `provider` is
         `custom`; otherwise 409. (2) `custom`: stores the supplied `url` in the event's
         private extended properties. (3) `google_meet`: asks Google to mint a Meet link.

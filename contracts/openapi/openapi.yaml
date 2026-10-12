@@ -957,11 +957,21 @@ paths:
       tags:
       - auth
       summary: Microsoft OAuth callback
-      description: 'Validates `ms_oauth_state`, exchanges the code, saves the Microsoft token
+      description: 'Validates `ms_oauth_state`, exchanges the code, fetches the Graph profile
 
-        on the GLOBAL settings row, best-effort fetches the Graph profile and
+        and upserts the user, then saves the Microsoft token on THAT USER''S OWN
 
-        upserts the user, then redirects.
+        settings row (making Outlook their calendar provider), sets the session
+
+        cookie and redirects. Since PAC-24 the profile fetch is required, not
+
+        best-effort: without it there is no user to attach the credential to, so
+
+        a failed fetch is a 502 and nothing is saved. Before PAC-24 the token was
+
+        saved on the single shared settings row and the provider flipped for
+
+        everyone.
 
         '
       security: []
@@ -978,13 +988,9 @@ paths:
           type: string
       responses:
         '302':
-          description: 'Redirect to `<FRONTEND_URL>/auth/callback?provider=outlook`.
+          description: 'Redirect to `<FRONTEND_URL>/auth/callback?provider=outlook`, with the
 
-            The `auth_token` cookie is only set when the Graph profile fetch AND
-
-            the user upsert both succeed — the redirect is identical either way,
-
-            so a caller cannot tell from the response whether it is logged in.
+            `auth_token` cookie set. Every failure is a non-302 response below.
 
             '
           headers:
@@ -994,7 +1000,7 @@ paths:
             Set-Cookie:
               schema:
                 type: string
-              description: auth_token JWT — conditional, see description.
+              description: auth_token JWT for the upserted user.
         '400':
           description: Missing or mismatched `ms_oauth_state` cookie ("invalid state").
           content:
@@ -1002,7 +1008,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
-          description: Token exchange, settings read or token save failed (text/plain).
+          description: 'Token exchange, user upsert (`save user failed`) or token save (`save token failed:
+            <err>`) failed (text/plain).
+
+            '
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '502':
+          description: 'The Graph profile could not be read, or carried no email (`could not read the
+            Microsoft account`, text/plain). Added by PAC-24.
+
+            '
           content:
             text/plain:
               schema:
@@ -1130,10 +1148,13 @@ paths:
       tags:
       - conferencing
       summary: Begin the Zoom OAuth authorization-code flow.
-      description: Sets a 300-second HttpOnly `zoom_oauth_state` cookie (SameSite=Lax, Path=/) and 302-redirects
-        to Zoom's authorize endpoint. Not a JSON endpoint.
-      security: []
+      description: 'Sets a 300-second HttpOnly `zoom_oauth_state` cookie (SameSite=Lax, Path=/) and 302-redirects
+        to Zoom''s authorize endpoint. Not a JSON endpoint. Requires a signed-in user since PAC-24: Zoom
+        is connected to the caller''s own settings, so there must be a caller (session cookie, which the
+        browser sends on this top-level navigation).'
       responses:
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
         '302':
           description: Redirect to Zoom's authorize URL.
           headers:
@@ -1160,9 +1181,10 @@ paths:
       - conferencing
       summary: Zoom OAuth redirect target; exchanges the code and stores tokens.
       description: Compares `state` against the `zoom_oauth_state` cookie, clears that cookie, exchanges
-        `code` for tokens, persists them, then 302-redirects to the app root. Error bodies here use `http.Error`,
-        i.e. `text/plain; charset=utf-8` plain text, NOT the shared JSON error envelope.
-      security: []
+        `code` for tokens, persists them on the CALLER'S OWN settings row (making Zoom the caller's conferencing
+        provider, and nobody else's), then 302-redirects to the app root. Requires a signed-in user since
+        PAC-24 (401 otherwise); before PAC-24 it wrote the single shared settings row. Error bodies here
+        use `http.Error`, i.e. `text/plain; charset=utf-8` plain text, NOT the shared JSON error envelope.
       parameters:
       - name: code
         in: query
@@ -1178,6 +1200,8 @@ paths:
         schema:
           type: string
       responses:
+        '401':
+          $ref: '#/components/responses/BookingUnauthorized'
         '302':
           description: Tokens stored; redirect back to the app.
           headers:
@@ -1504,9 +1528,10 @@ paths:
       tags:
       - conferencing
       summary: Create a standalone conference meeting with the configured provider.
-      description: 'Provider comes from stored settings (`ConferencingProvider`), not from the request.
-        No field validation at all: a missing `title`, `start` or `end` decodes to the Go zero value and
-        is forwarded to the provider as-is. Not referenced anywhere in the frontend.'
+      description: 'Provider comes from the CALLER''S stored settings (`ConferencingProvider`), not from
+        the request; the Teams credential is the caller''s own (PAC-24; before it, both came from the
+        single shared settings row). No field validation at all: a missing `title`, `start` or `end` decodes
+        to the Go zero value and is forwarded to the provider as-is. Not referenced anywhere in the frontend.'
       requestBody:
         required: true
         content:
@@ -1543,7 +1568,8 @@ paths:
       summary: Conferencing providers this server can offer, and their connection state.
       description: 'Order is fixed: google_meet (only when Google OAuth env is configured), zoom (only
         when Zoom env is configured), teams (only when Microsoft env is configured), then `custom`, which
-        is always last and always `connected: true`. Length is therefore 1..4.'
+        is always last and always `connected: true`. Connection state and the Meet email describe the
+        CALLER''S own settings and credentials (PAC-24). Length is therefore 1..4.'
       responses:
         '200':
           description: Provider statuses.
@@ -1569,7 +1595,8 @@ paths:
       tags:
       - conferencing
       summary: Clear the stored Zoom tokens.
-      description: Takes no request body. Tokens are server-wide, not per user.
+      description: Takes no request body. Clears the CALLER'S Zoom tokens and returns the caller's conferencing
+        provider to `meet`; other users are untouched. Before PAC-24 the tokens were server-wide.
       responses:
         '204':
           description: Tokens cleared. Empty body.
@@ -1681,11 +1708,12 @@ paths:
       tags:
       - conferencing
       summary: Attach a conference link to an existing calendar event.
-      description: 'Four branches. (1) The event already has a conference: returns 200 with the EXISTING
-        link when the stored provider matches, or when `provider` is `custom`; otherwise 409. (2) `custom`:
-        stores the supplied `url` in the event''s private extended properties. (3) `google_meet`: asks
-        Google to mint a Meet link. (4) anything else (`zoom`, `teams`): creates a meeting through the
-        provider factory and stores the join URL in extended properties.'
+      description: 'Uses the CALLER''S stored settings and credentials (PAC-24). Four branches. (1) The
+        event already has a conference: returns 200 with the EXISTING link when the stored provider matches,
+        or when `provider` is `custom`; otherwise 409. (2) `custom`: stores the supplied `url` in the
+        event''s private extended properties. (3) `google_meet`: asks Google to mint a Meet link. (4)
+        anything else (`zoom`, `teams`): creates a meeting through the provider factory and stores the
+        join URL in extended properties.'
       requestBody:
         required: true
         content:
@@ -7146,10 +7174,9 @@ components:
         (spec AC-9).
 
         Keys are enforced EXACTLY by the handler (revision 3; generators drop `propertyNames`), and migration
-        024 removes stored keys that are not one of the seven lowercase names. `propertyNames` is added
-        by PAC-24 for the same reason as on `WorkingHoursSchedule.days`: the validator lowercases the
-        key before checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks it up already-lowercased
-        (`backend/storage/settings.go:138`), so a `"Monday"` key validates, stores, and never matches.
+        024 removes stored keys that are not one of the seven lowercase names, or whose `start`/`end`
+        are neither empty nor a clock. Before PAC-24 the validator lower-cased the key, so a `"Monday"`
+        key was stored and never matched `LunchWindow`''s lookup.
 
         '
       propertyNames:
@@ -8667,7 +8694,7 @@ components:
         is a valid `SettingsUpdate` body.
 
         Every value this schema forbids has been normalised away in storage by migration 024 (see `SettingsUpdate`
-        and contracts/features/PAC-24.md, Revision 3), so a GET always satisfies it.
+        and contracts/features/PAC-24.md, Revisions 3 and 4), so a GET always satisfies it.
 
         '
       properties:
@@ -9702,8 +9729,8 @@ components:
             '
         default:
           $ref: '#/components/schemas/DaySchedule'
-          description: 'Only validated when `mode == "all_days"` and at least one of enabled/start/end
-            is set. Ignored by WorkWindow() in by_day mode.
+          description: 'Validated whenever at least one of enabled/start/end is set, in either mode (revision
+            4). Ignored by WorkWindow() in by_day mode.
 
             '
         days:
@@ -9713,13 +9740,11 @@ components:
             `propertyNames` into a validator, so the server''s exact-match check is the enforcement point
             (contract challenge r2, finding 4). Migration 024 removes stored keys that are not exactly
             one of the seven names - they never matched `WorkWindow`''s lookup, so removing them changes
-            no behaviour. `validateSchedulePreferences` lowercases before checking (`backend/api/handlers_settings.go:145`,
-            `validScheduleWeekdays[strings.ToLower(day)]`), so `"Monday"` passes validation and is stored
-            - but `WorkWindow` looks the day up as `strings.ToLower(day.Weekday().String())` (`backend/storage/settings.go:117`),
-            so the entry can never match and the user''s Monday hours are silently inert forever. Under
-            the whole-object replace this is worse than it was: the write that installs the dead key also
-            deletes the live key it replaced. `propertyNames` makes the dead key a 400 instead of a document
-            that says so. In `by_day` mode a missing weekday means "not working".
+            no behaviour; it also removes entries whose `start`/`end` are neither empty nor a clock. Keys
+            and entries are checked WHATEVER THE MODE (revision 4): a `days` map stored under `all_days`
+            is still returned by GET. Before PAC-24 the validator lower-cased keys and only looked at
+            `days` in `by_day` mode, so `"Monday"` was stored and never matched. In `by_day` mode a missing
+            weekday means "not working".
 
             '
           propertyNames:
@@ -9850,11 +9875,9 @@ components:
         with no error (`smart-calendar-flow/src/api/client.ts:505-517,543`); the `all_days` equivalent
         is already normalised away on read (`backend/storage/settings.go:95-99`). Serves spec AC-20.
 
-        Two messages in the list above become UNREACHABLE via the HTTP boundary and remain only as defence
-        in depth, because `propertyNames` now rejects the request at schema validation: `workingHours.days.<day>
-        is not a valid weekday` and `lunchBreaks.<day> is not a valid weekday`. The handler checks stay
-        - they are what `handlers_settings_schedule_test.go:41-49` asserts, and spec §6 requires that
-        test to keep passing unchanged.
+        `workingHours.days.<day> is not a valid weekday` and `lunchBreaks.<day> is not a valid weekday`
+        are how a weekday key that is not exactly one of the seven lowercase names is refused: generators
+        drop `propertyNames`, so the handler is the only enforcement point (revision 3/4).
 
         `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart` or `lunchEnd`. It is a
         valid value for all four, on read and on write (spec AC-7); the handler already skips the format
