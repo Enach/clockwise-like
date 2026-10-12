@@ -913,3 +913,495 @@ sha256sum contracts/openapi/openapi.yaml
 `9fdb862475219fba6cf34d61db3b9186ce52db264e562cddf95225aa6a3f5f3d`.
 `contractHashOf` in the manifest carries this procedure verbatim so the next
 reader can check it in one command.
+
+---
+
+## Challenge (revision 2) — 2026-10-12
+
+*contract-challenger, second pass. I did not write either revision and did not
+ask the author for reasoning; I reviewed revision 2 cold, against source at
+`HEAD` (`8d52e8b`, branch `feat/pac-24-per-user-settings`) in both repos and
+against the generated artefacts that now exist in both. Line numbers in
+`backend/` are `HEAD`'s.*
+
+**What I ran, and what I did not.**
+
+```
+$ python scripts/openapi_assemble.py --check      # Python311 on PATH
+ModuleNotFoundError: No module named 'yaml'        exit=1
+$ python3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)                   exit=0
+$ py -3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)                   exit=0
+$ sha256sum contracts/openapi/openapi.yaml        (working copy and HEAD blob agree)
+f6044a99754efcd9664920090add6513987f27ca9ec4d919c503c02453f8fc1e
+```
+
+A `yaml.safe_load` walk of the bundle confirmed: `/api/settings` has only
+`get` and `patch`; no `updateSettings` anywhere; `LLMTestRequest` has exactly
+`[llmProvider, llmModel, llmApiKey]`, `additionalProperties: false`;
+`x-uncertain` count 18. I also ran two `node -e` probes against the web repo's
+installed `zod` 4.4.3 (results quoted in findings 1 and N8).
+**Not run:** `make openapi-check` (no `make` on this machine), either code
+generator, `go build`, any test, any request against a server. Everything about
+the generated code below comes from reading the committed files, not from
+regenerating them.
+
+**State of the tree.** The working copy has uncommitted modifications to 25
+files under `backend/api`, `backend/auth`, `backend/engine`, `backend/nlp`,
+`backend/storage`, plus untracked `024_settings_per_user.{up,down}.sql` — an
+implementation is in progress before this gate has passed. I did not review it.
+
+**Verdict**: reject
+
+Five findings block. Two of them are the same lesson revision 1 was rejected
+for, applied to properties revision 2 did not look at; one is the condition the
+contract itself pre-registered as "fall back to the two-schema split", which the
+committed generators now meet; one is a request the contract permits that the
+generated server refuses; one is a spec/manifest disagreement the product
+decisions of 2026-10-12 did not settle. Revision 1's three blocking findings are
+otherwise genuinely fixed (see "Verified clean").
+
+### Blocking
+
+**1. `readOnly`/`writeOnly` do not survive into any of the three generated
+artefacts, so the response type carries `llmApiKey` and loses its `required`
+list. This is the exact condition §2 named as the trigger for the two-schema
+split.**
+
+Read from the committed files:
+
+- Go, oapi-codegen v2.4.1 — `backend/api/gen/paceday.gen.go:2060`
+  `type Settings = SettingsFields` and `:2220` `type SettingsUpdate = SettingsFields`:
+  one type for both directions. `:2121` `LlmApiKey *string \`json:"llmApiKey,omitempty"\``
+  sits on it, so `GetSettings200JSONResponse Settings` (`:14529`) and
+  `PatchSettings200JSONResponse Settings` (`:14556`) will serialise a key if one
+  is put there. The `allOf` + outer `required` shape is collapsed to an alias,
+  so all 50 "always present" response properties are `*T` with `omitempty`
+  (`:2065-2201`) — nothing in the type stops the server omitting one.
+  Compare a concrete object with `required`, `DailyRecapSettings`
+  (`:875-896`): non-pointer, no `omitempty`. The generator honours `required`;
+  it is the `allOf` alias that discards it.
+- TypeScript, openapi-typescript 7.4.4 —
+  `smart-calendar-flow/src/api/generated/types.ts:4001`
+  `Settings: WithRequired<components["schemas"]["SettingsFields"], …>`, and
+  `SettingsFields` has `llmApiKey?: string` (`:4069`). `readOnly` became a TS
+  `readonly` modifier (`:4073` `readonly llmApiKeySet?`, `:4135`
+  `readonly updatedAt?`), which does not stop a value being sent; `writeOnly`
+  vanished. `SettingsUpdate: components["schemas"]["SettingsFields"]` (`:4142`).
+- zod, typed-openapi 4.1.0 — `src/api/generated/schemas.ts:392`
+  `SettingsFields = z.strictObject({… llmApiKey: z.string(), llmApiKeySet: z.boolean(), …}).partial()`;
+  `:395` `Settings = SettingsFields`; `:398` `SettingsUpdate = SettingsFields`.
+  Required list gone. Probed with the installed zod 4.4.3: a strict-partial
+  object of this shape **accepts** `{"llmApiKey":"sk-live"}` and **accepts** `{}`.
+
+What it means. **Server:** AC-11 now rests entirely on handler discipline; the
+type would carry a leak and the bundle cannot prevent it. The obvious
+conversion from `storage.Settings` to the generated type (a JSON round trip —
+every json tag already matches, including `json:"llmApiKey"` at
+`backend/storage/settings.go:172`) copies the key into `LlmApiKey` and emits it.
+**Client:** the generated zod `Settings` cannot serve as a response guard —
+`GET /api/settings` returning `{"workStart":"09:00"}` (49 properties missing)
+parses successfully, and every missing field renders blank, which is the silent
+blank AC-20 exists to end. The response type also offers `mode: ""` and
+`llmApiKey` to every switch the frontend writes.
+
+The reason §2 rejected the split no longer holds: it assumed a round-tripping
+client would hold "a document that is not a member of the type it must send".
+That is only true if the *request* schema is the narrower one. Make the
+**response** the narrower one and every `Settings` document is a valid
+`SettingsUpdate`.
+
+**Fix (schema shape):** two concrete object schemas, no `allOf` between them —
+`Settings` with its own `properties` (all of today's except `llmApiKey`), its own
+`required` list, `additionalProperties: false`; and `SettingsUpdate` with the
+same properties plus `llmApiKey`, nothing required, `additionalProperties:
+false`, `llmApiKeySet`/`updatedAt` still accepted-and-ignored. Do not express
+`SettingsUpdate` as `allOf: [Settings, {properties: {llmApiKey}}]`: JSON Schema
+evaluates `additionalProperties` per subschema, so that composition rejects
+`llmApiKey`. (I have not run the generators against the split; the expectation
+that it yields non-pointer required fields and a non-`partial()` zod object is
+inferred from how `DailyRecapSettings` came out, `gen.go:875-896`,
+`schemas.ts:113`.)
+
+**2. The response schema forbids values the contract itself says are already
+stored — and because the same schema is the request schema, a client that
+round-trips them gets a 400 on every save, for fields the settings page cannot
+edit.** Revision 2 fixed this class for `""` on four clock properties (rev-1 C1)
+and left the rest of the class in place. The contract's own prose is the
+evidence:
+
+| property | contract text admitting the stored value | response schema says |
+|---|---|---|
+| `calendarProvider` | "before it, an unknown value was stored and silently behaved as `google`" | `enum: [google, outlook, webcal]` |
+| `conferencingProvider` | "an unknown value was stored and silently behaved as `meet`" | `enum: [meet, zoom, teams]` |
+| `bufferMinMeetingMinutes` | "before that a negative value was accepted here alone" | `minimum: 0` |
+| `workStart`/`workEnd`/`lunchStart`/`lunchEnd` | "the server's own check was the same loose regexp, so `99:99` was stored" | `^(([01][0-9]\|2[0-3]):[0-5][0-9])?$` |
+| `workingHours.mode` | "persisted value is whatever was sent" after case-insensitive, trimmed validation (`handlers_settings.go:128`) | `enum: ['', all_days, by_day]` |
+| `workingHours.days` / `lunchBreaks` keys | "`\"Monday\"` passes validation and is stored" | `propertyNames: {enum: [monday…sunday]}` |
+
+The mechanism is today's `PUT` (`backend/api/handlers_settings.go:41-65`):
+`calendar_provider` and `conferencing_provider` are `TEXT NOT NULL` with **no
+CHECK** (`003_calendar_providers.up.sql:1`, `005_conferencing.up.sql:1`), and
+`SaveSettings` writes `s.CalendarProvider`/`s.ConferencingProvider` verbatim
+(`backend/storage/settings.go:344-345`), so `PUT {"workStart":"09:00"}` stores
+`""` in both (API-004) and `PUT {"calendarProvider":"gooogle"}` stores the typo.
+`COALESCE(conferencing_provider,'meet')` (`:223`) maps NULL, not `""`.
+`validateSettings` has no check on `BufferMinMeetingMinutes` (`:80-98`).
+
+Concrete failure on the current client. Stored `buffer_min_meeting_minutes = -5`
+→ `GET /api/settings` returns `{…, "bufferMinMeetingMinutes": -5, …}` (contract
+violation; zod `Settings` rejects the whole document) → the current client keeps
+every unmapped GET key (`smart-calendar-flow/src/api/client.ts:576-603`) and
+spreads it back (`:610-628`) → `PATCH /api/settings` body carries
+`"bufferMinMeetingMinutes": -5` → `400 bufferMinMeetingMinutes must be zero or
+positive`. The settings page has no control for that property (the `set(...)`
+calls in `src/pages/Settings.tsx:311-714` never touch it), so **the user can
+never save any setting again**. `conferencingProvider: ""` behaves identically
+(the UI edits `default_conference_provider`, which is not mapped). The product
+decision of 2026-10-12 copies `work_*`, `lunch_*`, `working_hours`,
+`lunch_breaks` and `buffer_min_meeting_minutes` from the anchor row to every
+user, so for those properties one bad value in the anchor row becomes every
+user's bad value; `calendar_provider`/`conferencing_provider` are not copied, so
+those hit the anchor owner — the AC-18 user.
+
+**Fix:** for each row of the table the contract must state what PAC-24 makes the
+stored value become, on the property itself, choosing the behavioural
+equivalent the readers already apply: unknown `calendarProvider` → `google`
+(all consumers fall through to Google, U-18); unknown `conferencingProvider` →
+`meet`; negative `bufferMinMeetingMinutes` → `0`; `mode` → lower-cased, trimmed;
+day keys → lower-cased, non-weekday keys dropped (they are already inert,
+`settings.go:117,138`); a clock value that fails the new pattern → `""` (which
+`WorkWindow`/`LunchWindow` already treat as "fall back" / "no lunch",
+`settings.go:124-127,141-142`). Add one manifest acceptance test: *a row seeded
+with one value of each legacy class reads back schema-valid and survives an
+unchanged GET→PATCH round trip with 200*. Widening the response schema instead
+(option b) does not work: the round trip would still 400 on write.
+
+**3. `testLLMConnection` declares `requestBody.required: false` and says "an
+absent body … probes the caller's stored configuration"; the generated server
+refuses an absent body.** `paceday.gen.go:17329-17336`, the strict wrapper:
+
+```go
+var body TestLLMConnectionJSONRequestBody
+if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+    sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+```
+
+`POST /api/llm/test` with no body → `Decode` returns `io.EOF` → 400
+`can't decode JSON body: EOF`. oapi-codegen v2.4.1 does not honour an optional
+body in the strict server. `testLLMConnection` is modified by PAC-24, so
+README §4 puts it on the generated interface; the contract then permits a
+request the server rejects, and the second half of AC-15 ("with no
+configuration supplied, reports on the stored one") fails as written. No
+consumer sends an empty body (the web client always posts one,
+`client.ts:1207-1209`; MCP has no LLM tool).
+**Fix:** `requestBody.required: true`, and state that `{}` is how a caller probes
+its stored configuration. Update `LLMTestRequest`'s and the operation's
+"absent body, or `{}`" sentences and manifest AC-15 to say `{}`.
+
+**4. Revision-1 Requests-2 (dead weekday keys) is fixed in the schema and in
+nothing that runs, and the contract tells the implementer the handler check is
+redundant.** `SettingsValidationError` says `workingHours.days.<day> is not a
+valid weekday` and `lunchBreaks.<day> …` "become UNREACHABLE via the HTTP
+boundary … because `propertyNames` now rejects the request at schema
+validation". There is no schema validation at the boundary:
+
+- no request validator in the backend (`grep` for `openapi3filter` /
+  `OapiRequestValidator` outside `backend/api/gen`: nothing);
+- the generated wrapper only `json.Decode`s (`gen.go:18542-18550`);
+- every generated artefact drops `propertyNames`: Go
+  `Days map[string]DaySchedule` (`gen.go:2483`), `type LunchBreakSchedule
+  map[string]DaySchedule` (`:1338`); TS `[key: string]` (`types.ts:4405-4406`,
+  `:3283-3284`); zod `z.record(z.string(), DaySchedule)` (`schemas.ts:389`,
+  `:221`) — and with zod 4.4.3 that record accepts a `Monday` key (probed). This
+  refutes the manifest's `followUps.propertyNamesGeneratorFidelity` claim that
+  "the generated zod schemas … should carry it".
+
+So `PATCH /api/settings` with
+`{"workingHours":{"mode":"by_day","default":{"enabled":true,"start":"09:00","end":"18:00"},"days":{"Monday":{"enabled":true,"start":"08:00","end":"17:00"}}}}`
+reaches `validateSchedulePreferences`, which lower-cases before checking
+(`handlers_settings.go:145`), passes, is stored, and — under whole-object
+replace — deletes the live `monday` key it replaced. Exactly the rev-1 bug. The
+same for `"mode":"BY_DAY"`: the enum forbids it, the handler lower-cases and
+accepts it (`:128-129`), and `WorkingHoursSchedule.mode`'s own description says
+so — the schema-versus-own-prose contradiction revision 2 fixed for `''` and
+reintroduced for case.
+**Fix:** in `WorkingHoursSchedule.mode`, `.days` and `LunchBreakSchedule`, state
+that the **server** enforces exact values — `mode` exactly `''|all_days|by_day`
+with no trim or case folding, keys exactly lower-case — and that the two weekday
+messages plus `workingHours.mode must be all_days or by_day` are the enforcement
+point, not defence in depth. Neither test in
+`handlers_settings_schedule_test.go` uses a capitalised key or mode
+(`:9-60`), so spec §6 survives. Correct `followUps.propertyNamesGeneratorFidelity`
+to "no generator carries it" and add a manifest acceptance test for
+`"Monday"` → 400.
+
+**5. Spec AC-7 still contradicts the contract, on more properties than the
+manifest names, and the 2026-10-12 decisions did not amend it.** AC-7
+(`docs/specs/PAC-24.md:511-514`) is unchanged: an empty value of a setting's
+type clears it. The manifest's AC-7 narrows it for `recapSendTime` only and files
+`followUps.spec24AC7Amendment` "before stage 3"; the Decisions section
+(`:973-1007`) does not mention it, so the gate "acceptanceTests match the spec"
+fails today. The narrowing is also incomplete — each of these is a 400 under the
+contract and a "clear" under AC-7:
+
+```
+PATCH /api/settings {"recapSendTime": ""}        -> 400 (pattern)
+PATCH /api/settings {"recapSendTo": ""}          -> 400 (enum [dm, channel])
+PATCH /api/settings {"calendarProvider": ""}     -> 400 (enum [google, outlook, webcal])
+PATCH /api/settings {"conferencingProvider": ""} -> 400 (enum [meet, zoom, teams])
+```
+
+**Fix:** the spec owner amends AC-7 to exempt properties whose type has no empty
+value and names these four (or the contract admits `''` in those enums, which
+finding 2 argues against). The manifest's AC-7 line then lists the same four.
+The contract text itself needs no change for this finding.
+
+### Non-blocking
+
+**N1. The stated reason for deleting `PUT` is now false; the deletion is still
+right.** The comment at `contracts/openapi/paths/scheduling.yaml:623-643`, the
+`SettingsUpdate` description (`:1996-2001`), the manifest's `operationsRemoved`
+and first `consumersAffected` entry all cite `client.ts:813` and `:550-563` sending
+snake_case. Web PR #81 (`2a51b5d`, 2026-10-10, "map every setting to the
+backend's camelCase contract") changed that: the PUT is now `client.ts:879`, and
+`settingsRequestBody` (`:610-628`) maps 30 properties to camelCase via
+`SETTINGS_FIELDS` (`:546-573`) and passes every other GET key back unchanged.
+The current body would mostly pass `SettingsUpdate`. The deletion stands on the
+product decision (spec Decisions, OQ-3: the repos deploy together), and that is
+the reason the contract should give. Also stale: `e2e/seed/seed.sql:79-90` "ON
+CONFLICT (user_id)" — the settings insert is now `:105-114` with no
+`ON CONFLICT`; `mcp/client.go` `delete` is `:51`, not `:52`.
+
+**N2. What actually breaks in the web consumer, for the frontend stage**
+(re-derived against `smart-calendar-flow@6064af6`; nothing else in `src/` reads
+`src/api/generated` yet):
+
+- `src/pages/Settings.tsx:567-568` sets `calendar_id`; it is not in
+  `SETTINGS_FIELDS`, so a save after touching it sends `"calendar_id": …` →
+  400 (`additionalProperties: false`). Intended, but it is the one unmapped key
+  left.
+- `src/api/client.ts:624` sends `lunchBreaks` only when non-empty, and
+  `normalizeLunchBreaks` returns `undefined` for `{}` (`:537`). Under PUT, an
+  omitted `lunchBreaks` was zeroed; under PATCH it is "unchanged". **Removing the
+  last per-day lunch override now silently does nothing** — a new break caused
+  by the merge semantics, not by API-013. AC-9 says `lunchBreaks: {}` clears;
+  the client must send it.
+- `src/api/client.ts:1207-1209` `llmTest` posts the whole draft → 400. And
+  `LLMTestResult` in `src/api/types.ts` is `{ok, message, latency_ms}` while
+  the contract returns `{ok, response, provider}`; `Settings.tsx:171-175` reads
+  `res.message`, so `provider` — the property AC-15 depends on — is never shown.
+- `src/api/client.ts:879` uses `PUT` → 405 once the route is gone. Ships
+  together per OQ-3.
+- MCP (`mcp/tools.go:233-238`, GET pass-through) and `e2e/tests/` (no settings
+  spec): unaffected, confirmed.
+
+**N3. `LLMTestRequest` leaves two values undefined.** `{"llmApiKey": ""}` —
+"probe with an empty key" (→ 500 `LLM not configured`) or "use the stored key"?
+The settings page's key field is always empty for a stored key (write-only), so
+a client that sends its form state hits this on every probe. `{"llmProvider":
+""}` — selects the `default` branch (`llm_factory.go:55-56`) and always fails.
+`LLMTestResult.provider` says "the submitted one when a body was sent"; after
+finding 3 every call sends a body, so it should say "when `llmProvider` was
+supplied". **Fix:** `minLength: 1` on `LLMTestRequest.llmApiKey` and drop `''`
+from `LLMTestRequest.llmProvider`'s enum, or state each value's meaning.
+
+**N4. `LLMTestRequest.llmModel` description is factually wrong; the invariant
+still holds.** "Consulted only by the `openai` and `anthropic` branches" — the
+`ollama` branch falls back to it (`backend/nlp/llm_factory.go:47-50`). It lands
+in the JSON body there too (`backend/nlp/parser.go:104-112`, URL is
+`base+"/api/chat"`), so no URL is affected. Correct the sentence (it is repeated
+in the operation description).
+
+**N5. "PAC-24 neither opens nor closes" the indirect endpoint-steering path is
+not accurate, and the path is wider than the probe.** Before PAC-24, writing
+`azureEndpoint` or `awsProfile` rewrote the shared row and broke the owner's own
+LLM features — visible. After PAC-24 (and the decision not to copy provider
+settings) each user's row is private, so the same steering is invisible to
+everyone else. It is also not limited to `/api/llm/test`: the same factory runs
+for meeting briefs (`backend/api/handlers_meeting_briefs.go:74`) and NLP parsing
+(`backend/nlp/parser.go:239`), and `awsProfile` selects any shared-config
+profile on the server (`backend/nlp/llm_bedrock.go:35-36`). Restate the residual
+on the operation and treat `followUps.llmProbeEndpointAllowlist` as a release
+gate, not a follow-up.
+
+**N6. The new `by_day`-with-empty-`days` 400 contradicts the rule the author used
+for `mode: ''`, and its premise is only half true.** Revision 2 refuses to
+narrow `mode` because "narrowing here would be a NEW rejection, and spec §6
+requires…", then adds a new rejection for `by_day` + `{}`. The premise that the
+client deletes that document holds only when `default` is also invalid:
+`normalizeWorkingHours` (`client.ts:520-532`) returns
+`{mode:"by_day", default, days:{}}` when `default` is valid, which is what the
+client always sends. The 400 is in no acceptance test, and it does not remove the
+shape from responses (stored rows keep it, and the decided migration copies
+`working_hours` to everyone). Related inconsistency: §"Revision 2" argument (b)
+rejects `recapSendTime: ""` because a silent server substitution breaks the merge
+rule, yet `PATCH {"workingHours":{"mode":"","default":{"enabled":false,"start":"","end":""},"days":{}}}`
+returns 200 and reads back as `{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"18:00"},"days":{}}`
+(`settings.go:92-99`). Either drop the `by_day` rule, or add it to AC-17 and note
+the spec §6 change. Either way, say plainly that `workingHours` is normalised on
+read and is the documented exception to "stored exactly as given".
+
+**N7. AC-8 needs a message the catalogue does not define.** AC-8 requires a
+refusal "naming the setting"; `SettingsValidationError` lists no message for
+`null` and none for an unknown property, and `patchDailyRecapSettings`' 400 list
+has neither. The generated request types cannot represent the distinction:
+every `SettingsFields` and `DailyRecapPatch` field is `*T` (`gen.go:2065-2201`,
+`:852-864`), so `null`, absent and (for an undecoded key) unknown are identical
+after the wrapper's decode (`:18546`, `:18601`). Add the two messages (e.g.
+`<field> must not be null`, `<field> is not a settings property`). Stage 3 has
+to name where they are produced; that is not the contract's job.
+
+**N8. `updatedAt` format.** `format: date-time` permits offsets; the generated
+zod is `z.iso.datetime()` (`schemas.ts:392`), which with zod 4.4.3 rejects
+`2026-10-12T10:24:00.123456+02:00` and accepts only `Z` (probed). The backend
+uses pgx (`backend/storage/db.go:18`), which returns `timestamptz` in
+`time.Local`; e2e pins `TZ: UTC` (`e2e/docker-compose.e2e.yml:111`), a developer
+machine in Europe/Paris does not. Pin "UTC, `Z` suffix" in the description.
+
+**N9. Manifest acceptance tests miss what the contract and the decisions add.**
+No test for: `conferencingProvider` outside its enum; `lunchEnd <= lunchStart`;
+`recapSendTime: ""`; an unknown property → 400; `null` on
+`patchDailyRecapSettings`; `"Monday"` → 400 (finding 4). The decisions' central
+safety property — "nothing that acts on a calendar by itself is copied"
+(`auto_schedule_enabled`, `auto_schedule_cron`, `auto_decline_outside_working_hours`,
+`compression_enabled`, every `recap_*` at column default for non-owners) — has
+no acceptance test; manifest AC-19 still tests only credentials, addresses and
+destinations. Also: spec §3 says the probe "checks the configuration being
+offered"; `LLMTestRequest` deliberately cannot carry an offered endpoint. The
+manifest says "the spec needs no amendment"; it does need a one-line §3 note, or
+stage 6 will read it as a gap.
+
+**N10. `contractHash` no longer matches the bundle.** `9fdb8624…` is the bundle
+at `1e76a6a` (verified with `git show 1e76a6a:contracts/openapi/openapi.yaml |
+sha256sum`). `HEAD`'s bundle is `f6044a99…`, changed by #199, #201 and #203. The
+PAC-24 parts of `scheduling.yaml` are unchanged since `1e76a6a` (the diff is
+PAC-28's `nullable` removals and focus-block descriptions). Recompute when the
+fixes above land, as the manifest itself requires.
+
+### Verified clean
+
+So the next reader need not repeat these:
+
+- **Rev-1 C2 (exfiltration through the probe) is fixed, and the generated Go
+  enforces it by construction.** `LLMTestRequest` has three properties and
+  `additionalProperties: false` (`scheduling.yaml:1369-1426`). Go's
+  `LLMTestRequest` has exactly three fields (`gen.go:1307-1316`), so even though
+  the wrapper does not reject unknown properties, a submitted `llmBaseUrl` has no
+  field to land in and cannot reach `NewLLMClientFromSettings`. zod is
+  `z.strictObject(…)` (`schemas.ts:215`). I checked each survivor at
+  `llm_factory.go:13-58`: `llmProvider` picks a client, `llmApiKey` is only an
+  `Authorization` value (`parser.go:43`), `llmModel` is only a body field (N4).
+  The 400 half of AC-15b is not generator-enforced; the security half is.
+- **Rev-1 C1, for the four clock properties:** widened in the fragment and in
+  zod (`schemas.ts:392`). **`recapSendTime` strict is sound:** the column is
+  `TIME NOT NULL DEFAULT '08:00'` (`015_daily_recap.up.sql:3`) and both write
+  paths — settings and daily-recap PATCH, which also calls `SaveSettings`
+  (`handlers_daily_recap.go:85`) — pass through `recapSendTimeOrDefault`
+  (`settings.go:346,356-361`), so no row can hold `""`.
+- **Rev-1 C3:** `PUT /api/settings` is gone from the bundle and from the
+  generated router (`gen.go:10132-10135`: `Get` and `Patch` only). MCP has
+  `get`/`post`/`patch`/`delete` and no `put` (`mcp/client.go:22,43,47,51`); its only
+  settings tool is a GET (`mcp/tools.go:233-238`). `e2e/tests/` has no settings
+  spec. Consistent with Decisions OQ-3.
+- **The author's correction of rev-1 Responses-2 is right:** the all-empty
+  `all_days` default is rewritten on every read (`settings.go:95-99`).
+- **Rev-1 Requests-3 (`mode: ''`):** `''` is in the enum and matches
+  `handlers_settings.go:129` (the case-folding problem is finding 4).
+- **The `readOnly` round trip works for the current client.** A
+  `Settings` value is assignable to `SettingsUpdate` in the generated TS; the
+  current client echoes `llmApiKeySet` and `updatedAt` from GET, which the
+  contract accepts and ignores; its draft holds `llm_api_key` only after the user
+  types (`Settings.tsx:131-142,713-714`), so AC-13's "submitted back unchanged
+  leaves the key" holds for it.
+- **Daily-recap operations:** no web consumer
+  (`grep daily-recap src/` outside `generated/`: nothing); the response schema
+  generates as a concrete, fully required type (`gen.go:875-896`,
+  `schemas.ts:113`); `send_time` `HH:MM` is reachable from a `TIME` column.
+  Decisions do not copy `recap_*`, consistent with AC-4.
+- **`x-uncertain`:** 18 in the bundle; U-19 resolved by decision and pinned by
+  AC-16, as the first challenge asked. U-18: `e2e/seed/seed.sql:100-101` states
+  `calendar.NewProvider()` has no production call site; I did not verify that,
+  and the other two cited consumers settle the enum on their own.
+- **No other operation emits the settings document:** the only encoders of
+  `storage.Settings` in `backend/api` are `handlers_settings.go:38,64`.
+
+---
+
+## Revision 3 — 2026-10-12
+
+*contract-author, responding to "Challenge (revision 2) — 2026-10-12" (verdict
+**reject**, five blocking findings). Written in the implementation session,
+which can compile and run tests: every claim below about behaviour is pinned by
+a test named here, and the backend suite (testcontainers Postgres) passes.*
+
+**Finding 1 — readOnly/writeOnly lost by every generator. Accepted; fixed as
+the challenger proposed.** `Settings` and `SettingsUpdate` are now two concrete
+schemas, not an `allOf` over `SettingsFields` (which is deleted). `Settings` has
+no `llmApiKey` property and all 50 properties are required; `SettingsUpdate`
+has the same properties plus the write-only `llmApiKey` and nothing required.
+The property map is written once and shared through a YAML anchor
+(`&settingsProperties`, merged into `SettingsUpdate` with `<<`). The assembler
+loads fragments with PyYAML `safe_load`, which resolves anchors and merge keys,
+so the bundle every generator reads contains two fully expanded schemas — the
+anchor exists only in the fragment, to stop the two copies drifting. Every
+`Settings` document is a valid `SettingsUpdate`. The server side matches:
+`storage.Settings.LLMAPIKey` is `json:"-"` and the PATCH handler reads the key
+from the request itself (`TestSettings_NeverReturnsProviderKey` walks both
+response bodies for the key under any name).
+
+**Finding 2 — stored values the response schema forbids. Accepted; fixed two
+ways, because they are two problems.**
+- *Values outside a schema enum, pattern or minimum* — an unknown or empty
+  calendar or conferencing kind, negative minutes, non-clock top-level times,
+  a `mode` other than `all_days`/`by_day`, weekday keys that are not exactly
+  lowercase — are normalised by migration 024, step 0, to what the code already
+  behaved as: `google`, `meet`, `0`, the column default, `by_day` when it
+  matched case-insensitively and `all_days` otherwise (`WorkWindow` only
+  special-cases `by_day`), and removal of keys that never matched the lowercase
+  lookup. `recap_send_to` needs nothing: a CHECK constraint already limits it.
+  Pinned by `TestMigration024_NormalisesLegacyValues`.
+- *Combinations a new cross-property rule rejects* (an end before a start, focus
+  minimum above maximum) are schema-valid per property, so no normalisation is
+  owed — but echoing them back must not 400. **PATCH now validates only the
+  properties whose value the body changes.** A GET document submitted back
+  unchanged is always accepted, an unrelated property can always be saved, and
+  changing one of the offending properties to another rejected value is still a
+  400. Pinned by `TestPatchSettings_LegacyValuesDoNotLockTheUserOut`. This is
+  stated on `SettingsUpdate`.
+
+**Finding 3 — optional body vs the generated wrapper. Accepted.** The body of
+`POST /api/llm/test` is `required: true`; `{}` probes the stored configuration
+and an absent body is a 400 — on the generated wrapper and on the handwritten
+handler alike (`TestLLMTest_BodyRulesAndNoKeyEcho`).
+
+**Finding 4 — weekday keys enforced only by a keyword no generator keeps.
+Accepted.** The handler no longer lower-cases or trims: `mode` and every weekday
+key are compared exactly, so `"BY_DAY"` and `"Monday"` are a 400. The
+descriptions now name the handler as the enforcement point, and
+`followUps.propertyNamesGeneratorFidelity` is marked settled. Stored keys that
+were never exact are removed by the migration (finding 2).
+
+**Finding 5 — AC-7 unamended. Accepted; spec amended.** Spec AC-7 now exempts
+the four properties with no empty state (`recapSendTime`, `recapSendTo`,
+`calendarProvider`, `conferencingProvider`). The manifest's AC-7 says the same.
+
+**Non-blocking findings.**
+- N (PUT removal rationale stale): `SettingsUpdate` now gives the reason that
+  holds — the repositories deploy together (spec Decisions, OQ-3).
+- N (AC-8 messages unnamed): `SettingsUpdate` names them —
+  `<property> must not be null`, `unknown property: <name>`.
+- N (`updatedAt` with a non-`Z` offset): the storage read returns it in UTC.
+- N (manifest test gaps): AC-21 (legacy values) and AC-22 (nothing that acts
+  on a calendar is copied, from the 2026-10-12 decisions) are added; the new
+  400s are covered by `TestPatchSettings_RejectsNullAndUnknown`.
+- N (stale `contractHash`): recomputed for this revision.
+- The web-side findings (`calendar_id`, the last lunch override, `llmTest`
+  posting the whole draft, `LLMTestResult.provider`) belong to the frontend
+  stage, which this revision does not change; they are carried into it.
+- The steering residual (`followUps.llmProbeEndpointAllowlist`) is unchanged
+  and still to be filed before merge.
+- `by_day` with no days is a 400 as revision 2 specified; a stored one is not
+  re-validated unless the body changes `workingHours` (finding 2's rule), so it
+  creates no lock-out.

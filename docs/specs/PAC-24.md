@@ -512,6 +512,11 @@ AC-7. Given a stored setting with a non-empty value, when a request supplies
 that setting with an empty value of its type, then the stored value becomes
 empty — so clearing remains possible and is distinguishable from omitting.
 `[contract]`
+*Amended 2026-10-12 (contract challenge, revision 2, finding 5):* except for the
+four settings that have no empty state — the morning summary's send time and
+destination, the calendar kind and the conferencing kind. For these, an empty
+value is outside the permitted set and the request is refused with a client
+error naming the setting, like any other value outside it; nothing is stored.
 
 AC-8. Given stored settings, when a request supplies an explicit null for any
 setting, then the request is refused with a client error naming the setting, and
