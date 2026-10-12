@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings",
   "status": "draft",
   "contractRevision": "5",
-  "contractHash": "1866b55f8b160f170be7a6a0ec12dffdf6a6a3660143fedb8b2995bc4075d678",
+  "contractHash": "9c034be5cc5d625dce458c36afc5a16994ac36bde4995e6cccc096996ea8ef87",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it. Computed AFTER the final `python3 scripts/openapi_assemble.py` run and verified against `python3 scripts/openapi_assemble.py --check` (exit 0, `OK: bundle is in sync (98 paths)`), so it is the hash of an assembled bundle that is in sync with the fragments rather than of a stale working copy. Reproduce with: `python3 scripts/openapi_assemble.py && python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`. The PAC-23 manifest carries a hash that no longer matches its bundle; this note exists so that does not recur here.",
   "contractDoc": "contracts/features/PAC-24.md",
   "specDoc": "docs/specs/PAC-24.md",
