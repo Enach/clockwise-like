@@ -9709,10 +9709,13 @@ components:
           - all_days
           - by_day
           description: 'Compared EXACTLY by the handler (revision 3): `"BY_DAY"` and `" all_days"` are
-            a 400. Before PAC-24 the validator lower-cased and trimmed, then persisted whatever was sent;
-            migration 024 lower-cases and trims every stored mode, and turns any other stored value into
-            `all_days`, which is how `WorkWindow` already treated it (it only special-cases `by_day`,
-            case-insensitively).
+            a 400. Before PAC-24 the validator lower-cased and trimmed, then persisted whatever was sent.
+            Migration 024 turns a stored mode that equals `by_day` ignoring case (and NOT trimmed: `"
+            by_day"` never matched) into `by_day`, and any other non-empty value into `all_days` - exactly
+            how `WorkWindow` treated them (it only special-cases `by_day`, case-insensitively). It also
+            clears an enabled entry that would fail validation in the half the mode ignores (`days` under
+            `all_days`, `default` under `by_day`), which `WorkWindow` never reads, so a later edit is
+            not refused (revision 5).
 
             `''''` is in the enum because the server accepts it (`:129`, `mode != "" && mode != "all_days"
             && mode != "by_day"`) and because the contract must describe what is, not what should be (factory

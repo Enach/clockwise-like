@@ -2,7 +2,7 @@
   "featureId": "PAC-24",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings",
   "status": "draft",
-  "contractRevision": "4",
+  "contractRevision": "5",
   "contractHash": "1866b55f8b160f170be7a6a0ec12dffdf6a6a3660143fedb8b2995bc4075d678",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it. Computed AFTER the final `python3 scripts/openapi_assemble.py` run and verified against `python3 scripts/openapi_assemble.py --check` (exit 0, `OK: bundle is in sync (98 paths)`), so it is the hash of an assembled bundle that is in sync with the fragments rather than of a stale working copy. Reproduce with: `python3 scripts/openapi_assemble.py && python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`. The PAC-23 manifest carries a hash that no longer matches its bundle; this note exists so that does not recur here.",
   "contractDoc": "contracts/features/PAC-24.md",
@@ -83,7 +83,16 @@
     "LunchBreakSchedule — propertyNames enum monday..sunday, for the same reason"
   ],
 
+  "mergeConditions": [
+    "The product owner confirms the stage-2 amendments to spec AC-7 (four settings with no empty state refuse \"\") and AC-17 (rules apply to what a request changes), recorded as pending in the spec's Decisions section.",
+    "The backend and frontend PRs merge and deploy together: PUT /api/settings is removed, so the pre-PAC-24 web client cannot save settings against this server (spec Decisions, OQ-3).",
+    "followUps.llmProbeEndpointAllowlist and followUps.calendarCredentialLifecycle are filed as issues."
+  ],
+
   "responsesAdded": [
+    "POST /api/llm/test 400 for an absent or null body (revision 3: the body is required; {} probes stored settings).",
+    "GET /api/auth/zoom and GET /api/auth/zoom/callback 401 (revision 4: a signed-in user is required).",
+    "GET /api/auth/microsoft/callback 502 `could not read the Microsoft account` (revision 4: the profile is required to attach the credential to a user). Accounts whose Graph profile has no `mail` are refused this way; recorded, not addressed.",
     "SettingsValidationError — the shared 400 for PATCH /api/settings. Two messages added in revision 2: `recapSendTime must be in HH:MM format` now also covers the empty string (the silent 08:00 substitution is removed, because the merge rule says a present property is stored exactly as given), and `workingHours.days must contain at least one weekday when mode is by_day`."
   ],
 
@@ -120,6 +129,7 @@
     "AC-19 After upgrade a non-owning user sees the shared row's working-day and focus values and no credential, calendar address or message destination.",
     "AC-20 The settings page shows stored values rather than blanks, and an edit survives a save and a reload.",
     "AC-21 (revision 3) A stored document holding values a newer rule rejects (an inverted work window, focusMin above focusMax) can be read and submitted back unchanged, and an unrelated property can still be saved; changing one of those properties to another rejected value is a 400. Migration 024 normalises every stored value the Settings schema does not admit (unknown or empty calendar/conferencing kind, negative minutes, non-clock times, a mode other than all_days/by_day, weekday keys that are not exactly lowercase) to the value the code already behaved as.",
+    "AC-23 (revision 5) Migration 024 clears an enabled entry that would fail validation in the half of workingHours the stored mode ignores (days under all_days, default under by_day), so a later edit of working hours is not refused; WorkWindow's result is unchanged.",
     "AC-22 (revision 3, from the 2026-10-12 decisions) After upgrade no user other than the shared row's owner has auto-schedule, auto-decline or compression enabled, a provider, an endpoint, a key, a calendar or conferencing credential, or a recap setting copied from the shared row."
   ],
 
