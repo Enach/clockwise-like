@@ -1,7 +1,7 @@
 # Spec — PAC-24: A user's settings must be their own, their provider key must not be readable, and saving one preference must not erase the rest
 
 - **Linear**: https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings
-- **Status**: draft
+- **Status**: accepted with decisions (2026-10-12, see "Decisions")
 - **Author**: spec-author
 - **Inherited scope**:
   - **Resolved by this spec**: API-002, API-003, API-004, API-009, API-013,
@@ -967,3 +967,41 @@ correct and the audit's "about 4 of ~48" is the one that is wrong.
   spec does not name and the one that acts on release day.
 - No e2e consumer: `e2e/tests/` has no settings spec, and
   `e2e/seed/seed.sql:79-90` already uses `ON CONFLICT (user_id)`.
+
+---
+
+## Decisions — 2026-10-12
+
+*Answered by the product owner in the implementation session. These settle the
+human-owned open questions in §8 and the challenger's blocking finding 3 and
+non-blocking finding 3.*
+
+**OQ-1 / OQ-4 — the migration copies passive preferences only.** Each user who
+has no settings row gets one, with these columns copied from the anchor row and
+every other column at its column default:
+
+| Copied (passive preferences) | Not copied (column default) |
+|---|---|
+| `work_start`, `work_end`, `working_hours` | `auto_schedule_enabled`, `auto_schedule_cron` |
+| `lunch_start`, `lunch_end`, `lunch_breaks`, `protect_lunch` | `auto_decline_outside_working_hours`, `compression_enabled` |
+| `timezone` | every `llm_*`, `aws_*`, `bedrock_model`, `azure_*`, `gcp_*`, `vertex_model`, `ollama_*` |
+| `focus_min_block_minutes`, `focus_max_block_minutes`, `focus_daily_target_minutes`, `focus_label`, `focus_color` | `calendar_provider`, `microsoft_tokens`, `webcal_url`, `calendar_email` |
+| `buffer_before_minutes`, `buffer_after_minutes`, `buffer_enabled`, `buffer_min_meeting_minutes`, `buffer_skip_back_to_back` | `conferencing_provider`, `zoom_tokens` |
+| `out_of_hours_meetings_per_week` | every `recap_*` |
+
+Nothing that acts on a calendar by itself is copied, so no background job starts
+acting for a user who did not enable it (challenger blocking 3). Provider
+selection, endpoints, regions and profiles are not copied: they identify or bill
+the owner (challenger non-blocking 3). The anchor row's owner keeps every value.
+
+**OQ-3 — the two repositories deploy together.** `PUT /api/settings` is removed,
+not kept as a deprecated alias; `PATCH /api/settings` is the only write. The web
+change ships with the backend change.
+
+**OQ-4 (told?) / OQ-7 — no notice.** Users are not shown an upgrade notice; the
+settings page's empty key field and "not connected" states are the explanation.
+A notice can be a follow-up.
+
+Still open and not blocking implementation: OQ-5 (who rotates the shared LLM key,
+a human action for the deployment owner) and OQ-6 (settled by
+`TestMicrosoftToken_IsPerUser` at stage 4).
