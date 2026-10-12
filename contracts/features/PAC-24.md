@@ -2061,8 +2061,10 @@ entries with an empty, inverted or equal start/end are removed; in `by_day`
 rows, such a `default` becomes the product default. `WorkWindow` reads neither,
 so no behaviour changes, and the challenger's two requests no longer meet a
 stored value that refuses them. Pinned by
-`TestMigration024_ClearsTheIgnoredHalfOfWorkingHours` (manifest AC-23). An
-inverted ACTIVE half cannot have been stored: the old validator checked it.
+`TestMigration024_ClearsTheIgnoredHalfOfWorkingHours` (manifest AC-23).
+~~An inverted ACTIVE half cannot have been stored: the old validator checked
+it.~~ (struck in revision 6: false for three legacy shapes, see the revision-5
+challenge, finding 1)
 
 **Finding 2 — the mode description still said "trims". Accepted; corrected**,
 and it now also describes the ignored-half clean-up.
@@ -2077,3 +2079,291 @@ and it now also describes the ignored-half clean-up.
   the profile-without-`mail` case.
 - The web branch's generated types will be regenerated from this revision before
   its PR opens; its `openapi-check` is run then.
+
+---
+
+## Challenge (revision 5) — 2026-10-12
+
+*contract-challenger, fifth pass. I did not write any revision and did not ask
+the author for reasoning. I reviewed the committed tree at `cf5f061`
+(`git status` clean, checkout not modified); line numbers are `HEAD`'s. I read
+the web consumer at `smart-calendar-flow@feat/pac-24-per-user-settings`
+(`920aea7`) via `git show`.*
+
+**What I ran, and what I did not.**
+
+```
+$ py -3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)                                   exit=0
+$ py -3 scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 119 operations (0 generated)           exit=0
+$ git show HEAD:contracts/openapi/openapi.yaml | sha256sum
+9c034be5cc5d625dce458c36afc5a16994ac36bde4995e6cccc096996ea8ef87  (= manifest contractHash)
+# on a `git archive cf5f061` copy in my scratch directory:
+$ scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract                           exit=0
+$ go build ./...                              BUILD_OK
+$ go vet ./api ./storage ./engine             exit=0
+$ go test ./... -count=1                      # throwaway postgres:16-alpine on host port 25432
+ok  backend, api, auth, calendar, config, domain, engine, nlp, scheduler, storage
+# web generators (web repo's pinned node_modules/.bin), HEAD bundle in, output to scratch:
+$ openapi-typescript 7.4.4 ; typed-openapi 4.1.0 --runtime zod --schemas-only
+types.ts, schemas.ts, schemas.types.d.ts: byte-identical to the web branch's committed files
+```
+
+I also added three throwaway tests, in the scratch copy only. Each drove the
+real handlers (`patchSettings`, `getSettings`, the recap `preview`) or
+migration 024 against that Postgres. The payloads are in the findings below. I
+deleted the tests and removed the container afterwards. **Not run:** `make`
+(not installed), `golangci-lint`, `make coverage`, `make e2e`, the web repo's
+`make verify`, and any request to a real LLM, Slack, Zoom or Microsoft endpoint.
+
+**Verdict**: accept-with-changes
+
+Revision-4 finding 2 is fixed. Finding 1 is fixed for the exact rows it
+described. The new statements, `TestMigration024_ClearsTheIgnoredHalfOfWorkingHours`
+and AC-23, are correct as far as they go. Revision 5 rests its fix on the
+sentence "An inverted ACTIVE half cannot have been stored: the old validator
+checked it". That sentence is false: three reachable legacy shapes give an
+active `default` that ends before it starts. Each of them still produces the
+revision-4 lock-out the moment the user switches to "Customize by day"
+(blocking 1). Separately, `previewDailyRecap` says the caller's timezone drives
+the preview, but the server never reads it. Revision 5's recap change makes the
+preview's times depend on the host's zone again (blocking 2).
+
+Neither fix changes a schema shape, so generated types do not move. The verdict
+is accept-with-changes because both blocking findings can be closed by
+contract and spec text alone. That is the fix described first in each. If the
+author instead changes stored data or server behaviour, that is a new revision
+and needs another challenge.
+
+### Blocking
+
+**1. A legacy row can still hold an ACTIVE `default` that ends before it starts.
+Switching that user to `by_day` is refused for a value the `by_day` screen does
+not show. This contradicts `SettingsUpdate` and spec AC-17 as amended.**
+
+The old validator (`git show 8d52e8b:backend/api/handlers_settings.go`) had
+these gaps:
+- It checked `default` only when the trimmed, lower-cased mode was exactly
+  `all_days` (`:128`, `:136-142`).
+- It never compared `workEnd` with `workStart` (`:68-80`).
+
+`normalizeSchedules` (`backend/storage/settings.go:92-99`) derives `default`
+from `workStart`/`workEnd` on every read. It does this when `mode` is `''`, and
+when an `all_days` default is entirely empty. Migration 024 does not touch any
+of the following (`024_settings_per_user.up.sql:38-44`, `:63-81`):
+
+| Stored before PAC-24 | Old validator | Migration 024 | GET after upgrade |
+|---|---|---|---|
+| A: `mode:""`, `days:{}`, `work_start 17:00`, `work_end 08:00` | checks neither half | leaves `''` | `{"mode":"all_days","default":{"enabled":true,"start":"17:00","end":"08:00"},"days":{}}` |
+| B: `mode:"all_days"`, `default:{enabled:false,start:"",end:""}`, same inverted work window | default "has no values", skipped | untouched | same as A |
+| C: `mode:" by_day"`, `default:{enabled:true,start:"17:00",end:"08:00"}`, `days.monday 09:00-17:00` | trims to `by_day`, checks only `days` | mode becomes `all_days` (`:38-44`); `:76` matches only `by_day`, so the default is kept | `{"mode":"all_days","default":{"enabled":true,"start":"17:00","end":"08:00"},"days":{"monday":{"enabled":true,"start":"09:00","end":"17:00"}}}` |
+
+A and B are the "inverted work window" that AC-21 itself names as an expected
+legacy state. I confirmed C against the real migration:
+`{"mode":"all_days","default":{"start":"17:00","end":"08:00",...},...}` after
+`to(24)`.
+
+I ran this against the real handler and Postgres for each of A, B and C:
+
+```
+GET /api/settings                     -> 200, workingHours as in the table
+PATCH /api/settings <GET document>    -> 200   (round trip holds)
+PATCH /api/settings    # the user picks "Customize by day" and sets Monday
+{"workingHours":{"mode":"by_day","default":{"enabled":true,"start":"17:00","end":"08:00"},
+ "days":{"monday":{"enabled":true,"start":"09:00","end":"17:00"}}}}
+-> 400 {"error":"workingHours.default end must be after start"}
+```
+
+The old server returned 200 for this body: under `by_day` it checked only
+`days`. The web client sends exactly this body:
+- `normalizeInterval` keeps any `default` whose two times are `HH:MM`
+  (`src/api/client.ts:497-503`, `:524-530`).
+- `WorkingHoursEditor` keeps `default` across the mode switch.
+- `validateWorkingHours` does not look at `default` under `by_day`
+  (`src/lib/schedulingPresets.ts:175-184`).
+
+So the user gets a 400 naming a field the `by_day` screen hides. That is the
+same failure as revision-4 finding 1, from the other half.
+
+The contract and spec promise otherwise:
+- `SettingsUpdate` (`contracts/openapi/paths/scheduling.yaml:1984-1990`) says
+  "a stored value never locks the user out of saving something else".
+- Spec AC-17 as amended (`docs/specs/PAC-24.md:574-580`) says the same, and
+  uses an inverted working day as its example.
+- The `mode` description (`scheduling.yaml:1515-1525`) and AC-23 say the
+  clean-up is what makes "a later edit … not refused".
+
+**Fix (contract shape unchanged; text only):**
+1. `SettingsUpdate` and spec AC-17 state the actual rule, with nothing
+   promised beyond it:
+   - the changed-only rule is per top-level property;
+   - a `workingHours` write must make BOTH halves valid, including an active
+     `default` that the server derived on read from a legacy `workStart`/
+     `workEnd`, or that a legacy mode made active;
+   - the 400 can name the half the request's mode ignores.
+2. Add one sentence to the `mode` description and AC-23: the clean-up covers
+   only the half that was inert before the upgrade.
+3. Strike "An inverted ACTIVE half cannot have been stored" from Revision 5.
+   Optionally add a regression line to AC-21 pinning the 400 for shape A, so
+   the narrowed promise is tested rather than asserted.
+
+A data fix is the alternative: normalise these rows so the `default` stays
+valid. It changes what `WorkWindow` returns for shapes A–C, which revision 5
+correctly declined to do for the active half. It would therefore need a spec
+decision and another challenge.
+
+**2. `previewDailyRecap` says the caller's timezone drives the preview. The
+server never reads it, and revision 5 makes the preview's times depend on the
+host's zone.**
+
+The contract says, at `scheduling.yaml:730-733`, "the recap configuration
+driving it (timezone, which sections to include) came from the singleton row
+… Both now come from the caller's row". Manifest `operationsChanged` says the
+same (`PAC-24.yaml:59`).
+
+The handler does not do this:
+- `preview` and `test` call `BuildMessage(..., time.Now(), s)`
+  (`backend/api/handlers_daily_recap.go:139-140`, `:164-165`). `time.Now()` is
+  in the process's zone, and `BuildMessage` never reads `settings.Timezone`.
+  Only `RunForUser` does (`backend/engine/daily_recap.go:82-86`).
+- Revision 5 now renders focus-block and habit times with
+  `.In(now.Location())` (`daily_recap.go:193-194`, `:394`, `:423`). The comment
+  says "never the host's zone". For these two operations, though,
+  `now.Location()` *is* the host's zone (`time.Local`). Under revision 4 they
+  were UTC on every host.
+
+I ran this against the real handler:
+
+```
+PATCH /api/settings {"timezone":"Pacific/Kiritimati"}   -> 200
+POST /api/settings/daily-recap/preview
+-> 200 {"blocks":[…,{"elements":[{"text":"Monday, October 12 — Local","type":"mrkdwn"}],"type":"context"},…]}
+```
+
+The header names `Local`, not the caller's zone. "Today" is the host's day. On
+this Europe/Paris host, a 07:00Z focus block previews as `09:00` for a caller
+whose `timezone` is `America/New_York`. The contract promised neither result.
+The pre-PAC-24 server also used `time.Now()`
+(`git show 8d52e8b:backend/api/handlers_daily_recap.go:104`, `:129`). So the
+false part is the contract's "timezone … now from the caller's row", not a
+regression in revision 5 alone.
+
+**Fix (text only):**
+- `previewDailyRecap` and `sendDailyRecapTest` say what happens. The recap is
+  built for `time.Now()` in the server process's zone. "Today", the rendered
+  focus/habit times and the header's zone name (`Local` or `UTC`, depending on
+  the host) all come from that zone. The caller's `timezone` is not consulted.
+  Only which sections to include, and for `test` the destination, come from
+  the caller's row.
+- Drop "timezone" from the parenthesis at `:731`. Record the defect for a
+  follow-up (factory §7).
+- Correct manifest `operationsChanged` for `previewDailyRecap`.
+- Correct the Revision 5 non-blocking note: the zone is the header's zone only
+  on the scheduled path.
+
+### Non-blocking
+
+**N1. The web validator and the server disagree on new writes, not only on
+legacy rows.** The server checks both halves in every mode
+(`handlers_settings.go:296-313`). The web checks only the visible half
+(`schedulingPresets.ts:175-184`). Example: a user types an inverted Monday under
+"Customize by day", switches to "Same hours every day" and saves. The client
+passes the body, and the server returns 400
+`workingHours.days.monday end must be after start` while the screen shows no
+Monday. The contract describes the server correctly, so this is a web-stage
+item: `validateWorkingHours` should check both halves, as the server does.
+
+**N2. Revision-4 N1 to N3 carried over, still open.**
+- Manifest `testLLMConnection` still says "optional … request body"
+  (`PAC-24.yaml:61`).
+- `notRunHere` still says only Python was run (`:106`).
+- `consumersAffected` still cites `e2e/seed/seed.sql:79-90` (`:171`) and
+  "breaks: yes" (`:152`).
+- `LLMTestRequest` still opens "Optional body" (`scheduling.yaml:1374`).
+- `llmModel` is still described as "consulted only by" (`:429`).
+- The `patchDailyRecapSettings` 400 list (`:703-708`) still lacks
+  `unknown property: <name>` and `<name> must not be null`
+  (`handlers_daily_recap.go:68-75`).
+- `llmApiKey must be a string` (`handlers_settings.go:123`) is in no catalogue.
+
+Revision 5 fixed one item from revision-4 N1, the three `responsesAdded`
+entries. Revision-4 N1's request for acceptance lines for the Zoom 401 and
+Microsoft 502 is still open: no `acceptanceTests` line covers them.
+
+**N3. AC-21, AC-22 and AC-23 exist only in the manifest.** The spec's
+acceptance criteria stop before them. They are stage-2 additions rather than
+narrowings, so this is not silent drift. The spec should still list them, or
+the manifest should say they are contract-stage criteria.
+
+**N4. A cast in the migration could abort it on hand-edited data.**
+`(d.value->>'enabled')::boolean` (`024_settings_per_user.up.sql:70`, `:79`)
+aborts migration 024 if a row holds a non-boolean string such as
+`"enabled":"maybe"`. Go always marshals a bool, so no API-written row can hit
+this. It matters only for hand-edited data.
+
+### Verified clean
+
+- **Revision-4 finding 1, literal rows: fixed.** These rows are exactly what
+  `TestMigration024_ClearsTheIgnoredHalfOfWorkingHours` seeds:
+  - `all_days` + an enabled inverted Monday: removed. A disabled inverted
+    Tuesday is kept, which is correct, because `validateDaySchedule` accepts a
+    disabled entry with clock times.
+  - `by_day` + an inverted `default`: replaced by `09:00-18:00`.
+
+  The SQL predicate matches `validateDaySchedule`'s enabled branch: an empty
+  time, or `end <= start`, which is valid lexicographically because the
+  earlier statement (`:49-55`) leaves only `HH:MM` or `''`. The mode statement
+  runs first (`:38-44`), so `BY_DAY` rows are treated as `by_day`. Rows created
+  in step 3 copy an already-cleaned anchor. `WorkWindow`
+  (`storage/settings.go:116-127`) reads neither cleaned half, so no behaviour
+  changes for those rows.
+- **Revision-4 finding 2: fixed.** The `mode` description now says "NOT
+  trimmed", which matches `:37-44`. Fresh Go codegen picked the description up,
+  and `gen --check` is clean.
+- **Lunch breaks cannot hold the same trap.** The old validator checked every
+  `lunchBreaks` entry in full (`8d52e8b … :153-160`), and the new one does too
+  (`handlers_settings.go:317-327`).
+- **Generated artifacts.**
+  - The bundle is in sync, and the manifest hash equals the `HEAD` blob.
+  - Go gen is in sync.
+  - All three web generated files are byte-identical to fresh output, so
+    revision-4 N4 is resolved.
+- **Manifest.** `mergeConditions` name the AC-7/AC-17 confirmation, the joint
+  deploy, and two `followUps` keys that exist (`llmProbeEndpointAllowlist`,
+  `calendarCredentialLifecycle`). That closes revision-4 N7.
+- **Consumers.** MCP still only GETs settings, and no shape changed in this
+  revision. Settings e2e asserts status codes only. The full backend suite
+  passes on this Europe/Paris host, including the new +02:00 recap scope
+  assertion.
+
+---
+
+## Revision 6 — 2026-10-12
+
+*contract-author, responding to "Challenge (revision 5) — 2026-10-12" (verdict
+**accept-with-changes**, two blocking findings).*
+
+**Finding 1 — a stored inverted default still refuses a switch to by_day.
+Accepted; fixed in text, as proposed.** `SettingsUpdate` and spec AC-17 now say
+that `workingHours` is one setting: a write that changes it must make the whole
+document valid, both halves, including a `default` derived on read from legacy
+`workStart`/`workEnd`. The `mode` description and AC-23 are scoped to the half
+that was inert before the upgrade, and Revision 5's false sentence is struck.
+The server already behaves this way; nothing in the schemas changes.
+
+**Finding 2 — the recap preview ignored the caller's timezone. Accepted; fixed
+in code rather than described.** `previewDailyRecap` and `sendDailyRecapTest`
+now build the recap at the current time in the caller's timezone (UTC if it
+cannot be resolved), the same rule the scheduled send already used, so the
+header and every time in the recap are in that zone
+(`TestDailyRecapPreview_UsesTheCallersTimezone`). The two descriptions and the
+manifest entries say so.
+
+**Non-blocking.** The migration no longer casts `enabled` to boolean (a
+hand-edited non-boolean value would have aborted it); it compares the text to
+`true`. The web validator checking only the visible half is a frontend
+follow-up: the server's 400 names the property, so nothing is silently lost.
+AC-21 to AC-23 remain manifest-level criteria derived from the spec's AC-17 and
+Decisions.

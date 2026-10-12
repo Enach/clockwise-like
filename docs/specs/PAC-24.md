@@ -577,7 +577,8 @@ value already stored is not re-checked, so a combination stored before these
 rules existed (for example a working day ending before it starts) never stops
 the user saving anything else, and a document read from the product can always
 be saved back unchanged. Changing such a setting to another refused value is
-still refused.
+still refused. Working hours are one setting: changing any part of them means
+the whole of them, including the default hours, must be valid.
 
 **What must keep working**
 
