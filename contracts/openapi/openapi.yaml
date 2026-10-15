@@ -8988,7 +8988,20 @@ components:
         recapIncludeHabits: &id049
           type: boolean
           description: DB default true.
-        updatedAt: &id050
+        timeFormat: &id050
+          type: string
+          enum:
+          - 12h
+          - 24h
+          description: 'How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30
+            PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM).
+            DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other
+            value are a 400 `timeFormat must be 12h or 24h`, and `null` is a 400 like every property of
+            this body. Display only: the server formats nothing with it, and the public booking page ignores
+            it (always 12-hour, PAC-55 §5).
+
+            '
+        updatedAt: &id051
           type: string
           format: date-time
           readOnly: true
@@ -9046,6 +9059,7 @@ components:
       - recapIncludeBriefs
       - recapIncludeFocus
       - recapIncludeHabits
+      - timeFormat
       - updatedAt
       additionalProperties: false
     SettingsUpdate:
@@ -9133,7 +9147,8 @@ components:
         recapIncludeBriefs: *id047
         recapIncludeFocus: *id048
         recapIncludeHabits: *id049
-        updatedAt: *id050
+        timeFormat: *id050
+        updatedAt: *id051
         llmApiKey:
           type: string
           writeOnly: true
@@ -9878,6 +9893,8 @@ components:
         must be in HH:MM format` (previously reached the Postgres TIME cast and surfaced as a 500); `calendarProvider
         must be one of: google, outlook, webcal` (resolves U-18); `conferencingProvider must be one of:
         meet, zoom, teams`.
+
+        Message PAC-55 adds: `timeFormat must be 12h or 24h` (covers `""`).
 
         Messages revision 2 of this contract adds, each with its reason: `recapSendTime must be in HH:MM
         format` now also covers `""`. The write path previously substituted `08:00` for an empty value
