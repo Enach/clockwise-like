@@ -75,5 +75,8 @@ func completeSettings(s storage.Settings) *storage.Settings {
 	if s.RecapSendTime == "" {
 		s.RecapSendTime = "08:00"
 	}
+	if s.TimeFormat == "" {
+		s.TimeFormat = "12h"
+	}
 	return &s
 }
