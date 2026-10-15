@@ -263,7 +263,10 @@ Reverting the web alone is safe: the server keeps the value and nothing reads it
 
 - **OQ-1 — Public booking pages.** *Closed 2026-10-11 (product owner):* always
   12-hour; the host's in-app views follow the preference (§1, §5, AC-11).
-- **OQ-2 — Sequencing against PAC-24.** Owner: plan-author with the PAC-24 owner.
+- **OQ-2 — Sequencing against PAC-24.** *Closed 2026-10-15:* PAC-24 merged first
+  (Enach/clockwise-like#204, Enach/smart-calendar-flow#100). Settings are per user,
+  and migration 024 ran before any PAC-55 storage exists, so every user starts at
+  the default. Original question: owner plan-author with the PAC-24 owner.
   This spec assumes PAC-55's storage lands after PAC-24's per-user migration. If
   it must land earlier, PAC-24's OQ-1 partition must say whether the shared
   row's value is copied, and PAC-55 would ship a global setting in the interim,
@@ -271,7 +274,12 @@ Reverting the web alone is safe: the server keeps the value and nothing reads it
 - **OQ-3 — Native time pickers.** *Closed 2026-10-11 (product owner):*
   acceptable for now; out of scope, follow-up to be filed (owner of filing:
   plan-author).
-- **OQ-4 — Who takes API-025 and API-039?** Owner: PAC-24 contract owner (for
+- **OQ-4 — Who takes API-025 and API-039?** *Closed 2026-10-15:* API-025 is fixed
+  by PAC-24 (exact weekday keys enforced by the handler, legacy keys removed by
+  migration 024; contract revisions 3-4); API-039 is claimed and fixed by
+  Enach/smart-calendar-flow#101. The other settings findings PAC-24 claimed are
+  fixed too (`docs/factory/api-audit.md`). The contract stage can start.
+  Original question: owner PAC-24 contract owner (for
   API-039) and the owner of the grouped validation issue (for API-025). The
   owner decided they are not PAC-55's; until one of them claims each finding in
   a merged contract, PAC-55's contract stage cannot start without breaking
