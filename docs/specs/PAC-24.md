@@ -1015,12 +1015,11 @@ change ships with the backend change.
 settings page's empty key field and "not connected" states are the explanation.
 A notice can be a follow-up.
 
-**Stage-2 amendments (2026-10-12), pending the product owner's confirmation.**
+**Stage-2 amendments (2026-10-12), confirmed by the product owner on 2026-10-15 ("merge", in reply to the request to confirm AC-7 and AC-17).**
 AC-7 (four settings with no empty state refuse `""`) and AC-17 (rules apply to
 what a request changes) were amended in response to the contract challenges of
 revisions 2 and 3. Both narrow what the contract can promise; neither changes a
-product decision above. They are recorded here so the owner can confirm or
-overrule them before merge.
+product decision above.
 
 Still open and not blocking implementation: OQ-5 (who rotates the shared LLM key,
 a human action for the deployment owner) and OQ-6 (settled by
