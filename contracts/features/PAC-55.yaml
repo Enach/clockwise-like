@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-55",
   "status": "draft",
   "contractRevision": "2",
-  "contractHash": "65afee5c15904b960b9dde639e41961f936e915a5f924367e0b23c2b98ab7d29",
+  "contractHash": "78fd8dffdd427ab9558299f3a22b198c61ce2a2b57c4ca456b5be485f9985ada",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml at the commit that carries this revision (git show HEAD:contracts/openapi/openapi.yaml | sha256sum).",
   "contractDoc": "contracts/features/PAC-55.md",
   "specDoc": "docs/specs/PAC-55.md",
