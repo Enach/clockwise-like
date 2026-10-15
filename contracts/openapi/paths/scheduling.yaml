@@ -837,7 +837,8 @@ components:
         U-18);
         `conferencingProvider must be one of: meet, zoom, teams`.
 
-        Message PAC-55 adds: `timeFormat must be 12h or 24h` (covers `""`).
+        Message PAC-55 adds: `timeFormat must be 12h or 24h`, for `""` and any
+        other string (a non-string is `invalid JSON: <err>`).
 
         Messages revision 2 of this contract adds, each with its reason:
         `recapSendTime must be in HH:MM format` now also covers `""`. The write
@@ -1918,8 +1919,10 @@ components:
             `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h`
             ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who
             never chose reads `12h`. There is no "unset": `""` and any other
-            value are a 400 `timeFormat must be 12h or 24h`, and `null` is a 400
-            like every property of this body. Display only: the server formats
+            STRING are a 400 `timeFormat must be 12h or 24h`; a non-string
+            (`24`, `true`, `["24h"]`) fails decoding first and is a 400
+            `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every
+            property of this body. Display only: the server formats
             nothing with it, and the public booking page ignores it (always
             12-hour, PAC-55 §5).
         updatedAt:
@@ -1992,7 +1995,7 @@ components:
         request. A property present is applied exactly as given - `""`, `0` and
         `false` are values, not absences, except where a property's enum or
         pattern excludes `""` (`recapSendTime`, `recapSendTo`,
-        `calendarProvider`, `conferencingProvider`), where `""` is a 400 like
+        `calendarProvider`, `conferencingProvider`, `timeFormat`), where `""` is a 400 like
         any other value outside the set (spec AC-7 as amended 2026-10-12).
 
         The same properties as `Settings` (one YAML anchor) plus the write-only
