@@ -299,6 +299,12 @@ const (
 	SettingsRecapSendToDm      SettingsRecapSendTo = "dm"
 )
 
+// Defines values for SettingsTimeFormat.
+const (
+	SettingsTimeFormatN12h SettingsTimeFormat = "12h"
+	SettingsTimeFormatN24h SettingsTimeFormat = "24h"
+)
+
 // Defines values for SettingsUpdateCalendarProvider.
 const (
 	SettingsUpdateCalendarProviderGoogle  SettingsUpdateCalendarProvider = "google"
@@ -328,6 +334,12 @@ const (
 const (
 	SettingsUpdateRecapSendToChannel SettingsUpdateRecapSendTo = "channel"
 	SettingsUpdateRecapSendToDm      SettingsUpdateRecapSendTo = "dm"
+)
+
+// Defines values for SettingsUpdateTimeFormat.
+const (
+	SettingsUpdateTimeFormatN12h SettingsUpdateTimeFormat = "12h"
+	SettingsUpdateTimeFormatN24h SettingsUpdateTimeFormat = "24h"
 )
 
 // Defines values for SlackBlockType.
@@ -2198,6 +2210,9 @@ type Settings struct {
 	// RecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 	RecapSendTo SettingsRecapSendTo `json:"recapSendTo"`
 
+	// TimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+	TimeFormat SettingsTimeFormat `json:"timeFormat"`
+
 	// Timezone IANA name, e.g. `Europe/Paris`. DB default `UTC`. PAC-24 validates it with time.LoadLocation and returns 400 `timezone is not a known IANA location`. Before PAC-24 any string was accepted and every engine silently fell back to UTC, so a typo moved a user's whole schedule with no error anywhere (API-082).
 	Timezone string `json:"timezone"`
 
@@ -2235,7 +2250,10 @@ type SettingsLlmProvider string
 // SettingsRecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 type SettingsRecapSendTo string
 
-// SettingsUpdate PATCH /api/settings body - the only settings write. Nothing is required: a property absent means "leave it as it is", and `{}` is a valid no-op request. A property present is applied exactly as given - `""`, `0` and `false` are values, not absences, except where a property's enum or pattern excludes `""` (`recapSendTime`, `recapSendTo`, `calendarProvider`, `conferencingProvider`), where `""` is a 400 like any other value outside the set (spec AC-7 as amended 2026-10-12).
+// SettingsTimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+type SettingsTimeFormat string
+
+// SettingsUpdate PATCH /api/settings body - the only settings write. Nothing is required: a property absent means "leave it as it is", and `{}` is a valid no-op request. A property present is applied exactly as given - `""`, `0` and `false` are values, not absences, except where a property's enum or pattern excludes `""` (`recapSendTime`, `recapSendTo`, `calendarProvider`, `conferencingProvider`, `timeFormat`), where `""` is a 400 like any other value outside the set (spec AC-7 as amended 2026-10-12).
 // The same properties as `Settings` (one YAML anchor) plus the write-only `llmApiKey`. `llmApiKeySet` and `updatedAt` are accepted and ignored, so a document read from GET can be submitted back unchanged (spec AC-10).
 // No property is nullable: `null` is a 400 `<property> must not be null` and an unknown property - including a snake_case spelling of a real one - is a 400 `unknown property: <name>` (spec AC-8). These are enforced by the handler, not by a generated validator.
 // Validation applies to the properties whose value the body CHANGES. A property sent with the value already stored is not re-validated, so a GET document submitted back unchanged is always accepted - including a legacy combination a newer cross-property rule would reject (an end before a start, a focus minimum above the maximum) - and a stored value never locks the user out of saving something else (challenge r2, finding 2).
@@ -2357,6 +2375,9 @@ type SettingsUpdate struct {
 	// RecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 	RecapSendTo *SettingsUpdateRecapSendTo `json:"recapSendTo,omitempty"`
 
+	// TimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+	TimeFormat *SettingsUpdateTimeFormat `json:"timeFormat,omitempty"`
+
 	// Timezone IANA name, e.g. `Europe/Paris`. DB default `UTC`. PAC-24 validates it with time.LoadLocation and returns 400 `timezone is not a known IANA location`. Before PAC-24 any string was accepted and every engine silently fell back to UTC, so a typo moved a user's whole schedule with no error anywhere (API-082).
 	Timezone *string `json:"timezone,omitempty"`
 
@@ -2393,6 +2414,9 @@ type SettingsUpdateLlmProvider string
 
 // SettingsUpdateRecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 type SettingsUpdateRecapSendTo string
+
+// SettingsUpdateTimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+type SettingsUpdateTimeFormat string
 
 // SlackBlock engine.slackBlock is `map[string]interface{}` - an untyped Slack Block Kit object. Nested values are themselves slackBlocks or arrays of them.
 // Resolves U-20 by reading engine/daily_recap.go end to end. Every top-level block this API can emit is built by DailyRecapService.BuildMessage (`:150-236`), buildSummaryBlock (`:238-262`) or buildMeetingBlocks, and the complete set of top-level `type` values is `header`, `context`, `section`, `divider`. The only nested text object types are `plain_text` and `mrkdwn`.
