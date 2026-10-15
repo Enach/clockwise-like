@@ -30,14 +30,14 @@ type conferencingHandlers struct {
 
 type defaultConferenceProviderFactory struct{ db *sql.DB }
 
-func (f defaultConferenceProviderFactory) ProviderForRequest(_ context.Context, providerName string, settings *storage.Settings) (conference.Provider, error) {
+func (f defaultConferenceProviderFactory) ProviderForRequest(ctx context.Context, providerName string, settings *storage.Settings) (conference.Provider, error) {
 	switch providerName {
 	case "zoom":
 		copy := *settings
 		copy.ConferencingProvider = "zoom"
 		return conference.NewProvider(&copy)
 	case "teams":
-		msToken, tokenErr := auth.LoadMicrosoftToken(f.db)
+		msToken, tokenErr := auth.LoadMicrosoftToken(f.db, auth.UserIDFromContext(ctx))
 		if tokenErr != nil || msToken == nil {
 			return nil, fmt.Errorf("teams: not connected — visit /api/auth/microsoft to authenticate")
 		}
@@ -109,7 +109,7 @@ func (h *conferencingHandlers) zoomCallback(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "zoom token exchange: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := storage.SaveZoomTokens(h.db, tok.AccessToken, tok.RefreshToken); err != nil {
+	if err := storage.SaveZoomTokens(h.db, userIDFromCtx(r.Context()), tok.AccessToken, tok.RefreshToken); err != nil {
 		http.Error(w, "save zoom token: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -127,7 +127,8 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 		writeError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	s, err := storage.GetSettings(h.db)
+	userID := userIDFromCtx(r.Context())
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		writeError(w, "settings: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -135,7 +136,7 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 
 	var provider conference.Provider
 	if s.ConferencingProvider == "teams" {
-		msTok, _ := auth.LoadMicrosoftToken(h.db)
+		msTok, _ := auth.LoadMicrosoftToken(h.db, userID)
 		if msTok == nil {
 			writeError(w, "teams: not connected — visit /api/auth/microsoft to authenticate", http.StatusBadRequest)
 			return
@@ -158,14 +159,14 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 }
 
 func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request) {
-	settings, err := storage.GetSettings(h.db)
+	userID := userIDFromCtx(r.Context())
+	settings, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		writeError(w, "settings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	userID := userIDFromCtx(r.Context())
 	googleToken, _ := auth.LoadUserToken(h.db, userID)
-	microsoftToken, _ := auth.LoadMicrosoftToken(h.db)
+	microsoftToken, _ := auth.LoadMicrosoftToken(h.db, userID)
 	configured := integrationAvailabilitySnapshot()
 	out := make([]conferenceProviderStatus, 0, 4)
 	if configured["google"].Available {
@@ -183,7 +184,7 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *conferencingHandlers) disconnectZoom(w http.ResponseWriter, r *http.Request) {
-	if err := storage.ClearZoomTokens(h.db); err != nil {
+	if err := storage.ClearZoomTokens(h.db, userIDFromCtx(r.Context())); err != nil {
 		writeError(w, "disconnect zoom: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -318,7 +319,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 		return
 	}
 
-	settings, err := storage.GetSettings(h.db)
+	settings, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		writeError(w, "settings: "+err.Error(), http.StatusInternalServerError)
 		return

@@ -73,12 +73,9 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 	}
 	ctx = context.WithValue(ctx, auth.UserIDKey, userID)
 
-	s, err := storage.GetSettingsByUser(e.DB, userID)
+	s, err := storage.GetOrCreateSettingsByUser(e.DB, userID)
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
-	}
-	if s == nil {
-		return nil, fmt.Errorf("no settings row for user %s", userID)
 	}
 
 	client, err := e.calClient(ctx)

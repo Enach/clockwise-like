@@ -70,7 +70,7 @@ func (h *meetingBriefHandlers) refreshBrief(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 
 	svc := &engine.MeetingBriefService{DB: h.db}
-	if settings, err := storage.GetSettings(h.db); err == nil {
+	if settings, err := storage.GetOrCreateSettingsByUser(h.db, userID); err == nil {
 		if llm, err := nlp.NewLLMClientFromSettings(settings); err == nil {
 			svc.LLM = llm
 		}

@@ -57,24 +57,24 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Ensure settings row exists before updating
-	if _, err := storage.GetSettings(h.db); err != nil {
-		http.Error(w, "settings: "+err.Error(), http.StatusInternalServerError)
+	// The credential belongs to the user who signed in with it (PAC-24), so
+	// the user is resolved first; without one there is nobody to attach it to.
+	info, err := fetchMicrosoftUserInfo(r.Context(), token)
+	if err != nil || info.Email == "" {
+		http.Error(w, "could not read the Microsoft account", http.StatusBadGateway)
 		return
 	}
-
-	if err := auth.SaveMicrosoftToken(h.db, token); err != nil {
+	user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID)
+	if err != nil {
+		http.Error(w, "save user failed", http.StatusInternalServerError)
+		return
+	}
+	if err := auth.SaveMicrosoftToken(h.db, user.ID, token); err != nil {
 		http.Error(w, "save token failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Fetch Microsoft user profile and upsert user
-	if info, err := fetchMicrosoftUserInfo(r.Context(), token); err == nil && info.Email != "" {
-		if user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID); err == nil {
-			_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
-			h.issueJWT(w, user)
-		}
-	}
+	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
+	h.issueJWT(w, user)
 
 	http.Redirect(w, r, h.frontendURL+"/auth/callback?provider=outlook", http.StatusFound)
 }

@@ -94,7 +94,7 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 		return fmt.Errorf("work calendar: %w", err)
 	}
 
-	s, _ := storage.GetSettings(b.DB)
+	s, _ := storage.GetOrCreateSettingsByUser(b.DB, pc.UserID)
 
 	incoming := make(map[string]calendar.GenericEvent, len(events))
 	for _, e := range events {

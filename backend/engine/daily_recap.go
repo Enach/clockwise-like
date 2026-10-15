@@ -69,7 +69,7 @@ func insertRecapSend(db *sql.DB, r RecapSend) error {
 // RunForUser checks whether it's time to send a recap to a single user and
 // sends if so.  Designed to be called every minute from a cron job.
 func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, userName string) {
-	settings, err := storage.GetSettings(s.DB)
+	settings, err := storage.GetOrCreateSettingsByUser(s.DB, userID)
 	if err != nil || !settings.RecapEnabled {
 		return
 	}
@@ -121,25 +121,44 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 // RunAll iterates all users with recap_enabled and calls RunForUser.
 // Called every minute by the cron in main.go.
 func (s *DailyRecapService) RunAll(ctx context.Context) {
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT u.id, u.name
-		FROM users u
-		INNER JOIN settings st ON st.id = 1
-		WHERE st.recap_enabled = true`)
+	users, err := s.recapUsers(ctx)
 	if err != nil {
 		log.Printf("daily recap: list users error: %v", err)
 		return
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id uuid.UUID
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
-			continue
-		}
-		go s.RunForUser(ctx, id, name)
+	for _, u := range users {
+		go s.RunForUser(ctx, u.id, u.name)
 		time.Sleep(time.Second) // stagger sends to respect Slack rate limits
 	}
+}
+
+type recapUser struct {
+	id   uuid.UUID
+	name string
+}
+
+// recapUsers returns the users who enabled the recap on their own settings
+// (PAC-24: this joined every user to the shared row, so one user enabling it
+// sent a recap to everyone).
+func (s *DailyRecapService) recapUsers(ctx context.Context) ([]recapUser, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT u.id, u.name
+		FROM users u
+		INNER JOIN settings st ON st.user_id = u.id
+		WHERE st.recap_enabled = true`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []recapUser
+	for rows.Next() {
+		var u recapUser
+		if err := rows.Scan(&u.id, &u.name); err != nil {
+			continue
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
 }
 
 // ── Message construction ──────────────────────────────────────────────────────
@@ -170,8 +189,9 @@ func (s *DailyRecapService) BuildMessage(ctx context.Context, userID uuid.UUID, 
 	todayEnd := todayStart.Add(24 * time.Hour)
 
 	meetings := s.fetchMeetings(ctx, userID, todayStart, todayEnd)
-	focusBlocks := s.fetchFocusBlocks(userID, todayStart)
-	habits := s.fetchHabits(userID, todayStart)
+	// Times are shown in the zone the recap is built for, the one in its header.
+	focusBlocks := s.fetchFocusBlocks(userID, todayStart, now.Location())
+	habits := s.fetchHabits(userID, todayStart, now.Location())
 	briefs := s.fetchBriefs(ctx, userID, meetings)
 
 	// Summary line
@@ -354,7 +374,7 @@ func (s *DailyRecapService) fetchMeetings(_ context.Context, userID uuid.UUID, s
 	return meetings
 }
 
-func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []recapFocusBlock {
+func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time, loc *time.Location) []recapFocusBlock {
 	rows, err := s.DB.Query(`
 		SELECT start_time, end_time
 		FROM focus_blocks
@@ -371,6 +391,7 @@ func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []
 		if err := rows.Scan(&st, &et); err != nil {
 			continue
 		}
+		st, et = st.In(loc), et.In(loc) // never the host's zone
 		dur := et.Sub(st)
 		blocks = append(blocks, recapFocusBlock{
 			Start:    st.Format("15:04"),
@@ -381,7 +402,7 @@ func (s *DailyRecapService) fetchFocusBlocks(userID uuid.UUID, day time.Time) []
 	return blocks
 }
 
-func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time) []recapHabit {
+func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time, loc *time.Location) []recapHabit {
 	rows, err := s.DB.Query(`
 		SELECT h.title, ho.start_time, ho.end_time
 		FROM habit_occurrences ho
@@ -399,7 +420,7 @@ func (s *DailyRecapService) fetchHabits(userID uuid.UUID, day time.Time) []recap
 		if err := rows.Scan(&title, &st, &et); err != nil {
 			continue
 		}
-		ws, we := st.Format("15:04"), et.Format("15:04")
+		ws, we := st.In(loc).Format("15:04"), et.In(loc).Format("15:04")
 		habits = append(habits, recapHabit{Emoji: "🎯", Title: title, WindowStart: ws, WindowEnd: we})
 	}
 	return habits

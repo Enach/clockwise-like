@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -26,7 +28,7 @@ type recapSettingsBody struct {
 }
 
 func (h *dailyRecapHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := storage.GetSettings(h.db)
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -43,16 +45,45 @@ func (h *dailyRecapHandlers) getSettings(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// recapPatchProperties is every property PATCH /api/settings/daily-recap accepts.
+var recapPatchProperties = map[string]bool{
+	"enabled": true, "send_time": true, "send_to": true, "channel_id": true,
+	"include_briefs": true, "include_focus_blocks": true, "include_habits": true,
+}
+
 func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := storage.GetSettings(h.db)
+	userID := userIDFromCtx(r.Context())
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	// A null is not "leave unchanged" and an unknown property is not ignored
+	// (PAC-24, matching PATCH /api/settings): both are a 400.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	for name, value := range fields {
+		if !recapPatchProperties[name] {
+			http.Error(w, "unknown property: "+name, http.StatusBadRequest)
+			return
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			http.Error(w, name+" must not be null", http.StatusBadRequest)
+			return
+		}
+	}
+	var body recapSettingsBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	var body recapSettingsBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -60,6 +91,10 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 		s.RecapEnabled = *body.Enabled
 	}
 	if body.SendTime != nil {
+		if !validClockTime(*body.SendTime) {
+			http.Error(w, "send_time must be in HH:MM format", http.StatusBadRequest)
+			return
+		}
 		s.RecapSendTime = *body.SendTime
 	}
 	if body.SendTo != nil {
@@ -82,7 +117,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 		s.RecapIncludeHabits = *body.IncludeHabits
 	}
 
-	if err := storage.SaveSettings(h.db, s); err != nil {
+	if err := storage.SaveRecapSettingsForUser(h.db, userID, s); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -91,7 +126,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 
 func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetSettings(h.db)
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -101,7 +136,7 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow(`SELECT name FROM users WHERE id = $1`, userID).Scan(&userName)
 
 	svc := &engine.DailyRecapService{DB: h.db}
-	now := time.Now()
+	now := time.Now().In(recapLocation(s))
 	blocks := svc.BuildMessage(r.Context(), userID, userName, now, s)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -110,7 +145,7 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 
 func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetSettings(h.db)
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -126,7 +161,7 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow(`SELECT name FROM users WHERE id = $1`, userID).Scan(&userName)
 
 	svc := &engine.DailyRecapService{DB: h.db}
-	now := time.Now()
+	now := time.Now().In(recapLocation(s))
 	blocks := svc.BuildMessage(r.Context(), userID, userName, now, s)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -139,4 +174,13 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "slack_message_ts": ts})
+}
+
+// recapLocation is the caller's zone, as the scheduled recap uses
+// (engine.DailyRecapService.RunForUser), or UTC when it cannot be resolved.
+func recapLocation(s *storage.Settings) *time.Location {
+	if loc, err := time.LoadLocation(s.Timezone); err == nil {
+		return loc
+	}
+	return time.UTC
 }

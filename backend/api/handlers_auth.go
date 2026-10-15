@@ -82,7 +82,8 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	s, err := storage.GetSettings(h.db)
+	userID := userIDFromCtx(r.Context())
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 		return
@@ -95,7 +96,7 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 
 	switch provider {
 	case "outlook":
-		msToken, _ := auth.LoadMicrosoftToken(h.db)
+		msToken, _ := auth.LoadMicrosoftToken(h.db, userID)
 		connected := msToken != nil && msToken.RefreshToken != ""
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"connected": connected,
@@ -109,7 +110,6 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 			"email":     s.CalendarEmail,
 		})
 	default: // google
-		userID := userIDFromCtx(r.Context())
 		token, err := auth.LoadUserToken(h.db, userID)
 		if err != nil || token == nil {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})

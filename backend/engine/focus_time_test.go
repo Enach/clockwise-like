@@ -397,3 +397,17 @@ func TestSortByScore(t *testing.T) {
 		t.Errorf("expected highest score first, got %d", slots[0].score)
 	}
 }
+
+// PAC-24: a user who never saved settings gets the defaults, not
+// "no settings row for user".
+func TestFocusRun_UserWithNoPriorSettings(t *testing.T) {
+	db := openTestDB(t)
+	user, err := storage.UpsertUser(db, "focus-no-settings@example.com", "No Settings", "", "google", "focus-no-settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := &FocusTimeEngine{DB: db, calOps: &mockCalOps{calID: "primary", events: []*googlecalendar.Event{}}}
+	if _, err := eng.RunForUser(context.Background(), user.ID, time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("RunForUser for a user with no settings row: %v", err)
+	}
+}

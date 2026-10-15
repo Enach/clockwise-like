@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/internal/testdb"
 	"github.com/Enach/paceday/backend/storage"
 )
@@ -264,9 +265,9 @@ func TestOllamaClient_Complete_Mock(t *testing.T) {
 func TestNLPService_Parse_NoLLM(t *testing.T) {
 	db := openTestDB(t)
 	// DB default for llm_provider is "ollama" (would try localhost:11434); force empty.
-	storage.SaveSettings(db, &storage.Settings{LLMProvider: ""})
+	ctx := settingsUser(t, db, &storage.Settings{LLMProvider: ""})
 	svc := &NLPService{DB: db}
-	result, err := svc.Parse(context.Background(), "schedule a meeting tomorrow")
+	result, err := svc.Parse(ctx, "schedule a meeting tomorrow")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -298,10 +299,10 @@ func TestNLPService_Parse_WithOllama(t *testing.T) {
 		WorkStart:   "09:00",
 		WorkEnd:     "18:00",
 	}
-	storage.SaveSettings(db, s)
+	ctx := settingsUser(t, db, s)
 
 	svc := &NLPService{DB: db}
-	result, err := svc.Parse(context.Background(), "block focus time tomorrow")
+	result, err := svc.Parse(ctx, "block focus time tomorrow")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -332,10 +333,10 @@ func TestNLPService_Parse_ScheduleMeeting(t *testing.T) {
 		WorkStart:   "09:00",
 		WorkEnd:     "18:00",
 	}
-	storage.SaveSettings(db, s)
+	ctx := settingsUser(t, db, s)
 
 	svc := &NLPService{DB: db}
-	result, err := svc.Parse(context.Background(), "schedule 30 min meeting with alice@co.com this week")
+	result, err := svc.Parse(ctx, "schedule 30 min meeting with alice@co.com this week")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -362,14 +363,29 @@ func TestNLPService_Parse_InvalidJSON(t *testing.T) {
 		LLMBaseURL:  srv.URL,
 		Timezone:    "UTC",
 	}
-	storage.SaveSettings(db, s)
+	ctx := settingsUser(t, db, s)
 
 	svc := &NLPService{DB: db}
-	result, err := svc.Parse(context.Background(), "something unclear")
+	result, err := svc.Parse(ctx, "something unclear")
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
 	}
 	if result.Intent != "unknown" {
 		t.Errorf("expected unknown for invalid json, got %q", result.Intent)
 	}
+}
+
+// settingsUser saves s as a new user's settings and returns a context carrying
+// that user: NLPService.Parse reads the caller's own settings (PAC-24).
+func settingsUser(t *testing.T, db *sql.DB, s *storage.Settings) context.Context {
+	t.Helper()
+	email := fmt.Sprintf("nlp-%d@example.com", time.Now().UnixNano())
+	u, err := storage.UpsertUser(db, email, email, "", "google", email)
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	if err := storage.SaveSettingsForUser(db, u.ID, s); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	return context.WithValue(context.Background(), auth.UserIDKey, u.ID)
 }

@@ -152,9 +152,14 @@ paths:
       tags: [auth]
       summary: Microsoft OAuth callback
       description: |
-        Validates `ms_oauth_state`, exchanges the code, saves the Microsoft token
-        on the GLOBAL settings row, best-effort fetches the Graph profile and
-        upserts the user, then redirects.
+        Validates `ms_oauth_state`, exchanges the code, fetches the Graph profile
+        and upserts the user, then saves the Microsoft token on THAT USER'S OWN
+        settings row (making Outlook their calendar provider), sets the session
+        cookie and redirects. Since PAC-24 the profile fetch is required, not
+        best-effort: without it there is no user to attach the credential to, so
+        a failed fetch is a 502 and nothing is saved. Before PAC-24 the token was
+        saved on the single shared settings row and the provider flipped for
+        everyone.
       security: []
       parameters:
         - name: state
@@ -168,16 +173,14 @@ paths:
       responses:
         '302':
           description: |
-            Redirect to `<FRONTEND_URL>/auth/callback?provider=outlook`.
-            The `auth_token` cookie is only set when the Graph profile fetch AND
-            the user upsert both succeed — the redirect is identical either way,
-            so a caller cannot tell from the response whether it is logged in.
+            Redirect to `<FRONTEND_URL>/auth/callback?provider=outlook`, with the
+            `auth_token` cookie set. Every failure is a non-302 response below.
           headers:
             Location:
               schema: { type: string }
             Set-Cookie:
               schema: { type: string }
-              description: auth_token JWT — conditional, see description.
+              description: auth_token JWT for the upserted user.
         '400':
           description: Missing or mismatched `ms_oauth_state` cookie ("invalid state").
           content:
@@ -185,7 +188,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
-          description: Token exchange, settings read or token save failed (text/plain).
+          description: >
+            Token exchange, user upsert (`save user failed`) or token save
+            (`save token failed: <err>`) failed (text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '502':
+          description: >
+            The Graph profile could not be read, or carried no email
+            (`could not read the Microsoft account`, text/plain). Added by PAC-24.
           content:
             text/plain:
               schema:

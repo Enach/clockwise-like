@@ -19,7 +19,7 @@ func TestValidateSettings_DaySpecificSchedules(t *testing.T) {
 			"monday": {Enabled: true, Start: "12:00", End: "13:00"},
 		},
 	}
-	if err := validateSettings(s); err != nil {
+	if err := validateSettings(completeSettings(*s)); err != nil {
 		t.Fatalf("valid day-specific schedule rejected: %v", err)
 	}
 }
@@ -52,9 +52,28 @@ func TestValidateSettings_InvalidDaySpecificSchedules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateSettings(&tc.s); err == nil {
+			if err := validateSettings(completeSettings(tc.s)); err == nil {
 				t.Fatal("expected schedule validation error")
 			}
 		})
 	}
+}
+
+// completeSettings fills the enumerated properties a test does not set with
+// their stored defaults, so a validator test fails only for the property it is
+// about (PAC-24 added enum checks on calendar, conferencing and recap fields).
+func completeSettings(s storage.Settings) *storage.Settings {
+	if s.CalendarProvider == "" {
+		s.CalendarProvider = "google"
+	}
+	if s.ConferencingProvider == "" {
+		s.ConferencingProvider = "meet"
+	}
+	if s.RecapSendTo == "" {
+		s.RecapSendTo = "dm"
+	}
+	if s.RecapSendTime == "" {
+		s.RecapSendTime = "08:00"
+	}
+	return &s
 }

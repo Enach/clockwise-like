@@ -456,10 +456,14 @@ paths:
         providers.
 
         What the body IS for: verifying a key that has not been saved, now that a
-        stored key can never be read back (see `SettingsFields.llmApiKey`), and
-        naming which provider the result is about (spec AC-15). An absent body,
-        or `{}`, probes the caller's stored configuration entirely — the
-        pre-PAC-24 behaviour.
+        stored key can never be read back (see `SettingsUpdate.llmApiKey`), and
+        naming which provider the result is about (spec AC-15). The body is
+        REQUIRED (revision 3): `{}` probes the caller's stored configuration
+        entirely - the pre-PAC-24 behaviour - and an absent body is a 400, as the
+        generated server wrapper already makes it (contract challenge r2,
+        finding 3). In the body, `""` is a value like any other: `llmApiKey: ""`
+        probes with no key and `llmProvider: ""` probes with no provider, which
+        reports `LLM not configured`.
 
         Before PAC-24 the handler never read r.Body at all and always probed the
         SINGLETON settings row, so this operation reported on the deployment's
@@ -481,7 +485,7 @@ paths:
         (allow-listing or scheme/host restriction on the endpoint properties);
         see `contracts/features/PAC-24.md` §2.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
@@ -719,14 +723,18 @@ paths:
       tags: [daily-recap]
       summary: Render today's recap without sending it
       description: >
-        Builds the Slack Block Kit payload for the authenticated user at
-        `time.Now()` and returns it. No request body is read. Nothing is sent to
+        Builds the Slack Block Kit payload for the authenticated user at the
+        current time IN THE CALLER'S TIMEZONE (`settings.timezone`, UTC when it
+        cannot be resolved) - the same rule the scheduled recap uses - and
+        returns it; the header names that zone and every time in the recap is
+        rendered in it. No request body is read. Nothing is sent to
         Slack and no Slack connection is required.
 
         Before PAC-24 the day's content was the caller's but the recap
-        configuration driving it (timezone, which sections to include) came from
+        configuration driving it (which sections to include) came from
         the singleton row, so a preview could omit sections the caller had
-        enabled (API-002). Both now come from the caller's row.
+        enabled (API-002), and it was built in the server's zone. Both now come
+        from the caller's row.
       responses:
         '200':
           description: Rendered Slack blocks.
@@ -750,7 +758,8 @@ paths:
         Requires a stored `slack` workspace connection for the authenticated
         user. Destination comes from the CALLER'S OWN stored settings
         (`recapSendTo`, `recapChannelId`), not from the request - no request
-        body is read. The Slack call is bounded by a 10s context timeout.
+        body is read. The message is built at the current time in the caller's
+        timezone, as for the preview. The Slack call is bounded by a 10s context timeout.
 
         Before PAC-24 the destination came from the singleton row, so a test
         send could be addressed to a channel another user had configured
@@ -834,7 +843,7 @@ components:
         (`recapSendTimeOrDefault`, `backend/storage/settings.go:356-361`); under
         the merge rule a present property must be stored exactly as given, so a
         silent substitution is a contract violation and the empty value is
-        refused instead. See `SettingsFields.recapSendTime`; this is the one
+        refused instead. See `Settings.recapSendTime`; this is the one
         clock property for which `""` is NOT a value, and it needs a narrow
         amendment to spec AC-7.
         `workingHours.days must contain at least one weekday when mode is by_day`
@@ -844,13 +853,11 @@ components:
         `all_days` equivalent is already normalised away on read
         (`backend/storage/settings.go:95-99`). Serves spec AC-20.
 
-        Two messages in the list above become UNREACHABLE via the HTTP boundary
-        and remain only as defence in depth, because `propertyNames` now rejects
-        the request at schema validation:
         `workingHours.days.<day> is not a valid weekday` and
-        `lunchBreaks.<day> is not a valid weekday`. The handler checks stay -
-        they are what `handlers_settings_schedule_test.go:41-49` asserts, and
-        spec §6 requires that test to keep passing unchanged.
+        `lunchBreaks.<day> is not a valid weekday` are how a weekday key that is
+        not exactly one of the seven lowercase names is refused: generators drop
+        `propertyNames`, so the handler is the only enforcement point
+        (revision 3/4).
 
         `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart`
         or `lunchEnd`. It is a valid value for all four, on read and on write
@@ -1383,19 +1390,19 @@ components:
         all-or-nothing body (endpoint plus credential together) does not close
         the channel on the three ambient-credential providers.
 
-        An absent body, or `{}`, probes the caller's stored configuration - the
-        pre-PAC-24 behaviour. `{"llmApiKey": "sk-..."}` probes an unsaved key
+        Required. `{}` probes the caller's stored configuration - the
+        pre-PAC-24 behaviour; an absent body is a 400. `{"llmApiKey": "sk-..."}` probes an unsaved key
         against the caller's stored endpoint, which is the case the settings UI
         needs because a stored key can no longer be read back to re-submit.
 
         This is deliberately NOT `SettingsUpdate`. Sharing that schema would
         re-admit every endpoint property by inheritance, which is precisely the
         defect this shape exists to prevent, and would make a probe read like a
-        write. The three property names match the corresponding SettingsFields
+        write. The three property names match the corresponding SettingsUpdate
         ones so a client can build this from the document it already holds.
 
         `llmApiKey` here is `writeOnly` for the same reason it is on
-        SettingsFields: it is accepted and is never echoed, including in the 400
+        SettingsUpdate: it is accepted and is never echoed, including in the 400
         and 502 bodies (spec AC-14). Nothing submitted here is persisted.
       properties:
         llmProvider:
@@ -1511,9 +1518,18 @@ components:
           type: string
           enum: ['', all_days, by_day]
           description: >
-            Compared case-insensitively after trimming during validation
-            (`backend/api/handlers_settings.go:128`), but the persisted value is
-            whatever was sent.
+            Compared EXACTLY by the handler (revision 3): `"BY_DAY"` and
+            `" all_days"` are a 400. Before PAC-24 the validator lower-cased and
+            trimmed, then persisted whatever was sent. Migration 024 turns a
+            stored mode that equals `by_day` ignoring case (and NOT trimmed:
+            `" by_day"` never matched) into `by_day`, and any other non-empty
+            value into `all_days` - exactly how `WorkWindow` treated them (it only
+            special-cases `by_day`, case-insensitively). It also clears an
+            enabled entry that would fail validation in the half the stored mode
+            ignored before the upgrade (`days` under `all_days`, `default` under
+            `by_day`), which `WorkWindow` never read. It does not touch the half
+            in use, nor a `default` derived on read for a mode-`""` row: a write
+            of `workingHours` must make those valid (see `SettingsUpdate`).
 
             `''` is in the enum because the server accepts it
             (`:129`, `mode != "" && mode != "all_days" && mode != "by_day"`) and
@@ -1534,24 +1550,24 @@ components:
         default:
           $ref: '#/components/schemas/DaySchedule'
           description: >
-            Only validated when `mode == "all_days"` and at least one of
-            enabled/start/end is set. Ignored by WorkWindow() in by_day mode.
+            Validated whenever at least one of enabled/start/end is set, in
+            either mode (revision 4). Ignored by WorkWindow() in by_day mode.
         days:
           type: object
           description: >
             Keys are lowercase English weekday names, and PAC-24 makes that a
-            schema constraint rather than a warning. `validateSchedulePreferences`
-            lowercases before checking
-            (`backend/api/handlers_settings.go:145`,
-            `validScheduleWeekdays[strings.ToLower(day)]`), so `"Monday"` passes
-            validation and is stored - but `WorkWindow` looks the day up as
-            `strings.ToLower(day.Weekday().String())`
-            (`backend/storage/settings.go:117`), so the entry can never match and
-            the user's Monday hours are silently inert forever. Under the
-            whole-object replace this is worse than it was: the write that
-            installs the dead key also deletes the live key it replaced.
-            `propertyNames` makes the dead key a 400 instead of a document that
-            says so. In `by_day` mode a missing weekday means "not working".
+            constraint THE HANDLER ENFORCES (revision 3): `propertyNames` below
+            documents it, but no generator carries `propertyNames` into a
+            validator, so the server's exact-match check is the enforcement point
+            (contract challenge r2, finding 4). Migration 024 removes stored keys
+            that are not exactly one of the seven names - they never matched
+            `WorkWindow`'s lookup, so removing them changes no behaviour; it also
+            removes entries whose `start`/`end` are neither empty nor a clock.
+            Keys and entries are checked WHATEVER THE MODE (revision 4): a
+            `days` map stored under `all_days` is still returned by GET. Before
+            PAC-24 the validator lower-cased keys and only looked at `days` in
+            `by_day` mode, so `"Monday"` was stored and never matched. In
+            `by_day` mode a missing weekday means "not working".
           propertyNames:
             enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
           additionalProperties:
@@ -1569,35 +1585,39 @@ components:
         disabling lunch for that day. Replaced whole by a PATCH that mentions it;
         `lunchBreaks: {}` clears every per-day override (spec AC-9).
 
-        `propertyNames` is added by PAC-24 for the same reason as on
-        `WorkingHoursSchedule.days`: the validator lowercases the key before
-        checking (`backend/api/handlers_settings.go:154`) but `LunchWindow` looks
-        it up already-lowercased (`backend/storage/settings.go:138`), so a
-        `"Monday"` key validates, stores, and never matches.
+        Keys are enforced EXACTLY by the handler (revision 3; generators drop
+        `propertyNames`), and migration 024 removes stored keys that are not one
+        of the seven lowercase names, or whose `start`/`end` are neither empty
+        nor a clock. Before PAC-24 the validator lower-cased the key, so a
+        `"Monday"` key was stored and never matched `LunchWindow`'s lookup.
       propertyNames:
         enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
       additionalProperties:
         $ref: '#/components/schemas/DaySchedule'
 
-    SettingsFields:
+    Settings:
       type: object
       description: >
-        The property set shared by the GET response (`Settings`) and the PATCH /
-        PATCH body (`SettingsUpdate`). Property names come straight from
-        the json tags on storage.Settings - camelCase throughout. `ID`,
-        `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear on the
-        wire.
+        The settings document for ONE user, returned by GET and by PATCH. Every
+        property is always present. It has NO `llmApiKey` property at all: the
+        key is write-only and is never returned (spec AC-11); `llmApiKeySet`
+        reports whether one is on file. Property names come straight from the
+        json tags on storage.Settings, camelCase throughout. `ID`,
+        `MicrosoftTokens` and `ZoomTokens` are `json:"-"` and never appear.
 
-        Two properties are asymmetric and are marked as such rather than being
-        split into two schemas, so that a document read from GET can be submitted
-        back unchanged (which is what the shipped frontend does):
-        `llmApiKey` is `writeOnly` - accepted on write, never returned; and
-        `llmApiKeySet` and `updatedAt` are `readOnly` - returned, accepted and
-        ignored on write. Everything else is symmetric.
+        PAC-24 revision 3 makes this a concrete schema rather than an `allOf`
+        over a shared field set with `readOnly`/`writeOnly` markers: all three
+        generators (oapi-codegen, openapi-typescript, typed-openapi) dropped
+        those markers and generated a response type carrying `llmApiKey`, and
+        typed-openapi also dropped the `required` list (contract challenge,
+        revision 2, finding 1). The property map is shared with
+        `SettingsUpdate` through a YAML anchor, so the two cannot drift; every
+        `Settings` document is a valid `SettingsUpdate` body.
 
-        No property other than `llmApiKey` carries omitempty, so the GET response
-        always contains all of them.
-      properties:
+        Every value this schema forbids has been normalised away in storage by
+        migration 024 (see `SettingsUpdate` and contracts/features/PAC-24.md,
+        Revisions 3 and 4), so a GET always satisfies it.
+      properties: &settingsProperties
         workStart:
           type: string
           pattern: '^(([01][0-9]|2[0-3]):[0-5][0-9])?$'
@@ -1739,24 +1759,6 @@ components:
           description: >
             Provider default applied at call time when empty: `gpt-4o-mini`
             (openai), `claude-haiku-4-5-20251001` (anthropic).
-        llmApiKey:
-          type: string
-          writeOnly: true
-          description: >
-            WRITE-ONLY. Accepted on write; never present in any response from
-            any operation (spec AC-11). Required for openai and anthropic.
-
-            Under the merge semantics this needs no special case: omit it and
-            the stored key is unchanged; send `""` and it is cleared; send a
-            value and it is replaced (spec AC-13). There is no way to read it
-            back, by design - someone who loses their key re-enters it. Do not
-            add a reveal affordance later.
-
-            Before PAC-24 it was returned in cleartext from a row shared by every
-            authenticated account (API-002 + API-003), and wiped by any write that
-            omitted it (API-004). Every key configured before this ships must be
-            treated as compromised and rotated - closing the read path does not
-            un-expose it (spec §5, OQ-5).
         llmApiKeySet:
           type: boolean
           readOnly: true
@@ -1914,16 +1916,6 @@ components:
             Server-managed (NOW() on every write). May be present in a request
             body - a client submitting back a document it just read will include
             it - and is ignored (spec AC-10).
-      additionalProperties: false
-
-    Settings:
-      description: >
-        The settings document for ONE user, returned by GET and by PATCH.
-        Every property is always present except `llmApiKey`,
-        which is `writeOnly` and therefore never present (spec AC-11);
-        `llmApiKeySet` takes its place in the required list.
-      allOf:
-        - $ref: '#/components/schemas/SettingsFields'
       required:
         - workStart
         - workEnd
@@ -1975,32 +1967,71 @@ components:
         - recapIncludeFocus
         - recapIncludeHabits
         - updatedAt
+      additionalProperties: false
 
     SettingsUpdate:
+      type: object
       description: >
         PATCH /api/settings body - the only settings write. Nothing is required:
         a property absent means "leave it as it is", and `{}` is a valid no-op
         request. A property present is applied exactly as given - `""`, `0` and
-        `false` are values, not absences.
+        `false` are values, not absences, except where a property's enum or
+        pattern excludes `""` (`recapSendTime`, `recapSendTo`,
+        `calendarProvider`, `conferencingProvider`), where `""` is a 400 like
+        any other value outside the set (spec AC-7 as amended 2026-10-12).
 
-        No property is nullable, so `null` anywhere in this body is a 400 rather
-        than a silent no-op (spec AC-8). `additionalProperties: false` is
-        inherited from SettingsFields, so an unknown property - including a
-        snake_case spelling of a real one - is rejected rather than ignored;
-        that is what makes API-013 detectable instead of silent.
+        The same properties as `Settings` (one YAML anchor) plus the write-only
+        `llmApiKey`. `llmApiKeySet` and `updatedAt` are accepted and ignored, so
+        a document read from GET can be submitted back unchanged (spec AC-10).
+
+        No property is nullable: `null` is a 400 `<property> must not be null`
+        and an unknown property - including a snake_case spelling of a real one
+        - is a 400 `unknown property: <name>` (spec AC-8). These are enforced
+        by the handler, not by a generated validator.
+
+        Validation applies to the properties whose value the body CHANGES. A
+        property sent with the value already stored is not re-validated, so a
+        GET document submitted back unchanged is always accepted - including a
+        legacy combination a newer cross-property rule would reject (an end
+        before a start, a focus minimum above the maximum) - and a stored value
+        never locks the user out of saving something else (challenge r2,
+        finding 2).
+
+        `workingHours` is ONE property and is replaced whole, so a write that
+        changes it must make the whole document valid: both its `default` and
+        its `days`, whatever the mode. That includes a `default` the client
+        derived from legacy values - for a row whose mode was `""` the server
+        derives it from `workStart`/`workEnd` on read - so a client switching
+        such a row to `by_day` must send a valid `default` (revision 6).
 
         `workingHours` and `lunchBreaks` are replaced whole when present, not
-        deep-merged (spec AC-9). `llmApiKeySet` and `updatedAt` are `readOnly`
-        and are accepted and ignored.
+        deep-merged (spec AC-9).
 
         Before PAC-24 this was the body of `PUT /api/settings`, a replace: every
         omitted property was persisted as its Go zero value (API-004). That
-        operation is removed, not deprecated - its only consumer
-        (`smart-calendar-flow/src/api/client.ts:813`) sends snake_case names that
-        `additionalProperties: false` refuses on either method, so a deprecated
-        alias would have shielded nothing.
-      allOf:
-        - $ref: '#/components/schemas/SettingsFields'
+        operation is removed because the two repositories deploy together
+        (spec PAC-24, Decisions 2026-10-12, OQ-3).
+      properties:
+        <<: *settingsProperties
+        llmApiKey:
+          type: string
+          writeOnly: true
+          description: >
+            WRITE-ONLY. Accepted on write; never present in any response from
+            any operation (spec AC-11). Required for openai and anthropic.
+
+            Under the merge semantics this needs no special case: omit it and
+            the stored key is unchanged; send `""` and it is cleared; send a
+            value and it is replaced (spec AC-13). There is no way to read it
+            back, by design - someone who loses their key re-enters it. Do not
+            add a reveal affordance later.
+
+            Before PAC-24 it was returned in cleartext from a row shared by every
+            authenticated account (API-002 + API-003), and wiped by any write that
+            omitted it (API-004). Every key configured before this ships must be
+            treated as compromised and rotated - closing the read path does not
+            un-expose it (spec §5, OQ-5).
+      additionalProperties: false
 
     # ----------------------------------------------------------- daily recap
 

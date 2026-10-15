@@ -67,7 +67,7 @@ func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) erro
 	// calOps may be nil if not connected — we degrade gracefully.
 
 	now := e.now()
-	if settings, settingsErr := storage.GetSettingsByUser(e.DB, userID); settingsErr == nil && settings != nil {
+	if settings, settingsErr := storage.GetOrCreateSettingsByUser(e.DB, userID); settingsErr == nil {
 		if loc, locErr := time.LoadLocation(settings.Timezone); locErr == nil {
 			now = now.In(loc)
 		}
@@ -93,10 +93,7 @@ func (e *HabitsEngine) scheduleDay(
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
 
-	settings, _ := storage.GetSettingsByUser(e.DB, userID)
-	if settings == nil {
-		settings, _ = storage.GetSettings(e.DB)
-	}
+	settings, _ := storage.GetOrCreateSettingsByUser(e.DB, userID)
 
 	// Fetch calendar busy intervals once for the day.
 	var calBusy []interval

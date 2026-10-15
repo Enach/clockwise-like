@@ -128,7 +128,8 @@ func TestPACE023MigrationNormalizesAndMergesLegacyEmailIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create migrator: %v", err)
 	}
-	if err := migrator.Steps(-1); err != nil {
+	// Explicit versions, not Steps: later migrations exist above 23.
+	if err := migrator.Migrate(22); err != nil {
 		t.Fatalf("return test database to migration 22: %v", err)
 	}
 
@@ -172,7 +173,7 @@ func TestPACE023MigrationNormalizesAndMergesLegacyEmailIdentity(t *testing.T) {
 		}
 	}
 
-	if err := migrator.Steps(1); err != nil {
+	if err := migrator.Migrate(23); err != nil {
 		t.Fatalf("apply migration 23 to dirty legacy data: %v", err)
 	}
 
@@ -240,7 +241,7 @@ func TestPACE023MigrationNormalizesAndMergesLegacyEmailIdentity(t *testing.T) {
 		t.Fatal("normalized-email check no longer enforced")
 	}
 
-	if err := migrator.Steps(-1); err != nil {
+	if err := migrator.Migrate(22); err != nil {
 		t.Fatalf("roll migration 23 back to 22: %v", err)
 	}
 	version, dirty, err := migrator.Version()

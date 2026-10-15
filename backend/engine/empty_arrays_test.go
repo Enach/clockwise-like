@@ -81,7 +81,7 @@ func TestCompressionEngine_SuggestForDay_NoProposals_EncodesEmptyArray(t *testin
 	db := openTestDB(t)
 	eng := &CompressionEngine{DB: db, calOps: &mockCalOps{calID: "primary", events: []*googlecalendar.Event{}}}
 
-	result, err := eng.SuggestForDay(context.Background(), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
+	result, err := eng.SuggestForDay(compressionCtx(t, db), time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("SuggestForDay: %v", err)
 	}

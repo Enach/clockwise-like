@@ -72,7 +72,7 @@ func NewFreeBusyService(db *sql.DB, cfg *oauth2.Config) *FreeBusyService {
 // Query returns free/busy data for the given emails, using the requesting user's
 // calendar credentials. Results are cached for 15 minutes.
 func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID, emails []string, start, end time.Time) ([]ParticipantBusy, error) {
-	settings, err := storage.GetSettings(s.DB)
+	settings, err := storage.GetOrCreateSettingsByUser(s.DB, requestingUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 
 	switch provider {
 	case "outlook":
-		token, err := auth.LoadMicrosoftToken(s.DB)
+		token, err := auth.LoadMicrosoftToken(s.DB, requestingUserID)
 		if err == nil && token != nil {
 			oc := calendar.NewOutlookClient(oauth2.StaticTokenSource(token))
 			fetched, _ = oc.GetFreeBusy(qCtx, queryEmails, start, end)

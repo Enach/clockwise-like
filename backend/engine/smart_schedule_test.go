@@ -2,10 +2,13 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 )
 
 func TestScoreCandidate_Morning(t *testing.T) {
@@ -146,7 +149,8 @@ func TestSmartScheduler_Suggest_WithMock(t *testing.T) {
 		Title:           "Test Meeting",
 	}
 
-	suggestions, err := sched.Suggest(context.Background(), req)
+	ctx, _ := smartScheduleUser(t, db, "suggest@example.com")
+	suggestions, err := sched.Suggest(ctx, req)
 	if err != nil {
 		t.Fatalf("Suggest: %v", err)
 	}
@@ -195,9 +199,10 @@ func TestSmartScheduler_CreateMeeting_WithMock(t *testing.T) {
 	mock := &mockCalOps{calID: "primary"}
 	sched := &SmartScheduler{DB: db, calOps: mock}
 
-	settings, err := storage.GetSettings(db)
+	ctx, user := smartScheduleUser(t, db, "create-meeting@example.com")
+	settings, err := storage.GetOrCreateSettingsByUser(db, user)
 	if err != nil {
-		t.Fatalf("GetSettings: %v", err)
+		t.Fatalf("GetOrCreateSettingsByUser: %v", err)
 	}
 	req := ScheduleRequest{
 		Title:       "Team Sync",
@@ -206,7 +211,7 @@ func TestSmartScheduler_CreateMeeting_WithMock(t *testing.T) {
 	}
 	slot := futureEnabledWorkSlot(t, settings)
 
-	created, err := sched.CreateMeeting(context.Background(), req, slot)
+	created, err := sched.CreateMeeting(ctx, req, slot)
 	if err != nil {
 		t.Fatalf("CreateMeeting: %v", err)
 	}
@@ -217,4 +222,15 @@ func TestSmartScheduler_CreateMeeting_WithMock(t *testing.T) {
 	if created.Summary != "Team Sync" {
 		t.Errorf("Summary = %q, want Team Sync", created.Summary)
 	}
+}
+
+// smartScheduleUser creates a user and returns a context carrying them: the
+// scheduler reads the caller's own settings (PAC-24).
+func smartScheduleUser(t *testing.T, db *sql.DB, email string) (context.Context, uuid.UUID) {
+	t.Helper()
+	u, err := storage.UpsertUser(db, email, email, "", "google", email)
+	if err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	return context.WithValue(context.Background(), auth.UserIDKey, u.ID), u.ID
 }

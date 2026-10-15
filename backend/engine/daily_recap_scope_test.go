@@ -48,16 +48,48 @@ func TestDailyRecap_OnlyTheUsersOwnData(t *testing.T) {
 	}
 
 	s := &DailyRecapService{DB: db}
-	focus := s.fetchFocusBlocks(alice.ID, day)
+	focus := s.fetchFocusBlocks(alice.ID, day, time.UTC)
 	if len(focus) != 1 || focus[0].Start != "09:00" {
 		t.Errorf("alice's focus blocks = %+v, want only her 09:00 block", focus)
 	}
-	habits := s.fetchHabits(alice.ID, day)
+	habits := s.fetchHabits(alice.ID, day, time.UTC)
 	if len(habits) != 1 || habits[0].Title != "Alice habit" || habits[0].WindowStart != "11:00" || habits[0].WindowEnd != "11:30" {
 		t.Errorf("alice's habits = %+v, want only her 11:00-11:30 habit", habits)
+	}
+	if paris := s.fetchFocusBlocks(alice.ID, day, time.FixedZone("CEST", 2*3600)); len(paris) != 1 || paris[0].Start != "11:00" {
+		t.Errorf("focus blocks in the recap's zone = %+v, want 11:00", paris)
 	}
 	meetings := s.fetchMeetings(context.Background(), alice.ID, day, day.Add(24*time.Hour))
 	if len(meetings) != 1 || meetings[0].ID != "evt-recap-alice-brief" {
 		t.Errorf("alice's meetings = %+v, want only her brief", meetings)
+	}
+}
+
+// PAC-24: only users who enabled the recap on their own settings get one.
+func TestDailyRecap_RecapUsersOnlyThoseWhoEnabledIt(t *testing.T) {
+	db := openTestDB(t)
+	on, err := storage.UpsertUser(db, "recap-on@example.com", "On", "", "google", "recap-on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	off, err := storage.UpsertUser(db, "recap-off@example.com", "Off", "", "google", "recap-off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, _ := storage.GetOrCreateSettingsByUser(db, on.ID)
+	s.RecapEnabled = true
+	if err := storage.SaveRecapSettingsForUser(db, on.ID, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.GetOrCreateSettingsByUser(db, off.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := (&DailyRecapService{DB: db}).recapUsers(context.Background())
+	if err != nil {
+		t.Fatalf("recapUsers: %v", err)
+	}
+	if len(users) != 1 || users[0].id != on.ID {
+		t.Errorf("recap users = %+v, want only %s", users, on.ID)
 	}
 }
