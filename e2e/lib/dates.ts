@@ -45,6 +45,29 @@ export function nextBookableWeekday(minDaysAhead = 7, now = new Date()): Date {
   return d;
 }
 
+/**
+ * The `index`-th weekday on or after `nextBookableWeekday()` (index 0 is that
+ * day itself). Distinct indices are distinct weekdays on every day of the
+ * week, which `nextBookableWeekday(n)` does not guarantee: it adds calendar
+ * days and rolls a weekend forward, so on a Wednesday offsets 10, 11 and 12
+ * all become the same Monday. Two journeys that book the same link on the same
+ * day then race for the same slot, and whichever runs second fails.
+ *
+ * Use this for every journey that writes a booking. Indices 0–5 stay within
+ * 7–15 days ahead, inside the 7–18-day band `weekDay()` keeps focus blocks
+ * out of.
+ */
+export function bookingDay(index: number, now = new Date()): Date {
+  const d = nextBookableWeekday(7, now);
+  for (let i = 0; i < index; i++) {
+    d.setTime(d.getTime() + DAY_MS);
+    while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+      d.setTime(d.getTime() + DAY_MS);
+    }
+  }
+  return d;
+}
+
 /** An RFC3339 instant at HH:MM UTC on `date`, the shape POST /api/book wants. */
 export function atUtc(date: Date, hhmm: string): string {
   const [h, m] = hhmm.split(':').map(Number);

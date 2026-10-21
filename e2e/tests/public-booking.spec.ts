@@ -30,11 +30,17 @@
  * 13:00–15:00 UTC). Different hosts means
  * storage.GetConfirmedBookingsForUser() can never see the other file's rows,
  * so the two can run in either order and in parallel.
+ *
+ * Within this file, every journey that writes a booking takes its own
+ * `bookingDay(index)` — distinct indices are distinct weekdays whatever today
+ * is. The journeys used to take `nextBookableWeekday(8..12)`, which collapses
+ * three offsets onto one Monday when the suite runs on a Wednesday, so the two
+ * UI journeys raced for the same 09:00 slot and the loser failed.
  */
 
 import { test, expect } from '../fixtures';
 import { LINKS, MISSING_SLUG, USERS } from '../seed/ids';
-import { atUtc, instant, isoDate, nextBookableWeekday } from '../lib/dates';
+import { atUtc, bookingDay, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 import { pickBookingDate, slotButtons } from '../lib/ui';
 
 test.describe('public booking — link info', () => {
@@ -123,7 +129,7 @@ test.describe('public booking — slots', () => {
 
 test.describe('public booking — booking through the API', () => {
   test('creates a persisted booking and then refuses the same slot', async ({ api, db }) => {
-    const date = nextBookableWeekday(8);
+    const date = bookingDay(1);
     const start = atUtc(date, '13:00');
     const end = atUtc(date, '13:30');
     const bookerEmail = `e2e.booker.api.${Date.now()}@paceday.test`;
@@ -182,7 +188,7 @@ test.describe('public booking — booking through the API', () => {
   });
 
   test('rejects a booking with no name or email', async ({ api }) => {
-    const date = nextBookableWeekday(9);
+    const date = bookingDay(2);
     const res = await api.post(`/api/book/${LINKS.apiBooking.slug}`, {
       name: '  ',
       email: '',
@@ -192,7 +198,7 @@ test.describe('public booking — booking through the API', () => {
   });
 
   test('refuses to book an exhausted single-use link', async ({ api }) => {
-    const date = nextBookableWeekday(10);
+    const date = bookingDay(3);
     const res = await api.post(`/api/book/${LINKS.exhausted.slug}`, {
       name: 'E2E Late Booker',
       email: 'e2e.booker.late@paceday.test',
@@ -208,7 +214,7 @@ test.describe('public booking — the anonymous browser journey', () => {
     db,
     assertNotDemo,
   }) => {
-    const date = nextBookableWeekday(11);
+    const date = bookingDay(4);
     const bookerEmail = `e2e.booker.ui.${Date.now()}@paceday.test`;
 
     // No storageState: this context has never been authenticated.
@@ -282,7 +288,7 @@ test.describe('public booking — the anonymous browser journey', () => {
     // name and email Inputs `required`, so the browser's native validation
     // blocks submission before React's onSubmit (and its error message) ever
     // runs. There is nothing for an e2e test to observe.
-    const date = nextBookableWeekday(12);
+    const date = bookingDay(5);
 
     await page.goto(`/book/${LINKS.uiBooking.slug}`);
     await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toBeVisible();
