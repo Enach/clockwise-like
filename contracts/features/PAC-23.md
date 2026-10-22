@@ -2,13 +2,16 @@
 
 - **Linear issue**: [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)
 - **Spec**: `docs/specs/PAC-23.md`
-- **Manifest**: `contracts/features/PAC-23.yaml` (revision 3; bundle
-  `28e8a5100d6eefcedcc3df70eca26662b95ca13db5c66eb62b1f65b3d85a3dcc`, fragment
-  `d4679029c872a735374021c09a3b5db9aae9b5a743c25e78093dfebcf4a656d7`). Revision 2's
-  `23099fbc…` and revision 1's `2ae42114…` were both falsified by edits PAC-23 did not
-  make — see Revision 2 §U2 and the hash ruling answered in Revision 3 §H.
-- **Stage**: contract-author → contract-challenger (revision 3, after a second
-  `reject`)
+- **Manifest**: `contracts/features/PAC-23.yaml` (revision 5, 2026-10-22; bundle
+  `ead120ee190bae9b11b3debfc6971b8fdbea99db1620bbc2ab9663f8e19fba19`, fragment
+  `c0d00e060b2380117ef21b24743ac329d95d7917cd6921d4ad41155b9165c673`). Revision 4's
+  bundle `1a5e6463…` and fragment `5be8ecc6…`, revision 3's `28e8a510…`/`d4679029…`,
+  revision 2's `23099fbc…` and revision 1's `2ae42114…` were all falsified by edits
+  PAC-23 did not make — see Revision 2 §U2, the hash ruling answered in Revision 3 §H,
+  and Revision 5 §F1 for the one that moved the *fragment* hash (#203).
+- **Stage**: contract-author → contract-challenger (revision 5, after a fourth
+  `reject`; the spec's own 2026-09-17 challenge verdict is accept-with-changes, and
+  revisions 1–5 all proceed on that basis)
 - **Source of truth repo**: `Enach/clockwise-like`
 - **Resolves**: API-005 (critical), API-074 (low), `x-uncertain` U-02
 - **Operations changed**: exactly one — `listAuditEntries` (`GET /api/audit`)
@@ -103,8 +106,10 @@ because the client always sent a value — which is precisely why this survived.
 The contract now declares **one** default, 50, and the manifest requires the client to
 take it from the generated contract rather than declare its own. 50 rather than 100 is
 chosen because it is the number users actually experience today
-(`smart-calendar-flow/src/pages/Audit.tsx:38` says "the last 50 actions"; revisions
-1–3 of this document said `:39-40`, which is the closing `</p>` and `</div>`), so
+(`smart-calendar-flow/src/pages/Audit.tsx:39` says "the last 50 actions"; revisions
+1–3 of this document said `:39-40`, which was then the closing `</p>` and `</div>`,
+revision 4 said `:38`, and web #81 moved it by one on 2026-10-10 — corrected in
+place at revision 5), so
 aligning downward changes nothing anyone sees, while aligning upward would change the
 page for every user as a side effect of a security fix.
 
@@ -183,7 +188,8 @@ grep -rn 'HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen' \
 
 It returns nothing. `/api/audit` is served by the hand-written `auditHandler`
 (`backend/api/handlers_audit.go:12-23`), registered directly on chi at
-`backend/api/routes.go:179`. `python3 scripts/openapi_migration_report.py --check`
+`backend/api/routes.go:180` (`:179` until #198–#205 moved it; corrected in place at
+revision 5). `python3 scripts/openapi_migration_report.py --check`
 prints `0 generated` for all 119 operations.
 
 **The corrected cost of adopting the generated server for this one operation.** Not
@@ -3263,3 +3269,1383 @@ scratch directory then, and were not re-run. Nothing was written to
    they read this section.
 7. **`getCurrentUser` declares `PlainTextError` for a 401 whose body is this schema's
    example** (§N3). Recorded, not fixed: `paths/auth.yaml` is not PAC-23's.
+
+---
+
+## Challenge, revision 4 — 2026-10-22
+
+*By `contract-challenger`, against revision 4 of `contracts/features/PAC-23.yaml`
+(`contractRevision: 4`, merged in #183 on 2026-10-04 and never challenged) and the
+`/api/audit` surface in `contracts/openapi/paths/calendar.yaml`, read on branch
+`nihochart/pac-49-50-specs` at `a896faa` (main `a896faa` is an ancestor; the branch
+differs from main only in `docs/specs/` and `contracts/features/PAC-24.yaml`). The
+sibling web repo was read at `smart-calendar-flow` `main` `ed44af0`. Eighteen days and
+eleven merges separate this challenge from the revision it challenges, and that gap is
+the subject of most of what follows. Where a claim could be executed I executed it;
+"What I ran" is at the end. I am challenging revision 4, not re-running revision 3's
+challenge: R3-F1–F6 and R3-N1–N7 are checked for whether revision 4 resolved them, and
+each did — see "Verified clean".*
+
+**Verdict**: reject
+
+Four blocking findings. **None is about the shape of the interface**, and the author
+should not spend revision 5 re-arguing anything: one operation, one optional integer
+with `minimum: 1` / `maximum: 500` / `default: 50`, a closed seven-value `action`
+enum, `id` as `int32`, `200`/`401`/`500` and no `400` — all upheld, and the `limit`
+resolution procedure is now right in every row I could execute (both probes re-run,
+below). Every revision-3 finding is resolved in substance. Revision 5 is a
+**re-baseline against the tree of 2026-10-22, in both repos**, plus one paragraph the
+fragment has lacked since revision 1.
+
+Why reject rather than accept-with-changes, given that: the standard the three earlier
+rejections applied is factory §7 rule 2 — the contract may not say things about the
+tree that are not so — and the revision-3 challenge was explicit that *"a `file:line`
+that points at unrelated code is such a thing"*. Applied to the document as it stands
+today, not as it stood on merge day: the manifest's own falsifier for this feature's
+fragment has fired (R4-F1); the manifest directs the frontend stream on a premise that
+stopped being true on 2026-10-10 (R4-F2); 25 of the 33 hand-written-source citations in
+the fragment and manifest now point at unrelated lines, and every one of them is
+emitted as a doc comment into generated code in both repos (R4-F3); and the headline
+behaviour change — the scoped read — is declared in the present tense with no statement
+anywhere in the fragment that the server does the opposite today (R4-F4). Three of
+these four were caused by merges PAC-23 did not make; that is a factory defect (PAC-51)
+the author cannot fix, and I say so where it applies. It does not make the statements
+true.
+
+### Requests wrongly permitted
+
+Nothing new. `?limit=0`, `?limit=abc`, `?limit=`, `?limit=99999999999999999999`,
+`?limit=%zz&limit=10` and `?limit=10&limit=500` were all re-sent to both servers
+(probe output under "What I ran"); every answer the fragment gives is the answer the
+code gives. The wire still admits no vocabulary for another user's rows: no path
+parameter, no body, one query parameter, `additionalProperties: false` on the item.
+
+### Responses the client cannot handle
+
+Nothing new in substance, one correction to the stated premise (folded into R4-F2):
+the zod schema the `action` degradation paragraph says "does not exist yet" exists,
+and it is exactly as unforgiving as the paragraph predicts —
+`smart-calendar-flow/src/api/generated/schemas.ts:38` is
+`AuditEntry = z.strictObject({ id: z.number().int(), action: z.enum(["focus_created",
+…, "nlp_confirmed"]), details: z.string(), created_at: z.iso.datetime() })`. It is not
+applied to the audit path: the only import from `generated/schemas` in the web repo is
+`SettingsUpdate` (`src/api/client.ts:2`), `getAudit` (`client.ts:1159-1166`) still
+runs `normalizeAuditEntries`, and the page still types entries with the hand-written
+`AuditEntry` (`src/api/types.ts:222-227`, `action: string`). So a `200` carrying
+`[{"id":1,"action":"focus.run","details":"","created_at":"2026-10-22T08:00:00Z"}]`
+still renders today, for the reason the paragraph gives. The day that zod schema is
+applied to `getAudit`, the same body is a thrown `ZodError` and six good rows vanish
+with the odd one — which is the paragraph's own warning, now one import away rather
+than one lockfile away.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts}` —
+  **new consumer, missing from the manifest.** Committed since web #87 (2026-10-10),
+  regenerated after every api-repo contract merge (#93, #96, #97, #98, #99), and
+  drift-checked by the web repo's `openapi-check`, which `make openapi-check` in this
+  repo now reaches and which passes. The fragment's `limit` and `action` descriptions
+  are emitted verbatim into `types.ts` (the `listAuditEntries` block and
+  `components.schemas.AuditEntry`), so every stale citation in R4-F3 is now in a
+  second generated file. The manifest lists `backend/api/gen/paceday.gen.go` as a
+  generated consumer for exactly this reason and must list this one too.
+- `smart-calendar-flow/src/api/client.ts:420` (`DEFAULT_AUDIT_LIMIT`), `:426-435`
+  (`formatAuditDetails`), `:438-453` (`normalizeAuditEntries`, `Number(e.id)` at
+  `:448`, the `action` normaliser at `:451`), `:365` (`credentials: "include"`);
+  `src/api/types.ts:222-227`; `src/pages/Audit.tsx:39` (subtitle) and `:95` (list
+  key); `src/components/QuickActions.tsx:21`; `src/api/audit.test.ts:50,54` (still
+  `focus.run`) — all still the consumers the manifest describes, all at different
+  lines than it cites (R4-F3).
+- `mcp/` — still no occurrence of `audit`. `e2e/` — still no caller; the two prose
+  matches are `e2e/auth.ts:29` and `e2e/SEAM-REQUIRED.md:240` (the manifest says
+  `:209`).
+- `docs/specs/PAC-49.md` (v3) and `docs/specs/PAC-50.md` (v2.1) — **new dependants
+  the manifest predates**; see "What depends on this" below.
+
+### Contract/implementation divergences
+
+**R4-F1 — blocking. The fragment hash does not reproduce, because the fragment was
+edited after revision 4 without a revision, a challenge, or a manifest bump — and the
+bundle hash does not reproduce either.**
+
+```
+$ shasum -a 256 contracts/openapi/openapi.yaml contracts/openapi/paths/calendar.yaml
+cd8b77ac0415295f033db8064bfa586780a44a5b3990aa2a6463931fc0b4cfec  openapi.yaml         (manifest: 1a5e6463…)
+cd5b36dfa559542af65836e27af32b8271550bb977bb0acfdd2fd2613a684841  paths/calendar.yaml  (manifest: 5be8ecc6…)
+```
+
+The bundle moving is expected and the manifest says so (`contractHashOf`). The
+fragment moving is not: `contractFragmentHashOf` calls it the hash that "falsifies a
+change to the FRAGMENT PAC-23 owns", and it has been falsified.
+`git log d8d346a..HEAD -- contracts/openapi/paths/calendar.yaml` returns exactly one
+commit, `081057d` (#203, "focus blocks belong to one user everywhere", 2026-10-12),
+whose diff to this fragment is two lines: `backend/storage/focus_blocks.go:61-63` →
+`:74-76`, in the operation description and in `AuditEntry.action`. That edit is
+*correct* — `WriteAuditLog` is at `focus_blocks.go:74-76` today — and it is also a
+change to a contract under this feature's manifest, made by another feature's PR,
+which fixed one of the citations its merge moved and left the other seven (R4-F3)
+stale. `contracts/features/PAC-23.yaml` and this document were not touched after #183
+(`git log d8d346a..HEAD` on both is empty), so the manifest says `contractRevision: 4`
+of a fragment that is no longer revision 4's. Nothing noticed, because nothing gates
+either hash — which is the PAC-51 argument, now with an instance.
+
+*Fix (manifest)*: revision 5 re-records both hashes against the tree it is written on,
+bumps `contractRevision`, and records in `contractFragmentHashOf` that the fragment hash
+was moved on 2026-10-12 by #203 and what the edit was. *Process note for whoever owns
+the factory, not for the author*: an edit to a fragment under an open feature manifest
+is a contract change and should go through that feature's revision, or at least bump
+its manifest.
+
+**R4-F2 — blocking. The web-repo premises are false: the work the manifest files as
+PAC-52 landed in `smart-calendar-flow` #87 on 2026-10-10, and the fragment, the
+manifest and this document all still describe the tree before it.**
+
+What is true today, each checked:
+
+- `src/api/generated/` holds `types.ts`, `schemas.ts` and `schemas.types.d.ts`, all
+  tracked (`git ls-files`), first committed in #87, whose body says in as many words:
+  "src/api/generated was never generated (README only). types.ts, schemas.ts and
+  schemas.types.d.ts are now committed".
+- `package.json` pins `openapi-typescript` `7.4.4` and `typed-openapi` `4.1.0`
+  (`1.1.0` was the one that could not run); `node_modules/ajv` is `8.20.0` and has
+  `dist/core.js`; a clean `npm ci` is what #87 fixed.
+- `make openapi-check` from **this** repo's root now runs the web half
+  (`WEB` defaults to `../smart-calendar-flow`, which exists beside this worktree) and
+  it passes — the first time in this contract's history that factory §2 gate 4 has been
+  fully rather than half checked. Verbatim output under "What I ran".
+- `yaml` and `js-yaml` both `require.resolve` in that tree and neither is in
+  `package.json` — still transitive, exactly as the manifest says, but no longer
+  "blocked on the same lockfile".
+
+What is therefore false, by location:
+
+| where | says | true today |
+|---|---|---|
+| fragment, `AuditEntry.action` (and so `paceday.gen.go` and web `types.ts` doc comments) | "Factory §4 mandates a generated zod `schemas.ts` in that repo; it does not exist yet, and when it does it will not be so forgiving" | it exists (`schemas.ts:38`, `z.strictObject`, `action: z.enum([…])`), and is not applied to the audit path |
+| manifest `pathsDeliberatelyNotListed` | "neither types.ts nor schemas.ts has ever been produced in that tree … that declaration cannot be made while the lockfile is broken, and the lockfile is PAC-52" | both produced and committed; the lockfile installs clean |
+| manifest `schemasChanged.breaking` | "`smart-calendar-flow/src/api/generated/` contains no types.ts … until that file exists and the client imports from it" | the file exists; the client does not import it for audit |
+| manifest `consumersAffected` (DEFAULT_AUDIT_LIMIT) | "typed-openapi 1.1.0 … cannot run in that tree at all (Cannot find module 'ajv/dist/core' …; node_modules/ajv is 6.15.0)"; precondition 1 "exits 1 today because typed-openapi is broken"; "Both are PAC-52" | 4.1.0 runs; ajv 8.20.0; the generator-availability check passes, so precondition 1 is void; precondition 2 (declare a YAML reader) stands and is unblocked |
+| manifest `verification.notRun` | "its fourth step is the web repo's own openapi-check, which cannot pass (PAC-52)" | it passes |
+| manifest `relatedIssues` PAC-52 | "Blocks src/api/generated existing at all, blocks the AC-10 contract comparison in consumersAffected item (c), and blocks declaring a YAML reader for it" | blocks none of the three |
+| Revision 4 "Still unresolved" item 2 | "Factory §2 gate 4 is half-checked and will stay so until PAC-52" | fully checked since 2026-10-10 |
+
+This is blocking rather than a citation fix because the manifest **directs stage 4**
+on it: a frontend implementer reading `consumersAffected` today is told item (c) — the
+only AC-10 pin that reads the contract — cannot land, and that `package.json` is kept
+out of `allowedPaths` for a reason that no longer exists. The capitalised sentence
+"UNTIL (c) LANDS, AC-10 CLAUSE 2 IS PINNED ONLY BY COINCIDENT LITERALS" is still true,
+but the reason it gives for (c) not landing is gone.
+
+*Fix (fragment, one sentence)*: replace "it does not exist yet, and when it does it
+will not be so forgiving" with "it exists (`src/api/generated/schemas.ts`,
+`AuditEntry = z.strictObject(…)` with `action: z.enum([…])`, committed since
+smart-calendar-flow #87) and is not applied to the audit path; the day it is, an
+out-of-enum value is a thrown validation error, which is the case this paragraph is
+for". *Fix (manifest)*: rewrite the six entries above against the tree; either add
+`package.json` to the frontend `allowedPaths` (precondition 2 of item (c) needs it) or
+state that (c) is dropped and what pins AC-10 clause 2 instead; list
+`smart-calendar-flow/src/api/generated/*` under `consumersAffected` as the second
+generated consumer; and say whether the frontend stream is expected to keep the
+hand-written `AuditEntry` (`src/api/types.ts:222-227`) beside the generated one, now
+that "until that file exists" has expired — the manifest currently defers that
+decision to an event that has happened.
+
+**R4-F3 — blocking. 25 of 33 hand-written-source `file:line` citations in the fragment
+and manifest are stale. Every one was correct at #183 and was moved by a later merge.**
+
+Revision 4's `citationPolicy` rule 4 says hand-written source is cited by `file:line`
+"because these files are hand-written and stable". They were not: the first web move
+was #81 on 2026-10-10, six days after merge, and the backend moved under #198–#205.
+Each row below was checked by opening the cited line at `d8d346a` (correct in every
+case) and at `HEAD`:
+
+| cited | what it was meant to point at | now |
+|---|---|---|
+| `backend/api/handlers_schedule.go:188` | `WriteAuditLog(… "meeting_created" …)` | `:191`; `:188` is `return` |
+| `backend/api/handlers_settings.go:206` | `func writeError` | `:371`; `:206` is an unrelated closure |
+| `backend/api/routes.go:179` | `r.Get("/api/audit", …)` | `:180`; `:179` is `/api/freebusy` |
+| `backend/api/routes.go:58` | `GET /api/auth/me` | `:59`; `:58` is `r.Use(requireAuth(…))` |
+| `backend/engine/booking.go:267` / `:250-269` | `calClient.CreateEvent` / `h.UserID` in scope | `:269` / `:244-271` |
+| `backend/engine/compression.go:178` | `WriteAuditLog(… "meeting_moved" …)` | `:180`; `:178` is `}` |
+| `backend/engine/focus_time.go:106` / `:101-106` | `WriteAuditLog(… "focus_created" …)` / the marshal | `:108` / `:103-108` |
+| `backend/engine/focus_time_cleaner.go:39` / `:33-39` | `WriteAuditLog(… "focus_cleared" …)` / the marshal | `:47` / `:42-47` |
+| `backend/engine/smart_schedule.go:323` | `WriteAuditLog(… "meeting_scheduled" …)` | `:325`; `:323` is `}` |
+| `backend/nlp/parser.go:221` | `WriteAuditLog(… "nlp_parsed" …)` | `:222`; `:221` is blank |
+| `contracts/openapi/paths/auth.yaml:604` (manifest) | `cookieAuth:` | `:617`; `:604` is an `ErrorResponse` `$ref` |
+| `e2e/SEAM-REQUIRED.md:209` (manifest) | the prose match | `:240` |
+| `smart-calendar-flow/src/api/client.ts:349` (manifest) | `credentials: "include"` | `:365`; `:349` is the `requestApi` signature |
+| `client.ts:403-404` | `DEFAULT_AUDIT_LIMIT` | `:419-420`; `:403-404` is a `PersonalCalendar` field |
+| `client.ts:410-419` | `formatAuditDetails` | `:426-435` |
+| `client.ts:432` | `Number(e.id)` | `:448` |
+| `client.ts:435` | the `action` normaliser | `:451`; `:435` is `}` |
+| `src/api/types.ts:221` | `action: string` | `:224`; `:221` is blank |
+| `src/pages/Audit.tsx:38` | the subtitle text | `:39`; `:38` is the opening `<p>` |
+| `src/pages/Audit.tsx:94` | `key={entry.id}` | `:95`; `:94` is `entries.map` |
+| `src/components/QuickActions.tsx:20` | `useAudit(10, showAudit)` | `:21`; `:20` is blank |
+
+Still correct, so the next reader need not reopen them: `handlers_audit.go:12-23` and
+`:14`; `handlers_schedule.go:80-93`; `handlers_nlp.go:67`; `handlers_org.go:21`;
+`handlers_me.go:19`; `middleware.go:36`, `:38`, `:44`, `:50`, `:52`; `routes.go:26`,
+`:27`; `audit_log.go:9`, `:16-18`, `:19`, `:25`; `focus_blocks.go:74-76`;
+`001_initial.up.sql:45`; `scripts/openapi_assemble.py:170-172`;
+`backend/auth/sso_detect.go:14` (plan); `audit.test.ts:50,54`; web `Makefile:13`.
+
+The seven writer citations and `routes.go:179` are inside `AuditEntry.action` and the
+operation description, so they are now wrong inside `backend/api/gen/paceday.gen.go`
+**and** inside `smart-calendar-flow/src/api/generated/types.ts` — the construction
+revision 4 removed for the generated file has reappeared one level up. The author's
+own falsifying commands are the durable half of each claim: `grep -rn 'WriteAuditLog('
+--include='*.go' backend/ | grep -v _test.go` returns exactly the seven call sites plus
+the definition today, and `grep -rn error.:.unauthorized --include=*.go backend/api/`
+returns exactly the five 401 producers.
+
+*Fix (description and manifest)*: re-derive every row above; and for the seven writers
+and the three `requireAuth` sites, which sit in text that is emitted into two generated
+files, cite **file and enclosing function** (`backend/engine/focus_time.go`,
+`FocusTimeEngine.RunForUser` — or whatever the enclosing symbol is — plus the grep),
+keeping `file:line` only where no symbol encloses the claim. That is the symbol rule
+revision 4 adopted for `paceday.gen.go`, applied for the same reason.
+
+**R4-F4 — blocking. The scoped read is declared in the present tense and the fragment
+nowhere says the server does the opposite today. `API-005` does not appear in
+`calendar.yaml` at all.**
+
+`grep -c API-005 contracts/openapi/paths/calendar.yaml` is `0`. The operation
+description opens *"Returns the calling user's own `audit_log` rows … The query is
+scoped by the authenticated user id … no caller can address another user's entries."*
+The `200` says *"The caller's own audit entries."* Today:
+
+- `backend/storage/audit_log.go:19` is `SELECT id, action, details, created_at FROM
+  audit_log ORDER BY created_at DESC, id DESC LIMIT $1` — no predicate;
+- `backend/storage/migrations/001_initial.up.sql:44-49` defines `audit_log` with no
+  `user_id`, and the highest migration on disk and on `main` is
+  `024_settings_per_user` — no `025`;
+- `backend/api/handlers_audit.go:12-23` reads no user id from the context;
+- `backend/storage/focus_blocks.go:74` is still `WriteAuditLog(db *sql.DB, action,
+  details string)`.
+
+So `GET /api/audit` as user A, today, returns user B's meeting titles and typed
+prompts, and nothing in the fragment says so. The `limit` parameter carries a
+"CURRENT SERVER BEHAVIOUR, which differs and which PAC-23 is fixing (finding API-074)"
+paragraph — the "beside it" half that the revision-2 ruling on `default: 50`
+established as the price of declaring target behaviour under §7 rule 2. The scoping,
+which is the critical finding and the entire point of the feature, has no such half.
+A reader of this fragment, or of either generated file, is told the read is scoped. It
+is not. This predates revision 4 — it has been true since revision 1 and three
+challenges did not raise it — and it is the one finding here that is not caused by the
+tree moving.
+
+*Fix (operation description, one paragraph, parallel to the `limit` one)*: "CURRENT
+SERVER BEHAVIOUR, which PAC-23 is fixing (finding API-005, critical): as of this
+revision `storage.ListAuditLog` (`backend/storage/audit_log.go:19`) selects with no
+user predicate, `audit_log` has no `user_id` column
+(`backend/storage/migrations/001_initial.up.sql:44-49`; no later migration adds one),
+and `auditHandler` reads no identity from the request — every authenticated caller
+receives every user's rows, including other users' meeting titles and typed prompts.
+The paragraphs above describe what stage 4 implements and what spec AC-1, AC-3, AC-4
+and AC-8 test; this paragraph is what they replace." Naming the finding also closes the
+gap the manifest's bookkeeping note points at: `docs/factory/api-audit.md:239` still
+carries API-005 as `Confirmed`, and nothing in the fragment currently links the two.
+
+### Uncertainties not actually resolved
+
+None. U-02 remains determined (the register at `api-audit.md:446` still rates it
+API-005 critical; the only consumer still advertises per-user scope at
+`Audit.tsx:39`), the fragment still carries four `x-uncertain` markers, none on
+`/api/audit` or `AuditEntry` (`:99`, `:234`, `:1122`, `:1553`), and the bundle still
+carries 18 keys (`grep -c '^ *x-uncertain:'`), which the assembler's count would
+report; the manifest's refusal to predict that number is still the right call.
+
+### Non-blocking
+
+**R4-N1 — this document's header still says revision 3.** Lines 5–10: "(revision 3;
+bundle `28e8a510…`, fragment `d4679029…`)" and "Stage: contract-author →
+contract-challenger (revision 3, after a second `reject`)". Revision 4 updated the
+manifest and not the header. Revision 5 should update both, with the hashes R4-F1
+re-records.
+
+**R4-N2 — `rollback`'s stage-7 precondition is stale and three specs now hang on
+`025`.** "The highest on disk is `023_manager_team_member_preferences`" — it is
+`024_settings_per_user` (PAC-24, #204, 2026-10-15), and `docs/specs/PAC-49.md` v3 now
+records "025 is PAC-23's, 027 is PAC-50's" and takes `026` for itself. The precondition
+("confirm the number against `backend/storage/migrations/`") still protects stage 7;
+the manifest should say that `025` is now reserved by two other specs, because
+renumbering it again would move three documents rather than one.
+
+**R4-N3 — `e2e/SEAM-REQUIRED.md:209` → `:240`**, folded into R4-F3's table; listed
+here because it is in the manifest's `consumersAffected`, which R4-F2 rewrites anyway.
+
+### What depends on this — PAC-49 v3 and PAC-50 v2.1
+
+Asked directly whether revision 4 leaves room for the two specs on this branch, or
+whether they need a revision 5. Checked against `docs/specs/PAC-49.md` (v3 section,
+the `auto_schedule_ran` paragraph and §"Carried by PAC-23") and
+`docs/specs/PAC-50.md` §4.6 and AC-12.
+
+**The explicit `userID` parameter — room exists, nothing to change here.** Both specs
+require `WriteAuditLog` to take an explicit `userID` because the cron has no HTTP
+context and `UserIDFromContext` returns `uuid.Nil` rather than an error. This contract
+deliberately does not describe `WriteAuditLog`'s signature (§5, first bullet: "those
+are the plan's business"), and `docs/factory/PAC-23-plan.md` §1 already fixes it as
+`WriteAuditLog(db, userID, action, details)` — explicit, not context-derived — for an
+independent reason I verified: `backend/auth/sso_detect.go:14` imports
+`backend/storage`, so `storage` cannot import `auth`. PAC-49's "if PAC-23's plan has it
+context-derived, change PAC-23" is already satisfied. No contract change.
+
+**PAC-49's `auto_schedule_ran` — room exists by design, and the edit is PAC-49's, not
+a PAC-23 revision 5.** The enum is closed on purpose and the fragment says what adding
+a literal costs: "adding an eighth action is a contract change". That change is to
+*this fragment*, made by PAC-49's contract stage, and it touches four sentences, not
+one: the `enum` list; "This is the complete set the server can emit … at all seven";
+the per-action `details` statement (an `encoding/json`-marshalled `{created, cleared,
+error}` joins the ALWAYS VALID JSON group); and "no value in this enum distinguishes an
+action a person took from one the scheduler took on their behalf", which
+`auto_schedule_ran` would be the first value to falsify. Spec §3.2 already admits a
+clock-initiated action into the subject's log. The manifest's `contractFragmentHash`
+will be falsified by that edit, as R4-F1 shows it already has been once; revision 5
+should say in `contractFragmentHashOf` that PAC-49 is expected to move it.
+
+**PAC-50's `sso_stepup` and `sso_provider_written` — revision 4 does not leave room,
+and no revision of this contract alone can make room without the spec changing.** Three
+texts forbid it, and PAC-23's own contract §5 names this exact case:
+
+- operation description: *"This log is a per-user activity feed, not a security audit
+  trail: it has no authentication or configuration events … and it is readable only by
+  its subject … do not build anything on it that needs a third party to be able to
+  review it"*;
+- contract §5, bullet 4: *"the next agent to look for 'where do we record who changed
+  the SSO configuration' will read this operation first and must not build on it"*;
+- spec §3.5 and OQ-7: *"it is not this table. If somebody decides it is this table,
+  §3.2's rule against placeholder identities is the first thing that has to be
+  revisited, and this spec would need to be rewritten rather than amended."*
+
+PAC-50 §4.6 writes both actions with `user_id` = the caller. Under this contract that
+row is readable by exactly one person — the admin who performed the SSO write, or the
+account that attempted the step-up — and it appears in their "actions Paceday
+performed on your calendar" feed. An attacker's denied step-up (`reason: not_admin`,
+`tid_mismatch`) would be visible only to the attacker. That is the inversion spec §3.5
+describes in as many words. Two contract-level shapes resolve it, and the choice is a
+product/spec decision this role does not make: (i) PAC-50 records to a destination
+that is not this table (OQ-7's open answer), leaving this contract untouched; (ii)
+PAC-23's spec §3.2/§3.5 and this operation description are rewritten to admit
+configuration events with an actor who is not the subject, which the spec says is a
+rewrite, and which would also reopen OQ-1 (who may read) and OQ-2 (actor vs subject).
+Either way, PAC-50 §4.6's "depends on PAC-23 (audit `user_id`)" understates the
+dependency: it depends on a decision PAC-23's spec has recorded the opposite of.
+
+So: **PAC-49 needs no revision 5 of PAC-23** (it edits the fragment under its own
+manifest); **PAC-50 cannot be accommodated by a revision 5 of this contract** until
+the spec question above is decided one way or the other.
+
+### Verified clean
+
+Attacked, or checked by running something, and could not break. The next reader need
+not repeat these.
+
+- **Every revision-3 finding is resolved in substance.** R3-F1: outcome (e) names the
+  `int64` overflow, the "parse failure, not a range one" sentence is gone, and the
+  `ErrRange`-means-above-maximum warning is present. R3-F2: outcome (d) exists and is
+  flagged as the only case the shipped client sends. R3-F3: step 1 states the
+  `ParseQuery` drop and `?limit=%zz&limit=10 → 10`. R3-F4: every `paceday.gen.go`
+  reference is a symbol (all eight present: `AuditEntryAction`,
+  `ListAuditEntriesParams`, `ServerInterfaceWrapper.ListAuditEntries`,
+  `ListAuditEntries{200JSON,401Text,500JSON}Response`, the `/api/audit` route in
+  `HandlerWithOptions`, `CookieAuthScopes`), `grep -c 'paceday.gen.go:[0-9]'` on the
+  generated file is `0`, plan references are by section, `Makefile` by target. R3-F5:
+  the degradation paragraph quotes the normaliser and says no consumer implements the
+  placeholder. R3-F6: `contracts/openapi/MIGRATION.md:75` carries the precondition in
+  its `notes` cell, no `|` inside it, and `openapi_migration_report.py --check`
+  passes. R3-N1: ten `_test.go` paths in backend `allowedPaths`. R3-N2: item (c) placed
+  in `scripts/openapi-gen.sh` with the plain "nothing reads the contract" statement.
+  R3-N3: `middleware.go:38/:44/:50` right, `handlers_me.go:19` added with the narrower
+  reason, which is correct — `routes.go:59` is `GET /api/auth/me` and `getCurrentUser`
+  lives in `paths/auth.yaml`. R3-N4/N5/N6: `Audit.tsx` corrected (now moved again),
+  `routes.go:27` right, `compression.go` named as the fourth writer. R3-N7:
+  `relatedIssues` names PAC-51/52/53 (I could not open Linear to confirm the issues
+  exist; PAC-52's scope has landed regardless, R4-F2).
+- **The `limit` procedure, re-executed independently.** Probe 1 (stdlib, 14 inputs
+  through a real `*http.Request`) and probe 2 (the generated binder, mounted from
+  *this worktree's* `backend/api/gen` via a `replace` directive, 11 inputs) — both
+  tables under "What I ran". Every `today`, `declared`, `400` and `501` the fragment
+  states is what the code produces, including `?limit=` → `400` on the binder (the
+  split in outcome (a)), `?limit=10000` → `501` (maximum not enforced by the binder),
+  `?limit=99999999999999999999` → `ErrRange` on `Atoi` and `400 … value out of range`
+  on the binder, and `?limit=%zz&limit=10` → `10` on both.
+- **`make openapi-check` passes, all four steps**, run from this worktree's root with
+  the web repo present. This is stronger than any previous revision or challenge could
+  claim: revision 4 and the revision-3 challenge both ran the three scripts by hand and
+  reported the web step unrunnable.
+- **Nothing mounts the generated server, still.** The fragment's falsifying grep
+  returns nothing (exit 1); `/api/audit` is `r.Get("/api/audit", auditHandler(db))` at
+  `routes.go:180`; `handlers_audit.go` and `audit_log.go` are byte-identical to what
+  revision 4 read.
+- **Seven writers, still seven, still actor = subject, still one INSERT.** `grep -rn
+  'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go` returns the
+  definition at `focus_blocks.go:74` and exactly the seven call sites, with the same
+  seven string literals and the same safe/unsafe split (`json.Marshal` at
+  `focus_time.go:103`, `focus_time_cleaner.go:42`; `%q` at `parser.go:222`;
+  concatenation at `smart_schedule.go:325`, `handlers_schedule.go:191`,
+  `compression.go:180`, `handlers_nlp.go:67`). `booking.go` still writes no entry
+  (`CreateEvent` at `:269`, `h.UserID` in scope at `:244-271`), and `POST
+  /api/book/{slug}` is still outside `requireAuth` at `routes.go:27`.
+- **The five 401 producers are exactly the five the schema names.** The falsifying
+  grep returns `handlers_org.go:21`, `handlers_me.go:19`, `middleware.go:38`, `:44`,
+  `:50` and nothing else.
+- **`acceptanceTests` still match the spec's fifteen**, tags included; the
+  parentheticals on AC-10/11/12 narrow the claim about what pins them, not the
+  criterion.
+- **The generated TypeScript still carries `default: 50` only as prose.**
+  `types.ts:5043` is `limit?: number;` and no `@default` tag precedes it, so the
+  manifest's "neither pinned generator can hand it over as a value" holds for
+  `openapi-typescript 7.4.4` against the tree that now exists.
+- **The register rows are as the bookkeeping note says**: `api-audit.md:239` API-005
+  `Confirmed`, `:308` API-074 `Reported`, `:446` U-02 open.
+- **Interface shape, fourth attempt, same result.** No `user_id` on the wire, no
+  `scope`, no pagination, no `400`; `additionalProperties: false` on `AuditEntry`;
+  `id` `int32`; the assembler-synthesised document-level `security` is still
+  conditional on `cookieAuth` (`openapi_assemble.py:170-172`, `auth.yaml:617`).
+
+### What I ran
+
+From the worktree root with the session toolchain (Go 1.25.5, Python 3.15 venv with
+PyYAML, Node 22, `oapi-codegen` on PATH). Nothing was written to either repo except
+this section; no `make openapi`, no `make verify`/`test`/`e2e`, no Docker.
+
+```
+$ make openapi-check
+python3 …/scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)
+python3 …/scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 119 operations (0 generated)
+…/scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract
+CONTRACT="…/clockwise-like-specs/contracts/openapi/openapi.yaml" …/smart-calendar-flow/scripts/openapi-gen.sh --check
+✨ openapi-typescript 7.4.4
+🚀 …/contracts/openapi/openapi.yaml → …/types.ts [263.8ms]
+Found 119 endpoints
+Generating client... …/schemas.ts
+Generating runtime declarations... …/schemas.types.d.ts
+OK: src/api/generated matches the contract
+EXIT=0
+
+$ shasum -a 256 contracts/openapi/openapi.yaml contracts/openapi/paths/calendar.yaml
+cd8b77ac0415295f033db8064bfa586780a44a5b3990aa2a6463931fc0b4cfec  contracts/openapi/openapi.yaml
+cd5b36dfa559542af65836e27af32b8271550bb977bb0acfdd2fd2613a684841  contracts/openapi/paths/calendar.yaml
+
+$ git log --format='%h %ad %s' --date=short d8d346a..HEAD -- contracts/openapi/paths/calendar.yaml
+081057d 2026-10-12 fix(focus): focus blocks belong to one user everywhere (#203)
+$ git log d8d346a..HEAD -- contracts/features/PAC-23.yaml contracts/features/PAC-23.md contracts/openapi/MIGRATION.md
+(no output)
+
+$ grep -rn "HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen" --include=*.go backend/ | grep -v "^backend/api/gen/"
+(no output)  EXIT=1
+$ grep -c 'paceday.gen.go:[0-9]' backend/api/gen/paceday.gen.go
+0
+$ grep -c 'API-005' contracts/openapi/paths/calendar.yaml
+0
+```
+
+Probe 1 — the handwritten path (`handlers_audit.go:14` + `audit_log.go:16-18`),
+scratchpad, stdlib only:
+
+```
+query                        nvals  Query().Get              atoi                       today  declared
+?                            0      ""                       0 +err                     100    50 (a)
+?limit                       1      ""                       0 +err                     100    50 (a)
+?limit=                      1      ""                       0 +err                     100    50 (a)
+?limit=50                    1      "50"                     50                         50     50 (d)
+?limit=abc                   1      "abc"                    0 +err                     100    50 (b)
+?limit=0                     1      "0"                      0                          100    50 (c)
+?limit=10000                 1      "10000"                  10000                      100    500 (e)
+?limit=99999999999999999999  1      "99999999999999999999"   9223372036854775807 +err   100    500 (e, ErrRange)
+?limit=%zz&limit=10          1      "10"                     10                         10     10 (d)
+?limit=10&limit=500          2      "10"                     10                         10     10 (d)
+?limit=abc&limit=10          2      "abc"                    0 +err                     100    50 (b)
+?limit=%zz                   0      ""                       0 +err                     100    50 (a)
+?limit=+50                   1      " 50"                    0 +err                     100    50 (b)
+?limit=%2B50                 1      "+50"                    50                         50     50 (d)
+```
+
+Probe 2 — the generated binder, `gen.HandlerFromMux(gen.Unimplemented{},
+chi.NewRouter())` from a scratch module whose `go.mod` `replace`s
+`github.com/Enach/paceday/backend` with this worktree's `backend/` (no copy; the
+worktree path has no space), `httptest` requests; `501` = bound and reached
+`Unimplemented`:
+
+```
+?                            -> 501
+?limit                       -> 400 text/plain; charset=utf-8 nosniff  …ParseInt: parsing "": invalid syntax
+?limit=                      -> 400 text/plain; charset=utf-8 nosniff  …ParseInt: parsing "": invalid syntax
+?limit=50                    -> 501
+?limit=abc                   -> 400 text/plain; charset=utf-8 nosniff  …ParseInt: parsing "abc": invalid syntax
+?limit=0                     -> 501
+?limit=10000                 -> 501
+?limit=99999999999999999999  -> 400 text/plain; charset=utf-8 nosniff  …ParseInt: parsing "99999999999999999999": value out of range
+?limit=%zz&limit=10          -> 501
+?limit=10&limit=500          -> 400 text/plain; charset=utf-8 nosniff  …multiple values for single value parameter 'limit'
+?limit=%zz                   -> 501
+```
+
+Citation pass: every `file:line` in the fragment's audit surface and in the manifest
+was opened at `d8d346a` and at `HEAD` in this repo, and at `afd29a8` (2026-10-04) and
+`ed44af0` in the web repo; the table in R4-F3 is that output.
+
+**Not run, and not claimed.** `make verify`, `make test`, `make e2e`, anything Docker
+— another gate run owns Docker; nothing in these findings touches Go or needs a
+database. `make openapi` — it writes. Linear — not authenticated in this session, so
+PAC-51/52/53's existence and state were not checked. The AC-1/3/4/8/15 two-user tests
+still need a stack and still do not exist, which is unchanged and correct at stage 2.
+
+---
+
+## Revision 5 — 2026-10-22
+
+*By `contract-author`, answering the `reject` at "Challenge, revision 4 — 2026-10-22":
+4 blocking, 3 non-blocking. Written locally on branch `nihochart/pac-49-50-specs` at
+`a896faa`, with the sibling web checkout at `ed44af0` and the session toolchain (Go
+1.25.5, PyYAML venv, Node 22, `oapi-codegen` v2.4.1). This is a **re-baseline, not a
+redesign**: the interface, the `limit` resolution procedure and the no-`400` ruling are
+upheld by the challenge and are not re-argued here. One line on the spec, since every
+revision has said it: `docs/specs/PAC-23.md` is `draft` with a 2026-09-17 challenge
+verdict of accept-with-changes, and revisions 1–5 all proceed on that basis.*
+
+**Changed in this revision**: `contracts/openapi/paths/calendar.yaml` (hand-edited,
+129 insertions / 63 deletions, description-only), `contracts/openapi/openapi.yaml`
+(assembler), `backend/api/gen/paceday.gen.go` (generator, 10/10, comment-only),
+`smart-calendar-flow/src/api/generated/types.ts` and `schemas.types.d.ts` (the web
+repo's generators, 14/12 and 13/11, comment-only; `schemas.ts` unchanged because
+descriptions are not emitted into it), `contracts/features/PAC-23.yaml`, and this
+document — the header, one citation each in §4 and §6, and this section.
+`contracts/openapi/MIGRATION.md` was regenerated and came out byte-identical. No
+hand-written Go, no spec, no plan, nothing in `docs/specs/PAC-49.md` or `PAC-50.md`.
+
+**Accepted**: R4-F1, R4-F2, R4-F3, R4-F4, R4-N1, R4-N2, R4-N3 — all of them, as
+stated. Nothing is rejected. Two things the challenge analysed under "What depends
+on this" are deliberately **not** done, and are recorded at the end.
+
+### F4 — the scoped read now says what the server does today. Taken first, because it is the one finding the tree did not cause
+
+The challenge is right that this has been missing since revision 1: the `limit`
+parameter has carried a "CURRENT SERVER BEHAVIOUR … (finding API-074)" paragraph since
+revision 2, and the scoping — the critical finding and the whole point of the
+feature — had no such half. `grep -c API-005 contracts/openapi/paths/calendar.yaml`
+was `0`.
+
+The operation description now carries the parallel paragraph, as the second
+paragraph, immediately after the present-tense statement of the scoped read. The
+challenge supplied the text; I checked every clause against the code before using it
+and extended it where the check gave me more than the sentence claimed:
+
+- `storage.ListAuditLog` (`backend/storage/audit_log.go:19`) is
+  `SELECT id, action, details, created_at FROM audit_log ORDER BY created_at DESC, id
+  DESC LIMIT $1` — the paragraph quotes the statement rather than describing it;
+- `audit_log` is created at `backend/storage/migrations/001_initial.up.sql:44-49` with
+  four columns and no `user_id`; `grep -l audit_log backend/storage/migrations/*`
+  returns `001_initial.{up,down}.sql` and nothing else, and the highest migration on
+  disk is `024_settings_per_user`;
+- `storage.WriteAuditLog` (`backend/storage/focus_blocks.go:74-76`) is
+  `func WriteAuditLog(db *sql.DB, action, details string)` and inserts no user — added
+  to the challenge's three clauses because a reader asking "could the column exist and
+  simply not be read" should get the write side answered too;
+- `auditHandler` (`backend/api/handlers_audit.go:12-23`) reads `limit` and nothing
+  else from the request.
+
+So, today, every authenticated caller receives every user's rows, including other
+users' meeting titles and typed prompts, and the fragment now says so in those words,
+names API-005 with its severity, says which acceptance criteria (AC-1, AC-3, AC-4,
+AC-8) test the replacement, and ends with the two falsifying commands. The register
+row (`docs/factory/api-audit.md:239`, still `Confirmed`) and the contract now point at
+each other; `resolvesFindings` records that.
+
+### F1 — both hashes re-recorded; the fragment hash's history written down
+
+The fragment hash fired, as the challenge says, and the cause is exactly what it
+found: `git log d8d346a..HEAD -- contracts/openapi/paths/calendar.yaml` is one
+commit, `081057d` (#203, 2026-10-12), whose diff to this fragment is two lines —
+`focus_blocks.go:61-63` → `:74-76` in the operation description and in
+`AuditEntry.action`. The edit was correct and is kept.
+
+Revision 5 re-records both hashes against the tree it is written on, after the
+**final** regeneration (I regenerated twice — see §V for why — and the recorded values
+are from the second run, with no fragment edit after it):
+
+```
+ead120ee190bae9b11b3debfc6971b8fdbea99db1620bbc2ab9663f8e19fba19  contracts/openapi/openapi.yaml
+c0d00e060b2380117ef21b24743ac329d95d7917cd6921d4ad41155b9165c673  contracts/openapi/paths/calendar.yaml
+```
+
+`contractRevision` is `5`. `contractHashOf` records the assembler's counts at this
+revision — 98 paths, 119 operations (**12 public, 107 authenticated**), **145
+schemas**, 11 responses, 8 parameters, 2 security schemes, 18 `x-uncertain` — and
+says plainly that the three counts that moved since revision 4 (14/105/146) were moved
+by other features' merges between #183 and `a896faa`, not by PAC-23, whose own edits
+are description-only in both repos. `contractFragmentHashOf` now carries a "HISTORY
+THAT MATTERS" sentence naming #203, the two-line edit, and the fact that it happened
+with no revision, no challenge and no manifest bump; and an "EXPECTED TO MOVE AGAIN"
+sentence naming PAC-49's `auto_schedule_ran` edit as the next thing that will falsify
+it, by design. The two line citations inside that field that had moved are corrected
+(`auth.yaml:604` → `:617`, `client.ts:349` → `:365`, both verified).
+
+The process note the challenge addressed to the factory's owner is not mine to act on
+and I have not; it is recorded in `relatedIssues` under PAC-51 as a second instance.
+
+### F2 — the web repo, as it is on 2026-10-22
+
+Every premise the challenge listed as false I re-checked in the web checkout at
+`ed44af0` rather than taking from the challenge:
+
+- `git ls-files src/api/generated` → `.gitkeep`, `README.md`, `schemas.ts`,
+  `schemas.types.d.ts`, `types.ts`; first committed in #87 (2026-10-10), whose body
+  says "src/api/generated was never generated (README only). types.ts, schemas.ts and
+  schemas.types.d.ts are now committed"; regenerated since by #93, #96, #97, #98, #99.
+- `package.json` pins `openapi-typescript` `7.4.4` and `typed-openapi` `4.1.0`;
+  `node_modules/ajv` is `8.20.0` and has `dist/core.js`; `require.resolve` finds both
+  `yaml` and `js-yaml`, neither declared.
+- `src/api/generated/schemas.ts` has
+  `AuditEntry = z.strictObject({ id: z.number().int(), action: z.enum([…seven…]),
+  details: z.string(), created_at: z.iso.datetime() })`; the only import from
+  `generated/schemas` in the repo is `SettingsUpdate` (`src/api/client.ts:2`);
+  `getAudit` (`client.ts:1159-1166`) still runs `normalizeAuditEntries`; the page
+  still types entries with the hand-written `AuditEntry` (`src/api/types.ts:222-227`,
+  `action: string` at `:224`).
+- `make openapi` and `make openapi-check` from this repo's root both reach the web
+  step and it passes (§V).
+
+What changed, by location — the six the challenge tabulated plus one it folded in:
+
+| where | now says |
+|---|---|
+| fragment, `AuditEntry.action` | the zod schema **exists** (`schemas.ts`, `z.strictObject`, `action: z.enum([…])`, committed since #87) and is not applied to the audit path; the day it is applied to `getAudit`, an out-of-enum value is a thrown validation error and the whole response is lost. The challenge's sentence, with the `SettingsUpdate` import named so the "not applied" half is checkable. |
+| manifest `pathsDeliberatelyNotListed` | `src/api/generated` stays out of `allowedPaths` for a *different* reason: factory §3 rule 3 / §5 — the frontend-implementer may not edit generated files, and the regeneration this contract causes is committed by the regenerate commit that follows the merge (as #93/#96–#99 were), not by the frontend stream. It is a consumer, listed as one. `src/api/types.ts` stays out because the stream keeps the hand-written type (next row). |
+| manifest `schemasChanged.breaking` | says where the enum actually lands in the web repo (both generated files), that neither is applied to the audit path, and — the decision revision 4 deferred to an event that has now happened — that **PAC-23's frontend stream keeps the hand-written `AuditEntry`** and does not switch `getAudit` to the generated zod schema. Three reasons are given: applying `z.strictObject` with a closed enum to `getAudit` makes one bad row discard the whole response, which is the behaviour the fragment's degradation paragraph forbids, so it is a behaviour change needing the placeholder rule first, not a type swap; no PAC-23 acceptance criterion asks for it and `src/api/types.ts` is not in `allowedPaths`; and it belongs with the wider "apply the generated schemas to the hand-written client" work, which is a frontend issue of its own and not a security fix's rider. |
+| manifest `schemasChanged.degradation` | the last sentence corrected: the zod schema exists and is exactly as unforgiving as predicted; it is not applied; `client.ts:435` → `:451`, `types.ts:221` → `:224`. |
+| manifest `consumersAffected`, `DEFAULT_AUDIT_LIMIT` | re-based: the "typed-openapi 1.1.0 cannot run" reason **expired** on 2026-10-10; what survives is the reason that does not depend on the lockfile — no pinned generator emits the default as a value. Checked in this revision's regenerated files: `types.ts` has `limit?: number` with `default: 50` only as JSDoc prose; `schemas.ts` is generated with `--schemas-only` and carries no parameters at all, so `limit` does not appear in it. Precondition 1 on item (c) (place the assertion above the generator loop) is **void**; precondition 2 (declare a YAML reader) **stands and is unblocked**, so `package.json` and `package-lock.json` are added to the frontend `allowedPaths` for that single change, with an `allowedPathsNote` saying so. The capitalised "UNTIL (c) LANDS…" sentence is kept, because it is still true; the reason (c) was not landable is gone. |
+| manifest `verification.notRun` | rewritten; `make openapi-check` is now under `ran`, all four steps. |
+| manifest `relatedIssues`, PAC-52 | "ITS SCOPE HAS LANDED" via web #87; blocks none of the three things revision 4 said it blocked. Whether the Linear issue is closed I could not check (not authenticated); said so. |
+| manifest `consumersAffected`, new entry | `smart-calendar-flow/src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts}` — the second generated consumer: what this contract puts in each file, how each is produced and gated, that none is a runtime consumer for this operation, and that the revision-5 diff to them is comment-only. |
+| Revision 4 "Still unresolved" item 2 | superseded: factory §2 gate 4 is fully checked since 2026-10-10 and was run in full here. Left in place in that section as the record of what revision 4 believed; corrected by this section. |
+
+One correction to the challenge's own premise, found while doing this: the schema
+descriptions are emitted into **three** generated files, not two. `schemas.ts` carries
+no descriptions, but `schemas.types.d.ts` carries the `AuditEntry` schema descriptions
+as JSDoc (it is why that file's diff is 13/11 while `schemas.ts` is untouched). The
+operation and parameter descriptions go into two (`paceday.gen.go`, `types.ts`). The
+fragment's citation note and the manifest's `citationPolicy` say so precisely; it
+changes nothing about the remedy, which is the symbol rule either way.
+
+### F3 — citations, re-derived; writers and 401 sites by function
+
+Every row of the challenge's table was re-derived against this tree rather than
+shifted by the offsets it gives, and the result agrees with the table in every row.
+Applied as the challenge asks: for the seven writers and the three `requireAuth`
+rejections — all inside text that is emitted into generated files in both repos — the
+citation is now **file and enclosing function**, with the falsifying `grep` kept beside
+it; a bare `file:line` survives only where no symbol encloses the claim.
+
+| was | now | enclosing symbol, where used |
+|---|---|---|
+| `handlers_schedule.go:188` | function | `scheduleHandlers.createMeeting` (`WriteAuditLog` at `:191` today) |
+| `handlers_settings.go:206` (header comment, `ErrorResponse`) | `:371` | — (`func writeError` is the line) |
+| `routes.go:179` | `:180` | — , plus `grep -n audit backend/api/routes.go` |
+| `routes.go:27` | unchanged (`:26` is the slots route) | — |
+| `booking.go:267` / `:250-269` | `:269` / `:244-271` | `BookingEngine.ConfirmBooking` named |
+| `compression.go:178` | function | `CompressionEngine.Apply` (`:180` today) |
+| `focus_time.go:106` / `:101-106` | function | `FocusTimeEngine.RunForUser` (`:108`, marshal `:103-108`) |
+| `focus_time_cleaner.go:39` / `:33-39` | function | `FocusTimeEngine.ClearWeek` (`:47`, marshal `:42-47`) |
+| `smart_schedule.go:323` | function | `SmartScheduler.CreateMeeting` (`:325`) |
+| `parser.go:221` | function | `NLPService.Parse` (`:222`) |
+| `handlers_nlp.go:67` | function | `nlpHandlers.confirm` (`:67`, unchanged but cited by function for consistency) |
+| `handlers_schedule.go:80-93` | unchanged | `scheduleHandlers.applyCompress` named beside it |
+| `middleware.go:38`, `:44`, `:50` | function | `requireAuth`, with the three rejection reasons spelled out instead of the lines |
+| `handlers_org.go:21`, `handlers_me.go:19` | unchanged | already by function; lines still correct |
+| `auth.yaml:604` (manifest) | `:617` | — |
+| `e2e/SEAM-REQUIRED.md:209` (manifest) | `:240` | — (R4-N3) |
+| `client.ts:349` (manifest) | `:365` | `requestApi` named |
+| `client.ts:403-404` / `:403` / `:404` | `:419-420` / `:419` / `:420` | — |
+| `client.ts:410-419` | `:426-435` | `formatAuditDetails` already named |
+| `client.ts:432` / `:435` | `:448` / `:451` | `normalizeAuditEntries` named |
+| `types.ts:221` / `:219-224` | `:224` / `:222-227` | — |
+| `Audit.tsx:38` / `:94` | `:39` / `:95` | — |
+| `QuickActions.tsx:20` | `:21` | — |
+
+The fragment's file-header comment carried `handlers_settings.go:206` too (it predates
+PAC-23); it is the same fact in the same file, so it is corrected with the
+`ErrorResponse` one rather than left wrong. The header's `middleware.go:36-52` was
+re-checked and is still exact (`:36` is the first `if tokenStr == ""`, `:52` closes
+the third branch). Two citations in this fragment that are not on the audit surface
+(`backend/calendar/freebusy.go:10`, `backend/calendar/provider.go:13`) were opened,
+point at the structs they name, and are not PAC-23's to touch.
+
+Both documents' citations were then fed to the same kind of pass revision 4 ran, after
+the **final** regeneration: 43 `file:line` claims across both repos opened and checked
+for an expected substring, 43 ok, 0 failed; and the twelve enclosing symbols grepped
+for in their files, each found exactly once. Table and command in §V. The pass is a
+scratchpad script, not a gate — that is still PAC-51.
+
+The policy change is written into `citationPolicy` rule 4, replacing revision 4's
+"these files are hand-written and stable": they were not, and the rule now says which
+claims get a symbol and which keep a line, and why. §4 and §6 of this document carry
+one stale citation each (`Audit.tsx:38`, `routes.go:179`) and both are corrected in
+place with the old value noted, as revision 4 did for its own.
+
+### N1, N2, N3
+
+**N1 — accepted.** The header of this document now says revision 5 and carries both
+revision-5 hashes, with the lineage of falsified values in one sentence.
+
+**N2 — accepted.** `rollback` no longer says the highest migration on disk is `023`:
+`024_settings_per_user` exists on disk and on `main` (PAC-24, #204, 2026-10-15). It now
+also says that `025` is reserved three times over — the plan, `docs/specs/PAC-49.md`
+v3 ("025 is PAC-23's, so this spec takes 026") and `docs/specs/PAC-50.md` v2.1
+("027 … 025 is PAC-23's, 026 is PAC-49's") — so renumbering it again would move three
+documents, not one. The stage-7 precondition stays: nothing exists under `025` yet.
+
+**N3 — accepted**, folded into F3: `e2e/SEAM-REQUIRED.md:240`.
+
+### Two things deliberately not done
+
+Both come from the challenge's "What depends on this" section, and both are recorded
+in the manifest so the next reader does not take their absence for an oversight.
+
+1. **The `auto_schedule_ran` literal is not added.** `docs/specs/PAC-49.md` v3 needs an
+   eighth `action`. The enum is closed on purpose and the fragment says what an eighth
+   value costs — a contract change to this fragment — and that change is PAC-49's
+   contract stage's to make, under PAC-49's manifest, on top of revision 5. It touches
+   the `enum` list and three sentences around it (the "complete set … at all seven"
+   sentence, the per-action `details` split, and "no value in this enum distinguishes
+   an action a person took from one the scheduler took"). Pre-adding a literal that no
+   writer emits would make this contract describe a server that does not exist, which
+   is the rule this whole document is built on. `contractFragmentHashOf` says PAC-49 is
+   expected to move the hash. (`schemasChanged.change`.)
+2. **The "no authentication or configuration events" rule is not loosened.**
+   `docs/specs/PAC-50.md` §4.6, decided 2026-10-22, records every SSO write and
+   step-up outcome in a dedicated SSO event table created by its migration 027 — in
+   its own words, "the two records do not go into the activity log at all". So the
+   inversion the challenge described (an attacker's denied step-up visible only to the
+   attacker) does not arise, nothing about this operation needs room for PAC-50, and
+   the description's rule, contract §5 bullet 4 and spec §3.5 stand as written.
+   (`schemasChanged.deliberatelyUnchanged`.)
+
+### V — what I ran, verbatim
+
+From the worktree root, after `source` of the session `env.sh` (Go 1.25.5, PyYAML venv,
+Node 22, `oapi-codegen` on `PATH`); `WEB` resolved to the sibling checkout. I ran the
+write-then-check sequence **twice**: once after the main fragment edits, and once more
+after correcting the "two generated files" sentence to name `schemas.types.d.ts` as a
+third emission target for the schema descriptions (found by reading the first run's
+web diff). The hashes recorded above and in the manifest are from the second run; the
+fragment was not edited after it. Output of the second run:
+
+```
+$ make openapi
+python3 /Users/nicolashochart/PycharmProjects/clockwise-like-specs/scripts/openapi_assemble.py
+wrote contracts/openapi/openapi.yaml
+  paths      : 98
+  operations : 119  (12 public, 107 authenticated)
+  schemas    : 145
+  responses  : 11
+  parameters : 8
+  securitySchemes: 2
+  x-uncertain: 18
+python3 /Users/nicolashochart/PycharmProjects/clockwise-like-specs/scripts/openapi_migration_report.py
+wrote contracts/openapi/MIGRATION.md
+  operations : 119  (0 generated, 119 handwritten)
+/Users/nicolashochart/PycharmProjects/clockwise-like-specs/scripts/openapi_gen_go.sh
+wrote backend/api/gen/paceday.gen.go
+-> regenerating web artifacts in /Users/nicolashochart/PycharmProjects/clockwise-like-specs/../smart-calendar-flow
+CONTRACT="/Users/nicolashochart/PycharmProjects/clockwise-like-specs/contracts/openapi/openapi.yaml" /Users/nicolashochart/PycharmProjects/smart-calendar-flow/scripts/openapi-gen.sh
+✨ openapi-typescript 7.4.4
+🚀 /Users/nicolashochart/PycharmProjects/clockwise-like-specs/contracts/openapi/openapi.yaml → /var/folders/j9/1c0hhr0132d29twct815lqq40000gn/T/tmp.wCLjOpFykf/types.ts [198.9ms]
+Found 119 endpoints
+Generating client... /var/folders/j9/1c0hhr0132d29twct815lqq40000gn/T/tmp.wCLjOpFykf/schemas.ts
+Generating runtime declarations... /var/folders/j9/1c0hhr0132d29twct815lqq40000gn/T/tmp.wCLjOpFykf/schemas.types.d.ts
+Done in 98ms !
+wrote src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts} from /Users/nicolashochart/PycharmProjects/clockwise-like-specs/contracts/openapi/openapi.yaml
+EXIT=0
+
+$ make openapi-check
+python3 /Users/nicolashochart/PycharmProjects/clockwise-like-specs/scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)
+python3 /Users/nicolashochart/PycharmProjects/clockwise-like-specs/scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 119 operations (0 generated)
+/Users/nicolashochart/PycharmProjects/clockwise-like-specs/scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract
+CONTRACT="/Users/nicolashochart/PycharmProjects/clockwise-like-specs/contracts/openapi/openapi.yaml" /Users/nicolashochart/PycharmProjects/smart-calendar-flow/scripts/openapi-gen.sh --check
+✨ openapi-typescript 7.4.4
+🚀 /Users/nicolashochart/PycharmProjects/clockwise-like-specs/contracts/openapi/openapi.yaml → /var/folders/j9/1c0hhr0132d29twct815lqq40000gn/T/tmp.LzD5smVdgH/types.ts [194.9ms]
+Found 119 endpoints
+Generating client... /var/folders/j9/1c0hhr0132d29twct815lqq40000gn/T/tmp.LzD5smVdgH/schemas.ts
+Generating runtime declarations... /var/folders/j9/1c0hhr0132d29twct815lqq40000gn/T/tmp.LzD5smVdgH/schemas.types.d.ts
+Done in 100ms !
+OK: src/api/generated matches the contract
+EXIT=0
+
+$ cd backend && go build ./...
+EXIT=0
+$ cd backend && go vet ./...
+EXIT=0
+```
+
+Hashes, reproduced as `contractHashOf` and `contractFragmentHashOf` say to, after the
+second run:
+
+```
+$ shasum -a 256 contracts/openapi/openapi.yaml contracts/openapi/paths/calendar.yaml
+ead120ee190bae9b11b3debfc6971b8fdbea99db1620bbc2ab9663f8e19fba19  contracts/openapi/openapi.yaml
+c0d00e060b2380117ef21b24743ac329d95d7917cd6921d4ad41155b9165c673  contracts/openapi/paths/calendar.yaml
+```
+
+Shape of the diff — generated changes are comment-only in both repos, and the register
+did not move:
+
+```
+$ git diff --numstat -- backend/api/gen contracts/openapi
+10	10	backend/api/gen/paceday.gen.go
+120	76	contracts/openapi/openapi.yaml
+129	63	contracts/openapi/paths/calendar.yaml
+# contracts/openapi/MIGRATION.md: byte-identical after regeneration, not in the diff
+
+$ git diff -U0 backend/api/gen/paceday.gen.go | grep -E '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-]\s*//'
+(no output)  EXIT=1
+$ grep -c 'paceday.gen.go:[0-9]' backend/api/gen/paceday.gen.go
+0
+$ grep -c 'API-005' contracts/openapi/paths/calendar.yaml
+1
+
+# in ../smart-calendar-flow
+$ git status --short
+ M src/api/generated/schemas.types.d.ts
+ M src/api/generated/types.ts
+$ git diff --numstat
+13	11	src/api/generated/schemas.types.d.ts
+14	12	src/api/generated/types.ts
+$ git diff -U0 src/api/generated/ | grep -E '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-]\s*(\*|/\*\*)'
+(no output)  EXIT=1
+```
+
+The standing falsifiers, re-run on this tree rather than quoted:
+
+```
+$ grep -rn 'HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen' --include='*.go' backend/ | grep -v '^backend/api/gen/'
+(no output)  EXIT=1
+$ grep -n audit backend/api/routes.go
+180:		r.Get("/api/audit", auditHandler(db))
+$ grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go
+backend/storage/focus_blocks.go:74:func WriteAuditLog(db *sql.DB, action, details string) {
+backend/nlp/parser.go:222:	storage.WriteAuditLog(s.DB, "nlp_parsed", …)
+backend/api/handlers_nlp.go:67:	storage.WriteAuditLog(h.db, "nlp_confirmed", …)
+backend/api/handlers_schedule.go:191:	storage.WriteAuditLog(h.db, "meeting_created", …)
+backend/engine/smart_schedule.go:325:	storage.WriteAuditLog(e.DB, "meeting_scheduled", …)
+backend/engine/focus_time.go:108:	storage.WriteAuditLog(e.DB, "focus_created", string(detail))
+backend/engine/focus_time_cleaner.go:47:	storage.WriteAuditLog(e.DB, "focus_cleared", string(detail))
+backend/engine/compression.go:180:		storage.WriteAuditLog(e.DB, "meeting_moved", …)
+$ grep -rn 'error.:.unauthorized' --include='*.go' backend/api/ | grep -v '^backend/api/gen/'
+backend/api/handlers_org.go:21
+backend/api/handlers_me.go:19
+backend/api/middleware.go:38
+backend/api/middleware.go:44
+backend/api/middleware.go:50
+$ grep -l audit_log backend/storage/migrations/*
+backend/storage/migrations/001_initial.up.sql
+backend/storage/migrations/001_initial.down.sql
+$ ls backend/storage/migrations | tail -2
+024_settings_per_user.down.sql
+024_settings_per_user.up.sql
+$ git log --format='%h %ad %s' --date=short d8d346a..HEAD -- contracts/openapi/paths/calendar.yaml
+081057d 2026-10-12 fix(focus): focus blocks belong to one user everywhere (#203)
+```
+
+**The citation pass.** A scratchpad script (`python3 -I`, stdlib only) opened every
+`file:line` written into the audit surface of `contracts/openapi/paths/calendar.yaml`
+and into `contracts/features/PAC-23.yaml`, in both repos, and asserted an expected
+substring on that line or within that range — 43 claims, **43 ok, 0 failed** — then
+grepped each of the twelve enclosing symbols now cited by name
+(`FocusTimeEngine.RunForUser`, `FocusTimeEngine.ClearWeek`,
+`SmartScheduler.CreateMeeting`, `CompressionEngine.Apply`,
+`scheduleHandlers.createMeeting`, `scheduleHandlers.applyCompress`, `NLPService.Parse`,
+`nlpHandlers.confirm`, `BookingEngine.ConfirmBooking`, `requireAuth`,
+`orgHandlers.members`, `meHandlers.me`) in its file: each found exactly once. The one
+`file:line` left in the manifest that the pass does not cover is
+`focus_blocks.go:61-63` inside `contractFragmentHashOf`, which is a quotation of what
+#203 changed, not a claim about today.
+
+**Not run, and not claimed.** `make verify`, `make test`, `make e2e`, `make lint`,
+`make coverage`, `golangci-lint`, `scripts/test-backend.sh` — revision 5 changes no
+hand-written Go and no behaviour, `go build` and `go vet` are the cheap answer to "did
+the regeneration break the tree", and another gate run owns Docker. The two `limit`
+probes — the revision-4 challenge re-ran both against this tree on the same day and
+pasted both tables; `handlers_audit.go` and `audit_log.go` are byte-identical to what
+it read. Anything npm beyond what the two `make` targets invoke in the web repo; no
+frontend test, lint or typecheck. Linear — not authenticated in this session; the Linear
+comment body is handed back for posting rather than posted. Nothing was committed,
+stashed or checked out in either repo; the web repo's two regenerated files are left
+modified in its working tree, as `make openapi` leaves them.
+
+### Still unresolved after revision 5
+
+1. **AC-1, AC-3, AC-4, AC-8 and AC-15 are unpinned**, because the tests do not exist —
+   correct at stage 2, and what stage 4 must not ship without. The challenger's extra
+   criterion stands: a contract test issuing `?limit=abc`,
+   `?limit=99999999999999999999` and `?limit=%zz&limit=10` against the **mounted**
+   handler, asserting 200 and the resolved count.
+2. **Factory §2 gate 4 is fully checked** as of this revision — the revision-4 item
+   that said otherwise is closed. What remains on the web side is the AC-10 pin, item
+   (c), now landable: it needs the YAML reader declared, which is why `package.json` and
+   its lockfile entered `allowedPaths`.
+3. **The parse/range/repeat `400` divergence is recorded in three places, not closed.**
+   PAC-53 closes it from the handwritten side; OQ-5 closes it from the generated side.
+4. **OQ-1, OQ-2, OQ-3, OQ-4, OQ-6** unchanged — product or spec questions.
+5. **OQ-5 restated, not decided.** Owner: whoever owns `MIGRATION.md`.
+6. **PAC-51 is the only thing that would make this contract's code claims gated rather
+   than merely checked**, and this revision adds two instances to its case (F1, F3).
+   The citation pass is a practice the next author inherits only by reading this.
+7. **`getCurrentUser` declares `PlainTextError` for a 401 whose body is this schema's
+   example** (Revision 4 §N3). Recorded, not fixed: `paths/auth.yaml` is not PAC-23's.
+8. **One edit to this fragment is expected from another feature and will move the
+   fragment hash**: PAC-49's `auto_schedule_ran`, made by its contract stage under its
+   own manifest. `contractFragmentHashOf` says so, so the next challenger reads a moved
+   hash as expected rather than as a repeat of R4-F1.
+
+---
+
+## Challenge, revision 5 — 2026-10-22
+
+*By `contract-challenger`, against revision 5 of `contracts/features/PAC-23.yaml`
+(`contractRevision: 5`, committed in `7b71b4a` on branch `nihochart/pac-49-50-specs`,
+whose parents `631b105` and `36e459e` touch only `docs/specs/`; `a896faa` is an
+ancestor) and the `/api/audit` surface in `contracts/openapi/paths/calendar.yaml`. The
+sibling web repo was read at `ed44af0` with `src/api/generated/{types.ts,
+schemas.types.d.ts}` regenerated by revision 5 and left uncommitted, as the factory's
+cross-repo order requires. I did not write revision 5 and did not consult its author.
+Revision 5 declares itself a re-baseline — interface, `limit` procedure and the no-`400`
+ruling unchanged — and the revision-4 challenge asked for exactly that. So this
+challenge asks two things: is each of R4-F1..F4 and R4-N1..N3 resolved **as the tree
+actually is**, re-derived rather than taken from the revision's own tables; and did the
+re-baseline change the interface after all. Where a claim could be executed I executed
+it; "What I ran" is at the end.*
+
+**Verdict**: accept
+
+Every revision-4 finding is resolved in substance and, where I could check it by
+command, in fact. Nothing in revision 5 changes the interface: with `description`,
+`summary` and `x-uncertain` stripped, the fragment at `631b105` and at `7b71b4a` load to
+**identical** documents (script under "What I ran"), the generated Go diff is 10/10 with
+no non-comment line, and the regenerated web files differ by comment lines only. Both
+hashes reproduce byte-for-byte. Three notes follow, all non-blocking; one of them is a
+sentence in the fragment that undercounts by one where its own text is emitted, and the
+other two are version labels and a stale pointer in a spec PAC-23 does not own. None is a
+claim about today's server that is not so, which is the standard the four earlier
+rejections applied, and none changes a line of generated code.
+
+### Requests wrongly permitted
+
+Nothing new, and nothing old reopened. The wire still admits no vocabulary for another
+user's rows — no path parameter, no body, one optional query parameter,
+`additionalProperties: false` on the item — so AC-3's "any combination of the
+parameters the interface accepts" is a single parameter with five outcomes. I re-ran both
+`limit` probes rather than citing the revision-4 tables (the revision says the handlers
+are byte-identical to what revision 4 read; `git diff a896faa HEAD` on
+`handlers_audit.go`, `audit_log.go`, `focus_blocks.go`, `routes.go` and `middleware.go` is
+empty, so they are). Probe 1 added five inputs the revision-4 table did not have:
+
+| request | `Query().Get` | `Atoi` | today | declared |
+|---|---|---|---|---|
+| `GET /api/audit?limit=-5` | `"-5"` | `-5` | 100 | 50 (c) |
+| `GET /api/audit?limit=501` | `"501"` | `501` | 100 | 500 (e) |
+| `GET /api/audit?limit=500&limit=10` | `"500"` | `500` | 500 | 500 (d — first decodable value) |
+| `GET /api/audit?limit=50.5` | `"50.5"` | `0 +err` | 100 | 50 (b) |
+| `GET /api/audit?limit=1e2` | `"1e2"` | `0 +err` | 100 | 50 (b) |
+
+All five land in the outcome the procedure assigns them, and the fourteen inputs from
+the revision-4 table reproduce exactly (full output below). Probe 2 — the generated
+binder, mounted from *this* worktree's `backend/api/gen` through a `replace` — reproduces
+all eleven rows: `?limit`, `?limit=`, `?limit=abc`, `?limit=99999999999999999999` and
+`?limit=10&limit=500` are `400 text/plain; charset=utf-8` + `nosniff` with the exact
+`strconv.ParseInt` / `multiple values` messages the fragment quotes; `?limit=0`,
+`?limit=10000`, `?limit=%zz&limit=10` and `?limit=%zz` reach the handler. The binder is
+still not mounted (the fragment's falsifying grep returns nothing), so no deployed
+request receives any of those `400`s and the refusal to declare one stands.
+
+### Responses the client cannot handle
+
+None. Four bodies constructed and traced through
+`smart-calendar-flow/src/api/client.ts` as it is at `ed44af0`:
+
+1. `200 application/json` `[{"id":1,"action":"focus.run","details":"","created_at":"2026-10-22T08:00:00Z"}]`
+   — `requestApi` returns it (`:390-396`), `normalizeAuditEntries` (`:438-453`) passes
+   `focus.run` through at `:451` because it is a non-empty string, the page types it
+   as the hand-written `AuditEntry` (`src/api/types.ts:222-227`, `action: string`), and
+   the row renders. The generated `z.strictObject` at `src/api/generated/schemas.ts:38`
+   would throw on it and is imported by nothing on this path (`client.ts:2` imports
+   `SettingsUpdate` only). Exactly what the degradation paragraph now says.
+2. `200 application/json` `null` — `normalizeAuditEntries(null)` falls through every
+   `Array.isArray` branch to `[]` (`:439-445`). The contract forbids the body; the client
+   survives it anyway.
+3. `401 text/plain; charset=utf-8` `{"error":"unauthorized"}\n` — `res.ok` is false,
+   `res.json()` parses the JSON regardless of the content type (`:373-378`), and
+   `apiErrorMessage` returns `unauthorized` from `data.error` (`:330-333`). The 25-byte
+   body, both headers and the `Fprintln` newline are what `MiddlewareUnauthorized`
+   describes, and `http.Error` at `middleware.go:38/:44/:50` is what produces them.
+4. `500 application/json` `{"error":"audit: pq: ..."}` — same path, message surfaces.
+
+One client property worth a line for the stage-4 reviewer, not a contract defect: a
+`200` whose `Content-Type` lacks `application/json` is treated as *unreachable*
+(`client.ts:383-385`) and the mock fallback engages, so the page would silently show
+preview data. The contract declares `application/json` and `handlers_audit.go:20` sets
+it; the generated `ListAuditEntries200JSONResponse` sets it too. Nothing to change.
+
+The generated consumers agree with the fragment: `types.ts:2487` carries the
+seven-member `action` union, `schemas.ts:38` the `z.enum`, and
+`schemas.types.d.ts` `get_ListAuditEntries` declares `200: Array<Schemas.AuditEntry>`,
+`401: Schemas.MiddlewareUnauthorized`, `500: Schemas.ErrorResponse` with
+`query?: Partial<{ limit: number }>` — no `400`, no default as a value. (Line numbers in
+generated files are given here, in a challenge section nothing emits, for the reader's
+convenience only; they will move.)
+
+### Consumers affected
+
+Each one the manifest names, reopened at `ed44af0` and at `7b71b4a`:
+
+- `smart-calendar-flow/src/api/client.ts:2` (`SettingsUpdate` import, the only one from
+  `generated/schemas`), `:365` (`credentials: "include"`), `:419-420`
+  (`DEFAULT_AUDIT_LIMIT`), `:426-435` (`formatAuditDetails`, no `JSON.parse`),
+  `:438-453` (`normalizeAuditEntries`; `Number(e.id)` at `:448`, the `action`
+  normaliser at `:451`), `:1159-1166` (`getAudit`); `src/api/types.ts:222-227`
+  (`action: string` at `:224`); `src/pages/Audit.tsx:39` (subtitle) and `:95` (list
+  key); `src/components/QuickActions.tsx:21` (`useAudit(10, showAudit)`);
+  `src/api/audit.test.ts:50,54` (still `focus.run`, still must change) — every citation
+  the manifest and fragment make is correct today.
+- `src/hooks/useAudit.ts:16-19` and `src/api/contract.ts:79` (`getAudit(limit?:
+  number): Promise<AuditEntry[]>`) — the hook the manifest names "via", and the
+  hand-written port interface it does not name; both type with the hand-written
+  `AuditEntry`, neither changes.
+- `src/api/generated/types.ts` (14/12) and `schemas.types.d.ts` (13/11) — comment-only
+  (`git diff -U0 ... | grep -vE '^[+-]\s*(\*|/\*\*)'` is empty); `schemas.ts` untouched;
+  `package.json` pins `openapi-typescript 7.4.4` / `typed-openapi 4.1.0`; `yaml` and
+  `js-yaml` both `require.resolve` and neither is declared — as the manifest says, and
+  why `package.json`/`package-lock.json` are now in `allowedPaths` for that one change.
+- `backend/api/gen/paceday.gen.go` — 10/10, comment-only; zero `paceday.gen.go:<line>`
+  strings inside it; still mounted by nothing.
+- `mcp/` — no occurrence of `audit`. `e2e/` — prose only, `e2e/auth.ts:29` and
+  `e2e/SEAM-REQUIRED.md:240`.
+- `docs/specs/PAC-49.md` (v3.1) and `docs/specs/PAC-50.md` (v2.2) — dependants; see
+  "What depends on this".
+
+### Contract/implementation divergences
+
+None. The paragraph revision 5 added for R4-F4 was checked clause by clause against the
+code rather than against the challenge that proposed it:
+
+- `backend/storage/audit_log.go:19` is the quoted `SELECT ... FROM audit_log ORDER BY
+  created_at DESC, id DESC LIMIT $1`; `grep -n "WHERE\|user_id"` on the file returns
+  nothing; `:16-18` is the `<= 0 || > 500 → 100` clamp; `:25` is the `make`.
+- `backend/storage/migrations/001_initial.up.sql:44-49` creates `audit_log` with `id
+  SERIAL`, `action`, `details`, `created_at` and nothing else; `grep -l audit_log
+  backend/storage/migrations/*` returns `001_initial.{up,down}.sql` only; the highest
+  file on disk is `024_settings_per_user`; no `025`.
+- `backend/storage/focus_blocks.go:74-76` is `func WriteAuditLog(db *sql.DB, action,
+  details string)` with an `INSERT INTO audit_log (action, details, created_at)`.
+- `backend/api/handlers_audit.go:12-23` reads `limit` and nothing else; `:14` discards
+  `Atoi`'s error; `:20` sets `application/json`.
+- `routes.go:180` is the one `audit` line; `:26`/`:27` are the slots and `POST
+  /api/book/{slug}` routes outside the `requireAuth` group that opens at `:58`; `:59` is
+  `GET /api/auth/me`.
+- the seven writers are at `parser.go:222`, `handlers_nlp.go:67`,
+  `handlers_schedule.go:191`, `smart_schedule.go:325`, `focus_time.go:108`,
+  `focus_time_cleaner.go:47`, `compression.go:180`, with the same seven literals and
+  the same safe/unsafe split (`json.Marshal` at `focus_time.go:103-108` and
+  `focus_time_cleaner.go:42-47`, `%q` at `parser.go:222`, concatenation at the other
+  four); the five `401` producers are `handlers_org.go:21`, `handlers_me.go:19`,
+  `middleware.go:38/:44/:50`, and `:36`/`:52` bracket the three branches as the
+  fragment header says.
+
+So the fragment now says what the server does today, names API-005 with its severity,
+and the register row (`docs/factory/api-audit.md:239`, `Confirmed`) and the contract
+point at each other. `grep -c API-005 contracts/openapi/paths/calendar.yaml` is `1`, and
+the paragraph is carried into `paceday.gen.go`, `types.ts` **and** `schemas.types.d.ts`
+(see R5-N1).
+
+**R4-F1** — both hashes reproduce: `ead120ee…` for the bundle, `c0d00e06…` for the
+fragment, from `shasum -a 256` on the files at `7b71b4a` with the worktree clean. The
+assembler counts the manifest records (98 / 119 / 12 public / 107 authenticated / 145 /
+11 / 8 / 2 / 18) reproduce from an independent walk of the committed bundle, and
+revision 4's manifest did record 14 / 105 / 146, so the three moved counts are correctly
+attributed to other features. `#203`'s diff to the fragment is exactly the two
+`focus_blocks.go:61-63 → :74-76` lines the manifest now records. Resolved.
+
+**R4-F2** — every web premise re-checked at `ed44af0` and true as rewritten (list under
+"Consumers affected"); the six manifest locations and the fragment sentence now describe
+that tree; the deferred decision is taken (the frontend stream keeps the hand-written
+`AuditEntry`), with reasons that hold — applying `z.strictObject` to `getAudit` *is* the
+behaviour the degradation paragraph forbids. Resolved.
+
+**R4-F3** — 43 `file:line` claims across the fragment's audit surface and the manifest
+were opened independently; I sampled 36 of them by hand (every row of the R4-F3 table,
+plus the "still correct" list) and found 36 correct. The twelve enclosing symbols now
+cited by name each occur exactly once in their file (`FocusTimeEngine.RunForUser`
+`focus_time.go:70`, `FocusTimeEngine.ClearWeek` `focus_time_cleaner.go:16`,
+`SmartScheduler.CreateMeeting` `smart_schedule.go:282`, `CompressionEngine.Apply`
+`compression.go:152`, `scheduleHandlers.createMeeting` `handlers_schedule.go:157`,
+`scheduleHandlers.applyCompress` `:73`, `NLPService.Parse` `parser.go:173`,
+`nlpHandlers.confirm` `handlers_nlp.go:38`, `BookingEngine.ConfirmBooking`
+`booking.go:215`, `requireAuth` `middleware.go:24`, `orgHandlers.members`
+`handlers_org.go:16`, `meHandlers.me` `handlers_me.go:16`). `citationPolicy` rule 4
+now says which claims get a symbol and which keep a line. Resolved.
+
+**R4-F4** — resolved as above.
+
+**R4-N1** — header lines 5–12 now say revision 5 with both hashes and the lineage.
+**R4-N2** — `rollback` says `024` is on disk and `025` is reserved three times over; the
+stage-7 precondition stays. **R4-N3** — `:240`. All resolved.
+
+### Uncertainties not actually resolved
+
+None. U-02 remains determined (register `:446`, consumer subtitle `Audit.tsx:39`). The
+fragment's four `x-uncertain` markers are now at `:99`, `:234`, `:1164`, `:1595` — moved
+by revision 5's own prose, which is expected, and the manifest cites none of them by
+line — none on `/api/audit` or `AuditEntry` (checked on the loaded document, not by
+grep); the bundle carries 18.
+
+### Non-blocking
+
+**R5-N1 — the fragment's emission-count sentence is one file short, in the direction
+that strengthens its own rule.** The citation note in the operation description says
+*"This description is emitted verbatim as a doc comment into `paceday.gen.go` and into
+`types.ts`, and the schema descriptions below into those two and `schemas.types.d.ts`
+as well"*; `citationPolicy` rule (1) and Revision 5 §F2 say the same ("the operation
+and parameter descriptions go into two"). In fact `typed-openapi` emits the **operation**
+description as the JSDoc of `get_ListAuditEntries` in `schemas.types.d.ts` too — the
+API-005 paragraph is at `schemas.types.d.ts:2578` — while the `limit` **parameter**
+description is not (`grep 'RESOLUTION PROCEDURE'` on that file finds nothing). So:
+operation and schema descriptions land in three files, the parameter description in
+two. Nothing about the remedy changes — the symbol rule was adopted for exactly this
+reason — but under §7 rule 2 the sentence should match. *Fix*: one clause in the
+fragment note and in `citationPolicy` rule (1); it will move the fragment hash, as any
+description edit does, and that is the author's call to batch with PAC-49's edit or make
+now.
+
+**R5-N2 — version labels.** The manifest (`consumersAffected`, `schemasChanged.change`,
+`deliberatelyUnchanged`, `rollback`) and Revision 5 cite `docs/specs/PAC-49.md v3` and
+`docs/specs/PAC-50.md v2.1`. At `7b71b4a` the files are **v3.1** (`631b105`) and
+**v2.2** (`36e459e`), both committed before revision 5, and the text revision 5 relies
+on — PAC-50 §4.6 "Recording (decided 2026-10-22)" and the header's "no dependency on
+PAC-23's activity-log changes remains" — is the v2.2 body. The substance cited is right;
+the label is one revision behind. *Fix*: `v3.1` and `v2.2`.
+
+**R5-N3 — not PAC-23's to fix; recorded for PAC-49's contract stage.** `docs/specs/
+PAC-49.md` §4.4 says PAC-49's contract revision is written *"on top of PAC-23's contract
+revision 4"* and cites `contracts/openapi/paths/calendar.yaml:1668` and
+`backend/api/gen/paceday.gen.go:534-536` by line. The base is now revision 5 (fragment
+`c0d00e06…`); at `7b71b4a` the `action` enum is at `calendar.yaml:1724-1731` and `:1668`
+is a line of prose; and a line citation into the generated file is the construction
+this contract's `citationPolicy` exists to forbid. PAC-49's manifest should record
+revision 5 as its base and the moved hash it will produce — which `contractFragmentHashOf`
+already says to expect.
+
+### What depends on this — the two things revision 5 deliberately did not do
+
+Both confirmed against the specs as committed, not against the revision's summary of
+them.
+
+1. **`auto_schedule_ran` not pre-added — consistent with PAC-49 v3.1.** §4.4 says the
+   eighth literal is PAC-49's contract revision, written on top of PAC-23's and landing
+   after it; the header bullet "Blocked by: PAC-23" and the "Blocked on PAC-23" heading
+   over AC-5/AC-6 say the same; v3.1 item 5 restates it. No writer emits the literal
+   today (the grep returns the seven literals and nothing else), so adding it to
+   revision 5 would declare a value no server produces — the §7 rule 2 case. The
+   four-sentence edit the revision-4 challenge enumerated is still the right size, and
+   `contractFragmentHashOf` now says the hash is expected to move for it.
+2. **"No authentication or configuration events" not loosened — consistent with PAC-50
+   v2.2.** §4.6: *"The two SSO records do not go into the activity log"*; §4.8 item 2
+   creates the dedicated `(id, user_id, org_id, kind, details JSON, created_at)` table
+   in migration 027; §4.9 keeps only migration ordering (025 → 026 → 027); §7 records
+   "put the SSO records in the activity log" as rejected on 2026-10-22, for the
+   inversion the revision-4 challenge described; the header says no activity-log
+   dependency remains. The operation description, contract §5 bullet 4 and spec §3.5
+   therefore stand as written. One phrasing in PAC-50 §4.6 — that the PAC-23 challenger
+   "confirmed … that no revision of that contract can admit these two kinds" — is
+   stronger than what the revision-4 challenge said (it could not be accommodated
+   *until the spec question was decided*); PAC-50's own decision makes the difference
+   moot, and it is PAC-50's text.
+
+### Verified clean
+
+Attacked, or checked by running something, and could not break. The next reader need
+not repeat these.
+
+- **The interface is unchanged by revision 5, mechanically.** Both versions of the
+  fragment loaded with `description`, `summary` and `x-uncertain` stripped compare
+  equal; `summary` itself is unchanged; the bundle's `/api/audit` has no `security`
+  key, one parameter (`integer`, `minimum: 1`, `maximum: 500`, `default: 50`),
+  responses `200`/`401`/`500`; `AuditEntry` has `required: [id, action, details,
+  created_at]`, `additionalProperties: false`, `id` `int32`, the seven-value enum,
+  `created_at` `date-time`; the document is `openapi: 3.1.0` with document-level
+  `security` `[bearerAuth, cookieAuth]` synthesised at `openapi_assemble.py:170-172`
+  conditional on `auth.yaml:617`.
+- **Both hashes and all nine assembler counts reproduce** (above).
+- **`make openapi-check` passes, all four steps**, from this worktree's root with the
+  web checkout present (verbatim below). `MIGRATION.md` is not in the revision-5
+  commit, consistent with "regenerated byte-identical"; its `listAuditEntries` row
+  (`:75`) still carries the `400` precondition in its `notes` cell.
+- **Both `limit` probes reproduce every row**, with five new inputs on the handwritten
+  path (above). `?limit=99999999999999999999` is `ErrRange` on `Atoi`, not a syntax
+  error, so AC-11's parenthetical holds.
+- **The API-005 paragraph is true clause by clause** (above), and its two falsifying
+  commands return what it says.
+- **Seven writers, five `401` producers, nothing mounting the generated server** — the
+  three standing greps return exactly what the fragment and schema state.
+- **OQ-5's premise still holds**: the only `_test.go` touching the surface is
+  `backend/storage/focus_blocks_test.go:120-124` (`TestWriteAuditLog`, two calls, no
+  assertion on content, as the plan's §2 already notes); nothing references
+  `auditHandler` or `ListAuditLog`; no `handlers_audit_test.go`, no `audit_log_test.go`.
+- **`acceptanceTests` still match the spec's fifteen**, text and tags; the
+  parentheticals on AC-10/11/12 narrow what pins them, not the criterion.
+- **The plan citations the fragment leans on exist**: `docs/factory/PAC-23-plan.md` §1
+  fixes `WriteAuditLog(db, userID, action, details)` (`:47`), §2's up-migration step 1
+  is the `ON DELETE CASCADE` `ALTER TABLE` (`:140`), §7 item 1 leaves the delete action
+  open (`:320`), and the file names are `025_audit_log_user_id.{up,down}.sql`
+  (`:121-122`); `backend/auth/sso_detect.go:14` imports `storage`, so the explicit
+  parameter is forced for the reason the revision-4 challenge gave.
+- **The generated TypeScript still carries `default: 50` only as prose** — `limit?:
+  number` with the JSDoc above it; `schemas.ts` has no parameters.
+- **Register rows unchanged**: `api-audit.md:239` API-005 `Confirmed`, `:308` API-074
+  `Reported`, `:446` U-02 open — the bookkeeping note still describes them.
+- **The worktree was clean before this section and the web repo's only modifications
+  are the two regenerated files** revision 5 says it left.
+
+### What I ran
+
+From the worktree root after `source` of the session `env.sh` (Go 1.25.5, Python 3.15
+venv with PyYAML, Node 22, `oapi-codegen` on `PATH`). Nothing was written to either repo
+except this section; no `make openapi`, no `make verify`/`test`/`e2e`, no Docker, no
+commit, stash or checkout.
+
+```
+$ git status --short            (empty)        $ git rev-parse --short HEAD   7b71b4a
+$ git log --format='%h %s' a896faa..HEAD
+7b71b4a contract(PAC-23): revision-4 challenge (reject) and revision 5 — re-baseline
+631b105 spec(PAC-49): v3 challenge (accept-with-changes) and v3.1 response
+36e459e spec(PAC-50): v2.1 challenge (accept-with-changes) and v2.2 response
+$ git diff --stat a896faa 631b105 -- . ':!docs/specs'      (empty)
+
+$ make openapi-check
+python3 .../scripts/openapi_assemble.py --check
+OK: bundle is in sync (98 paths)
+python3 .../scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 119 operations (0 generated)
+.../scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract
+CONTRACT=".../clockwise-like-specs/contracts/openapi/openapi.yaml" .../smart-calendar-flow/scripts/openapi-gen.sh --check
+✨ openapi-typescript 7.4.4
+🚀 .../contracts/openapi/openapi.yaml → .../types.ts [194.2ms]
+Found 119 endpoints
+Generating client... .../schemas.ts
+Generating runtime declarations... .../schemas.types.d.ts
+Done in 99ms !
+OK: src/api/generated matches the contract
+EXIT=0
+
+$ shasum -a 256 contracts/openapi/openapi.yaml contracts/openapi/paths/calendar.yaml
+ead120ee190bae9b11b3debfc6971b8fdbea99db1620bbc2ab9663f8e19fba19  contracts/openapi/openapi.yaml
+c0d00e060b2380117ef21b24743ac329d95d7917cd6921d4ad41155b9165c673  contracts/openapi/paths/calendar.yaml
+
+# independent walk of the committed bundle (PyYAML, scratchpad, python3 -I)
+paths 98 ops 119 public 12 auth 107
+schemas 145 responses 11 parameters 8 securitySchemes 2
+x-uncertain 18
+audit security key present: False | params: [('limit', {'type': 'integer', 'minimum': 1, 'maximum': 500, 'default': 50})] | responses: ['200', '401', '500']
+AuditEntry required ['id', 'action', 'details', 'created_at'] addl False enum [...seven...] id fmt int32
+x-uncertain on /api/audit: False | on AuditEntry: False
+
+# fragment at 631b105 vs 7b71b4a, description/summary/x-uncertain stripped
+structurally identical with description/summary/x-uncertain stripped: True
+
+$ git diff --numstat 631b105 7b71b4a -- contracts/openapi/paths/calendar.yaml backend/api/gen/paceday.gen.go contracts/openapi/openapi.yaml
+10	10	backend/api/gen/paceday.gen.go
+120	76	contracts/openapi/openapi.yaml
+129	63	contracts/openapi/paths/calendar.yaml
+$ git diff -U0 631b105 7b71b4a -- backend/api/gen/paceday.gen.go | grep -E '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-]\s*//'
+(no output)  EXIT=1
+$ git show --numstat --format= 081057d -- contracts/openapi/paths/calendar.yaml
+2	2	contracts/openapi/paths/calendar.yaml      (the two focus_blocks.go:61-63 -> :74-76 lines)
+
+$ grep -c API-005 contracts/openapi/paths/calendar.yaml                      1
+$ grep -c 'paceday.gen.go:[0-9]' backend/api/gen/paceday.gen.go              0
+$ grep -n 'WHERE\|user_id' backend/storage/audit_log.go                      (no output)
+$ grep -l audit_log backend/storage/migrations/*                             001_initial.up.sql  001_initial.down.sql
+$ ls backend/storage/migrations | tail -1                                    024_settings_per_user.up.sql
+$ grep -n audit backend/api/routes.go                                        180:  r.Get("/api/audit", auditHandler(db))
+$ grep -rn 'HandlerFromMux\|gen\.ServerInterface\|gen\.Strict\|api/gen' --include='*.go' backend/ | grep -v '^backend/api/gen/'
+(no output)  EXIT=1
+$ grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go     definition + 7 call sites, lines as in Revision 5 §V
+$ grep -rn 'error.:.unauthorized' --include='*.go' backend/api/ | grep -v '^backend/api/gen/'
+handlers_org.go:21  handlers_me.go:19  middleware.go:38  middleware.go:44  middleware.go:50
+$ grep -rln 'auditHandler\|ListAuditLog\|WriteAuditLog' --include='*_test.go' backend/
+backend/storage/focus_blocks_test.go        (TestWriteAuditLog, :120-124; WriteAuditLog only)
+$ grep -n '^| API-005\|^| API-074\|^| U-02' docs/factory/api-audit.md         239 Confirmed / 308 Reported / 446 open
+
+# in ../smart-calendar-flow (ed44af0)
+$ git status --short
+ M src/api/generated/schemas.types.d.ts
+ M src/api/generated/types.ts
+$ git diff --numstat                     13 11 schemas.types.d.ts   14 12 types.ts
+$ git diff -U0 src/api/generated/ | grep -E '^[+-]' | grep -v '^[+-][+-]' | grep -vE '^[+-]\s*(\*|/\*\*)'
+(no output)  EXIT=1
+$ grep -rn 'generated/schemas\|generated/types' src/ --include='*.ts' --include='*.tsx' | grep -v '^src/api/generated/'
+src/api/client.ts:2:import { SettingsUpdate } from "./generated/schemas";
+$ grep -c API-005 src/api/generated/types.ts src/api/generated/schemas.types.d.ts src/api/generated/schemas.ts
+1 / 1 / 0
+$ grep -n 'RESOLUTION PROCEDURE' src/api/generated/schemas.types.d.ts        (no output)
+$ node -e "console.log(require.resolve('yaml'), require.resolve('js-yaml'))" both resolve; neither in package.json
+```
+
+Probe 1 — the handwritten path (`handlers_audit.go:14` + `audit_log.go:16-18`),
+scratchpad, stdlib only, 19 inputs:
+
+```
+query                        nvals  Query().Get              Atoi                         today
+                             0      ""                       0 +err                       100
+?limit                       1      ""                       0 +err                       100
+?limit=                      1      ""                       0 +err                       100
+?limit=50                    1      "50"                     50                           50
+?limit=abc                   1      "abc"                    0 +err                       100
+?limit=0                     1      "0"                      0                            100
+?limit=-5                    1      "-5"                     -5                           100
+?limit=501                   1      "501"                    501                          100
+?limit=10000                 1      "10000"                  10000                        100
+?limit=99999999999999999999  1      "99999999999999999999"   9223372036854775807 +ErrRange 100
+?limit=%zz&limit=10          1      "10"                     10                           10
+?limit=10&limit=500          2      "10"                     10                           10
+?limit=500&limit=10          2      "500"                    500                          500
+?limit=abc&limit=10          2      "abc"                    0 +err                       100
+?limit=%zz                   0      ""                       0 +err                       100
+?limit=+50                   1      " 50"                    0 +err                       100
+?limit=%2B50                 1      "+50"                    50                           50
+?limit=50.5                  1      "50.5"                   0 +err                       100
+?limit=1e2                   1      "1e2"                    0 +err                       100
+```
+
+Probe 2 — `gen.HandlerFromMux(gen.Unimplemented{}, chi.NewRouter())` from a scratch
+module whose `go.mod` `replace`s `github.com/Enach/paceday/backend` with this worktree's
+`backend/`, `GOPROXY=off` (module cache only), `httptest`; `501` = bound and reached
+`Unimplemented`:
+
+```
+?                            -> 501
+?limit                       -> 400 text/plain; charset=utf-8 nosniff  ...strconv.ParseInt: parsing "": invalid syntax
+?limit=                      -> 400 text/plain; charset=utf-8 nosniff  ...strconv.ParseInt: parsing "": invalid syntax
+?limit=50                    -> 501
+?limit=abc                   -> 400 text/plain; charset=utf-8 nosniff  ...strconv.ParseInt: parsing "abc": invalid syntax
+?limit=0                     -> 501
+?limit=10000                 -> 501
+?limit=99999999999999999999  -> 400 text/plain; charset=utf-8 nosniff  ...strconv.ParseInt: parsing "99999999999999999999": value out of range
+?limit=%zz&limit=10          -> 501
+?limit=10&limit=500          -> 400 text/plain; charset=utf-8 nosniff  ...multiple values for single value parameter 'limit'
+?limit=%zz                   -> 501
+```
+
+**Not run, and not claimed.** `make verify`, `make test`, `make e2e`, `make lint`,
+`make coverage`, anything Docker — another gate run owns Docker, and revision 5 changes
+no hand-written Go. `make openapi` — it writes. Linear — not authenticated in this
+session; the comment body is handed back for posting. The AC-1/3/4/8/15 two-user tests
+still need a stack and still do not exist, which is unchanged and correct at stage 2.

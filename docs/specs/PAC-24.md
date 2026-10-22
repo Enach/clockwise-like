@@ -1015,7 +1015,7 @@ change ships with the backend change.
 settings page's empty key field and "not connected" states are the explanation.
 A notice can be a follow-up.
 
-**Stage-2 amendments (2026-10-12), confirmed by the product owner on 2026-10-15 ("merge", in reply to the request to confirm AC-7 and AC-17).**
+**Stage-2 amendments (2026-10-12), confirmed by the product owner on 2026-10-15 ("merge", in reply to the request to confirm AC-7 and AC-17) and reconfirmed on 2026-10-21 as #204's merge condition 1 — nothing on AC-7/AC-17 is pending.**
 AC-7 (four settings with no empty state refuse `""`) and AC-17 (rules apply to
 what a request changes) were amended in response to the contract challenges of
 revisions 2 and 3. Both narrow what the contract can promise; neither changes a
