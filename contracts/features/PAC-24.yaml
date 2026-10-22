@@ -84,7 +84,7 @@
   ],
 
   "mergeConditions": [
-    "The product owner confirms the stage-2 amendments to spec AC-7 (four settings with no empty state refuse \"\") and AC-17 (rules apply to what a request changes), recorded as pending in the spec's Decisions section.",
+    "CONFIRMED 2026-10-21 (#204 merge condition 1; first confirmed 2026-10-15): the product owner confirmed the stage-2 amendments to spec AC-7 (four settings with no empty state refuse \"\") and AC-17 (rules apply to what a request changes). Recorded in the spec's Decisions section; nothing on AC-7/AC-17 is pending.",
     "The backend and frontend PRs merge and deploy together: PUT /api/settings is removed, so the pre-PAC-24 web client cannot save settings against this server (spec Decisions, OQ-3).",
     "followUps.llmProbeEndpointAllowlist and followUps.calendarCredentialLifecycle are filed as issues."
   ],
