@@ -206,6 +206,8 @@ type Settings struct {
 	RecapIncludeBriefs bool      `json:"recapIncludeBriefs"`
 	RecapIncludeFocus  bool      `json:"recapIncludeFocus"`
 	RecapIncludeHabits bool      `json:"recapIncludeHabits"`
+	// TimeFormat is the user's time-of-day display: "12h" (default) or "24h" (PAC-55).
+	TimeFormat         string    `json:"timeFormat"`
 	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
@@ -229,6 +231,7 @@ const settingsColumns = `
 		recap_enabled, to_char(recap_send_time, 'HH24:MI'), COALESCE(recap_send_to,''),
 		COALESCE(recap_channel_id,''), recap_include_briefs, recap_include_focus, recap_include_habits,
 		COALESCE(working_hours, '{}'::jsonb), COALESCE(lunch_breaks, '{}'::jsonb),
+		time_format,
 		updated_at`
 
 // GetOrCreateSettingsByUser returns userID's settings, creating the row with
@@ -261,6 +264,7 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 		&s.RecapEnabled, &s.RecapSendTime, &s.RecapSendTo,
 		&s.RecapChannelID, &s.RecapIncludeBriefs, &s.RecapIncludeFocus, &s.RecapIncludeHabits,
 		&s.WorkingHours, &s.LunchBreaks,
+		&s.TimeFormat,
 		&s.UpdatedAt,
 	)
 	if err != nil {
@@ -300,11 +304,12 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 			recap_include_briefs, recap_include_focus, recap_include_habits,
 			out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
 			working_hours, lunch_breaks,
+			time_format,
 			updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
 			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
-			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,NOW()
+			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,NOW()
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
@@ -346,6 +351,7 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 			recap_include_habits=EXCLUDED.recap_include_habits,
 			working_hours=EXCLUDED.working_hours,
 			lunch_breaks=EXCLUDED.lunch_breaks,
+			time_format=EXCLUDED.time_format,
 			updated_at=NOW()`,
 		userID,
 		s.WorkStart, s.WorkEnd, s.Timezone,
@@ -365,6 +371,7 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
 		s.OutOfHoursMeetingsPerWeek, s.AutoDeclineOutsideWorkingHours,
 		s.WorkingHours, s.LunchBreaks,
+		timeFormatOrDefault(s.TimeFormat),
 	)
 	return err
 }
@@ -383,6 +390,15 @@ func SaveRecapSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 		userID, s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo),
 		s.RecapChannelID, s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits)
 	return err
+}
+
+// timeFormatOrDefault keeps a struct built in Go without the field (tests,
+// fixtures) valid against the column's CHECK; the handler never sends "".
+func timeFormatOrDefault(v string) string {
+	if v == "" {
+		return "12h"
+	}
+	return v
 }
 
 func recapSendTimeOrDefault(v string) string {

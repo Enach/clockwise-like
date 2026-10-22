@@ -31,6 +31,7 @@ var validLLMProviders = map[string]bool{
 var validCalendarProviders = map[string]bool{"google": true, "outlook": true, "webcal": true}
 var validConferencingProviders = map[string]bool{"meet": true, "zoom": true, "teams": true}
 var validRecapSendTo = map[string]bool{"dm": true, "channel": true}
+var validTimeFormats = map[string]bool{"12h": true, "24h": true}
 
 type settingsHandlers struct {
 	db *sql.DB
@@ -266,6 +267,9 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 	}
 	if !validClockTime(s.RecapSendTime) {
 		add("recapSendTime must be in HH:MM format", "recapSendTime")
+	}
+	if !validTimeFormats[s.TimeFormat] {
+		add("timeFormat must be 12h or 24h", "timeFormat")
 	}
 
 	if err := validateWorkingHours(s); err != nil {
