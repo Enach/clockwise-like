@@ -1,7 +1,7 @@
 # Spec — PAC-49: automatic focus scheduling must act for exactly the people who asked for it, and the migration that says so must be telling the truth
 
 - **Linear**: https://linear.app/paceday/issue/PAC-49/listuserswithautoschedule-does-not-filter-user-id-so-the-focus-cron-is
-- **Status**: v2 (challenged 2026-10-04, accept-with-changes) — **superseded by v3, appended below on 2026-10-21; v3 is awaiting challenge.** The v2 body and its Challenge are kept verbatim as lineage; where v2 and v3 disagree, v3 wins.
+- **Status**: v2 (challenged 2026-10-04, accept-with-changes) — **superseded by v3, appended below on 2026-10-21; v3 was challenged on 2026-10-22 (accept-with-changes) and revised to v3.1 (2026-10-22) — v3 challenge answered; awaiting stage 2.** The v2 body, its Challenge and the v3 Challenge are kept verbatim as lineage; where v2 and v3.1 disagree, v3.1 wins.
 - **Author**: spec-author
 - **Inherited scope**:
   - **Resolved by this spec**: nothing from the defect register. Argued in §0.2 —
@@ -1619,140 +1619,472 @@ finding:
 
 > ⚠️ **Reality check, 2026-10-21 16:10** — written before discovering that [Enach/clockwise-like#204](https://linear.app/paceday/review/featsettings-every-user-has-their-own-settings-pac-24-89e2813268be) ([PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)) **merged on 2026-10-15**. Migration 024 exists: every user has a row, `user_id` is NOT NULL, nothing that acts on a calendar was copied, Outlook/Zoom credentials are per-user, `PUT /api/settings` is gone (now `PATCH`, merge). Consequences for this spec: §2.1, §4.1 "old global columns", §6 (plan rev 3) are **moot** — the reshape is done. What is still open and what the next revision must be scoped to: (1) `auto_schedule_last_run` + enable-sets-`last_run` (new migration, number TBD — 025 may be taken; **landed as 026**: 025 is PAC-23's, 027 is PAC-50's); (2) the 1-minute non-reentrant ticker replacing `FocusCron.Reload` (enabling still only takes effect at restart); (3) the `auto_schedule_ran` audit action with explicit `userID`; (4) cron/timezone validation on `PATCH`; (5) confirm `ListUsersWithAutoSchedule` and `newCalOps` read the caller's row and token after [Enach/clockwise-like#204](https://linear.app/paceday/review/featsettings-every-user-has-their-own-settings-pac-24-89e2813268be) (AC-6b). §4.4 "PUT remains a full replace" is wrong — it is PATCH. Everything else stands.
 
-* Stage: 1 (spec). Author: cloud session, 2026-10-21.
-* Status: **awaiting challenge**.
-* **Lineage**: a v2 of this spec already exists in PR [Enach/clockwise-like#179](https://linear.app/paceday/review/specpac-49-focus-cron-must-act-for-exactly-the-people-who-asked-for-it-a6e5129984b7) (`Enach/clockwise-like`, 2026-10-04: author + challenger, 4 blocking findings resolved). This v3 **supersedes v2's recommendation** ("copy the schedule, not the consent") because of the 2026-10-21 decisions in §2 — zero users, comprehensive fix. Whoever lands this file must keep v2's `## Challenge` section appended and carry forward v2's three findings that v3 does not restate: (a) `newCalOps` refuses without an OAuth token, so the blast radius of any mistake is "every user with a connected calendar"; (b) `FocusCron.Reload()` has one production call site, inside `Start` — enabling auto-schedule today only takes effect at restart (v3's §4.3 ticker removes `Reload` entirely); (c) `DailyRecapService.RunAll` joins every user against the `id = 1` row — same defect, owned by [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings), and [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s plan rev 3 must keep it. v2's correction that `google/uuid` scans NULL to `uuid.Nil` cleanly (the listing never "fails") stands.
+* Stage: 1 (spec). Author: cloud session, 2026-10-21; v3.1 revision by `spec-author`, 2026-10-22.
+* Status: **v3.1 (2026-10-22) — v3 challenge answered; awaiting stage 2**.
+* **Blocked by**: [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the) (backend) — its migration (025) and its explicit-subject audit write land first; PAC-49's migration is 026 and migrations apply in order. AC-5 and AC-6 sit under their own "Blocked on PAC-23" heading in §5 and are implemented after it, never skipped. Everything else in §5 is buildable without PAC-23.
+* **Citation basis for v3.1**: `4dc801f` (the last code commit; `50e8ca0` and `a896faa` above it touch only `docs/` and `contracts/features/`). Nothing was executed for this revision — no test, migration or request — so every claim in §1 is a reading of source with a `file:line`, and anything that would be worth more as a run is an acceptance criterion in §5.
+* **Lineage**: a v2 of this spec already exists in PR [Enach/clockwise-like#179](https://linear.app/paceday/review/specpac-49-focus-cron-must-act-for-exactly-the-people-who-asked-for-it-a6e5129984b7) (`Enach/clockwise-like`, 2026-10-04: author + challenger, 4 blocking findings resolved). This v3 **supersedes v2's recommendation** ("copy the schedule, not the consent") because of the 2026-10-21 decisions in §2 — zero users, comprehensive fix. Whoever lands this file must keep v2's `## Challenge` section appended and carry forward v2's findings that v3 does not restate: (a) `newCalOps` refuses without an OAuth token (`backend/engine/cal_iface.go:53-58`), so the blast radius of any mistake is "every user with a connected calendar"; (b) `FocusCron.Reload()` has one production call site, inside `Start` (`backend/scheduler/cron.go:73-76`, called from `backend/main.go:69-70`) — enabling auto-schedule today only takes effect at restart (§4.3 removes `Reload` entirely); (c) **corrected 2026-10-22**: v2 recorded the daily recap as joining every user against the shared `id = 1` row; since #204 the recap selects only users whose *own* row has it on (`backend/engine/daily_recap.go:143-148`, `INNER JOIN settings st ON st.user_id = u.id`), so that finding is closed and nothing is owed to any PAC-24 plan revision. v2's correction that `google/uuid` scans NULL to `uuid.Nil` cleanly (the listing never "fails") stands, and is moot since 024 made the column NOT NULL.
 * ~~Relationship to PAC-24: implemented in the same migration (024) and the same stage-4 branch. PAC-24's plan (revision 2) was written before the decisions in §2 and must be simplified accordingly — see §6.~~ **Landed 2026-10-21:** [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings) / #204 is merged. This spec ships on its own stage-4 branch with its own migration (026).
 * ~~Blocks: PAC-24 migration 024. Sequenced before PAC-48 (which moves the token columns off the same shared row).~~ **Landed 2026-10-21:** moot — 024 has shipped, and Outlook/Zoom credentials are per-user since #204. [PAC-48](https://linear.app/paceday/issue/PAC-48/outlook-and-zoom-credentials-are-written-to-the-singleton-settings-row) keeps only what #204 left (see its issue).
 
 ## 1. Problem
 
-`ListUsersWithAutoSchedule` has no `user_id` predicate. Together with the settings singleton (`WHERE id = 1` everywhere; migration 018's comment calls this deliberate half-finished work) this means:
+> **Rewritten 2026-10-22 (v3 challenge, blocking 1).** v3's §1 described the
+> pre-#204 world — one ownerless flag, a run that died on "no settings row", a
+> landmine that enrolled everyone. None of the three is true at `4dc801f`, and
+> the next reader was being told the landmine was live. This section now states
+> what *is* true for a user today, with citations, and what this spec changes.
 
-* There is exactly one `auto_schedule_enabled` flag and one cron expression for the whole deployment, owned by nobody.
-* The cron is effectively dead today: no production path creates a per-user settings row (`INSERT INTO settings` only at `storage/settings.go:262,271` plus fixtures), so `RunForUser` dies at `no settings row for user <id>` (`focus_time.go:82-84`) or at `newCalOps` without a token.
-* If the flag were ever honoured as-is, the cron would run focus-time scheduling for **every** user whenever **anyone** turned it on, writing focus blocks into every connected Google calendar. That was the migration-day landmine in the original issue.
+**Who is affected.** A signed-in person who switches "Auto-schedule focus time"
+on in their own settings. Since migration 024 every settings row belongs to one
+user and to nobody else, so this is every user of the product who opts in.
+
+**What the issue originally reported is closed.** The issue's mechanism — a
+missing `user_id` predicate on the listing, so that an ownerless row was
+registered as a schedule for nobody — was closed by
+[Enach/clockwise-like#204](https://linear.app/paceday/review/featsettings-every-user-has-their-own-settings-pac-24-89e2813268be)
+(PAC-24, merged 2026-10-15): migration 024 deletes any row without an owner and
+makes the owner column `NOT NULL`
+(`backend/storage/migrations/024_settings_per_user.up.sql:140, 144`), so every
+row the listing returns (`backend/storage/settings.go:411-416`) is a person's
+own; the run injects that person's id into its context
+(`backend/engine/focus_time.go:74`) and reads that person's calendar token
+(`backend/engine/cal_iface.go:53-58`, `backend/auth/token_store.go:40-49`), so
+no scheduled run writes into anyone else's calendar; and a person with no row
+gets one created on first read (`backend/storage/settings.go:237-242`, asserted
+by `TestFocusRun_UserWithNoPriorSettings`,
+`backend/engine/focus_time_test.go:401-413`), so "no settings row" is no longer
+a way for a run to fail. The mass-enrolment landmine never fired: nothing that
+acts on a calendar was copied to anyone.
+
+**What is still wrong for that user at `4dc801f`.** Four things, in the order
+they are met:
+
+(a) **Switching it on does nothing until the process restarts.** The set of
+people to schedule is read once per process: `FocusCron.Reload` has exactly one
+production caller, `Start` (`backend/scheduler/cron.go:73-76`), invoked once from
+`backend/main.go:69-70`. Saving settings calls nothing on the scheduler. On a
+long-lived deployment the page says "saved" and the calendar stays empty
+indefinitely. The same is true of changing the schedule or switching it off: the
+old schedule keeps firing until a restart.
+
+(b) **When it does run, it runs at the server's local hour, not the user's.**
+The scheduler is built with `cron.New()` and no location
+(`backend/scheduler/cron.go:27`), so the library evaluates every expression in
+`time.Local` (`github.com/robfig/cron/v3@v3.0.1/cron.go:124`). None of
+`docker-compose.yml`, `docker-compose.dev.yml` or `docker-compose.prod.yml` sets
+`TZ`; only the e2e stack pins `TZ: UTC` (`e2e/docker-compose.e2e.yml:111`). The
+user's own `timezone` setting is not consulted when deciding *when* to fire —
+only when deciding where in the day to put blocks. A Paris user who writes
+`0 7 * * 1-5` on a UTC server has blocks created at 09:00 Paris in summer, after
+the working day has started.
+
+(c) **The run is unattributed in the activity log.** A run records one
+`focus_created` entry (`backend/engine/focus_time.go:103-108`) through a writer
+that takes no user (`backend/storage/focus_blocks.go:74-75`) into a table that
+has no user column (`backend/storage/migrations/001_initial.up.sql:44-49`). A
+scheduled run and a manual one are indistinguishable, and neither says whose
+calendar was written. This half is PAC-23's subject and is the reason for the
+"Blocked by" bullet above.
+
+(d) **There is no record of when it last ran.** Nothing stores it. The only
+trace is a server log line (`backend/scheduler/cron.go:61-62`). The user cannot
+tell from the product whether the feature has ever acted for them; an operator
+cannot tell either without the log.
+
+**What this spec changes, observably.** Enabling, editing or disabling takes
+effect within a minute and without a restart; a scheduled run happens at the
+user's own hour in the user's own timezone; each scheduled run leaves one
+attributed entry in the activity log (after PAC-23); the settings page shows
+when it last ran; an unusable schedule or timezone is refused at save time with
+a machine-readable reason. Nothing about the manual run, the stored defaults, or
+what a run does once it starts changes — §7 lists what stays the same.
 
 ## 2. Decisions (human, 2026-10-21)
 
 1. **Production has zero users.** Migration 024 has no data to preserve. No backfill, no inheritance, no "copy the preference but don't act on it".
 2. **Take the comprehensive fix**: auto-schedule becomes a per-user feature end to end — flag, schedule, execution, audit.
 3. Both repos deploy together (docker-compose), so the settings wire-shape change ships in one release with the frontend that reads it. No dual-shape window.
+4. **Added 2026-10-22 (orchestrator, from the issue owner)**: the stored schedule default stays `'0 8 * * *'`; migration 026 adds the last-run column and nothing else. The weekday-morning schedule is a preset the user picks, not a default the database imposes.
 
 ## 3. Scope
 
 In scope:
 
 1. ~~Per-user `auto_schedule_enabled` and `auto_schedule_cron` columns on the per-user settings row that PAC-24 introduces.~~ **Landed 2026-10-21 (struck per the reality-check header):** both columns already exist on `settings` and every row is per-user since migration 024. What this spec adds to the schema is `auto_schedule_last_run` only (§4.1).
-2. `ListUsersWithAutoSchedule` returns `user_id`s whose own row has the flag on, and nothing else.
-3. The cron iterates those users and calls `RunForUser(userID)` with that user's settings and **that user's calendar token**. One user's failure must not stop the loop.
-   **Landed 2026-10-21 (answers OQ-5 and reality-check item 5):** the Google token is *already* per-user — `oauth_tokens` is keyed `(user_id, calendar_id)` since migration 017 and `newCalOps` (`backend/engine/cal_iface.go:53-58`) reads it with `auth.LoadUserToken(db, userID)` for the user id `RunForUser` injects into the context (`backend/engine/focus_time.go`). No column move is needed; AC-6b still has to prove it. The struck text below is the pre-#204 reasoning, kept for lineage. ~~**This requires the Google calendar token to be per-user in the same migration.** Today it lives on the shared settings row (`WHERE id = 1`) next to `microsoft_tokens`; [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s reshape of that row into per-user rows carries *every* column, token columns included, so `newCalOps(userID)` reads the caller's own token. Without this, N enabled users would all write focus blocks into the one connected calendar — the §1 landmine relocated, not removed. [PAC-48](https://linear.app/paceday/issue/PAC-48/outlook-and-zoom-credentials-are-written-to-the-singleton-settings-row)'s remaining scope after this is the `calendar_provider` flip semantics and Zoom, not the column move.~~
-4. Settings API reads/writes these two fields for the caller only.
-5. Audit: one `auto_schedule_ran` entry per user per run, carrying `user_id` ([PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)).
+2. The set of people scheduled is exactly the set whose own settings have the flag on. **Already true at `4dc801f`** (§1); AC-2 keeps it as a regression guard because §4.3 replaces the code that currently proves it.
+3. A scheduled run acts for one user with that user's settings and **that user's calendar token**. One user's failure must not stop the others.
+   **Landed 2026-10-21 (answers OQ-5 and reality-check item 5):** the Google token is *already* per-user — `oauth_tokens` is keyed `(user_id, calendar_id)` since migration 017 and `newCalOps` (`backend/engine/cal_iface.go:53-58`) reads it with `auth.LoadUserToken(db, userID)` for the user id `RunForUser` injects into the context (`backend/engine/focus_time.go:74`). No column move is needed; AC-6b still has to prove it. The struck text below is the pre-#204 reasoning, kept for lineage. ~~**This requires the Google calendar token to be per-user in the same migration.** Today it lives on the shared settings row (`WHERE id = 1`) next to `microsoft_tokens`; [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s reshape of that row into per-user rows carries *every* column, token columns included, so `newCalOps(userID)` reads the caller's own token. Without this, N enabled users would all write focus blocks into the one connected calendar — the §1 landmine relocated, not removed. [PAC-48](https://linear.app/paceday/issue/PAC-48/outlook-and-zoom-credentials-are-written-to-the-singleton-settings-row)'s remaining scope after this is the `calendar_provider` flip semantics and Zoom, not the column move.~~
+4. Enabling, disabling, or editing the schedule or timezone takes effect at the next minute, not the next restart (§4.3), with the rules for *when the first run after such a change happens* stated in §4.1 and proven in AC-3, AC-7b, AC-7c, AC-7d.
+5. The scheduled run fires at the user's slot in the user's own IANA timezone (§4.3).
+6. Settings: the caller reads and writes their own two auto-schedule fields — **already true since PAC-24** (AC-8 is a regression guard) — and additionally reads, but cannot write, when the scheduler last ran for them (§4.4); an unusable schedule or timezone is refused with a machine-readable code (§4.4).
+7. Audit: one attributed `auto_schedule_ran` entry per user per scheduled run, in addition to the entry the run already writes (§4.3, item 12). **Blocked on PAC-23.**
+8. Frontend: two test ids, schedule presets, and a read-only last-run line (§4.5).
 
 Out of scope:
 
 * Per-user cron *schedules* running at different times. v3 keeps a single process-level tick and lets each user's `cron` expression decide whether this tick is "their" time. See §4.3.
-* Changing how tokens are *obtained* or the `calendar_provider` flip in `SaveMicrosoftToken` ([PAC-48](https://linear.app/paceday/issue/PAC-48/outlook-and-zoom-credentials-are-written-to-the-singleton-settings-row)). Moving the token *columns* per-user is in scope via [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s reshape (§3.3). The implementer verifies where the Google token is actually stored before writing 024; if it is somewhere other than the settings row, it must still become per-user in 024, or AC-12 is unverifiable.
-* Making focus blocks per-user in `ListFocusBlocksForWeek` / `FocusMinutesForDay` (they take no user id and act as global busy time). Real defect, separate issue.
+* Changing how tokens are *obtained*, or the `calendar_provider` flip in `SaveMicrosoftToken` ([PAC-48](https://linear.app/paceday/issue/PAC-48/outlook-and-zoom-credentials-are-written-to-the-singleton-settings-row)). **Corrected 2026-10-22**: the token is already per-user (item 3 above); nothing moves, and the v3 sentence that put a column move "in scope via PAC-24's reshape" is withdrawn.
+* ~~Making focus blocks per-user in `ListFocusBlocksForWeek` / `FocusMinutesForDay` (they take no user id and act as global busy time). Real defect, separate issue.~~ **Struck 2026-10-22 (v3 challenge, non-blocking 2):** no such defect — both readers take a user id (`backend/storage/focus_blocks.go:30, 64`) and the first name does not exist.
+* Changing the stored schedule default. It stays `'0 8 * * *'` (§2 decision 4). A user who never touched the schedule field is run daily at 08:00 in their timezone, Saturday and Sunday included, exactly as the stored default has always said; what a weekend run does is the next bullet.
+* What a run does with days already in the past, including a weekend tick that hands the run a week whose working days are over. A tick schedules the week containing the tick instant, exactly as the manual run does today when no week is given; the run's own handling of past days is unchanged by this spec. If that handling should change, it is a change to the run, not to the scheduler, and gets its own spec.
+* Clearing or re-planning existing blocks on a scheduled run. A scheduled run only ever adds; it never deletes (§4.3, item 13; AC-14). Whether a morning run *should* re-plan the week is a product question this spec does not open.
+* Machine-readable codes for the rest of the settings validation catalogue. Exactly two refusals gain a code here (§4.4); the others keep their messages and nothing else.
+* Anything about the manual "run my focus time now" request — its request, its response, or its failure body.
+* Reporting a run's outcome to the user by any channel other than the activity log and the last-run time.
 
-## 4. Design
+## 4. Desired behaviour and requirements
 
-### 4.1 Schema (migration **026** — `auto_schedule_last_run` only)
+> **Rewritten 2026-10-22 (v3 challenge, non-blocking 1).** v3's §4 named a Go
+> signature, a cron library and two of its options, a mutex strategy, an
+> interface, a `main.go` seam and a handler helper. The factory forbids that at
+> stage 1 (`docs/factory/README.md` stage 1 gate and §5 table). What follows
+> states the *requirements* those names were standing in for; the plan chooses
+> how to meet them. The names that remain — the migration number, the stored
+> column, the wire properties, the audit literal, the two codes — are the
+> contract-level decisions the orchestrator fixed for this revision, and stage 2
+> writes them down.
 
-> **Landed 2026-10-21:** the table is `settings`, keyed by `user_id` (NOT NULL since 024). `auto_schedule_enabled` and `auto_schedule_cron` already exist (since `001_initial.up.sql`, as `BOOLEAN NOT NULL DEFAULT FALSE` and `TEXT NOT NULL DEFAULT '0 8 * * *'` — note the stored default differs from the `'0 7 * * 1-5'` below; the challenger decides whether that is a finding); migration 026 adds the third column and nothing else. The block below is the *intended end state* of the three columns, not the DDL of 026.
+### 4.1 Stored state (migration 026 — the last-run watermark only)
 
-On the per-user settings table ~~PAC-24 creates (whatever it is finally named — `user_settings` or `settings` keyed by `user_id`)~~ `settings`:
+> **Landed 2026-10-21:** the table is `settings`, keyed by `user_id` (NOT NULL since 024). `auto_schedule_enabled` and `auto_schedule_cron` already exist (since `001_initial.up.sql`, as `BOOLEAN NOT NULL DEFAULT FALSE` and `TEXT NOT NULL DEFAULT '0 8 * * *'`). **Corrected 2026-10-22 (v3 challenge, blocking 2):** v3 printed an "intended end state" with `DEFAULT '0 7 * * 1-5'` and the prose "weekdays at 07:00". Both are struck; the stored default is `'0 8 * * *'` and 026 does not change it (§2 decision 4). The contract already documents it as such (`contracts/openapi/paths/scheduling.yaml:1752`).
 
-```sql
-auto_schedule_enabled  BOOLEAN     NOT NULL DEFAULT false,
-auto_schedule_cron     TEXT        NOT NULL DEFAULT '0 7 * * 1-5',
-auto_schedule_last_run TIMESTAMPTZ NULL
-```
+Migration 026 adds exactly one thing: a per-user, nullable, timezone-aware
+timestamp — **`auto_schedule_last_run`**, the *watermark*. Nothing else changes
+in the schema: no default changes, no column is dropped, no row is rewritten.
 
-* Default **off**. Nobody is auto-scheduled until they opt in from their own settings.
-* `auto_schedule_cron` is a 5-field cron expression, validated on write (§4.4). Default: weekdays at 07:00 in the user's `timezone` setting.
-* `auto_schedule_last_run` is what makes the single-tick loop idempotent (§4.3). **Enabling the flag sets it to** `now` (in `SaveSettings`, when the flag goes false→true), so the first run is the user's *next* cron slot, not the next tick. Without this, `cronNext(expr, after = NULL→epoch)` is 1970 and every newly-enabled user runs immediately.
-* ~~The old global columns on the `id = 1` row are dropped in the same migration. With zero users there is nothing to move. The migration must be written so that it also succeeds on a database that *does* have the old row (dev/test fixtures) — drop, don't assume absence.~~ **Struck 2026-10-21 per the reality-check header:** there are no global columns left to drop; 024 deleted the ownerless row.
-* Down migration (026): drop `auto_schedule_last_run`; no data restore.
+What the watermark means, as behaviour:
 
-### 4.2 Storage
+* **It is null for a user who has never had auto-schedule on.**
+* **Enabling sets it to "now".** When a save turns the flag from off to on, the
+  watermark becomes the instant of that save. The first scheduled run is
+  therefore the user's *next* slot after they enabled, never the next tick:
+  a user who enables at 06:30 with a 07:00 schedule runs at 07:00, and a user
+  who enables at 09:00 with a 07:00 weekday schedule runs tomorrow at 07:00.
+* **Editing the schedule or the timezone while enabled resets it to "now",
+  exactly like enabling.** A user whose last run was yesterday 07:00 and who
+  changes `0 7 * * 1-5` to `0 5 * * 1-5` at 09:00 is next run tomorrow at
+  05:00 — not at the next tick, which is what "next slot after yesterday's
+  watermark" would otherwise give. A timezone change, in either direction, is
+  treated the same way. An edit never causes an immediate run. *(v3 challenge,
+  blocking 6.)*
+* **A save that changes neither the flag, the schedule nor the timezone leaves
+  the watermark alone**, whatever else it changes.
+* **A settings save never carries the watermark.** Only the enable/edit reset
+  above and the scheduler's own advance (§4.3, item 4) ever write it. In
+  particular, a save built from a settings document read *before* a tick
+  advanced the watermark does not rewind it — so a save that races a tick
+  cannot cause a second run. *(v3 challenge, non-blocking 8.)* AC-7e proves it.
+* **The scheduler advances it to the tick instant before each run** (§4.3,
+  item 4).
+* **Disabling leaves it as it is.** The value is then history ("last ran at
+  …"), and re-enabling resets it to "now" by the first rule, so stale history
+  never schedules a run.
+* **A null watermark on an enabled user** can only arise from a direct database
+  edit. The scheduler treats it as "now": it sets it and does not run the user
+  on that tick.
 
-```go
-// ListUsersWithAutoSchedule returns the ids of users whose own settings row
-// has auto_schedule_enabled = true.
-func (s *Store) ListUsersWithAutoSchedule(ctx) ([]uuid.UUID, error)
-```
+Down migration (026): drop the watermark column. **The down migration loses
+it** — see §8.
 
-Query: `SELECT user_id FROM <settings> WHERE auto_schedule_enabled = true`. No join to `users` is needed for correctness, but add `AND EXISTS (SELECT 1 FROM users u WHERE u.id = user_id)` only if the FK is not already `ON DELETE CASCADE` — the implementer checks [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s DDL.
+### 4.2 Who is a candidate
 
-`GetSettings(ctx, userID)` / `SaveSettings(ctx, userID, …)` from [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings) carry the two fields (they already do). ~~`PUT` remains a full replace per PAC-24's contract decision, so the frontend must send the fields back; the contract fragment marks them required in the request body.~~ **Corrected 2026-10-21 (reality-check header):** the write is `PATCH /api/settings`, a merge (PAC-24 contract revision 6) — a request carries only the properties it changes, so a toggle flip is a one-property body. This spec adds `autoScheduleLastRun` as a read-only response property and the two 400 codes (§4.4).
+Only a user whose own settings have the flag on. Nobody else is ever
+considered, whatever any other user has set. This is already true at `4dc801f`
+(§1) and is restated because §4.3 replaces the code that proves it today; AC-2
+guards it.
 
-### 4.3 Cron loop
+### 4.3 The scheduled loop
 
-Replace the current body (one global cron expression, one shot) with a **fixed one-minute ticker** — cron granularity is the minute, so a coarser tick would silently skip slots — guarded against overlap:
+The current design — one registration pass at start-up, one library-managed
+entry per user, evaluated in the server's local time — is replaced by a loop
+with these properties. Each is a requirement; none prescribes a mechanism.
 
-```
-ticker: every 1 min, non-reentrant (robfig cron.SkipIfStillRunning, or a
-        TryLock mutex; a tick that finds the previous one running is dropped)
-on tick:
-  now := clock.Now()
-  users := ListUsersWithAutoSchedule()
-  for each u:
-    st := GetSettings(u)
-    next := cronNext(st.AutoScheduleCron, st.Timezone, after = st.AutoScheduleLastRun)
-    if next > now: continue            // not their time yet
-    SetAutoScheduleLastRun(u, now)     // BEFORE running — see below
-    res, err := RunForUser(ctx, u)     // uses u's settings and u's token
-    audit auto_schedule_ran {user_id: u, created, cleared, error: reason|null}
-    log err; continue                  // never return early
-```
+1. **Minute granularity.** While the process runs, the question "is it this
+   user's time?" is asked at least once per minute for every candidate. A
+   schedule expression's finest unit is the minute, so a coarser check would
+   silently skip slots.
+2. **No overlapping ticks.** A tick that begins while the previous one is still
+   running is dropped, not queued. Together with item 4 this is what makes a
+   double run impossible.
+3. **Due means: the next slot after the watermark is not later than now, in
+   the user's own IANA timezone.** The user's `timezone` setting decides what
+   "07:00" means; the server's zone is never consulted.
+4. **The watermark is advanced to the tick instant *before* the run, on every
+   outcome** — success, the run's own failure (for example, no calendar
+   credential), or a run in which every day failed. So a user is never run
+   twice for one slot, a user whose credential is dead is retried at their
+   *next slot* rather than every minute, and a run that outlives a tick (item
+   2) cannot be started again by the next one.
+5. **A tick schedules the week containing the tick instant**, exactly as the
+   manual run does today when no week is given. The run's handling of days
+   already past is unchanged by this spec (§3, out of scope). *(v3 challenge,
+   non-blocking 3.)*
+6. **One user's failure never stops the loop.** Whatever happens to one user,
+   every other due user on the same tick is still attempted.
+7. **Per-user time bound: ten minutes per run**, which is the bound each run
+   has today. A run that exceeds it is abandoned, treated as a failed run (item
+   12's `error`), and the loop moves on; one hung credential refresh cannot
+   hold every user behind it. *(v3 challenge, non-blocking 9.)* AC-4e.
+8. **A missed slot is caught up once.** If the process was down across a
+   user's slot, the first tick after restart runs them (their next slot after
+   the watermark is in the past, so they are due), the watermark advances to
+   that tick, and they are not run again until their next slot. Never more
+   than once, however many slots were missed. *(v3 challenge, blocking 6.)*
+   AC-4c.
+9. **The loop parses schedules with the same five-field parser the write uses,
+   and no other.** A stored expression that parser rejects — a descriptor such
+   as `@daily`, which the current registration path accepts and which existing
+   test fixtures seed — is skipped with a warning that names the user, writes
+   no audit row, and keeps no "already warned" state; the same for a stored
+   timezone that cannot be loaded. Both are unreachable through the write path
+   after this spec (§4.4) and reachable only by direct database edit or by
+   rows that predate it. *(v3 challenge, non-blocking 11.)* AC-4d.
+10. **The clock the loop reads can be set by a test**, so that every criterion
+    in §5 that says "tick at 07:00" is a unit test and not a wait; and **the
+    e2e stack has a way to make the loop tick at a chosen instant**, because
+    the e2e suite cannot wait for a real 07:00. The mechanism of both is the
+    plan's. *(v3 challenge, non-blocking 6.)* AC-12 requires the second.
+11. **A scheduled run calls the same per-user run the manual request calls**,
+    with that user's settings and that user's token, and refuses an empty user
+    id exactly as it does today.
+12. **One attributed audit entry per user per scheduled run — in addition to
+    the `focus_created` entry the run itself writes.** The run already records
+    `focus_created` (`backend/engine/focus_time.go:103-108`); the loop does
+    not replace that, it adds one `auto_schedule_ran` entry for the user, so a
+    successful scheduled run leaves two entries and AC-6 counts only the
+    second. *(v3 challenge, non-blocking 4.)* Its details are
+    `{created: n, errors: [...], error: string|null}` where:
+    * `created` is the number of blocks the run created (0 when it found no
+      free slot or failed);
+    * `errors` is the list of per-day failure strings the run itself reports
+      (its own `Errors` list — listing a day's events, creating or saving a
+      block), possibly empty;
+    * `error` is the run's *own* failure — it did not get as far as the days:
+      no calendar credential, settings unreadable, abandoned at the time bound
+      — or null.
+    So a run that fails every day has `created: 0`, a non-empty `errors` and
+    `error: null`; a run refused for want of a credential has `created: 0`,
+    `errors: []` and a non-null `error`; a run that found no free slot has
+    `created: 0`, `errors: []`, `error: null`. The entry is attributed to the
+    user it ran for, which is what PAC-23 provides and why §5's AC-5 and AC-6
+    are blocked on it. `cleared` is **not** in the details — see item 13.
+13. **A scheduled run never clears blocks.** The run only ever adds blocks
+    (`backend/engine/focus_time.go:178-193` creates and saves, nothing else);
+    clearing is a separate, manual-only operation
+    (`backend/engine/focus_time_cleaner.go:16`, called only from
+    `backend/api/handlers_focus.go:81`). This spec keeps that: a block the user
+    kept does not vanish every morning. *(v3 challenge, blocking 3.)* AC-14.
 
-* `last_run` is written **before** `RunForUser`, and the ticker is non-reentrant, so a user can never be double-run: even if a run takes longer than a minute, the dropped tick and the already-advanced `last_run` both prevent it. It is also written on error so a user whose token is dead is retried at their next slot, not every minute.
-* `auto_schedule_last_run` is never NULL for an enabled user (§4.1), so `after` needs no epoch fallback; if it is NULL anyway (manual DB edit), treat as `now` and skip this tick.
-* **One audit row per user per run**, action `auto_schedule_ran` (new eighth literal), details `{created: n, cleared: n, error: string|null}`, marshalled with `encoding/json`. This replaces relying on `focus_created`/`focus_cleared` counts, which are zero on a run that finds no free slot and several on a run that creates several blocks. `WriteAuditLog` takes an explicit `userID` ([PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the) must provide this — the cron has no HTTP context and `UserIDFromContext` returns nil UUID, not an error).
-* `RunForUser` already refuses `uuid.Nil`; keep that.
-* `cronNext` uses `github.com/robfig/cron/v3`'s parser with the user's IANA `timezone`. OQ-1 (is robfig already present?) only decides whether `go.mod` grows a line; the design does not depend on what the current cron is.
-* Invalid timezone is rejected at settings write (400 `invalid_timezone`), so the loop never sees one; if it does (manual edit), skip the user and log at warn — no audit, no "once" state to maintain.
-* Clock: the loop takes `engine.Clock`, an interface with `Now()`, injected from `main.go`. `engine.SystemClock` is a package var `main.go` never replaces; this is the moment to thread it through for this code path rather than add another unassigned exported field. [PAC-50](https://linear.app/paceday/issue/PAC-50/sso-configuration-is-writable-by-any-employee-and-for-any-subdomain) uses the same seam.
+### 4.4 Settings interface (the contract delta)
 
-### 4.4 API
+The settings read and write already carry `autoScheduleEnabled` and
+`autoScheduleCron` for the caller only (`contracts/openapi/paths/scheduling.yaml:1745-1752`;
+PAC-24 contract revision 6). This spec adds to that operation pair, and to one
+other, exactly the following:
 
-Settings fragment (owned by [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s contract revision **6** — this spec adds properties to it rather than a new operation; `autoScheduleEnabled` and `autoScheduleCron` are already in the schema, so the contract delta is `autoScheduleLastRun` plus the two error codes):
+* **`autoScheduleLastRun`** — read-only, RFC 3339 timestamp or `null`, the
+  watermark of §4.1. On write it is **accepted and ignored**, in the same class
+  as `llmApiKeySet` and `updatedAt` (`scheduling.yaml:1984`), so a document read
+  from GET can be sent back unchanged and PAC-24's AC-10 still holds; it is not
+  a `null`-is-400 property (`scheduling.yaml:1987`) because a GET document
+  legitimately carries `null` here. *(v3 challenge, non-blocking 7.)* The shipped
+  client derives its PATCH key set from the generated write schema minus two
+  hard-coded names (`smart-calendar-flow/src/api/client.ts:636-637`), so it
+  *will* include this property; accepted-and-ignored is what makes that safe.
+* **A `code` property on the write's 400 response**, optional, carrying
+  `invalid_cron` when the refusal is the existing
+  `autoScheduleCron must be a 5-part cron expression` /
+  `autoScheduleCron is invalid: <err>` message, and `invalid_timezone` when it
+  is the existing `timezone is not a known IANA location` message. The
+  **message stays exactly as it is today**; the shared envelope stays
+  `{"error": "<message>"}` and merely gains the optional property; **no other
+  message in the catalogue gains a code here**. *(v3 challenge, blocking 4.)*
+  The shipped client reads `error` first
+  (`smart-calendar-flow/src/api/client.ts:328-329`) and is unaffected.
+* **An eighth `action` literal, `auto_schedule_ran`, on the activity-log
+  read.** That enum is closed by design — adding a value is a contract change
+  (`contracts/openapi/paths/calendar.yaml:1668`;
+  `backend/api/gen/paceday.gen.go:534-536`) — and the operation is PAC-23's:
+  it carries API-005 (critical, Confirmed, `docs/factory/api-audit.md:239`) and
+  API-074 (`:308`), both of which PAC-23 resolves. **PAC-49's contract revision
+  is therefore written on top of PAC-23's contract revision 4**
+  (`contracts/features/PAC-23.md`, "Revision 4 — 2026-10-04"), never beside
+  it, and lands after it. *(v3 challenge, blocking 5.)*
+* The settings write continues to refuse an unusable schedule or timezone
+  before anything is stored (both refusals exist today; only the code is new).
 
-* `autoScheduleEnabled: boolean` (camelCase on the wire, matching the backend's existing settings keys; the frontend's snake_case drift is [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings)'s problem and is fixed there).
-* `autoScheduleCron: string`, 5-field cron. Server validates with the same parser the loop uses; invalid → 400 `invalid_cron` via `writeError` (JSON envelope), never `http.Error`.
-* Read-only in responses: `autoScheduleLastRun: string|null` (RFC 3339).
-
-If the MCP server (`mcp/`) exposes settings, it goes through the same storage layer and inherits the change; if it has its own query, the implementer greps for `auto_schedule` across `mcp/` as well.
+The MCP server reaches settings through one read-only tool that performs the
+GET (`mcp/tools.go:233-238`); it has no write and no direct column read, so it
+sees the new property and needs nothing else (OQ-4).
 
 ### 4.5 Frontend (smart-calendar-flow, after the contract merges)
 
-* Settings page gets a toggle and a schedule field for the **caller's** own settings. Presets ("weekday mornings", "daily") map to cron strings; a raw field is fine behind "advanced".
-* Types come from the regenerated contract, never hand-written (factory rule).
-* `data-testid`s per `e2e/TESTIDS-REQUIRED.md`: `settings-autoschedule-toggle`, `settings-autoschedule-cron`.
+The toggle and the schedule field already exist
+(`smart-calendar-flow/src/pages/Settings.tsx:393-412`). The whole frontend delta
+is: *(v3 challenge, non-blocking 10)*
+
+* two test ids on those existing controls, per `e2e/TESTIDS-REQUIRED.md`:
+  `settings-autoschedule-toggle`, `settings-autoschedule-cron`;
+* presets that fill the schedule field — at least "weekday mornings"
+  (`0 7 * * 1-5`) and "every morning" (`0 8 * * *`, the stored default) — with
+  the raw field kept behind "advanced";
+* one read-only line showing when the scheduler last ran for this user, from
+  `autoScheduleLastRun`, test id `settings-autoschedule-lastrun`, rendered as
+  "never" (or hidden) when the value is `null` **or the property is absent** —
+  the absence case is what a rollback produces (§8).
+
+Types come from the regenerated contract, never hand-written (factory rule).
 
 ## 5. Acceptance criteria
 
-* AC-1 Fresh database after migration 026: `ListUsersWithAutoSchedule` returns an empty list. No row has `auto_schedule_enabled = true` by default.
-* AC-2 Two users A and B; A enables auto-schedule. `ListUsersWithAutoSchedule` returns exactly `[A]`.
-* AC-3 A enables auto-schedule at 06:30 Paris (cron `0 7 * * 1-5`); ticks at 06:31 and 06:58 do **not** run A (`last_run` was set to 06:30 on enable, so `next` is 07:00). B is disabled and is never run.
-* AC-4 Tick at 07:00 runs A exactly once; ticks at 07:01 and 07:07 do not run A again (`auto_schedule_last_run` advanced to 07:00).
-* AC-4b A's `RunForUser` is made to block for 3 minutes; ticks at 07:01 and 07:02 are dropped (non-reentrant); A is not run a second time; B, enabled with the same cron, is run once when the long tick reaches her.
-* AC-5 A's `RunForUser` returns an error (no calendar token): the loop continues to B, A's `auto_schedule_last_run` is set, and one `auto_schedule_ran` audit row exists with `user_id = A` and a non-null `error`.
-* AC-6 A successful run that creates two blocks and clears one writes exactly one `auto_schedule_ran` row with `user_id = A`, details `{created: 2, cleared: 1, error: null}`, parseable with `json.Unmarshal`. A run that finds no free slot still writes exactly one row with `created: 0`.
-* AC-6b Users A and B both enabled, each with their own calendar token: A's run creates events via A's token only, B's via B's (recording calendar mock keyed by token). Fails if tokens are still read from a shared row.
-* AC-7 `PATCH` settings with `autoScheduleCron: "every tuesday"` → 400, JSON envelope, code `invalid_cron`, row unchanged. Same with `timezone: "Mars/Olympus"` → 400 `invalid_timezone`.
-* AC-7b `PATCH` that flips `autoScheduleEnabled` false→true sets `auto_schedule_last_run` to the injected clock's `now`; a `PATCH` that leaves it true (or omits it) does not touch `last_run`.
-* AC-8 `PATCH` settings by A sets A's flag only; B's `GET` is unchanged.
-* AC-9 Migration 026 up+down+up succeeds on (a) an empty database and (b) a database carrying the e2e seed's per-user settings rows (post-024 shape).
-* ~~AC-10 No query in `backend/` or `mcp/` references the dropped global columns (grep in `make verify`'s lint step or a unit test that fails on `auto_schedule` outside the new table).~~ **Struck 2026-10-21:** no columns are dropped (§4.1).
-* AC-11 Contract: `scripts/openapi_assemble.py --check` passes; the settings fragment documents both properties and the 400 code.
-* AC-12 E2E: user enables auto-schedule in the UI, a forced tick (test hook or advanced clock) creates focus blocks in the stubbed calendar for that user only. May stay `test.fixme` until [PAC-43](https://linear.app/paceday/issue/PAC-43/add-a-base-url-seam-to-backendcalendar-so-external-calendar-providers)'s calendar seam lands, but the test file must exist with the right test ids.
+Each is Given/When/Then and names the layer that proves it. "Tick at HH:MM"
+means the loop's clock is set to that instant and one tick is forced (§4.3,
+item 10). Every `[unit]` here needs a live Postgres, as v2's §4 preamble
+explains; none has been run for this revision.
+
+**Regression guards.** AC-1, AC-2 and AC-8 are already true at `4dc801f` and
+are kept because §4.3 deletes the code and the tests that currently prove them
+(`backend/scheduler/cron_test.go:72-141`, all four `Reload` tests go with
+`Reload`). They are stated so that stage 3 writes their replacements, not so
+that anyone records them as new behaviour.
+
+### Buildable now
+
+* **AC-1** *(regression guard; the watermark clause is new)* Given a database
+  migrated through 026 holding users who have never saved settings, when the
+  candidate set is produced, then it is empty; and each such user's settings
+  read shows `autoScheduleEnabled: false`, `autoScheduleCron: "0 8 * * *"` and
+  `autoScheduleLastRun: null`. [unit]
+* **AC-2** *(regression guard)* Given users A and B where only A has enabled
+  auto-schedule, when the candidate set is produced, then it is exactly `[A]`.
+  [unit]
+* **AC-3** Given A with timezone `Europe/Paris` and schedule `0 7 * * 1-5`
+  who enables it at 06:30 Paris on a weekday (so the watermark is 06:30), and
+  B who has it disabled, when ticks occur at 06:31 and 06:58 Paris, then no
+  run is started for A and none for B. [unit]
+* **AC-4** Given AC-3's state, when ticks occur at 07:00, 07:01 and 07:07
+  Paris, then A is run exactly once, at the 07:00 tick, with the week
+  containing that instant as its target; A's watermark afterwards equals the
+  07:00 tick instant; B is never run. [unit]
+* **AC-4a (timezone)** Given A as in AC-3 but the process clock in UTC, when
+  the tick at 05:00 UTC (07:00 Paris, summer) occurs, then A is run; and given
+  the same A in winter, the tick at 06:00 UTC runs A and the tick at 05:00 UTC
+  does not. [unit]
+* **AC-4b (no overlap)** Given A and B both enabled on the same schedule and
+  A's run made to block for three minutes, when ticks occur at 07:00, 07:01 and
+  07:02, then the 07:01 and 07:02 ticks are dropped, A is run exactly once, and
+  B is run exactly once, by the 07:00 tick after A's run returns. [unit]
+* **AC-4c (missed slot, caught up once)** Given A on `0 7 * * 1-5` whose
+  watermark is Monday 07:00, when the process is down from Tuesday 06:00 to
+  Tuesday 09:30 and ticks then occur at 09:30, 09:31 and 09:45, then A is run
+  exactly once, at 09:30, A's watermark becomes 09:30, and A is not run again
+  before Wednesday 07:00. Given instead the process is down from Monday 08:00
+  to Thursday 09:30 (three slots missed), the same ticks run A exactly once.
+  [unit]
+* **AC-4d (unparseable stored values are skipped, not fatal)** Given A enabled
+  with the stored expression `@daily` (accepted by the old registration path,
+  rejected by the five-field parser) and B enabled with a valid schedule due
+  now, when a tick occurs, then A is not run, one warning naming A is logged,
+  no audit entry is written for A, and B is run; and given A instead has a
+  stored timezone that cannot be loaded, the same holds. [unit]
+* **AC-4e (time bound)** Given A and B both due and A's run made to block
+  indefinitely, when the tick occurs, then A's run is abandoned after ten
+  minutes, A's watermark was advanced at the tick, and B is run on the same
+  tick. [unit]
+* **AC-6b (own token only)** Given A and B both enabled and due, each with
+  their own calendar credential, and a recording calendar stand-in keyed by
+  credential, when the tick runs both, then every event created for A was
+  created with A's credential and every event for B with B's; the test fails
+  if either run used the other's. [unit]
+* **AC-7 (machine-readable refusal)** Given a signed-in user, when they save
+  `autoScheduleCron: "every tuesday"`, then the response is 400, JSON, with
+  `error` equal to today's message for that refusal and `code` equal to
+  `invalid_cron`, and the stored row is unchanged; when they save
+  `timezone: "Mars/Olympus"`, the response is 400 with `code` equal to
+  `invalid_timezone`; and when they save `focusMinBlockMinutes: -1`, the
+  response is 400 with today's message and **no** `code` property. [contract]
+* **AC-7b (enable resets the watermark)** Given A with auto-schedule off and
+  the write-side clock set to T, when A saves `autoScheduleEnabled: true`,
+  then A's `autoScheduleLastRun` reads back as T; and given A already on with
+  watermark W, when A saves `autoScheduleEnabled: true` again, or omits it,
+  the watermark is still W. [unit]
+* **AC-7c (edit while enabled resets the watermark)** Given A enabled on
+  `0 7 * * 1-5` with watermark yesterday 07:00, when at 09:00 today A saves
+  `autoScheduleCron: "0 5 * * 1-5"`, then A's watermark is 09:00 today, ticks
+  at 09:01 and 09:30 do not run A, and the tick at 05:00 tomorrow does; and
+  given the same A instead saves `timezone` to a zone six hours west, the
+  watermark is likewise 09:00 and no tick before A's next 07:00 in the new
+  zone runs A. [unit]
+* **AC-7d (an unrelated save leaves the watermark alone)** Given A enabled
+  with watermark W, when A saves a change to `focusLabel` only, then A's
+  watermark is still W. [unit]
+* **AC-7e (a save never carries the watermark)** Given A's settings document
+  read at T0 showing `autoScheduleLastRun: W0`, and a tick that then advances
+  A's watermark to W1, when that T0 document is sent back as a write with
+  `autoScheduleLastRun: W0` and one unrelated property changed, then the
+  response is 200, the response body shows `autoScheduleLastRun: W1`, and the
+  next tick does not run A. [contract]
+* **AC-8** *(regression guard)* Given A and B, when A saves a change to their
+  auto-schedule settings, then B's settings read is unchanged. [contract]
+* **AC-9** Given (a) an empty database and (b) a database carrying the e2e
+  seed's per-user settings rows (`e2e/seed/seed.sql:105-115`, none with
+  auto-schedule on — so (b) exercises the migration against real rows but no
+  data in the new column, which is what the seed has), when migration 026 is
+  applied, reverted and applied again, then each step succeeds and afterwards
+  every row's watermark is `null`. [unit]
+* ~~**AC-10** No query in `backend/` or `mcp/` references the dropped global columns (grep in `make verify`'s lint step or a unit test that fails on `auto_schedule` outside the new table).~~ **Struck 2026-10-21:** no columns are dropped (§4.1).
+* **AC-11** Given the assembled contract, when the contract gate runs, then it
+  passes, and the settings fragment documents `autoScheduleLastRun` as
+  read-only, nullable and accepted-and-ignored on write; the write's 400
+  response documents the optional `code` with exactly the values
+  `invalid_cron` and `invalid_timezone`; and the activity-log fragment's
+  `action` enum contains `auto_schedule_ran` as its eighth value, on top of
+  PAC-23's contract revision 4. [contract]
+* **AC-12** Given a seeded user signed in to the e2e stack who turns
+  auto-schedule on and picks the "weekday mornings" preset through the
+  controls carrying `settings-autoschedule-toggle` and
+  `settings-autoschedule-cron`, when the loop is made to tick at that user's
+  next slot, then focus blocks appear in the calendar stand-in for that user
+  only, no other seeded user's calendar changes, and the Settings page's
+  `settings-autoschedule-lastrun` line shows the tick time. The test is not
+  `test.fixme`: PAC-43's calendar stand-in exists (`e2e/fake-google/`,
+  `e2e/SEAM-REQUIRED.md:3`), and the tick seam is a requirement of this spec
+  (§4.3, item 10), not a precondition it waits for. [e2e]
+* **AC-13 (last run is visible)** Given A for whom a scheduled run completed
+  at tick T, when A reads their settings, then `autoScheduleLastRun` equals T
+  and the Settings page shows it under `settings-autoschedule-lastrun`; given
+  a user who has never enabled it, the value is `null` and the page shows
+  "never" or nothing. [e2e]
+* **AC-14 (a scheduled run never clears)** Given A with one existing focus
+  block in the current week and auto-schedule due, when the tick runs A, then
+  that block still exists in storage and in the calendar stand-in afterwards,
+  and no `focus_cleared` entry was written by the run. [unit]
+
+### Blocked on PAC-23
+
+Neither of these can be written until the activity log can carry a subject
+(PAC-23's migration 025 and its explicit-subject write). They are implemented
+after PAC-23 lands, in the same stage-4 branch or a follow-up on it — never
+skipped.
+
+* **AC-5** Given A and B both due, and A's run failing before it reaches any
+  day (no calendar credential), when the tick occurs, then the loop goes on to
+  run B; A's watermark was advanced; and exactly one `auto_schedule_ran` entry
+  exists for A, attributed to A, whose details parse to
+  `{created: 0, errors: [], error: <non-null string>}`. [unit]
+* **AC-6** Given A due, when A's scheduled run creates two blocks, then
+  exactly one `auto_schedule_ran` entry exists for A, attributed to A, whose
+  details parse to `{created: 2, errors: [], error: null}` — the run's own
+  `focus_created` entry is not counted. Given instead a run that finds no free
+  slot, the one entry parses to `{created: 0, errors: [], error: null}`. Given
+  instead a run in which listing events fails on every one of the five
+  weekdays, the one entry parses to `created: 0`, an `errors` list of five
+  strings, and `error: null`. [unit]
 
 ## 6. ~~Consequences for PAC-24's plan (revision 2 → 3)~~ — struck 2026-10-21
 
-> **Struck per the reality-check header:** PAC-24 / #204 merged on 2026-10-15 with migration 024 as shipped; there is no PAC-24 plan revision 3 to write. Item 5 (the explicit `userID` on `WriteAuditLog`) is carried by PAC-23's plan, which already specifies it. The list is kept struck for lineage.
+> **Struck per the reality-check header:** PAC-24 / #204 merged on 2026-10-15 with migration 024 as shipped; there is no PAC-24 plan revision 3 to write. Item 5 (the explicit `userID` on `WriteAuditLog`) is carried by PAC-23's plan, which already specifies it (`docs/factory/PAC-23-plan.md:47`). The list is kept struck for lineage.
 
 ~~The plan author should strike, not reinterpret:~~
 
@@ -1760,20 +2092,526 @@ If the MCP server (`mcp/`) exposes settings, it goes through the same storage la
 2. ~~Any "copy `auto_schedule_enabled` as false regardless" step — superseded by §4.1 (column default false, old column dropped).~~
 3. ~~Any cross-repo compatibility window or dual wire shape — gone (§2.3).~~
 4. ~~Add: the three columns, the loop rewrite (§4.3), the eighth audit literal, the per-user token columns (§3.3), and ACs 1–12 above to the same branch.~~
-5. Confirm [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)'s `WriteAuditLog` signature takes an explicit `userID`; if [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)'s plan has it context-derived, change [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the), not this.
+5. Confirm [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)'s `WriteAuditLog` signature takes an explicit `userID`; if [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the)'s plan has it context-derived, change [PAC-23](https://linear.app/paceday/issue/PAC-23/add-user-id-to-the-audit-log-table-and-scope-get-apiaudit-to-the), not this. **Checked 2026-10-22:** it does — `docs/factory/PAC-23-plan.md:47`.
 
 What stays unchanged in [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings): creating a settings row at signup for every new user (this is the real fix for the `no settings row` outage), per-user `GetSettings`/`SaveSettings`, and the `llmApiKey` no longer being a shared cleartext value.
 
-## 7. Open questions for the challenger
+## 7. What must not change
 
-* **OQ-1** Is `robfig/cron/v3` already in `go.mod`? Only affects whether a dependency is added; the design (§4.3) no longer depends on what the current cron looks like.
-* **OQ-2** Closed in v3: `last_run` advances before the run, on every outcome.
-* **OQ-3** `RunForUser` reads settings itself (`focus_time.go:82`). After [PAC-24](https://linear.app/paceday/issue/PAC-24/switch-apisettings-and-the-daily-recap-handlers-to-per-user-settings) that read must be per-user; confirm there is no second global read hiding in `engine/` or `calendar/` that the per-user loop would bypass — and the same for the token read in `newCalOps`.
-* **OQ-4** Does the MCP server have an auto-schedule tool or read of these columns?
+*(Restored 2026-10-22 — v3 challenge, blocking 7. v2 had this section; v3 dropped it.)*
+
+* **The manual "run my focus time now" request and its `focus_created`
+  entry.** Its request (optional week), its response, its `text/plain` 500,
+  and the one audit entry it writes are untouched. A scheduled run calls the
+  same per-user run; it adds an entry beside that one, it does not change it.
+* **The settings write's merge semantics and every existing validation.** An
+  absent property is unchanged, a present one is set exactly, `null` and
+  unknown properties are a 400, `llmApiKeySet` and `updatedAt` are accepted and
+  ignored; every message in the validation catalogue is emitted unchanged. The
+  only additions are the optional `code` on two of those messages and one more
+  accepted-and-ignored property. Protected by PAC-24's tests and AC-7/AC-7e.
+* **The run's refusal of an empty user id**, at every layer that refuses it
+  today. Filtering candidates earlier is not licence to remove the guards.
+* **The per-user token read.** A scheduled run reads only the user's own
+  credential, and a user who has none is refused before anything is written.
+  AC-6b and AC-5.
+* **The stored schedule default `'0 8 * * *'` and the two existing columns.**
+  Migration 026 touches neither. AC-1.
+* **A user with auto-schedule off is never run**, whatever anyone else set.
+  AC-2, AC-3.
+* **Nothing a scheduled run does once it starts changes** — which days it
+  plans, how it picks slots, what it writes into the calendar, and that it
+  never deletes (AC-14).
+* **The activity-log read's existing seven `action` values remain**; PAC-23's
+  AC-14 (the set never shrinks) holds across this change. The shipped UI treats
+  `action` as an opaque string (`smart-calendar-flow/src/api/client.ts:451`)
+  and renders an unknown value as `unknown`, which is the contract's own stated
+  handling, so the eighth value breaks no consumer.
+* **Tests that go, and what replaces them.** The four `Reload` tests
+  (`backend/scheduler/cron_test.go:72-141`) test a method §4.3 deletes. Their
+  four guarantees survive as AC-1 (nobody on → nothing runs), AC-2 (per-user),
+  AC-4d (an unusable stored schedule is skipped, not fatal) and AC-4/AC-7c
+  (the set of candidates is re-decided — now every tick rather than on
+  reload). Stage 3 names the replacement tests.
+
+## 8. Rollback
+
+*(Restored 2026-10-22 — v3 challenge, blocking 7.)*
+
+**Code revert.** Reverting the release restores the restart-only loop in
+server-local time (`backend/scheduler/cron.go:27, 53-56`). Three consequences
+for users who enabled under this release: their schedule is evaluated in the
+server's zone again, so a Paris user on a UTC server **silently shifts** from
+07:00 Paris to 07:00 UTC; any enable or edit they make afterwards takes effect
+only at the next restart; and, because the old loop keeps no watermark, a user
+whose last run was earlier the same day may be run again at their next
+server-local slot. Blocks already created are in the calendar and stay there —
+no revert retracts them, which is the same asymmetry v2 §7 recorded.
+
+**Audit entries.** `auto_schedule_ran` entries already written sit outside the
+previous contract's closed action set. A strictly validating consumer of the
+activity-log read would reject every response that contains one; the contract's
+own instruction to consumers is to render the row with a placeholder rather
+than discard the response, and the shipped UI does exactly that
+(`smart-calendar-flow/src/api/client.ts:451`). The rows are not deleted on
+rollback; they remain true history.
+
+**Down migration.** 026's down migration drops the watermark column and
+**loses it**. Re-applying the up migration later gives every enabled user a
+`null` watermark, which §4.1's last rule turns into "treat as now, skip this
+tick" — so a rollback-then-upgrade does not produce a burst of catch-up runs.
+What is lost is only the "last ran at" history.
+
+**Wire properties.** After a revert the settings read no longer carries
+`autoScheduleLastRun` and the write's 400 no longer carries `code`. The shipped
+client reads `error` before anything else and tolerates a missing property; the
+last-run line in §4.5 is required to render "never" or nothing when the property
+is absent, so a frontend deployed ahead of a backend revert degrades rather than
+breaks.
+
+## 9. Open questions
+
+* **OQ-1** ~~Is `robfig/cron/v3` already in `go.mod`?~~ **Closed 2026-10-22 from
+  the code:** `github.com/robfig/cron/v3 v3.0.1` is at `backend/go.mod:21` and
+  is already imported by the settings handler
+  (`backend/api/handlers_settings.go:16`) and the scheduler
+  (`backend/scheduler/cron.go:12`). No dependency is added; which parser the
+  plan uses is its decision, within §4.3 item 9.
+* **OQ-2** Closed in v3: the watermark advances before the run, on every outcome (§4.3, item 4).
+* **OQ-3** ~~Is there a second global settings or token read the per-user loop would bypass?~~ **Closed 2026-10-22 from the code:** every engine settings read is per-user — `backend/engine/focus_time.go:76`, `auto_decline.go:66`, `habits.go:70, 96`, `smart_schedule.go:54, 288`, `compression.go:48`, `daily_recap.go:72`, `analytics.go:58`, `freebusy_service.go:75`, `personal_blocker.go:97` all go through the by-user read; the token read is by user (`backend/auth/token_store.go:40-49`); the string `id = 1` survives in non-test Go only inside generated-code comments (`backend/api/gen/paceday.gen.go:2120, 2226, 2274, 2385`) and a comment at `token_store.go:39`.
+* **OQ-4** ~~Does the MCP server have an auto-schedule tool or read of these columns?~~ **Closed 2026-10-22 from the code:** one read-only settings tool, `clockwise_get_settings`, which performs the GET (`mcp/tools.go:233-238`); no write, no direct column read; `auto_schedule` does not occur under `mcp/`. The new property reaches it for free.
 * **OQ-5** ~~Where exactly is the Google token stored today (§3.3)? Decides whether 024's reshape carries it for free or needs an extra move.~~ **Answered while landing (2026-10-21):** `oauth_tokens (user_id, calendar_id)`, per-user since migration 017 — see §3 item 3. No extra move.
+* **OQ-6 (new, 2026-10-22) — daylight-saving edges.** *Owner: plan-author; resolve by a unit test pinned to a real transition, added beside AC-4a.* §4.3 item 3 evaluates slots in the user's zone. Two edge cases are not decided here because I have not read how the chosen parser steps across them: a slot that does not exist on the spring-forward day (`30 2 * * *` in a zone that skips 02:00–03:00) and a slot that exists twice on the fall-back day. The requirement is the §4.3 one — never twice for one slot, never skipped for a whole day — and the plan states which instant the library picks and proves it; if it skips the whole day, that is a finding against the parser choice, not an accepted behaviour.
 
-## 8. Revision log
+## 10. Revision log
 
 * v2 (2026-10-04, PR [Enach/clockwise-like#179](https://linear.app/paceday/review/specpac-49-focus-cron-must-act-for-exactly-the-people-who-asked-for-it-a6e5129984b7)): first full spec; recommended copying the cron expression but not `auto_schedule_enabled`.
 * v3 draft (2026-10-21 am): rewritten after the "zero users / comprehensive fix" decision.
 * v3 (2026-10-21 pm): after an internal challenge (12 findings across [PAC-49](https://linear.app/paceday/issue/PAC-49/listuserswithautoschedule-does-not-filter-user-id-so-the-focus-cron-is)/50) — enable sets `last_run = now` (first-tick bug); per-user token columns pulled into 024 (shared-token landmine); 1-minute non-reentrant ticker with `last_run` written before the run (double-run); `auto_schedule_ran` per-run audit with explicit `userID`; invalid timezone rejected at write; ACs 3–7 rewritten, 4b/6b/7b added.
+* v3.1 (2026-10-22): response to the stage-1 challenge of v3 (appended below, after the revision note) — §1 rewritten around what is true post-#204; stored default kept at `'0 8 * * *'`; `cleared` dropped and the audit details defined; `code` on the write's 400 defined; PAC-23 made a stated blocker with AC-5/AC-6 under their own heading; edit-while-enabled and missed-slot rules stated with criteria; "What must not change" and "Rollback" restored; §4 stripped of implementation names; OQ-1/3/4 closed from the code; OQ-6 opened. Every finding is mapped in the `## Revision v3.1` section below.
+
+---
+
+## Revision v3.1 — 2026-10-22 (response to the v3 challenge)
+
+Verdict answered: accept-with-changes. Every finding below was re-verified in
+the code at `4dc801f` before the body was edited; nothing was executed. Where a
+decision was taken by the orchestrator rather than by me it is marked
+*(decision)*. The v2 body, v2's Challenge and the v3 Challenge below are
+unchanged by a character.
+
+### Blocking
+
+1. **§1 false post-#204** — §1 rewritten around (a) restart-only, (b)
+   server-local hour, (c) unattributed audit, (d) no last-run record, each
+   with citations at `4dc801f`; one sentence closes the issue's original
+   mechanism via #204; the seven wrong citations are corrected (see "Citations"
+   below); the `ListFocusBlocksForWeek` out-of-scope bullet is struck; lineage
+   item (c) corrected to the per-user recap join. *(decision)*
+2. **Cron default contradiction** — the stored default stays `'0 8 * * *'` and
+   026 adds the watermark only (§2 decision 4, §4.1); the `'0 7 * * 1-5'`
+   end-state block and "weekdays at 07:00" are struck; weekday mornings is a
+   §4.5 preset; the target-week rule is stated (§4.3 item 5) and weekend/past-day
+   handling is explicitly out of scope. *(decision)*
+3. **`cleared` unreachable** — a scheduled run never clears (§4.3 item 13,
+   §3 out of scope, AC-14); `cleared` dropped from the details, which are now
+   `{created, errors, error}` with each number's meaning defined (§4.3 item
+   12); AC-6 rewritten so every value is one the loop can produce, including
+   the all-days-fail case. *(decision)*
+4. **`code` undefined** — §4.4: the envelope stays `{"error": msg}` and gains
+   an optional `code` on the settings write's 400, `invalid_cron` /
+   `invalid_timezone` for exactly those two existing messages, message
+   unchanged, no other message gains one; AC-7 asserts the property and its
+   absence on a third message. *(decision)*
+5. **PAC-23 is a gate** — header bullet "Blocked by: PAC-23 (backend)" with
+   the 025-before-026 ordering; §4.4 names the audit-fragment delta (eighth
+   literal on PAC-23's operation, carrying API-005/API-074) and that PAC-49's
+   contract revision is written on top of PAC-23's revision 4; AC-5 and AC-6
+   moved under "Blocked on PAC-23", implemented after it, never skipped.
+   *(decision)*
+6. **Edits and missed slots** — §4.1: a save changing schedule or timezone
+   while enabled resets the watermark to now, like enabling; a save changing
+   neither leaves it alone; §4.3 item 8: a missed slot is caught up once at the
+   first tick after restart, never more. Criteria AC-7c (edit), AC-7d
+   (unrelated save), AC-4c (missed slot, including several missed). *(decision)*
+7. **Rollback and must-not-change missing** — restored as §7 and §8, naming
+   the manual run and its `focus_created` entry, PATCH merge semantics and the
+   validation catalogue, the empty-user-id refusal, the per-user token read; and
+   the revert's hour shift, the out-of-enum audit rows, the lossy down
+   migration and the absent-property case for the frontend. *(decision)*
+
+### Non-blocking
+
+1. **Implementation names in §4** — §4 rewritten as requirements (minute
+   granularity, no overlap, watermark-before-run on every outcome, the user's
+   IANA zone, a settable clock, a ten-minute per-user bound); the Go signature,
+   library, options, mutex, interface, `main.go` and helper names are gone.
+   Contract-level names fixed by the orchestrator (column, wire properties,
+   literal, codes, migration number) remain and are flagged as such.
+2. **Non-existent `ListFocusBlocksForWeek` defect** — struck in §3 with the
+   correction (`focus_blocks.go:30, 64` both take a user id).
+3. **Which week a tick schedules** — §4.3 item 5: the week containing the tick
+   instant, as the manual run does with no week given; past-day handling
+   unchanged and out of scope; AC-4 asserts the target week. *(decision)*
+4. **Two audit rows / per-day errors** — §4.3 item 12 says `auto_schedule_ran`
+   is *in addition to* `focus_created`, AC-6 counts only the former, and the
+   run's per-day failures map to `errors` with `error` reserved for the run's
+   own failure. *(decision)*
+5. **Lineage (c) stale** — corrected in the lineage bullet to the per-user
+   join at `daily_recap.go:143-148`; (a) and (b) kept with their citations.
+6. **AC-12's void escape hatch** — `test.fixme` clause removed; §4.3 item 10
+   *requires* a way to tick the loop at a chosen instant in the e2e stack,
+   mechanism left to the plan; AC-12 rewritten against it and against the
+   PAC-43 stand-in that exists.
+7. **`autoScheduleLastRun` on write** — §4.4: read-only, accepted and ignored
+   like `llmApiKeySet`/`updatedAt`, so PAC-24's AC-10 holds; AC-7e and AC-11
+   assert it.
+8. **Concurrent write path** — §4.1: a settings save never carries the
+   watermark; only enable/edit reset and the scheduler's advance write it;
+   stated as behaviour so a save racing a tick cannot rewind it; AC-7e.
+9. **No per-user time bound** — §4.3 item 7: ten minutes per run, as today;
+   AC-4e.
+10. **§4.5 overstated** — §4.5 now says the toggle and field exist and the
+    delta is the two test ids, the presets, and one read-only last-run line
+    with test id `settings-autoschedule-lastrun`; AC-13 says who sees the
+    value.
+11. **Parser agreement** — §4.3 item 9: the loop uses the write's five-field
+    parser; a stored expression it rejects (e.g. `@daily`) is skipped with a
+    warning and no audit row, like an invalid timezone; AC-4d.
+12. **OQs answerable from the code** — OQ-1, OQ-3, OQ-4 closed in §9 with the
+    challenger's citations re-verified (go.mod:21 and the two imports; the
+    eleven per-user engine reads and the by-user token read; the single
+    read-only MCP tool).
+
+### Criteria the challenger could not falsify
+
+- **AC-1, AC-2, AC-8** — kept, labelled "regression guard" in §5 with the
+  reason (the `Reload` tests that prove them today are deleted with `Reload`);
+  AC-1 additionally asserts the new column's `null`.
+- **AC-6** — rewritten without `cleared` (blocking 3).
+- **AC-7** — rewritten against the defined `code` property (blocking 4).
+- **AC-11** — now names the new items: `autoScheduleLastRun`, the `code`
+  property and its two values, and the `auto_schedule_ran` literal on top of
+  PAC-23's revision 4.
+- **AC-12** — now rests on a required tick seam (non-blocking 6).
+
+### Citations the challenger found wrong
+
+All seven corrected in the body: `settings.go:262,271` → the per-user read
+creates the row at `:237-242` and the write is `SaveSettingsForUser` at `:279`;
+"`RunForUser` dies at `no settings row`" → it calls the by-user read at
+`focus_time.go:76` and `focus_time_test.go:401-413` asserts success;
+"`WHERE id = 1` everywhere" → no such read remains outside comments;
+`ListFocusBlocksForWeek` → struck; "400 `invalid_cron`" as an existing thing →
+defined as a new optional property; lineage (c) → `daily_recap.go:143-148`;
+`DEFAULT '0 7 * * 1-5'` → `'0 8 * * *'` (`001_initial.up.sql:17`,
+`scheduling.yaml:1752`). One refinement to the challenge's own text: "no `TZ`
+is set in any `docker-compose*.yml`" is true of the three top-level files; the
+e2e stack does pin `TZ: UTC` (`e2e/docker-compose.e2e.yml:111`), which is why
+§1(b) names the three.
+
+### Consumers
+
+The challenge's list is adopted: the four `Reload` tests go and §7 names what
+replaces them; the activity-log enum gains a literal that the UI renders as
+`unknown`; the client's derived PATCH key set will include
+`autoScheduleLastRun`, which accepted-and-ignored makes safe (§4.4); the MCP
+read-only tool gains a property; AC-9(b) says in terms that the seed exercises
+no data in the new column.
+
+---
+
+## Challenge — 2026-10-22 (v3)
+
+**Verdict**: accept-with-changes
+
+Challenged at `a896faa` (worktree clean apart from this file). Every citation
+below was re-read in the code; `go build ./... && go vet` of `scheduler`,
+`engine` and `storage` pass at that commit. No Docker-backed test was run, by
+instruction, so nothing here claims to have executed a migration or a cron
+tick. The Linear issue itself was not reachable from this session; the problem
+statement I compared against is the one v2 §1 restates, which v2's challenge
+checked against the issue.
+
+The decisions in v3 §2 are not under challenge and the shape of §4.3 (a
+minute-granular, non-reentrant loop that advances a per-user watermark *before*
+running, in the user's own timezone) is sound. What blocks is that v3's §1
+describes a world #204 removed, one acceptance criterion asks for a number no
+conforming implementation can produce, one names a wire property that does not
+exist, and the dependency on PAC-23 is a contract gate rather than the aside the
+spec makes of it.
+
+### Blocking
+
+1. **§1 "Problem" is false at `a896faa`, all three bullets, and the live
+   problem is not stated.** (i) "exactly one `auto_schedule_enabled` flag ...
+   owned by nobody": migration 024 deleted every ownerless row and made
+   `user_id` NOT NULL (`backend/storage/migrations/024_settings_per_user.up.sql:140,144`);
+   each user's own row carries the flag. (ii) "no production path creates a
+   per-user settings row ... `RunForUser` dies at `no settings row`":
+   `GetOrCreateSettingsByUser` inserts the row on first read
+   (`backend/storage/settings.go:242`), `RunForUser` calls it
+   (`backend/engine/focus_time.go:76`), and
+   `TestFocusRun_UserWithNoPriorSettings` (`backend/engine/focus_time_test.go:401-413`)
+   asserts the opposite of the spec's claim. (iii) "every user whenever anyone
+   turned it on": `ListUsersWithAutoSchedule` returns per-user rows
+   (`settings.go:411-416`), `RunForUser` injects that user's id into ctx
+   (`focus_time.go:74`) and `newCalOps` loads that user's token
+   (`backend/engine/cal_iface.go:53-58`). The reality-check header concedes
+   §2.1/§4.1/§6 are moot but leaves §1 standing, so the next reader is told the
+   landmine is live. What *is* still true for a user today, and what v3 should
+   name as its problem: (a) switching it on does nothing until someone restarts
+   the process — `Reload()` has one call site, `Start()`
+   (`backend/scheduler/cron.go:73-76`, `backend/main.go:69-70`); (b) when it
+   does run, it runs at the **server's** local hour, not the user's —
+   `cron.New()` at `cron.go:27` takes no `WithLocation`, so robfig uses
+   `time.Local` (`robfig/cron/v3@v3.0.1/cron.go:124`), no `TZ` is set in any
+   `docker-compose*.yml`, and a Paris user's `0 7 * * 1-5` fires at 09:00 Paris
+   in summer; (c) the run is unattributed in the audit log
+   (`backend/storage/focus_blocks.go:74-75`); (d) there is no record of when it
+   last ran. *Resolves it*: rewrite §1 around (a)–(d), naming the affected user
+   and the observable change, and say in one sentence that the issue's stated
+   mechanism (a missing `user_id` predicate) is closed by #204's constraint.
+
+2. **§4.1 contradicts itself on the cron default, and the two readings differ
+   in user-visible behaviour.** "Migration 026 adds the third column and
+   nothing else" cannot coexist with the "intended end state"
+   `DEFAULT '0 7 * * 1-5'` and the prose "Default: weekdays at 07:00". The
+   stored default is `'0 8 * * *'` (`001_initial.up.sql:17`), the contract
+   documents it as such (`contracts/openapi/paths/scheduling.yaml:1752`), and
+   nothing in v3 changes it. The difference matters: `'0 8 * * *'` fires on
+   Saturday and Sunday, and a tick on those days hands `RunForUser` a week that
+   is already over (`startOfWeek`, `focus_time.go:328-334`, used at `:86`;
+   the five-day loop at `:94`). *Resolves it*: state one default. If it is the
+   weekday one, 026 changes the column default, AC-1 asserts it, and the
+   contract's "DB default" text is part of the delta; if not, strike the
+   `'0 7 * * 1-5'` line and the "weekdays at 07:00" sentence.
+
+3. **AC-6's `cleared: 1` is unreachable under §4.3, so the criterion cannot
+   be written.** The loop calls only `RunForUser`, and `RunForUser` never
+   deletes anything — `processDay` creates (`focus_time.go:178`) and saves
+   (`:184`), nothing else. Clearing is `ClearWeek`
+   (`backend/engine/focus_time_cleaner.go:16`), whose one caller is the HTTP
+   handler (`backend/api/handlers_focus.go:81`). Either a scheduled run is
+   meant to clear the week's existing blocks and re-plan — a behaviour change
+   a user notices (a block they kept vanishes every morning) that must be
+   stated as desired behaviour with its own criterion — or `cleared` does not
+   belong in the details. *Resolves it*: decide, state it in §3 and §4.3, and
+   rewrite AC-6 so that each number in the details is one the loop can produce.
+
+4. **AC-7 names an error `code` that the envelope does not have, so a test
+   cannot tell pass from fail.** `writeError` emits `{"error": <msg>}` and
+   nothing else (`backend/api/handlers_settings.go:371-375`); the contract's
+   `SchedulingErrorResponse` (`scheduling.yaml:875-883`) and the
+   `SettingsValidationError` catalogue (`:797-835`) are catalogues of
+   *messages*. Both messages AC-7 wants already exist and already return 400:
+   `autoScheduleCron ...` at handler `:247-253` / contract `:813-814`, and
+   `timezone is not a known IANA location` at handler `:222-224` / contract
+   `:831`. The only new thing in AC-7 is the word `invalid_cron`, and the spec
+   never says where it appears — a new property on every 400 from this
+   operation, a replacement for the message, or a prefix inside it. The one
+   shipped client reads `error`, `message` or `detail`
+   (`smart-calendar-flow/src/api/client.ts:328-329`). *Resolves it*: state the
+   observable — which property carries the code, whether the message stays,
+   and whether codes are added for these two messages only or for the whole
+   catalogue — and then AC-7 is a one-line test.
+
+5. **The PAC-23 dependency is a contract gate, and the spec treats it as an
+   aside.** At `a896faa`: `WriteAuditLog(db, action, details)` has no user
+   (`focus_blocks.go:74-75`), `audit_log` has no `user_id`
+   (`001_initial.up.sql:44-49`), no migration 025 exists (the directory ends
+   at 024), PAC-23's spec is `Status: draft` (`docs/specs/PAC-23.md:4`) and
+   only its contract revisions are on main (`d8d346a`), not its code. So AC-5
+   and AC-6 cannot be written before PAC-23's stage 4 lands — the spec says as
+   much in three scattered places (§3 item 5, §4.3 bullet 3, struck §6 item 5)
+   without once writing "blocked by". It is stricter than that: the eighth
+   literal `auto_schedule_ran` is a change to the closed `AuditEntryAction`
+   enum of `GET /api/audit` (`contracts/openapi/paths/calendar.yaml:1668`;
+   `backend/api/gen/paceday.gen.go:534-536`: "adding an eighth action is a
+   contract change"), and that operation carries API-005 (critical, Confirmed,
+   `docs/factory/api-audit.md:239`) and API-074 (`:308`), both PAC-23's.
+   Factory §7 rule 1 and `make contract` gate 3 refuse a feature that touches
+   that operation while those are open. §4.4's "the contract delta is
+   `autoScheduleLastRun` plus the two error codes" also omits this audit
+   fragment delta. *Resolves it*: a header bullet "Blocked by: PAC-23
+   (backend)"; §4.4 names the audit-fragment delta; AC-5/AC-6 move under a
+   "blocked on PAC-23" heading, or the spec states what a test asserts about
+   attribution before PAC-23 lands (nothing can, so the heading is the honest
+   option).
+
+6. **Editing the schedule while enabled re-opens the "runs on the next tick"
+   case the spec closes for enabling.** §4.1 sets `last_run = now` on enable
+   so that "the first run is the user's *next* cron slot, not the next tick";
+   AC-7b then requires that a PATCH leaving the flag true "does not touch
+   `last_run`". A user whose last run was yesterday 07:00 changes
+   `0 7 * * 1-5` to `0 5 * * 1-5` at 09:00: `next` after yesterday 07:00 is
+   today 05:00, which is `< now`, so they run at the next tick. A timezone
+   change westwards does the same. So does a process that was down across a
+   slot: the first tick after restart runs everyone whose slot was missed.
+   None of these is wrong on its face, but the spec's own principle covers one
+   of them and AC-7b locks the others in without saying so. *Resolves it*:
+   state the rule for a cron or timezone edit while enabled and for a missed
+   slot (catch up, or wait for the next one), and a criterion for each.
+
+7. **Rollback and "what must not change" are missing.** Factory §2 stage 1
+   requires both; v2 had §6 and §7, v3 has only "Down migration (026): drop
+   `auto_schedule_last_run`". Rolling the release back brings back
+   `cron.go`'s Reload-at-start loop in server-local time (`cron.go:27, :53`):
+   every user who enabled under v3 in their own timezone silently shifts hours,
+   and rows already written with `auto_schedule_ran` sit outside the old
+   contract's closed enum (`gen.go:536`). *Resolves it*: a Rollback section
+   naming those two effects, and a short list of what stays the same —
+   `POST /api/focus/run` and its `focus_created` row, PATCH merge semantics,
+   `RunForUser`'s refusal of `uuid.Nil`.
+
+### Non-blocking
+
+1. **§4 names files, packages and function signatures, which the factory
+   forbids at stage 1** (`docs/factory/README.md:66-69`, §5 table). §4.2 is a
+   Go signature; §4.3 names `robfig`, `SkipIfStillRunning`, a `TryLock`,
+   `engine.Clock` and `main.go`; §4.4 names `writeError`. README §0 says the
+   README wins and I say so: stages 2 and 3 must read §4 as illustration, not
+   decision. The *requirements* it encodes — minute granularity, no overlap,
+   watermark advanced before the run on every outcome, the user's IANA zone, a
+   clock a test can set — are good and should be stated as requirements.
+2. **§3's third out-of-scope bullet names a defect that does not exist.**
+   `ListFocusBlocksForUserWeek(db, userID, …)` (`focus_blocks.go:30`) and
+   `FocusMinutesForDay(db, userID, date)` (`:64`) both take a user id; there is
+   no `ListFocusBlocksForWeek` in `backend/` or `mcp/`. Strike it.
+3. **Which week a tick schedules is unstated.** Today the cron passes
+   `time.Now()` (`cron.go:56`), i.e. the current week, and `processDay` has no
+   past-day guard, so a Wednesday run re-plans Monday and Tuesday. AC-3/AC-4
+   need to know the week to assert anything about created blocks.
+4. **Two audit rows per successful cron run, and per-day errors vanish.**
+   `RunForUser` writes `focus_created` itself (`focus_time.go:103-108`), so
+   the loop's `auto_schedule_ran` is a second row, not a replacement as §4.3's
+   wording suggests; say so, since AC-6 counts rows. And `RunForUser` returns
+   `nil` with the failures inside `result.Errors` when every day fails to list
+   or create (`:98-100`, `:178-180`), so `{error: null}` would be written for a
+   run that did nothing. State how `result.Errors` maps into the details.
+5. **Lineage item (c) is stale.** `DailyRecapService.recapUsers` joins
+   `st.user_id = u.id` (`backend/engine/daily_recap.go:143-148`) since #204;
+   there is no PAC-24 plan revision 3 to keep it in. Items (a) and (b) still
+   hold (`cal_iface.go:53-58`; `cron.go:73-76` + `main.go:69-70`), and (b) is
+   the live half of the problem — see blocking 1.
+6. **AC-12's escape hatch is void.** PAC-43 landed (#195, #196;
+   `backend/main.go:35-49`; `e2e/fake-google/`; `e2e/SEAM-REQUIRED.md:3`
+   "item A is done"), so "may stay `test.fixme` until PAC-43's calendar seam
+   lands" permits nothing, and factory §3 rule 4 requires an issue on any
+   `fixme` regardless. What AC-12 does still lack is the thing it calls "a
+   forced tick (test hook or advanced clock)": the e2e stack cannot wait for
+   07:00, so the spec must *require* a way to make the loop tick at a chosen
+   instant, as a requirement, and leave the mechanism to the plan.
+7. **`autoScheduleLastRun` on write is undecided, and PAC-24's rules make the
+   two options differ.** The PATCH contract says `null` is a 400
+   (`scheduling.yaml:1987`) and that read-only `llmApiKeySet`/`updatedAt` are
+   accepted and ignored (`:1984`) so a GET document can be submitted back
+   unchanged. The spec adds a nullable read-only property to the same shared
+   anchor without saying which rule it follows. The shipped client diffs
+   against the cached previous document (`smart-calendar-flow/src/hooks/useSettings.ts:16`,
+   `src/api/client.ts:647-656`), so it would not echo it today, but
+   `SETTINGS_PATCH_KEYS` is derived from the generated `SettingsUpdate` minus
+   two hard-coded names (`client.ts:636-637`) and will include the new one.
+   State "accepted and ignored", or state that PAC-24's AC-10 no longer holds.
+8. **Concurrent write path.** `SaveSettingsForUser` upserts the whole row
+   (`settings.go:279-372`). If `auto_schedule_last_run` becomes a column that
+   write carries, a PATCH that read the row before a tick advanced the
+   watermark writes the stale value back, and the user is run again at the
+   next tick. AC-7b's "does not touch `last_run`" should be stated to hold
+   under a concurrent tick, which is a requirement, not a design.
+9. **No per-user time bound.** Today each run has a 10-minute context
+   (`cron.go:54`); §4.3 has none, and with a non-reentrant loop one hung token
+   refresh holds every user behind it. State the bound AC-4b assumes.
+10. **§4.5 overstates the frontend delta.** The toggle and cron field exist
+    (`smart-calendar-flow/src/pages/Settings.tsx:393-412`); what is missing is
+    test ids (zero `data-testid` in `src/`, `e2e/TESTIDS-REQUIRED.md:7-9`),
+    presets, and a decision on whether anyone *sees* `autoScheduleLastRun`.
+    The spec puts it on the wire and never says who reads it; if nobody
+    renders it, say what it is for.
+11. **Parser agreement.** The handler parses with
+    `Minute|Hour|Dom|Month|Dow` only (`handlers_settings.go:250`), which
+    rejects descriptors; robfig's standard parser used by `AddFunc` accepts
+    them, and `cron_test.go:83-84` seeds `@weekly`/`@daily` straight into the
+    table. §4.3 says the loop and the write share a parser (good); say what the
+    loop does with a stored expression the write-side parser rejects, as it
+    already does for timezone (skip, warn, no audit).
+12. **Open questions I can answer from the code.** OQ-1: `robfig/cron/v3
+    v3.0.1` is in `backend/go.mod:21` and already imported by the handler
+    (`handlers_settings.go:16`) and the scheduler; no dependency is added.
+    OQ-3: every engine settings read is `GetOrCreateSettingsByUser(userID)`
+    (`focus_time.go:76`, `auto_decline.go:66`, `habits.go:70,96`,
+    `smart_schedule.go:54,288`, `compression.go:48`, `daily_recap.go:72`,
+    `analytics.go:58`, `freebusy_service.go:75`, `personal_blocker.go:97`) and
+    the token read is `LoadUserToken(db, userID)` by `user_id`
+    (`backend/auth/token_store.go:40-49`); no `id = 1` read remains in
+    non-test Go (the string survives only in a comment, `token_store.go:39`).
+    OQ-4: the MCP server has one settings tool, `clockwise_get_settings`, a
+    GET through HTTP (`mcp/tools.go:233-238`); no write, no direct column
+    read — the new property reaches it for free.
+
+### Criteria I could not falsify
+
+- AC-1: already true at `a896faa` — default `FALSE` (`001_initial.up.sql:16`)
+  and the query returns nothing on an empty table (`settings.go:411-416`). A
+  regression guard; only "after migration 026" is new.
+- AC-2: already true — per-user rows since 024, and
+  `TestFocusCron_Reload_PerUserEntries` (`cron_test.go:81-101`) proves the
+  listing is per-user today. Regression guard.
+- AC-6: `cleared: 1` cannot occur (blocking 3).
+- AC-7: both 400s exist today (handler `:222-224`, `:247-253`); only `code`
+  is new and its location is unstated (blocking 4).
+- AC-8: already true — the handler reads and writes the caller's row
+  (`handlers_settings.go:72, 137`); PAC-24's tests cover it. Regression guard.
+- AC-11: "documents both properties" — `autoScheduleEnabled`/`autoScheduleCron`
+  are documented already (`scheduling.yaml:1745-1752`); the new items are
+  `autoScheduleLastRun`, the code(s) and the audit literal. Name them.
+- AC-12: depends on a tick seam the spec does not require (non-blocking 6).
+
+### Citations I checked and found wrong
+
+- §1 "`INSERT INTO settings` only at `storage/settings.go:262,271`" — now at
+  `:242` (`GetOrCreateSettingsByUser`) and `:291` (`SaveSettingsForUser`).
+- §1 "`RunForUser` dies at `no settings row for user <id>`
+  (`focus_time.go:82-84`)" — `:76` calls `GetOrCreateSettingsByUser`; the
+  error string no longer exists in non-test code; `focus_time_test.go:401-413`
+  asserts success for a user with no row.
+- §1 "the settings singleton (`WHERE id = 1` everywhere)" — no such read
+  remains (only the comment at `token_store.go:39`).
+- §3 "`ListFocusBlocksForWeek` / `FocusMinutesForDay` (they take no user
+  id)" — `focus_blocks.go:30, :64` both take `userID`; the first name does not
+  exist.
+- §4.4 / AC-7 "400 `invalid_cron`", "the two 400 codes" — the envelope has no
+  code property (`handlers_settings.go:371-375`; `scheduling.yaml:875-883`).
+- Lineage (c) "`DailyRecapService.RunAll` joins every user against the
+  `id = 1` row" — `daily_recap.go:143-148` joins `st.user_id = u.id`.
+- §4.1 end-state `DEFAULT '0 7 * * 1-5'` — stored default is `'0 8 * * *'`
+  (`001_initial.up.sql:17`), contract agrees (`scheduling.yaml:1752`).
+- Verified correct, for the record: `cal_iface.go:53-58` token read;
+  `focus_time.go:74` ctx injection and `:71-73` `uuid.Nil` refusal;
+  `UserIDFromContext` returns `uuid.Nil`, not an error
+  (`backend/auth/context.go:19-24`); `engine.SystemClock` is a package var
+  nothing in `main.go` replaces (`backend/engine/clock.go:19`); `oauth_tokens`
+  per `(user_id, calendar_id)` since 017; `PUT /api/settings` removed, PATCH is
+  a merge (`scheduling.yaml:573-581, 627`); migration numbering 025/026/027
+  matches `docs/factory/PAC-23-plan.md:29-32` and `docs/specs/PAC-50.md:9`.
+
+### Consumers this breaks
+
+None outright. Consumers of what changes, so the plan does not discover them:
+
+- `backend/scheduler/cron.go:37` — sole caller of `ListUsersWithAutoSchedule`;
+  replaced wholesale. `backend/scheduler/cron_test.go:72-130` tests `Reload`
+  and `entryIDs`, both of which §4.3 deletes; the spec should say those tests
+  go and what covers the loop instead.
+- `GET /api/audit` consumers of the `AuditEntryAction` enum — the generated
+  type (`gen.go:48-49`, `smart-calendar-flow/src/api/generated/types.ts`)
+  gains a literal; the one UI treats `action` as an opaque string
+  (`smart-calendar-flow/src/api/client.ts:451`), so nothing fails to compile.
+- `smart-calendar-flow/src/api/client.ts:636-637, 647-656` and
+  `src/hooks/useSettings.ts:16` — see non-blocking 7; not broken, but the
+  spec's silence on `autoScheduleLastRun`-on-write decides whether it stays
+  that way.
+- `mcp/tools.go:233-238` — gains a read-only property; no break.
+- `e2e/seed/seed.sql:105-115` — nine per-user settings rows, none with
+  auto-schedule on; AC-9(b) is realisable but exercises no data in the new
+  column, which is fine if the spec says so.
