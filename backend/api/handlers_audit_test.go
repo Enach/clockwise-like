@@ -176,7 +176,7 @@ func TestListAuditEntries_PreMigrationRowsReturnedToNobody(t *testing.T) {
 func TestListAuditEntries_DefaultLimitMatchesContract(t *testing.T) {
 	u := createTestUser(t, "audit-http-default@example.com")
 	seedAuditRows(t, u, 120)
-	for _, q := range []string{"", "?limit=", "?limit=abc", "?limit=0", "?limit=-5", "?limit=%2B50"} {
+	for _, q := range []string{"", "?limit=", "?limit=abc", "?limit=0", "?limit=-5", "?limit=+50"} {
 		if got := len(decodeAudit(t, getAudit(t, u, q))); got != 50 {
 			t.Errorf("%q: got %d entries, want 50", q, got)
 		}

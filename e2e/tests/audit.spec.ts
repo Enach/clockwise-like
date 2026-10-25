@@ -9,7 +9,7 @@
  *
  * The pre-migration row is written the way history arrives after migration
  * 026: the subject constraint is dropped, the row inserted, and the constraint
- * re-added NOT VALID, in one transaction. The test deletes that row again.
+ * re-added NOT VALID, in one statement. The test deletes that row again.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -45,11 +45,13 @@ test.describe('PAC-23 — the activity log is the reader\'s own', () => {
     await record(me, 'meeting_scheduled', `{"event_id":"e2e-${tag}","title":"E2E mine newer ${tag}"}`, 1);
     await record(colleague, 'meeting_scheduled', `{"event_id":"e2e-c-${tag}","title":"${title}"}`, 2);
     await record(colleague, 'nlp_parsed', `{"text":"${prompt}","intent":"schedule_meeting"}`, 3);
-    await exec(`BEGIN;
+    // One DO block is one statement: it commits whole or fails whole, and never
+    // leaves the pooled connection inside an open transaction.
+    await exec(`DO $$ BEGIN
       ALTER TABLE audit_log DROP CONSTRAINT audit_log_user_id_present;
       INSERT INTO audit_log (action, details, created_at) VALUES ('nlp_parsed', '${history}', NOW());
       ALTER TABLE audit_log ADD CONSTRAINT audit_log_user_id_present CHECK (user_id IS NOT NULL) NOT VALID;
-      COMMIT;`);
+      END $$;`);
 
     try {
       // The HTTP boundary, with the parameters a caller might try.
