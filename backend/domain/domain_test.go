@@ -40,12 +40,19 @@ func TestDomainMatchesOrg(t *testing.T) {
 		want   bool
 	}{
 		{"acme.com", "acme.com", true},
-		{"sub.acme.com", "acme.com", true},
-		{"deep.sub.acme.com", "acme.com", true},
+		// PAC-50 AC-15 (ex-PAC-46): the rule is exact. A subdomain is a
+		// domain nobody in the org was shown to administer.
+		{"evil-acme.com", "acme.com", false},
+		{"eu.acme.com", "acme.com", false},
+		{"ACME.com", "acme.com", true},
+		{"sub.acme.com", "acme.com", false},
+		{"deep.sub.acme.com", "acme.com", false},
 		{"notacme.com", "acme.com", false},
 		{"acmeevil.com", "acme.com", false},
 		{"ACME.COM", "acme.com", true},
+		{" acme.com ", "ACME.com", true},
 		{"", "acme.com", false},
+		{"", "", false},
 	}
 	for _, c := range cases {
 		got := DomainMatchesOrg(c.d, c.org)
