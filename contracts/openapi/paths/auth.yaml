@@ -717,7 +717,8 @@ paths:
         This is the `stepup_url` of SsoWriteStepupRequired: the client appends
         `?provider=google` or `?provider=microsoft` after asking the user
         which account administers their organisation, then navigates the
-        browser there (a top-level navigation, not a fetch).
+        browser there (a top-level navigation, not a fetch), resolving the
+        path against its configured API base's origin, not the page's.
 
         Scopes are requested for this round-trip only and the resulting
         tokens are discarded after the check; nothing is written to the
@@ -1244,11 +1245,16 @@ components:
           type: string
           const: /api/admin/sso/stepup
           description: |
-            Root-relative path of startSsoAdminStepup, without the `provider`
-            parameter (spec §4.3 and OQ-8; same precedent as
-            SsoDetectResponse.redirect_url). The web app and the API share an
-            origin behind nginx (`/api/` is proxied to the backend), so the
-            browser resolves it against the page's origin.
+            Path of startSsoAdminStepup on the API's origin, without the
+            `provider` parameter (spec §4.3 and OQ-8). It has the same form as
+            every operation path in this document, and a client resolves it
+            the way it resolves those: against the origin of its configured
+            API base (for the web app, the base it already uses for
+            `/api/auth/...` navigations), never against the page's origin.
+            The API need not share an origin with the page: the web's API
+            base is set at runtime (`API_BASE_URL`) or at build time
+            (`VITE_API_BASE_URL`), and the session cookie is host-only on
+            the API host, so the page's origin can lack the session.
       additionalProperties: false
 
     SsoWriteFreshLoginRequired:

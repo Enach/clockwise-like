@@ -93,15 +93,24 @@ and the select-and-consume statement needs nothing more. Adding an id would put
 a field into two contracts that nothing could use to widen access, but that a
 client could get wrong.
 
-### `stepup_url` is a constant root-relative path
+### `stepup_url` is a constant path on the API's origin
 
 - **Chosen:** `const: /api/admin/sso/stepup`, without `provider`. This closes
-  spec OQ-8. In every deployment the web app and the API share one origin:
-  nginx proxies `/api/` to the backend (`nginx/nginx.conf`), and the web
-  client's default `API_BASE` is `/api`. So the browser resolves the path
-  against the page's own origin. It follows the precedent of
-  `SsoDetectResponse.redirect_url`. Making it a `const` means the web can
-  generate a literal type and the server cannot drift.
+  spec OQ-8. The value is a path on the API's origin, of the same form as
+  every operation path in the document, and a client resolves it the way it
+  resolves those: against the origin of its configured API base, never
+  against the page's origin (Revision 2, B1). The web app and the API do not
+  always share an origin. The web takes its API base at runtime from
+  `window.__API_BASE_URL__`, which `docker/fileserver/main.go` injects from
+  `API_BASE_URL` (passed through by `docker-compose.yml` and
+  `docker-compose.prod.yml`), or at build time from `VITE_API_BASE_URL`
+  (`smart-calendar-flow/Dockerfile.local` bakes a separate API host). The
+  session cookie is host-only on the API host, so on a split-host deployment
+  the page's origin has no session. The web already sends every top-level
+  navigation to the API through its API base (`apiUrl(...)` in
+  `src/components/auth/AuthDialog.tsx`), and AC-22's navigation does the
+  same. Making it a `const` means the web can generate a literal type and the
+  server cannot drift.
 - **Rejected: an absolute URL built from `APP_URL`.** It would put deployment
   configuration into every 403. A wrongly set `APP_URL` would then send users
   to the wrong host in the middle of an admin flow. It would also break the

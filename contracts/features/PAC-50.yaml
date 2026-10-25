@@ -2,7 +2,7 @@
   "featureId": "PAC-50",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-50/sso-configuration-is-writable-by-any-employee-and-for-any-subdomain",
   "status": "draft",
-  "contractRevision": "1",
+  "contractRevision": "2",
   "contractHash": "5510e31be99aec785eb093f3885fbf48714bea677344c4653064c37dfff0ca7b",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml at the commit that carries this revision (git show HEAD:contracts/openapi/openapi.yaml | sha256sum).",
   "contractDoc": "contracts/features/PAC-50.md",
@@ -126,7 +126,7 @@
     "AC-20b [unit] Row acme.com, authorized create with ACME.com: row count 1, updated_at advanced.",
     "AC-21a [unit] Org member, start with provider=google and provider=microsoft: 302 to the respective IdP and a state cookie bound to the caller.",
     "AC-21b [unit] Org member, start with no provider or provider=okta: 400, no state cookie.",
-    "AC-22  [web unit] Client error mapping: a 403 whose body has stepup_url navigates the browser there; a 403 without it renders as today.",
+    "AC-22  [web unit] Client error mapping: a 403 whose body has stepup_url navigates the browser there, resolved against the client's configured API base origin (never the page origin; contract revision 2, B1); a 403 without it renders as today.",
     "AC-23  [e2e] Compose stack with IdP stand-ins: member POST 403 with stepup_url; start for the stubbed provider, stub callback as an admin, redirect stepup=granted; repeated POST 2xx and the row exists."
   ],
   "linearAcceptance": {
