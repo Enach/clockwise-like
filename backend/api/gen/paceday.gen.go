@@ -352,10 +352,10 @@ const (
 
 // Defines values for SsoDetectResponseType.
 const (
-	Generic   SsoDetectResponseType = "generic"
-	Google    SsoDetectResponseType = "google"
-	Microsoft SsoDetectResponseType = "microsoft"
-	Sso       SsoDetectResponseType = "sso"
+	SsoDetectResponseTypeGeneric   SsoDetectResponseType = "generic"
+	SsoDetectResponseTypeGoogle    SsoDetectResponseType = "google"
+	SsoDetectResponseTypeMicrosoft SsoDetectResponseType = "microsoft"
+	SsoDetectResponseTypeSso       SsoDetectResponseType = "sso"
 )
 
 // Defines values for SsoProviderCreateRequestProviderType.
@@ -368,6 +368,33 @@ const (
 const (
 	SsoProviderResponseProviderTypeOidc SsoProviderResponseProviderType = "oidc"
 	SsoProviderResponseProviderTypeSaml SsoProviderResponseProviderType = "saml"
+)
+
+// Defines values for SsoStepupProvider.
+const (
+	SsoStepupProviderGoogle    SsoStepupProvider = "google"
+	SsoStepupProviderMicrosoft SsoStepupProvider = "microsoft"
+)
+
+// Defines values for SsoWriteFreshLoginRequiredError.
+const (
+	SsoWriteRequiresFreshLogin SsoWriteFreshLoginRequiredError = "sso_write_requires_fresh_login"
+)
+
+// Defines values for SsoWriteMembershipRequiredError.
+const (
+	OrgMembershipRequired SsoWriteMembershipRequiredError = "org membership required"
+	OrgNotFound           SsoWriteMembershipRequiredError = "org not found"
+)
+
+// Defines values for SsoWriteStepupRequiredError.
+const (
+	SsoWriteRequiresAdminStepup SsoWriteStepupRequiredError = "sso_write_requires_admin_stepup"
+)
+
+// Defines values for SsoWriteStepupRequiredStepupUrl.
+const (
+	Apiadminssostepup SsoWriteStepupRequiredStepupUrl = "/api/admin/sso/stepup"
 )
 
 // Defines values for TeamInviteStatus.
@@ -2468,9 +2495,20 @@ type SsoDetectResponse struct {
 // login.microsoftonline.com (2s timeout, 1h cache), else "google".
 type SsoDetectResponseType string
 
-// SsoProviderCreateRequest Anonymous struct in ssoHandlers.createSSOProvider.
+// SsoProviderCreateRequest Anonymous struct in ssoHandlers.createSSOProvider. Since PAC-50 an
+// undeclared property is rejected with 400 `unknown property: <name>`
+// (before, the decoder ignored it despite `additionalProperties: false`).
+// Determined at stage 2 from the handler (resolves U-21): the server
+// validates exactly `domain`, `provider_name` and `provider_type` as
+// non-empty, `provider_type` against the enum, and (PAC-50) `domain`
+// against the org domain. Nothing else is validated: an `oidc` provider
+// can be stored with an empty issuer, client id or secret and fails only
+// later, at sign-in, as a 500 from /api/auth/sso/{domain} (API-060, not
+// changed by PAC-50).
 type SsoProviderCreateRequest struct {
-	// Domain Must match the caller's org domain or the request is 403'd.
+	// Domain Must equal the caller's org domain, exact and case-insensitive,
+	// else 400 `provider_domain_mismatch`; a subdomain does not match.
+	// Stored lower-cased.
 	Domain           string  `json:"domain"`
 	OidcClientId     *string `json:"oidc_client_id,omitempty"`
 	OidcClientSecret *string `json:"oidc_client_secret,omitempty"`
@@ -2478,7 +2516,8 @@ type SsoProviderCreateRequest struct {
 	ProviderName     string  `json:"provider_name"`
 
 	// ProviderType "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-	// with 501 — a SAML row can be created that can never be used to log in.
+	// with 501, so a SAML row can be created that can never be used to
+	// log in (API-060).
 	ProviderType   SsoProviderCreateRequestProviderType `json:"provider_type"`
 	SamlCert       *string                              `json:"saml_cert,omitempty"`
 	SamlEntryPoint *string                              `json:"saml_entry_point,omitempty"`
@@ -2486,20 +2525,30 @@ type SsoProviderCreateRequest struct {
 }
 
 // SsoProviderCreateRequestProviderType "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-// with 501 — a SAML row can be created that can never be used to log in.
+// with 501, so a SAML row can be created that can never be used to
+// log in (API-060).
 type SsoProviderCreateRequestProviderType string
 
 // SsoProviderResponse storage.SSOProvider (backend/storage/sso_providers.go) marshalled directly.
 // The struct has NO json tags, so encoding/json emits the exact Go field
-// names below — PascalCase, and including the client secret and SAML cert.
+// names below: PascalCase, all thirteen always present, including the
+// client secret and SAML cert. Determined at stage 2 (resolves U-22) by
+// marshalling a storage.SSOProvider with encoding/json, which printed
+// exactly these keys. Returning `OIDCClientSecret` is a defect
+// (API-001), documented because it is what the code does; the
+// projection is PAC-22's, which lands after PAC-50.
 type SsoProviderResponse struct {
-	CreatedAt    time.Time          `json:"CreatedAt"`
-	Domain       string             `json:"Domain"`
+	CreatedAt time.Time `json:"CreatedAt"`
+
+	// Domain Lower-case for every row written since PAC-50; migration 027 lower-cases existing rows.
+	Domain string `json:"Domain"`
+
+	// Enabled Always true when written through this API (API-066).
 	Enabled      bool               `json:"Enabled"`
 	ID           openapi_types.UUID `json:"ID"`
 	OIDCClientID string             `json:"OIDCClientID"`
 
-	// OIDCClientSecret Returned in plaintext to any org member by both POST and GET /api/admin/sso. Documented because it is what the code does, not because it is intended.
+	// OIDCClientSecret Returned in plaintext to any org member by both POST and GET /api/admin/sso (API-001). Documented because it is what the code does, not because it is intended; PAC-22 removes it.
 	OIDCClientSecret string                          `json:"OIDCClientSecret"`
 	OIDCIssuer       string                          `json:"OIDCIssuer"`
 	ProviderName     string                          `json:"ProviderName"`
@@ -2512,6 +2561,65 @@ type SsoProviderResponse struct {
 
 // SsoProviderResponseProviderType defines model for SsoProviderResponse.ProviderType.
 type SsoProviderResponseProviderType string
+
+// SsoStepupProvider Identity provider an SSO admin step-up runs against (PAC-50).
+type SsoStepupProvider string
+
+// SsoWriteForbiddenResponse The 403 of createSsoProvider and deleteSsoProvider (PAC-50). Exactly
+// one variant applies, told apart by `error`; `stepup_url` is present
+// on, and only on, `sso_write_requires_admin_stepup`. All three keep the
+// shared `{error}` envelope, so a client that reads only `error` still
+// shows a specific message (the web client renders a 403 without
+// `error` as a generic "no permission" text).
+type SsoWriteForbiddenResponse struct {
+	union json.RawMessage
+}
+
+// SsoWriteFreshLoginRequired The caller's email is on the deployment's break-glass list but the
+// session JWT was issued 10 minutes ago or more. The client sends the
+// user through sign-in again; a step-up grant also satisfies the gate.
+type SsoWriteFreshLoginRequired struct {
+	Error SsoWriteFreshLoginRequiredError `json:"error"`
+}
+
+// SsoWriteFreshLoginRequiredError defines model for SsoWriteFreshLoginRequired.Error.
+type SsoWriteFreshLoginRequiredError string
+
+// SsoWriteMembershipRequired The caller has no org (or its org row is gone). Checked before
+// anything else, including break-glass. No `stepup_url`: there is no org
+// to step up for.
+type SsoWriteMembershipRequired struct {
+	Error SsoWriteMembershipRequiredError `json:"error"`
+}
+
+// SsoWriteMembershipRequiredError defines model for SsoWriteMembershipRequired.Error.
+type SsoWriteMembershipRequiredError string
+
+// SsoWriteStepupRequired An org member with no live step-up grant for (caller, caller's org)
+// who is not a break-glass admin. The client asks the user which
+// provider administers their organisation, appends
+// `?provider=google` or `?provider=microsoft` to `stepup_url` and
+// navigates the browser there.
+type SsoWriteStepupRequired struct {
+	Error SsoWriteStepupRequiredError `json:"error"`
+
+	// StepupUrl Root-relative path of startSsoAdminStepup, without the `provider`
+	// parameter (spec §4.3 and OQ-8; same precedent as
+	// SsoDetectResponse.redirect_url). The web app and the API share an
+	// origin behind nginx (`/api/` is proxied to the backend), so the
+	// browser resolves it against the page's origin.
+	StepupUrl SsoWriteStepupRequiredStepupUrl `json:"stepup_url"`
+}
+
+// SsoWriteStepupRequiredError defines model for SsoWriteStepupRequired.Error.
+type SsoWriteStepupRequiredError string
+
+// SsoWriteStepupRequiredStepupUrl Root-relative path of startSsoAdminStepup, without the `provider`
+// parameter (spec §4.3 and OQ-8; same precedent as
+// SsoDetectResponse.redirect_url). The web app and the API share an
+// origin behind nginx (`/api/` is proxied to the backend), so the
+// browser resolves it against the page's origin.
+type SsoWriteStepupRequiredStepupUrl string
 
 // SuggestedSlot engine.SuggestedSlot.
 type SuggestedSlot struct {
@@ -2752,6 +2860,24 @@ type SettingsValidationError = SchedulingErrorResponse
 // Unauthorized The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
 type Unauthorized = ErrorResponse
+
+// StartSsoAdminStepupParams defines parameters for StartSsoAdminStepup.
+type StartSsoAdminStepupParams struct {
+	// Provider Which identity provider to step up with. Missing, or any other value, is a 400.
+	Provider SsoStepupProvider `form:"provider" json:"provider"`
+}
+
+// SsoAdminStepupCallbackParams defines parameters for SsoAdminStepupCallback.
+type SsoAdminStepupCallbackParams struct {
+	// State Echo of the state the start operation sent. Absent, or not matching the cookie, gives denied/`state_mismatch`.
+	State *string `form:"state,omitempty" json:"state,omitempty"`
+
+	// Code Authorization code. Absent gives denied/`token_invalid`.
+	Code *string `form:"code,omitempty" json:"code,omitempty"`
+
+	// Error Set by the provider when the user cancelled or the provider refused. Present gives denied/`token_invalid`.
+	Error *string `form:"error,omitempty" json:"error,omitempty"`
+}
 
 // ListAnalyticsMeetingsParams defines parameters for ListAnalyticsMeetings.
 type ListAnalyticsMeetingsParams struct {
@@ -5173,15 +5299,109 @@ func (a TeamNameRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(object)
 }
 
+// AsSsoWriteMembershipRequired returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteMembershipRequired
+func (t SsoWriteForbiddenResponse) AsSsoWriteMembershipRequired() (SsoWriteMembershipRequired, error) {
+	var body SsoWriteMembershipRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSsoWriteMembershipRequired overwrites any union data inside the SsoWriteForbiddenResponse as the provided SsoWriteMembershipRequired
+func (t *SsoWriteForbiddenResponse) FromSsoWriteMembershipRequired(v SsoWriteMembershipRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSsoWriteMembershipRequired performs a merge with any union data inside the SsoWriteForbiddenResponse, using the provided SsoWriteMembershipRequired
+func (t *SsoWriteForbiddenResponse) MergeSsoWriteMembershipRequired(v SsoWriteMembershipRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSsoWriteStepupRequired returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteStepupRequired
+func (t SsoWriteForbiddenResponse) AsSsoWriteStepupRequired() (SsoWriteStepupRequired, error) {
+	var body SsoWriteStepupRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSsoWriteStepupRequired overwrites any union data inside the SsoWriteForbiddenResponse as the provided SsoWriteStepupRequired
+func (t *SsoWriteForbiddenResponse) FromSsoWriteStepupRequired(v SsoWriteStepupRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSsoWriteStepupRequired performs a merge with any union data inside the SsoWriteForbiddenResponse, using the provided SsoWriteStepupRequired
+func (t *SsoWriteForbiddenResponse) MergeSsoWriteStepupRequired(v SsoWriteStepupRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSsoWriteFreshLoginRequired returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteFreshLoginRequired
+func (t SsoWriteForbiddenResponse) AsSsoWriteFreshLoginRequired() (SsoWriteFreshLoginRequired, error) {
+	var body SsoWriteFreshLoginRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSsoWriteFreshLoginRequired overwrites any union data inside the SsoWriteForbiddenResponse as the provided SsoWriteFreshLoginRequired
+func (t *SsoWriteForbiddenResponse) FromSsoWriteFreshLoginRequired(v SsoWriteFreshLoginRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSsoWriteFreshLoginRequired performs a merge with any union data inside the SsoWriteForbiddenResponse, using the provided SsoWriteFreshLoginRequired
+func (t *SsoWriteForbiddenResponse) MergeSsoWriteFreshLoginRequired(v SsoWriteFreshLoginRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SsoWriteForbiddenResponse) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *SsoWriteForbiddenResponse) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// List the SSO providers belonging to the caller's org
 	// (GET /api/admin/sso)
 	ListSsoProviders(w http.ResponseWriter, r *http.Request)
-	// Create or update the SSO provider for a domain
+	// Create or update the SSO provider for the caller's org domain
 	// (POST /api/admin/sso)
 	CreateSsoProvider(w http.ResponseWriter, r *http.Request)
-	// Delete the SSO provider for a domain
+	// Begin an admin step-up for an SSO write
+	// (GET /api/admin/sso/stepup)
+	StartSsoAdminStepup(w http.ResponseWriter, r *http.Request, params StartSsoAdminStepupParams)
+	// Finish an admin step-up and record its outcome
+	// (GET /api/admin/sso/stepup/callback)
+	SsoAdminStepupCallback(w http.ResponseWriter, r *http.Request, params SsoAdminStepupCallbackParams)
+	// Delete the SSO provider for the caller's org domain
 	// (DELETE /api/admin/sso/{domain})
 	DeleteSsoProvider(w http.ResponseWriter, r *http.Request, domain string)
 	// Meetings in the week containing a date
@@ -5544,13 +5764,25 @@ func (_ Unimplemented) ListSsoProviders(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Create or update the SSO provider for a domain
+// Create or update the SSO provider for the caller's org domain
 // (POST /api/admin/sso)
 func (_ Unimplemented) CreateSsoProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Delete the SSO provider for a domain
+// Begin an admin step-up for an SSO write
+// (GET /api/admin/sso/stepup)
+func (_ Unimplemented) StartSsoAdminStepup(w http.ResponseWriter, r *http.Request, params StartSsoAdminStepupParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Finish an admin step-up and record its outcome
+// (GET /api/admin/sso/stepup/callback)
+func (_ Unimplemented) SsoAdminStepupCallback(w http.ResponseWriter, r *http.Request, params SsoAdminStepupCallbackParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete the SSO provider for the caller's org domain
 // (DELETE /api/admin/sso/{domain})
 func (_ Unimplemented) DeleteSsoProvider(w http.ResponseWriter, r *http.Request, domain string) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -6296,6 +6528,99 @@ func (siw *ServerInterfaceWrapper) CreateSsoProvider(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateSsoProvider(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartSsoAdminStepup operation middleware
+func (siw *ServerInterfaceWrapper) StartSsoAdminStepup(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params StartSsoAdminStepupParams
+
+	// ------------- Required query parameter "provider" -------------
+
+	if paramValue := r.URL.Query().Get("provider"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "provider"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "provider", r.URL.Query(), &params.Provider)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "provider", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartSsoAdminStepup(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SsoAdminStepupCallback operation middleware
+func (siw *ServerInterfaceWrapper) SsoAdminStepupCallback(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SsoAdminStepupCallbackParams
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "state", r.URL.Query(), &params.State)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "state", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "code" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "code", r.URL.Query(), &params.Code)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "error" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "error", r.URL.Query(), &params.Error)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "error", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SsoAdminStepupCallback(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10056,6 +10381,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/admin/sso", wrapper.CreateSsoProvider)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/admin/sso/stepup", wrapper.StartSsoAdminStepup)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/admin/sso/stepup/callback", wrapper.SsoAdminStepupCallback)
+	})
+	r.Group(func(r chi.Router) {
 		r.Delete(options.BaseURL+"/api/admin/sso/{domain}", wrapper.DeleteSsoProvider)
 	})
 	r.Group(func(r chi.Router) {
@@ -10512,7 +10843,7 @@ func (response CreateSsoProvider401TextResponse) VisitCreateSsoProviderResponse(
 	return err
 }
 
-type CreateSsoProvider403JSONResponse ErrorResponse
+type CreateSsoProvider403JSONResponse SsoWriteForbiddenResponse
 
 func (response CreateSsoProvider403JSONResponse) VisitCreateSsoProviderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -10524,6 +10855,110 @@ func (response CreateSsoProvider403JSONResponse) VisitCreateSsoProviderResponse(
 type CreateSsoProvider500JSONResponse ErrorResponse
 
 func (response CreateSsoProvider500JSONResponse) VisitCreateSsoProviderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type StartSsoAdminStepupRequestObject struct {
+	Params StartSsoAdminStepupParams
+}
+
+type StartSsoAdminStepupResponseObject interface {
+	VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error
+}
+
+type StartSsoAdminStepup302ResponseHeaders struct {
+	Location  string
+	SetCookie string
+}
+
+type StartSsoAdminStepup302Response struct {
+	Headers StartSsoAdminStepup302ResponseHeaders
+}
+
+func (response StartSsoAdminStepup302Response) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
+	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
+	w.WriteHeader(302)
+	return nil
+}
+
+type StartSsoAdminStepup400JSONResponse ErrorResponse
+
+func (response StartSsoAdminStepup400JSONResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type StartSsoAdminStepup401TextResponse PlainTextError
+
+func (response StartSsoAdminStepup401TextResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type StartSsoAdminStepup403JSONResponse ErrorResponse
+
+func (response StartSsoAdminStepup403JSONResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type StartSsoAdminStepup503JSONResponse ErrorResponse
+
+func (response StartSsoAdminStepup503JSONResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SsoAdminStepupCallbackRequestObject struct {
+	Params SsoAdminStepupCallbackParams
+}
+
+type SsoAdminStepupCallbackResponseObject interface {
+	VisitSsoAdminStepupCallbackResponse(w http.ResponseWriter) error
+}
+
+type SsoAdminStepupCallback302ResponseHeaders struct {
+	Location  string
+	SetCookie string
+}
+
+type SsoAdminStepupCallback302Response struct {
+	Headers SsoAdminStepupCallback302ResponseHeaders
+}
+
+func (response SsoAdminStepupCallback302Response) VisitSsoAdminStepupCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
+	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
+	w.WriteHeader(302)
+	return nil
+}
+
+type SsoAdminStepupCallback401TextResponse PlainTextError
+
+func (response SsoAdminStepupCallback401TextResponse) VisitSsoAdminStepupCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type SsoAdminStepupCallback500JSONResponse ErrorResponse
+
+func (response SsoAdminStepupCallback500JSONResponse) VisitSsoAdminStepupCallbackResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
@@ -10546,6 +10981,15 @@ func (response DeleteSsoProvider204Response) VisitDeleteSsoProviderResponse(w ht
 	return nil
 }
 
+type DeleteSsoProvider400JSONResponse ErrorResponse
+
+func (response DeleteSsoProvider400JSONResponse) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteSsoProvider401TextResponse PlainTextError
 
 func (response DeleteSsoProvider401TextResponse) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
@@ -10556,11 +11000,20 @@ func (response DeleteSsoProvider401TextResponse) VisitDeleteSsoProviderResponse(
 	return err
 }
 
-type DeleteSsoProvider403JSONResponse ErrorResponse
+type DeleteSsoProvider403JSONResponse SsoWriteForbiddenResponse
 
 func (response DeleteSsoProvider403JSONResponse) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type DeleteSsoProvider404JSONResponse ErrorResponse
+
+func (response DeleteSsoProvider404JSONResponse) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -15700,10 +16153,16 @@ type StrictServerInterface interface {
 	// List the SSO providers belonging to the caller's org
 	// (GET /api/admin/sso)
 	ListSsoProviders(ctx context.Context, request ListSsoProvidersRequestObject) (ListSsoProvidersResponseObject, error)
-	// Create or update the SSO provider for a domain
+	// Create or update the SSO provider for the caller's org domain
 	// (POST /api/admin/sso)
 	CreateSsoProvider(ctx context.Context, request CreateSsoProviderRequestObject) (CreateSsoProviderResponseObject, error)
-	// Delete the SSO provider for a domain
+	// Begin an admin step-up for an SSO write
+	// (GET /api/admin/sso/stepup)
+	StartSsoAdminStepup(ctx context.Context, request StartSsoAdminStepupRequestObject) (StartSsoAdminStepupResponseObject, error)
+	// Finish an admin step-up and record its outcome
+	// (GET /api/admin/sso/stepup/callback)
+	SsoAdminStepupCallback(ctx context.Context, request SsoAdminStepupCallbackRequestObject) (SsoAdminStepupCallbackResponseObject, error)
+	// Delete the SSO provider for the caller's org domain
 	// (DELETE /api/admin/sso/{domain})
 	DeleteSsoProvider(ctx context.Context, request DeleteSsoProviderRequestObject) (DeleteSsoProviderResponseObject, error)
 	// Meetings in the week containing a date
@@ -16133,6 +16592,58 @@ func (sh *strictHandler) CreateSsoProvider(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateSsoProviderResponseObject); ok {
 		if err := validResponse.VisitCreateSsoProviderResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartSsoAdminStepup operation middleware
+func (sh *strictHandler) StartSsoAdminStepup(w http.ResponseWriter, r *http.Request, params StartSsoAdminStepupParams) {
+	var request StartSsoAdminStepupRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartSsoAdminStepup(ctx, request.(StartSsoAdminStepupRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartSsoAdminStepup")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartSsoAdminStepupResponseObject); ok {
+		if err := validResponse.VisitStartSsoAdminStepupResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SsoAdminStepupCallback operation middleware
+func (sh *strictHandler) SsoAdminStepupCallback(w http.ResponseWriter, r *http.Request, params SsoAdminStepupCallbackParams) {
+	var request SsoAdminStepupCallbackRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SsoAdminStepupCallback(ctx, request.(SsoAdminStepupCallbackRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SsoAdminStepupCallback")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SsoAdminStepupCallbackResponseObject); ok {
+		if err := validResponse.VisitSsoAdminStepupCallbackResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

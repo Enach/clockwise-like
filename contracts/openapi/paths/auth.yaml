@@ -492,12 +492,57 @@ paths:
     post:
       operationId: createSsoProvider
       tags: [auth]
-      summary: Create or update the SSO provider for a domain
+      summary: Create or update the SSO provider for the caller's org domain
       description: |
-        Upsert keyed on domain. The caller must belong to an org and the supplied
-        domain must match that org's domain (domain.DomainMatchesOrg).
-        `enabled` is always forced to true — there is no way to disable a provider
-        through this API.
+        Upsert keyed on domain: a second POST for the same domain is the update
+        (there is no PATCH/PUT). Since PAC-50 (spec docs/specs/PAC-50.md §4.2)
+        every write passes this gate, in this order, before the provider store
+        is touched; the first step that fails decides the response:
+
+        1. Membership: the caller must belong to an org, and the org is always
+           the caller's own; nothing in the body chooses it. Otherwise 403
+           `org membership required` (or `org not found` when the org row is
+           gone). This runs before the break-glass check, so a break-glass
+           email with no org gets this same 403. It carries no `stepup_url`.
+        2. Body shape: `domain`, `provider_name` and `provider_type` non-empty,
+           `provider_type` in the enum, and NO property outside the schema.
+           An undeclared property (for instance `org_id`) is a 400
+           `unknown property: <name>`, never silently dropped. (Before PAC-50
+           the decoder ignored undeclared properties although the schema said
+           `additionalProperties: false`.)
+        3. Domain: `domain` must equal the caller's org domain, exact and
+           case-insensitive. Otherwise 400 `provider_domain_mismatch`. A
+           subdomain does NOT match: with org `example.com`, `sub.example.com`
+           is a 400. (Before PAC-50 this was the suffix rule
+           domain.DomainMatchesOrg, which accepted any subdomain, and a
+           mismatch was a 403; ex-PAC-46.)
+        4. Authorization, one of:
+           a. a live admin step-up grant for (caller, caller's org), obtained
+              through GET /api/admin/sso/stepup less than 10 minutes earlier.
+              The request carries nothing that names it: the server selects
+              the caller's newest live grant and consumes it in the same
+              statement, so one grant authorizes exactly one write, and two
+              concurrent writes on one grant yield one success and one 403.
+              Every 400 above happens before this step and leaves the grant
+              live; a failure after it (the 500 below) leaves it consumed.
+           b. break-glass: the caller's session email is listed in the
+              deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the
+              session JWT was issued less than 10 minutes ago. Listed with an
+              older session gives 403 `sso_write_requires_fresh_login`.
+           Neither gives 403 `sso_write_requires_admin_stepup` with
+           `stepup_url`. A 403 rather than a 401: the session is valid, the
+           privilege is not there. Every 403 leaves the provider table
+           unchanged.
+        5. Write: the domain is stored lower-cased, so `ACME.com` updates the
+           existing `acme.com` row rather than adding a second one. Each
+           successful write is recorded server-side for operators (spec §4.6);
+           no operation exposes that record.
+
+        `enabled` is always forced to true; there is no way to disable a
+        provider through this API (API-066, not changed by PAC-50).
+        `provider_type: "saml"` and an `oidc` row with an empty issuer or
+        client id are still accepted and only fail at sign-in (API-060, not
+        changed by PAC-50).
       requestBody:
         required: true
         content:
@@ -506,13 +551,22 @@ paths:
               $ref: '#/components/schemas/SsoProviderCreateRequest'
       responses:
         '201':
-          description: The stored provider row.
+          description: |
+            The stored provider row, for a create and for an update alike.
+            It carries the client secret in plaintext (API-001; the projection
+            is PAC-22's, which lands after PAC-50).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SsoProviderResponse'
         '400':
-          description: '"invalid JSON"; "domain, provider_name and provider_type are required"; "provider_type must be ''oidc'' or ''saml''".'
+          description: |
+            JSON error, one of: `invalid JSON`; `unknown property: <name>`
+            (added by PAC-50); `domain, provider_name and provider_type are
+            required`; `provider_type must be 'oidc' or 'saml'`;
+            `provider_domain_mismatch` (added by PAC-50; replaces the 403
+            `can only configure SSO for your own domain`). No row is written
+            and a live grant is NOT consumed.
           content:
             application/json:
               schema:
@@ -524,13 +578,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required"; "org not found"; "can only configure SSO for your own domain".'
+          description: |
+            The caller may not write SSO configuration. The `error` field tells
+            the three cases apart (see SsoWriteForbiddenResponse); only
+            `sso_write_requires_admin_stepup` carries `stepup_url`. The
+            provider table is unchanged.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/SsoWriteForbiddenResponse'
         '500':
-          description: '"save failed: <err>".'
+          description: |
+            `save failed: <err>`: the gate passed and the provider store
+            failed. A grant used for this request is consumed; the retry needs
+            a new step-up.
           content:
             application/json:
               schema:
@@ -571,19 +632,43 @@ paths:
     delete:
       operationId: deleteSsoProvider
       tags: [auth]
-      summary: Delete the SSO provider for a domain
+      summary: Delete the SSO provider for the caller's org domain
       description: |
-        Deletes by domain after checking the domain belongs to the caller's org.
-        Deleting a domain that has no provider row still returns 204 — the
-        storage layer does not check rows-affected.
+        Same gate as createSsoProvider, in the same order (spec §4.2):
+        membership (403 `org membership required` / `org not found`), then the
+        `{domain}` segment, lower-cased, must equal the caller's org domain
+        exactly (400 `provider_domain_mismatch`; a subdomain does not match),
+        then authorization (a live step-up grant, consumed, or break-glass with
+        a fresh session; otherwise 403 `sso_write_requires_admin_stepup` with
+        `stepup_url`, or `sso_write_requires_fresh_login`).
+        The segment is a target, never an authorization: it chooses which row,
+        and only ever within the caller's own org domain.
+
+        The row deleted is the lower-cased domain, so `DELETE
+        /api/admin/sso/ACME.com` removes the `acme.com` row. Since PAC-50 a
+        delete that removes no row is a 404 and is not recorded (API-067 fixed;
+        before PAC-50 it answered 204 having deleted nothing). The grant is
+        consumed before the delete runs, so a 404 has used it.
       parameters:
         - name: domain
           in: path
           required: true
-          schema: { type: string }
+          schema:
+            type: string
+            minLength: 1
+          description: The caller's org domain, in any casing, e.g. "acme.com".
       responses:
         '204':
-          description: Deleted (or nothing existed). No body.
+          description: The row existed and was deleted. No body.
+        '400':
+          description: |
+            `provider_domain_mismatch`: `{domain}` is not the caller's org
+            domain (added by PAC-50; replaces the 403 `can only delete SSO for
+            your own domain`). No grant is consumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: No/invalid JWT (text/plain).
           content:
@@ -591,13 +676,211 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required"; "org not found"; "can only delete SSO for your own domain".'
+          description: |
+            The caller may not write SSO configuration; see
+            SsoWriteForbiddenResponse. Nothing is deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteForbiddenResponse'
+        '404':
+          description: |
+            `sso provider not found`: authorized, but no provider row exists
+            for the org domain (added by PAC-50, API-067). Nothing is recorded.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Delete failed — raw err.Error() in the JSON error envelope.
+          description: Delete failed — raw err.Error() in the JSON error envelope. A grant used for this request is consumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/stepup:
+    get:
+      operationId: startSsoAdminStepup
+      tags: [auth]
+      summary: Begin an admin step-up for an SSO write
+      description: |
+        Added by PAC-50 (spec §4.3). Behind the session; the org is the
+        caller's, never a parameter. Sets a purpose-bound state cookie and
+        redirects the browser to the chosen identity provider for a fresh
+        sign-in whose result is checked for administrator status over the
+        caller's org domain (Google: `hd` equals the org domain and the
+        Directory reports `isAdmin` or `isDelegatedAdmin`; Microsoft: the
+        tenant has the org domain verified and the user holds a qualifying
+        Entra role). The outcome comes back through
+        GET /api/admin/sso/stepup/callback.
+
+        This is the `stepup_url` of SsoWriteStepupRequired: the client appends
+        `?provider=google` or `?provider=microsoft` after asking the user
+        which account administers their organisation, then navigates the
+        browser there (a top-level navigation, not a fetch).
+
+        Scopes are requested for this round-trip only and the resulting
+        tokens are discarded after the check; nothing is written to the
+        user's settings or token store, and the calendar consent is not
+        widened. Google adds the read-only directory-user scope; Microsoft
+        adds delegated directory-role and organisation read scopes (whether
+        `User.Read` suffices for the organisation's verified domains is spec
+        OQ-2, open for the plan; it does not change this interface).
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/SsoStepupProvider'
+          description: Which identity provider to step up with. Missing, or any other value, is a 400.
+      responses:
+        '302':
+          description: Redirect to the identity provider's authorization endpoint.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+              description: |
+                The provider's authorization URL; its redirect_uri is
+                `<APP_URL>/api/admin/sso/stepup/callback`.
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `sso_stepup_state=<opaque>; Path=/api/admin/sso/stepup;
+                Max-Age=600; HttpOnly; SameSite=Lax`, plus `Secure` in
+                production (a deployment property, not observed per request;
+                spec §4.3). The value binds the caller's user id, org id, the
+                chosen provider and a nonce, and cannot be forged, nor replayed
+                by or for another user.
+        '400':
+          description: |
+            `provider must be 'google' or 'microsoft'`: `provider` is missing
+            or not in the enum. No state cookie is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain). No state cookie is set.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: |
+            `org membership required`: the caller has no org, so there is no
+            org domain to step up for. No state cookie is set. (Assumed by the
+            factory at stage 2, pending owner confirmation; spec "Decisions",
+            D-1.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            `<provider> step-up not configured`: the deployment has no OAuth
+            client for the chosen provider. No state cookie is set. Same
+            precedent as startMicrosoftOAuth's 503. (Assumed by the factory at
+            stage 2, pending owner confirmation; spec "Decisions", D-2.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/stepup/callback:
+    get:
+      operationId: ssoAdminStepupCallback
+      tags: [auth]
+      summary: Finish an admin step-up and record its outcome
+      description: |
+        Added by PAC-50 (spec §4.3). The identity provider's redirect target.
+        Behind the session: the browser's top-level navigation back from the
+        provider carries the SameSite=Lax `auth_token` cookie. Without a
+        session the answer is 401 and nothing is issued or recorded.
+
+        With a session, every outcome is a 302 to the web app's settings page,
+        `<FRONTEND_URL>/settings`, with the outcome in the query string (see
+        the 302's Location). Checks run in this order
+        and the first failure decides the `reason`:
+
+        0. The `sso_stepup_state` cookie is present, unexpired, untampered,
+           matches `state`, and is bound to the session's user and current
+           org; else `state_mismatch`.
+        1. The authorization code is exchanged and the ID token verified
+           (signature, audience, issuer, expiry). A provider `error`, a
+           missing `code` or any failure here gives `token_invalid`.
+        2. Google: `hd` present (`no_hd`) and equal to the org domain
+           (`hd_mismatch`). Microsoft: the organisation answer's id equals
+           the token's `tid` and its verified domains contain the org domain
+           (`tid_mismatch`; a failed organisation lookup is also
+           `tid_mismatch`); an org already pinned to a different tenant gives
+           `tid_changed` and the pin stays. On success the org's tenant is
+           pinned (idempotent).
+        3. The token's email (Microsoft: `preferred_username`/`email`) equals
+           the session email; else `email_mismatch`. A Google token whose
+           `email_verified` is not true is also `email_mismatch`.
+        4. Administrator: Google Directory `isAdmin` or `isDelegatedAdmin`;
+           Microsoft `wids` (or, when absent, the directory-role lookup)
+           containing a qualifying role template id (spec §4.4). Anything
+           else, including a lookup error, gives `not_admin`.
+        5. A grant for (caller, caller's org, provider) is issued, valid for
+           10 minutes and good for one SSO write.
+
+        Every outcome with a session, granted or denied, is recorded
+        server-side for operators (spec §4.6) and clears the state cookie.
+        No outcome touches the session, the user's settings or token store.
+        The mapping of a provider `error`, a missing `code`, a failed
+        organisation lookup and an unverified Google email onto the enum is
+        assumed by the factory at stage 2, pending owner confirmation (spec
+        "Decisions", D-3).
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { type: string }
+          description: Echo of the state the start operation sent. Absent, or not matching the cookie, gives denied/`state_mismatch`.
+        - name: code
+          in: query
+          required: false
+          schema: { type: string }
+          description: Authorization code. Absent gives denied/`token_invalid`.
+        - name: error
+          in: query
+          required: false
+          schema: { type: string }
+          description: Set by the provider when the user cancelled or the provider refused. Present gives denied/`token_invalid`.
+      responses:
+        '302':
+          description: Redirect to the web app's settings page with the outcome.
+          headers:
+            Location:
+              schema:
+                type: string
+                pattern: '/settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin))$'
+              description: |
+                `<FRONTEND_URL>/settings?stepup=granted`, or
+                `<FRONTEND_URL>/settings?stepup=denied&reason=<reason>`, where
+                `<reason>` is one of the eight values in the pattern (spec
+                §4.6; the same enum the server records): `state_mismatch`,
+                `token_invalid`, `no_hd`, `hd_mismatch` (Google only),
+                `tid_mismatch`, `tid_changed` (Microsoft only),
+                `email_mismatch`, `not_admin`. Never a raw token or provider
+                error text. Built from the configured frontend URL, never a
+                literal path (contrast API-084).
+            Set-Cookie:
+              schema: { type: string }
+              description: '`sso_stepup_state=; Path=/api/admin/sso/stepup; Max-Age=-1; HttpOnly; SameSite=Lax`: the state is single-use.'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain). No grant, no record.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: |
+            Issuing the grant, pinning the tenant or writing the record failed
+            in storage. JSON error; no usable grant exists afterwards. (Assumed
+            by the factory at stage 2, pending owner confirmation; spec
+            "Decisions", D-4.)
           content:
             application/json:
               schema:
@@ -810,20 +1093,36 @@ components:
 
     SsoProviderCreateRequest:
       type: object
-      description: Anonymous struct in ssoHandlers.createSSOProvider.
+      description: |
+        Anonymous struct in ssoHandlers.createSSOProvider. Since PAC-50 an
+        undeclared property is rejected with 400 `unknown property: <name>`
+        (before, the decoder ignored it despite `additionalProperties: false`).
+        Determined at stage 2 from the handler (resolves U-21): the server
+        validates exactly `domain`, `provider_name` and `provider_type` as
+        non-empty, `provider_type` against the enum, and (PAC-50) `domain`
+        against the org domain. Nothing else is validated: an `oidc` provider
+        can be stored with an empty issuer, client id or secret and fails only
+        later, at sign-in, as a 500 from /api/auth/sso/{domain} (API-060, not
+        changed by PAC-50).
       required: [domain, provider_name, provider_type]
       properties:
         domain:
           type: string
-          description: Must match the caller's org domain or the request is 403'd.
+          minLength: 1
+          description: |
+            Must equal the caller's org domain, exact and case-insensitive,
+            else 400 `provider_domain_mismatch`; a subdomain does not match.
+            Stored lower-cased.
         provider_name:
           type: string
+          minLength: 1
         provider_type:
           type: string
           enum: [oidc, saml]
           description: |
             "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-            with 501 — a SAML row can be created that can never be used to log in.
+            with 501, so a SAML row can be created that can never be used to
+            log in (API-060).
         oidc_issuer:
           type: string
         oidc_client_id:
@@ -837,17 +1136,18 @@ components:
         saml_cert:
           type: string
       additionalProperties: false
-      x-uncertain: >-
-        No field beyond the three required ones is validated, so an oidc provider
-        can be created with an empty issuer/client_id; the failure only surfaces
-        later as a 500 from /api/auth/sso/{domain}.
 
     SsoProviderResponse:
       type: object
       description: |
         storage.SSOProvider (backend/storage/sso_providers.go) marshalled directly.
         The struct has NO json tags, so encoding/json emits the exact Go field
-        names below — PascalCase, and including the client secret and SAML cert.
+        names below: PascalCase, all thirteen always present, including the
+        client secret and SAML cert. Determined at stage 2 (resolves U-22) by
+        marshalling a storage.SSOProvider with encoding/json, which printed
+        exactly these keys. Returning `OIDCClientSecret` is a defect
+        (API-001), documented because it is what the code does; the
+        projection is PAC-22's, which lands after PAC-50.
       required:
         - ID
         - Domain
@@ -868,6 +1168,7 @@ components:
           format: uuid
         Domain:
           type: string
+          description: Lower-case for every row written since PAC-50; migration 027 lower-cases existing rows.
         ProviderName:
           type: string
         ProviderType:
@@ -875,6 +1176,7 @@ components:
           enum: [oidc, saml]
         Enabled:
           type: boolean
+          description: Always true when written through this API (API-066).
         OIDCIssuer:
           type: string
         OIDCClientID:
@@ -883,8 +1185,8 @@ components:
           type: string
           description: >-
             Returned in plaintext to any org member by both POST and GET
-            /api/admin/sso. Documented because it is what the code does, not
-            because it is intended.
+            /api/admin/sso (API-001). Documented because it is what the code
+            does, not because it is intended; PAC-22 removes it.
         SAMLEntryPoint:
           type: string
         SAMLIssuer:
@@ -898,7 +1200,71 @@ components:
           type: string
           format: date-time
       additionalProperties: false
-      x-uncertain: >-
-        No frontend code consumes /api/admin/sso, so the PascalCase key casing is
-        unverified against any real consumer; it is inferred from the absence of
-        json tags on storage.SSOProvider.
+
+    SsoWriteForbiddenResponse:
+      description: |
+        The 403 of createSsoProvider and deleteSsoProvider (PAC-50). Exactly
+        one variant applies, told apart by `error`; `stepup_url` is present
+        on, and only on, `sso_write_requires_admin_stepup`. All three keep the
+        shared `{error}` envelope, so a client that reads only `error` still
+        shows a specific message (the web client renders a 403 without
+        `error` as a generic "no permission" text).
+      oneOf:
+        - $ref: '#/components/schemas/SsoWriteMembershipRequired'
+        - $ref: '#/components/schemas/SsoWriteStepupRequired'
+        - $ref: '#/components/schemas/SsoWriteFreshLoginRequired'
+
+    SsoWriteMembershipRequired:
+      type: object
+      description: |
+        The caller has no org (or its org row is gone). Checked before
+        anything else, including break-glass. No `stepup_url`: there is no org
+        to step up for.
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [org membership required, org not found]
+      additionalProperties: false
+
+    SsoWriteStepupRequired:
+      type: object
+      description: |
+        An org member with no live step-up grant for (caller, caller's org)
+        who is not a break-glass admin. The client asks the user which
+        provider administers their organisation, appends
+        `?provider=google` or `?provider=microsoft` to `stepup_url` and
+        navigates the browser there.
+      required: [error, stepup_url]
+      properties:
+        error:
+          type: string
+          const: sso_write_requires_admin_stepup
+        stepup_url:
+          type: string
+          const: /api/admin/sso/stepup
+          description: |
+            Root-relative path of startSsoAdminStepup, without the `provider`
+            parameter (spec §4.3 and OQ-8; same precedent as
+            SsoDetectResponse.redirect_url). The web app and the API share an
+            origin behind nginx (`/api/` is proxied to the backend), so the
+            browser resolves it against the page's origin.
+      additionalProperties: false
+
+    SsoWriteFreshLoginRequired:
+      type: object
+      description: |
+        The caller's email is on the deployment's break-glass list but the
+        session JWT was issued 10 minutes ago or more. The client sends the
+        user through sign-in again; a step-up grant also satisfies the gate.
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: sso_write_requires_fresh_login
+      additionalProperties: false
+
+    SsoStepupProvider:
+      type: string
+      enum: [google, microsoft]
+      description: Identity provider an SSO admin step-up runs against (PAC-50).

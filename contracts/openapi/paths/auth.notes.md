@@ -1,6 +1,6 @@
 # Domain notes: auth
 
-Companion to `auth.yaml`. 16 operations documented.
+Companion to `auth.yaml`. 18 operations documented (16, plus 2 added by PAC-50; see (d)).
 
 Sources read: `backend/api/routes.go`, `middleware.go`, `handlers_auth.go`,
 `handlers_sso.go`, `handlers_me.go`, `handlers_health.go`,
@@ -158,3 +158,32 @@ because the code is unambiguous, but where the code may not be the intent:
   most likely declare `security: [{bearerAuth: []}, {cookieAuth: []}]`.
 - `503` on the Microsoft routes is JSON while the neighbouring `400`/`500` on
   the same handler are text/plain. Pick one before clients start branching.
+
+---
+
+## (d) PAC-50 (stage 2, 2026-10-25)
+
+What changed in `auth.yaml`, and what of the above it settles. The reasoning is
+in `contracts/features/PAC-50.md`; the decisions it records are in
+`docs/specs/PAC-50.md` §9.
+
+- `createSsoProvider` and `deleteSsoProvider` document the write gate: membership
+  (403), body shape with undeclared properties rejected (400, create only),
+  exact case-insensitive domain (400 `provider_domain_mismatch`, replacing the
+  suffix rule and its 403), then a consumed step-up grant or break-glass with a
+  fresh session (403 `SsoWriteForbiddenResponse`). Delete of an absent row is a
+  404 (settles (b)(11), API-067).
+- Two operations added: `startSsoAdminStepup` (`GET /api/admin/sso/stepup`) and
+  `ssoAdminStepupCallback` (`GET /api/admin/sso/stepup/callback`). The operation
+  count is now 18.
+- The two `x-uncertain` rows of (c) on `SsoProviderCreateRequest` and
+  `SsoProviderResponse` are resolved by determination, not deletion:
+  - `SsoProviderCreateRequest` (U-21): the handler validates the three required
+    fields as non-empty and `provider_type` against the enum, and nothing else.
+    The schema now says so (`minLength: 1`); requiring the OIDC/SAML trios is a
+    behaviour change outside PAC-50 and stays with API-060.
+  - `SsoProviderResponse` (U-22): a `storage.SSOProvider` marshalled with
+    `encoding/json` on 2026-10-25 printed exactly the thirteen PascalCase keys
+    the schema lists. Returning `OIDCClientSecret` is API-001; PAC-22 removes it.
+- Still open after PAC-50: (b)(9)/(b)(10) (API-060, API-066), and (a)(7): the
+  SSO operations still have no hand-written web consumer.
