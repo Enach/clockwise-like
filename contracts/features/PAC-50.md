@@ -538,3 +538,31 @@ Divergence 1 (`APP_URL` named as the step-up redirect base) and divergence 2
 (orgless caller at the callback), the U-21/U-22 notes, and other items 1-4
 are inputs the plan must resolve or pin. None alters the shape of a request
 or response the generated types carry.
+
+### Gates run for revision 2
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `3fb469c` (the first run, on the source commit, regenerated
+`backend/api/gen/paceday.gen.go` and `contracts/openapi/openapi.yaml`, which
+were committed as `ded7aad`):
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (100 paths)
+OK: MIGRATION.md covers all 121 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 43.3% (floor 43%) [3946 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+Not run: the web gate, for the reason the challenger gave (web types
+regenerate after the merge, factory §1); and e2e, because no runtime behaviour
+changes at stage 2.
