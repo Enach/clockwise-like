@@ -31,6 +31,15 @@ async function hourAxis(page: Page): Promise<string[]> {
   return (await labels.allInnerTexts()).map((t) => t.trim()).filter(Boolean);
 }
 
+/**
+ * The first hour-axis label once it reads `want`. The grid renders before the
+ * user's settings load (12-hour until the choice is known, spec §3), so a
+ * 24-hour axis appears a moment later: wait for it rather than read once.
+ */
+async function expectFirstHour(page: Page, want: string): Promise<void> {
+  await expect.poll(async () => (await hourAxis(page))[0], { timeout: 10_000 }).toBe(want);
+}
+
 test.describe('PAC-55 — time format', () => {
   test('AC-8: with 24-hour chosen, the calendar hour axis reads 07:00 … 20:00', async ({ browser, apiAs }) => {
     const user = await freshUser('axis');
@@ -40,8 +49,8 @@ test.describe('PAC-55 — time format', () => {
     const page = await context.newPage();
     try {
       await page.goto('/app');
+      await expectFirstHour(page, '07:00');
       const axis = await hourAxis(page);
-      expect(axis[0]).toBe('07:00');
       expect(axis).toContain('20:00');
       expect(axis.join(' ')).not.toMatch(/am|pm/i);
     } finally {
@@ -64,7 +73,7 @@ test.describe('PAC-55 — time format', () => {
 
       // In-app navigation, no reload.
       await page.getByRole('link', { name: /paceday/i }).first().click();
-      expect((await hourAxis(page))[0]).toBe('07:00');
+      await expectFirstHour(page, '07:00');
     } finally {
       await first.close();
     }
@@ -75,7 +84,7 @@ test.describe('PAC-55 — time format', () => {
       await again.goto('/settings');
       await expect(again.getByLabel('Time format')).toHaveValue('24h');
       await again.goto('/app');
-      expect((await hourAxis(again))[0]).toBe('07:00');
+      await expectFirstHour(again, '07:00');
     } finally {
       await second.close();
     }
