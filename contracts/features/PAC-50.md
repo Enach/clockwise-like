@@ -483,3 +483,58 @@ Not run by the challenger: the web gate, because web types regenerate after
 the merge (factory §1) and a check-only run against web `main` would fail
 `openapi-check` by construction; and e2e, because no runtime behaviour
 changes at stage 2.
+
+## Revision 2 — 2026-10-25 (response to the round-1 challenge)
+
+Written by `contract-author` in a local session. Contract revision 2; the
+bundle at `ded7aad` hashes to
+`7860bcdc8511ee612c180a5ff3c5167f93386e2bb83ea44b4ba7897e562156cf`
+(`git show ded7aad:contracts/openapi/openapi.yaml | sha256sum`), recorded in
+the manifest.
+
+### B1 — accepted, fixed as proposed
+
+The finding is correct. Checked before changing anything:
+`docker/fileserver/main.go:20-24` injects `window.__API_BASE_URL__` from
+`API_BASE_URL`; `docker-compose.yml:61` and `docker-compose.prod.yml:89` pass
+it through; `smart-calendar-flow/Dockerfile.local:4-7` bakes
+`VITE_API_BASE_URL=https://paceday-api.nhochart.ovh/api`; the web's two API
+bases (`src/lib/api.ts:19-23`, `src/api/client.ts:284-287`) read those; and
+`src/components/auth/AuthDialog.tsx:85,104,108,112` send every top-level API
+navigation through `apiUrl(...)`, including the SSO start that the
+`redirect_url` "precedent" was supposed to show. The claim that the web app
+and the API share an origin in every deployment was false.
+
+Changes, contract shape untouched (the value stays `const:
+/api/admin/sso/stepup`, so the generated web type is the same literal):
+
+- `SsoWriteStepupRequired.stepup_url` (`paths/auth.yaml`): the description now
+  says it is a path on the API's origin, of the same form as every operation
+  path, resolved against the origin of the client's configured API base and
+  never against the page's origin, and says why (runtime/build-time API base,
+  host-only session cookie). The "share an origin behind nginx" sentence and
+  the `SsoDetectResponse.redirect_url` precedent are gone.
+- `startSsoAdminStepup` description: the navigation sentence says the client
+  resolves the path against its configured API base's origin, not the page's.
+- §2 of this file: the heading is now "a constant path on the API's origin";
+  the "every deployment" claim and the precedent are removed and replaced by
+  the evidence above. The rejection of an absolute `APP_URL`-built URL stands
+  for its original reasons.
+- Spec §9 D-6: the OQ-8 sentence is corrected the same way and says AC-22's
+  "navigates the browser to that URL" is read against the API base.
+- Manifest: `contractRevision` 2, the new `contractHash`, and AC-22's line
+  states the resolution rule so that stage 3 names a test for it (a 403
+  carrying `stepup_url` with a non-empty, cross-origin API base must navigate
+  to `<API base origin>/api/admin/sso/stepup?provider=…`).
+
+The challenger noted that the e2e stack sets `API_BASE_URL: ""` and so AC-23
+cannot catch this; that is why the rule is pinned at AC-22 (web unit), where a
+split-host API base is a test input.
+
+### Non-blocking findings
+
+Not changed in this revision; carried to stage 3 as the challenger asked.
+Divergence 1 (`APP_URL` named as the step-up redirect base) and divergence 2
+(orgless caller at the callback), the U-21/U-22 notes, and other items 1-4
+are inputs the plan must resolve or pin. None alters the shape of a request
+or response the generated types carry.

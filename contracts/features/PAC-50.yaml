@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-50/sso-configuration-is-writable-by-any-employee-and-for-any-subdomain",
   "status": "draft",
   "contractRevision": "2",
-  "contractHash": "5510e31be99aec785eb093f3885fbf48714bea677344c4653064c37dfff0ca7b",
+  "contractHash": "7860bcdc8511ee612c180a5ff3c5167f93386e2bb83ea44b4ba7897e562156cf",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml at the commit that carries this revision (git show HEAD:contracts/openapi/openapi.yaml | sha256sum).",
   "contractDoc": "contracts/features/PAC-50.md",
   "specDoc": "docs/specs/PAC-50.md",
