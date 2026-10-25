@@ -2603,22 +2603,32 @@ type SsoWriteMembershipRequiredError string
 type SsoWriteStepupRequired struct {
 	Error SsoWriteStepupRequiredError `json:"error"`
 
-	// StepupUrl Root-relative path of startSsoAdminStepup, without the `provider`
-	// parameter (spec §4.3 and OQ-8; same precedent as
-	// SsoDetectResponse.redirect_url). The web app and the API share an
-	// origin behind nginx (`/api/` is proxied to the backend), so the
-	// browser resolves it against the page's origin.
+	// StepupUrl Path of startSsoAdminStepup on the API's origin, without the
+	// `provider` parameter (spec §4.3 and OQ-8). It has the same form as
+	// every operation path in this document, and a client resolves it
+	// the way it resolves those: against the origin of its configured
+	// API base (for the web app, the base it already uses for
+	// `/api/auth/...` navigations), never against the page's origin.
+	// The API need not share an origin with the page: the web's API
+	// base is set at runtime (`API_BASE_URL`) or at build time
+	// (`VITE_API_BASE_URL`), and the session cookie is host-only on
+	// the API host, so the page's origin can lack the session.
 	StepupUrl SsoWriteStepupRequiredStepupUrl `json:"stepup_url"`
 }
 
 // SsoWriteStepupRequiredError defines model for SsoWriteStepupRequired.Error.
 type SsoWriteStepupRequiredError string
 
-// SsoWriteStepupRequiredStepupUrl Root-relative path of startSsoAdminStepup, without the `provider`
-// parameter (spec §4.3 and OQ-8; same precedent as
-// SsoDetectResponse.redirect_url). The web app and the API share an
-// origin behind nginx (`/api/` is proxied to the backend), so the
-// browser resolves it against the page's origin.
+// SsoWriteStepupRequiredStepupUrl Path of startSsoAdminStepup on the API's origin, without the
+// `provider` parameter (spec §4.3 and OQ-8). It has the same form as
+// every operation path in this document, and a client resolves it
+// the way it resolves those: against the origin of its configured
+// API base (for the web app, the base it already uses for
+// `/api/auth/...` navigations), never against the page's origin.
+// The API need not share an origin with the page: the web's API
+// base is set at runtime (`API_BASE_URL`) or at build time
+// (`VITE_API_BASE_URL`), and the session cookie is host-only on
+// the API host, so the page's origin can lack the session.
 type SsoWriteStepupRequiredStepupUrl string
 
 // SuggestedSlot engine.SuggestedSlot.
