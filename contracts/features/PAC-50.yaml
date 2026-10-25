@@ -173,8 +173,8 @@
   ],
   "gates": {
     "openapi_assemble --check": "run locally (python scripts/openapi_assemble.py --check): OK: bundle is in sync (100 paths)",
-    "api-gate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract - see contracts/features/PAC-50.md §6 for the output on the pushed commit",
-    "web openapi-check": "run by the frontend regeneration PR after this contract merges (factory §1 ordering)"
+    "api-gate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract on e865c60: make openapi rc=0, regenerated: none, openapi-check(api) rc=0, backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp test rc=0, backend coverage 43.3% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0",
+    "web generation (check only)": "throwaway container, smart-calendar-flow@main + this branch: make openapi rc=0, tsc --noEmit rc=0, make openapi-check OK; nothing copied back. Committed web types regenerate in the frontend PR after merge (factory §1); full web make verify not run for this revision"
   },
   "rollback": "Contract-only revision: revert this commit; no code depends on it until stage 4. After stage 4, reverting the code removes the gate and the step-up operations and restores 'any member writes', which is the defect PAC-50 closes - a security regression to be release-noted (spec §7). Migration 027's down drops the grant and SSO event tables and organizations.ms_tenant_id (ids and short enums only, no user data) and restores raw UNIQUE(domain) without restoring backfilled casing.",
   "mergeConditions": [

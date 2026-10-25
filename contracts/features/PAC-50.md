@@ -237,5 +237,35 @@ must list `<APP_URL>/api/admin/sso/stepup/callback` as a redirect URI.
 
 ## 6. Gates run for this revision
 
-See the manifest's `gates` entry for the exact commands and their output on
-the pushed commit.
+Run on 2026-10-25 against commit `e865c60` (this revision's contract; the
+bundle is byte-identical in the commit that adds this section).
+
+- `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (100 paths)`.
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`:
+
+  ```
+  make openapi rc=0
+  regenerated: none
+  OK: bundle is in sync (100 paths)
+  OK: MIGRATION.md covers all 121 operations (0 generated)
+  OK: backend/api/gen matches the contract
+  openapi-check(api) rc=0
+  backend lint rc=0
+  mcp lint rc=0
+  backend test rc=0
+  mcp test rc=0
+  backend  coverage: 43.3% (floor 43%) [3946 generated blocks excluded]
+  backend coverage rc=0
+  mcp      coverage: 84.0% (floor 75%)
+  mcp coverage rc=0
+  ```
+
+- Web generation, as a check only, with nothing copied back. In a throwaway
+  `node:24-bookworm` container, against clones of `smart-calendar-flow@main`
+  and this branch: `make openapi` rc=0 (it rewrote `src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts}`),
+  `npx tsc --noEmit -p tsconfig.app.json` rc=0, then `make openapi-check`
+  printed `OK: src/api/generated matches the contract` (rc=0).
+  openapi-typescript emits `SsoWriteForbiddenResponse` as a union of the three
+  variants, discriminated by the `error` literal. The committed web types
+  regenerate in the frontend regeneration PR after this contract merges. The
+  full web `make verify` was **not** run for this revision.
