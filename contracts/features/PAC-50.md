@@ -566,3 +566,192 @@ mcp coverage rc=0
 Not run: the web gate, for the reason the challenger gave (web types
 regenerate after the merge, factory §1); and e2e, because no runtime behaviour
 changes at stage 2.
+
+## Challenge — 2026-10-25 (round 2, contract revision 2)
+
+Reviewed by `contract-challenger` against the committed state of
+`factory/pac-50-contract` at `328461b` (spec v2.2 and its §9, this file, the
+manifest, `paths/auth.yaml`, the bundle and the regenerated server code). The
+author's reasoning was not read beyond what these artefacts say. This round
+checks the B1 fix, then attacks the whole contract again, not only the diff.
+
+**Verdict**: accept. B1 is resolved for every deployment the code ships. No
+new blocking finding. The non-blocking items below, and round 1's carried
+items, are inputs stage 3 must pin.
+
+### B1 (round 1): resolved
+
+`git diff e391bc6..328461b -- contracts/openapi/paths/` changes only two
+descriptions: `SsoWriteStepupRequired.stepup_url` and the navigation sentence
+of `startSsoAdminStepup`. The value stays `const: /api/admin/sso/stepup`, so
+the generated types do not change shape. Spec §9 D-6 and the manifest's AC-22
+line were corrected to match.
+
+Round 1's constructed failure, replayed with the new rule: page on
+`https://paceday.example.com`, `API_BASE_URL=https://api.example.com/api`. The
+403 carries `"stepup_url":"/api/admin/sso/stepup"`. Resolved against the API
+base's origin, that gives
+`https://api.example.com/api/admin/sso/stepup?provider=google`. That host
+holds the host-only `auth_token` (`handlers_auth.go:146-161`), so the step-up
+starts. The same holds for `Dockerfile.local`
+(`VITE_API_BASE_URL=https://paceday-api.nhochart.ovh/api`) and for the
+same-origin e2e stack (`e2e/docker-compose.e2e.yml:189`, `API_BASE_URL: ""`).
+The "share an origin in every deployment" claim and the `redirect_url`
+precedent are gone from the fragment, from §2 and from D-6.
+
+### Requests wrongly permitted
+
+None found. See "Verified clean".
+
+### Responses the client cannot handle
+
+None found. Revision 2 changed no response shape.
+
+### Consumers affected
+
+- smart-calendar-flow: only `src/api/generated/types.ts` and
+  `src/api/generated/schemas.types.d.ts` reference `admin/sso|stepup` (grep
+  over `src/`). The AC-22 code in `src/api/client.ts` does not exist yet.
+- mcp/: no reference. e2e/: no reference (grep `admin/sso|stepup`).
+
+### Contract/implementation divergences (non-blocking)
+
+1. **The B1 rule has two halves that disagree for an API base with a path
+   prefix.** The `stepup_url` description says a client resolves the path
+   "against the origin of its configured API base (for the web app, the base
+   it already uses for `/api/auth/...` navigations)". The web's navigation
+   base does not resolve against an origin. `apiUrl`
+   (`src/lib/api.ts:100-102`) is `API_BASE + path`, where `API_BASE` is the
+   injected base with its trailing `/api` removed (`src/lib/api.ts:19-23`).
+   For `API_BASE_URL=https://host/paceday/api`, `/api/auth/google` goes to
+   `https://host/paceday/api/auth/google`. The origin rule would send
+   `stepup_url` to `https://host/api/admin/sso/stepup`, a different resource.
+   No shipped configuration has such a prefix (`docker-compose*.yml`,
+   `Dockerfile.local`, `e2e/docker-compose.e2e.yml`), so nothing breaks
+   today. Fix (description only): say "the configured API base with its
+   trailing `/api` removed, followed by the path". That equals the origin
+   rule for every base of the form `<origin>/api`.
+
+   The web also has **two** API bases. `src/lib/api.ts` reads
+   `__API_BASE_URL__` or `VITE_API_URL`. `src/api/client.ts:284-287` reads
+   `__API_BASE_URL__`, `VITE_API_BASE_URL` or `/api`. The description names
+   the build-time variable of the second base (`VITE_API_BASE_URL`) and the
+   navigation behaviour of the first. The two agree in `Dockerfile.local`,
+   but not under `.env.example`, which sets only `VITE_API_URL`. The plan's
+   AC-22 test should name which base it uses.
+2. **A missing `provider` under the generated server wrapper is not the
+   documented 400.** The contract gives a single JSON 400,
+   `provider must be 'google' or 'microsoft'`, for a missing `provider` and
+   for an unknown one. Factory §4 says new endpoints use the generated
+   interface. In `backend/api/gen/paceday.gen.go`,
+   `ServerInterfaceWrapper.StartSsoAdminStepup` answers a missing `provider`
+   itself, through `ErrorHandlerFunc` with `RequiredParamError`. The default
+   handler is plain-text `http.Error`, the hazard PAC-23 recorded in the same
+   file. An unknown value (`okta`) binds into the string enum and reaches the
+   handler. So `GET /api/admin/sso/stepup` with no query would get a
+   text/plain 400 with a different message, while `?provider=okta` gets the
+   JSON one. That contradicts the 400's `application/json` /
+   `ErrorResponse`. The contract is correct as a statement of required
+   behaviour. AC-21b should assert the content type and the message for both
+   inputs, so that whichever route stage 4 takes is held to it.
+   (`MIGRATION.md` lists both new operations as `handwritten`, which is
+   accurate before stage 4.)
+3. **Round 1 divergences 1 (`APP_URL` as the step-up `redirect_uri` base)
+   and 2 (orgless caller at the callback) are unchanged**, as Revision 2
+   says. Re-checked: neither compose file passes `APP_URL` (grep). The
+   callback still says "every outcome with a session ... is recorded" and
+   has no rule for a user with no org. Both stay inputs to stage 3. The plan
+   must either add `APP_URL` to both compose files or change the
+   description, and must pick one of the two orgless outcomes round 1 named.
+
+### Uncertainties not actually resolved (non-blocking)
+
+1. U-21 / U-22: round 1's notes stand, and nothing in revision 2 touches
+   them. The plan should commit an assertion on the 201 body's thirteen
+   keys. `docs/factory/api-audit.md:465-466` should be annotated when this
+   merges.
+
+### Other non-blocking
+
+1. **Stale bookkeeping.** This file's header still says "Revision: 1". The
+   manifest's `gates.api-gate` still records the revision-1 run on
+   `e865c60`, although `contractRevision` is 2 and §"Gates run for
+   revision 2" records `3fb469c`. Update both so the manifest stands alone
+   (factory §8).
+2. **Start op, orgless caller vs. org row gone.** D-1's 403 names only
+   `org membership required`, but the write operations also answer
+   `org not found` when the org row is gone. The start's 403 is a plain
+   `ErrorResponse`, so either text validates. Say which one the start uses,
+   or say "the same two messages as the writes".
+3. Round 1's other items 1-4 are unchanged and carried to stage 3, as
+   Revision 2 says: no fresh IdP sign-in at the boundary, Linear scope
+   item 3, a break-glass caller who holds a live grant, and
+   `DELETE /api/admin/sso/stepup`.
+
+### Verified clean
+
+- **Callback return leg in a split-host deployment** (the mirror of B1). The
+  callback's 302 is `<FRONTEND_URL>/settings?...`. The three existing
+  sign-in callbacks redirect exactly the same way: `handlers_auth.go:79`,
+  `handlers_microsoft_auth.go:79` and `handlers_sso.go:194`, all
+  `frontendURL + path`. So any deployment where sign-in lands on the web app
+  also lands the step-up there. The step-up adds no new failure.
+- **Break-glass freshness cannot be refreshed without a sign-in.** The only
+  JWT mint is `issueJWT` (`handlers_auth.go:146-161`, the single
+  `auth.GenerateToken` call outside tests), reached only from the sign-in
+  callbacks, and it stamps `iat` from `time.Now()` (`auth/jwt.go:23`). No
+  refresh or re-issue path exists, so "issued less than 10 minutes ago"
+  does mean "signed in less than 10 minutes ago".
+- **Cross-user callback replay.** Suppose an attacker sends a signed-in
+  victim to
+  `/api/admin/sso/stepup/callback?code=<attacker's>&state=<attacker's>`. The
+  victim's `sso_stepup_state` is either absent or holds the victim's own
+  nonce, so the outcome is `state_mismatch` at step 0, before any code
+  exchange. Even with a valid state, step 3 compares the token email to the
+  victim's session email.
+- **Domain-segment variants on delete.** For org `acme.com`,
+  `DELETE /api/admin/sso/ACME.com` is lower-cased to a match. The segments
+  `/acme.com.`, `/%20acme.com` and `/eu.acme.com` are each a 400
+  `provider_domain_mismatch` before the consume, and none discloses
+  anything about another org.
+- **Create body.**
+  `{"domain":"acme.com","provider_name":"x","provider_type":"oidc","org_id":"x"}`
+  is a 400 `unknown property: org_id`, from the step-2 shape check, before
+  the domain and authorization checks.
+  `{"domain":"","provider_name":"x","provider_type":"oidc"}` is excluded by
+  `minLength: 1` and by the handler's existing non-empty check
+  (`handlers_sso.go:223-226`).
+- **Gate order against the current handler.** Today `org not found` is
+  checked after the body is decoded (`handlers_sso.go:232-236`). The
+  contract moves it into step 1, before the body. That is a stated PAC-50
+  change, consistent with spec §4.2 step 2, not a misdescription.
+- **Bundle integrity.**
+  `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` printed
+  `7860bcdc8511ee612c180a5ff3c5167f93386e2bb83ea44b4ba7897e562156cf`,
+  which equals the manifest's `contractHash`.
+
+### Gates run by the challenger
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `328461b` (working tree clean before and after; nothing regenerated):
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (100 paths)
+OK: MIGRATION.md covers all 121 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 43.3% (floor 43%) [3946 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+Not run: the web gate, because the web types regenerate after the merge
+(factory §1) and a check-only run against web `main` fails `openapi-check`
+by construction; and e2e, because no runtime behaviour changes at stage 2.
