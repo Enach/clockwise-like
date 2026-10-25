@@ -200,3 +200,32 @@ func TestNLPConfirm_CreateError(t *testing.T) {
 		t.Errorf("status = %d, want 500", w.Code)
 	}
 }
+
+// PAC-23 AC-5 / AC-14: POST /api/nlp/confirm is recorded against the caller.
+func TestNLPConfirm_AuditEntrySubjectIsCaller(t *testing.T) {
+	db := openTestDB(t)
+	caller := createTestUser(t, "audit-nlp-confirm@example.com")
+	other := createTestUser(t, "audit-nlp-confirm-other@example.com")
+	h := &nlpHandlers{svc: &mockNLPParser{}, smart: &mockScheduler{created: &googlecalendar.Event{Id: "audit-confirmed"}}, db: db}
+	now := time.Now().UTC()
+	b, _ := json.Marshal(map[string]interface{}{
+		"parse_result": nlp.ParseResult{
+			Intent:         "schedule_meeting",
+			Title:          "Audit Sync",
+			SuggestedSlots: []engine.SuggestedSlot{{Start: now.Add(time.Hour), End: now.Add(2 * time.Hour)}},
+		},
+		"selected_slot_index": 0,
+	})
+	w := httptest.NewRecorder()
+	h.confirm(w, withUser(httptest.NewRequest(http.MethodPost, "/api/nlp/confirm", bytes.NewReader(b)), caller))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	if got := auditActionsFor(t, caller); len(got) != 1 || got[0] != "nlp_confirmed" {
+		t.Errorf("caller's log = %v, want [nlp_confirmed]", got)
+	}
+	if got := auditActionsFor(t, other); len(got) != 0 {
+		t.Errorf("other user's log = %v, want empty", got)
+	}
+}

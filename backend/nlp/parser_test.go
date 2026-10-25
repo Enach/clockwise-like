@@ -389,3 +389,34 @@ func settingsUser(t *testing.T, db *sql.DB, s *storage.Settings) context.Context
 	}
 	return context.WithValue(context.Background(), auth.UserIDKey, u.ID)
 }
+
+// PAC-23 AC-5 / AC-14: a parsed request is recorded against the caller in ctx,
+// and the typed prompt reaches nobody else's log.
+func TestParse_AuditEntrySubjectIsCallerFromContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": map[string]string{"content": `{"intent":"schedule_focus","duration_minutes":60}`},
+		})
+	}))
+	defer srv.Close()
+
+	db := openTestDB(t)
+	ctx := settingsUser(t, db, &storage.Settings{LLMProvider: "ollama", LLMBaseURL: srv.URL, Timezone: "UTC", WorkStart: "09:00", WorkEnd: "18:00"})
+	otherCtx := settingsUser(t, db, &storage.Settings{LLMProvider: ""})
+	caller, other := auth.UserIDFromContext(ctx), auth.UserIDFromContext(otherCtx)
+
+	if _, err := (&NLPService{DB: db}).Parse(ctx, "block an hour of focus (audit prompt)"); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	mine, err := storage.ListAuditLog(db, caller, storage.AuditMaxLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mine) != 1 || mine[0].Action != "nlp_parsed" || !strings.Contains(mine[0].Details, "audit prompt") {
+		t.Errorf("caller's log = %+v, want one nlp_parsed carrying the prompt", mine)
+	}
+	if theirs, _ := storage.ListAuditLog(db, other, storage.AuditMaxLimit); len(theirs) != 0 {
+		t.Errorf("other user's log = %+v, want empty", theirs)
+	}
+}

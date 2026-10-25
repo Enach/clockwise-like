@@ -155,6 +155,8 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 		return nil, nil, err
 	}
 
+	// The subject of every move is the caller (PAC-23); read it once.
+	subject := auth.UserIDFromContext(ctx)
 	var applied, failed []string
 	for _, p := range proposals {
 		busy, err := client.getFreeBusy(ctx, nil, p.ProposedStart, p.ProposedEnd)
@@ -177,7 +179,7 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 			continue
 		}
 
-		storage.WriteAuditLog(e.DB, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
+		storage.WriteAuditLog(e.DB, subject, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
 		applied = append(applied, p.EventID)
 	}
 
