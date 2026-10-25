@@ -28,6 +28,7 @@ export const SINK_HOSTS = [
   'www.googleapis.com',
   'oauth2.googleapis.com',
   'accounts.google.com',
+  'admin.googleapis.com',
   'graph.microsoft.com',
   'login.microsoftonline.com',
   'slack.com',
