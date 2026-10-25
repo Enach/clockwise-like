@@ -269,3 +269,208 @@ bundle is byte-identical in the commit that adds this section).
   variants, discriminated by the `error` literal. The committed web types
   regenerate in the frontend regeneration PR after this contract merges. The
   full web `make verify` was **not** run for this revision.
+
+## Challenge — 2026-10-25
+
+Reviewed by `contract-challenger` against the committed state of
+`factory/pac-50-contract` at `9c604c2` (spec v2.2 and its §9, this file, the
+manifest, `paths/auth.yaml`, the bundle). The author's reasoning was not read
+beyond what these artefacts say.
+
+**Verdict**: accept-with-changes. One blocking finding (B1); the rest does
+not block stage 3.
+
+### Blocking
+
+**B1. `stepup_url` is said to resolve against the page's origin "in every
+deployment". The code supports, and ships, deployments where that is false.**
+`SsoWriteStepupRequired.stepup_url` is `const: /api/admin/sso/stepup`, and its
+description (and §2 "stepup_url is a constant root-relative path") says "the
+web app and the API share an origin behind nginx, so the browser resolves it
+against the page's origin". The code says otherwise:
+- `docker/fileserver/main.go:20-24` injects `window.__API_BASE_URL__` from
+  `API_BASE_URL`, and both `docker-compose.yml:61` and
+  `docker-compose.prod.yml:89` pass `API_BASE_URL` through. The web reads it
+  in `smart-calendar-flow/src/api/client.ts:282-286` and `src/lib/api.ts:19-23`.
+- `smart-calendar-flow/Dockerfile.local:4-7` bakes
+  `VITE_API_BASE_URL=https://paceday-api.nhochart.ovh/api`: a real build in
+  which the API is on its own host.
+- The web never navigates to an API path raw. Every top-level navigation to
+  the API goes through its API base: `src/components/auth/AuthDialog.tsx:85,104,108,112`
+  wrap `/api/auth/...` in `apiUrl(...)`. That includes the `redirect_url`
+  precedent cited for this choice: line 112 builds its own URL and does not
+  follow `SsoDetectResponse.redirect_url` as given.
+
+Constructed failure: page on `https://paceday.example.com`,
+`API_BASE_URL=https://api.example.com/api`. The member's
+`POST https://api.example.com/api/admin/sso` gets
+`403 {"error":"sso_write_requires_admin_stepup","stepup_url":"/api/admin/sso/stepup"}`.
+A client that does what the contract says (AC-22: navigate to `stepup_url`
+resolved against the page) lands on
+`https://paceday.example.com/api/admin/sso/stepup?provider=google`. The
+`auth_token` cookie is host-only on `api.example.com` (`handlers_auth.go:153-160`,
+no `Domain`), so that request is a 401, or the SPA's index if that host does
+not proxy `/api/`. The step-up cannot start.
+
+**Fix (contract shape only):** keep the `const`. Change the `stepup_url`
+description, and §2 of this file, to say that it is a path on the API's
+origin, which a client resolves the way it resolves every other API path (its
+configured API base origin), and never against the page's origin. Delete the
+"share an origin in every deployment" claim and the `redirect_url`-precedent
+justification. The other option is an absolute URL, which this file rejected
+for reasons that still hold, so the description change is the smaller fix.
+AC-22's wording ("navigates the browser to that URL") is then read against the
+API base. The plan should name that test.
+
+### Requests wrongly permitted
+
+None found that the schema should reject and does not. See "Verified clean".
+
+### Responses the client cannot handle
+
+1. The B1 case above: `createSsoProvider`/`deleteSsoProvider` 403
+   `SsoWriteStepupRequired`. If the client follows the contract literally,
+   in a split-host deployment it navigates to a URL where it has no session.
+
+### Consumers affected
+
+- smart-calendar-flow: `src/api/generated/types.ts` and
+  `src/api/generated/schemas.types.d.ts` only (grep `admin/sso|stepup` over
+  `src/`). No hand-written caller. The future AC-22 code in `src/api/client.ts`
+  is affected by B1.
+- mcp/: no reference (grep `admin/sso|stepup`). e2e/: no reference.
+  `e2e/docker-compose.e2e.yml:189` sets `API_BASE_URL: ""`, so the AC-23
+  journey runs same-origin and **will not** catch B1.
+
+### Contract/implementation divergences (non-blocking)
+
+1. **`APP_URL` named as the step-up redirect base.** The start's `Location`
+   says redirect_uri is `<APP_URL>/api/admin/sso/stepup/callback`. `APP_URL` is
+   read only by the OIDC sign-in (`handlers_sso.go:104,155`). It appears in
+   neither `docker-compose.yml` nor `docker-compose.prod.yml`. The Google and
+   Microsoft clients take their redirect from `GOOGLE_REDIRECT_URL` and
+   `MICROSOFT_REDIRECT_URL` (`docker-compose.prod.yml:58,64`). With the prod
+   compose as written, the redirect_uri would be the relative string
+   `/api/admin/sso/stepup/callback`, which the IdPs refuse. Fix: describe it
+   as "the deployment's configured step-up callback URL", leave the variable
+   to the plan, and correct §4's deployment note to match.
+2. **Orgless caller at the callback.** The callback says "every outcome with
+   a session ... is recorded" and is a 302. A signed-in user with no org can
+   `GET /api/admin/sso/stepup/callback` directly. That outcome is
+   `state_mismatch`, but its `sso_stepup` row has no `org_id`, and spec §4.8
+   has `org_id` reference `organizations`. As written, the contract permits
+   either a 302 or (through D-4) a 500 for the same request. Fix: say that an
+   orgless caller gets 302 `stepup=denied&reason=state_mismatch` with no
+   record (mirroring D-1), or say that the event's `org_id` is nullable.
+
+### Uncertainties not actually resolved (non-blocking)
+
+1. **U-22**: the evidence is a temporary test that was deleted, so nothing
+   pins it. The conclusion is still sound: `storage.SSOProvider`
+   (`backend/storage/sso_providers.go:12`) has no json tags and no
+   `MarshalJSON`, so `encoding/json` semantics settle the keys. Ask the plan
+   for a committed assertion on the 201 body's key set, because AC-18 only
+   reads the bundle. The U-21 and U-22 rows in
+   `docs/factory/api-audit.md:465-466` still read as open. Annotate them when
+   this merges.
+2. **U-21**: the audit row recommended "decide and encode"
+   (`dependentRequired`). The contract documents the status quo instead, as
+   spec v2.2 directs (no new validation, API-060 stays open). That is
+   acceptable as determination, but the decision belongs to the spec, not the
+   contract. It is recorded here so that nobody reads U-21 as "decided".
+
+### Other non-blocking
+
+1. **The step-up does not require a fresh IdP sign-in.** Spec §2 says "a fresh
+   re-authentication". Nothing at the boundary asks for it: the start's
+   `Location` names no `prompt=login`/`max_age=0`, and the callback names no
+   `auth_time` check. The start is a GET, and a cross-site top-level
+   navigation sends the Lax `auth_token`. So a page can send a signed-in
+   Workspace admin through `/api/admin/sso/stepup?provider=google` and get
+   them a grant with no interaction. It does not escalate: the grant serves
+   only that user's own session, and a cross-site POST does not carry the Lax
+   cookie. State it in the start's `Location` description, or have the plan
+   pin it.
+2. **Linear scope item 3 is unaddressed.** The issue requires that
+   "configurations already stored for a domain that is nobody's exact
+   organisation domain ... stop minting sessions" when the exact rule lands.
+   Neither spec v2.2 nor this contract does this: `ssoOidcCallback` and
+   `startSsoLogin` are unchanged, so a pre-existing `eu.acme.com` row stays
+   live. Production has zero users, so such rows are unlikely, but the owner
+   should confirm that it was dropped deliberately. The 403-vs-400 difference
+   is already recorded in spec §9.
+3. **Break-glass caller who also holds a live grant.** Order 4a-then-4b
+   implies that the grant is consumed and the event says `via: stepup`. Say
+   so, so that AC-12/AC-14 tests cannot pick either.
+4. **`DELETE /api/admin/sso/stepup`.** chi falls through to `/{domain}`, which
+   gives 400 `provider_domain_mismatch`. A generated OpenAPI router may answer
+   405. Both refuse. The plan should include a router test, as §5 of this
+   file asks.
+
+### Verified clean
+
+- **`oneOf` disjointness.**
+  `{"error":"sso_write_requires_fresh_login","stepup_url":"/api/admin/sso/stepup"}`
+  matches no variant (`additionalProperties: false`).
+  `{"error":"sso_write_requires_admin_stepup"}` matches none (`stepup_url`
+  required). `{"error":"org not found"}` matches exactly one. The `error`
+  values are disjoint across variants.
+- **Web rendering of all three 403s.** `apiErrorMessage` reads `data.error`
+  first (`smart-calendar-flow/src/api/client.ts:355`), so no variant falls to
+  the generic 403 text.
+- **Session on the callback.** `auth_token` is `Path=/` and `SameSite=Lax`
+  (`handlers_auth.go:153-160`), and `requireAuth` accepts the cookie
+  (`middleware.go:28`), so the IdP's top-level GET back carries the session.
+  The state cookie's `Path=/api/admin/sso/stepup` path-matches `/callback`.
+  The callback is declared GET only, which rules out Entra `form_post`, a
+  cross-site POST that would drop both Lax cookies.
+- **`Location` pattern.** `FRONTEND_URL` defaults to empty in
+  `docker-compose.prod.yml:49`, so the server would send
+  `/settings?stepup=granted`, which the unanchored pattern still matches. The
+  eight reasons equal the §4.6 enum plus the D-3 mapping, with no extra value.
+  `/settings` exists in the web (`src/App.tsx:86`).
+- **Gate order and cross-org disclosure.** A member of `acme.com` sending
+  `POST {"domain":"eu.acme.com","provider_name":"x","provider_type":"oidc"}`
+  and `DELETE /api/admin/sso/other.com` gets the same 400
+  `provider_domain_mismatch` whether or not that domain has a row. The
+  response says nothing about another org. Membership runs first, so an
+  orgless break-glass email gets the membership 403 (AC-1b). The domain check
+  runs before the consume (AC-3c).
+- **Unknown property message format.** `unknown property: <name>` as a JSON
+  `{error}` matches `handlers_settings.go:91`. The text/plain variant at
+  `handlers_daily_recap.go:70` is not the one cited.
+- **Current-handler statements.** The membership, `org not found` and
+  suffix-rule 403 strings quoted as "before PAC-50" match `handlers_sso.go`
+  `createSSOProvider` and `deleteSSOProvider`. 201 on upsert matches. Delete
+  has no rows-affected check (API-067).
+- **Bookkeeping.** `x-uncertain` count 18 → 16 (grep on the `origin/main` and
+  branch bundles). MIGRATION.md 119 → 121. The manifest `acceptanceTests`
+  map one-to-one onto spec §5 AC-1a..AC-23 (AC-19 withdrawn), with no
+  narrowing found.
+
+### Gates run by the challenger
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `9c604c2`:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (100 paths)
+OK: MIGRATION.md covers all 121 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 43.3% (floor 43%) [3946 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+Not run by the challenger: the web gate, because web types regenerate after
+the merge (factory §1) and a check-only run against web `main` would fail
+`openapi-check` by construction; and e2e, because no runtime behaviour
+changes at stage 2.
