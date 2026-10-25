@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,10 +17,6 @@ import (
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 )
-
-type ssoHandlers struct {
-	ah *authHandlers
-}
 
 // --- Rate limiter (sliding 1-minute window per IP) -------------------------
 
@@ -195,53 +193,34 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Admin SSO CRUD (protected) -------------------------------------------
+//
+// PAC-50 (spec docs/specs/PAC-50.md §4.2): every write passes the gate in
+// writeGate, in the spec's order, before the provider store is touched.
 
 // POST /api/admin/sso
 func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) {
-	userID := userIDFromCtx(r.Context())
-	user, err := storage.GetUserByID(h.ah.db, userID)
-	if err != nil || user == nil || user.OrgID == nil {
-		writeError(w, "org membership required", http.StatusForbidden)
+	caller, ok := h.callerOrg(w, r)
+	if !ok {
 		return
 	}
 
-	var body struct {
-		Domain           string `json:"domain"`
-		ProviderName     string `json:"provider_name"`
-		ProviderType     string `json:"provider_type"`
-		OIDCIssuer       string `json:"oidc_issuer"`
-		OIDCClientID     string `json:"oidc_client_id"`
-		OIDCClientSecret string `json:"oidc_client_secret"`
-		SAMLEntryPoint   string `json:"saml_entry_point"`
-		SAMLIssuer       string `json:"saml_issuer"`
-		SAMLCert         string `json:"saml_cert"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, "invalid JSON", http.StatusBadRequest)
+	body, msg := decodeSSOProviderBody(r)
+	if msg != "" {
+		writeError(w, msg, http.StatusBadRequest)
 		return
 	}
-	if body.Domain == "" || body.ProviderName == "" || body.ProviderType == "" {
-		writeError(w, "domain, provider_name and provider_type are required", http.StatusBadRequest)
-		return
-	}
-	if body.ProviderType != "oidc" && body.ProviderType != "saml" {
-		writeError(w, "provider_type must be 'oidc' or 'saml'", http.StatusBadRequest)
+	if !domain.DomainMatchesOrg(body.Domain, caller.org.Domain) {
+		writeError(w, "provider_domain_mismatch", http.StatusBadRequest)
 		return
 	}
 
-	// Only allow configuring SSO for the user's own org domain.
-	org, err := storage.GetOrgByID(h.ah.db, *user.OrgID)
-	if err != nil || org == nil {
-		writeError(w, "org not found", http.StatusForbidden)
-		return
-	}
-	if !domain.DomainMatchesOrg(body.Domain, org.Domain) {
-		writeError(w, "can only configure SSO for your own domain", http.StatusForbidden)
+	via, ok := h.authorizeWrite(w, r, caller)
+	if !ok {
 		return
 	}
 
-	p, err := storage.UpsertSSOProvider(h.ah.db, &storage.SSOProvider{
-		Domain:           body.Domain,
+	p, err := h.store.upsertProvider(r.Context(), &storage.SSOProvider{
+		Domain:           strings.ToLower(strings.TrimSpace(body.Domain)),
 		ProviderName:     body.ProviderName,
 		ProviderType:     body.ProviderType,
 		Enabled:          true,
@@ -251,7 +230,7 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 		SAMLEntryPoint:   body.SAMLEntryPoint,
 		SAMLIssuer:       body.SAMLIssuer,
 		SAMLCert:         body.SAMLCert,
-	})
+	}, caller.user.ID, caller.org.ID, via)
 	if err != nil {
 		writeError(w, "save failed: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -260,6 +239,61 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(p)
+}
+
+// ssoProviderBody is SsoProviderCreateRequest.
+type ssoProviderBody struct {
+	Domain           string `json:"domain"`
+	ProviderName     string `json:"provider_name"`
+	ProviderType     string `json:"provider_type"`
+	OIDCIssuer       string `json:"oidc_issuer"`
+	OIDCClientID     string `json:"oidc_client_id"`
+	OIDCClientSecret string `json:"oidc_client_secret"`
+	SAMLEntryPoint   string `json:"saml_entry_point"`
+	SAMLIssuer       string `json:"saml_issuer"`
+	SAMLCert         string `json:"saml_cert"`
+}
+
+var ssoProviderBodyProperties = map[string]bool{
+	"domain": true, "provider_name": true, "provider_type": true,
+	"oidc_issuer": true, "oidc_client_id": true, "oidc_client_secret": true,
+	"saml_entry_point": true, "saml_issuer": true, "saml_cert": true,
+}
+
+// decodeSSOProviderBody validates the body's shape (spec §4.2 step 3). It
+// returns the 400 message, or "" when the body is acceptable. An undeclared
+// property is refused, never dropped (the contract's additionalProperties:
+// false; the PAC-24 "unknown property: <name>" convention).
+func decodeSSOProviderBody(r *http.Request) (*ssoProviderBody, string) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, "invalid JSON"
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, "invalid JSON"
+	}
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !ssoProviderBodyProperties[name] {
+			return nil, "unknown property: " + name
+		}
+	}
+	var body ssoProviderBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, "invalid JSON"
+	}
+	if body.Domain == "" || body.ProviderName == "" || body.ProviderType == "" {
+		return nil, "domain, provider_name and provider_type are required"
+	}
+	if body.ProviderType != "oidc" && body.ProviderType != "saml" {
+		return nil, "provider_type must be 'oidc' or 'saml'"
+	}
+	return &body, ""
 }
 
 // GET /api/admin/sso
@@ -286,27 +320,31 @@ func (h *ssoHandlers) listSSOProviders(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/admin/sso/{domain}
 func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) {
-	d := chi.URLParam(r, "domain")
-
-	userID := userIDFromCtx(r.Context())
-	user, err := storage.GetUserByID(h.ah.db, userID)
-	if err != nil || user == nil || user.OrgID == nil {
-		writeError(w, "org membership required", http.StatusForbidden)
+	caller, ok := h.callerOrg(w, r)
+	if !ok {
+		return
+	}
+	// The segment is a target, never an authorization: lower-cased, and it
+	// must be the caller's own org domain exactly.
+	d := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "domain")))
+	if !domain.DomainMatchesOrg(d, caller.org.Domain) {
+		writeError(w, "provider_domain_mismatch", http.StatusBadRequest)
 		return
 	}
 
-	org, err := storage.GetOrgByID(h.ah.db, *user.OrgID)
-	if err != nil || org == nil {
-		writeError(w, "org not found", http.StatusForbidden)
-		return
-	}
-	if !domain.DomainMatchesOrg(d, org.Domain) {
-		writeError(w, "can only delete SSO for your own domain", http.StatusForbidden)
+	via, ok := h.authorizeWrite(w, r, caller)
+	if !ok {
 		return
 	}
 
-	if err := storage.DeleteSSOProvider(h.ah.db, d); err != nil {
+	found, err := h.store.deleteProvider(r.Context(), d, caller.user.ID, caller.org.ID, via)
+	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		// The grant (if one was used) is consumed: spec Decisions, D-5.
+		writeError(w, "sso provider not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

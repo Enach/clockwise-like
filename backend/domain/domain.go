@@ -39,15 +39,20 @@ func EmailBelongsToDomain(email, d string) bool {
 	return emailDomain != "" && emailDomain == d
 }
 
-// DeriveOrgName turns a domain base segment into a display name.
-// "gorgias.com" → "Gorgias", "acme-corp.io" → "Acme Corp"
-// DomainMatchesOrg returns true if d is equal to orgDomain or a subdomain of it.
+// DomainMatchesOrg reports whether d is exactly orgDomain, compared
+// case-insensitively after trimming spaces. Subdomains do NOT match (PAC-50
+// §4.7, ex-PAC-46): sign-in detection routes a domain to its provider row by
+// that exact domain, so allowing eu.acme.com for a member of acme.com would let
+// them configure login for a domain nobody showed they administer. An empty
+// domain never matches.
 func DomainMatchesOrg(d, orgDomain string) bool {
 	d = strings.ToLower(strings.TrimSpace(d))
 	orgDomain = strings.ToLower(strings.TrimSpace(orgDomain))
-	return d == orgDomain || strings.HasSuffix(d, "."+orgDomain)
+	return d != "" && d == orgDomain
 }
 
+// DeriveOrgName turns a domain base segment into a display name.
+// "gorgias.com" → "Gorgias", "acme-corp.io" → "Acme Corp"
 func DeriveOrgName(d string) string {
 	base := strings.SplitN(d, ".", 2)[0]
 	words := strings.Split(base, "-")

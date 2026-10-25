@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,23 +45,31 @@ func scanSSOProvider(s interface{ Scan(...any) error }) (*SSOProvider, error) {
 	return &p, err
 }
 
+// GetSSOProviderByDomain returns the enabled provider for domain, compared
+// lower-cased (PAC-50: rows are stored lower-cased and unique on lower(domain)).
 func GetSSOProviderByDomain(db *sql.DB, domain string) (*SSOProvider, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT `+ssoProviderCols+`
 		FROM sso_providers
-		WHERE domain = $1 AND enabled = true
-	`, domain)
+		WHERE lower(domain) = lower($1) AND enabled = true
+	`, strings.TrimSpace(domain))
 	return scanSSOProvider(row)
 }
 
+// UpsertSSOProvider writes p, keyed on the lower-cased domain, without
+// recording it. The admin API writes through UpsertSSOProviderRecorded.
 func UpsertSSOProvider(db *sql.DB, p *SSOProvider) (*SSOProvider, error) {
-	row := db.QueryRowContext(context.Background(), `
+	stored, _, err := upsertSSOProvider(context.Background(), db, p)
+	return stored, err
+}
+
+const upsertSSOProviderSQL = `
 		INSERT INTO sso_providers
 			(domain, provider_name, provider_type, enabled,
 			 oidc_issuer, oidc_client_id, oidc_client_secret,
 			 saml_entry_point, saml_issuer, saml_cert)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		ON CONFLICT (domain) DO UPDATE SET
+		VALUES (lower($1),$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT ((lower(domain))) DO UPDATE SET
 			provider_name      = EXCLUDED.provider_name,
 			provider_type      = EXCLUDED.provider_type,
 			enabled            = EXCLUDED.enabled,
@@ -71,12 +80,26 @@ func UpsertSSOProvider(db *sql.DB, p *SSOProvider) (*SSOProvider, error) {
 			saml_issuer        = EXCLUDED.saml_issuer,
 			saml_cert          = EXCLUDED.saml_cert,
 			updated_at         = NOW()
-		RETURNING `+ssoProviderCols,
-		p.Domain, p.ProviderName, p.ProviderType, p.Enabled,
+		RETURNING ` + ssoProviderCols + `, (xmax = 0) AS inserted`
+
+// upsertSSOProvider reports whether the row was inserted (true) or updated.
+func upsertSSOProvider(ctx context.Context, q queryRower, p *SSOProvider) (*SSOProvider, bool, error) {
+	var out SSOProvider
+	var inserted bool
+	err := q.QueryRowContext(ctx, upsertSSOProviderSQL,
+		strings.TrimSpace(p.Domain), p.ProviderName, p.ProviderType, p.Enabled,
 		p.OIDCIssuer, p.OIDCClientID, p.OIDCClientSecret,
 		p.SAMLEntryPoint, p.SAMLIssuer, p.SAMLCert,
+	).Scan(
+		&out.ID, &out.Domain, &out.ProviderName, &out.ProviderType, &out.Enabled,
+		&out.OIDCIssuer, &out.OIDCClientID, &out.OIDCClientSecret,
+		&out.SAMLEntryPoint, &out.SAMLIssuer, &out.SAMLCert,
+		&out.CreatedAt, &out.UpdatedAt, &inserted,
 	)
-	return scanSSOProvider(row)
+	if err != nil {
+		return nil, false, err
+	}
+	return &out, inserted, nil
 }
 
 func ListSSOProvidersByOrg(db *sql.DB, orgID uuid.UUID) ([]*SSOProvider, error) {
@@ -107,6 +130,6 @@ func ListSSOProvidersByOrg(db *sql.DB, orgID uuid.UUID) ([]*SSOProvider, error) 
 
 func DeleteSSOProvider(db *sql.DB, domain string) error {
 	_, err := db.ExecContext(context.Background(),
-		`DELETE FROM sso_providers WHERE domain = $1`, domain)
+		`DELETE FROM sso_providers WHERE lower(domain) = lower($1)`, strings.TrimSpace(domain))
 	return err
 }

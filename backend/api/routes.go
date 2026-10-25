@@ -28,7 +28,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 	// Public auth routes — no JWT required
 	ah := &authHandlers{oauthConfig: oauthConfig, db: db, jwtSecret: jwtSecret, frontendURL: frontendURL}
-	ssoh := &ssoHandlers{ah: ah}
+	ssoh := newSSOHandlers(ah, ssoOptionsFromEnv())
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Get("/google", ah.startOAuth)
 		r.Get("/callback", ah.callback)
@@ -169,11 +169,9 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Post("/{id}/leave", slh.leaveLink)
 		})
 
-		r.Route("/api/admin/sso", func(r chi.Router) {
-			r.Post("/", ssoh.createSSOProvider)
-			r.Get("/", ssoh.listSSOProviders)
-			r.Delete("/{domain}", ssoh.deleteSSOProvider)
-		})
+		// PAC-50: writes are gated (handlers_sso_stepup.go); the step-up start
+		// and callback live under the same prefix, behind the session.
+		r.Route("/api/admin/sso", ssoh.mountAdmin)
 
 		fbh := newFreeBusyHandlers(db, oauthConfig)
 		r.Post("/api/freebusy", fbh.query)
