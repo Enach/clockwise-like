@@ -275,3 +275,228 @@ on Windows with Git Bash. `make` is not installed on the host, so I ran the scri
 - **Web openapi-check and web-gate.** Web types are regenerated after this contract
   merges (factory §1), so the web half reports drift until then.
 - **e2e.**
+
+## Challenge — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewer: contract-challenger, run as a separate agent. It read the committed artefacts on
+`factory/new-pac21-error-leaks-remaining-contract` at 032e3ad, the PAC-21 issue and its
+comments, the handlers, and every consumer named below. It did not read the author's session.
+
+**Ruling on §0 (no spec).** This is a process finding, not a blocker. The PAC-21 issue
+contradicts itself:
+
+- its body says "Documented response shapes do not change, only their content" and
+  "Contract change required: no";
+- the same body asks for a 4xx instead of a 500, which is a status change;
+- the release-manager comment of 2026-10-26 brings the remaining text/plain 5xx into scope.
+
+This contract follows the later comment. D-1 to D-5 stay "assumed by the factory, pending
+owner confirmation". The owner should confirm them before the backend PR merges.
+
+**Ruling on §6 (x-uncertain on touched operations).**
+
+- **May be carried forward:** response-scoped markers on a response this change does not
+  edit. These are U-01 (`getAnalyticsWeek` 404), U-05 (`getMeetingBrief` 400) and U-09
+  (`getTeam` 404).
+- **May not be carried forward:** operation-scoped markers on an operation whose 4xx
+  behaviour changes. Factory §2 (Stage 2 gate item 3) and §7.1 are binding. See blocking
+  finding 4.
+- No gate script enforces this rule. I checked `api-gate.sh` and
+  `scripts/openapi_assemble.py`; they only count markers.
+
+### Requests wrongly permitted, behaviour wrongly forbidden (blocking)
+
+1. **`POST /api/personal-calendars/{id}/sync` depends on the calendar but is not in the set.**
+   - **Payload:** a signed-in user with no Google credential, who owns a personal calendar
+     whose feed reads successfully, calls the endpoint.
+   - **What the server does:** it answers `500 {"error":"internal error"}`.
+     `handlers_personal.go:191` calls `PersonalBlocker.Sync`, then `syncOne`, then `newCalOps`
+     (`engine/personal_blocker.go:92`). `newCalOps` returns `not authenticated` for a
+     missing token, and the handler maps any error to a 500.
+   - **Why this is wrong:** it matches §2.5's own definition ("reach `newCalOps` ... and
+     error on a missing token"). It also matches the ticket criterion "a calendar-dependent
+     operation gives the 4xx". Yet the contract declares only the middleware 401 and the 500
+     for `syncPersonalCalendar` (`calendar.yaml`).
+   - **Fix:**
+     - Give `syncPersonalCalendar` `"401": $ref CalendarNotConnected`.
+     - Add it to `operationsChanged4xx`, D-2 and AC-2. That makes 18 operations, not 17.
+     - Its 500 description should say that a failure reading the credential store stays a 500.
+   - If the author wants it excluded, §2.5 must say why it degrades on purpose. Today it does
+     not degrade: it returns an error, not a partial result.
+
+2. **The "closed list of fixed sentences" does not match the server's text.**
+   - **What the contract says:** the `addEventConference` and `createConferenceLink` 400s list
+     these two sentences with an ASCII hyphen:
+     - `"teams: not connected - visit /api/auth/microsoft to authenticate"`
+     - `"zoom: not connected - visit /api/auth/zoom to authenticate"`
+   - **What the server sends:** U+2014 EM DASH, at `backend/api/handlers_conferencing.go:42`
+     and `:141`, and at `backend/conference/factory.go:15`.
+   - **Why it matters:** AC-1 asserts "the body is exactly the documented fixed message". A
+     test copied from the contract fails against the unchanged server. Or an implementer edits
+     a literal that the contract never said to change.
+   - **Fix:**
+     - Write `—` (U+2014) in both 400 descriptions.
+     - In the new `zoom: stored credential is invalid ...` sentence, choose one character and
+       say the choice is deliberate.
+
+3. **The patchSettings catalogue misstates an existing literal.**
+   - **What the contract says:** `SettingsValidationError` lists `invalid JSON` under "Messages
+     that already exist", for "the body is not a JSON object or cannot be read".
+   - **What the server sends:** for a body that is not an object, the existing literal is
+     `invalid JSON: the body must be an object` (`backend/api/handlers_settings.go:81`). It
+     leaks nothing.
+   - **Payload:** `PATCH /api/settings` with `[]`. The server answers
+     `400 {"error":"invalid JSON: the body must be an object"}`; the contract promises
+     `{"error":"invalid JSON"}`.
+   - **Why it is wrong:** either the contract silently changes a fixed literal, or it
+     misdescribes the server. The first goes against the contract's own §2.6, which rejects
+     changing "message text that nothing asked to change".
+   - **Fix:**
+     - List `invalid JSON: the body must be an object` for a body that is not an object, or is
+       null.
+     - Keep `invalid JSON` only for a body that cannot be read.
+
+4. **Operation-scoped `x-uncertain` markers remain on operations whose 4xx changes.**
+   - **Which markers:**
+     - U-04 on `patchEvent`, whose 401 and 404 bodies change.
+     - U-07 on `suggestMeetingSlots`, which gains a new 401 (it was a 500).
+   - **Why they can be resolved now:** §7.2 asks the contract to "describe what is". Both
+     markers can be settled from the code, so neither needs the product decision the .md
+     defers.
+   - **Fix:**
+     - **U-04:** at the end of `patchEvent`, `handlers_events.go` encodes the
+       `*calendar.Event` that `UpdateEvent` returned (`json.NewEncoder(w).Encode(updated)`).
+       Resolve it as "the 200 body is GoogleCalendarEvent, determined from the handler,
+       pinned by a unit test named in acceptanceTests". Move the question of which side is
+       wrong to a follow-up issue in `followUps`.
+     - **U-07:** `engine/smart_schedule.go:113,121,135` step 30 minutes, and no 15-minute rule
+       exists anywhere. Resolve it as "no 15-minute constraint; slots start on 30-minute
+       steps, determined from the engine, pinned by a test". Record it as assumed by the
+       factory, pending owner confirmation.
+   - **Alternative I accept:** the owner explicitly waives §7.1 for these two markers in
+     Linear, and the manifest cites the waiver.
+
+### Responses the client cannot handle
+
+None of these blocks. I checked:
+
+- **`CalendarNotConnected` on an operation that now returns 401.** In `src/api/client.ts`,
+  `withFallback` rethrows every error that is not a network error, and `apiErrorMessage`
+  prefers `data.error`. The UI therefore shows `calendar not connected`, not "Your session
+  expired".
+- **Sign-out.** `AuthContext.tsx:58` signs the user out only on a 401 or 403 from
+  `GET /api/auth/me`, which does not change.
+- **Dashboard.** `Dashboard.tsx` decides "not connected" from `/api/auth/status`, not from the
+  401.
+- **`previewCompression` week mode, 200 `[]` becoming 401.** On web main,
+  `api.compressionPreview` has no UI caller; only `client.ts` and `contract.ts` reference it.
+  The MCP tool `clockwise_compress_schedule` sends only `date`, never `week`.
+
+Two further non-blocking points:
+
+- **UX regression.** On the 56 operations whose 5xx moves to JSON, `apiErrorMessage` will show
+  `internal error` or `db error` instead of "The server had a problem. Try again shortly.".
+  The manifest already says this. File the web follow-up before the backend PR merges,
+  instead of leaving it optional.
+- **Two media types under one status.** `CalendarNotConnected` declares both JSON and text
+  under 401. Check what `typed-openapi --runtime zod` emits for it at REGEN. If it keeps only
+  one, the web PR should say so.
+
+### Consumers affected
+
+These are confirmed exactly as the manifest lists them:
+
+- `e2e/tests/focus-time.spec.ts:61-71`
+- `e2e/tests/calendar.spec.ts:236-238`
+- `e2e/tests/seam.spec.ts:110-112`
+- `e2e/tests/calendar.spec.ts:37-41`, which still passes
+- `backend/api/handlers_settings_autoschedule_test.go:73`
+- `mcp/client.go:37,61,84`, which relays any status >= 400 as is; the bodies only get shorter
+
+Adding blocking finding 1 would affect `e2e/tests/seam.spec.ts:383-433` only if its SEAM user
+had no Google credential. That user has one (the test reaches the stand-in), so no break is
+expected there.
+
+### Contract and implementation divergences (non-blocking)
+
+1. **`applyCompression` still leaks provider error text in a 200.**
+   `CompressionApplyResult.failed[]` carries it: `engine/compression.go:170,178` append
+   `p.EventID+": "+err.Error()`, and the schema says the entries are "appended verbatim". This
+   change touches the operation, and PAC-21's problem is error text reaching clients. Add it
+   to `doesNotResolve` with an issue, or fix it in this change; do not leave it unmentioned.
+2. **A revoked credential stays a 500.** A stored Google credential that the provider rejects
+   (revoked, or `invalid_grant`) still gets `500 {"error":"internal error"}`;
+   `calendar.spec.ts:217-238` pins this. In practice the user is not connected, and gets no
+   hint to reconnect. Keeping it for this change is fine; add it to `followUps`.
+3. **The Teams path does not follow §2.3.** `ProviderForRequest`
+   (`handlers_conferencing.go:41`) maps a failure to read the Microsoft token store to the 400
+   `teams: not connected ...`. Either say so in the 400 description, or apply the §2.3 split
+   there too.
+4. **An existing literal is renamed.** `event has no time` (`handlers_conferencing.go:196,204`)
+   becomes `event has no usable time`. The description says this is intentional, but it is the
+   kind of rename §2.6 rejects. Keeping `event has no time` for both cases is the smaller
+   change.
+
+### Uncertainties not actually resolved
+
+- **U-03:** the resolution is sound. `mcp/tools.go:137` calls `GET /api/calendar/freebusy`.
+- **U-06 / API-024:** the resolution is sound.
+  - `handlers_nlp.go:49` checks only the upper bound, and `:54` then indexes the slice.
+  - So `{"selected_slot_index": -1, "parse_result": {"suggested_slots": [{...}]}}` panics
+    today.
+  - `minimum: 0` plus a 400 is what the handler already returns for every other bad index.
+  - AC-3b pins it.
+- **U-04, U-07:** see blocking finding 4.
+
+### Verified clean
+
+**Commands run in the worktree at 032e3ad:**
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py --check` | `OK: bundle is in sync (98 paths)`, rc=0 |
+| `python3 scripts/openapi_migration_report.py --check` | `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc=0 |
+| `bash scripts/openapi_gen_go.sh --check` | `OK: backend/api/gen matches the contract`, rc=0 |
+| `sha256sum contracts/openapi/openapi.yaml` | `d1f09a4f...dab8c1`, equal to the manifest's `contractHash` |
+
+**Not run by the challenger:**
+
+- `api-gate.sh`. The shared host checkout is on `impl/pac-66b-llm-base-url-backend`, another
+  stage's branch, and I did not switch it.
+- web-gate.
+- e2e.
+- `go build` and the Go tests.
+
+**Attacked and found clean:**
+
+- **5xx bodies.** A scripted scan of the bundle found 113 5xx responses. Every one is
+  `application/json` only, and none has a description matching
+  `/<err>|err\.Error|raw (Go )?err|verbatim|underlying error|driver error/`. No 4xx description
+  matches it either.
+- **The 401 set.** Exactly 17 operations reference `CalendarNotConnected`, matching the
+  manifest.
+- **What else changed.** I diffed every operation against `origin/main`. Only responses
+  changed, except `getCalendarFreeBusy`, `confirmNaturalLanguage` and `previewCompression`
+  (descriptions or markers), and the manifest declares all three. No request schema widens;
+  `NLPConfirmRequest` only narrows (`minimum: 0`).
+- **§2.3 can be implemented as written.** `auth.LoadUserToken` returns `(nil, nil)` on
+  `sql.ErrNoRows` and an error otherwise (`backend/auth/token_store.go:61-68`). "No token" and
+  "store failed" can therefore be told apart without guessing.
+- **§2.5's list of operations that degrade on purpose.** All of these correctly keep 200:
+  - `getAnalyticsWeek`: `engine/analytics.go:118` ignores `calErr`.
+  - `getTeamAvailability`: `engine/team_availability.go:82` skips that member.
+  - `listConferenceProviders`: `handlers_conferencing.go:168` ignores the error.
+  - Public booking: `handlers_booking.go:88`.
+- **Other `err.Error()` 4xx sites not in the manifest.** These pass validator sentences, as
+  §5 says:
+  - `handlers_habits.go:117,229`
+  - `handlers_manager.go:166,276,284,386`
+  - `handlers_teams.go:188,340,386`
+  - `handlers_settings.go:136`
+
+  The AC-1 source scan will have to allow-list these sites by name, not by pattern.
+- **Telling the two 401s apart.** The middleware's body is `{"error":"unauthorized"}` as
+  text/plain; this one is `{"error":"calendar not connected"}` as application/json. The enum
+  makes an implementation that leaks text fail any test that validates against the schema.
