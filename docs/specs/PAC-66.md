@@ -1,7 +1,7 @@
 # Spec — PAC-66: A user can point the server's cloud-identity LLM requests at a host of their choice
 
 - **Linear**: https://linear.app/paceday/issue/PAC-66
-- **Status**: draft
+- **Status**: challenged (round 1 answered in "Revision 1")
 - **Author**: spec-author
 - **Inherited scope**:
   - No `x-uncertain` marker sits on the provider-probe operation or on the
@@ -20,6 +20,20 @@
   - T8 (`docs/factory/api-audit.md:185`, provider error text echoed to the
     client) is a theme, not a finding on these operations. The probe's 502 still
     echoes the provider's response body (`backend/nlp/parser.go:144-145`). See §5.
+  - *(Revision 1)* The two other operations whose behaviour this spec changes:
+    - Natural-language parse (`POST /api/nlp/parse`). Its response **shape** does
+      not change (AC-13 reuses the documented 200 `intent: unknown` + `error`
+      shape, `contracts/openapi/paths/scheduling.yaml:332-337`). It carries open
+      finding **API-080** (`docs/factory/api-audit.md:314`, zero-time
+      `range_start`/`range_end`). If the contract stage edits this operation at
+      all (for example to correct its description, which says LLM failures never
+      give a 5xx while `backend/nlp/parser.go:197-200` gives a 500), factory §7.1
+      pulls API-080 into scope. No `x-uncertain` marker sits on it.
+    - Meeting-brief refresh (`POST /api/meetings/{event_id}/brief/refresh`). Its
+      response shape does not change (AC-14 reuses the documented 200
+      `status: "failed"`, `contracts/openapi/paths/habits.yaml:481-483`). No open
+      audit finding and no `x-uncertain` marker sits on it (the `habits.yaml:463`
+      marker is on `getMeetingBrief`).
 
 ## 0. Scope and split
 
@@ -157,8 +171,10 @@ deployment's identity can reach.
 - `TestLLMTest_BodyRulesAndNoKeyEcho` (`backend/api/pac24_scope_test.go:70-124`)
   proves the probe body cannot carry a destination and that no key is echoed. It
   uses the `openai` branch only.
-- No test covers the `azure_openai`, `vertex` or `bedrock` branches. No test
-  records where an outbound LLM request goes. No e2e test exercises the probe
+- No test covers the `azure_openai`, `vertex` or `bedrock` branches, and no test
+  records where an outbound request from those three branches goes. (The
+  user-key branches' requests do reach `httptest` servers in
+  `backend/nlp/parser_test.go:162-262`.) No e2e test exercises the probe
   (`e2e/tests/settings.spec.ts` covers the key only).
 
 ## 3. Desired behaviour
@@ -181,9 +197,24 @@ The deployment's cloud identity leaves the server only toward destinations the
   unapproved.
 - If an approved destination redirects, the deployment identity never follows
   the redirect to an unapproved destination.
-- A refusal at send time causes no outbound request at all. The user gets a
-  client error that says what was refused and why. It is neither a 502 that looks
-  like "the provider was unreachable" nor a 500.
+- A refusal at send time causes no outbound request at all, on every path.
+- How the refusal is reported depends on the path, so that no existing consumer
+  breaks (Decisions D-5):
+  - **The provider probe** answers with a client error that says what was refused
+    and why. It is neither a 502 that looks like "the provider was unreachable"
+    nor a 500.
+  - **Natural-language parse** answers the way it already answers when the LLM
+    cannot be used: a success response whose intent is "unknown" and whose error
+    text says the provider's destination is not approved on this deployment. It
+    never answers with a server error.
+  - **Meeting-brief refresh** answers the way it already answers when the LLM
+    cannot be used: a success response with a brief marked failed, whose text
+    says why. That failed brief is what is stored.
+- Clearing a destination (saving it empty) is always accepted, whatever the
+  operator has approved, so a user can always undo a bad value (D-3). An empty
+  value is not a free pass at send time: it stands for whatever default the
+  provider would use, and that default must itself be approved (see "Effective
+  host" in §4).
 - Users of the user-key providers (OpenAI, Anthropic, Ollama) see no change from
   this spec (see §0, PAC-66-B).
 
@@ -191,9 +222,42 @@ The deployment's cloud identity leaves the server only toward destinations the
 
 Throughout, "ambient provider" means each of Azure OpenAI, Vertex and Bedrock,
 and each criterion applies to each of them. "Approved" means named in the
-operator's deployment configuration. "Recording transport" means a test double
-for the outbound network that records every attempted request, including its
-destination host and headers, and lets no request reach the real network.
+operator's deployment configuration.
+
+*Shared Givens and definitions (Revision 1):*
+
+- **Sentinel credential.** Unless a criterion says otherwise, every `[unit]`
+  criterion has the Given "a deployment credential is obtainable". For Azure and
+  Vertex this is a token source that yields a known sentinel bearer token; for
+  Bedrock, sentinel signing keys. Without it, today's code fails at credential
+  acquisition and sends nothing (`llm_azure_openai.go:28-37`,
+  `llm_vertex.go:30-37`, `llm_bedrock.go:38-41`), which would make the
+  zero-request criteria pass against the vulnerable code. With it, each
+  "fails today" note below is true.
+- **Recording transport.** A test double for the outbound network that records
+  every attempted request **other than credential acquisition**, including its
+  destination host, scheme and headers, and lets no request reach the real
+  network. Credential acquisition (Entra ID, instance metadata, Google's token
+  endpoint, AWS STS or shared config) is served by the sentinel source and is
+  **not counted**: §5 keeps that traffic out of scope, and an implementation may
+  acquire the credential before or after it decides to refuse.
+- **Zero requests** means the recording transport records no request at all. It
+  also implies that the sentinel credential appears in no recorded request to an
+  unapproved host and in no response body.
+- **Effective host** of a destination value is the host (and scheme) of the
+  inference request that would actually be sent, after every default is applied:
+  - Azure: the host of the stored endpoint. An empty endpoint has **no** effective
+    host. At send time it is refused like an unapproved one (no request; the
+    provider is reported as not configured).
+  - Vertex: the host built from the location. An empty location means the
+    built-in default region (`us-central1` today, `llm_vertex.go:20-22`), so its
+    effective host is that region's host, which is sent to only if approved.
+  - Bedrock: the host the request would actually be sent to once the AWS
+    configuration is resolved (region, the stored profile, and any
+    operator-controlled endpoint override). An empty region means the
+    deployment's own configured region. At **write** time the Bedrock region is
+    checked only for validity as a region name (a single host label); the host
+    itself is enforced at send time (AC-1, AC-4).
 
 AC-1. Given the operator has approved exactly one Azure inference host, and a
 user's stored Azure endpoint names a different host, when that user probes their
@@ -208,11 +272,14 @@ the URL's authority), when that user probes, then zero requests are recorded and
 the response is a 4xx JSON error. [unit]
 *Fails today: §2.2 shows the request goes to `attacker.example`.*
 
-AC-3. Given any ambient provider and a stored destination that resolves to an
-unapproved host, when the natural-language parse runs for that user, and
-separately when that user regenerates a meeting brief, then zero requests are
-recorded for that provider on either path. [unit]
-*Fails today for Azure and Vertex on both paths.*
+AC-3. Given any ambient provider and a stored destination whose effective host
+is not approved, when the natural-language parse runs for that user, and
+separately when that user regenerates a meeting brief (the user has no workspace
+connections, so no other outbound traffic is expected), then zero requests are
+recorded on either path. The response on each path is as AC-13 and AC-14 state.
+[unit]
+*Fails today for Azure and Vertex on both paths: with the sentinel credential the
+request is sent.*
 
 AC-4. Given the operator has approved nothing for a given ambient provider, and a
 user has that provider selected with any endpoint, region or location, when the
@@ -220,12 +287,14 @@ user probes, then zero requests are recorded and the response is a 4xx JSON erro
 saying the provider is not enabled on this deployment. [unit]
 *Fails today: the request is sent.*
 
-AC-5. Given a user who submits a settings write that sets an ambient provider's
-destination property (Azure endpoint, Vertex location, Bedrock region) to a value
-whose effective host is not approved, when the write is processed, then the
+AC-5. Given a user who submits a settings write that sets the Azure endpoint or
+the Vertex location to a **non-empty** value whose effective host is not
+approved, or sets the Bedrock region to a non-empty value that is not a valid
+region name, when the write is processed, then the
 response is a 4xx with a JSON error naming that property, the stored settings are
 unchanged (a following read returns the previous values), and the recording
-transport records zero requests. [contract] [unit]
+transport records zero requests. The check applies whichever provider is
+currently selected. [contract] [unit]
 *Fails today: the write is accepted with 200 and stored.*
 
 AC-6. Given a user who submits a settings write that sets the same properties to
@@ -242,35 +311,85 @@ that value is refused as in AC-5. [unit]
 
 AC-8. Given an approved host that answers the inference request with a redirect
 to an unapproved host (including a subdomain of the approved host that is not
-itself approved), when a user probes, then no request carrying the deployment
-credential is recorded for the unapproved host, and the probe reports failure.
-[unit]
+itself approved), or to the same approved host over an insecure scheme, when a
+user probes, then no request carrying the deployment credential is recorded for
+the redirect target, and the probe reports failure. [unit]
 *Fails today: `http.DefaultClient` follows the redirect and re-sends
-`Authorization` to subdomains.*
+`Authorization` to subdomains and to the same host over `http://`.*
 
 AC-9. Given a settings row written **before** this change, holding an Azure
 endpoint or Vertex location that points to an unapproved host, when the owner of
-that row probes, parses, or regenerates a brief, then zero requests are recorded.
-When the same user later saves an unrelated setting (for example their working
-hours), that save succeeds. [unit]
+that row probes, parses, or regenerates a brief, then zero requests are recorded
+and each path responds as AC-1, AC-13 and AC-14 state. When the same user later
+saves an unrelated setting (for example their working hours), that save
+succeeds. [unit]
 *The second half preserves PAC-24 AC-17. The first half fails today.*
 
-AC-10. Given the full compose stack started with an approved Azure host that
-points to a local fake provider, and a signed-in user, when the user saves an
-unapproved Azure endpoint through the settings write, then the response is a 4xx
-JSON error. When the user then saves the approved endpoint and probes, the fake
-provider receives exactly one request. When the user probes with the stored row
-forced (by direct database write) to an unapproved host, the fake provider and a
-second fake listening on that host both receive nothing. [e2e]
+AC-10. Given the full compose stack started with one approved Azure host in the
+operator configuration (nothing needs to listen on it; the stack provides **no**
+cloud identity and no TLS fake), and a signed-in user with Azure selected, when
+the user saves an unapproved Azure endpoint through the settings write, then the
+response is a 4xx JSON error naming the endpoint and a following settings read
+shows the previous value. When the stored endpoint is then forced (by direct
+database write) to an unapproved host and the user probes, the response is a 4xx
+JSON error saying the endpoint is not approved. [e2e]
+*Fails today: the write is accepted with 200, and the probe answers 502 with the
+credential-acquisition error, because today's code tries to send.* That exactly
+one request reaches an approved host is proven at unit level by AC-6, where the
+sentinel credential and the recording transport stand in for a cloud identity
+and a trusted TLS fake. The compose stack cannot provide either without a real
+cloud account.
 
-AC-11. Given a refusal under AC-1 to AC-9, when the response body is read, then
+AC-11. Given a refusal under AC-1 to AC-9, AC-13 or AC-14, when the response
+body (and, for AC-14, the stored brief) is read, then
 it contains no token, no key, and no part of the deployment's credential, and its
-`error` member is a non-empty human-readable sentence. [unit]
+error text (the `error` member, or the brief text for AC-14) is a non-empty
+human-readable sentence. [unit]
 
 AC-12. Given the operator's approved-destination configuration is present but
 malformed (for example an entry that is not a host name), when the server starts,
-then it either refuses to start or logs the bad entry and treats it as not
-approved. It never treats a malformed entry as "approve everything". [unit]
+then it starts, logs the bad entry and treats it as not approved, and well-formed
+entries beside it stay approved. It never treats a malformed entry as "approve
+everything". [unit] *(Revision 1: one outcome chosen, D-6.)*
+
+AC-13. Given any ambient provider and a stored destination whose effective host
+is not approved (or nothing approved for that provider), when the user's
+natural-language parse runs, then zero requests are recorded and the response is
+HTTP 200 with a JSON body whose intent is "unknown" and whose error text is a
+non-empty sentence saying the provider's destination is not approved (or the
+provider is not enabled) on this deployment. It is never a 4xx or a 5xx, and
+never `text/plain`. [contract] [unit]
+*Fails today: with the sentinel credential the request is sent, and when sending
+fails the response is a 500 `text/plain` (`backend/nlp/parser.go:197-200`,
+`backend/api/handlers_nlp.go:28-31`).*
+
+AC-14. Given the same state as AC-13, when the user regenerates a meeting brief,
+then zero requests are recorded, the response is HTTP 200 with the brief's status
+"failed" and a brief text that is a non-empty sentence saying why, and a
+following read of that brief returns the same status and text. [contract] [unit]
+*Fails today: with the sentinel credential the request is sent.*
+
+AC-15. Given any approved set (including nothing approved), and a user whose
+stored Azure endpoint, Vertex location or Bedrock region holds a value that is
+not approved, when the user submits a settings write that sets that property to
+the empty string, then the write succeeds and a following read shows the empty
+value. [contract] [unit]
+*Guards D-3: a user can always clear their own bad value. Fails for any fix that
+treats "" as an unapproved host at write time.*
+
+AC-16. Given Vertex is approved only for a region other than the default region,
+and a user's stored Vertex location is empty, when the user probes, then zero
+requests are recorded and the response is a 4xx JSON error as in AC-1. Given
+instead that the default region's host is approved, the same probe sends exactly
+one request, to that host, over secure transport. [unit]
+*Pins the effective host of an empty location. The first half fails today.*
+
+AC-17. Given a user's row already holds an unapproved Azure endpoint while
+another provider is selected, when the user submits a settings write that
+changes only the provider to Azure, then the write succeeds (it changes no
+destination property; PAC-24 AC-17) and the next probe is refused as in AC-1.
+[unit] *(Revision 1, challenge non-blocking 1: this case is refused at send time
+only.)*
 
 ## 5. Explicitly out of scope
 
@@ -287,7 +406,12 @@ approved. It never treats a malformed entry as "approve everything". [unit]
   separate change to error handling.
 - **Token acquisition traffic** (Entra ID, the instance metadata service, Google's
   token endpoint, AWS STS). No user setting influences it (§2.2). The approved
-  set governs inference requests only.
+  set governs inference requests only, and the criteria do not count this
+  traffic (see "Recording transport" in §4).
+- **New response shapes for parse and brief refresh.** A send-time refusal reuses
+  each operation's existing "LLM unusable" shape (AC-13, AC-14), so the web
+  natural-language bar, the brief panel and the MCP tool `clockwise_parse_command`
+  need no change.
 - **Encrypting stored settings at rest** (`docs/security.md:87`).
 - **Any change to the web app.** The existing settings page already shows a
   server error string. Better guidance in the form is a follow-up once the
@@ -303,9 +427,16 @@ approved. It never treats a malformed entry as "approve everything". [unit]
   adds the ambient-provider case.
 - OpenAI, Anthropic and Ollama behave exactly as today, including a
   user-supplied OpenAI-compatible base URL and a local Ollama URL. The OpenAI
-  branch is protected by `TestLLMTest_BodyRulesAndNoKeyEcho`. **No test protects
-  the Ollama or Anthropic branches**, which is a finding. The plan should add one
-  for each so that this change is shown not to touch them.
+  branch is protected by `TestLLMTest_BodyRulesAndNoKeyEcho`. The Ollama and
+  Anthropic client branches are protected by `backend/nlp/parser_test.go`
+  (`TestBuildLLMClient_Ollama` :90, `TestBuildLLMClient_Anthropic` :118,
+  `TestAnthropicClient_Complete` :183, `TestOllamaClient_Complete_Mock` :244,
+  `TestNLPService_Parse_WithOllama` :282). *(Revision 1: the earlier claim that no
+  test protects them was wrong.)* No **probe-level** test covers the Ollama or
+  Anthropic branches. The plan should add one for each.
+- The parse and brief-refresh response shapes, which the web natural-language
+  bar, the brief panel and `mcp/tools.go:195-203` (`clockwise_parse_command`)
+  read. AC-13 and AC-14 pin them for the refusal case.
 - The key-handling e2e journey in `e2e/tests/settings.spec.ts:40-60` still passes.
 - A deployment whose operator approves its Azure, Vertex or Bedrock host keeps
   working with no change to any user's stored settings (AC-6).
@@ -375,7 +506,17 @@ PAC-24 decision that endpoints, regions and profiles "identify or bill the owner
   time, and the user can correct them. *Assumed by the factory, pending owner
   confirmation.*
 - **D-4 — Split.** Channel 2 (OpenAI, Anthropic, Ollama base URLs) moves to
-  PAC-66-B. *Assumed by the factory, pending owner confirmation.*
+  PAC-66-B. PAC-66 is not closed until PAC-66-B exists in Linear and is linked
+  from this spec. *Assumed by the factory, pending owner confirmation.*
+- **D-5 — Each path reports a refusal in its existing "LLM unusable" shape.** The
+  probe gives a 4xx JSON error; parse gives 200 with intent "unknown" and an
+  error sentence; brief refresh gives 200 with a failed brief. This option
+  changes no consumer (§5 promises no web change; the MCP tool relays parse
+  verbatim). *Assumed by the factory, pending owner confirmation.*
+- **D-6 — A malformed approved-destination entry is logged and ignored, not
+  fatal.** The server still starts, so the rest of the product stays available;
+  the entry approves nothing (fail closed, as D-1). *Assumed by the factory,
+  pending owner confirmation.*
 
 ## Challenge — 2026-10-26
 
@@ -541,3 +682,55 @@ leave undecided, not about the diagnosis.
 - The web settings save is diff-only (`smart-calendar-flow/src/api/client.ts:699-710`),
   so a stored unapproved value does not block unrelated saves; AC-9's second half
   holds for the web client.
+
+## Revision 1 — 2026-10-26
+
+Answers to the round-1 challenge. The spec sections above are changed in place;
+changes that are not obvious from the text are marked *(Revision 1)*.
+
+### Blocking
+
+1. **Refusal response on parse and brief refresh.** Accepted. §3 no longer
+   promises a client error on every path; it now gives the outcome per path. The
+   probe keeps the 4xx (AC-1, AC-2, AC-4, AC-7). New AC-13 pins parse: HTTP 200,
+   intent "unknown", a non-empty error sentence, never a 4xx, a 5xx or
+   `text/plain`. New AC-14 pins brief refresh: HTTP 200, status "failed", a
+   non-empty brief text, and the same failed brief stored. AC-3 and AC-9 now
+   point at them, and AC-11 covers them. This is the option that keeps every
+   consumer working (web natural-language bar, brief panel, MCP
+   `clockwise_parse_command`), recorded as D-5. Because both operations'
+   behaviour changes, Inherited scope now lists them: parse carries API-080
+   (pulled in if the contract stage edits that operation); brief refresh has no
+   open finding or marker. §5 and §6 state that the shapes do not change.
+2. **Clearing a destination.** Accepted. New AC-15: writing `""` to the Azure
+   endpoint, the Vertex location or the Bedrock region is accepted whatever the
+   approved set. AC-5 now applies only to non-empty values. §4 defines the
+   effective host of an empty value at send time: Azure has none and is refused;
+   Vertex means the default region's host, which must itself be approved (new
+   AC-16); Bedrock means the deployment's own configured region, enforced on the
+   resolved host at send time.
+3. **Falsifiability without a deployment identity.** Accepted. §4 now has shared
+   Givens. Every unit criterion runs with a sentinel credential (a sentinel
+   bearer token for Azure and Vertex, sentinel signing keys for Bedrock), so
+   today's code sends the request and every "fails today" note holds. The
+   recording transport records every request **except credential acquisition**,
+   which the sentinel source serves and which is not counted, matching §5. An
+   implementation may acquire the credential before refusing. AC-10 is narrowed
+   to what the compose stack can prove with no cloud identity and no TLS fake:
+   the write refusal, and a probe of a forced unapproved row answering 4xx
+   instead of today's 502. Both fail today. "Exactly one request reaches the
+   approved host" stays at unit level in AC-6 (and AC-16), and AC-10 says so.
+
+### Non-blocking, also taken
+
+- NB-1: new AC-17 (switching the provider onto a stored unapproved endpoint is
+  accepted at write and refused at send). AC-5 says the write check applies
+  whichever provider is selected.
+- NB-2: AC-8 now includes a redirect to the same approved host over an insecure
+  scheme.
+- NB-3: Bedrock's effective host is defined as the resolved send host. The write
+  check for Bedrock is region-name validity only (AC-5).
+- NB-4: D-4 now requires PAC-66-B to exist and be linked before PAC-66 closes.
+- NB-5: Inherited scope names both operations and their status.
+- NB-6: AC-12 now has one outcome (start, log, ignore the entry), recorded as D-6.
+- Citations found wrong: §2.6 and §6 corrected.
