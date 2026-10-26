@@ -648,6 +648,23 @@ PRODUCT.md and earlier owner decisions.*
   provider included, §2.4), so the server and the app classify every user the
   same way. Assumed by the factory, pending owner confirmation.
 
+*Added at the contract stage (2026-10-26, contract-author). Each is recorded in
+`contracts/features/PAC-35.md` with the alternatives rejected.*
+
+- **D-9 — A disconnect whose calendar provider cannot be read deletes
+  nothing.** Answers challenge round 4, non-blocking 1. When the caller's
+  settings row cannot be read, disconnect answers a failure (500) and deletes
+  nothing, rather than following the calendar status's fallback of reporting
+  "google" on a read failure. Following that fallback could delete the Google
+  credential of a user who is in fact Outlook or webcal, which D-8 exists to
+  prevent. Assumed by the factory, pending owner confirmation.
+- **D-10 — An SSO login hint at another domain is not forwarded.** Answers
+  challenge round 1, non-blocking 6. The SSO start forwards a hint only when the
+  hint's domain is exactly the start route's domain (the same test as the PAC-45
+  callback check). Otherwise the hint is dropped and sign-in starts without it.
+  This sends an organisation's identity provider no address outside that
+  organisation's domain. Assumed by the factory, pending owner confirmation.
+
 ## Challenge — 2026-10-26
 
 Reviewed: commit `54c5458` on `factory/pac-35-spec`, against clockwise-like
