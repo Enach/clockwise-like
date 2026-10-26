@@ -34,7 +34,7 @@ wants a spec first, the decisions in §3 are the content it would need.
 
 | Area | Before | After |
 |---|---|---|
-| 401 for "no calendar" (17 operations, list in the manifest) | Varied. Text/plain `not connected: <err>`, JSON `not authenticated` or JSON client-construction error text. **Nine operations declared no 401 and answered 500.** | One shared response, `CalendarNotConnected`. Body is `application/json` `{"error":"calendar not connected"}`, and the schema pins that single value with an enum. The requireAuth 401 keeps its text/plain body under the same status. |
+| 401 for "no calendar" (18 operations since revision 2, list in the manifest) | Varied. Text/plain `not connected: <err>`, JSON `not authenticated` or JSON client-construction error text. **Ten operations answered 500 (nine in revision 1, plus `syncPersonalCalendar`).** | One shared response, `CalendarNotConnected`. Body is `application/json` `{"error":"calendar not connected"}`, and the schema pins that single value with an enum. The requireAuth 401 keeps its text/plain body under the same status. |
 | `event not found: <err>` (3 ops, 404) | Google's error text appended | `{"error":"event not found"}` |
 | `invalid JSON: <err>` (queryFreeBusy, patchSettings) | Go decoder text, which names Go types | `invalid JSON`. For a type mismatch on patchSettings: `invalid JSON: <property> has the wrong type`, where `<property>` is the JSON path from the request |
 | Other err-derived 4xx | `zoom: invalid token: <json err>`, time.Parse text, `autoScheduleCron is invalid: <cron err>` | Fixed sentences, listed per operation |
@@ -159,7 +159,8 @@ and earlier decisions. None deletes user data or widens who can see data.
 
 - **D-1**: The no-calendar response is a 401 with `{"error":"calendar not connected"}`
   (§2.1, §2.2).
-- **D-2**: The calendar-dependent set is the 17 operations in the manifest, including
+- **D-2**: The calendar-dependent set is the 18 operations in the manifest (revision 2
+  added `syncPersonalCalendar`), including
   previewCompression week mode (§2.4, §2.5).
 - **D-3**: Existing fixed 5xx literals are kept (§2.6).
 - **D-4**: U-03 is resolved as **keep `GET /api/calendar/freebusy` unchanged**. It is
@@ -208,6 +209,8 @@ read literally the rule pulls every open marker into this change.
 
 - U-03 (`getCalendarFreeBusy`)
 - U-06 (`confirmNaturalLanguage`)
+- U-04 (`patchEvent`) and U-07 (`suggestMeetingSlots`), added in revision 2 after the
+  challenger's ruling; see the Revision section.
 
 **Carried forward, not resolved.** In every case the only edit is the 5xx envelope rule
 or the 401/404 bodies:
@@ -217,10 +220,8 @@ or the 401/404 bodies:
 | U-01 | `getAnalyticsWeek` 404 | Needs a stub test or deleting the branch. Unrelated to error bodies. |
 | U-05 | `getMeetingBrief` 400 | Needs a router test. Unrelated to error bodies. |
 | U-09 | `getTeam` 404 | Reachable by a race between `requireMember` and `GetTeam`, so deleting the branch is not obviously right. Unrelated to error bodies. |
-| U-04 | `patchEvent` 200 body | A product decision: which side is wrong. |
-| U-07 | `suggestMeetingSlots` 15-minute rule | A question for the brief's author. |
 
-The bundle had 18 markers and now has 16. If the challenger reads §7 as covering
+The bundle had 18 markers; revision 1 left 16 and revision 2 leaves 14. If the challenger reads §7 as covering
 envelope-only edits, the alternative is to split criterion 3 by domain so each slice
 can carry its own resolutions. That costs six contract revisions for one invariant.
 
@@ -239,11 +240,12 @@ These map to the acceptance criteria in the manifest:
 
 - **AC-1**: Inject a marker string into every former 4xx leak site and assert it never
   reaches the body. Widen the #217 source scan from 5xx to every status.
-- **AC-2**: Run the 17 operations as a no-calendar user and get 401 with the exact body.
+- **AC-2**: Run the 18 operations as a no-calendar user and get 401 with the exact body.
   The same operations with a token-store failure give a 500.
 - **AC-3**: A test over the bundle fails on any non-JSON 5xx or on raw-error prose.
   Remove `writeServerErrorText` and every 5xx `http.Error` from `backend/api`.
 - **AC-3b**: `selected_slot_index: -1` gives a 400.
+- **AC-6** (revision 2): two unit tests pin the U-04 and U-07 resolutions.
 
 ## 9. What was run (factory §3: nothing claimed that was not run)
 
@@ -500,3 +502,77 @@ expected there.
 - **Telling the two 401s apart.** The middleware's body is `{"error":"unauthorized"}` as
   text/plain; this one is `{"error":"calendar not connected"}` as application/json. The enum
   makes an implementation that leaks text fail any test that validates against the schema.
+
+## Revision 2 — 2026-10-26
+
+Author: contract-author, answering the round-1 challenge above. Bundle hash after this
+revision: `aae17626d4dfb49c0ac1c2d5c7d3b41448f2544c9771bbba3dcd876767127311`
+(`contractRevision` 2 in the manifest).
+
+### Blocking findings
+
+1. **`syncPersonalCalendar` added to the calendar-dependent set. Accepted.**
+   - Re-read the path: `handlers_personal.go:191` calls `PersonalBlocker.Sync`, which reads
+     the feed and then calls `newCalOps` (`engine/personal_blocker.go:92`), and any error is
+     `writeServerError` 500. It errors, it does not degrade, so it fits §2.5.
+   - `calendar.yaml`: its `401` is now `$ref CalendarNotConnected` (which still carries the
+     middleware text/plain body). The operation description says why it is
+     calendar-dependent. The 500 description now says a feed-read failure or a
+     credential-store read failure stays the 500, body `{"error":"internal error"}`.
+   - Manifest: new `operationsChanged4xx` entry; AC-2 says 18 operations and names the
+     sync case (a personal calendar whose feed reads successfully). D-2 and §1, §8 say 18.
+   - The bundle scan now finds exactly 18 operations that reference `CalendarNotConnected`.
+
+2. **U+2014 in the provider sentences. Accepted.**
+   - Both 400 descriptions (`createConferenceLink`, `addEventConference`) now write
+     `teams: not connected — visit ...` and `zoom: not connected — visit ...` with U+2014,
+     as `handlers_conferencing.go:42,141` and `conference/factory.go:15` send it. Checked
+     byte-for-byte (`e2 80 94`).
+   - The new sentence `zoom: stored credential is invalid — reconnect at /api/auth/zoom` uses
+     U+2014 too, deliberately, so the three provider sentences read alike. Both descriptions
+     say so.
+
+3. **patchSettings catalogue. Accepted.**
+   - `SettingsValidationError` now lists the existing literal
+     `invalid JSON: the body must be an object` for a body that is not an object or is
+     `null` (`handlers_settings.go:81`), unchanged.
+   - `invalid JSON` is kept only for a body that cannot be read (`handlers_settings.go:77`,
+     which today appends the read error: that is the leak this change removes).
+   - The `patchSettings` manifest entry says the same.
+
+4. **U-04 and U-07 resolved, each pinned by a named test. Accepted.**
+   - **U-04 (`patchEvent`)**: determined from the handler. `handlers_events.go:81-87`
+     encodes the `*calendar.Event` that `UpdateEvent` returned. The operation-scoped
+     `x-uncertain` is removed; the description states the 200 body is the raw Google event
+     (`GoogleCalendarEventRaw`, already the declared schema). AC-6 names
+     `TestPatchEvent_SuccessBodyIsRawGoogleEvent`. Whether it *should* return
+     `CalendarEvent` is API-017 and moves to `followUps.patchEventBodyShape`.
+   - **U-07 (`suggestMeetingSlots`)**: determined from the engine. Every step in
+     `engine/smart_schedule.go` (113, 121, 135) is 30 minutes from the start of a free
+     interval; no 15-minute rule exists on the route. The marker is removed; the
+     description records the rule and that it is assumed by the factory, pending owner
+     confirmation that no 15-minute rule was intended. AC-6 names
+     `TestSmartScheduler_Suggest_StepsThirtyMinutes`.
+   - Both tests are written by the backend implementer before the code (factory §2
+     stage 4); they do not exist yet and this revision does not claim they do.
+   - Markers in the bundle: 16 → 14.
+
+### Non-blocking findings
+
+1. **`applyCompression` `failed[]` provider text.** Not fixed here: it is a 200 payload
+   field, and changing it changes a result shape the web app renders. Listed in
+   `doesNotResolve` and `followUps.compressionFailedText`.
+2. **Revoked Google credential stays a 500.** Listed in `doesNotResolve` and
+   `followUps.revokedCredential`.
+3. **Teams token-store failure maps to the 400.** The contract now says so on both 400
+   descriptions (describe what is). Listed in `doesNotResolve` and
+   `followUps.teamsTokenStore`.
+4. **`event has no usable time` rename.** Accepted: the `addEventConference` 400 now keeps
+   the existing literal `event has no time` for both cases, so no literal is renamed.
+5. **UX regression on 5xx text.** `followUps.webGeneric5xxMessage` now says the web issue
+   is filed before the backend PR merges.
+6. **Two media types under one 401.** Left to the web REGEN step, as the challenger asked;
+   the web PR must say what `typed-openapi` emitted.
+
+### What was run for revision 2
+

@@ -226,11 +226,14 @@ paths:
         TIMED EVENT. Supplying `attendees` REPLACES the whole attendee list with
         email-only entries, discarding display names and RSVP status, and also
         discards any room resource attendee that the previous list contained.
-      x-uncertain: >-
-        The 200 body is the raw google.golang.org/api/calendar/v3.Event returned by
-        the Google API, NOT the flattened CalendarEvent DTO used by GET
-        /api/calendar/events. The frontend types this call as CalendarEvent. A human
-        must decide which side is wrong. No handler test covers the success body.
+        The 200 body is the raw google.golang.org/api/calendar/v3.Event that
+        UpdateEvent returned, re-encoded as-is (`json.NewEncoder(w).Encode(updated)`
+        in handlers_events.go), NOT the flattened CalendarEvent DTO used by GET
+        /api/calendar/events. U-04 resolved by PAC-21 from the handler, to be pinned
+        by TestPatchEvent_SuccessBodyIsRawGoogleEvent (AC-6, written in the backend
+        PR before the code). Whether the endpoint should
+        return CalendarEvent instead (the web app types it that way) is a separate
+        product question (API-017), not part of this contract.
       requestBody:
         required: true
         content:
@@ -612,7 +615,10 @@ paths:
       summary: Run a personal-calendar sync now
       description: >-
         Runs engine.PersonalBlocker.Sync, stamps `last_synced_at = NOW()`, then
-        re-reads and returns the calendar. Takes no request body.
+        re-reads and returns the calendar. Takes no request body. The sync writes
+        busy blocks into the user's work calendar, so it is calendar-dependent: a
+        user with no stored Google credential gets the 401 CalendarNotConnected
+        (PAC-21; before, a 500).
       responses:
         "200":
           description: The calendar after syncing; `last_synced_at` is always populated.
@@ -627,11 +633,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
-          description: MiddlewareUnauthorized.
-          content:
-            text/plain:
-              schema:
-                $ref: "#/components/schemas/MiddlewareUnauthorized"
+          $ref: "#/components/responses/CalendarNotConnected"
         "404":
           description: "`personal calendar not found` (before or after the sync)."
           content:
@@ -640,8 +642,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: >-
-            The blocker's Sync returned an error, or the last_synced_at update failed.
-            Verified by TestPersonalCalendarSyncPropagatesBlockerError.
+            The blocker's Sync returned an error other than "no stored Google
+            credential" (for example the personal feed could not be read, or
+            reading the credential store failed), or the last_synced_at update
+            failed. Body `{"error":"internal error"}`. Verified by
+            TestPersonalCalendarSyncPropagatesBlockerError.
           content:
             application/json:
               schema:

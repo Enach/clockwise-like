@@ -267,13 +267,15 @@ paths:
         The engine walks candidate starts in 30-minute steps
         (engine/smart_schedule.go: `t = t.Add(30 * time.Minute)`) and returns at
         most 3 slots, each at least 1h apart (pickTopUnique(candidates, 3, time.Hour)).
-      x-uncertain: >
-        The task brief mentions a 15-minute increment rule. No 15-minute
-        constraint exists anywhere on this route: the smart scheduler steps 30
-        minutes, and the only 15-minute stepping in the repo is in
-        engine/booking.go, engine/habits.go and engine/team_availability.go,
-        which back other domains (booking links, habits, team availability).
-        A human should confirm whether a 15-minute rule was intended here.
+        There is no 15-minute increment rule on this route: every step in
+        engine/smart_schedule.go (lines 113, 121 and 135) is 30 minutes, so
+        every suggested start is the start of a free interval (`range_start` or
+        the end of a busy interval) plus a multiple of 30 minutes. The 15-minute stepping in
+        engine/booking.go, engine/habits.go and engine/team_availability.go
+        backs other domains. U-07 resolved by PAC-21 from the engine, to be
+        pinned by TestSmartScheduler_Suggest_StepsThirtyMinutes (AC-6, written
+        in the backend PR before the code); assumed by the
+        factory, pending owner confirmation that no 15-minute rule was intended.
       requestBody:
         required: true
         content:
@@ -960,8 +962,10 @@ components:
         of SettingsUpdate is nullable (spec AC-8).
 
         Messages that already exist:
-        `invalid JSON` (the body is not a JSON object or cannot be read; fixed
-        text, PAC-21);
+        `invalid JSON` (the body cannot be read; fixed text, PAC-21: before, the
+        read error was appended);
+        `invalid JSON: the body must be an object` (the body is not a JSON
+        object, or is `null`; an existing fixed literal, unchanged);
         `invalid JSON: <property> has the wrong type` (a value of the wrong JSON
         type; `<property>` is the dotted path of JSON property names from the
         request, e.g. `timeFormat` or `workingHours.days.monday.start`, never a

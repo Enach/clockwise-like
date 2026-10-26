@@ -861,12 +861,18 @@ paths:
                 $ref: '#/components/schemas/ConferenceMeetingDetails'
         '400':
           description: >-
-            One of these fixed messages (PAC-21: no Go error text is appended):
-            "invalid body"; "teams: not connected - visit /api/auth/microsoft to
-            authenticate"; "zoom: not connected - visit /api/auth/zoom to
-            authenticate"; "zoom: stored credential is invalid - reconnect at
-            /api/auth/zoom" (the stored Zoom token does not decode; before PAC-21 was
-            finished this was "zoom: invalid token: " plus the JSON decoder's error).
+            One of these fixed messages (PAC-21: no Go error text is appended). The
+            dash in the three provider sentences is U+2014 EM DASH, exactly as the
+            server writes it today; the new stored-credential sentence uses the same
+            character on purpose, so the three read alike:
+            "invalid body"; "teams: not connected — visit /api/auth/microsoft to
+            authenticate" (also returned when reading the stored Microsoft token
+            fails, not only when there is none: the server does not separate the two
+            on this path; see the PAC-21 contract's doesNotResolve); "zoom: not
+            connected — visit /api/auth/zoom to authenticate"; "zoom: stored
+            credential is invalid — reconnect at /api/auth/zoom" (the stored Zoom
+            token does not decode; before PAC-21 was finished this was
+            "zoom: invalid token: " plus the JSON decoder's error).
           content:
             application/json:
               schema:
@@ -978,13 +984,17 @@ paths:
         '400':
           description: >-
             One of these fixed messages (PAC-21: no Go error text is appended):
+            The dash in the three provider sentences is U+2014 EM DASH, exactly as
+            the server writes it.
             "invalid body"; "provider is required"; "url is required for custom
-            conferences"; "event has no usable time" (the event has no start or end, or
-            Google's value does not parse; before PAC-21 was finished a parse failure
-            returned Go's time.Parse error text); 'unsupported conference provider
-            "<provider>"' (echoes the request's own `provider`); "teams: not connected -
-            visit /api/auth/microsoft to authenticate"; "zoom: not connected - visit
-            /api/auth/zoom to authenticate"; "zoom: stored credential is invalid -
+            conferences"; "event has no time" (the existing literal, kept: the event
+            has no start or end, or, new in PAC-21, Google's value does not parse;
+            before PAC-21 was finished a parse failure returned Go's time.Parse error
+            text); 'unsupported conference provider "<provider>"' (echoes the
+            request's own `provider`); "teams: not connected — visit
+            /api/auth/microsoft to authenticate" (also returned when reading the
+            stored Microsoft token fails); "zoom: not connected — visit
+            /api/auth/zoom to authenticate"; "zoom: stored credential is invalid —
             reconnect at /api/auth/zoom".
           content:
             application/json:

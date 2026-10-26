@@ -1550,11 +1550,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConferenceMeetingDetails'
         '400':
-          description: 'One of these fixed messages (PAC-21: no Go error text is appended): "invalid body";
-            "teams: not connected - visit /api/auth/microsoft to authenticate"; "zoom: not connected -
-            visit /api/auth/zoom to authenticate"; "zoom: stored credential is invalid - reconnect at
-            /api/auth/zoom" (the stored Zoom token does not decode; before PAC-21 was finished this was
-            "zoom: invalid token: " plus the JSON decoder''s error).'
+          description: 'One of these fixed messages (PAC-21: no Go error text is appended). The dash in
+            the three provider sentences is U+2014 EM DASH, exactly as the server writes it today; the
+            new stored-credential sentence uses the same character on purpose, so the three read alike:
+            "invalid body"; "teams: not connected — visit /api/auth/microsoft to authenticate" (also returned
+            when reading the stored Microsoft token fails, not only when there is none: the server does
+            not separate the two on this path; see the PAC-21 contract''s doesNotResolve); "zoom: not
+            connected — visit /api/auth/zoom to authenticate"; "zoom: stored credential is invalid — reconnect
+            at /api/auth/zoom" (the stored Zoom token does not decode; before PAC-21 was finished this
+            was "zoom: invalid token: " plus the JSON decoder''s error).'
           content:
             application/json:
               schema:
@@ -1638,11 +1642,12 @@ paths:
         as time.Time and re-emitted as UTC RFC3339 `dateTime` — patching either one CONVERTS AN ALL-DAY
         EVENT INTO A TIMED EVENT. Supplying `attendees` REPLACES the whole attendee list with email-only
         entries, discarding display names and RSVP status, and also discards any room resource attendee
-        that the previous list contained.
-      x-uncertain: The 200 body is the raw google.golang.org/api/calendar/v3.Event returned by the Google
-        API, NOT the flattened CalendarEvent DTO used by GET /api/calendar/events. The frontend types
-        this call as CalendarEvent. A human must decide which side is wrong. No handler test covers the
-        success body.
+        that the previous list contained. The 200 body is the raw google.golang.org/api/calendar/v3.Event
+        that UpdateEvent returned, re-encoded as-is (`json.NewEncoder(w).Encode(updated)` in handlers_events.go),
+        NOT the flattened CalendarEvent DTO used by GET /api/calendar/events. U-04 resolved by PAC-21
+        from the handler, to be pinned by TestPatchEvent_SuccessBodyIsRawGoogleEvent (AC-6, written in
+        the backend PR before the code). Whether the endpoint should return CalendarEvent instead (the
+        web app types it that way) is a separate product question (API-017), not part of this contract.
       requestBody:
         required: true
         content:
@@ -1735,13 +1740,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/EventConferenceLink'
         '400':
-          description: 'One of these fixed messages (PAC-21: no Go error text is appended): "invalid body";
-            "provider is required"; "url is required for custom conferences"; "event has no usable time"
-            (the event has no start or end, or Google''s value does not parse; before PAC-21 was finished
-            a parse failure returned Go''s time.Parse error text); ''unsupported conference provider "<provider>"''
-            (echoes the request''s own `provider`); "teams: not connected - visit /api/auth/microsoft
-            to authenticate"; "zoom: not connected - visit /api/auth/zoom to authenticate"; "zoom: stored
-            credential is invalid - reconnect at /api/auth/zoom".'
+          description: 'One of these fixed messages (PAC-21: no Go error text is appended): The dash in
+            the three provider sentences is U+2014 EM DASH, exactly as the server writes it. "invalid
+            body"; "provider is required"; "url is required for custom conferences"; "event has no time"
+            (the existing literal, kept: the event has no start or end, or, new in PAC-21, Google''s value
+            does not parse; before PAC-21 was finished a parse failure returned Go''s time.Parse error
+            text); ''unsupported conference provider "<provider>"'' (echoes the request''s own `provider`);
+            "teams: not connected — visit /api/auth/microsoft to authenticate" (also returned when reading
+            the stored Microsoft token fails); "zoom: not connected — visit /api/auth/zoom to authenticate";
+            "zoom: stored credential is invalid — reconnect at /api/auth/zoom".'
           content:
             application/json:
               schema:
@@ -3682,8 +3689,10 @@ paths:
       tags:
       - calendar
       summary: Run a personal-calendar sync now
-      description: Runs engine.PersonalBlocker.Sync, stamps `last_synced_at = NOW()`, then re-reads and
-        returns the calendar. Takes no request body.
+      description: 'Runs engine.PersonalBlocker.Sync, stamps `last_synced_at = NOW()`, then re-reads and
+        returns the calendar. Takes no request body. The sync writes busy blocks into the user''s work
+        calendar, so it is calendar-dependent: a user with no stored Google credential gets the 401 CalendarNotConnected
+        (PAC-21; before, a 500).'
       responses:
         '200':
           description: The calendar after syncing; `last_synced_at` is always populated.
@@ -3698,11 +3707,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: MiddlewareUnauthorized.
-          content:
-            text/plain:
-              schema:
-                $ref: '#/components/schemas/MiddlewareUnauthorized'
+          $ref: '#/components/responses/CalendarNotConnected'
         '404':
           description: '`personal calendar not found` (before or after the sync).'
           content:
@@ -3710,8 +3715,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: The blocker's Sync returned an error, or the last_synced_at update failed. Verified
-            by TestPersonalCalendarSyncPropagatesBlockerError.
+          description: The blocker's Sync returned an error other than "no stored Google credential" (for
+            example the personal feed could not be read, or reading the credential store failed), or the
+            last_synced_at update failed. Body `{"error":"internal error"}`. Verified by TestPersonalCalendarSyncPropagatesBlockerError.
           content:
             application/json:
               schema:
@@ -3904,14 +3910,13 @@ paths:
         as the handler is concerned (no validation) - `duration_minutes: 0` produces zero-length candidate
         slots rather than an error. The engine walks candidate starts in 30-minute steps (engine/smart_schedule.go:
         `t = t.Add(30 * time.Minute)`) and returns at most 3 slots, each at least 1h apart (pickTopUnique(candidates,
-        3, time.Hour)).
-
-        '
-      x-uncertain: 'The task brief mentions a 15-minute increment rule. No 15-minute constraint exists
-        anywhere on this route: the smart scheduler steps 30 minutes, and the only 15-minute stepping
-        in the repo is in engine/booking.go, engine/habits.go and engine/team_availability.go, which back
-        other domains (booking links, habits, team availability). A human should confirm whether a 15-minute
-        rule was intended here.
+        3, time.Hour)). There is no 15-minute increment rule on this route: every step in engine/smart_schedule.go
+        (lines 113, 121 and 135) is 30 minutes, so every suggested start is the start of a free interval
+        (`range_start` or the end of a busy interval) plus a multiple of 30 minutes. The 15-minute stepping
+        in engine/booking.go, engine/habits.go and engine/team_availability.go backs other domains. U-07
+        resolved by PAC-21 from the engine, to be pinned by TestSmartScheduler_Suggest_StepsThirtyMinutes
+        (AC-6, written in the backend PR before the code); assumed by the factory, pending owner confirmation
+        that no 15-minute rule was intended.
 
         '
       requestBody:
@@ -10122,21 +10127,22 @@ components:
       description: 'Malformed JSON, or a value the server refuses. JSON error shape (writeError). A body
         property set to `null` is refused here: no property of SettingsUpdate is nullable (spec AC-8).
 
-        Messages that already exist: `invalid JSON` (the body is not a JSON object or cannot be read;
-        fixed text, PAC-21); `invalid JSON: <property> has the wrong type` (a value of the wrong JSON
-        type; `<property>` is the dotted path of JSON property names from the request, e.g. `timeFormat`
-        or `workingHours.days.monday.start`, never a Go type or struct name; before PAC-21 was finished
-        this was the decoder''s own error text, which named Go types); `<field> must be in HH:MM format`
-        (workStart/workEnd/lunchStart/lunchEnd); `focusMinBlockMinutes must be positive`; `focusMaxBlockMinutes
-        must be positive`; `focusDailyTargetMinutes must be positive`; `outOfHoursMeetingsPerWeek must
-        be zero or positive`; `bufferBeforeMinutes must be positive`; `bufferAfterMinutes must be positive`;
-        `autoScheduleCron must be a 5-part cron expression`; `autoScheduleCron is invalid` (fixed text;
-        before PAC-21 was finished the cron parser''s error was appended); `llmProvider must be one of:
-        openai, anthropic, ollama, bedrock, azure_openai, vertex`; `workingHours.mode must be all_days
-        or by_day`; `workingHours.mode is required when day-specific hours are provided`; `workingHours.days.<day>
-        is not a valid weekday`; `lunchBreaks.<day> is not a valid weekday`; `<field> requires start and
-        end when enabled`; `<field> start and end must be in HH:MM format`; `<field> end must be after
-        start`.
+        Messages that already exist: `invalid JSON` (the body cannot be read; fixed text, PAC-21: before,
+        the read error was appended); `invalid JSON: the body must be an object` (the body is not a JSON
+        object, or is `null`; an existing fixed literal, unchanged); `invalid JSON: <property> has the
+        wrong type` (a value of the wrong JSON type; `<property>` is the dotted path of JSON property
+        names from the request, e.g. `timeFormat` or `workingHours.days.monday.start`, never a Go type
+        or struct name; before PAC-21 was finished this was the decoder''s own error text, which named
+        Go types); `<field> must be in HH:MM format` (workStart/workEnd/lunchStart/lunchEnd); `focusMinBlockMinutes
+        must be positive`; `focusMaxBlockMinutes must be positive`; `focusDailyTargetMinutes must be positive`;
+        `outOfHoursMeetingsPerWeek must be zero or positive`; `bufferBeforeMinutes must be positive`;
+        `bufferAfterMinutes must be positive`; `autoScheduleCron must be a 5-part cron expression`; `autoScheduleCron
+        is invalid` (fixed text; before PAC-21 was finished the cron parser''s error was appended); `llmProvider
+        must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex`; `workingHours.mode
+        must be all_days or by_day`; `workingHours.mode is required when day-specific hours are provided`;
+        `workingHours.days.<day> is not a valid weekday`; `lunchBreaks.<day> is not a valid weekday`;
+        `<field> requires start and end when enabled`; `<field> start and end must be in HH:MM format`;
+        `<field> end must be after start`.
 
         Messages PAC-24 adds, closing API-081 and API-082 - each of these is a value the server accepted
         before and then failed on, silently or as a 500 (spec AC-17): `workEnd must be after workStart`;

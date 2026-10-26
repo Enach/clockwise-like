@@ -14028,6 +14028,15 @@ func (response SyncPersonalCalendar400JSONResponse) VisitSyncPersonalCalendarRes
 	return json.NewEncoder(w).Encode(response)
 }
 
+type SyncPersonalCalendar401JSONResponse CalendarNotConnectedError
+
+func (response SyncPersonalCalendar401JSONResponse) VisitSyncPersonalCalendarResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type SyncPersonalCalendar401TextResponse MiddlewareUnauthorized
 
 func (response SyncPersonalCalendar401TextResponse) VisitSyncPersonalCalendarResponse(w http.ResponseWriter) error {
