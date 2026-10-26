@@ -246,3 +246,89 @@ avoid. They are recorded here so a follow-up can pick them up:
 
 The stale prose in `e2e/auth.ts:5-7` and `docs/factory/api-audit.md:434` is
 outside this change's `allowedPaths` and is left for the same follow-up.
+
+## Challenge — 2026-10-26 (round 2)
+
+Reviewer: contract-challenger (separate agent; read the committed artefacts on
+`factory/new-auth-contract-prose-contract` at `c035dab`, the code at that
+commit, and the web types branch at `623f88f`; not the author's reasoning).
+
+**Verdict**: accept
+
+The round-1 blocking finding is resolved, and the revision touched only prose
+and a YAML comment: the bundle at `c035dab` hashes to
+`7cc6b2402984c53d045720e98f5088f2a64fad5ef22c9137802e2e7a7a989bd2`, equal to
+the manifest's `contractHash`, and `git diff ba052b2 c035dab --
+contracts/openapi/openapi.yaml` is empty.
+
+### Requests wrongly permitted
+
+None. Re-attacked against the code at `c035dab` (unchanged since round 1):
+
+1. `GET /api/auth/me` with `Cookie: auth_token=<valid JWT for A>` and
+   `Authorization: Bearer <valid JWT for B>`: runs as B
+   (`backend/api/middleware.go:32-33`), as `bearerAuth` now says.
+2. `Authorization: Bearer garbage` plus a valid cookie: 401, no fallback
+   (`middleware.go:43-46`), as `bearerAuth` says.
+3. `Authorization: Basic dXNlcjpwYXNz` plus a valid cookie: the prefix test
+   fails, the cookie is used, the request is authenticated. The header comment's
+   "another scheme falls back to the cookie" and `cookieAuth`'s "no
+   `Authorization: Bearer` header" both permit exactly this.
+4. `POST /api/auth/detect` x21 from one peer with rotating `X-Forwarded-For` or
+   untrusted `X-Real-IP`: 21st is 429 (`ratelimit_detect.go:96-114`); the
+   description says neither header is honoured from an untrusted peer.
+
+### Responses the client cannot handle
+
+None. Every `+`/`-` line of `git diff origin/main...origin/factory/new-auth-contract-prose-types`
+in smart-calendar-flow is a JSDoc comment line (filtered for non-comment lines:
+zero results). No consumer reads descriptions at runtime.
+
+### Consumers affected
+
+- None at runtime (`mcp/`, `e2e/`, web: unchanged from round 1).
+- Still stale, outside `allowedPaths`, recorded by the author for a follow-up:
+  `e2e/auth.ts:5-7`, `docs/factory/api-audit.md:434`. Non-blocking.
+
+### Contract/implementation divergences
+
+1. Round-1 blocking finding (root `security`): **resolved**. Checked each place:
+   - root `security` is `[{bearerAuth: []}, {cookieAuth: []}]`
+     (`contracts/openapi/openapi.yaml:24-26`);
+   - `.md` §3 alternative 1 now rejects encoding precedence in `security` because
+     OpenAPI alternatives cannot express order, which is a real constraint;
+   - `auth.notes.md:157-162` closes the open point as the root value since #173;
+   - `auth.yaml:12-16` says protected operations inherit
+     "`bearerAuth` OR `cookieAuth`".
+   A grep of `contracts/`, `mcp/`, `e2e/` and `docs/factory/api-audit.md` for
+   "cookie first", "cookie wins", "checked before bearer" and "sliding window"
+   finds no remaining instance inside this change's `allowedPaths`.
+2. Round-1 non-blocking findings 2 (`TRUSTED_PROXIES` default vs
+   `docker-compose.prod.yml`) and 3 (empty token / lower-case `bearer` fall back
+   to the cookie) are deferred by the author with a reason (they change bundle
+   strings and the web types) and recorded under the revision. Neither makes the
+   description false for the binary's default; they stay non-blocking.
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain: []`). API-008/API-062 are prose updates and
+`docs/factory/api-audit.md:266,320` already carry their PAC-39 status.
+
+### Verified clean
+
+- Fixed one-minute window, sweep at most once a minute, per-process map
+  (`ratelimit_detect.go:39-68`) match the detect description word for word.
+- `X-Real-IP` used only when the peer is in `TRUSTED_PROXIES` and the header
+  parses as an IP; unparseable `TRUSTED_PROXIES` entries are dropped
+  (`parseTrustedProxies`), so the description's "allowlist" cannot widen.
+- Gates, run by this reviewer on the final commits:
+  - `bash .claude/factory/api-gate.sh factory/new-auth-contract-prose-contract`
+    (host at `c035dab`): `make openapi rc=0`, `regenerated: none`,
+    `OK: bundle is in sync (98 paths)`, `OK: MIGRATION.md covers all 119
+    operations`, `OK: backend/api/gen matches the contract`,
+    `openapi-check(api) rc=0`, backend/mcp lint rc=0, backend/mcp test rc=0,
+    backend coverage 53.2% (floor 43%) rc=0, mcp 84.0% (floor 75%) rc=0.
+  - `bash .claude/factory/web-gate.sh factory/new-auth-contract-prose-types
+    factory/new-auth-contract-prose-contract` (web at `623f88f`, no REGEN):
+    lint, typecheck, design-check, openapi-check, test (236 passed), coverage
+    all PASS; `make verify rc=0`.
