@@ -85,7 +85,8 @@ name, so a reader does not assume every failure redirects.
 referenced by all three start routes.** The description carries the forwarding
 rule: at most 254 characters, exactly one `@`, and `net/mail.ParseAddress`
 accepts it with an empty display name and an `Address` equal to the whole
-value; since revision 2 also a local part limited to `[A-Za-z0-9._+-]` and a
+value; since revision 2 also a local part limited to `[A-Za-z0-9._+-]`
+(revision 3 adds the apostrophe: `[A-Za-z0-9._+'-]`) and a
 domain that is a DNS hostname (two or more LDH labels, the last containing a
 letter, no IP literal). A value that fails is dropped and the redirect still
 happens. See "Revision 2" below for why the first rule was not enough.
