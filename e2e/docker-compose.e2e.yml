@@ -118,6 +118,10 @@ services:
       # listens on it and the stack has no cloud identity, so no request is
       # ever sent to it (tests/llm-destination.spec.ts).
       PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI: e2e-approved.openai.azure.com
+      # PAC-66-B AC-B17: no extra OpenAI/Anthropic host and no Ollama origin
+      # is approved (PACEDAY_LLM_APPROVED_HOSTS_OPENAI, _ANTHROPIC and
+      # PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA deliberately unset), so Ollama is
+      # not enabled on the stack (tests/llm-base-url.spec.ts).
       # PAC-20: the stack is plain HTTP (http://localhost:8088), so cookies are
       # set without Secure here, matching sessionCookie() in e2e/auth.ts. A
       # production deployment leaves this unset and every cookie is Secure.

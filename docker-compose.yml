@@ -47,15 +47,20 @@ services:
       - NOTION_CLIENT_ID=${NOTION_CLIENT_ID:-}
       - NOTION_CLIENT_SECRET=${NOTION_CLIENT_SECRET:-}
       - NOTION_REDIRECT_URI=${NOTION_REDIRECT_URI:-}
-      # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
-      # Vertex AI, Ollama) are configured per-user in the Settings page and
-      # stored in the database.
+      # LLM provider choice, models and OpenAI/Anthropic keys are configured
+      # per-user in the Settings page and stored in the database; the
+      # destinations they may reach are approved here (see .env.example).
       # PAC-66: Azure OpenAI, Vertex AI and Bedrock send THIS deployment's cloud
       # identity, so they work only toward inference hosts approved here (see
       # .env.example). Unset means the provider is not enabled.
       - PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI=${PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI:-}
       - PACEDAY_LLM_APPROVED_HOSTS_VERTEX=${PACEDAY_LLM_APPROVED_HOSTS_VERTEX:-}
       - PACEDAY_LLM_APPROVED_HOSTS_BEDROCK=${PACEDAY_LLM_APPROVED_HOSTS_BEDROCK:-}
+      # PAC-66-B: extra OpenAI / Anthropic hosts (the public APIs are built
+      # in) and Ollama origins. Unset Ollama means it is not enabled.
+      - PACEDAY_LLM_APPROVED_HOSTS_OPENAI=${PACEDAY_LLM_APPROVED_HOSTS_OPENAI:-}
+      - PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC=${PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC:-}
+      - PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA=${PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA:-}
     depends_on:
       postgres:
         condition: service_healthy

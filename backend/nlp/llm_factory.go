@@ -1,6 +1,7 @@
 package nlp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -20,6 +21,11 @@ func NewLLMClientFromSettings(s *storage.Settings) (LLMClient, error) {
 		return NewVertexClient(s.GCPProject, s.GCPLocation, s.VertexModel)
 	case "openai":
 		if s.LLMAPIKey == "" {
+			// PAC-66-B: a refused destination is reported whether or not a
+			// key is on file (spec §B4).
+			if r := (&OpenAIClient{BaseURL: s.LLMBaseURL}).CheckDestination(context.Background()); r != nil {
+				return nil, r
+			}
 			return nil, fmt.Errorf("LLM not configured — set API key in Settings")
 		}
 		model := s.LLMModel
@@ -29,6 +35,9 @@ func NewLLMClientFromSettings(s *storage.Settings) (LLMClient, error) {
 		return &OpenAIClient{APIKey: s.LLMAPIKey, Model: model, BaseURL: s.LLMBaseURL}, nil
 	case "anthropic":
 		if s.LLMAPIKey == "" {
+			if r := (&AnthropicClient{BaseURL: s.LLMBaseURL}).CheckDestination(context.Background()); r != nil {
+				return nil, r
+			}
 			return nil, fmt.Errorf("LLM not configured — set API key in Settings")
 		}
 		model := s.LLMModel
@@ -37,12 +46,14 @@ func NewLLMClientFromSettings(s *storage.Settings) (LLMClient, error) {
 		}
 		return &AnthropicClient{APIKey: s.LLMAPIKey, Model: model, BaseURL: s.LLMBaseURL}, nil
 	case "ollama":
-		baseURL := s.OllamaBaseURL
-		if baseURL == "" {
-			baseURL = s.LLMBaseURL // fallback to legacy field
+		// Fallback order unchanged (PAC-66-B D-B9); the property a refusal
+		// names is the one the effective destination came from.
+		baseURL, property := s.OllamaBaseURL, "ollamaBaseUrl"
+		if baseURL == "" && s.LLMBaseURL != "" {
+			baseURL, property = s.LLMBaseURL, "llmBaseUrl" // fallback to legacy field
 		}
 		if baseURL == "" {
-			baseURL = "http://localhost:11434"
+			baseURL = ollamaDefaultBaseURL
 		}
 		model := s.OllamaModel
 		if model == "" {
@@ -51,7 +62,7 @@ func NewLLMClientFromSettings(s *storage.Settings) (LLMClient, error) {
 		if model == "" {
 			model = "llama3.2"
 		}
-		return &OllamaClient{BaseURL: baseURL, Model: model}, nil
+		return &OllamaClient{BaseURL: baseURL, Model: model, baseURLProperty: property}, nil
 	default:
 		return nil, fmt.Errorf("LLM not configured — set API key in Settings")
 	}
