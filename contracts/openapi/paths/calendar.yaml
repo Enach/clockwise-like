@@ -86,15 +86,18 @@ paths:
       tags: [calendar]
       summary: Raw Google free/busy lookup for a comma-separated attendee list
       description: >-
-        Thin passthrough over calendar.CalendarClient.GetFreeBusy. NOTE: the response
-        is `map[string][]calendar.TimeSlot` and calendar.TimeSlot (backend/calendar/freebusy.go:10)
-        has NO json struct tags, so the window keys serialize as Go field names —
-        `Start` / `End`, capitalized. This is NOT the same shape as POST /api/freebusy.
+        Thin passthrough over calendar.CalendarClient.GetFreeBusy. The response is
+        `map[string][]calendar.TimeSlot`. calendar.TimeSlot (backend/calendar/freebusy.go)
+        carries explicit json tags since PAC-26 (API-029), so each window is
+        `{"start","end"}`, the same window shape as POST /api/freebusy. Before PAC-26
+        the struct had no tags and the keys were `Start` / `End`. The map wrapper is
+        unchanged and is still NOT the POST /api/freebusy envelope.
         No frontend code calls this endpoint, but it is NOT dead: the MCP server's
         `clockwise_find_free_slots` tool (mcp/tools.go) calls it and relays the body
-        unchanged. U-03 is therefore resolved as "keep, unchanged" (assumed by the factory
-        for PAC-21, pending owner confirmation): deleting it or aligning its shape with
-        POST /api/freebusy would break that consumer and belongs to its own issue.
+        to the model as text without parsing it, so the key casing change reaches the
+        MCP client unchanged and breaks no code. U-03 stays resolved as "keep" (assumed
+        by the factory for PAC-21, pending owner confirmation); PAC-26 changes only the
+        window key casing, not the envelope.
       parameters:
         - name: start
           in: query
@@ -564,10 +567,10 @@ paths:
       responses:
         "200":
           description: >-
-            Preview events. WARNING: the element type is calendar.GenericEvent
-            (backend/calendar/provider.go:13), which has NO json struct tags, so keys
-            are the Go field names `ID`, `Title`, `Start`, `End` — capitalized and
-            inconsistent with every other response in this domain.
+            Preview events. The element type is calendar.GenericEvent
+            (backend/calendar/provider.go), with explicit json tags since PAC-26
+            (API-029): keys `id`, `title`, `start`, `end`. Before PAC-26 the struct
+            had no tags and the keys were `ID`, `Title`, `Start`, `End`.
           content:
             application/json:
               schema:
@@ -1336,16 +1339,19 @@ components:
     RawGoogleBusyWindow:
       type: object
       description: >-
-        calendar.TimeSlot serialized WITHOUT json tags, hence capitalized Go field
-        names. A Google timestamp that fails to parse becomes the Go zero time
-        `0001-01-01T00:00:00Z` because the parse error is discarded.
-      required: [Start, End]
+        calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26
+        (API-028, API-029). Same keys as FreeBusyWindow; kept as its own schema
+        because it is a different Go type with a different failure mode: a Google
+        timestamp that fails to parse becomes the Go zero time
+        `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26
+        the struct had no tags and the keys were `Start` / `End`.
+      required: [start, end]
       additionalProperties: false
       properties:
-        Start:
+        start:
           type: string
           format: date-time
-        End:
+        end:
           type: string
           format: date-time
 
@@ -1381,8 +1387,10 @@ components:
       type: object
       description: >-
         The same free/busy data is returned three ways for compatibility:
-        `participants` (canonical), `busy` (map form) and `results` (legacy, and with
-        different key casing). All three are always present.
+        `participants` (canonical), `busy` (map form) and `results` (legacy). All
+        three are always present. Since PAC-26 (API-028) every busy window in all
+        three uses the same `{"start","end"}` keys; before it, `results[].busy[]`
+        alone was `{"Start","End"}`.
       required: [start_time, end_time, participants, busy, results]
       additionalProperties: false
       properties:
@@ -1411,8 +1419,8 @@ components:
         results:
           type: array
           description: >-
-            Legacy view. Uses `coverage` instead of `status`, and its busy windows are
-            engine/calendar.TimeSlot values with CAPITALIZED `Start`/`End` keys.
+            Legacy view. Uses `coverage` instead of `status`. Its busy windows are
+            calendar.TimeSlot values, `{"start","end"}` since PAC-26 (API-028).
           items:
             $ref: "#/components/schemas/FreeBusyLegacyResult"
 
@@ -1579,19 +1587,20 @@ components:
     PersonalCalendarPreviewEvent:
       type: object
       description: >-
-        calendar.GenericEvent serialized WITHOUT json tags — capitalized Go field
-        names. All four keys are always present.
-      required: [ID, Title, Start, End]
+        calendar.GenericEvent, with explicit json tags since PAC-26 (API-029).
+        All four keys are always present (no omitempty). Before PAC-26 the struct
+        had no tags and the keys were `ID`, `Title`, `Start`, `End`.
+      required: [id, title, start, end]
       additionalProperties: false
       properties:
-        ID:
+        id:
           type: string
-        Title:
+        title:
           type: string
-        Start:
+        start:
           type: string
           format: date-time
-        End:
+        end:
           type: string
           format: date-time
 

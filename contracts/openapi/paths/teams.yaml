@@ -52,9 +52,10 @@ paths:
       responses:
         "200":
           description: >
-            The persisted storage.UserProfile Go struct. That struct carries NO json
-            tags, so encoding/json emits Go field names in PascalCase. This is
-            inconsistent with the snake_case GET response on the same path.
+            The storage.UserProfile Go struct, with explicit snake_case json tags since
+            PAC-26 (API-030). Before PAC-26 the struct had no tags and the keys were
+            PascalCase. The shape still differs from the GET response on the same
+            path (GET is a summary with team_member_count; POST is the profile row).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/UserProfileGoStruct" }
@@ -216,10 +217,16 @@ paths:
       responses:
         "201":
           description: >
-            The in-memory storage.ManagerTeamMember Go struct. It has NO json tags, so the
-            body is PascalCase and its `ID`/`CreatedAt`/`UpdatedAt` are the Go zero values
-            (all-zero UUID, "0001-01-01T00:00:00Z") because the upsert does not read the
-            row back. Clients must re-fetch the roster instead of using this body.
+            The member row as stored, read back after the upsert commits (PAC-26,
+            API-031), as storage.ManagerTeamMember with explicit snake_case json tags
+            (API-030). Without `team_id` it is the global manager_team_members row; with
+            `team_id` it is that row seen through this team's assignment (display name
+            override, assignment cadence and cadence_custom_days), exactly as
+            patchManagerTeamMember returns it. `id`, `created_at` and `updated_at` are
+            the stored values. Before PAC-26 the body was the pre-insert struct in
+            PascalCase with the zero UUID and "0001-01-01T00:00:00Z" timestamps. If the
+            read-back fails the response is the 500 below, although the upsert has
+            committed; the upsert is idempotent, so a retry is safe.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ManagerTeamMemberGoStruct" }
@@ -296,15 +303,14 @@ paths:
       responses:
         "200":
           description: >
-            The re-read storage.ManagerTeamMember, PascalCase (no json tags). The read
-            error is discarded, so this body can legitimately be the JSON literal `null`
-            when the re-read fails.
+            The re-read storage.ManagerTeamMember, with explicit snake_case json tags
+            since PAC-26 (API-030). Never `null`: since PAC-26 (API-032) a failed
+            re-read is the 500 below instead of a 200 whose body is the JSON literal
+            `null`. The patch has committed when that 500 is sent.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/ManagerTeamMemberGoStruct"
-                  - type: "null"
+                $ref: "#/components/schemas/ManagerTeamMemberGoStruct"
         "400":
           description: JSON error — "team_id must be a valid UUID" or "invalid JSON".
           content:
@@ -602,14 +608,13 @@ paths:
       responses:
         "200":
           description: >
-            The re-read team. GetTeam's error is discarded, so the body can be the JSON
-            literal `null` on a read failure even though the rename committed.
+            The re-read team. Never `null`: since PAC-26 (API-032) a failed re-read is
+            the 500 `internal error` below instead of a 200 whose body is the JSON
+            literal `null`. The rename has committed when that 500 is sent.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/Team"
-                  - type: "null"
+                $ref: "#/components/schemas/Team"
         "400":
           description: JSON error "invalid team id" or "name is required".
           content:
@@ -1060,64 +1065,70 @@ components:
     UserProfileGoStruct:
       type: object
       description: >
-        storage.UserProfile marshalled with no json tags — Go field names verbatim. Do not
-        rename these keys in the spec; they are literally what the server sends.
+        storage.UserProfile with explicit snake_case json tags (PAC-26, API-030); the keys
+        match the user_profiles columns. The schema name is kept from before PAC-26, when
+        the struct had no tags and the keys were the Go field names (`UserID`,
+        `IsManager`, `DetectedAt`, `AnalyticsSharedWithManager`, `UpdatedAt`).
       properties:
-        UserID: { type: string, format: uuid }
-        IsManager: { type: boolean }
-        DetectedAt:
+        user_id: { type: string, format: uuid }
+        is_manager: { type: boolean }
+        detected_at:
           type: [string, "null"]
           format: date-time
-        AnalyticsSharedWithManager:
+        analytics_shared_with_manager:
           type: boolean
           description: Member-side consent flag, defaulting to true. No endpoint in this domain sets it.
-        UpdatedAt:
+        updated_at:
           type: string
           format: date-time
           description: The value read BEFORE the upsert, not the newly written now().
-      required: [UserID, IsManager, DetectedAt, AnalyticsSharedWithManager, UpdatedAt]
+      required: [user_id, is_manager, detected_at, analytics_shared_with_manager, updated_at]
       additionalProperties: false
 
     ManagerTeamMemberGoStruct:
       type: object
       description: >
-        storage.ManagerTeamMember marshalled with no json tags — Go field names verbatim.
-        Returned by addManagerTeamMember (201) and patchManagerTeamMember (200).
+        storage.ManagerTeamMember with explicit snake_case json tags (PAC-26, API-030); the
+        keys match the manager_team_members columns. Returned by addManagerTeamMember (201)
+        and patchManagerTeamMember (200), both read back from storage after the write. The
+        schema name is kept from before PAC-26, when the struct had no tags and the keys
+        were the Go field names (`ID`, `ManagerUserID`, `MemberEmail`, ...). Note the key
+        is `member_email` here but `email` on ManagerRosterMember: this is the stored row,
+        the roster is a view.
       properties:
-        ID:
+        id:
           type: string
           format: uuid
           description: >
-            On the 201 add response this is the zero UUID
-            "00000000-0000-0000-0000-000000000000" because the struct is echoed back
-            without re-reading the row.
-        ManagerUserID: { type: string, format: uuid }
-        MemberEmail: { type: string, format: email }
-        MemberUserID:
+            The stored row id. Since PAC-26 (API-031) never the zero UUID on the 201 add
+            response.
+        manager_user_id: { type: string, format: uuid }
+        member_email: { type: string, format: email }
+        member_user_id:
           type: [string, "null"]
           format: uuid
           description: Set when the email matches a Paceday user; null for external members.
-        DisplayName: { type: string }
-        Source: { $ref: "#/components/schemas/ManagerMemberSource" }
-        Cadence: { $ref: "#/components/schemas/Cadence" }
-        CadenceCustomDays:
+        display_name: { type: string }
+        source: { $ref: "#/components/schemas/ManagerMemberSource" }
+        cadence: { $ref: "#/components/schemas/Cadence" }
+        cadence_custom_days:
           type: [integer, "null"]
           minimum: 1
           maximum: 365
-        LastOneOnOneAt:
+        last_one_on_one_at:
           type: [string, "null"]
           format: date-time
-        CreatedAt:
+        created_at:
           type: string
           format: date-time
-          description: Zero value "0001-01-01T00:00:00Z" on the 201 add response.
-        UpdatedAt:
+          description: Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
+        updated_at:
           type: string
           format: date-time
-          description: Zero value "0001-01-01T00:00:00Z" on the 201 add response.
+          description: Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
       required:
-        [ID, ManagerUserID, MemberEmail, MemberUserID, DisplayName, Source, Cadence,
-         CadenceCustomDays, LastOneOnOneAt, CreatedAt, UpdatedAt]
+        [id, manager_user_id, member_email, member_user_id, display_name, source, cadence,
+         cadence_custom_days, last_one_on_one_at, created_at, updated_at]
       additionalProperties: false
 
     AddManagerMemberRequest:
