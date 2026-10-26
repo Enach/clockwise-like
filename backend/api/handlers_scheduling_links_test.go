@@ -331,7 +331,7 @@ func TestSchedulingLinksReinviteKeepsExistingHostStatus(t *testing.T) {
 		if _, err := storage.AddLinkHost(db, link.ID, id, "pending"); err != nil {
 			t.Fatalf("add host: %v", err)
 		}
-		if err := storage.RespondToHostInvite(db, link.ID, id, status); err != nil {
+		if _, err := storage.RespondToHostInvite(db, link.ID, id, status); err != nil {
 			t.Fatalf("respond: %v", err)
 		}
 	}
@@ -366,7 +366,7 @@ func TestSchedulingLinksPatchCoHostsSetsListByDifference(t *testing.T) {
 		if _, err := storage.AddLinkHost(db, link.ID, id, "pending"); err != nil {
 			t.Fatalf("add host: %v", err)
 		}
-		if err := storage.RespondToHostInvite(db, link.ID, id, "accepted"); err != nil {
+		if _, err := storage.RespondToHostInvite(db, link.ID, id, "accepted"); err != nil {
 			t.Fatalf("accept: %v", err)
 		}
 	}
@@ -391,5 +391,191 @@ func TestSchedulingLinksPatchCoHostsSetsListByDifference(t *testing.T) {
 	}
 	if got[ownerID] != "accepted" {
 		t.Errorf("the owner is now %q, want accepted", got[ownerID])
+	}
+}
+
+// PAC-30 (API-020): accept, decline and leave answer 404 and change nothing
+// when the caller has no host row on the link. Before the fix they answered
+// 200/204 having changed nothing.
+
+func hostRowsSnapshot(t *testing.T, linkID uuid.UUID) string {
+	t.Helper()
+	hosts, err := storage.GetLinkHosts(openTestDB(t), linkID)
+	if err != nil {
+		t.Fatalf("get hosts: %v", err)
+	}
+	rows := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		responded := "nil"
+		if h.RespondedAt != nil {
+			responded = h.RespondedAt.UTC().Format(time.RFC3339Nano)
+		}
+		rows = append(rows, h.ID.String()+"|"+h.UserID.String()+"|"+h.Status+"|"+responded)
+	}
+	return strings.Join(rows, "\n")
+}
+
+func assertNotFoundJSON(t *testing.T, what string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("%s: status = %d, want 404; body: %s", what, w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("%s: Content-Type = %q, want application/json", what, ct)
+	}
+	if body := strings.TrimSpace(w.Body.String()); body != `{"error":"not found"}` {
+		t.Errorf("%s: body = %s, want {\"error\":\"not found\"}", what, body)
+	}
+}
+
+func TestSchedulingLinksRespondAndLeaveWithoutHostRowIs404(t *testing.T) {
+	r := setupSchedulingLinkRoutes(t)
+	ownerID := createTestUser(t, "pac30-owner@example.com")
+	inviteeID := createTestUser(t, "pac30-invitee@example.com")
+	strangerID := createTestUser(t, "pac30-stranger@example.com")
+	link := createSchedulingLinkRecord(t, ownerID, "pac30-no-row", "No Row")
+	if _, err := storage.AddLinkHost(openTestDB(t), link.ID, inviteeID, "pending"); err != nil {
+		t.Fatalf("add invitee host: %v", err)
+	}
+	before := hostRowsSnapshot(t, link.ID)
+
+	paths := []string{
+		"/api/scheduling-links/host-invites/" + link.ID.String() + "/accept",
+		"/api/scheduling-links/host-invites/" + link.ID.String() + "/decline",
+		"/api/scheduling-links/" + link.ID.String() + "/accept",
+		"/api/scheduling-links/" + link.ID.String() + "/decline",
+		"/api/scheduling-links/" + link.ID.String() + "/leave",
+	}
+	for _, p := range paths {
+		req := httptest.NewRequest(http.MethodPost, p, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, withUser(req, strangerID))
+		assertNotFoundJSON(t, "stranger POST "+p, w)
+		if after := hostRowsSnapshot(t, link.ID); after != before {
+			t.Fatalf("stranger POST %s changed host rows:\nbefore:\n%s\nafter:\n%s", p, before, after)
+		}
+	}
+}
+
+func TestSchedulingLinksAcceptWithHostRowIdIs404(t *testing.T) {
+	r := setupSchedulingLinkRoutes(t)
+	ownerID := createTestUser(t, "pac30-rowid-owner@example.com")
+	inviteeID := createTestUser(t, "pac30-rowid-invitee@example.com")
+	link := createSchedulingLinkRecord(t, ownerID, "pac30-rowid", "Row Id")
+	row, err := storage.AddLinkHost(openTestDB(t), link.ID, inviteeID, "pending")
+	if err != nil {
+		t.Fatalf("add invitee host: %v", err)
+	}
+	before := hostRowsSnapshot(t, link.ID)
+
+	for _, p := range []string{
+		"/api/scheduling-links/host-invites/" + row.ID.String() + "/accept",
+		"/api/scheduling-links/" + row.ID.String() + "/accept",
+	} {
+		req := httptest.NewRequest(http.MethodPost, p, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, withUser(req, inviteeID))
+		assertNotFoundJSON(t, "accept with host-row id "+p, w)
+	}
+	if after := hostRowsSnapshot(t, link.ID); after != before {
+		t.Fatalf("accept with a host-row id changed host rows:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if got := hostStatuses(t, link.ID)[inviteeID]; got != "pending" {
+		t.Errorf("invitee status = %q, want pending", got)
+	}
+}
+
+func TestSchedulingLinksLeaveTwiceIs404(t *testing.T) {
+	r := setupSchedulingLinkRoutes(t)
+	ownerID := createTestUser(t, "pac30-leave-owner@example.com")
+	hostID := createTestUser(t, "pac30-leave-host@example.com")
+	link := createSchedulingLinkRecord(t, ownerID, "pac30-leave", "Leave")
+	if _, err := storage.AddLinkHost(openTestDB(t), link.ID, hostID, "accepted"); err != nil {
+		t.Fatalf("add host: %v", err)
+	}
+
+	path := "/api/scheduling-links/" + link.ID.String() + "/leave"
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withUser(req, hostID))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("first leave: status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+	before := hostRowsSnapshot(t, link.ID)
+
+	req = httptest.NewRequest(http.MethodPost, path, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, withUser(req, hostID))
+	assertNotFoundJSON(t, "second leave", w)
+	if after := hostRowsSnapshot(t, link.ID); after != before {
+		t.Fatalf("second leave changed host rows:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestSchedulingLinksRespondOnUnknownLinkIs404(t *testing.T) {
+	r := setupSchedulingLinkRoutes(t)
+	userID := createTestUser(t, "pac30-unknown@example.com")
+	missing := uuid.New().String()
+	for _, p := range []string{
+		"/api/scheduling-links/host-invites/" + missing + "/accept",
+		"/api/scheduling-links/host-invites/" + missing + "/decline",
+		"/api/scheduling-links/" + missing + "/leave",
+	} {
+		req := httptest.NewRequest(http.MethodPost, p, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, withUser(req, userID))
+		assertNotFoundJSON(t, "unknown link POST "+p, w)
+	}
+}
+
+func TestSchedulingLinksInvitedHostAcceptsIs200(t *testing.T) {
+	for slug, prefix := range map[string]string{
+		"pac30-accept-hostinvites": "/api/scheduling-links/host-invites/",
+		"pac30-accept-bylink":      "/api/scheduling-links/",
+	} {
+		t.Run(slug, func(t *testing.T) {
+			r := setupSchedulingLinkRoutes(t)
+			ownerID := createTestUser(t, slug+"-owner@example.com")
+			inviteeEmail := slug + "-invitee@example.com"
+			inviteeID := createTestUser(t, inviteeEmail)
+			link := createSchedulingLinkRecord(t, ownerID, slug, "Accept")
+
+			req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", bytes.NewBufferString(`{"email":"`+inviteeEmail+`"}`))
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, withUser(req, ownerID))
+			if w.Code != http.StatusCreated {
+				t.Fatalf("invite: status = %d, want 201; body: %s", w.Code, w.Body.String())
+			}
+
+			req = httptest.NewRequest(http.MethodPost, prefix+link.ID.String()+"/accept", nil)
+			w = httptest.NewRecorder()
+			r.ServeHTTP(w, withUser(req, inviteeID))
+			if w.Code != http.StatusOK {
+				t.Fatalf("accept: status = %d, want 200; body: %s", w.Code, w.Body.String())
+			}
+			if body := strings.TrimSpace(w.Body.String()); body != `{"status":"accepted"}` {
+				t.Errorf("accept: body = %s, want {\"status\":\"accepted\"}", body)
+			}
+			hosts, err := storage.GetLinkHosts(openTestDB(t), link.ID)
+			if err != nil {
+				t.Fatalf("get hosts: %v", err)
+			}
+			found := false
+			for _, h := range hosts {
+				if h.UserID != inviteeID {
+					continue
+				}
+				found = true
+				if h.Status != "accepted" {
+					t.Errorf("invitee status = %q, want accepted", h.Status)
+				}
+				if h.RespondedAt == nil {
+					t.Errorf("invitee responded_at is nil, want set")
+				}
+			}
+			if !found {
+				t.Fatalf("invitee host row missing after accept")
+			}
+		})
 	}
 }
