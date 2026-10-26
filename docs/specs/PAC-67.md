@@ -843,3 +843,143 @@ conditional since D-6 leaves its response unchanged.
 5. AC-1 now says the lookup queries attendees' free/busy with A's credential.
 6. The Decisions preamble quotes what PAC-24 actually records.
 7. §2.5 now says Google's hosts are in the sink list too.
+
+## Challenge — 2026-10-26 (round 2)
+
+**Verdict**: accept-with-changes
+
+Reviewed the committed spec at `f2337f9` (Revision 1) against the Linear issue
+text, the backend and contract at `16f3100` (= `origin/main`, unchanged since
+round 1), and `smart-calendar-flow` at `d9e0786`. The four round-1 blocking
+findings are resolved: §2.7 and the AC-8 table settle availability lookups,
+§2.6 and the §4 preamble define the status surfaces, `GET /api/audit` is listed
+as changed with AC-22, and the inherited-scope list is complete. I re-derived
+every `x-uncertain` location in `openapi.yaml` by enclosing path or schema and
+found none on a touched operation beyond those listed. Two new defects remain.
+
+### Blocking
+
+1. **"Meeting creation on an existing event" also depends on the Google
+   credential, which the spec says it does not.** The §4 preamble says both
+   meeting-creation actions "read the same stored credential". They do not.
+   `POST /api/events/{id}/conference` loads the event through the Google
+   client *before* any Teams or Zoom credential is touched
+   (`backend/api/handlers_conferencing.go:266-275` calls `loadEventClient`,
+   which is `eventHandlers.calClient`, `backend/api/handlers_events.go:24-32`,
+   built from `auth.LoadUserToken`), whatever the calendar provider is.
+   Consequences for the criteria as written:
+   - For a user with no Google credential (the Outlook-signed-in population §1
+     names first), the on-event variant fails with 401 "not authenticated" today
+     and after this feature, so AC-3 (on-event), AC-8's Teams and Zoom rows and
+     AC-12's "meeting creation creates a meeting" cannot pass for that user
+     however refresh is built.
+   - When A's Google credential is dead, the request fails at `GetEvent` with
+     404 "event not found: ..." (`:271-275`) before Teams or Zoom is reached.
+     AC-8 and AC-10 do not say which provider is then reported lost or which
+     error the user gets, and a test passes or fails depending on whether the
+     fixture also gives A a working Google token.
+
+   *Resolves when* the spec (a) corrects the preamble sentence to say the
+   on-event action reads the Google credential as well; (b) states the Google
+   precondition (A holds a working Google credential) on every criterion that
+   runs the on-event variant, or explicitly scopes that variant out for users
+   without one and says whether that belongs to PAC-47; and (c) states the
+   observable result, the status surfaces and the audit entry when the Google
+   credential is the one refused on that path.
+
+2. **"Visible, once" is not scoped to a loss episode, so the criteria permit
+   suppressing a genuine second loss.** §3 says the activity log gets "one
+   entry" per loss. AC-9 checks only repeated hits on the *same* dead
+   credential, and AC-12 (reconnect) asserts nothing about the audit log. An
+   implementation that records at most one connection-lost entry per user and
+   provider *ever* passes AC-8, AC-9 and AC-12, yet after lose, reconnect, lose
+   again, the user's activity log is silent about the second loss, which is the
+   invisible-dead-credential problem the issue exists to fix. No criterion
+   covers two concurrent actions both meeting the refusal either (AC-5 covers
+   concurrent *success* only), where a naive design writes two entries.
+   *Resolves when* a criterion states that a loss after a successful reconnect
+   produces a new connection-lost entry (lose, reconnect, lose = two entries),
+   and that concurrent refusals of the same credential within one backend
+   process produce exactly one.
+
+### Non-blocking
+
+1. **"Reconnect Outlook" is not guaranteed to reach A.** The Microsoft callback
+   attaches the credential to the user resolved by the Microsoft account's
+   `mail` (`backend/api/handlers_microsoft_auth.go:62-76`; `storage.UpsertUser`
+   matches `ON CONFLICT (email)`, `backend/storage/users.go:21-25`) and issues
+   a session for that user. §3's "changes only the caller's calendar provider"
+   and AC-11, AC-12 and AC-20's "A reconnects" assume it is the signed-in user.
+   If the Microsoft `mail` no longer equals A's Paceday email, the reconnect
+   AC-8 tells A to do signs the browser into another (possibly new) account and
+   leaves A reported lost. The spec should define reconnect for Outlook as a
+   sign-in that resolves to A, and state what A sees otherwise.
+2. AC-12 says "a provider" while the preamble defines provider as Outlook and
+   Zoom unless stated; it then mentions listing events, a Google action. Name
+   Google explicitly if AC-12 applies to it.
+3. The AC-8 table's precondition "listing A's calendar events (A's calendar
+   provider is Google)" suggests the operation is provider-dependent. It is not:
+   `listEvents` always uses the Google token
+   (`backend/api/handlers_calendar.go:133-162`). Harmless, but AC-21's second
+   half relies on exactly this, so say so.
+4. AC-20 requires the cache to be bypassed after a reconnect only when the
+   degraded result came from a *refused* credential. A disconnect followed by a
+   reconnect inside 15 minutes still serves a cached `unknown` (§2.7). Decide
+   whether "never outlives a reconnect" covers that case.
+5. The `AuditEntry` schema describes every entry as "always about the calling
+   user's own calendar" (`contracts/openapi/openapi.yaml:5545`). Connection
+   entries are about a credential (Zoom is not a calendar). The contract stage
+   will have to reword it; a line in §6 would stop that being read as a
+   redefinition of the existing kinds.
+6. D-2 says an unconfirmed revocation "is told to the user". Until the web
+   stage lands, the existing caller shows `toast.success("Disconnected Zoom")`
+   whatever the body says
+   (`smart-calendar-flow/src/components/ConferencingSection.tsx:98-99`). §5
+   should say the frontend stage owes that message, so the backend PR alone is
+   not taken to satisfy D-2.
+
+### Criteria I could not falsify
+- AC-3, AC-8, AC-10, AC-12 for the on-event meeting-creation variant: the
+  outcome depends on an unstated Google-credential precondition (Blocking 1).
+- AC-9 cannot distinguish a per-episode dedup from a permanent one (Blocking 2).
+
+Every other criterion has a test that fails today and passes afterwards
+(the round-1 list stands). The new ones:
+- AC-20: the per-user, per-attendee, per-day cache
+  (`backend/engine/freebusy_service.go:96-100`, `:140-150`) serves `unknown`
+  without a request today.
+- AC-21: both status surfaces derive "connected" from storage alone today
+  (`handlers_auth.go:98-131`, `handlers_conferencing.go:173,179`).
+- AC-22: the enum has seven values
+  (`contracts/openapi/paths/calendar.yaml:1715-1722`), so a listing with a new
+  kind is non-conforming today.
+
+### Citations I checked and found wrong
+- §4 preamble, "both read the same stored credential" — the on-event action
+  also reads the Google credential first, at `handlers_conferencing.go:266-275`
+  and `handlers_events.go:24-32` (Blocking 1).
+- §3, "Connecting Outlook changes only the caller's calendar provider" — it
+  changes the provider of the user matched by the Microsoft `mail`, who then
+  becomes the caller, at `handlers_microsoft_auth.go:66-76` and
+  `users.go:21-25` (Non-blocking 1).
+
+Checked and correct: §2.6 (`handlers_auth.go:97-132`;
+`handlers_conferencing.go:161-184,173,176,179,181`); §2.7
+(`freebusy_service.go:74-155,96-100,122-128,126,129-138,136,140-152`;
+`handlers_freebusy.go:72-76`; `manager.go:484-499`, which builds a fresh
+service per call and so never shares the cache); §2.4
+(`calendar.yaml:1669-1672`; `smart-calendar-flow/src/api/generated/schemas.ts:38`,
+`src/api/client.ts:478`, `src/pages/Audit.tsx:97`); §6
+(`src/api/client.ts:1463`, `src/components/ConferencingSection.tsx:98`);
+inherited scope (`openapi.yaml:371,800,1483,1493-1494,1545,1717,1951,6020-6021`;
+`api-audit.md:245,246,262,280,286,295,298,304,311,325,447`). Google sign-in
+uses `ApprovalForce` (`backend/auth/google_oauth.go:25`), so leaving Google out
+of AC-11 is sound.
+
+### Consumers this breaks
+- None beyond those §2.4 and §6 already name. The web consumers of
+  `connected: false` on calendar status
+  (`smart-calendar-flow/src/pages/Dashboard.tsx:114`,
+  `src/pages/Onboarding.tsx:61,84`) already treat it as "connect your
+  calendar", not as a logged-out session, so AC-8(b) reaching them is the
+  intended effect.
