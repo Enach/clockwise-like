@@ -1159,7 +1159,7 @@ None.
 - **Linear**: not yet filed. This part is the spec D-4 asks for; the factory
   ticket is `NEW-pac66b-llm-base-url`. D-4 still holds: PAC-66 is not closed
   until PAC-66-B exists in Linear and is linked to PAC-66 (AC-B13).
-- **Status**: challenged (Revision B1 answers the Part B challenge)
+- **Status**: challenged (Revision B2 answers the Part B round-2 challenge)
 - **Author**: spec-author
 - **Base**: `main` at c954521 (PAC-66 part A implemented by #214, PAC-21 by #217).
 - **Inherited scope**:
@@ -1220,6 +1220,16 @@ Who is affected: every operator. The attacker needs only an account. The cost is
 exposure of the operator's internal network to probing and to blind POST
 requests, and, for item 2, a user's own key reaching a third party.
 
+Every user is also affected by default, not only by choice *(Revision B2)*. An
+account that never opened the AI settings is stored as an Ollama account with the
+local address (§B2.1), so today each natural-language parse and each brief refresh
+by such an account makes the server POST to its own loopback interface. After this
+part ships, on the hosted product and on any deployment that approves no Ollama
+destination, every such account is told that Ollama is not enabled on this
+deployment, by the natural-language bar and by every refreshed brief, until the
+user picks another provider. That is the intended fail-closed outcome (D-B1), and
+it is why OQ-B2 matters more than it first reads.
+
 ## B2. Current behaviour
 
 ### B2.1 Where the destination comes from
@@ -1237,6 +1247,20 @@ requests, and, for item 2, a user's own key reaching a third party.
   through the factory, which always fills it).
 - The key goes out as `Authorization: Bearer` for OpenAI (`parser.go:45`) and as
   `x-api-key` for Anthropic (`:80`). Ollama sends no credential.
+- **Stored defaults of a settings row** *(Revision B2)*. Migration
+  `backend/storage/migrations/002_llm_providers.up.sql:10` gives the Ollama base
+  URL the column default `http://localhost:11434`, and `:13-14` make the provider
+  default to `ollama` (and rewrote existing empty providers to it). The shared
+  base URL has no such default (empty). Every settings row is created by an
+  `INSERT INTO settings (user_id)` that names no other column
+  (`backend/storage/settings.go:246`, `backend/storage/personal_calendars.go:165`,
+  `backend/auth/microsoft_oauth.go:65`), so it takes these defaults. An untouched
+  account therefore reads back provider `ollama`, shared base URL empty, Ollama
+  base URL `http://localhost:11434` (confirmed by the round-2 challenger against
+  the migrations on `postgres:16-alpine`). Because the factory prefers the Ollama
+  base URL over the shared one (`llm_factory.go:40-42`), **on such a row the
+  shared base URL is never Ollama's destination**; it becomes one only after the
+  Ollama base URL is set to the empty string through the API.
 
 ### B2.2 What the settings write does with these values
 
@@ -1250,6 +1274,11 @@ requests, and, for item 2, a user's own key reaching a third party.
   `src/api/client.ts:594`). The provider list labels it "Ollama (local)"
   (`Settings.tsx:62`). There is no web field for an OpenAI or Anthropic base URL;
   those can be set through the API only.
+- The web app never reads or writes the Ollama-specific base URL (its field
+  mapping at `src/api/client.ts:594` covers the shared one only). Combined with the
+  stored default (§B2.1), a value typed in the web app's Ollama field has **no
+  effect** on where Ollama requests go today: they go to the stored
+  `http://localhost:11434` *(Revision B2)*.
 
 ### B2.3 Every path that sends
 
@@ -1362,8 +1391,12 @@ user never adds one.
   path (probe, natural-language parse, meeting-brief refresh), and follows the
   provider the request actually uses, including a provider named for one probe
   only. Values stored before this change are refused at send time, not rewritten.
-- **A redirect never takes a request to a destination not approved for that
-  provider**, and never takes a user's key to any other host.
+- **A redirect is never followed** for these three providers *(Revision B2,
+  D-B6)*: not to another host, not to another operation or query on the same
+  destination, not with a changed method, and not to another destination approved
+  for the same provider. The request that drew the redirect counts as failed. So a
+  redirect never takes a request to a destination not approved for that provider,
+  and never takes a user's key to any other host.
 - **A refusal sends nothing.** It is reported the way part A reports one on each
   path: the probe answers with the documented client error and its documented
   refusal reason; parse answers "intent unknown" with an explanatory error;
@@ -1392,7 +1425,10 @@ would actually be sent, after every default is applied. The defaults are:
   refused, never replaced by the public host.
 - Ollama: the Ollama base URL; when it is the empty string, the shared base URL;
   when both are empty, the built-in local default (`http://localhost:11434`
-  today). This spec does not change that fallback order.
+  today). This spec does not change that fallback order. *(Revision B2)* An
+  account's starting state is not "both empty": its Ollama base URL is stored as
+  `http://localhost:11434` (§B2.1), so its effective destination is that value and
+  the shared base URL plays no part until the Ollama base URL is cleared.
 
 **Refusal does not depend on the key** *(Revision B1)*: when a destination is
 refused and no key is on file or submitted, the outcome is the destination
@@ -1440,14 +1476,17 @@ is approved for Ollama (AC-B11 covers what happens then). [unit]
 
 AC-B7. Given an approved destination for a provider P (each of OpenAI, Anthropic,
 Ollama, and OpenAI's and Anthropic's public hosts) that answers with a redirect
-to a destination not approved for P (another host, a subdomain of the approved
-host, the same host over insecure transport, an internal address, or the same
-approved destination at a path other than the provider's chat operation
-*(Revision B1)*), when a user probes, then no request is recorded for the
-redirect target, the sentinel key appears in no recorded request other than the
-first, and the probe reports failure. [unit]
-*Fails today: `http.DefaultClient` follows the redirect, and for Anthropic re-sends
-the key to any host (§B2.4).*
+of any status (301, 302, 303, 307, 308) to any target, including another host, a
+subdomain of the approved host, the same host over insecure transport, an
+internal address, the same approved destination at a path other than the
+provider's chat operation *(Revision B1)*, the same chat operation path with a
+query added, or another destination that is also approved for P *(Revision B2)*,
+when a user probes, then exactly one request is recorded (the first, to the
+approved destination, with method POST), no request is recorded for the redirect
+target with any method, the sentinel key appears in no recorded request other
+than the first, and the probe reports failure. [unit]
+*Fails today: `http.DefaultClient` follows the redirect (turning the POST into a
+GET on 301/302/303), and for Anthropic re-sends the key to any host (§B2.4).*
 
 AC-B8. Given the operator approved nothing for Ollama, and a user with Ollama
 selected (saved, or named for one probe) with any stored base URL, including
@@ -1458,18 +1497,33 @@ deployment. [unit]
 
 AC-B9. Given the operator approved one Ollama destination, including one with
 insecure transport and a non-default port (for example a plain-HTTP host on port
-11434), when a user saves exactly that destination and probes with Ollama, then
-exactly one request is recorded, to that destination, carrying no key. A stored
-Ollama destination that differs from the approved one in host, scheme or port is
-refused as in AC-B1. [unit]
-*Guards D-B1: Ollama is kept, not dropped, for an operator who approves it.*
+11434), when a user saves exactly that destination as the **Ollama-specific**
+base URL (through the API; the web app cannot write that property today, §B2.2)
+and probes with Ollama, then exactly one request is recorded, to that
+destination, carrying no key. A stored Ollama destination that differs from the
+approved one in host, scheme or port is refused as in AC-B1. [unit]
+*Revision B2*: given instead that the user saves that destination as the
+**shared** base URL (what the web app's field writes) while the Ollama-specific
+base URL holds the stored default `http://localhost:11434`, the save succeeds
+(the value is approved for Ollama, AC-B3), and the probe is decided on the
+effective destination, the stored default: zero requests are recorded and the
+response is the documented refusal naming the Ollama-specific base URL, unless
+the operator also approved the local default, in which case exactly one request
+is recorded, to the local default. The shared value is never the destination in
+this state (fallback order unchanged, D-B9).
+*Guards D-B1: Ollama is kept, not dropped, for an operator who approves it, and
+pins that the web field does not silently redirect Ollama.*
 
 AC-B10. Given the operator approved Ollama only for the built-in local default
-destination, and a user with Ollama selected and both base URLs empty, when the
-user probes, then exactly one request is recorded, to that default. Given instead
-that the default is not approved (and something else is), the same probe records
-zero requests and returns the documented refusal. [unit]
-*Pins the effective destination of an empty Ollama configuration.*
+destination, and a user with Ollama selected whose settings are in an account's
+starting state (Ollama-specific base URL stored as `http://localhost:11434`,
+shared base URL empty, §B2.1) *(Revision B2)*, when the user probes, then exactly
+one request is recorded, to that default. The same holds when both base URLs are
+empty (the built-in fallback). Given instead that the default is not approved
+(and something else is), the same probes record zero requests and return the
+documented refusal. [unit]
+*Pins the effective destination of an untouched account and of an empty Ollama
+configuration.*
 
 AC-B11. Given a destination approved **only for Ollama**, and a user whose shared
 base URL is that destination, when the user probes with OpenAI or with Anthropic
@@ -1520,14 +1574,20 @@ OpenAI destination approved, and a signed-in user with an OpenAI key on file
 *(Revision B1)*, when the user saves an OpenAI
 base URL pointing at another service on the stack's network (for example the
 database's host and port), then the response is a 4xx JSON error naming the base
-URL and a following read shows the previous value. When the stored shared base
-URL is then forced (by direct database write) to that address and the user
-probes with Ollama, the response is the documented refusal saying Ollama is not
-enabled on this deployment; when the user probes with OpenAI, the response is
-the documented refusal naming the base URL. [e2e]
-*Fails today: the save returns 200, and both probes return 502 after the server
-contacted the address.* That exactly one request reaches an approved destination
-is proven at unit level (AC-B5, AC-B9), not on the stack.
+URL and a following read shows the previous value. When **both** stored base URLs
+(the shared one and the Ollama-specific one) are then forced, by direct database
+write, to that address *(Revision B2: so that the forced value is the effective
+destination of both providers, §B2.1)*, and the user probes with Ollama, the
+response is the documented refusal saying Ollama is not enabled on this
+deployment; when the user probes with OpenAI, the response is the documented
+refusal naming the shared base URL. [e2e]
+*Fails today: the save returns 200, and each probe is sent to the forced address
+(the Ollama one because the forced Ollama-specific base URL is its destination,
+the OpenAI one through the shared base URL) and returns 502 when that service does
+not answer as an LLM would.* On the stack the e2e test observes the response, not
+the request; that the refusal sends zero requests, and that exactly one request
+reaches an approved destination, is proven at unit level (AC-B1, AC-B8, AC-B5,
+AC-B9), not on the stack.
 
 AC-B18. *(Revision B1)* Given the operator approved one Ollama destination, and a
 user who submits a settings write setting the Ollama base URL or the shared base
@@ -1572,7 +1632,9 @@ path, with no query. The same holds for Anthropic and its messages path. [unit]
 - **Any change to the web app.** The settings page already shows the server's
   error sentence. Hiding Ollama, or the base-URL field, when the deployment has
   not enabled it needs the server to say which providers are enabled, which is a
-  contract addition; it is a follow-up (OQ-B2).
+  contract addition; it is a follow-up (OQ-B2). So is making the web app's
+  Ollama field write the property Ollama actually uses, or show and clear it
+  (OQ-B7, D-B9) *(Revision B2)*.
 - **Splitting the shared base URL into one value per provider.** It would remove
   the cause of item 3 in §B1 but rewrites stored data. AC-B11 closes the risk
   without touching stored values (D-B4).
@@ -1582,10 +1644,12 @@ path, with no query. The same holds for Anthropic and its messages path. [unit]
 
 - **OpenAI and Anthropic with no base URL** keep working on every deployment with
   no configuration (AC-B5 second half). Protected today by
-  `TestBuildLLMClient_OpenAI` (`backend/nlp/parser_test.go:104`),
-  `TestBuildLLMClient_Anthropic` (:118), `TestBuildLLMClient_DefaultModels` (:143);
-  none of them sends a request to the public host, so AC-B5 is the first
-  test that does (through the recording transport).
+  `TestBuildLLMClient_OpenAI` (`backend/nlp/parser_test.go:104`) and
+  `TestBuildLLMClient_Anthropic` (:118), which build the clients but send nothing
+  (`TestBuildLLMClient_DefaultModels` at :143, cited here before Revision B2,
+  builds an Ollama client only and protects nothing for OpenAI or Anthropic).
+  AC-B5 is the first test that sends a request to the public host (through the
+  recording transport).
 - **Existing tests that point these clients at a test server** *(Revision B1;
   replaces the earlier bullet, which prescribed a Given D-B3 forbids)*. No test is
   deleted or skipped. Each one below falls in exactly one of four groups.
@@ -1630,6 +1694,14 @@ path, with no query. The same holds for Anthropic and its messages path. [unit]
       in the body, AC-B16). The property that half protected, a provider failure
       gives a 502 whose body echoes no key, stays covered by giving it the
       public-host Given above with a test server that answers 401.
+    - `TestDecideLLMApprovedHosts_PerProvider`
+      (`backend/config/llm_hosts_test.go:87-89`) *(Revision B2)*: its last
+      assertion, that `openai` is not enabled and has no approved host in part
+      A's ambient-provider set, is **kept** if the plan holds the OpenAI,
+      Anthropic and Ollama approved sets separately from part A's set, and is
+      **superseded by D-B2 and D-B3** if the plan merges them into it. Either way
+      the property behind it holds: an entry approved for one provider approves
+      nothing for another (AC-B11, part A D-8).
 - **Part A sentences Part B supersedes** *(Revision B1)*. Part A §3's last bullet
   ("Users of the user-key providers (OpenAI, Anthropic, Ollama) see no change from
   this spec") and part A §6's bullet saying OpenAI, Anthropic and Ollama behave
@@ -1659,7 +1731,17 @@ URL are unaffected. A stored base URL that carries a path, query or fragment
 (for example a gateway prefix) is refused until it is cleared or, if OQ-B6 allows
 it, the operator approves the prefix *(Revision B1)*. Release notes and
 `.env.example` must say so; `.env.example`
-must also stop saying these providers need no server configuration.
+must also stop saying these providers need no server configuration, and so must
+the comments in `docker-compose.yml:50-52` ("configured per-user in the Settings
+page") and `docker-compose.prod.yml:89-91` ("no server-level env vars needed")
+*(Revision B2)*.
+
+**Default accounts** *(Revision B2)*: every account still on the stored defaults
+(provider Ollama, Ollama base URL `http://localhost:11434`, §B2.1) changes, on a
+deployment that approves no Ollama destination, from a connection failure to
+"Ollama is not enabled on this deployment" on parse and brief refresh. No stored
+value changes; picking another provider in settings removes the message. The
+release note must say this.
 
 ## B8. Open questions
 
@@ -1693,6 +1775,21 @@ must also stop saying these providers need no server configuration.
   prefix. Assumed: no prefix (D-B8), entry syntax decided by the contract stage
   and listed in the feature manifest, not silently copied from D-10. Owner:
   contract-author, then product owner for the prefix.
+  *(Revision B2, challenge round 2 NB-5)* The answer must also say which
+  spellings of an approved destination, including OpenAI's and Anthropic's public
+  hosts, count as that destination: an explicit default port (`:443`, `:80`), an
+  upper-case host, and a trailing-dot host. AC-B5, AC-B6 and AC-B15 depend on it.
+  Until it is answered the conservative reading applies: a spelling that is not
+  the canonical one is refused, never approved.
+- **OQ-B7 — The web app's Ollama field writes a property Ollama does not use.**
+  *(Revision B2.)* On every account still holding the stored Ollama default
+  (§B2.1), the web field is ignored for Ollama, and an Ollama refusal names the
+  Ollama-specific base URL, which the web app can neither show nor clear. This is
+  today's behaviour, unchanged by this part (D-B9). Fixing it means either the web
+  app showing and writing the Ollama-specific property (a web change; the
+  contract already exposes it) or changing the fallback order or the stored
+  default (a stored-data or behaviour change). Owner: product owner, then
+  contract-author. Resolve: a follow-up issue filed beside PAC-66-B and OQ-B2.
 
 ## B. Decisions
 
@@ -1723,9 +1820,14 @@ to trade away") and with part A's D-1 to D-13.*
   reads it, and on send against the provider in use** (OQ-B5). Approval never
   transfers between providers, so no option widens who receives the user's key
   (AC-B11). *Assumed by the factory, pending owner confirmation.*
-- **D-B6 — Redirects are not followed to a destination not approved for the
-  provider, and a user's key is never re-sent to another host** (AC-B7). *Assumed
-  by the factory, pending owner confirmation.*
+- **D-B6 — Redirects are never followed for OpenAI, Anthropic and Ollama**
+  *(Revision B2, narrowed from "not followed to a destination not approved for the
+  provider")*, whatever the status, target, method change or query; the request
+  counts as failed, and a user's key is never re-sent (AC-B7). Chosen over
+  following redirects between approved destinations because the vendors' chat
+  operations do not redirect, a followed POST may become a GET on another
+  operation, and "follow, but strip the key" is a rule the plan would have to get
+  right per header. *Assumed by the factory, pending owner confirmation.*
 - **D-B7 — Refusals reuse part A's per-path shapes (D-5)**, with a reason that
   says which case applies. The contract stage decides whether that is a new reason
   value or an existing one; an existing reason's meaning does not change.
@@ -1741,6 +1843,20 @@ to trade away") and with part A's D-1 to D-13.*
   that harm is exactly a request to a non-chat operation. Cost: a gateway that
   needs a path prefix stops working until OQ-B6 is answered; stated in §B7.
   *Assumed by the factory, pending owner confirmation.*
+- **D-B9 — The Ollama fallback order and the stored Ollama default are kept, and
+  the web field's lack of effect on Ollama is accepted as friction.** *(Revision
+  B2.)* The Ollama-specific base URL still wins over the shared one, and no stored
+  `http://localhost:11434` is cleared or rewritten (as D-B4). Consequence, stated
+  plainly: on a deployment that approves an Ollama destination other than the
+  local default, a user who enters that destination in the web app's field gets a
+  successful save but a refused probe that names a property the web app cannot
+  show or clear; D-B1's journey then works through the API, or for an operator
+  who approves the local default, until OQ-B7 is resolved. Chosen over changing
+  the fallback order because that would make the shared base URL, which OpenAI
+  and Anthropic also read, the Ollama destination on every account, and over
+  clearing the stored default because that rewrites user data. Neither
+  alternative is safer, and both change behaviour this part does not need to
+  change. *Assumed by the factory, pending owner confirmation.*
 
 ## Challenge (Part B) — 2026-10-26
 
@@ -2148,3 +2264,67 @@ stored defaults of a settings row.
   If the refusal's `property` enum gains a value, the generated
   `LLMDestinationRefusal` schema must be regenerated in the usual order.
 - The tests §B6 lists, as §B6 says.
+
+## Revision B2 — 2026-10-26
+
+Answers to the Part B round-2 challenge above. Part B's sections are changed in
+place; changed text is marked *(Revision B2)*. Every citation below was re-read
+on c954521 before writing it.
+
+### Blocking
+
+1. **An untouched account does not have empty Ollama settings.** Accepted;
+   confirmed in the code: `002_llm_providers.up.sql:10` defaults the Ollama base
+   URL to `http://localhost:11434`, `:13-14` default the provider to `ollama`, and
+   the three `INSERT INTO settings (user_id)` sites (`storage/settings.go:246`,
+   `storage/personal_calendars.go:165`, `auth/microsoft_oauth.go:65`) name no
+   other column. The factory's preference for the Ollama base URL is at
+   `llm_factory.go:40-42`. (The scratch-postgres read-back is the challenger's; I
+   did not repeat it.)
+   - (i) §B2.1 now states the stored defaults with those citations, and that on
+     such a row the shared base URL is never Ollama's destination. §B2.2 adds that
+     the web app never writes the Ollama-specific property, so its Ollama field has
+     no effect today. §B4's effective-destination definition says an account
+     starts from the stored default, not from "both empty".
+   - (ii) AC-B17 now forces **both** stored base URLs to the internal address, so
+     the forced value is the effective destination of the Ollama probe as well as
+     the OpenAI one. Its "fails today" note is corrected: each probe is sent to the
+     forced address (Ollama through its own property, OpenAI through the shared
+     one). It also says what the e2e test can and cannot observe; zero requests is
+     proven at unit level.
+   - (iii) AC-B9 names the property: the Ollama-specific base URL, written through
+     the API. A second Given pins the web-app case: saving the approved
+     destination as the shared base URL is accepted, but with the stored default
+     in place the probe is decided on `http://localhost:11434` and is refused
+     (naming the Ollama-specific base URL) unless the operator also approved the
+     local default.
+   - (iv) Stated plainly and accepted as friction in new D-B9, with the reason
+     (changing the fallback order would make a value OpenAI and Anthropic also
+     read into the Ollama destination on every account; clearing the stored
+     default rewrites user data). Filed as follow-up OQ-B7 beside OQ-B2, and §B5's
+     web bullet points at it. AC-B10's Given now is the account's starting state,
+     with "both empty" kept as the second, equivalent case.
+
+### Non-blocking, also taken
+
+- NB-1: §B1 now says every untouched account is affected by default, and that
+  after the change such accounts see "Ollama is not enabled" on parse and brief
+  refresh where no Ollama destination is approved. §B7 adds the same as an upgrade
+  note for the release notes.
+- NB-2: `TestDecideLLMApprovedHosts_PerProvider` (`config/llm_hosts_test.go:87-89`)
+  is listed in §B6 group (iv): kept if the plan stores the new approved sets
+  apart from part A's, superseded by D-B2/D-B3 if it merges them; the
+  per-provider property behind it holds either way.
+- NB-3: the three open redirect cases are decided by narrowing D-B6: no redirect
+  is followed for these providers, whatever the status, target, query or method
+  change, including between two destinations approved for the same provider.
+  AC-B7 lists all three cases and requires exactly one recorded request, a POST.
+  §B3's redirect bullet says the same.
+- NB-4: §B7 now names `docker-compose.yml:50-52` and `docker-compose.prod.yml:89-91`.
+  (Checked: the dev file says "configured per-user in the Settings page"; the
+  prod file adds "no server-level env vars needed".)
+- NB-5: OQ-B6 now names the spellings (explicit default port, upper-case host,
+  trailing-dot host) and states the conservative reading until it is answered:
+  a non-canonical spelling is refused.
+- Citation fix: §B6 no longer cites `TestBuildLLMClient_DefaultModels` as
+  protecting OpenAI and Anthropic; it builds an Ollama client only.
