@@ -32,11 +32,15 @@ func NewBedrockClient(region, profile, modelID string) (LLMClient, error) {
 // applied explicitly, so it overrides AWS_REGION and the shared-config region
 // (spec D-7). Loading reads the environment and shared config files only; it
 // acquires no credential and sends nothing.
+//
+// The approved-only HTTP client is deliberately NOT set here: aws.Config's
+// HTTPClient is also what the credential chain (IMDS, STS web identity and
+// assume-role, ECS, SSO) uses, and those must reach their own endpoints. The
+// guard belongs on the inference client only; see Complete.
 func (c *BedrockClient) loadConfig(ctx context.Context) (aws.Config, error) {
 	d := currentDeps()
 	opts := []func(*config.LoadOptions) error{
 		config.WithRegion(c.Region),
-		config.WithHTTPClient(ambientHTTPClient(ProviderBedrock)),
 	}
 	if c.Profile != "" {
 		opts = append(opts, config.WithSharedConfigProfile(c.Profile))
@@ -57,7 +61,10 @@ func (c *BedrockClient) Complete(ctx context.Context, system, user string) (stri
 		return "", err
 	}
 
-	client := bedrockruntime.NewFromConfig(cfg)
+	// Only the inference request goes through the approved-only transport.
+	client := bedrockruntime.NewFromConfig(cfg, func(o *bedrockruntime.Options) {
+		o.HTTPClient = ambientHTTPClient(ProviderBedrock)
+	})
 
 	payload := map[string]interface{}{
 		"anthropic_version": "bedrock-2023-05-31",
