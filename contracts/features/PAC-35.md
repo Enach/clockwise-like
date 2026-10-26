@@ -850,3 +850,185 @@ The gate copied back `contracts/openapi/openapi.yaml` and
 `backend/api/gen/paceday.gen.go`; both are committed in `3e4cdc6`. The web
 gate is not run at this stage: web types regenerate after the contract merges
 (factory §1).
+
+---
+
+## Challenge — 2026-10-26 (round 3)
+
+Reviewer: contract-challenger. Reviewed the committed state of
+`factory/pac-35-contract` at `8e624d9` (contract revision 3) against spec
+`docs/specs/PAC-35.md`, the handlers on this branch, and smart-calendar-flow
+`origin/main` `4ded854`. Focus: whether revision 3 resolves round 2's blocking
+item, then a fresh pass over the parts rounds 1 and 2 did not attack (the
+picture name, the other user schema on the same column, the SSO start path,
+the Microsoft callback ordering).
+
+**Verdict**: accept-with-changes (1 blocking)
+
+### Requests wrongly permitted
+
+None. I re-ran the revision 3 rule myself (scratch Go program, Go 1.25.5,
+`net/mail` + `regexp`, local part `^[A-Za-z0-9._+'-]+$`, the five conditions
+exactly as `components.parameters.LoginHint` states them):
+
+| hint | result |
+|---|---|
+| `alice@acme.com`, `ALICE@ACME.COM`, `alice+x@a.co`, `o'brien@acme.com`, `alice@xn--bcher-kva.de` | forwarded |
+| `alice@acme.com&prompt=none`, `o'brien&prompt=none@acme.com`, `alice@acme.com\r\nX: y` | dropped |
+| `alice@[127.0.0.1]`, `alice@127.0.0.1`, `alice@localhost`, `alice@acme-.com`, `alice@acme.com.` | dropped |
+| `.alice@acme.com`, `alice.@acme.com`, `a..b@acme.com` (ParseAddress refuses) | dropped |
+| `alice@acme.com ` / ` alice@acme.com` (Address != value), `alice%40acme.com` (no `@` after one decode) | dropped |
+| `'@acme.com`, `-@acme.com`, `+@acme.com` | forwarded (see non-blocking 3) |
+
+Every value the description lists as dropped is dropped; both listed
+"forwarded" examples are forwarded. The schema is still `{type: string}` in
+the bundle and `type LoginHint = string` in the generated Go, so none is a 400.
+
+### Requests wrongly forbidden
+
+None. Round 2 blocking 1 is resolved:
+`GET /api/auth/google?login_hint=o%27brien%40acme.com` (and Microsoft, and
+`/api/auth/sso/acme.com`) now forwards. For SSO, D-10's
+`domain.EmailBelongsToDomain("o'brien@acme.com", "acme.com")` is true
+(`backend/domain/domain.go:33-40`: one `@`, domain compared lowercased). The
+web sends that value (`AuthDialog.tsx:37` zod `.email()`, appended at
+`:104,108`).
+
+### Statements the code contradicts (blocking)
+
+1. **`CurrentUserResponse.avatarUrl` says it is "the single name for the
+   picture in every client"** (fragment `auth.yaml:920-926`; bundle
+   `openapi.yaml:6478`), and `getCurrentUser` says "the user's picture has one
+   name end to end: `avatarUrl`" (`auth.yaml:566-569`; bundle `:1011`). The
+   same stored value (`users.avatar_url`) reaches the web under a second name,
+   `avatar_url`, on every scheduling-link and booking host:
+   - scheduling-link hosts: `schedulingHostDTO.AvatarURL
+     json:"avatar_url,omitempty"` (`backend/api/handlers_scheduling_links.go:57`,
+     filled from `user.AvatarURL` at `:292`); contract `booking.yaml:1334`.
+   - public booking page hosts: `publicHostDTO json:"avatar_url,omitempty"`
+     (`backend/api/handlers_booking.go:34`, filled at `:86,99`); contract
+     `PublicHost.avatar_url`, `booking.yaml:1143`.
+   - the web reads it under that name:
+     `smart-calendar-flow/src/api/schedulingLinks.ts:50,59,72`
+     (`avatar_url?: string`).
+
+   So the contract asserts something the server and the contract's own
+   `booking.yaml` contradict. It matters for this feature specifically: AC-14
+   (owner's picture in the host list of their own scheduling link) is the one
+   place the web shows a host picture, and the host list is exactly where the
+   picture is called `avatar_url`. A frontend implementer who takes "single
+   name in every client" literally moves `hosts[].avatar_url` to `avatarUrl`
+   and AC-14 reads `undefined`. Spec §3 and AC-13 only ask for one name
+   "everywhere the app reads the current user", not across schemas.
+   **Fix (contract text only, no schema change):** scope both sentences to the
+   current-user read. For example, `avatarUrl.description`: "The user's
+   picture URL. In the current-user read (`getCurrentUser`) this is the only
+   name for it; clients read it as `avatarUrl`, not `avatar` (PAC-35,
+   API-065). Scheduling-link and booking hosts carry the same stored value as
+   `avatar_url` (`SchedulingHost`, `PublicHost`), unchanged by PAC-35." and in
+   the `getCurrentUser` description: "...has one name in the current-user
+   read: `avatarUrl`...". Mirror it in the manifest's `operationsChanged` line
+   for `getCurrentUser` and `schemasChanged` line for
+   `CurrentUserResponse.avatarUrl`, and in §7 of this file.
+
+### Responses the client cannot handle
+
+None new. Revision 3 moved no status and no response schema. Round 1's checks
+stand and I re-read them against `origin/main` `4ded854`: `requestApi`
+throws `ApiHttpError` on non-2xx and returns `undefined` on 204
+(`src/api/client.ts:400-409`); `apiErrorMessage` prefers `data.error`
+(`:352-356`), so the 409's fixed sentence is shown before the web PR;
+`apiFetch` returns `undefined` on 204 (`src/lib/api.ts:93`).
+
+### Consumers affected
+
+Unchanged from round 1, re-grepped on both repos:
+- clockwise-like `backend/api/handlers_auth_test.go:44` (`TestAuthDisconnect`):
+  fixture break as the manifest says.
+- clockwise-like `backend/api/pac20_cookies_test.go:67`: logout cookie flags
+  only.
+- clockwise-like `e2e/tests/auth-session.spec.ts:24-111`: `/api/auth/me` and
+  the logout bounce; no status assertion on logout, no `login_hint`, no
+  disconnect.
+- clockwise-like `mcp/`: no caller of any touched operation (`git grep` for
+  `auth/disconnect`, `auth/logout`, `login_hint`, `auth_failed`: no match).
+- smart-calendar-flow: `AuthContext.tsx:128` (logout via `apiFetch`),
+  `client.ts:949-956` and its two callers, `contract.test.ts:84-87`,
+  `AuthDialog.tsx:104,108,111-113`, `AuthCallback.tsx:25`. All as listed in
+  §8. Nothing outside `src/api/generated` imports `CurrentUserResponse`,
+  `SsoDetectResponse` or `CalendarDisconnectUnsupported`.
+
+### Contract/implementation divergences
+
+Beyond blocking 1, none in the unchanged statements. Re-checked this round:
+- Microsoft callback ordering (`handlers_microsoft_auth.go:40-82`): the
+  profile read happens before any write, so (a) "nothing is saved" is true;
+  the upsert is a single statement, so (b) "nothing is saved" is true; the
+  token is saved after the upsert, so (c) "user and Microsoft token were
+  saved" is true.
+- OIDC callback (`handlers_sso.go:88-151`): the PAC-45 check runs before
+  `UpsertUser`, so the 403's "No user is upserted and no session is issued"
+  is true; the 404 and 500 use the JSON helpers and the 400s/403 use
+  `http.Error`, as the description now says.
+- Google start: `GetAuthURL` passes `oauth2.ApprovalForce`
+  (`backend/auth/google_oauth.go:25`), so "Google still shows its consent
+  screen every time" is true.
+- Disconnect: `DeleteUserToken` deletes only from `oauth_tokens` (the Google
+  credential; `backend/auth/token_store.go:53-59`); the Microsoft credential
+  lives in `settings.microsoft_tokens`, so the Google branch touches nothing
+  else. A missing settings row is created with `calendar_provider` default
+  `'google'` (migration `003_calendar_providers.up.sql:1`), so "a caller with
+  no settings row gets provider google" is true.
+
+### Uncertainties not actually resolved
+
+None on a touched operation. One consequence of U-13 outside this feature:
+non-blocking 2.
+
+### Verified clean
+
+- **Gate, run by me on the committed branch at `8e624d9`**
+  (`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-35-contract`,
+  exit 0): `make openapi rc=0`, `regenerated: none`,
+  `OK: bundle is in sync (98 paths)`,
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+  `backend coverage: 53.2% (floor 43%) [3899 generated blocks excluded]`,
+  `backend coverage rc=0`, `mcp coverage: 84.0% (floor 75%)`,
+  `mcp coverage rc=0`. Web gate not run (web types regenerate after merge,
+  factory §1); e2e gate not run (no behaviour changed at this stage).
+- **`contractHash`**: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`
+  = `916bb6775b1a35c017e74a919dc75889bea20568e399f78d0ab5a13f89537f4f`,
+  matches the manifest.
+- **LoginHint rule**: table above. The apostrophe is URL-encoded by the
+  forwarding, and no value round 1 or round 2 required dropped is forwarded
+  again.
+- **D-10 with an apostrophe**: `o'brien@acme.com` on `/api/auth/sso/acme.com`
+  forwarded; `o'brien@evil.com` on the same route dropped.
+- **Manifest vs spec acceptance criteria**: AC-1..AC-18 each present; none
+  narrowed. AC-9 now names `o'brien@acme.com`; AC-10 names
+  `alice@acme.com&prompt=none` on all three routes; AC-18's status list
+  covers every status the five operations document (including the new 403).
+- **AC-15 text checks**, repeated on the revision 3 bundle: no "discarded",
+  no silent session failure, logout responses `{204, 401}`, no Microsoft 502,
+  the disconnect 204 has no Set-Cookie and every cookie mention in its
+  description is a negation.
+
+Non-blocking:
+1. Round 1/2's two description omissions (org association kept on a failed
+   Google/SSO sign-in; `settings.calendar_provider = 'outlook'` kept after a
+   failed Microsoft session issue, which makes that user's later disconnect a
+   409) remain open. Still no status or schema impact; the plan should name
+   them in its tests so the behaviour is at least pinned.
+2. `OrgMember.provider` (`calendar.yaml:1617-1623`, `GET /api/org/members`)
+   reads the same `users.provider` column, still free text with an
+   `x-uncertain`, and is described as "identity/calendar provider". U-13's
+   evidence settles it too, and it is not the calendar provider. Not a
+   touched operation, so not AC-15; file a follow-up or note it in the audit
+   so the two schemas stop disagreeing about one column.
+3. The rule forwards `'@acme.com`, `-@acme.com`, `+@acme.com` (RFC-valid; zod
+   refuses them, so the web never sends them). Harmless: URL-encoded, and
+   spec D-4 only requires "syntactically valid". No change needed; recorded
+   so the plan's test author does not mistake it for a gap.
+4. Manifest `status` stays `draft` until blocking 1 is fixed.
