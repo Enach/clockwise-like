@@ -1498,3 +1498,115 @@ analytics queries members with the manager's own credential, and `GET
    resolves to A (`handlers_auth.go:63-70`). OQ-10 is extended to Google.
 3. The AC-8 Google availability row now reads "calendar provider is not
    Outlook: Google or WebCal" (`freebusy_service.go:122-138`).
+
+## Challenge — 2026-10-26 (round 4)
+
+**Verdict**: accept-with-changes
+
+Reviewed the committed spec at `fa86222` (Revision 3) against the Linear issue
+text, the backend and contract at `16f3100` (still `origin/main`) and the local
+`smart-calendar-flow` checkout. The round-3 blocking finding is resolved for the
+three paths it named: §2.9, the owner rule in §3, D-12 and AC-26 to AC-28 now
+state that renewal, status and loss belong to the credential's owner and that
+the requester's log, status and answer are unchanged; AC-29 and D-13 settle
+round-3 Non-blocking 1. One defect remains, on the fourth public booking
+operation, which §2.9 cites and then sets aside.
+
+### Blocking
+
+1. **Public link info tells anonymous visitors how many hosts have a usable
+   calendar token, and the spec neither keeps that count as it is nor lets it
+   change on purpose; one reading of §3 requires the change D-12 forbids.**
+   `GET /api/book/{slug}` (`getPublicLinkInfo`, `openapi.yaml:1259`, route
+   `backend/api/routes.go:25`, no authentication) returns `coverage.checked`,
+   counted from whether each host's Google credential loads
+   (`backend/api/handlers_booking.go:88-90`). The contract defines it as the
+   number of hosts "with a usable OAuth token"
+   (`contracts/openapi/paths/booking.yaml:1100-1105`), and the public booking
+   page shows it to every visitor
+   (`smart-calendar-flow/src/pages/PublicBooking.tsx:378-380`, `CoveragePill`).
+   §2.9 says this operation "never uses or renews" the credential, which is
+   true, and then drops it: it is not in inherited scope, not in §6, and in no
+   criterion. Both of these then pass every criterion:
+   - An implementation that, following §3 ("connected means usable") and the
+     contract's own word "usable", stops counting a host whose loss is recorded.
+     Every anonymous visitor with the link then learns H's Google connection is
+     dead, from a page H did not ask to show it on: exactly what §5 refuses
+     ("telling a ... booking visitor that a ... host's connection was lost") and
+     what D-12 calls widening who sees data. D-12 names only "team availability
+     and booking responses" as unchanged, and AC-28 and §6 pin only slots and
+     booking creation, so nothing forbids it.
+   - An implementation that keeps counting stored rows (D-1 keeps them), after
+     which the contract's "usable" describes intended rather than actual
+     behaviour, which factory §7.2 forbids.
+
+   *Resolves when* the spec states what `coverage.checked` reports for a host
+   whose loss has been recorded (D-12 and §5 point to "unchanged: a lost host
+   still counts as checked", recorded as a factory assumption pending owner
+   confirmation); lists `GET /api/book/{slug}` in inherited scope as unchanged
+   in response (checked: no `x-uncertain`, and no audit finding names it); adds
+   it to §6's "responses do not change" bullet with `PublicBooking.tsx` as its
+   consumer; requires the contract stage to make the `PublicLinkCoverage`
+   description match what is actually counted; and extends AC-28 so that after
+   H's loss the link-info response is identical to before. If the spec instead
+   chooses that visitors see the loss, it must say why that does not widen who
+   sees data, against D-12.
+
+### Non-blocking
+
+1. **§2.9's list of owner-only Google consumers is presented as complete and is
+   not.** It omits every engine path that reaches the credential through
+   `newCalOps` (`backend/engine/cal_iface.go:53-64`, user from the request
+   context): focus time (`focus_time.go:52`), compression (`compression.go:43`),
+   smart scheduling (`smart_schedule.go:50`), and the personal-blocker sync,
+   which runs every 30 minutes for every user with no request from them
+   (`backend/main.go:95`, `engine/personal_blocker.go:51,92`) and renews the
+   owner's work Google credential. D-13's rule ("every consumer that renews the
+   credential") already covers them, so no criterion is wrong; the list and the
+   matching inherited-scope bullet should name them or say they are examples,
+   so a plan author does not read the list as the set of paths needing loss
+   recording.
+2. **Temporary failures on someone else's behalf are not pinned.** §3 says a
+   temporary failure is never recorded as a loss, and AC-10 tests that only for
+   the AC-8 table. No criterion runs AC-26, AC-28 or AC-29 with a timeout or 5xx
+   on the owner's refresh, and those are the paths that swallow every error
+   today (`team_availability.go:85-99`, `booking.go:93-96`, `:269-272`), where
+   an implementation that treats any swallowed error as a loss would go
+   unnoticed. One sentence in AC-26 or AC-28 would close it.
+
+### Criteria I could not falsify
+- None. AC-28 as written is falsifiable for slots and booking creation; the gap
+  in Blocking 1 is the operation it does not cover. New criteria, each with a
+  test that fails today and passes afterwards:
+  - AC-26: no connection-lost entry exists today, and none is written to either
+    log.
+  - AC-27: `TokenSource` at `team_availability.go:84` renews but never writes
+    back.
+  - AC-28: no entry or status change for H today; the host's renewal is not
+    stored (`booking.go:202-208`).
+  - AC-29: `auto_decline.go:77-87` and `manager.go:191-195` record nothing.
+
+### Citations I checked and found wrong
+- None wrong. Revision 3's new citations are correct:
+  `team_availability.go:78-88,85-99,175-176`;
+  `booking.go:93,114-124,202-208,252,269-272`; `routes.go:23-27,236`;
+  `handlers_booking.go:88-90`; `auto_decline.go:77-87`;
+  `main.go:119-124,150-162`; `habits.go:250-254`;
+  `handlers_habits.go:139,241,384`; `analytics.go:212-216`;
+  `handlers_analytics.go:33,91`; `manager.go:191-195`;
+  `handlers_manager.go:80,102`; `openapi.yaml:1299,1359,4964`;
+  `api-audit.md:285,307`. The claim that Outlook and Zoom are used only for
+  their owner holds: every `LoadMicrosoftToken` call takes the caller's or
+  requester's id (`handlers_conferencing.go:40,139,169`,
+  `freebusy_service.go:123`, `handlers_auth.go:99`), and Zoom is read only from
+  the caller's settings (`conference/factory.go:14-21`).
+- Incomplete rather than wrong: §2.9's "`GET /api/book/{slug}` ... never uses
+  or renews it" omits that the operation reports credential usability to the
+  public (Blocking 1); the owner-only list is incomplete (Non-blocking 1).
+
+### Consumers this breaks
+- `smart-calendar-flow/src/pages/PublicBooking.tsx:378-380` and
+  `src/api/schedulingLinks.ts:61` (`coverage.checked` on the public booking
+  page): breaks, or starts revealing a host's loss to visitors, if Blocking 1 is
+  resolved by changing what `checked` counts; unaffected if it is resolved as
+  unchanged.
