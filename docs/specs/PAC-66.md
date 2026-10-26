@@ -734,3 +734,138 @@ changes that are not obvious from the text are marked *(Revision 1)*.
 - NB-5: Inherited scope names both operations and their status.
 - NB-6: AC-12 now has one outcome (start, log, ignore the entry), recorded as D-6.
 - Citations found wrong: §2.6 and §6 corrected.
+
+## Challenge — 2026-10-26 (round 2)
+
+**Verdict**: accept-with-changes
+
+Reviewed on `factory/pac-66-spec` at a23e836 (committed state only), against the
+code on that commit, `smart-calendar-flow` at 8bf231f, the contract fragments and
+`docs/factory/api-audit.md`. Revision 1 fixes all three round-1 blocking findings.
+AC-13 and AC-14 pin the parse and brief-refresh outcomes, and they match today's
+"LLM unusable" shapes (`backend/nlp/parser.go:179-182`, and
+`backend/engine/meeting_brief_service.go:73-89`, which stores the failed brief so
+`getBrief` returns it). AC-15 guarantees that a user can clear a value. The
+sentinel-credential Given makes the zero-request criteria fail today. A fresh grep
+for `NewLLMClientFromSettings` and `.Complete(` outside tests still finds only the
+three send paths. Parse makes two `Complete` calls (`parser.go:185` via
+`extractAttendees` at `:227`, and `:197`), and both use the same client. The
+brief-refresh Given "no workspace connections, so no other outbound traffic"
+holds: Slack and Notion are called only when a connection row exists
+(`meeting_brief_service.go:63-71`), and the handler uses a stub event instead of
+fetching from the calendar (`handlers_meeting_briefs.go:64-67`).
+
+### Blocking
+
+1. **No criterion covers a probe that overrides the provider, and that is the only
+   way the web app probes.** The probe body may set `llmProvider`
+   (`backend/api/handlers_llm.go:50-56`). The web client always sends it, taken
+   from the form rather than from the saved row
+   (`smart-calendar-flow/src/api/client.ts:712-716`, used at `:1297-1301`; `src/pages/Settings.tsx:173` passes the unsaved `draft`). Every
+   probe criterion assumes the provider comes from the *stored* settings: AC-1
+   "probes their stored configuration", AC-4 "has that provider selected", and
+   AC-17 reaches the ambient provider through a settings write. An implementation
+   could key its check on the stored `llmProvider` (for example, refusing at write
+   time and whenever the saved provider is ambient) and pass AC-1 to AC-17. Then
+   take a user whose saved provider is `openai` and whose row holds
+   `azureEndpoint: "https://attacker.example"`. That user sends
+   `POST /api/llm/test {"llmProvider":"azure_openai"}`, which is exactly what the
+   Settings page's "Test connection" button does, and the deployment's token goes
+   out. §3 forbids this in prose ("enforced again at the moment of sending, on
+   every path"), but no test written from the criteria would catch it.
+   *Resolve*: add a criterion for each ambient provider with this setup: the stored
+   provider is a user-key provider (or a different ambient provider), the stored
+   destination is unapproved (and, as a separate case, nothing is approved for the
+   provider), and the probe body names the ambient provider. Expected: zero
+   requests, and a 4xx JSON error as in AC-1 and AC-4.
+
+2. **The spec gets the effective host of an empty Bedrock region wrong.** §4 says
+   "An empty region means the deployment's own configured region", and Revision 1
+   says it again. The code substitutes a hard-coded `us-east-1`
+   (`backend/nlp/llm_bedrock.go:21-23`) and passes it as `config.WithRegion`
+   (`:31-33`). That setting overrides `AWS_REGION` and the shared-config region,
+   so the deployment's configured region is never used. (The round-1 challenge
+   made the same mistake, "falls back to the deployment's own AWS configuration",
+   and the author adopted it.) This changes what the criteria expect. Take an
+   operator who approved only the Bedrock host of their configured region, say
+   `eu-west-1`. For every user with an empty region, the result is either a
+   refusal or a request to `us-east-1`, and the spec tells the test author to
+   expect the opposite. Read literally, it also asks the implementer to change
+   which region is used, which is a behaviour change §3 does not list.
+   *Resolve*: state that an empty Bedrock region means the built-in default region
+   (`us-east-1` today), and that the request goes to its resolved host only if that
+   host is approved. Add a Bedrock version of AC-16: empty region with the default
+   region not approved gives a refusal; with it approved, exactly one request. If
+   the owner wants empty to mean "the deployment's region" instead, record that as
+   a behaviour change and a decision.
+
+### Non-blocking
+
+1. **AC-10 constrains the order that the shared Givens leave free.** The Givens
+   say "an implementation may acquire the credential before or after it decides to
+   refuse". The compose stack has no cloud identity. An implementation that
+   acquires first and returns on failure gives today's 502
+   ("azure: get token: ...") instead of AC-10's 4xx. So AC-10 requires that a
+   destination refusal is reported even when acquiring the credential would fail.
+   That requirement is reasonable. State it in the Givens so the plan does not
+   discover it in e2e.
+2. **The spec does not say whether approval is per provider.** AC-1 ("one Azure
+   inference host") and AC-4 ("approved nothing for a given ambient provider")
+   assume a separate set per provider, but §3 says only "the approved inference
+   destinations". With a shared set, a user can point the Azure endpoint at the
+   approved Vertex or Bedrock host, and the Azure token goes to a host it was
+   never meant for. State that each provider's credential goes only to hosts
+   approved for that provider.
+3. **"Exactly one request" needs the test double's answer pinned.** AC-6, AC-16
+   and the Bedrock criterion requested in Blocking 2 count requests on the probe.
+   The AWS SDK retries failed requests by default. If the recording transport
+   answers with an error, a correct implementation records several Bedrock
+   requests. State that in these criteria the double answers the inference request
+   successfully.
+4. **An empty Azure endpoint gets two different messages.** §4 says an empty
+   endpoint is refused with "the provider is reported as not configured". AC-1's
+   error must name "the endpoint as not approved". Say which message the probe
+   gives for `""`, and add a criterion for the empty case. Today it appears only in
+   the definition.
+5. **The web repo has no "brief panel" consumer.** §5, §6 and D-5 say the web brief
+   panel reads the refresh response. A case-insensitive grep for "brief" under
+   `smart-calendar-flow/src` (generated types excluded) finds nothing, and the
+   client never calls `/meetings/{id}/brief`. Parse has two consumers: the web
+   client (`client.ts:1155`) and the MCP tool (`mcp/tools.go:195-203`). Nothing
+   breaks, but the consumer list is wrong.
+
+### Criteria I could not falsify
+
+- None in the revised set. With the sentinel credential, AC-1 to AC-9, AC-13,
+  AC-14, AC-16 and AC-17 fail against a23e836. AC-10 fails on the write (200
+  today) and on the probe (502 today). AC-6, AC-11, AC-12 and AC-15 are guards, and
+  each would catch a specific wrong implementation. Blocking 1 is a missing
+  criterion, not an unfalsifiable one.
+
+### Citations I checked and found wrong
+
+- §4 "Effective host", Bedrock: "An empty region means the deployment's own
+  configured region". The code uses `us-east-1`, hard-coded at
+  `backend/nlp/llm_bedrock.go:21-23` and applied with `config.WithRegion` at `:31-33`
+  (Blocking 2).
+- Inherited scope, brief refresh: "documented 200 `status: "failed"`,
+  `contracts/openapi/paths/habits.yaml:481-483`". That sentence is at
+  `habits.yaml:487-488`. Lines 481-483 hold the operation's `operationId` and
+  `summary`.
+- §5, §6, D-5: "the brief panel" in the web app. No such consumer exists
+  (Non-blocking 5).
+- Checked and correct: `parser.go:179-182,185,197-200,227`, `handlers_nlp.go:28-31`,
+  `meeting_brief_service.go:73-86`, `handlers_meeting_briefs.go:73-77`,
+  `scheduling.yaml:332-337`, `habits.yaml:463` (`x-uncertain` on `getMeetingBrief`),
+  `api-audit.md:314` (API-080, open, on `POST /api/nlp/parse`),
+  `llm_vertex.go:20-22`, `llm_azure_openai.go:28-37`, `llm_vertex.go:30-37`,
+  `llm_bedrock.go:38-41`, `bedrockruntime@v1.57.1/endpoints.go:226`
+  (`IsValidHostLabel`), `mcp/tools.go:195-203`, `e2e/db.ts` (the e2e suite can
+  write to the database directly, as AC-10 needs).
+
+### Consumers this breaks
+
+- None, given D-5. The web probe (`smart-calendar-flow/src/api/client.ts:1294-1302`)
+  already throws on a non-2xx and shows the server's message, so a 4xx in place of
+  today's 502 renders. Parse and brief refresh keep their response shapes for the
+  web client (`client.ts:1155`) and `clockwise-like/mcp/tools.go:195-203`.
