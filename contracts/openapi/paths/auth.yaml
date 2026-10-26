@@ -796,11 +796,22 @@ components:
         links a Paceday account; the account signed in is the one the provider
         authenticates, checked exactly as before.
         The LoginHint rule: the value is forwarded only when it is a bare email
-        address, meaning all of: at most 254 characters; exactly one `@`; Go's
-        `net/mail.ParseAddress` accepts it with an empty display name and an
-        `Address` equal to the whole value (so no `<...>`, display name,
-        comment, whitespace or other extra text). Anything else, including an
-        empty value, is dropped silently and sign-in starts without a hint.
+        address, meaning all of: (1) at most 254 characters; (2) exactly one
+        `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
+        name and an `Address` equal to the whole value (so no `<...>`, display
+        name, comment, whitespace or other extra text); (4) the local part
+        (before `@`) uses only `A-Z a-z 0-9 . _ + -`; (5) the domain (after
+        `@`) is a DNS hostname: two or more dot-separated labels, each matching
+        `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
+        least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
+        no single-label host (`localhost`). Anything else, including an empty
+        value, is dropped silently and sign-in starts without a hint. Examples
+        dropped (spec AC-10, "a hint carrying extra URL parameters"):
+        `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
+        `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
+        `alice@localhost`, `alice@acme`. Example forwarded: `alice@acme.com`.
+        When `login_hint` is repeated, only the first value is considered
+        (`url.Values.Get`); the others are ignored.
         It is never a 400: the schema is a plain string on purpose, because a
         malformed hint must not stop a sign-in (spec AC-10). The forwarded
         value is URL-encoded by the OAuth library, so it cannot add a parameter
