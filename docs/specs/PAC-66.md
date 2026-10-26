@@ -376,3 +376,168 @@ PAC-24 decision that endpoints, regions and profiles "identify or bill the owner
   confirmation.*
 - **D-4 — Split.** Channel 2 (OpenAI, Anthropic, Ollama base URLs) moves to
   PAC-66-B. *Assumed by the factory, pending owner confirmation.*
+
+## Challenge — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewed on `factory/pac-66-spec` at 5b7a7cc (committed state only), against
+the Linear issue text, the code on that commit, both repos' consumers, the
+contract fragments and `docs/factory/api-audit.md`. The core analysis holds: the
+three ambient branches, the three send paths (probe, parse, brief refresh; a grep
+for `NewLLMClientFromSettings` and `.Complete(` finds no fourth), the Vertex
+authority injection (re-run with Go 1.25.5 against the exact format string:
+`attacker.example/x`, `attacker.example#` and `attacker.example:443/` all yield
+host `attacker.example[:443]`; `us-central1` yields
+`us-central1-aiplatform.googleapis.com`), the Bedrock host-label check, and the
+PATCH changed-only validation. The findings below are about what the criteria
+leave undecided, not about the diagnosis.
+
+### Blocking
+
+1. **§3 promises a 4xx on every send path; the criteria and the contract say
+   otherwise for parse and brief refresh, and no criterion decides it.** §3:
+   "A refusal at send time ... The user gets a client error ... neither a 502 ...
+   nor a 500." AC-1, AC-2, AC-4 and AC-7 pin a 4xx for the probe only. AC-3 and
+   AC-9 pin "zero requests" for parse and brief refresh and say nothing about the
+   response. Today those two operations report LLM-side failure very differently,
+   and the contract documents it: `POST /api/nlp/parse` returns **200**
+   `{"intent":"unknown","error":"..."}` when client construction fails
+   (`backend/nlp/parser.go:179-182`, `contracts/openapi/paths/scheduling.yaml:332-337`)
+   and a **500 text/plain** when `Complete` fails (`parser.go:197-200`,
+   `backend/api/handlers_nlp.go:28-31`); `POST /api/meetings/{event_id}/brief/refresh`
+   returns **200** with `status: "failed"` and `brief_text` "LLM not configured"
+   or "LLM error: ..." (`backend/engine/meeting_brief_service.go:73-86`,
+   `backend/api/handlers_meeting_briefs.go:73-77`,
+   `contracts/openapi/paths/habits.yaml:481-483`). An implementer can satisfy every
+   AC while the parse refusal is a 500, which §3 forbids, or can turn it into a
+   4xx and break consumers §5 says are untouched (the web natural-language bar,
+   the MCP tool `clockwise_parse_command` at `mcp/tools.go:195-203`, the brief
+   panel). *Resolve*: add a criterion per path stating the observable outcome of a
+   send-time refusal (status, body shape, and for briefs what is stored), and
+   either narrow §3's sentence to the probe or accept that the parse/refresh
+   responses change and list those operations under Inherited scope (see
+   Non-blocking 5).
+
+2. **Clearing a destination property is not guaranteed to succeed, although D-3
+   relies on the user correcting their row.** AC-5 refuses a write whose value's
+   "effective host is not approved". It does not say what the empty string's
+   effective host is, and the empty string is not inert: an empty Vertex location
+   is replaced by `us-central1` at build time (`backend/nlp/llm_vertex.go:20-22`),
+   an empty Bedrock region falls back to the deployment's own AWS configuration,
+   and an empty Azure endpoint yields a relative URL. Read literally, AC-5 permits
+   refusing `azureEndpoint: ""` on a deployment that approved nothing for Azure,
+   which locks a user out of the one correction D-3 promises them. The web app
+   sends exactly this kind of write (`smart-calendar-flow/src/api/client.ts:699-710`,
+   diff-only PATCH). *Resolve*: a criterion that setting each destination property
+   (Azure endpoint, Vertex location, Bedrock region) to `""` is accepted on write
+   regardless of the approved set, and a statement of what effective host an empty
+   value has at send time (in particular whether Vertex's `us-central1` default
+   must itself be approved).
+
+3. **The zero-request criteria pass today in any environment without a deployment
+   identity, and AC-10 cannot pass at all as written.** Every ambient branch
+   acquires its credential *before* building the URL
+   (`llm_azure_openai.go:28-37`, `llm_vertex.go:30-37`, `llm_bedrock.go:38-41`).
+   In a unit test or the compose stack with no Azure, GCP or AWS identity, today's
+   code fails at token acquisition and sends **no** inference request. So AC-1,
+   AC-2, AC-3, AC-4, AC-7, AC-9 and AC-10's last sentence pass against the
+   vulnerable code, and their "fails today" notes are only true when a credential
+   is available. Conversely AC-10's "the fake provider receives exactly one
+   request" and AC-6's "sends exactly one request" fail for every implementation
+   unless the environment yields a token and the fake is reachable over transport
+   the server trusts (AC-7 and D-2 forbid insecure). Separately, "the recording
+   transport records **every** attempted request" contradicts §5's carve-out of
+   token acquisition: if token traffic is recorded, an implementation that
+   acquires a token before refusing fails AC-1 although §5 says that traffic is out
+   of scope. *Resolve*: add to the shared Givens that a deployment credential is
+   obtainable (a token source yielding a known sentinel token) so the ACs fail
+   today; state whether "zero requests" counts token-acquisition traffic (or
+   require, as behaviour, that refusal happens before acquisition); and state for
+   AC-10 what the e2e stack must provide (a test credential and a fake provider
+   over trusted secure transport), or move that half of AC-10 to the unit level.
+
+### Non-blocking
+
+1. **Switching provider is unspecified at write time.** Under PAC-24 AC-17 the
+   write validates only properties whose values change
+   (`backend/api/handlers_settings.go:128-136`, `:191-203`). A PATCH of only
+   `{"llmProvider":"azure_openai"}` onto a row already holding an unapproved
+   `azureEndpoint` changes no destination property. The spec does not say whether
+   that write is refused or accepted (send-time refusal makes either safe). OQ-3
+   is near this but asks about the approved set, not a stored unapproved value.
+   State the outcome so the contract and the web form agree. Likewise a write of
+   `azureEndpoint` while another provider is selected: AC-5 implies it is checked
+   anyway; say so explicitly.
+2. **AC-8 misses the scheme downgrade.** Go's redirect rule ignores the scheme:
+   `shouldCopyHeaderOnRedirect` compares host names only
+   (`net/http/client.go:992-1009`, Go 1.25.5), so an approved host answering an
+   `https://approved/...` request with a redirect to `http://approved/...` gets
+   the bearer token re-sent in cleartext. §3 says approval "covers secure transport
+   only", but AC-8 only tests an unapproved *host*. Add the same-host
+   insecure-scheme case.
+3. **Bedrock's "effective host" is not defined by the region alone.** The SDK
+   host also depends on the selected shared-config profile (user-chosen, OQ-4),
+   that profile's `endpoint_url`, `AWS_ENDPOINT_URL*` in the environment, and
+   FIPS/dual-stack variants. AC-5 and AC-6 for Bedrock need a definition of the
+   value being approved (for example the host the request is actually sent to), or
+   the write-time half for Bedrock should be stated as region validity only.
+4. **PAC-66-B is not filed.** The issue's third draft acceptance
+   (`ollamaBaseUrl`/`llmBaseUrl` reject `http://`, loopback, RFC1918, link-local)
+   and half of its title leave with it. The split is sound (the Ollama defaults
+   cited in §0 check out), but the spec should require PAC-66-B to exist and be
+   linked before PAC-66 is closed, otherwise the issue's problem is half-solved
+   silently.
+5. **Inherited scope omits the other two touched operations.** If Blocking 1
+   changes their responses, `POST /api/nlp/parse` carries open finding API-080
+   (`docs/factory/api-audit.md:314`, zero-time `range_start`/`range_end`), which
+   factory §7.1 "touch it, fix it" would pull in;
+   `POST /api/meetings/{event_id}/brief/refresh` has no open marker (the
+   `habits.yaml:463` `x-uncertain` is on `getMeetingBrief`). Name both operations
+   and their status either way.
+6. **AC-12 is weakly falsifiable** ("either refuses to start or logs ... and
+   treats it as not approved"). Both are safe, but the contract stage should pick
+   one so a single test can check it.
+
+### Criteria I could not falsify
+
+- AC-1, AC-2, AC-3, AC-4, AC-7, AC-9 (first half): as written they pass against
+  today's code whenever no deployment credential is obtainable in the test
+  environment (Blocking 3).
+- AC-10: the "exactly one request" half fails for every implementation in a stack
+  with no cloud identity; the "both fakes receive nothing" half passes for every
+  implementation, today's included (Blocking 3).
+
+### Citations I checked and found wrong
+
+- §6 "**No test protects the Ollama or Anthropic branches**" — actually
+  `backend/nlp/parser_test.go` has `TestBuildLLMClient_Ollama` (:90),
+  `TestBuildLLMClient_Anthropic` (:118), `TestAnthropicClient_Complete` (:183),
+  `TestOllamaClient_Complete_Mock` (:244) and `TestNLPService_Parse_WithOllama`
+  (:282). What is true is narrower: no *probe-level* test covers those branches.
+- §2.6 "No test records where an outbound LLM request goes" — overstated: the
+  `httptest` servers in `parser_test.go:162-262` receive the user-key branches'
+  requests. It is true for the three ambient branches (no test file mentions
+  azure, vertex or bedrock).
+- All other citations checked and correct: `llm_factory.go:13-58,16,18,20,44-46`,
+  `llm_azure_openai.go:28-34,39-40,50`, `llm_vertex.go:30,39-42,53`,
+  `llm_bedrock.go:32-38`, `bedrockruntime@v1.57.1/endpoints.go:222-230`,
+  `parser.go:102-104,125-148,138,144-145,173-184,239-241`,
+  `handlers_llm.go:23-27,44,50-62,79,80-82`, `handlers_meeting_briefs.go:73-77`,
+  `handlers_settings.go:72-149,191-203,205-282,256-258`, `routes.go:74-77`,
+  `storage/settings.go:176-193`, `scheduling.yaml:476-488,1777-1797`,
+  `.env.example:38-41`, `docker-compose.yml:46-48`,
+  `smart-calendar-flow/src/pages/Settings.tsx:749`, `api-audit.md:185,273`,
+  `PAC-56.md:329-334`, PAC-24 Decisions (OQ-1, OQ-3, OQ-4),
+  `pac24_scope_test.go:70-124`, `e2e/tests/settings.spec.ts:40-60`.
+
+### Consumers this breaks
+
+- None if the spec stays as scoped and parse/refresh keep their response shapes.
+  If Blocking 1 is resolved by changing them: the `smart-calendar-flow`
+  natural-language bar and brief panel (they read the 200 `error` and
+  `status: "failed"` shapes) and `clockwise-like/mcp/tools.go:195-203`
+  (`clockwise_parse_command` relays the parse response).
+- The web settings save is diff-only (`smart-calendar-flow/src/api/client.ts:699-710`),
+  so a stored unapproved value does not block unrelated saves; AC-9's second half
+  holds for the web client.
