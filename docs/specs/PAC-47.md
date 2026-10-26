@@ -1566,3 +1566,169 @@ branches. Nothing was compiled or run, because this is a text stage.
 5. `UpsertUser` is cited at `handlers_microsoft_auth.go:68`.
 6. §2.6 and §6 name the two loopback fixtures and require that they be adapted,
    never skipped or deleted.
+
+## Challenge — 2026-10-26 (round 3)
+
+Reviewed by `spec-challenger` against the committed spec at `1948568` (Revision 2)
+on `factory/pac-47-spec`. The code was read on `main` at `7de7044` (api) and
+`4ded854` (web), which are still the tips of both `main` branches. I also read the
+Linear issue text. I read no author reasoning beyond this file. I opened every
+citation that Revision 2 added. I compiled and ran nothing, because this is a
+text-only stage.
+
+Revision 2 answers all five round-2 blocking findings. Every new citation I
+opened matches the code (list below). The two blocking findings are both in the
+booking-slot behaviour that Revision 2 introduced (§3.4 bullet 3, D-13, AC-4d/4e).
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **D-13 understates its cost. Without token refresh, failing closed makes the
+   booking links of every Microsoft-signed-in user go empty about an hour after
+   each sign-in. Links they co-host go empty too.** D-13 gives the cost as "such a
+   host offers no slots until their calendar is readable again". That reads as a
+   transient outage. The code makes it close to permanent:
+   - Every Microsoft sign-in, not only a Settings connect, makes the user an
+     Outlook user. The callback calls `SaveMicrosoftToken`
+     (`backend/api/handlers_microsoft_auth.go:74`), which writes
+     `calendar_provider = 'outlook'` (`backend/auth/microsoft_oauth.go:68`).
+   - Nothing refreshes the stored access token. `LoadMicrosoftToken` returns it
+     as stored (`microsoft_oauth.go:74-89`), and §5 records that it lapses after
+     about an hour.
+   - Slots are collective: a slot is offered only when **all** accepted hosts are
+     free (`backend/engine/booking.go:74-99`). "No slot that needs that host is
+     offered" therefore means the whole link offers nothing, including a link
+     owned by a Google host who added a Microsoft-signed-in co-host.
+
+   Guests open booking pages at times the host does not control. So for these
+   hosts the page is empty almost all the time. Today it offers every slot,
+   because such a host has no Google credential and `hostBusy` drops the error
+   (`booking.go:123`). That is wrong, but the page is usable. This regression
+   reaches users who never touched the provider setting, through the guest-facing
+   `smart-calendar-flow/src/pages/PublicBooking.tsx`. D-1 and §5 record the
+   token-expiry cost only for the status line and the week view. The PAC-67
+   recommendation in §5 is a recommendation, not a requirement.
+   *Resolves when* either of these is true:
+   - The spec makes token refresh (PAC-67) a stated prerequisite for releasing
+     the Outlook booking-slot behaviour of §3.4.
+   - D-13 records this cost so the owner can weigh it. That means naming the
+     affected population (every user who has signed in with Microsoft, and every
+     collective link with such a co-host) and saying that "readable again" means
+     a manual reconnect or sign-in roughly every hour until PAC-67 lands.
+
+2. **§3.4 makes an unauthenticated route drive an unbounded number of outbound
+   reads of a user-chosen address, and nothing in the spec bounds it.**
+   `GET /api/book/{slug}/slots` needs no session (`backend/api/routes.go:26`).
+   Without a `date`, it calls `CollectiveSlots` for each of the next 60 days
+   (`backend/api/handlers_booking.go:171-183`). Each call reads every host's
+   calendar again (`booking.go:91-97`). D-13 makes that read a WebCal feed fetch
+   or a Microsoft Graph call. The feed reader's cache does nothing when a new
+   instance is built per request (§2.5).
+   - One anonymous request can then cause about 60 × (hosts) outbound fetches of
+     an address that the link's host typed in. §3.5 limits *where* the server may
+     fetch. It does not limit *how often* anonymous traffic can make it fetch.
+     Anyone can sign up, store a public victim's address as a feed, publish a
+     link, and get a 60-fold reflector.
+   - For Outlook hosts the same volume goes to Graph. If Graph throttles it,
+     D-13's fail-closed rule turns the throttle into an empty booking page. An
+     anonymous party can therefore blank a host's booking page.
+   - Today the route reads only Google this way, and the read fails open.
+   - OQ-6 (feed size and time limits) is scoped to "hanging the week view" and
+     does not mention the booking path.
+
+   *Resolves when* the spec states a requirement that bounds the calendar reads a
+   public slots request may cause for each host, both within one request and
+   across repeated requests in a stated freshness window. That requirement needs
+   an AC that fails today. For example: given a WebCal host, when one dateless
+   slots request is made, then the feed is fetched at most a stated number of
+   times. OQ-6, or a new open question, must name the booking path as a consumer
+   of the limits.
+
+### Non-blocking
+
+1. **What a guest sees when a host's calendar cannot be read is not specified.**
+   The dated form of the slots request answers a `CollectiveSlots` error with
+   500 `internal error` (`handlers_booking.go:195-198`). The dateless form skips
+   the day silently (`:176-178`). An implementation that fails closed by
+   returning an error satisfies AC-4e. On the dated form, though, the guest would
+   see "internal error" (`PublicBooking.tsx:139-142`). AC-4d/4e should name both
+   forms of the request and say what answer the guest gets.
+2. **A cached Google answer can survive a switch to WebCal or Outlook.** The
+   free/busy query caches each answer for 15 minutes. The cache key is
+   (requester, email, date), and the provider is not part of it
+   (`backend/engine/freebusy_service.go:96-97,140-150`). A user who switches from
+   Google keeps getting Google-derived busy time for up to 15 minutes. No new
+   request reaches Google, so AC-4 still passes. §3.4 ("answers from the chosen
+   calendar") does not hold. Say that a provider change invalidates earlier
+   answers, or start AC-4 from a warm cache.
+3. **AC-4 does not say how the user's own row is treated when their address is
+   on a personal-mail domain.** Addresses on personal-mail domains are answered
+   "unknown" before any provider is consulted (`freebusy_service.go:92-94`).
+   Should a WebCal user whose own address is `@gmail.com` get their busy time
+   from the feed? Under §3.4 they should. Under today's code they would get
+   "unknown". Name the domain in AC-4, or state the rule.
+4. **The rule that only the four connect actions attach has no AC for a connect
+   started from outside the product.** `startMicrosoftOAuth` is a plain GET.
+   Under `SameSite=Lax`, the session cookie rides along on a top-level navigation
+   from another site. Suppose a victim has a Microsoft session and has already
+   given consent. A link on another site could then complete a "connect" with no
+   interaction. That switches the victim's work calendar to Outlook, which under
+   D-9 stops every Paceday write for them. §3.3's text already forbids this. Add
+   an AC that a Microsoft flow not started from one of the four connect actions
+   changes neither the signed-in user's credentials nor their work calendar.
+5. AC-3h says "This passes today", and it is labelled [e2e]. It can only run once
+   the D-15 stand-ins exist, so it is a regression guard for the new code, not a
+   check of today's behaviour. That is fine, but say so.
+
+### Criteria I could not falsify
+
+- AC-3h passes today by design. It is a regression guard, and it is labelled as
+  one.
+- AC-7 is a gate. AC-8d and the §6 items are regression guards.
+- Every other criterion has a test that fails today and passes afterwards. For
+  the criteria Revision 2 added:
+  - AC-4b fails because `Suggest` reads through `newCalOps` → Google
+    (`smart_schedule.go:56,65-71`).
+  - AC-4d fails because `hostBusy` reads Google (`booking.go:123`,
+    `:202-209`).
+  - AC-4e fails because a failed read leaves the host free (`booking.go:123`,
+    `:95-96`).
+  - AC-4f fails because of the Google-only client at
+    `handlers_calendar.go:203-209`.
+  - AC-5 (error tracker) fails because of `reportServerError` at
+    `server_errors.go:48`.
+  - AC-6 (sign-in steps) fails because the endpoints are fixed at
+    `microsoft_oauth.go:14-17` and `handlers_microsoft_auth.go:93`.
+
+### Citations I checked and found wrong
+
+- None. These Revision 2 citations match `main`:
+  - backend: `freebusy_service.go:119-138,122-127,128-137`;
+    `smart_schedule.go:56,59-71`; `handlers_schedule.go:162,164`;
+    `booking.go:122-135,123-125,202-209`; `routes.go:26,35-39,70`;
+    `handlers_calendar.go:203-209`; `handlers_freebusy.go:70`;
+    `handlers_personal.go:168-171,191-192`; `server_errors.go:16-22,41-49,75-80`;
+    `microsoft_oauth.go:14-17,52-69,74-89`; `handlers_microsoft_auth.go:41-45,62,68,74,79,93`.
+  - mcp: `mcp/tools.go:22,54,119,129-139,243,265`; `mcp/tools_test.go` exists.
+  - audit: `docs/factory/api-audit.md:269,270,286,287,304,322,334,335,349,471,486`.
+  - web: `Onboarding.tsx:61-62,78-87`; `client.ts:927,947-948`;
+    `AuthDialog.tsx:108`; `Index.tsx:555`; `ScheduleSuggestModal.tsx:97`;
+    `LinkEditDrawer.tsx:157`.
+- I confirmed by grep that there are exactly four connect actions
+  (`Dashboard.tsx:456`, `ConnectionStatus.tsx:13`,
+  `WorkCalendarConnection.tsx:81`, `Onboarding.tsx:80`) and one sign-in caller of
+  the Microsoft route (`AuthDialog.tsx:108`).
+- §2.7's claim also holds: the only readers of the provider setting are the
+  status handler, the free/busy service and the unused factory.
+
+### Consumers this breaks
+
+- smart-calendar-flow/src/pages/PublicBooking.tsx:126-142: empty pages for every
+  link with an Outlook host once the token lapses (Blocking 1), and possibly
+  "internal error" on the dated form (Non-blocking 1).
+- backend/api/handlers_booking.go:171-183: the dateless loop multiplies feed and
+  Graph reads per anonymous request (Blocking 2).
+- smart-calendar-flow/src/components/links/LinkEditDrawer.tsx:157: co-host
+  coverage chips can show Google-derived busy time for up to 15 minutes after a
+  provider switch (Non-blocking 2).
