@@ -1132,4 +1132,37 @@ document (§5, §8, this section).
 
 ### What was run for revision 4
 
-RUNLOG_PLACEHOLDER
+In the worktree, at 0e2990c (this revision's content commit):
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py --check` | `OK: bundle is in sync (98 paths)`, rc=0 |
+| `python3 scripts/openapi_migration_report.py --check` | `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc=0 |
+| `bash scripts/openapi_gen_go.sh --check` | `OK: backend/api/gen matches the contract`, rc=0 |
+| `sha256sum contracts/openapi/openapi.yaml` | `b8b2fd63…8bf9`, unchanged, equal to `contractHash` |
+| manifest parsed with `json.load` | ok |
+
+Then, with the host checkout switched to this branch at 0e2990c (and switched back to
+`impl/pac-66b-llm-base-url-backend` afterwards):
+
+```
+$ bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-pac21-error-leaks-remaining-contract
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 48.3% (floor 43%) [3896 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+**Not run:** web-gate and e2e-gate, for the reason given in Revision 2. The scan change
+this revision specifies is not implemented here (stage 4 does that), so no Go test
+exercises the exemption table yet.
