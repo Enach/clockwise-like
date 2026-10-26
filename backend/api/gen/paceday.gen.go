@@ -149,6 +149,12 @@ const (
 	DailyRecapSettingsSendToDm      DailyRecapSettingsSendTo = "dm"
 )
 
+// Defines values for EventPatchRequestSendUpdates.
+const (
+	EventPatchRequestSendUpdatesAll  EventPatchRequestSendUpdates = "all"
+	EventPatchRequestSendUpdatesNone EventPatchRequestSendUpdates = "none"
+)
+
 // Defines values for FreeBusyLegacyResultCoverage.
 const (
 	FreeBusyLegacyResultCoverageKnown   FreeBusyLegacyResultCoverage = "known"
@@ -434,6 +440,12 @@ const (
 	AllDays WorkingHoursScheduleMode = "all_days"
 	ByDay   WorkingHoursScheduleMode = "by_day"
 	Empty   WorkingHoursScheduleMode = ""
+)
+
+// Defines values for DeleteEventParamsSendUpdates.
+const (
+	DeleteEventParamsSendUpdatesAll  DeleteEventParamsSendUpdates = "all"
+	DeleteEventParamsSendUpdatesNone DeleteEventParamsSendUpdates = "none"
 )
 
 // AddEventConferenceRequest POST /api/events/{id}/conference.
@@ -1072,22 +1084,34 @@ type EventConferenceLink struct {
 	Url      string `json:"url"`
 }
 
-// EventPatchRequest Body of PATCH /api/events/{id}. Every field is optional; only non-null fields are applied. Unknown keys are silently ignored by encoding/json.
+// EventPatchRequest Body of PATCH /api/events/{id}. Every field is optional; null or absent leaves the corresponding part of the event unchanged. Since PAC-29 the schema declares every key the web client sends (`send_updates`, `room_resource_email`, `attendee_details`, API-018). The server's decoder still ignores undeclared keys; the contract forbids them so a generated client cannot send a key that would be a silent no-op.
 type EventPatchRequest struct {
-	// Attendees FULL REPLACEMENT of the attendee list with email-only entries. Sending `[]` clears all attendees, including room resources.
+	// AttendeeDetails Accepted and ignored by the server. Declared because the web client sends it alongside `attendees` on every edit (API-018). Who attends comes from `attendees`; existing attendees keep their names and RSVPs from Google (see `attendees`); a client never sets another person's RSVP. PAC-29 decision D-7.
+	AttendeeDetails *[]map[string]interface{} `json:"attendee_details"`
+
+	// Attendees Replaces the event's NON-ROOM attendees with this list (emails compared case-insensitively, duplicates collapsed). An email already on the event keeps its existing Google attendee entry (display name, RSVP, organizer, optional); a new email is added as an email-only entry. Room resource attendees already on the event (`resource: true` or `*@resource.calendar.google.com`) are always kept, so writing back the list GET /api/calendar/events returned (which omits rooms) does not drop the room. `[]` removes every non-room attendee. PAC-29, API-044: before PAC-29 this replaced the whole list with email-only entries, dropping names, RSVPs and the room.
 	Attendees   *[]openapi_types.Email `json:"attendees"`
 	Description *string                `json:"description"`
 
-	// End Same handling as `start`.
-	End      *time.Time `json:"end"`
-	Location *string    `json:"location"`
+	// End Same handling as `start`. For a bare date this is Google's exclusive end date, as in CalendarEvent.end.
+	End      *string `json:"end"`
+	Location *string `json:"location"`
 
-	// Start Decoded as Go time.Time (RFC3339) and re-emitted as UTC RFC3339 in `start.dateTime`. Setting this on an all-day event converts it to a timed event.
-	Start *time.Time `json:"start"`
+	// RoomResourceEmail A Google room resource calendar address (as returned by GET /api/rooms). When non-empty and not already an attendee, the room is added as a resource attendee. Rooms already on the event are kept: this endpoint never removes a room (PAC-29 decision D-6). Null, absent or `""` leaves the rooms unchanged. A non-empty value that is not a `*@resource.calendar.google.com` address is a 400. PAC-29, API-018.
+	RoomResourceEmail *string `json:"room_resource_email"`
+
+	// SendUpdates Passed to Google's update call as `sendUpdates`: `all` emails the guests about the change, `none` does not. Null or absent means `none`, which is what every PATCH did before PAC-29. Any other value is a 400 and nothing is written. PAC-29, API-018.
+	SendUpdates *EventPatchRequestSendUpdates `json:"send_updates"`
+
+	// Start Either an RFC3339 date-time, written as Google `start.dateTime` in UTC (the event becomes or stays timed), or a bare `YYYY-MM-DD` date, written as Google `start.date` (the event becomes or stays all-day). The same dual format as CalendarEvent.start, so a client can write back what it read. PAC-29, API-043: before PAC-29 only a date-time was accepted and an all-day event was always converted to a timed one. After applying the patch, start and end must be of the same kind or the request is a 400.
+	Start *string `json:"start"`
 
 	// Title Maps to Google `summary`. Null or absent leaves it unchanged.
 	Title *string `json:"title"`
 }
+
+// EventPatchRequestSendUpdates Passed to Google's update call as `sendUpdates`: `all` emails the guests about the change, `none` does not. Null or absent means `none`, which is what every PATCH did before PAC-29. Any other value is a 400 and nothing is written. PAC-29, API-018.
+type EventPatchRequestSendUpdates string
 
 // FocusBlockRecord storage.FocusBlock (backend/storage/models.go), with explicit snake_case json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and the web app's FocusBlock type. Before PAC-26 the struct had no tags and the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`, `CreatedAt`.
 type FocusBlockRecord struct {
@@ -3082,6 +3106,15 @@ type GetCalendarFreeBusyParams struct {
 	Attendees *string `form:"attendees,omitempty" json:"attendees,omitempty"`
 }
 
+// DeleteEventParams defines parameters for DeleteEvent.
+type DeleteEventParams struct {
+	// SendUpdates Whether Google emails the guests about the cancellation. Absent means `none`, which is what every DELETE did before PAC-29. Any other value is a 400 and nothing is deleted.
+	SendUpdates *DeleteEventParamsSendUpdates `form:"send_updates,omitempty" json:"send_updates,omitempty"`
+}
+
+// DeleteEventParamsSendUpdates defines parameters for DeleteEvent.
+type DeleteEventParamsSendUpdates string
+
 // ClearFocusBlocksParams defines parameters for ClearFocusBlocks.
 type ClearFocusBlocksParams struct {
 	// Week Week anchor date, `YYYY-MM-DD`. Omitted -> `time.Now()`.
@@ -4849,7 +4882,7 @@ type ServerInterface interface {
 	DisconnectZoom(w http.ResponseWriter, r *http.Request)
 	// Delete a Google Calendar event
 	// (DELETE /api/events/{id})
-	DeleteEvent(w http.ResponseWriter, r *http.Request, id string)
+	DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams)
 	// Partially update a Google Calendar event
 	// (PATCH /api/events/{id})
 	PatchEvent(w http.ResponseWriter, r *http.Request, id string)
@@ -5302,7 +5335,7 @@ func (_ Unimplemented) DisconnectZoom(w http.ResponseWriter, r *http.Request) {
 
 // Delete a Google Calendar event
 // (DELETE /api/events/{id})
-func (_ Unimplemented) DeleteEvent(w http.ResponseWriter, r *http.Request, id string) {
+func (_ Unimplemented) DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6834,8 +6867,19 @@ func (siw *ServerInterfaceWrapper) DeleteEvent(w http.ResponseWriter, r *http.Re
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteEventParams
+
+	// ------------- Optional query parameter "send_updates" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "send_updates", r.URL.Query(), &params.SendUpdates)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "send_updates", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteEvent(w, r, id)
+		siw.Handler.DeleteEvent(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -11337,7 +11381,8 @@ func (response DisconnectZoom500JSONResponse) VisitDisconnectZoomResponse(w http
 }
 
 type DeleteEventRequestObject struct {
-	Id string `json:"id"`
+	Id     string `json:"id"`
+	Params DeleteEventParams
 }
 
 type DeleteEventResponseObject interface {
@@ -11350,6 +11395,15 @@ type DeleteEvent204Response struct {
 func (response DeleteEvent204Response) VisitDeleteEventResponse(w http.ResponseWriter) error {
 	w.WriteHeader(204)
 	return nil
+}
+
+type DeleteEvent400JSONResponse ErrorResponse
+
+func (response DeleteEvent400JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteEvent401JSONResponse CalendarNotConnectedError
@@ -11369,6 +11423,15 @@ func (response DeleteEvent401TextResponse) VisitDeleteEventResponse(w http.Respo
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DeleteEvent404JSONResponse ErrorResponse
+
+func (response DeleteEvent404JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteEvent500JSONResponse ErrorResponse
@@ -16699,10 +16762,11 @@ func (sh *strictHandler) DisconnectZoom(w http.ResponseWriter, r *http.Request) 
 }
 
 // DeleteEvent operation middleware
-func (sh *strictHandler) DeleteEvent(w http.ResponseWriter, r *http.Request, id string) {
+func (sh *strictHandler) DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams) {
 	var request DeleteEventRequestObject
 
 	request.Id = id
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.DeleteEvent(ctx, request.(DeleteEventRequestObject))
