@@ -594,3 +594,212 @@ for a non-empty Azure endpoint with no host.
 - **Not run:** the web half of `openapi-check` (the gate runs with
   `WEB=/nonexistent`; web types regenerate after this contract merges, factory
   §1), and no e2e, because this revision changes descriptions only.
+
+---
+
+## Challenge — 2026-10-26 (round 2, contract revision 2)
+
+**Verdict**: accept (0 blocking)
+
+Reviewed on `factory/pac-66-contract` at `10586e7`, committed state only, from
+the spec, the fragment diff against `origin/main` (`037656c`, which is still the
+merge base), the bundle, the manifest, and the code in both repos. The author's
+reasoning was read only as far as this document states it.
+
+### Round-1 blocking item
+
+- **B-1 is fixed.** The `testLLMConnection` 422 description now says a 502 "does
+  not imply a request was sent", and the 502 description lists the no-request
+  causes. Every prefix it cites is the one the code raises: `azure: credential:`
+  and `azure: get token:` (`backend/nlp/llm_azure_openai.go:28-37`),
+  `vertex: find credentials:` and `vertex: get token:`
+  (`backend/nlp/llm_vertex.go:30-37`), and `bedrock: load config:`
+  (`backend/nlp/llm_bedrock.go:38-41`). All of them reach the 502 through
+  `backend/api/handlers_llm.go:79-82`. Revision 2 is description-only:
+  `git diff def7fd9 HEAD` changes no `backend/api/gen` file, and in the fragment
+  the only changed lines are inside `description:` blocks.
+
+### Requests wrongly permitted
+
+None blocking. Attacked:
+
+1. `PATCH /api/settings {"azureEndpoint":"https://evil.example%2F@my-resource.openai.azure.com"}`,
+   `"https://my-resource.openai.azure.com:"` (empty port) and
+   `"https://appr%6Fved-host"` (percent-encoded host). The Azure URL is
+   `TrimRight(endpoint,"/") + "/openai/deployments/…"`
+   (`llm_azure_openai.go:39-40`). The appended text starts with `/`, so it ends
+   the authority, and the built URL always has the same authority as the stored
+   endpoint. So "the host of the stored endpoint" (spec effective host) is the
+   host contacted, and the userinfo, port and exact-host rules in §4 decide
+   each case. `azureDeployment` and `azureApiVersion` land after that `/` and
+   cannot change the host. Clean.
+2. `PATCH /api/settings {"gcpProject":"x@evil.example/"}` cannot move the Vertex
+   host either, because it is interpolated after `/v1/projects/`
+   (`llm_vertex.go:39-42`). Only `gcpLocation` precedes the authority's end, and
+   it is the property the contract checks. Clean.
+3. A pre-PAC-66 stored `awsRegion` such as `evil.example#`. It cannot be
+   written any more (one host label, the `patchSettings` description), and at
+   send time the contract checks the host the SDK actually resolves, not the
+   region string (manifest `operatorConfiguration.effectiveHost`). That
+   includes any `endpoint_url` from the profile `awsProfile` selects. Clean, as
+   long as the plan computes the host with the SDK's own resolver. That is an
+   implementation matter, and AC-19 tests it.
+4. A second settings write path that skips the check. There is none.
+   `storage.SaveSettingsForUser` has one caller (`handlers_settings.go:138`),
+   after `validateChangedSettings` (`:134`). `validateSettings` (the
+   all-properties variant, `:158`) has no production caller. No MCP tool writes
+   settings. Clean.
+5. A fourth send path carrying the cloud identity. `azidentity`,
+   `FindDefaultCredentials`, `LoadDefaultConfig` and `bedrockruntime` appear
+   only in `backend/nlp/llm_{azure_openai,vertex,bedrock}.go`, and
+   `NewLLMClientFromSettings` has only the three callers the contract names
+   (`handlers_llm.go:73`, `handlers_meeting_briefs.go:74`, `nlp/parser.go:240`).
+   Clean.
+
+### Responses the client cannot handle
+
+None. `llmTest` (`smart-calendar-flow` `origin/main`
+`src/api/client.ts:1294-1302`) sends `llmTestBody`, which always includes
+`llmProvider` from the form (`client.ts:712-716`), so AC-18 (the check follows
+the body's provider) is the case the web app actually exercises. The 422 body's
+required, non-empty `error` is shown by `apiErrorMessage` before any status
+fallback (`client.ts:351-353`).
+
+Non-blocking:
+
+- **N-1. `property` cannot always name a stored setting.** The schema says
+  `property` is "present whenever `reason` is not `provider_not_enabled`" and
+  names "the stored setting the refused destination was built from". A Bedrock
+  host can come from an operator-side override that no stored setting
+  controls: `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` / `AWS_ENDPOINT_URL` in the
+  server environment, or the default profile's `endpoint_url` when `awsProfile`
+  is `""`. The contract counts these toward the effective host (manifest
+  `effectiveHost`). Take an operator who approves
+  `bedrock-runtime.us-east-1.amazonaws.com` but sets
+  `AWS_ENDPOINT_URL=https://vpce-…`. The probe must answer
+  `422 destination_not_approved` with a `property` that the user cannot fix.
+  Suggested wording: "`property` is absent when the effective host does not
+  come from any stored setting (an operator endpoint override)". This only
+  loosens a guarantee no consumer reads. Alternatively, accept that the answer
+  is `awsRegion` and say so.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/client.ts:1294-1302` (`llmTest`) and `:351-366`
+  (`apiErrorMessage`): the 422 renders `error`. Not broken.
+- `smart-calendar-flow` settings save: diff-only. A stored unapproved value is
+  never re-sent. Not broken.
+- `smart-calendar-flow/src/api/generated`: additive after regen. Not broken.
+- `e2e/`: outside `node_modules`, no test mentions `llm/test`, Azure, Vertex,
+  Bedrock or AWS. `settings.spec.ts:54-55` sends stored values back, and the
+  changed-only rule does not re-check them. Not broken.
+- `backend` and `mcp` tests: no `_test.go` file mentions `azureEndpoint`,
+  `gcpLocation`, `awsRegion` or an ambient provider name, so no existing test
+  writes a destination the new 400s would refuse. Not broken.
+- `mcp/tools.go`: `clockwise_parse_command` relays the parse 200 unchanged. Not
+  broken.
+
+### Contract/implementation divergences
+
+None blocking. Non-blocking:
+
+- **N-2. The Vertex effective host is still defined two ways (round-1 1a, left
+  open by revision 2).** The spec defines effective host as "the host … of the
+  inference request that would actually be sent", which means parsed. D-13 and
+  §7 of this document say a location that keeps the approved authority and
+  injects a path is **accepted**. The fragment instead gives the literal
+  formula three times: the `testLLMConnection` description (`Vertex:
+  <location>-aiplatform.googleapis.com`), the `gcpLocation` description ("The
+  server builds the host `<gcpLocation>-aiplatform.googleapis.com`"), and the
+  manifest `effectiveHost`. Concrete request:
+  `PATCH /api/settings {"gcpLocation":"us-central1-aiplatform.googleapis.com/v1/projects/OTHER/locations/us-central1/publishers/google/models/m:generateContent#"}`
+  with `us-central1-aiplatform.googleapis.com` approved. Under the literal
+  formula it is a 400. Under the spec, D-13 and §7 it is a 200. I checked both
+  readings against the matching rule. Neither sends the token to an unapproved
+  host: a literal string equal to an approved DNS name forces the location to
+  be a plain label, and the parsed reading is covered by the userinfo and port
+  rules. So the disagreement is about the observable status of one hostile
+  request, not about where the credential goes. That is why it is not
+  blocking. Fix (wording only): in those three places, say "the host of the
+  URL the server builds (`https://<location>-aiplatform.googleapis.com/…`), as
+  parsed".
+- **N-3. The 502 description promises more than the code enforces.** "The body
+  never carries the deployment credential." `redact` strips only the submitted
+  and stored API keys (`handlers_llm.go:64-71`). The 502 message carries the
+  upstream body verbatim (`postJSON`, `"LLM API error %d: %s"`; `vertex:
+  unexpected response: %s`, `llm_vertex.go:66`). So the promise holds only
+  because an approved Azure or Google host does not echo the request's
+  `Authorization` header. Since the host is operator-approved, this is not a
+  user-reachable leak. Suggested wording: "the server adds no part of the
+  deployment credential; upstream text is echoed as-is (API-054)".
+- **N-4. A stale line in §9.** It says the bundle sha256 is "`9d972b2a…f921c`,
+  as in the manifest". Since revision 2 the manifest says `ab59fcf4…d2361b`.
+  This is a record of the revision-1 run, but "as in the manifest" is now
+  false.
+
+### Uncertainties not actually resolved
+
+- None claimed (`resolvesUncertain: []`). The `x-uncertain` count in the bundle
+  is 18 (`grep -cE '^\s*x-uncertain:'`), and none sits on `testLLMConnection`
+  or `patchSettings`.
+- Round-1 non-blocking items left open by revision 2: 1a (now N-2), 1b
+  (the DNS-label rule for `gcpLocation`), the `property`/`reason` invariant not
+  being encoded in the schema, and the `reason` for a non-empty Azure endpoint
+  with no host. I re-checked each. None of them makes the contract permit
+  sending the credential to an unapproved host, so none blocks. They pass to
+  the plan stage, or to the `approvedHostPathSteering` follow-up, as the
+  revision says.
+
+### Verified clean
+
+- **Write-time refusal is atomic.** `validateChangedSettings` runs before
+  `SaveSettingsForUser` (`handlers_settings.go:134-141`), so "nothing in the
+  body is stored" holds for the new 400s.
+- **The changed-only rule compares encoded values** (`changedSettingsProperties`,
+  `handlers_settings.go:165-185`). Re-sending a stored unapproved
+  `azureEndpoint` byte-for-byte is not re-checked (D-12). `"https://evil/"` over
+  a stored `"https://evil"` counts as a change and is refused.
+- **Brief refresh already has the AC-14 shape.** `MeetingBriefService.Generate`
+  stores `status: failed` with a text and returns 200
+  (`engine/meeting_brief_service.go:73-91`).
+- **Parse already has the AC-13 shape.** `ParseResult{Intent:"unknown",
+  Error:…}` with 200 (`nlp/parser.go:178-181`). The round-1 note that the
+  refusal must come before `extractAttendees` (`:185`) still stands for the
+  plan.
+- **Ambient providers never fail in client construction**
+  (`nlp/llm_factory.go:15-20`). So the 500 description's "a destination refusal
+  is NEVER a 500" does not conflict with any existing 500 on those providers.
+- **Redirect handling.** `postJSON` uses `http.DefaultClient`
+  (`nlp/parser.go:125-148`). It follows redirects and re-sends
+  `Authorization` to subdomains and over `http` on the same host, as the spec
+  §2.5 says. The contract maps every refused redirect to the 502, which AC-8
+  allows ("the probe reports failure").
+- **Gates I ran myself on `10586e7`:**
+  - `python scripts/openapi_assemble.py --check` printed
+    `OK: bundle is in sync (98 paths)`, rc=0.
+  - `sha256sum contracts/openapi/openapi.yaml` printed
+    `ab59fcf458454d8ef2faf79da35f3e4613de05e893132704707f4e5999d2361b`, which
+    matches the manifest's `contractHash`.
+  - `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-66-contract`:
+
+    ```
+    make openapi rc=0
+    regenerated: none
+    OK: bundle is in sync (98 paths)
+    OK: MIGRATION.md covers all 119 operations (0 generated)
+    OK: backend/api/gen matches the contract
+    openapi-check(api) rc=0
+    backend lint rc=0
+    mcp lint rc=0
+    backend test rc=0
+    mcp test rc=0
+    backend  coverage: 43.9% (floor 43%) [3871 generated blocks excluded]
+    backend coverage rc=0
+    mcp      coverage: 84.0% (floor 75%)
+    mcp coverage rc=0
+    ```
+
+  - **Not run:** the web gate and the web half of `openapi-check`. Web types
+    regenerate after this contract merges (factory §1), so the web repo's
+    generated files are behind this bundle until then. No e2e was run, because
+    this stage changes no behaviour.
