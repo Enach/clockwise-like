@@ -75,3 +75,129 @@ None needed: no product choice is made here.
 ## 6. Rollback
 
 Revert the contract PR and the types PR. No runtime effect.
+
+## Challenge — 2026-10-26
+
+Reviewer: contract-challenger (separate agent; read the committed artefacts on
+`factory/new-auth-contract-prose-contract` at `ba052b2`, the code at that
+commit, and the web types branch; not the author's reasoning).
+
+**Verdict**: accept-with-changes
+
+The assembled contract (the description strings that reach the bundle and the
+generated types) matches the code. The one blocking finding is in the
+reviewer-facing prose this change edits: it rejects an alternative, and keeps an
+open point, on the premise that the root `security` is `bearerAuth` alone,
+which the bundle contradicts.
+
+### Requests wrongly permitted
+
+None. No schema, `required`, status code or `security` key changed, and the
+bundle/gen check confirms it. Requests attacked against the new prose:
+
+1. `GET /api/auth/me` with `Cookie: auth_token=<valid JWT for user A>` and
+   `Authorization: Bearer <valid JWT for user B>` — contract says Bearer wins;
+   `requireAuth` (`backend/api/middleware.go:32-33`) takes the header token, so
+   the request runs as B. Pinned by
+   `TestRequireAuth_ValidCookieAndValidBearer_BearerIdentityWins`.
+2. Same with `Authorization: Bearer garbage` and a valid cookie — contract says
+   401, no fallback; code sets `tokenStr = "garbage"`, `ValidateToken` fails,
+   401 at `middleware.go:43-46`. Pinned by
+   `TestRequireAuth_InvalidBearerAndValidCookie_Rejected`.
+3. `POST /api/auth/detect` 21 times in a minute from one socket peer, each with
+   a different `X-Forwarded-For: 203.0.113.N` — contract says XFF is never read;
+   `clientIP` (`backend/api/ratelimit_detect.go:96-114`) never reads it; the 21st
+   is a 429 (`handlers_sso.go:24-27`). Pinned by
+   `TestDetectLimiter_RotatingXForwardedFor_StillThrottled`.
+4. Same with rotating `X-Real-IP` from an untrusted peer — ignored, throttled
+   (`TestDetectLimiter_RotatingXRealIPFromUntrustedPeer_StillThrottled`); from a
+   trusted peer with `X-Real-IP: not-an-ip` — `net.ParseIP` is nil, keys on the
+   peer, as the description's "holds a valid IP" says.
+
+### Responses the client cannot handle
+
+None. The web types branch `factory/new-auth-contract-prose-types` changes
+`src/api/generated/types.ts` and `schemas.types.d.ts` in JSDoc lines only
+(checked: every non-comment `+`/`-` line of `git diff origin/main...` is a
+`/** @description */` line). No consumer reads descriptions at runtime.
+
+### Consumers affected
+
+- None at runtime. `mcp/` has its own `bearerAuth` (static token, `mcp/auth_test.go`)
+  and calls the backend server-side; it never sends the `auth_token` cookie, so
+  precedence cannot change its behaviour.
+- Non-blocking, stale prose outside this change's `allowedPaths` (left for a
+  follow-up, not a reason to widen this PR):
+  - `e2e/auth.ts:5-7` still lists "1. the `auth_token` cookie 2. an
+    `Authorization: Bearer` header" as the order `requireAuth` uses.
+  - `docs/factory/api-audit.md:434` still says "`requireAuth` checks the cookie
+    first" in the finding narrative (the table row at :266 is already marked
+    Fixed).
+
+### Contract/implementation divergences
+
+1. **Blocking.** The root document already declares
+   `security: [{bearerAuth: []}, {cookieAuth: []}]` (`contracts/openapi/openapi.yaml:24-26`,
+   present on `origin/main` since #173). Three statements in this change
+   contradict that:
+   - `.md` §3 alternative 1 rejects "changing the global `security` to
+     `[{bearerAuth: []}, {cookieAuth: []}]`" because it "would change the
+     generated server interface and the web types" and "stays an open point".
+     It is already the state, so the alternative was rejected for a reason that
+     is not real.
+   - `auth.notes.md:157-162` (edited by this change) still says the root
+     "should most likely declare" that same value — an open point that is
+     already closed.
+   - `auth.yaml:12-13` (in the header paragraph this change rewrote) says
+     protected operations "inherit the global scheme (`bearerAuth`)".
+   Fix (prose only, no regen impact): in `.md` §3 replace alternative 1 with the
+   real constraint — the root already lists both schemes as alternatives, and
+   OpenAPI alternatives cannot express precedence, so precedence lives in the
+   scheme descriptions; in `auth.notes.md` close that open-point bullet as
+   "already the root value since #173"; in `auth.yaml:13` say "inherit the
+   global requirement (`bearerAuth` OR `cookieAuth`)".
+
+2. Non-blocking. `POST /api/auth/detect` description says `TRUSTED_PROXIES` is
+   "empty by default, so no proxy is trusted". True of the binary
+   (`os.Getenv`, `ratelimit_detect.go:33`) and of `docker-compose.yml:31` and
+   `.env.example:18`, but `docker-compose.prod.yml:47` defaults it to
+   `172.16.0.0/12,192.168.0.0/16,10.0.0.0/8` (safe there: the backend port is
+   unpublished and `nginx/nginx.conf:8,15` overwrites `X-Real-IP` with
+   `$remote_addr`). Suggest "empty unless the operator sets it; the production
+   compose file trusts the Docker private pools", so a reader of the contract
+   does not conclude production keys every user behind nginx on one bucket.
+   `.md` §3 alternative 3 already says production enables it, so the two
+   artefacts currently disagree in emphasis.
+
+3. Non-blocking edge of "a `Bearer ` header wins". Go trims trailing whitespace
+   from header values, so `Authorization: Bearer ` (empty token) arrives as
+   `Bearer`, fails `HasPrefix(h, "Bearer ")` and falls back to the cookie;
+   `Authorization: bearer <jwt>` (lower case, valid per RFC 7235's
+   case-insensitive scheme) also falls back to the cookie. The header comment's
+   "(none, or another scheme)" covers neither literally. Suggest "a header value
+   starting with the case-sensitive `Bearer ` followed by a non-empty token".
+
+### Uncertainties not actually resolved
+
+None claimed: `resolvesUncertain` is empty and no `x-uncertain` sits on
+`detectAuthProvider` or the security schemes. API-008/API-062 are prose
+updates; the four `behaviourTestsAlreadyInTree` exist
+(`backend/api/middleware_test.go:37,54,71`, `ratelimit_detect_test.go:47`) and
+passed in the gate run below.
+
+### Verified clean
+
+- Fixed window (not sliding): `windowEnd` set once per bucket, reset only on
+  expiry (`ratelimit_detect.go:55-58`). Sweep "at most once a minute": guarded
+  by `lastDetectSweep` (`:44-52`).
+- 429 body: `writeError(w, "rate limit exceeded", 429)` — JSON
+  `ErrorResponse`, as the unchanged response schema says.
+- Acceptance tests vs spec: there is no spec (§0, accepted as stated); the
+  three manifest acceptance items are each checkable and were checked above.
+- Gate, run by this reviewer on `ba052b2`:
+  `bash .claude/factory/api-gate.sh factory/new-auth-contract-prose-contract` →
+  `make openapi rc=0`, `regenerated: none`, `OK: bundle is in sync (98 paths)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  backend/mcp lint rc=0, backend/mcp test rc=0, coverage backend 53.2% (floor
+  43%) rc=0, mcp 84.0% (floor 75%) rc=0. `web-gate.sh` was not run by this
+  reviewer.
