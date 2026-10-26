@@ -154,11 +154,11 @@ Frontend cross-checked: `src/api/{types,contract,client}.ts`, `src/lib/api.ts`,
 Additional points a human should settle that are **not** marked `x-uncertain`
 because the code is unambiguous, but where the code may not be the intent:
 
-- Whether the global `security` for the assembled document should be
-  `bearerAuth` alone. The spec fragment defines both `bearerAuth` and
-  `cookieAuth`; protected operations carry no `security:` key and so inherit
-  whatever the root document declares. Given the middleware accepts either
-  (Bearer first since PAC-39) and the frontend only ever sends a cookie, the root document should
-  most likely declare `security: [{bearerAuth: []}, {cookieAuth: []}]`.
+- ~~Whether the global `security` for the assembled document should be
+  `bearerAuth` alone.~~ Closed: the root document has declared
+  `security: [{bearerAuth: []}, {cookieAuth: []}]` since #173, and protected
+  operations (no `security:` key) inherit it. OpenAPI alternatives say "either
+  is accepted", not in which order, so the Bearer-over-cookie precedence
+  (PAC-39, #215) is stated in the `bearerAuth` / `cookieAuth` descriptions.
 - `503` on the Microsoft routes is JSON while the neighbouring `400`/`500` on
   the same handler are text/plain. Pick one before clients start branching.

@@ -10,8 +10,10 @@
 #   request with no `Bearer` header (none, or another scheme) falls back to the
 #   `auth_token` cookie. Both work.
 #   Protected operations below carry no `security:` key and therefore inherit the
-#   global scheme (`bearerAuth`); `cookieAuth` is the transport the shipped
-#   frontend actually uses (it never sets an Authorization header).
+#   global requirement (`bearerAuth` OR `cookieAuth`); OpenAPI alternatives cannot
+#   express the Bearer-over-cookie order, so it lives in the scheme descriptions.
+#   `cookieAuth` is the transport the shipped frontend actually uses (it never
+#   sets an Authorization header).
 paths:
   /api/health:
     get:

@@ -45,12 +45,15 @@ Description strings only. No operation, schema, status code, `required` or
 
 ## 3. Alternatives rejected
 
-1. **Make the precedence machine-readable by changing the global `security`
-   to `[{bearerAuth: []}, {cookieAuth: []}]`.** OpenAPI security alternatives
-   express "either is accepted", not an order, so it could not encode
-   Bearer-over-cookie anyway, and it would change the generated server
-   interface and the web types. That is a contract change with consumers, out
-   of scope for a prose correction; it stays an open point in `auth.notes.md`.
+1. **Make the precedence machine-readable in the `security` requirement.**
+   The root document already declares `security: [{bearerAuth: []},
+   {cookieAuth: []}]` (since #173), and protected operations inherit it. A
+   list of security requirement objects means "any one of these is accepted";
+   OpenAPI has no way to say which wins when both are present, and no
+   `security` value (root or per-operation) can encode Bearer-over-cookie.
+   So the requirement is left as it is and the precedence is stated in the
+   `bearerAuth` and `cookieAuth` scheme descriptions and the fragment's header
+   comment, which is the only place the format allows it.
 2. **Add an `x-rate-limit` extension or a `RateLimit` response header to the
    429.** The server sends no such header; specifying one would describe what
    should be, not what is.
@@ -201,3 +204,45 @@ passed in the gate run below.
   backend/mcp lint rc=0, backend/mcp test rc=0, coverage backend 53.2% (floor
   43%) rc=0, mcp 84.0% (floor 75%) rc=0. `web-gate.sh` was not run by this
   reviewer.
+
+## Revision — 2026-10-26 (answers challenge round 1)
+
+Author: contract-author. Revision of the prose only; no fragment string that
+reaches the bundle changed, so the bundle hash above and the web types are
+unchanged.
+
+### Blocking finding 1 — artefacts contradict the root `security`
+
+Accepted. The root document has declared
+`security: [{bearerAuth: []}, {cookieAuth: []}]` since #173
+(`contracts/openapi/openapi.yaml:24-26`; `git log -S` on the bundle points at
+#173). The three statements were written as if the root were `bearerAuth`
+alone. Fixed:
+
+- §3 alternative 1 is rewritten around the real constraint: the requirement
+  already lists both schemes as alternatives, OpenAPI alternatives cannot
+  express precedence, so precedence lives in the scheme descriptions. It no
+  longer claims a regen impact or an open point.
+- `auth.notes.md`: the "should most likely declare" bullet is closed as
+  already the root value since #173, with the pointer to where precedence is
+  stated.
+- `auth.yaml` header comment: protected operations now "inherit the global
+  requirement (`bearerAuth` OR `cookieAuth`)". This is a YAML comment, not
+  assembled into the bundle.
+
+### Non-blocking findings 2 and 3
+
+Not taken in this revision. Both would change description strings that reach
+the bundle and the generated web types, which the round-1 fix was asked to
+avoid. They are recorded here so a follow-up can pick them up:
+
+- 2: `TRUSTED_PROXIES` is empty in the binary and the dev compose file, but
+  `docker-compose.prod.yml` trusts the Docker private pools. §3 alternative 3
+  already says production enables it; the operation description should say
+  so too.
+- 3: "a `Bearer ` header wins" should read "a header value starting with the
+  case-sensitive `Bearer ` followed by a non-empty token" (empty token and
+  lower-case `bearer` fall back to the cookie).
+
+The stale prose in `e2e/auth.ts:5-7` and `docs/factory/api-audit.md:434` is
+outside this change's `allowedPaths` and is left for the same follow-up.
