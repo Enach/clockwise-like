@@ -308,3 +308,190 @@ the author's own reading (to be verified by the challenger):
 - `disconnectCalendar`'s summary, description and responses do not say it
   clears the session, logs the user out or sets a cookie. The description
   says the opposite.
+
+---
+
+## Challenge — 2026-10-26
+
+Reviewer: contract-challenger. Reviewed the committed state of
+`factory/pac-35-contract` at `26016ad` (fragment `contracts/openapi/paths/auth.yaml`,
+bundle, `PAC-35.yaml`, this file) against spec `docs/specs/PAC-35.md` (round 4
+accepted), the handlers on this branch, and smart-calendar-flow `origin/main`
+`4ded854`.
+
+**Verdict**: accept-with-changes (1 blocking)
+
+### Requests wrongly permitted
+
+1. **`GET /api/auth/google?login_hint=alice%40acme.com%26prompt%3Dnone`**
+   (decoded hint `alice@acme.com&prompt=none`) — the LoginHint rule
+   (`auth.yaml:798-808`) **forwards** it, while spec AC-10 says a hint "not a
+   valid email address (including one carrying extra URL parameters)" gets
+   "no hint forwarded". The rule is: ≤254 chars, one `@`, `net/mail.ParseAddress`
+   returns empty Name and `Address == value`. RFC 5322 `atext` includes `& = ? # /`,
+   so `ParseAddress` accepts all of these. I ran the rule as written (Go 1.25.5,
+   `net/mail`) and got:
+
+   | hint | rule result |
+   |---|---|
+   | `alice@acme.com&prompt=none` | **forwarded** |
+   | `alice@acme.com&prompt=consent&redirect_uri=x` | **forwarded** |
+   | `alice&prompt=none@acme.com` | **forwarded** |
+   | `alice@acme.com?x=y` | **forwarded** |
+   | `alice@acme.com#frag` | **forwarded** |
+   | `alice@[127.0.0.1]`, `alice@localhost`, `alice@acme` | forwarded |
+   | `"a b"@acme.com`, `alice@acme.com ` (trailing space), empty | dropped |
+
+   URL-encoding does stop the extra text from becoming a *separate* provider
+   parameter, so AC-10's second clause holds. Its first clause ("no hint
+   forwarded") does not: Google and Microsoft receive
+   `login_hint=alice%40acme.com%26prompt%3Dnone`. A test written straight from
+   AC-10 with that input fails against an implementation that follows the
+   contract exactly. So the contract and the spec contradict each other on the
+   exact input AC-10 names. (`startSsoLogin` drops these values anyway, because
+   D-10's `EmailBelongsToDomain` sees the domain `acme.com&prompt=none`. Google
+   and Microsoft have no such second check.)
+   **Fix (contract shape only):** tighten the LoginHint rule in
+   `components.parameters.LoginHint.description` (and repeat it in the manifest's
+   `schemasChanged` line). Keep the schema a plain `string` with no `pattern`,
+   so the request is still never a 400. Add two conditions on top of the current
+   three: (a) the local part uses only `[A-Za-z0-9._+-]`; (b) the domain is a DNS
+   hostname: two or more dot-separated labels, each
+   `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, with no IP literal. Each value in
+   the table marked forwarded except `alice@acme.com` is then dropped. That is
+   conservative: a dropped hint costs the user only a prefill (D-4), and the
+   web's zod `.email()` check already refuses these values before sending. Also
+   name `alice@acme.com&prompt=none` as an AC-10 example in the description, so
+   the plan's test uses it.
+
+### Responses the client cannot handle
+
+None found. Checked:
+- `disconnectCalendar` 409 `{error, provider}`: `requestApi` throws
+  `ApiHttpError` on any non-2xx (`smart-calendar-flow/src/api/client.ts:400-407`),
+  and `withFallback` rethrows it with no preview switch (`:491-503`). Both
+  callers catch it and show "Failed to disconnect" with no success toast
+  (`ConnectionStatus.tsx:15-26`, `WorkCalendarConnection.tsx:84-95`).
+  `apiErrorMessage` would show `data.error` (the fixed true sentence) before its
+  generic 409 text (`client.ts:352-356`).
+- `logout` 204: `apiFetch` returns `undefined` on 204 (`src/lib/api.ts:93`), and
+  so does `requestApi` (`client.ts:409`).
+- `getCurrentUser.provider` enum: nothing outside `src/api/generated` imports
+  `CurrentUserResponse`. `client.ts:2` imports only `SettingsUpdate`.
+- The failure redirect `/?error=auth_failed`: nothing in the web app reads it
+  today (`git grep auth_failed` finds only the producer, `AuthCallback.tsx:25`).
+  So until the web PR (AC-5) lands, a failed sign-in ends on the landing page
+  with no message. That is a feature gap the spec already assigns to the web
+  side, not a response the client mis-renders.
+
+### Consumers affected
+
+All consistent with the manifest's `consumersAffected`:
+- clockwise-like `backend/api/handlers_auth_test.go:35-53` `TestAuthDisconnect`:
+  confirmed. It uses a random `uuid.New()` with no users row, and
+  `GetOrCreateSettingsByUser` (`backend/storage/settings.go:241-248`) inserts a
+  settings row that hits the FK, so under this contract the answer is 500. The
+  fixture needs a real user, as the manifest says.
+- clockwise-like `backend/api/handlers_sso_test.go:177`: asserts that the
+  success `Location` starts with `/auth/callback`. Unchanged on success.
+- clockwise-like `backend/api/pac20_cookies_test.go:67` (logout): cookie flags
+  only.
+- No backend test asserts the Microsoft callback 502 or `save user failed`
+  (`git grep` over backend/ and e2e/). The 502 assertion in
+  `pac24_scope_test.go:117` is on `/api/llm/test`, not the callback.
+- clockwise-like `e2e/tests/auth-session.spec.ts:100-111`: asserts the bounce,
+  not the status.
+- clockwise-like `mcp/`: no caller of any touched operation.
+- smart-calendar-flow `src/components/auth/AuthDialog.tsx:32-35,111-113`: reads
+  `domain`, which was never sent (already broken; AC-7).
+
+### Contract/implementation divergences
+
+The touched operations describe the target behaviour, which is allowed because
+this is the stage-2 contract for a behaviour change. The notes file
+(`auth.notes.md`) records that the original extraction still describes the
+server until implementation. I checked that every *unchanged* statement still
+matches the code:
+- `ssoOidcCallback` 403 "email domain does not match SSO provider domain",
+  text/plain: `handlers_sso.go:138-141`. Correct, and previously missing.
+- Status sets now documented: oidc callback `302/400/403/404/500`, SSO start
+  `302/404/500/501`, `me` `200/401/404`, detect `200/400/429/500`, Microsoft
+  callback `302/400/500/503`, Google callback `302/400/500`. Each matches the
+  handler's branches (`handlers_sso.go:23-151`, `handlers_me.go:16-29`,
+  `handlers_microsoft_auth.go:40-82`, `handlers_auth.go:41-80`). AC-18 in the
+  manifest lists exactly these statuses.
+- `redirect_url` "lowercased and trimmed, not URL-escaped": `auth/sso_detect.go:45`
+  with `domain.ExtractDomain` (`domain/domain.go:16-22`). Correct.
+- U-13: `UpsertUser`'s `ON CONFLICT` does not update `provider`
+  (`storage/users.go:21-31`). Every `UpsertUser(` call in `git log -p -S` over
+  all branches passes `"google"`, `"microsoft"` or `"sso"`. Every direct
+  `INSERT INTO users` in tests omits `provider` (default `'google'`), and the e2e
+  seed writes `'google'`. The enum is determined, not just asserted.
+
+Non-blocking omissions in the failure-redirect descriptions:
+- Google (`auth.yaml:104-107`) and SSO (`:412`) say what is kept ("user and
+  token", "the saved user row"). Neither says that the org association
+  (`AssociateUserWithOrg`, `handlers_auth.go:76`, `handlers_sso.go:148`) also
+  runs before the session and is kept.
+- Microsoft (c) (`:214-216`) says "the user and the Microsoft token were saved;
+  they are kept". `SaveMicrosoftToken` also sets the caller's
+  `settings.calendar_provider = 'outlook'` (`auth/microsoft_oauth.go:68`), and
+  that is also kept. So a failed Microsoft sign-in can still change the user's
+  calendar provider, and from then on `disconnectCalendar` answers that user
+  with 409. Worth one sentence each. Neither changes a status or a schema.
+
+### Uncertainties not actually resolved
+
+None. U-13 is settled by evidence (see above). The fragment's two remaining
+`x-uncertain` markers are on `SsoProviderCreateRequest` and
+`SsoProviderResponse` (PAC-22, D-5/D-7), not on a touched operation.
+
+### Verified clean
+
+- **Gate, run by me on the committed branch** (`bash
+  /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-35-contract`):
+  `make openapi rc=0`, `regenerated: none`, `OK: bundle is in sync (98 paths)`,
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+  `backend coverage: 53.2% (floor 43%)`, `backend coverage rc=0`,
+  `mcp coverage: 84.0% (floor 75%)`, `mcp coverage rc=0`. The web gate was not
+  run, because the web types are regenerated only after merge (factory §1).
+- **`contractHash`**: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`
+  = `bb51698c…16d6`, which matches the manifest.
+- **AC-15 text checks on the bundle**: no "discarded" text for a valid hint, no
+  "silent" session failure, no logout `200`. The `logout` responses are
+  `{204, 401}`. `microsoftOAuthCallback` has no 502, its `500` excludes
+  upsert/profile failures, and there is no "every failure is a non-302"
+  sentence. The `disconnectCalendar` summary is "(the session is kept)", the 204
+  has no Set-Cookie header, and every cookie mention in the description is a
+  negation.
+- **Disconnect branches**: there is no request body to attack. The provider
+  split matches `getAuthStatus`'s value rule (`handlers_auth.go:92-112`), and
+  D-9 diverges only on the read-error branch (`:86-90`), as stated. The 409 is
+  the operation's only 409. `CalendarDisconnectUnsupported` is closed
+  (`additionalProperties: false`, both fields required, `const` + enum), and
+  oapi-codegen produces typed constants for it.
+- **Failure-redirect shape**: the 302 keeps one status with two `Location`
+  values. The value is a fixed literal with no cause, so no detail leaks
+  (PAC-21). The failure path neither sets nor expires `auth_token`, so a
+  failed second sign-in does not log out an existing session.
+- **D-10**: `startSsoLogin` with `login_hint=mallory@evil.com` on
+  `/api/auth/sso/acme.com` is dropped by `EmailBelongsToDomain` (exact,
+  case-insensitive, `domain/domain.go:33-40`). `ALICE@ACME.COM` on `acme.com`
+  is forwarded. Never a 400.
+- **Generated Go**: `LoginHint` is `*string`, no longer `*openapi_types.Email`,
+  so a generated wrapper cannot 400 a malformed hint.
+- **Rejected alternatives**: 501 / 403 / 422 / 200-`{performed:false}` for the
+  disconnect, and `format: email` for the hint, were each rejected for a reason
+  I could confirm in the web client (`client.ts:352-369`, `:409-415`).
+
+Non-blocking:
+1. `login_hint` given twice (`?login_hint=a@x.com&login_hint=b@y.com`): the
+   contract does not say which one is used. Say "the first value" (what
+   `r.URL.Query().Get` returns) or "dropped when repeated".
+2. §9 of this file says the manifest records "the exact commands and outputs".
+   It records the commands and one `openapi-check` line, not the gate's rc
+   lines. The run above fills that gap for this revision.
+3. Manifest `status` is `draft`. Move it on after this challenge's blocking
+   item is resolved.
