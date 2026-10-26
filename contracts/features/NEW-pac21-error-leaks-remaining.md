@@ -908,3 +908,163 @@ mcp coverage rc=0
 
 **Not run:** web-gate and e2e-gate, for the reason given in Revision 2 (web types are
 regenerated only after this contract merges; nothing behavioural changes at this stage).
+
+## Challenge (round 3) — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewer: contract-challenger, run as a separate agent against the committed state of
+`factory/new-pac21-error-leaks-remaining-contract` at 7bc5f5d (revision 3). It read the
+artefacts, the handlers and the backend tests on that commit, `mcp/`, and the web consumers
+on `smart-calendar-flow` main (d9e0786). It did not read the author's session.
+
+**Round-2 findings.** Both blocking findings and all three non-blocking ones are fixed as
+Revision 3 states (see "Verified clean"). One new blocking finding follows. It is a
+manifest edit only, and Revision 3's answer to round-2 finding 2 introduced it.
+
+### Requests wrongly permitted, behaviour wrongly forbidden (blocking)
+
+1. **AC-1's widened scan forbids ten 4xx sites that §5 says stay unchanged.**
+   - **Payload:** `POST /api/habits` with `{"title":"","duration_minutes":30}`. Today
+     `handlers_habits.go:116-117` answers 400 with the validator's fixed sentence via
+     `writeError(w, err.Error(), http.StatusBadRequest)`. §5 says these validators "are
+     unchanged".
+   - **What the manifest now requires:**
+     - AC-1: the scan must "fail on any writeError/http.Error whose message is built from
+       an error value at ANY status".
+     - `consumersAffected`, scan entry: guard fixture line 13,
+       `writeError(w, err.Error(), http.StatusBadRequest)`, "moves to the violation list".
+   - **What that shape matches in `backend/api` at 7bc5f5d.** Every site below is a
+     fixed-sentence validator, and none is in `operationsChanged4xx`:
+     - `handlers_habits.go:117` (create) and `:229` (update): `validateHabitFields`
+     - `handlers_manager.go:166` (confirmDetection) and `:276` (addMember): `normalizeManagerEmail`
+     - `handlers_manager.go:284` (addMember) and `:386` (patchMember): `validateManagerCadence`
+     - `handlers_teams.go:188` (inviteMember): `normalizeManagerEmail`
+     - `handlers_teams.go:340` (createZone) and `:386` (updateZone): `validateNoMeetingZone`
+     - `handlers_settings.go:136` (patchSettings): `validateChangedSettings`
+   - **Why it blocks:** once widened, the real scan (`TestPAC21NoRawErrorsIn5xxBodies`)
+     fails on these ten lines, and the contract gives the implementer no permitted way out:
+     - §5 forbids changing these responses.
+     - Nothing in the artefact authorises an exemption in the scan. Round 1 noted that the
+       scan "will have to allow-list these sites by name", but that note sits in the
+       challenge, not in AC-1, so it binds no one.
+     - Revision 3 then made the conflict explicit by turning fixture line 13 into a
+       violation.
+
+     Both likely outcomes are bad. The implementer either rewrites validator messages the
+     web shows to users, which is a behaviour change no contract records, or weakens the
+     scan.
+   - **Fix (manifest only):** amend AC-1 and the scan entry in `consumersAffected` to say:
+     - the scan exempts exactly the ten call sites above. The test names each one by file
+       and enclosing function, together with the validator it calls, and every return of
+       that validator is a fixed sentence;
+     - the guard fixture gains one allowed case for an exempted name. Line 13 stays a
+       violation for any other name;
+     - a later exemption must name its validator and show that it returns only fixed
+       sentences.
+
+     Also cite the list in §5, so that "unchanged" and AC-1 point at the same sites.
+     The alternative is also acceptable: move these ten sites to a shared fixed-message
+     error type that the scan already allows, like `validationErr.Msg` at fixture line 15.
+     If that is chosen, the contract must say so and state that the response text does
+     not change.
+
+### Responses the client cannot handle
+
+None found.
+
+- **The new JSON 401.** `apiErrorMessage` (`src/api/client.ts:351-372` at d9e0786) prefers
+  `data.error`, so the user sees `calendar not connected`, not "Your session expired".
+- **Sign-out.** The only sign-out on a 401 is `AuthContext.tsx:58`, on `GET /api/auth/me`,
+  which this change does not touch.
+- **Dashboard.** `Dashboard.tsx:113-114` reads `GET /api/auth/status`, which matches the
+  revised `CalendarNotConnected` prose.
+- **JSON 5xx bodies.** The UI shows the server's fixed text instead of the generic
+  sentence, as `consumersAffected` already says. Non-blocking, and already in `followUps`.
+
+### Consumers affected
+
+- **`mcp/`.** It does not handle 401, `text/plain` or `internal error` anywhere except its
+  own auth middleware (`mcp/main.go:58,62`). It relays bodies verbatim. Unchanged.
+- **e2e and backend tests.** Revision 3's list matches round 2's and adds the scan entry,
+  which is the subject of blocking finding 1.
+- **Web main moved.** Since round 2, `smart-calendar-flow` main moved from 66d6f20 to
+  d9e0786 (PAC-66 type regen). `clockwise-like` main has not moved past this branch's merge
+  base, so the PAC-66 contract is already in this branch's base. REGEN after merge stays a
+  single regeneration.
+
+### Contract and implementation divergences (non-blocking)
+
+None new. The `previewCompression` week-mode change is a behaviour change. The contract
+now states it consistently in four places: the operation description, the 200, the 500
+and AC-2.
+
+### Uncertainties not actually resolved
+
+None.
+
+- U-03, U-04, U-06 and U-07 stand as round 2 verified them.
+- U-01, U-05 and U-09 are carried forward under the round-1 ruling.
+- The bundle has one operation-scoped marker left, on `getSchedulingLink`, which this
+  change does not touch.
+
+### Verified clean
+
+**Commands run in `C:\Users\jouzu\paceday\wt-pac21-contract` at 7bc5f5d:**
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py --check` | `OK: bundle is in sync (98 paths)`, rc=0 |
+| `python3 scripts/openapi_migration_report.py --check` | `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc=0 |
+| `bash scripts/openapi_gen_go.sh --check` | `OK: backend/api/gen matches the contract`, rc=0 |
+| `sha256sum contracts/openapi/openapi.yaml` | `b8b2fd63…8bf9`, equal to the manifest's `contractHash` |
+
+**Not run by the challenger:**
+
+- `api-gate.sh`. The shared host checkout is on `impl/pac-66b-llm-base-url-backend`, and I
+  did not switch it. The author's pasted run is at caf2661, and 7bc5f5d changes only the
+  .md and the manifest.
+- web-gate and e2e-gate.
+- `go build` and the Go tests.
+
+**Attacked and found clean** (scripted scan of the bundle at 7bc5f5d):
+
+- **The 401 set.**
+  - Exactly 18 operations reference `CalendarNotConnected`. They are the operations in
+    `operationsChanged4xx` minus the three 400-only entries (`createConferenceLink`,
+    `queryFreeBusy`, `patchSettings`).
+  - The response carries `application/json` and `text/plain`.
+  - The schema is `{error: enum ["calendar not connected"]}`, required, with
+    `additionalProperties: false`.
+- **5xx bodies.** There are 113 5xx responses, all `application/json` only. No 5xx or 4xx
+  description matches the AC-3 prose pattern.
+- **`NLPConfirmRequest.selected_slot_index`.** `minimum: 0`, with a 400 described for
+  negative and out-of-range values.
+- **Round-2 finding 1 (`previewCompression`).**
+  - The 500 now covers a credential-store failure in both modes.
+  - The operation description no longer says week mode never returns 500.
+  - The 200 says `[]` means every day failed after the credential check.
+  - AC-2 carries the week-mode closed-DB payload.
+
+  AC-2, `CalendarNotConnected` and the operation no longer contradict each other.
+- **Round-2 finding 2 (tests that break by design).**
+  - The three tests are in `consumersAffected`, each with its replacement.
+  - The deletion of `TestPAC21WriteServerErrorTextKeepsPlainContentType` is authorised by
+    name. `TestPAC21WriteServerErrorGenericPerStatus` (`pac21_error_bodies_test.go:127`)
+    and the AC-3 scan replace it.
+  - The policy-refusal test keeps both cases and both paths.
+- **Round-2 non-blocking findings 1-3.**
+  - The `CalendarNotConnected` prose now matches `Dashboard.tsx`.
+  - The `addEventConference` and `removeEventConference` 500s name the credential read.
+  - The `patchEvent` 404 already said "Any GetEvent failure maps to 404".
+- **Other error-derived 4xx sites.** I grepped `backend/api/*.go` (excluding tests and
+  generated code) for `writeError` or `http.Error` calls with `err.Error()`. The grep finds
+  two groups and nothing else:
+  - the leak sites the manifest lists: `handlers_calendar.go:164,206`,
+    `handlers_conferencing.go:148,269,274,329,334,339,364,369`,
+    `handlers_events.go:51,56,95,110,130`, `handlers_freebusy.go:47` and
+    `handlers_settings.go:77,120`;
+  - the ten validator sites of blocking finding 1.
+
+  The validators return only fixed sentences. For example, `normalizeManagerEmail`
+  (`handlers_manager.go:671-681`) discards the error from `mail.ParseAddress`.
