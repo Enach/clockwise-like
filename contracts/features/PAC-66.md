@@ -74,11 +74,16 @@ for this case is a 502 (spec AC-10, "Fails today"). The spec forbids it. A 502
 tells the user the provider is down, so they retry, and no retry can ever
 succeed.
 
-**Why a refused redirect is a 502 and not a 422 (AC-8).** In that case a request
-*was* sent, to an approved host, and the approved provider's answer could not be
-used. That is what 502 already means on this operation. The 422 promises "nothing
-was sent". Keeping it to that meaning is what lets AC-1 to AC-4 assert zero
-requests from the status code.
+**Why a refused redirect is a 502 and not a 422 (AC-8).** In that case the
+provider call failed after a request was sent to an approved host: the approved
+provider's answer (a redirect) could not be used. On this operation a 502 means
+"the provider call failed": credential acquisition, provider configuration,
+transport, or an unusable or redirecting answer. A 502 does **not** imply a
+request was sent; credential and Bedrock configuration failures are 502s with
+zero requests (revision 2, B-1). The 422 promises "refused by deployment policy,
+nothing was sent". Keeping it to that meaning is what lets AC-1 to AC-4 assert
+zero requests from the status code. The implication runs one way only: 422 ⇒
+nothing sent; 502 ⇒ nothing in particular about whether a request left.
 
 `reason` precedence is fixed so that one state never needs two messages. This
 answers the round-3 challenge, non-blocking 2. When nothing is approved for the
@@ -513,3 +518,50 @@ None. Checked:
 
   - **Not run:** the web half of `openapi-check`. The web types regenerate after
     merge (factory §1). No e2e was run, because this stage changes no behaviour.
+
+---
+
+## Revision 2 — answer to the contract challenge of 2026-10-26
+
+Contract revision 2. Description-only: no schema, status code, operation or
+property changed. Bundle sha256 `ab59fcf4…d2361b` (manifest `contractHash`).
+
+### B-1 — "a 502 means a request was sent" — accepted, fixed
+
+The finding is correct. I re-read the code on this branch:
+`backend/api/handlers_llm.go:79-82` maps every `Complete` error to
+`http.StatusBadGateway`, and three of those errors are raised before any
+inference request is built: `azure: credential:` / `azure: get token:`
+(`backend/nlp/llm_azure_openai.go:28-37`), `vertex: find credentials:` /
+`vertex: get token:` (`backend/nlp/llm_vertex.go:29-36`), and
+`bedrock: load config:` (`backend/nlp/llm_bedrock.go:38-41`). PAC-66 does not
+change that mapping, and the spec does not ask it to, so the contract must
+describe it.
+
+Changes:
+
+- `scheduling.yaml`, `testLLMConnection` **422** description: the parenthetical
+  now reads "the 502 (the provider call failed: credential acquisition, provider
+  configuration, transport, or an unusable or redirecting answer; a 502 does not
+  imply a request was sent)", followed by "A 422 always means nothing was sent;
+  the converse does not hold."
+- `scheduling.yaml`, `testLLMConnection` **502** description (the optional part
+  of the fix, taken): it now says a 502 does not imply an inference request was
+  sent and lists the no-request causes by their error prefixes.
+- §2 of this document, "Why a refused redirect is a 502 and not a 422": reworded
+  to the same meaning. The argument for AC-8 is unchanged, because it rests on
+  422 meaning "refused by policy, nothing sent", and that still holds. The
+  implication is one-way: 422 ⇒ nothing sent; a 502 says nothing about whether a
+  request left.
+
+Consequence for downstream stages: no test may assert "a request was recorded"
+from a 502 status alone. AC-8's test asserts the redirect request was recorded
+and the follow-up was not, from the recording transport, not from the status.
+
+### Non-blocking items
+
+Not addressed in this revision; they remain as recorded in the challenge for the
+plan stage or the follow-up issue: the single wording for the Vertex effective
+host (requests-wrongly-permitted 1a), the DNS-label hardening for `gcpLocation`
+(1b), encoding the `property`/`reason` invariant in the schema, and the `reason`
+for a non-empty Azure endpoint with no host.

@@ -565,8 +565,10 @@ paths:
             The body never carries a token, a key or any part of the
             deployment credential, and `error` is a non-empty sentence (spec
             AC-11). Distinct from the 400 (the request body itself is
-            malformed) and from the 502 (a request was sent and the provider's
-            answer was unusable).
+            malformed) and from the 502 (the provider call failed: credential
+            acquisition, provider configuration, transport, or an unusable or
+            redirecting answer; a 502 does not imply a request was sent). A
+            422 always means nothing was sent; the converse does not hold.
           content:
             application/json:
               schema:
@@ -603,7 +605,14 @@ paths:
         '502':
           description: >
             The provider call failed. JSON error shape (writeError) carrying the
-            upstream error string. PAC-66: this includes an approved
+            upstream error string. A 502 does NOT imply an inference request
+            was sent: the handler maps every provider-call error to 502,
+            including failures before any request leaves the server - Azure or
+            Vertex credential acquisition (`azure: credential: …`,
+            `azure: get token: …`, `vertex: find credentials: …`,
+            `vertex: get token: …`) and Bedrock configuration loading
+            (`bedrock: load config: …`, e.g. a stored `awsProfile` absent from
+            the deployment's shared config). PAC-66: this includes an approved
             ambient-provider host answering with a redirect, which is not
             followed with the deployment credential to any other host or to
             `http` (spec AC-8). The body never carries the deployment
