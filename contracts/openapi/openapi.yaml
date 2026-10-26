@@ -1770,8 +1770,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: 'Google Meet creation, settings load, or the event update failed. Body: `{"error":"internal
-            error"}`. The detail is written to the server log and Sentry only (PAC-21).'
+          description: 'Google Meet creation, settings load, or the event update failed, or the stored
+            credential could not be read. Body: `{"error":"internal error"}`. The detail is written to
+            the server log and Sentry only (PAC-21).'
           content:
             application/json:
               schema:
@@ -1805,8 +1806,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: 'Removing the Google Meet or the conference properties failed. Body: `{"error":"internal
-            error"}`. The detail is written to the server log and Sentry only (PAC-21).'
+          description: 'Removing the Google Meet or the conference properties failed, or the stored credential
+            could not be read. Body: `{"error":"internal error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).'
           content:
             application/json:
               schema:
@@ -3766,12 +3768,13 @@ paths:
       description: 'Body decode errors are swallowed (`_ = json.NewDecoder(...).Decode(&body)`), so malformed
         JSON behaves like an empty body and yields 200 for today. If `week` is set it wins over `date`:
         the handler snaps the parsed date to Monday (startOfWeek) and iterates Mon..Fri, appending one
-        CompressionResult per day and SILENTLY SKIPPING days whose engine call errors - so week mode never
-        returns 500, and returns `[]` if all five days error. If `week` is empty, `date` (or today) produces
-        a single-element array and an engine error becomes a 500. A caller with no stored Google credential
-        gets the 401 `calendar not connected` in BOTH modes, before any day is computed (PAC-21, API-054).
-        Before PAC-21 was finished single-day mode answered 500 and week mode answered 200 `[]`, which
-        a client cannot tell apart from "nothing to compress".
+        CompressionResult per day and SILENTLY SKIPPING days whose engine call errors, and returns `[]`
+        if all five do. The credential check that runs before any day is computed can still answer 401
+        or 500 in week mode. If `week` is empty, `date` (or today) produces a single-element array and
+        an engine error becomes a 500. A caller with no stored Google credential gets the 401 `calendar
+        not connected` in BOTH modes, before any day is computed (PAC-21, API-054). Before PAC-21 was
+        finished single-day mode answered 500 and week mode answered 200 `[]`, which a client cannot tell
+        apart from "nothing to compress".
 
         '
       requestBody:
@@ -3783,7 +3786,7 @@ paths:
       responses:
         '200':
           description: 'Array of per-day results. `[]` when the slice stayed empty (week mode with every
-            day failing).
+            day''s engine call failing after the credential check passed).
 
             '
           content:
@@ -3803,9 +3806,10 @@ paths:
         '401':
           $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: 'Single-day mode only: engine failure for a user who HAS a stored Google credential
-            (a user with none gets the 401 `calendar not connected`). Body: `{"error":"internal error"}`.
-            The detail is written to the server log and Sentry only (PAC-21).'
+          description: 'Single-day mode: engine failure for a user who HAS a stored Google credential
+            (a user with none gets the 401 `calendar not connected`). Both modes: reading the credential
+            store failed (checked before any day is computed). Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).'
           content:
             application/json:
               schema:
@@ -10047,8 +10051,8 @@ components:
         exact body `{"error":"calendar not connected"}`: no provider, Go or storage error text and no
         user id (PAC-21, API-054). A failure to READ the credential store is not this response; it is
         the operation''s 500. The two cases are told apart by Content-Type, or by the body. The web app''s
-        Dashboard already treats a 401 on a calendar read as "connect a calendar", not as an expired session;
-        only a 401 on GET /api/auth/me signs the user out.'
+        Dashboard decides "not connected" from GET /api/auth/status, not from this 401; no web code signs
+        the user out on this 401 (only a 401 on GET /api/auth/me does).'
       content:
         application/json:
           schema:

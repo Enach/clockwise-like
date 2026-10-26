@@ -163,8 +163,9 @@ paths:
         so malformed JSON behaves like an empty body and yields 200 for today.
         If `week` is set it wins over `date`: the handler snaps the parsed date to
         Monday (startOfWeek) and iterates Mon..Fri, appending one CompressionResult
-        per day and SILENTLY SKIPPING days whose engine call errors - so week mode
-        never returns 500, and returns `[]` if all five days error.
+        per day and SILENTLY SKIPPING days whose engine call errors, and returns
+        `[]` if all five do. The credential check that runs before any day is
+        computed can still answer 401 or 500 in week mode.
         If `week` is empty, `date` (or today) produces a single-element array and
         an engine error becomes a 500.
         A caller with no stored Google credential gets the 401 `calendar not connected`
@@ -181,7 +182,8 @@ paths:
         '200':
           description: >
             Array of per-day results. `[]` when the slice stayed empty
-            (week mode with every day failing).
+            (week mode with every day's engine call failing after the credential
+            check passed).
           content:
             application/json:
               schema:
@@ -200,10 +202,11 @@ paths:
           $ref: '#/components/responses/CalendarNotConnected'
         '500':
           description: >-
-            Single-day mode only: engine failure for a user who HAS a stored Google
-            credential (a user with none gets the 401 `calendar not connected`). Body:
-            `{"error":"internal error"}`. The detail is written to the server log and Sentry
-            only (PAC-21).
+            Single-day mode: engine failure for a user who HAS a stored Google
+            credential (a user with none gets the 401 `calendar not connected`). Both
+            modes: reading the credential store failed (checked before any day is
+            computed). Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:

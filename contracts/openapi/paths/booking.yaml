@@ -1018,7 +1018,8 @@ paths:
                 $ref: '#/components/schemas/BookingError'
         '500':
           description: >-
-            Google Meet creation, settings load, or the event update failed. Body:
+            Google Meet creation, settings load, or the event update failed, or the
+            stored credential could not be read. Body:
             `{"error":"internal error"}`. The detail is written to the server log and Sentry
             only (PAC-21).
           content:
@@ -1058,7 +1059,8 @@ paths:
                 $ref: '#/components/schemas/BookingError'
         '500':
           description: >-
-            Removing the Google Meet or the conference properties failed. Body:
+            Removing the Google Meet or the conference properties failed, or the stored
+            credential could not be read. Body:
             `{"error":"internal error"}`. The detail is written to the server log and Sentry
             only (PAC-21).
           content:

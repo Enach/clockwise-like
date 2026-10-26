@@ -1035,9 +1035,9 @@ components:
         `{"error":"calendar not connected"}`: no provider, Go or storage error text and
         no user id (PAC-21, API-054). A failure to READ the credential store is not
         this response; it is the operation's 500. The two cases are told apart by
-        Content-Type, or by the body. The web app's Dashboard already treats a 401 on a
-        calendar read as "connect a calendar", not as an expired session; only a 401 on
-        GET /api/auth/me signs the user out.
+        Content-Type, or by the body. The web app's Dashboard decides "not connected"
+        from GET /api/auth/status, not from this 401; no web code signs the user out on
+        this 401 (only a 401 on GET /api/auth/me does).
       content:
         application/json:
           schema:

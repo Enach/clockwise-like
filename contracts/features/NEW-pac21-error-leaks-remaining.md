@@ -794,3 +794,93 @@ None. U-04 and U-07 are now determined from code, and a named test pins each one
   token into one `not authenticated`. Splitting them is an implementation task. The
   contract states the split, and `auth.LoadUserToken` makes it possible, as round 1
   verified.
+
+## Revision 3 — 2026-10-26
+
+Author: contract-author, answering the round-2 challenge above. Bundle hash after this
+revision: `b8b2fd6394f63e3c94ff4f4237556f3c8d963e12da21ee84c1b3232ff09b8bf9`
+(`contractRevision` 3 in the manifest). No operation, status code, schema or media type
+changes in this revision; the edits are prose in three fragments and the manifest.
+
+### Blocking findings
+
+1. **`previewCompression` week mode and a credential-store failure. Accepted, fixed as the
+   challenger proposed.**
+   - The conservative reading is the one §2.3 already chose: a database outage must not be
+     reported as "nothing to compress". Exempting week mode from AC-2 was rejected for that
+     reason.
+   - `scheduling.yaml`, `previewCompression` 500: now "Single-day mode: engine failure for a
+     user who HAS a stored Google credential ... Both modes: reading the credential store
+     failed (checked before any day is computed)."
+   - The operation description no longer says "week mode never returns 500". It says week
+     mode skips days whose engine call errors and returns `[]` if all five do, and that the
+     credential check that runs before any day is computed can still answer 401 or 500.
+   - The 200 description now says `[]` means every day's engine call failed *after* the
+     credential check passed.
+   - Manifest: the `previewCompression` entry and AC-2 say the 500 holds in both modes, with
+     the payload the challenger used (week mode, closed DB → 500
+     `{"error":"internal error"}`, not `200 []`).
+   - What the server does today (`handlers_schedule.go:37-42` swallows every per-day error)
+     is the behaviour this change removes for the credential check only. Per-day engine
+     errors after the check are still skipped; that is unchanged and still documented.
+
+2. **`consumersAffected` was missing backend tests that break by design. Accepted.**
+   Added to the manifest, each with `breaks: yes, by design` and its replacement:
+   - `TestPAC21ForcedStorageErrorReturnsGenericJSON` (`pac21_error_bodies_test.go:63-124`):
+     the five `json: false` cases become `json: true`. Manager profile asserts the existing
+     literal `{"error":"db error"}` (§2.6), the other four `{"error":"internal error"}`. The
+     text/plain branch becomes dead and goes with them. All leak, log and Sentry assertions
+     stay.
+   - `TestPAC21WriteServerErrorTextKeepsPlainContentType` (`:158-171`): **deleted together
+     with `writeServerErrorText`, in the same commit. This contract authorises that
+     deletion.** It is not a test removed to go green: the function it tests ceases to exist
+     by AC-3. What replaces it is the AC-3 source scan (fails if `writeServerErrorText` or an
+     `http.Error` on a 5xx reappears) and the existing
+     `TestPAC21WriteServerErrorGenericPerStatus` (`:127`), which covers the same body, log and
+     Sentry behaviour for the JSON writer.
+   - `TestPAC21CreateMeetingKeepsPolicyRefusalTextOnly` (`:376-399`): same two cases, same
+     two paths (`createMeeting`, `writeCreateMeetingFailure`), now asserting 500,
+     `application/json` and the exact envelope with the same two messages. It may be renamed;
+     its cases may not be reduced.
+   - Found while checking the challenger's list, not named by it:
+     `scanErrorBodies` / `TestPAC21NoRawErrorsIn5xxBodies` /
+     `TestPAC21GuardCatchesKnownBadPatterns` (`:267-334`). AC-1 extends the scan to any
+     status, so fixture line 13 (`writeError(w, err.Error(), http.StatusBadRequest)`, today
+     allowed) becomes a violation, and the `http.Error` hint that names
+     `writeServerErrorText` must name `writeServerError`. Listed with the rule that no
+     still-allowed shape may be dropped from the fixture.
+   - Also checked and listed as `breaks: no`: the handler tests that drive a mock engine with
+     a plain `errors.New` (`TestRunFocus_Error`, `TestClearBlocks_Error`, `TestCompress_Error`,
+     the suggest/create/NLP error tests). Only the no-stored-credential condition becomes
+     401; an arbitrary engine error stays 500. If the implementation turns these red, it is
+     mapping too broadly.
+   - A grep of `backend/**/*_test.go` for `not connected: `, `event not found: `,
+     `invalid JSON: `, `text/plain`, `autoScheduleCron is invalid`, `writeServerErrorText` and
+     `PlainTextServerError`, outside `pac21_error_bodies_test.go`, finds only
+     `handlers_settings_autoschedule_test.go:73` (already listed) and
+     `handlers_audit_test.go:210` (the middleware 401, unchanged).
+
+### Non-blocking findings
+
+1. **`CalendarNotConnected` misstated the web app. Fixed.** The prose now says the Dashboard
+   decides "not connected" from `GET /api/auth/status`, not from this 401, and that no web
+   code signs the user out on it (only a 401 on `GET /api/auth/me` does).
+2. **`addEventConference` and `removeEventConference` 500s. Fixed.** Both now add "or the
+   stored credential could not be read".
+3. **`patchEvent` 404 condition.** Already in the contract at 8394b21: `calendar.yaml`
+   `patchEvent` 404 reads "Any GetEvent failure maps to 404, including transport and
+   permission errors, not only a genuine 404 from Google." The two conferencing 404s say
+   "Any GetEvent failure maps to 404." No change.
+
+### What was run for revision 3
+
+In the worktree, before committing:
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py` | wrote the bundle: 98 paths, 119 operations, x-uncertain 14 |
+| `python3 scripts/openapi_assemble.py --check` | `OK: bundle is in sync (98 paths)` |
+| `bash scripts/openapi_gen_go.sh` then `--check` | `OK: backend/api/gen matches the contract` (no diff in `paceday.gen.go`) |
+| `python3 scripts/openapi_migration_report.py --check` | `OK: MIGRATION.md covers all 119 operations (0 generated)` |
+| `sha256sum contracts/openapi/openapi.yaml` | `b8b2fd63…8bf9`, recorded as `contractHash` |
+| manifest parsed with `json.load` | ok |
