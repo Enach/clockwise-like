@@ -22,7 +22,10 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 		Date string `json:"date"`
 		Week string `json:"week"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := decodeOptionalBody(r, &body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
 
 	results := make([]*engine.CompressionResult, 0)
 
@@ -47,8 +50,7 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The credential is checked once, before any day is computed, in both
-	// modes: week mode skips days that fail, and must not turn "no calendar"
-	// or an unreadable credential store into 200 [] (PAC-21, API-054).
+	// modes (PAC-21, API-054).
 	if err := h.eng.CheckCalendar(r.Context()); err != nil {
 		writeCalendarFailure(w, r, "compress", err)
 		return
@@ -60,7 +62,11 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 			day := monday.AddDate(0, 0, i)
 			res, err := h.eng.SuggestForDay(r.Context(), day)
 			if err != nil {
-				continue
+				// A failing day fails the whole week, as single-day mode
+				// does; skipping it answered 200 with the day silently
+				// missing (PAC-36, API-034).
+				writeCalendarFailure(w, r, "compress", err)
+				return
 			}
 			results = append(results, res)
 		}

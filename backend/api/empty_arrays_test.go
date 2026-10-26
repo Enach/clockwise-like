@@ -32,19 +32,20 @@ func TestListBlocks_EmptyWeek_EncodesEmptyArray(t *testing.T) {
 	}
 }
 
-func TestCompress_WeekEveryDayFails_EncodesEmptyArray(t *testing.T) {
+// Week mode used to answer 200 [] when every day failed. PAC-36 (API-034)
+// made a failing day fail the request, so the same input is now the generic
+// 500 and never a null or empty array.
+func TestCompress_WeekEveryDayFails_Is500NotEmptyArray(t *testing.T) {
 	h := &scheduleHandlers{eng: &mockCompressor{err: errors.New("calendar down")}, smart: &mockScheduler{}}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/schedule/compress", bytes.NewBufferString(`{"week":"2025-01-06"}`))
 	w := httptest.NewRecorder()
 	h.compress(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body %s", w.Code, w.Body.String())
 	}
-	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
-		t.Errorf("body = %s, want []", got)
-	}
+	exactJSONError(t, w, "internal error")
 }
 
 func TestApplyCompress_NothingToApply_EncodesEmptyArrays(t *testing.T) {
