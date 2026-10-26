@@ -250,3 +250,176 @@ count is unchanged (13).
 - The gate is re-run on the final commit of this branch; its output is in the Linear
   comment on PAC-26. The web gate and e2e gate are
   not run at this stage (no behaviour has changed yet; web types regenerate after merge).
+
+## Challenge — 2026-10-26
+
+Challenger: `contract-challenger`, on the committed state of `factory/pac-26-contract` at
+`056bcd2`. Read: the fragment diffs, the bundle, this file and the manifest, the PAC-26
+issue body, the handlers and storage code, the web consumers on `smart-calendar-flow`
+main `5008c72`, `mcp/` and `e2e/`. Not read: the author's Linear comments.
+
+**Verdict**: accept
+
+Nothing blocking. Every change is to a response body, so no new request is admitted. No
+consumer breaks: I regenerated the web types from this bundle and ran the web `make verify`
+(results below). Every statement I checked against the code holds. Four non-blocking
+changes are listed under "Recommended changes". They should be made before or with the
+plan. None of them changes the wire shape.
+
+### Checks run (output, not summaries)
+
+- `bash .claude/factory/api-gate.sh factory/pac-26-contract` at `056bcd2`:
+  `make openapi rc=0`, `regenerated: none`, `OK: bundle is in sync (98 paths)`,
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+  `backend coverage: 55.1% (floor 43%)`, `mcp coverage: 84.0% (floor 75%)`.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` gives
+  `792e3030...21362`, which equals the manifest's `contractHash`.
+- Formal `x-uncertain:` keys in the bundle: 13 on `origin/main` and 13 on the branch. Lines
+  that contain the string `x-uncertain` go from 15 to 14. The one removed is the prose
+  note on `skippedDays` (U-23), which matches the doc's claim.
+- Web consumer break test, run in a scratch clone inside the gate container. The host web
+  checkout was not touched. Steps: web `main` beside this api branch, `make openapi`
+  (rewrote `src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts}`, +102/-101), then
+  `make verify`: `lint PASS, typecheck PASS, design-check PASS, openapi-check PASS,
+  test PASS, coverage PASS`, `make verify rc=0`. The web side of AC-10 is therefore
+  reachable with a pure regeneration.
+
+### Requests wrongly permitted
+
+None. No request schema, parameter or `required` list changes. The only edits are response
+key renames and the removal of two `oneOf [.., null]`.
+
+### Responses the client cannot handle
+
+None found.
+- `listFocusBlocks` now returns
+  `[{"id":1,"google_event_id":"g1","start_time":"2026-10-26T08:00:00Z","end_time":"2026-10-26T09:30:00Z","date":"2026-10-26","created_at":"..."}]`.
+  web `src/api/types.ts:176` `FocusBlock {id, google_event_id, start_time, end_time, date}`
+  and `src/components/FocusStats.tsx:34,43,46` read `start_time`/`end_time`. These were
+  `undefined` before and are now readable. `date` is a `TEXT` column
+  (`001_initial.up.sql:40`) scanned into a `string`, so it really is `YYYY-MM-DD`. A
+  DATE-to-string scan would have produced RFC3339, so I checked the column type.
+- `runFocus` `createdBlocks[0]` = `{"google_event_id":"g1","start_time":...,"end_time":...,"date":"2026-10-26"}`.
+  The web reads `created_blocks`, which is absent both before and after (API-015,
+  PAC-32), so nothing that renders today changes.
+- `queryFreeBusy` `results[0].busy[0]` is `{"start","end"}`. `freeBusyWindowDTO`
+  (`handlers_freebusy.go:18`) is also `time.Time` with tags `start`/`end`, so AC-3's
+  equality with `participants[0].busy[0]` holds byte for byte.
+- `getCalendarFreeBusy` map values. The handler only builds the Google client
+  (`handlers_calendar.go:137`), and that client pre-sizes its slots with `make(..., 0)`.
+  The Outlook path that can yield a nil slice (`outlook_client.go:132`) does not reach
+  this operation, so no `null` array is introduced.
+
+### Consumers affected
+
+- web `src/api/manager.ts:396,430,457` and `src/api/teams.ts:346`. They discard the bodies
+  and re-fetch, so no shape break. Behaviour change the table omits: when a read-back
+  fails, these calls used to resolve (the response was 200 `null` or 201 with the
+  pre-insert struct). They now receive a 500. `requestApi` (`client.ts:421-428`) throws
+  `ApiHttpError`, and `withFallback` (`client.ts:512`) re-throws it. The user sees an
+  error although the write committed. This is D-3 working as intended. It is a rare
+  database-failure path and the operation is idempotent, but the consumer row should say
+  "surfaces an error on read-back failure" rather than only "no".
+- `e2e/tests/seam.spec.ts:163-215` calls `POST /api/freebusy`,
+  `GET /api/calendar/freebusy` and `POST /api/focus/run` and is missing from the table. I
+  checked it: the file asserts only the stand-in's request log and status codes, and no
+  renamed key is read. No break.
+- `mcp/tools.go:129-155`: three tools, text relay only, no typed decode, and no
+  `*_test.go` in `backend/` or `mcp/` mentions any old PascalCase key (grep). No code
+  break, as stated.
+- Other encode sites. I grepped every `json.Marshal`/`Encode` in `backend/` for the six
+  structs and found no second response that embeds them directly:
+  - the manager roster GET uses its own `memberResp` DTO (`handlers_manager.go:211`);
+  - gaps use `engine.CadenceGap`, which is already tagged;
+  - `engine.ParticipantBusy.Busy` is the `results` view already listed.
+
+  None of the six is persisted as JSON (settings, briefs, analytics and audit log marshal
+  other types), and none is sent outbound (`OutlookClient.CreateEvent` builds its own
+  map). Tagging therefore changes no stored data and no third-party payload.
+
+### Contract/implementation divergences
+
+The contract describes the post-implementation server, as the contract-author rule
+("reality plus the specified change") allows. I checked every "today" claim it still
+makes:
+- U-23: `processDay` appends `dateStr` at `engine/focus_time.go:116,128`. `dateStr` is
+  `day.Format("2006-01-02")` at line 96. Determined.
+- `UserProfileGoStruct.updated_at` "read BEFORE the upsert": correct.
+  `GetOrCreateUserProfile` reads, then `UpsertUserProfile` sets `now()` without a
+  read-back (`handlers_manager.go:69-88`).
+- D-4 team view: `GetManagerTeamMemberByEmailForTeam` (`storage/manager.go:197`) returns
+  `mtm.id`, the override-or-canonical display name, and the assignment cadence, as
+  described.
+- renameTeam 500 body `internal error`: `writeServerError` calls
+  `genericServerMessage(500)`, which returns `"internal error"`
+  (`server_errors.go:26-34`). This matches AC-8 and the `ServerError` component.
+
+### Uncertainties not actually resolved
+
+- U-23 is determined by reading the code, which is the method the audit prescribes
+  (`api-audit.md:491`). No acceptance test pins it, though. See recommendation 3.
+
+### Recommended changes (non-blocking; contract shape unchanged)
+
+1. **AC-6 cannot falsify D-4.** With `team_id`, `UpsertManagerTeamMemberForTeam` writes
+   the same `cadence` to the global row and to the assignment
+   (`storage/manager.go:75-95,133-152`). "cadence is the assignment's cadence" therefore
+   passes whether the read-back uses the team view or the global row. The two views differ
+   only in `display_name`, when an assignment already carries a `display_name_override`,
+   because the upsert never touches the override. Add a case to AC-6: given an existing
+   assignment with override `"Ally"`, when
+   `POST /api/manager/team/members?team_id=T` with
+   `{"email":"a@x.test","display_name":"Alice","cadence":"weekly"}`, then the 201
+   `display_name` is `"Ally"` and the global row's `display_name` is `"Alice"`. The 201
+   description should also say plainly that a re-add through a team does not replace an
+   existing team override.
+2. **setManagerProfile 200 overstates itself by omission.**
+   `_ = storage.UpsertUserProfile(...)` (`handlers_manager.go:85`) discards the write
+   error. A 200 with `{"is_manager":true,...}` can therefore come back when nothing was
+   stored. The contract-author convention is that the contract says so where the server
+   does something wrong. Add one sentence to the 200 description ("the upsert's error is
+   discarded: a 200 does not prove the flag was stored; see followUps.setManagerProfile").
+   Fixing it stays out of scope, as the manifest already records.
+3. **Pin U-23.** Extend AC-2: `skippedDays` entries match `^\d{4}-\d{2}-\d{2}$`. Give it a
+   day already at target and a disabled day so that both append sites are exercised.
+4. **Consumer table.** Add `e2e/tests/seam.spec.ts` and the read-back-500 note above to
+   both the manifest's `consumersAffected` and section 5.
+
+### Process findings (recorded, not blocking)
+
+- No spec, as section 0 itself flags. The contract-author definition says to stop without
+  an accepted spec. The precedent cited (PAC-21, PAC-36) and the size of the change make
+  this tolerable. The D-1 to D-5 assumptions are the only product decisions taken, and
+  each is conservative: no key is added, no data becomes visible to anyone new, nothing is
+  deleted. The owner should confirm D-1 to D-5 before or with the plan.
+- D-2 departs from the issue's literal ask. The issue says to omit `storage.SSOProvider`
+  only "if the SSO DTO issue lands first", and it has not landed. The reason given is real:
+  tagging would present `oidc_client_secret`/`saml_cert` as deliberate contract keys and
+  change `/api/admin/sso` twice. PAC-22 (`docs/specs/PAC-22.md`) exists and owns that
+  shape. Accepted as the more conservative option.
+- Factory section 4 says modified endpoints use the generated server interface. Nine
+  operations are modified here and the manifest names only hand-written handler files.
+  MIGRATION.md shows 0/119 generated after many features, so precedent is against
+  applying section 4 here. The plan should still say explicitly whether it applies, rather
+  than leave it silent.
+
+### Verified clean
+
+- Bundle in sync, generated Go in sync, hash reproducible, marker count unchanged (above).
+- The `required` sets of all renamed schemas equal their property sets, and
+  `additionalProperties: false` is kept. With no `omitempty` planned, every key is always
+  present, so the `required` lists are truthful.
+- Nullability is preserved as the Go types dictate: `detected_at`, `member_user_id`,
+  `cadence_custom_days` and `last_one_on_one_at` are Go pointers and nullable in the
+  schema, and every other field is a non-pointer and non-nullable.
+- Removing `null` from the patchManagerTeamMember and renameTeam 200 responses is
+  consistent with D-3 and with the shared `ServerError` component ("db error" on
+  /api/manager, "internal error" on /api/teams).
+- Retry-safety claim: both upserts are `ON CONFLICT ... DO UPDATE` with the same values. A
+  retried add or patch converges, and only `updated_at` moves.
+- Web generated types regenerate cleanly, and no hand-written web file references the
+  renamed schemas or keys (grep outside `src/api/generated`).
+- Rollback: no migration and no stored JSON of these structs, so a backend revert restores
+  the old keys with no data step.
