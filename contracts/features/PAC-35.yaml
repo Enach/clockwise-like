@@ -60,14 +60,14 @@
     { "operationId": "detectAuthProvider", "method": "POST", "path": "/api/auth/detect", "change": "Description only (SsoDetectResponse.redirect_url): a path on the API origin; the client appends ?login_hint=; there is no domain field." },
     { "operationId": "disconnectCalendar", "method": "DELETE", "path": "/api/auth/disconnect", "change": "No response sets or expires auth_token. Branches like getAuthStatus. Google (blank/unrecognised/no row): delete the Google token, 204. outlook/webcal: delete nothing, 409 CalendarDisconnectUnsupported. Settings unreadable: delete nothing, 500 (spec D-9). Summary rewritten; Set-Cookie header removed from 204." },
     { "operationId": "logout", "method": "POST", "path": "/api/auth/logout", "change": "200 (empty, no Content-Type) -> 204. Set-Cookie expiring auth_token unchanged. 401 unchanged." },
-    { "operationId": "getCurrentUser", "method": "GET", "path": "/api/auth/me", "change": "Description: avatarUrl is the single picture name (API-065). Schema change in CurrentUserResponse, below." }
+    { "operationId": "getCurrentUser", "method": "GET", "path": "/api/auth/me", "change": "Description: avatarUrl is the picture's only name in the current-user read (API-065); scheduling-link and booking hosts keep the same value as avatar_url (SchedulingLinkHost, PublicHost), unchanged. Schema change in CurrentUserResponse, below." }
   ],
 
   "schemasChanged": [
     "components.parameters.LoginHint: NEW. name login_hint, in query, optional, type string (no format, on purpose: AC-10). Rule (revision 3): forwarded only when all of: (1) <= 254 chars; (2) exactly one '@'; (3) net/mail.ParseAddress accepts it with empty Name and Address equal to the whole value; (4) local part only [A-Za-z0-9._+'-] (apostrophe added in revision 3); (5) domain a DNS hostname of 2 or more dot-separated LDH labels, each [A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?, the last containing a letter (no IP literal, no single-label host). Else dropped, never a 400. Forwarded examples: alice@acme.com, o'brien@acme.com. Dropped examples: alice@acme.com&prompt=none, alice&prompt=none@acme.com, alice@acme.com?x=y, alice@acme.com#frag, alice@[127.0.0.1], alice@localhost, alice@acme. Repeated login_hint: first value only (url.Values.Get).",
     "CalendarDisconnectUnsupported: NEW. {error: const 'disconnecting this kind of calendar is not available yet', provider: enum [outlook, webcal]}, both required, additionalProperties false.",
     "CurrentUserResponse.provider: enum [google, microsoft, sso] (was free string with x-uncertain). Description: provider of the FIRST sign-in.",
-    "CurrentUserResponse.avatarUrl: description only (single name; every sign-in overwrites it; Microsoft and SSO write '').",
+    "CurrentUserResponse.avatarUrl: description only (the only name in the current-user read; scheduling-link and booking hosts carry the same value as avatar_url, unchanged by PAC-35; every sign-in overwrites it; Microsoft and SSO write '').",
     "SsoDetectResponse.redirect_url: description only."
   ],
 

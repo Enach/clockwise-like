@@ -22,7 +22,7 @@
 | `detectAuthProvider` | Description only: `redirect_url` is a path on the **API** origin. The client appends `?login_hint=` itself. There is no `domain` field. | API-010 |
 | `disconnectCalendar` | No response sets or expires `auth_token`. Branches on the caller's provider the way `getAuthStatus` does. Google: `204`. `outlook`/`webcal`: new **409** `CalendarDisconnectUnsupported`, and nothing is deleted. Settings unreadable: `500`, nothing deleted. The summary no longer says "clear the session cookie". | API-061, spec D-8, D-9 |
 | `logout` | `200` (empty, no Content-Type) becomes **`204`**. The Set-Cookie that expires the session is unchanged. | API-063 |
-| `getCurrentUser` / `CurrentUserResponse` | `avatarUrl` is declared the single name for the picture. `provider` becomes `enum: [google, microsoft, sso]` and its `x-uncertain` is removed. | API-065, U-13 |
+| `getCurrentUser` / `CurrentUserResponse` | `avatarUrl` is declared the only name for the picture in the current-user read (hosts keep `avatar_url`, see §7). `provider` becomes `enum: [google, microsoft, sso]` and its `x-uncertain` is removed. | API-065, U-13 |
 
 New components: `parameters.LoginHint` and `schemas.CalendarDisconnectUnsupported`.
 
@@ -241,6 +241,14 @@ text did not say: every sign-in overwrites the picture, and Microsoft and SSO
 write `""`. So a Microsoft sign-in clears a picture an earlier Google sign-in
 stored. That is current behaviour, not changed here. A follow-up is listed in
 the manifest.
+
+Scope (revision 4): `avatarUrl` is the only name **in the current-user read**
+(`getCurrentUser`). The same stored value (`users.avatar_url`) also reaches the
+web as `avatar_url` on scheduling-link hosts (`SchedulingLinkHost`,
+`booking.yaml:1334`; `handlers_scheduling_links.go:57`) and public booking
+hosts (`PublicHost`, `booking.yaml:1143`; `handlers_booking.go:34`). PAC-35
+does not change those, and the web must keep reading `hosts[].avatar_url`
+there (`src/api/schedulingLinks.ts:50,59,72`); AC-14 depends on it.
 
 Rejected: **rename to `avatar`** (the web's current spelling). That changes the
 server to match a client bug, and it couples the deploys.
