@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -147,7 +146,7 @@ func TestAddConferenceErrorsContract(t *testing.T) {
 	start := "2026-08-12T10:00:00Z"
 	end := "2026-08-12T10:30:00Z"
 	client := &fakeConferenceEventClient{calendarID: "primary", event: &googlecalendar.Event{Summary: "Planning", Start: &googlecalendar.EventDateTime{DateTime: start}, End: &googlecalendar.EventDateTime{DateTime: end}}}
-	factory := &fakeConferenceProviderFactory{err: errors.New("unsupported conference provider \"whereby\"")}
+	factory := &fakeConferenceProviderFactory{err: errUnsupportedConferenceProvider}
 	r := setupConferencingRoutes(t, client, factory)
 	user := createTestUser(t, "conference-errors@example.com") // settings are the caller's (PAC-24)
 	tests := []struct {

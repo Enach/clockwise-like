@@ -8,7 +8,6 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODULE_DIR="$ROOT_DIR/backend"
 DB_CONTAINER="paceday-test-postgres-$$"
 DB_PORT="${PACEDAY_TEST_DB_PORT:-15432}"
 
@@ -42,10 +41,13 @@ fi
 # Word-split deliberately inside the container, hence the unquoted expansion there.
 GO_TEST_FLAGS="${PACEDAY_GO_TEST_FLAGS:-}"
 
+# The whole repository is mounted, with backend/ as the working directory, not
+# backend/ alone: the PAC-21 contract test (backend/api/pac21_contract_5xx_test.go)
+# reads contracts/openapi/openapi.yaml.
 docker run --rm --network host \
   -e "PACEDAY_TEST_DATABASE_URL=postgres://test:test@127.0.0.1:${DB_PORT}/testdb?sslmode=disable" \
   -e "GO_TEST_FLAGS=$GO_TEST_FLAGS" \
-  -v "$MODULE_DIR:/app" \
-  -w /app \
+  -v "$ROOT_DIR:/repo" \
+  -w /repo/backend \
   golang:1.25-alpine \
   sh -c 'go test -p 1 $GO_TEST_FLAGS ./...'
