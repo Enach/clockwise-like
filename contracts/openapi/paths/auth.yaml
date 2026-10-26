@@ -507,8 +507,10 @@ paths:
 
         Branches on the caller's calendar provider exactly as `getAuthStatus`
         does (`calendarProvider` from the caller's own settings row; blank or
-        any value other than `outlook` / `webcal` means Google), so the server
-        and the app classify every user the same way (spec PAC-35 D-8):
+        any value other than `outlook` / `webcal` means Google; a caller with
+        no settings row yet gets the default row, provider `google`, exactly as
+        `getAuthStatus` creates it), so the server and the app classify every
+        user the same way (spec PAC-35 D-8):
         - Google: deletes the caller's stored Google OAuth token row and answers
           204. As before, this also turns Google Meet to not connected for the
           caller (it depends on the same credential). A caller with no stored
@@ -517,7 +519,8 @@ paths:
           the caller holds one, the Microsoft credential and the webcal link
           are all kept) and answers 409 `CalendarDisconnectUnsupported`.
           Disconnect for these calendars is not implemented (spec PAC-35 OQ-5).
-        - The settings row cannot be read: deletes nothing and answers 500.
+        - The settings row cannot be read (or created): deletes nothing and
+          answers 500.
           The provider is never guessed as Google on this path, so a read
           failure cannot delete an Outlook or webcal user's Google token.
           (`getAuthStatus` still answers "google" on its own read failure;

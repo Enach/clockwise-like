@@ -70,6 +70,17 @@ const (
 	CadenceWeekly   Cadence = "weekly"
 )
 
+// Defines values for CalendarDisconnectUnsupportedError.
+const (
+	DisconnectingThisKindOfCalendarIsNotAvailableYet CalendarDisconnectUnsupportedError = "disconnecting this kind of calendar is not available yet"
+)
+
+// Defines values for CalendarDisconnectUnsupportedProvider.
+const (
+	CalendarDisconnectUnsupportedProviderOutlook CalendarDisconnectUnsupportedProvider = "outlook"
+	CalendarDisconnectUnsupportedProviderWebcal  CalendarDisconnectUnsupportedProvider = "webcal"
+)
+
 // Defines values for CalendarEventColor.
 const (
 	Hash039BE5 CalendarEventColor = "#039BE5"
@@ -117,6 +128,13 @@ const (
 	CreateSchedulingLinkRequestUsageTypeRecurring CreateSchedulingLinkRequestUsageType = "recurring"
 	CreateSchedulingLinkRequestUsageTypeReusable  CreateSchedulingLinkRequestUsageType = "reusable"
 	CreateSchedulingLinkRequestUsageTypeSingleUse CreateSchedulingLinkRequestUsageType = "single_use"
+)
+
+// Defines values for CurrentUserResponseProvider.
+const (
+	CurrentUserResponseProviderGoogle    CurrentUserResponseProvider = "google"
+	CurrentUserResponseProviderMicrosoft CurrentUserResponseProvider = "microsoft"
+	CurrentUserResponseProviderSso       CurrentUserResponseProvider = "sso"
 )
 
 // Defines values for DailyRecapPatchSendTo.
@@ -656,6 +674,24 @@ type CadenceGapList struct {
 	Gaps []CadenceGap `json:"gaps"`
 }
 
+// CalendarDisconnectUnsupported Body of `disconnectCalendar`'s 409 (PAC-35, spec D-8): the caller's
+// calendar is not Google, disconnect for that kind of calendar is not
+// implemented, and nothing was deleted. `error` keeps the shared
+// `{error}` member so a client that only shows `data.error` still shows a
+// true sentence.
+type CalendarDisconnectUnsupported struct {
+	Error CalendarDisconnectUnsupportedError `json:"error"`
+
+	// Provider The caller's calendar provider, as `getAuthStatus` reports it.
+	Provider CalendarDisconnectUnsupportedProvider `json:"provider"`
+}
+
+// CalendarDisconnectUnsupportedError defines model for CalendarDisconnectUnsupported.Error.
+type CalendarDisconnectUnsupportedError string
+
+// CalendarDisconnectUnsupportedProvider The caller's calendar provider, as `getAuthStatus` reports it.
+type CalendarDisconnectUnsupportedProvider string
+
 // CalendarEvent api.calendarEventDTO — the flattened event shape returned by GET /api/calendar/events.
 type CalendarEvent struct {
 	// AttendeeDetails Parallel to `attendees`, same ordering and same filtering. Omitted when empty.
@@ -902,8 +938,12 @@ type CreateSchedulingLinkRequestUsageType string
 
 // CurrentUserResponse storage.User (backend/storage/users.go) serialized directly.
 type CurrentUserResponse struct {
-	// AvatarUrl May be the empty string (Microsoft and SSO logins always upsert "").
-	// Not omitempty, so the key is always present.
+	// AvatarUrl The user's picture URL, and the single name for the picture in every
+	// client (PAC-35, API-065: the web app read it as `avatar`, or not at
+	// all). May be the empty string. Every sign-in overwrites it: Google
+	// writes the Google picture, Microsoft and SSO always write "" (so a
+	// Microsoft or SSO sign-in clears a picture an earlier Google sign-in
+	// stored). Not omitempty, so the key is always present.
 	AvatarUrl string              `json:"avatarUrl"`
 	CreatedAt time.Time           `json:"createdAt"`
 	Email     openapi_types.Email `json:"email"`
@@ -913,10 +953,34 @@ type CurrentUserResponse struct {
 	// Org storage.Org (backend/storage/orgs.go).
 	Org *OrgSummary `json:"org,omitempty"`
 
-	// Provider Login provider recorded at upsert time.
-	// x-uncertain applies — see property-level note.
-	Provider string `json:"provider"`
+	// Provider The provider of the user's FIRST sign-in: set when the row is
+	// inserted and never updated (UpsertUser's ON CONFLICT does not touch
+	// `provider`), so a user who first signed in with Google and later
+	// with Microsoft still reads "google".
+	// Closed by PAC-35 (U-13): `users.provider` has no CHECK constraint
+	// (migration 006, `TEXT NOT NULL DEFAULT 'google'`), but its only
+	// writer is storage.UpsertUser, and every call site in the history
+	// of the repository passes one of these three literals
+	// (handlers_auth.go "google", handlers_microsoft_auth.go "microsoft",
+	// handlers_sso.go "sso"; tests and the e2e seed write "google").
+	// A CHECK constraint is not added (spec PAC-35 section 7: no
+	// migration).
+	Provider CurrentUserResponseProvider `json:"provider"`
 }
+
+// CurrentUserResponseProvider The provider of the user's FIRST sign-in: set when the row is
+// inserted and never updated (UpsertUser's ON CONFLICT does not touch
+// `provider`), so a user who first signed in with Google and later
+// with Microsoft still reads "google".
+// Closed by PAC-35 (U-13): `users.provider` has no CHECK constraint
+// (migration 006, `TEXT NOT NULL DEFAULT 'google'`), but its only
+// writer is storage.UpsertUser, and every call site in the history
+// of the repository passes one of these three literals
+// (handlers_auth.go "google", handlers_microsoft_auth.go "microsoft",
+// handlers_sso.go "sso"; tests and the e2e seed write "google").
+// A CHECK constraint is not added (spec PAC-35 section 7: no
+// migration).
+type CurrentUserResponseProvider string
 
 // DailyRecapPatch api.recapSettingsBody. A property absent means "leave unchanged"; a property present is applied.
 // PAC-24 makes two changes to what this document permits, both to align it with PATCH /api/settings. `null` is no longer accepted anywhere: the Go fields are pointers, so `null` used to be indistinguishable from an omission, which meant a client that meant to clear something and a client with a serialisation bug got the same silent success. And an unknown property is now rejected rather than ignored, which is how a caller learns it has misspelt one of these seven snake_case names.
@@ -2518,7 +2582,14 @@ type SsoDetectResponse struct {
 	// ProviderName Display name of the SSO provider. Omitted unless type == "sso".
 	ProviderName *string `json:"provider_name,omitempty"`
 
-	// RedirectUrl Relative path `/api/auth/sso/<domain>`. Omitted unless type == "sso".
+	// RedirectUrl Relative path `/api/auth/sso/<domain>` (the email's domain,
+	// lowercased and trimmed, not URL-escaped). Omitted unless
+	// type == "sso". It is a path on the API's origin, not the web app's:
+	// a client resolves it against its API base URL, which may be a
+	// different origin (PAC-35 AC-7). The client appends
+	// `?login_hint=<email>` itself (see `startSsoLogin`); the detection
+	// answer does not carry the email. This is the only field a client
+	// needs to reach SSO; there is no `domain` field (API-010).
 	RedirectUrl *string `json:"redirect_url,omitempty"`
 
 	// Type "generic" for consumer/unparseable domains, "sso" when a provider row
@@ -2768,6 +2839,9 @@ type HabitId = openapi_types.UUID
 // InviteTokenPath defines model for InviteTokenPath.
 type InviteTokenPath = string
 
+// LoginHint defines model for LoginHint.
+type LoginHint = string
+
 // MemberEmailPath defines model for MemberEmailPath.
 type MemberEmailPath = openapi_types.Email
 
@@ -2913,22 +2987,71 @@ type SsoOidcCallbackParams struct {
 
 // StartGoogleOAuthParams defines parameters for StartGoogleOAuth.
 type StartGoogleOAuthParams struct {
-	// LoginHint Sent by the frontend (src/components/auth/AuthDialog.tsx) but the Go
-	// handler (authHandlers.startOAuth) reads no query parameters at all,
-	// so it is silently discarded and NOT forwarded to Google.
-	LoginHint *openapi_types.Email `form:"login_hint,omitempty" json:"login_hint,omitempty"`
+	// LoginHint The email the user typed, forwarded to the provider as the OAuth/OIDC
+	// `login_hint` so it can preselect or prefill that account (PAC-35,
+	// API-064). Advisory only (spec PAC-35 D-4): it never selects, creates or
+	// links a Paceday account; the account signed in is the one the provider
+	// authenticates, checked exactly as before.
+	// The LoginHint rule: the value is forwarded only when it is a bare email
+	// address, meaning all of: at most 254 characters; exactly one `@`; Go's
+	// `net/mail.ParseAddress` accepts it with an empty display name and an
+	// `Address` equal to the whole value (so no `<...>`, display name,
+	// comment, whitespace or other extra text). Anything else, including an
+	// empty value, is dropped silently and sign-in starts without a hint.
+	// It is never a 400: the schema is a plain string on purpose, because a
+	// malformed hint must not stop a sign-in (spec AC-10). The forwarded
+	// value is URL-encoded by the OAuth library, so it cannot add a parameter
+	// to the provider request, and no other query parameter of the start
+	// request is forwarded.
+	LoginHint *LoginHint `form:"login_hint,omitempty" json:"login_hint,omitempty"`
 }
 
 // StartMicrosoftOAuthParams defines parameters for StartMicrosoftOAuth.
 type StartMicrosoftOAuthParams struct {
-	// LoginHint Sent by the frontend; ignored by the handler (same as /api/auth/google).
-	LoginHint *openapi_types.Email `form:"login_hint,omitempty" json:"login_hint,omitempty"`
+	// LoginHint The email the user typed, forwarded to the provider as the OAuth/OIDC
+	// `login_hint` so it can preselect or prefill that account (PAC-35,
+	// API-064). Advisory only (spec PAC-35 D-4): it never selects, creates or
+	// links a Paceday account; the account signed in is the one the provider
+	// authenticates, checked exactly as before.
+	// The LoginHint rule: the value is forwarded only when it is a bare email
+	// address, meaning all of: at most 254 characters; exactly one `@`; Go's
+	// `net/mail.ParseAddress` accepts it with an empty display name and an
+	// `Address` equal to the whole value (so no `<...>`, display name,
+	// comment, whitespace or other extra text). Anything else, including an
+	// empty value, is dropped silently and sign-in starts without a hint.
+	// It is never a 400: the schema is a plain string on purpose, because a
+	// malformed hint must not stop a sign-in (spec AC-10). The forwarded
+	// value is URL-encoded by the OAuth library, so it cannot add a parameter
+	// to the provider request, and no other query parameter of the start
+	// request is forwarded.
+	LoginHint *LoginHint `form:"login_hint,omitempty" json:"login_hint,omitempty"`
 }
 
 // MicrosoftOAuthCallbackParams defines parameters for MicrosoftOAuthCallback.
 type MicrosoftOAuthCallbackParams struct {
 	State string `form:"state" json:"state"`
 	Code  string `form:"code" json:"code"`
+}
+
+// StartSsoLoginParams defines parameters for StartSsoLogin.
+type StartSsoLoginParams struct {
+	// LoginHint The email the user typed, forwarded to the provider as the OAuth/OIDC
+	// `login_hint` so it can preselect or prefill that account (PAC-35,
+	// API-064). Advisory only (spec PAC-35 D-4): it never selects, creates or
+	// links a Paceday account; the account signed in is the one the provider
+	// authenticates, checked exactly as before.
+	// The LoginHint rule: the value is forwarded only when it is a bare email
+	// address, meaning all of: at most 254 characters; exactly one `@`; Go's
+	// `net/mail.ParseAddress` accepts it with an empty display name and an
+	// `Address` equal to the whole value (so no `<...>`, display name,
+	// comment, whitespace or other extra text). Anything else, including an
+	// empty value, is dropped silently and sign-in starts without a hint.
+	// It is never a 400: the schema is a plain string on purpose, because a
+	// malformed hint must not stop a sign-in (spec AC-10). The forwarded
+	// value is URL-encoded by the OAuth library, so it cannot add a parameter
+	// to the provider request, and no other query parameter of the start
+	// request is forwarded.
+	LoginHint *LoginHint `form:"login_hint,omitempty" json:"login_hint,omitempty"`
 }
 
 // HandleZoomOAuthCallbackParams defines parameters for HandleZoomOAuthCallback.
@@ -5298,7 +5421,7 @@ type ServerInterface interface {
 	// Detect which auth provider an email address should use
 	// (POST /api/auth/detect)
 	DetectAuthProvider(w http.ResponseWriter, r *http.Request)
-	// Delete the stored calendar OAuth token and clear the session cookie
+	// Disconnect the caller's Google calendar (the session is kept)
 	// (DELETE /api/auth/disconnect)
 	DisconnectCalendar(w http.ResponseWriter, r *http.Request)
 	// Begin Google OAuth
@@ -5318,7 +5441,7 @@ type ServerInterface interface {
 	MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Request, params MicrosoftOAuthCallbackParams)
 	// Begin OIDC SSO login for a configured domain
 	// (GET /api/auth/sso/{domain})
-	StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string)
+	StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams)
 	// Calendar connection status for the current session
 	// (GET /api/auth/status)
 	GetAuthStatus(w http.ResponseWriter, r *http.Request)
@@ -5697,7 +5820,7 @@ func (_ Unimplemented) DetectAuthProvider(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Delete the stored calendar OAuth token and clear the session cookie
+// Disconnect the caller's Google calendar (the session is kept)
 // (DELETE /api/auth/disconnect)
 func (_ Unimplemented) DisconnectCalendar(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -5735,7 +5858,7 @@ func (_ Unimplemented) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Req
 
 // Begin OIDC SSO login for a configured domain
 // (GET /api/auth/sso/{domain})
-func (_ Unimplemented) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string) {
+func (_ Unimplemented) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6926,8 +7049,19 @@ func (siw *ServerInterfaceWrapper) StartSsoLogin(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params StartSsoLoginParams
+
+	// ------------- Optional query parameter "login_hint" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "login_hint", r.URL.Query(), &params.LoginHint)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "login_hint", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.StartSsoLogin(w, r, domain)
+		siw.Handler.StartSsoLogin(w, r, domain, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10972,6 +11106,16 @@ func (response SsoOidcCallback400TextResponse) VisitSsoOidcCallbackResponse(w ht
 	return err
 }
 
+type SsoOidcCallback403TextResponse PlainTextError
+
+func (response SsoOidcCallback403TextResponse) VisitSsoOidcCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(403)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
 type SsoOidcCallback404JSONResponse ErrorResponse
 
 func (response SsoOidcCallback404JSONResponse) VisitSsoOidcCallbackResponse(w http.ResponseWriter) error {
@@ -11041,16 +11185,10 @@ type DisconnectCalendarResponseObject interface {
 	VisitDisconnectCalendarResponse(w http.ResponseWriter) error
 }
 
-type DisconnectCalendar204ResponseHeaders struct {
-	SetCookie string
-}
-
 type DisconnectCalendar204Response struct {
-	Headers DisconnectCalendar204ResponseHeaders
 }
 
 func (response DisconnectCalendar204Response) VisitDisconnectCalendarResponse(w http.ResponseWriter) error {
-	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
 	w.WriteHeader(204)
 	return nil
 }
@@ -11063,6 +11201,15 @@ func (response DisconnectCalendar401TextResponse) VisitDisconnectCalendarRespons
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DisconnectCalendar409JSONResponse CalendarDisconnectUnsupported
+
+func (response DisconnectCalendar409JSONResponse) VisitDisconnectCalendarResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DisconnectCalendar500JSONResponse ErrorResponse
@@ -11105,17 +11252,17 @@ type LogoutResponseObject interface {
 	VisitLogoutResponse(w http.ResponseWriter) error
 }
 
-type Logout200ResponseHeaders struct {
+type Logout204ResponseHeaders struct {
 	SetCookie string
 }
 
-type Logout200Response struct {
-	Headers Logout200ResponseHeaders
+type Logout204Response struct {
+	Headers Logout204ResponseHeaders
 }
 
-func (response Logout200Response) VisitLogoutResponse(w http.ResponseWriter) error {
+func (response Logout204Response) VisitLogoutResponse(w http.ResponseWriter) error {
 	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
-	w.WriteHeader(200)
+	w.WriteHeader(204)
 	return nil
 }
 
@@ -11241,15 +11388,6 @@ func (response MicrosoftOAuthCallback500JSONResponse) VisitMicrosoftOAuthCallbac
 	return json.NewEncoder(w).Encode(response)
 }
 
-type MicrosoftOAuthCallback502JSONResponse ErrorResponse
-
-func (response MicrosoftOAuthCallback502JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(502)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
 type MicrosoftOAuthCallback503JSONResponse ErrorResponse
 
 func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
@@ -11261,6 +11399,7 @@ func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbac
 
 type StartSsoLoginRequestObject struct {
 	Domain string `json:"domain"`
+	Params StartSsoLoginParams
 }
 
 type StartSsoLoginResponseObject interface {
@@ -16012,7 +16151,7 @@ type StrictServerInterface interface {
 	// Detect which auth provider an email address should use
 	// (POST /api/auth/detect)
 	DetectAuthProvider(ctx context.Context, request DetectAuthProviderRequestObject) (DetectAuthProviderResponseObject, error)
-	// Delete the stored calendar OAuth token and clear the session cookie
+	// Disconnect the caller's Google calendar (the session is kept)
 	// (DELETE /api/auth/disconnect)
 	DisconnectCalendar(ctx context.Context, request DisconnectCalendarRequestObject) (DisconnectCalendarResponseObject, error)
 	// Begin Google OAuth
@@ -16834,10 +16973,11 @@ func (sh *strictHandler) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.R
 }
 
 // StartSsoLogin operation middleware
-func (sh *strictHandler) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string) {
+func (sh *strictHandler) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams) {
 	var request StartSsoLoginRequestObject
 
 	request.Domain = domain
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.StartSsoLogin(ctx, request.(StartSsoLoginRequestObject))

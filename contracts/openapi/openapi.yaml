@@ -871,16 +871,18 @@ paths:
         \ cookie (PAC-35, API-061; before PAC-35 the\n204 expired it and so logged the user out).\n\n\
         Branches on the caller's calendar provider exactly as `getAuthStatus`\ndoes (`calendarProvider`\
         \ from the caller's own settings row; blank or\nany value other than `outlook` / `webcal` means\
-        \ Google), so the server\nand the app classify every user the same way (spec PAC-35 D-8):\n- Google:\
-        \ deletes the caller's stored Google OAuth token row and answers\n  204. As before, this also\
-        \ turns Google Meet to not connected for the\n  caller (it depends on the same credential). A\
-        \ caller with no stored\n  token gets 204 too.\n- `outlook` or `webcal`: deletes NOTHING (the\
-        \ stored Google token, if\n  the caller holds one, the Microsoft credential and the webcal link\n\
-        \  are all kept) and answers 409 `CalendarDisconnectUnsupported`.\n  Disconnect for these calendars\
-        \ is not implemented (spec PAC-35 OQ-5).\n- The settings row cannot be read: deletes nothing and\
-        \ answers 500.\n  The provider is never guessed as Google on this path, so a read\n  failure cannot\
-        \ delete an Outlook or webcal user's Google token.\n  (`getAuthStatus` still answers \"google\"\
-        \ on its own read failure;\n  disconnect deliberately does not follow it there.)\n"
+        \ Google; a caller with\nno settings row yet gets the default row, provider `google`, exactly\
+        \ as\n`getAuthStatus` creates it), so the server and the app classify every\nuser the same way\
+        \ (spec PAC-35 D-8):\n- Google: deletes the caller's stored Google OAuth token row and answers\n\
+        \  204. As before, this also turns Google Meet to not connected for the\n  caller (it depends\
+        \ on the same credential). A caller with no stored\n  token gets 204 too.\n- `outlook` or `webcal`:\
+        \ deletes NOTHING (the stored Google token, if\n  the caller holds one, the Microsoft credential\
+        \ and the webcal link\n  are all kept) and answers 409 `CalendarDisconnectUnsupported`.\n  Disconnect\
+        \ for these calendars is not implemented (spec PAC-35 OQ-5).\n- The settings row cannot be read\
+        \ (or created): deletes nothing and\n  answers 500.\n  The provider is never guessed as Google\
+        \ on this path, so a read\n  failure cannot delete an Outlook or webcal user's Google token.\n\
+        \  (`getAuthStatus` still answers \"google\" on its own read failure;\n  disconnect deliberately\
+        \ does not follow it there.)\n"
       responses:
         '204':
           description: 'The caller''s calendar is Google and its stored token row is gone
