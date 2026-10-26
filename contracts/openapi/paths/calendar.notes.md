@@ -55,6 +55,11 @@ Frontend types the response as `CalendarEvent`. The handler encodes the **raw
 endpoint, so the inconsistency is deliberate nowhere and accidental here.
 Any frontend code reading `.title` off the PATCH result gets `undefined`.
 
+**PAC-29 (contract):** the 200 body is now specified as `CalendarEvent`, built by
+`toCalendarEventDTO` like the list, and `GoogleCalendarEventRaw` is deleted. Resolves
+API-017 and U-04 once the implementation lands. Items (3), (5) and the all-day / room /
+404 defects (API-018, API-042..045) are not changed by PAC-29.
+
 ### 5. `DELETE /api/events/{id}` — `send_updates` query param ignored
 Same as (3): `client.ts:1187` sends `?send_updates=none|all`; the handler reads no
 query parameters at all.
@@ -190,7 +195,7 @@ nobody "fixes" the backend to send structured details assuming the spec allows i
 | Location in `calendar.yaml` | Question |
 |---|---|
 | `getCalendarFreeBusy` (operation) | `GET /api/calendar/freebusy` has no frontend consumer and returns capitalized `Start`/`End`. Keep it, align it with `POST /api/freebusy`, or delete it? |
-| `patchEvent` (operation) | The 200 body is the raw Google event, not `CalendarEvent`. Which side is authoritative? No test covers the success body, so nothing pins it today. |
+| `patchEvent` (operation) | ~~The 200 body is the raw Google event, not `CalendarEvent`. Which side is authoritative?~~ Resolved: PAC-21 pinned the raw body; PAC-29 makes `CalendarEvent` authoritative (U-04). |
 | `listAuditEntries` (operation) | The audit log is global, not per-user/per-org. Intentional, or a data-exposure bug to fix before publishing? |
 | `CalendarEvent.is_personal_block` (property) | Dead field — is the tagging logic missing, or should the field be removed from the DTO? |
 | `OrgMember.provider` (property) | The exact set of values written at signup was not traced. Confirm against `handlers_auth.go` / `handlers_microsoft_auth.go` before adding an enum. |

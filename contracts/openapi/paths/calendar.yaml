@@ -229,14 +229,20 @@ paths:
         TIMED EVENT. Supplying `attendees` REPLACES the whole attendee list with
         email-only entries, discarding display names and RSVP status, and also
         discards any room resource attendee that the previous list contained.
-        The 200 body is the raw google.golang.org/api/calendar/v3.Event that
-        UpdateEvent returned, re-encoded as-is (`json.NewEncoder(w).Encode(updated)`
-        in handlers_events.go), NOT the flattened CalendarEvent DTO used by GET
-        /api/calendar/events. U-04 resolved by PAC-21 from the handler, to be pinned
-        by TestPatchEvent_SuccessBodyIsRawGoogleEvent (AC-6, written in the backend
-        PR before the code). Whether the endpoint should
-        return CalendarEvent instead (the web app types it that way) is a separate
-        product question (API-017), not part of this contract.
+        The 200 body is the event UpdateEvent returned, flattened by the same
+        toCalendarEventDTO as GET /api/calendar/events: the CalendarEvent DTO
+        (`title`, `start`, `end`, `attendees: string[]`, ...), never Google's own keys
+        (`summary`, `start.dateTime`, `htmlLink`, `hangoutLink`). PAC-29 (API-017,
+        U-04): until PAC-29's implementation lands the server still encodes the raw
+        google.golang.org/api/calendar/v3.Event here, so this response describes the
+        server after that PR, not before it. Like the list, the DTO drops room
+        resource attendees (`*@resource.calendar.google.com`) from `attendees` and
+        `attendee_details`, so a room booked on the event is not visible in this
+        body (whether PATCH keeps the room is API-044, not changed by PAC-29). The
+        other PATCH defects (API-018 discarded `send_updates` /
+        `room_resource_email` / `attendee_details`, API-043 all-day conversion,
+        API-044 room loss, API-045 every GetEvent failure is 404) are unchanged by
+        PAC-29 and described above and under 404.
       requestBody:
         required: true
         content:
@@ -245,11 +251,13 @@ paths:
               $ref: "#/components/schemas/EventPatchRequest"
       responses:
         "200":
-          description: The updated event, serialized by the Google API client library.
+          description: >-
+            The updated event as the CalendarEvent DTO, the same shape as one element
+            of GET /api/calendar/events (PAC-29).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GoogleCalendarEventRaw"
+                $ref: "#/components/schemas/CalendarEvent"
         "400":
           description: "`invalid body` — the request body is not valid JSON."
           content:
@@ -1130,8 +1138,11 @@ components:
     CalendarEvent:
       type: object
       description: >-
-        api.calendarEventDTO — the flattened event shape returned by
-        GET /api/calendar/events.
+        api.calendarEventDTO, built by toCalendarEventDTO — the flattened event shape
+        returned by GET /api/calendar/events (one per array element) and, since
+        PAC-29, as the whole 200 body of PATCH /api/events/{id},
+        POST /api/schedule/create and POST /api/nlp/confirm. One converter, so the
+        four operations cannot disagree about the same event.
       required: [id, title, start, end]
       properties:
         id:
@@ -1190,7 +1201,9 @@ components:
           type: boolean
           description: >-
             Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO,
-            so it is always omitted from responses from this endpoint.
+            so it is always omitted from every response that carries this schema
+            (the events list and, since PAC-29, PATCH /api/events/{id},
+            POST /api/schedule/create and POST /api/nlp/confirm).
           x-uncertain: >-
             Dead field on this path. Either the personal-block tagging logic is
             missing, or the field should be dropped from the DTO.
@@ -1288,41 +1301,6 @@ components:
           items:
             type: string
             format: email
-
-    GoogleCalendarEventRaw:
-      type: object
-      description: >-
-        The raw google.golang.org/api/calendar/v3.Event returned unmodified by
-        PATCH /api/events/{id}. Its keys are Google's own camelCase API names
-        (`summary`, `start.dateTime`, `htmlLink`, `hangoutLink`, `attendees[].responseStatus`,
-        …), not the CalendarEvent shape. Only the most load-bearing fields are listed;
-        the object carries the full Google event payload.
-      additionalProperties: true
-      properties:
-        id:
-          type: string
-        summary:
-          type: string
-        description:
-          type: string
-        location:
-          type: string
-        htmlLink:
-          type: string
-        hangoutLink:
-          type: string
-        start:
-          type: object
-          additionalProperties: true
-          description: Google EventDateTime — has `dateTime`, `date` and/or `timeZone`.
-        end:
-          type: object
-          additionalProperties: true
-        attendees:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
 
     # ------------------------------------------------------------- free/busy
 
