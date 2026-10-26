@@ -249,3 +249,159 @@ its own, and the well-formed journeys are unchanged.
   floor, mcp 84.0% against 75%).
 - The gate is re-run on the final commit of this branch. Its output is in the
   Linear comment on PAC-36 and in the contract PR body.
+
+## Challenge — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewed on `factory/pac-36-contract` at `26a3b8a`, committed state only, against
+`handlers_focus.go`, `handlers_schedule.go`, `engine/compression.go`, the tests in
+`backend/api`, `mcp/`, `e2e/tests` and `smart-calendar-flow` `main` at `8179a33`.
+The schema change itself holds. The one blocking finding is a consumer the manifest
+does not list.
+
+### Requests wrongly permitted
+
+None found. Every row of the §1 "does not decode" table was run through
+`json.NewDecoder(...).Decode` into the handlers' own body struct (a Go scratch
+program using the same decoder settings as both handlers):
+
+| Body | Decode result | Contract says |
+|---|---|---|
+| empty, `   \n` | `io.EOF` | `{}`, 200 path. Matches |
+| `null`, `{}`, `{"x":1}`, `{"week":null}`, `{} garbage` | no error | 200 path. Matches |
+| `{`, `{"week":`, `nul` | `unexpected EOF` (not `io.EOF`) | 400. Matches |
+| `not json` | syntax error | 400. Matches |
+| `[]`, `"2030-01-07"`, `5`, `true` | cannot unmarshal into struct | 400. Matches |
+| `{"week":5}`, `{"date":true}` | `UnmarshalTypeError` | 400. Matches |
+| `{"week":"a","week":5}` | `UnmarshalTypeError` | 400. Consistent with the stated rule |
+
+### Responses the client cannot handle
+
+None blocking.
+
+1. (non-blocking) The `previewCompression` mock fallback in `smart-calendar-flow`
+   `src/api/client.ts:1162` returns `[]` in mock mode. The new `minItems: 1` means
+   the server can no longer send that. Nothing breaks today: no UI component calls
+   `compressionPreview`, and only `src/api/contract.ts:73` declares it. But a future
+   screen written against the regenerated types may treat `[]` as impossible while
+   mock mode still produces it. This is a follow-up for the frontend stage, not a
+   contract change.
+2. (non-blocking) A week-mode 500 from `previewCompression` now says nothing about
+   which day failed and carries no per-day data. D-1 accepts this. It is recorded
+   here so the owner who confirms D-1 sees the cost: one transient provider error on
+   any of the five days loses the whole preview.
+
+### Consumers affected
+
+- **BLOCKING**: `clockwise-like/backend/api/empty_arrays_test.go:35`
+  `TestCompress_WeekEveryDayFails_EncodesEmptyArray`. It asserts **200 with body
+  `[]`** in week mode when every day's engine call fails (`mockCompressor{err: ...}`,
+  `{"week":"2025-01-06"}`). This contract removes exactly that response: the 200
+  schema is now `minItems: 1`, and the 500 description now covers week-mode engine
+  failures. The manifest's `consumersAffected` lists `TestCompress_Week` and
+  `pac21_calendar_not_connected_test.go` but not this test. `allowedPaths` covers
+  only "tests beside the two handlers", and this file is not one of them. If this is
+  left as is, the implementer must either change a PAC-28 test the plan did not
+  authorise or appear to delete one to go green (factory hard rule).
+  **Fix (manifest and doc only, no schema change)**: add to `consumersAffected`
+  `{ "consumer": "clockwise-like backend/api/empty_arrays_test.go:35 TestCompress_WeekEveryDayFails_EncodesEmptyArray", "breaks": "yes", "detail": "Pins week-mode 200 [] (PAC-28). Re-asserted, not deleted: the same input becomes 500 {\"error\":\"internal error\"} per AC-3." }`.
+  Add `backend/api/empty_arrays_test.go` to `backend.allowedPaths`, and add the row
+  to the §5 consumer table.
+- (non-blocking) `mockCompressor` in `backend/api/handlers_schedule_test.go:28`
+  returns the same `(result, err)` for every `SuggestForDay` call, so it cannot
+  express AC-3's "one weekday's engine call fails". When unset (`mockCompressor{}`)
+  it also returns a `nil` result, which the handler would encode as a `null` array
+  item that `CompressionResult` does not permit. The plan must name a per-day seam.
+  The contract does not need to change.
+- Checked and not affected:
+  - `mcp/tools.go:146` posts `nil`, which `mcp/client.go:69` marshals to `null`. It
+    still gets 200.
+  - `mcp/tools.go:177` posts `{}` or `{date}`.
+  - `e2e/tests/focus-time.spec.ts:61,120,189` and `seam.spec.ts:198,211,226` post
+    well-formed objects and use single-day compression only.
+  - Web `client.ts:1025` sends `{ week }`, and `JSON.stringify` drops an undefined
+    `week`. Web `client.ts:1161` is also unaffected.
+  - `QuickActions.tsx:35` and `Dashboard.tsx:179` call `runFocus` with a string or
+    undefined.
+
+### Contract/implementation divergences
+
+The contract describes behaviour after implementation. On this branch the handlers
+still behave the old way:
+
+- `handlers_focus.go:23-25` resets `week` on a decode error.
+- `handlers_schedule.go:25` discards the decode error.
+- `handlers_schedule.go:62-64` `continue`s past a failing day.
+
+That is the expected stage-2 state, not a finding. But until the backend PR merges,
+the bundle on `main` describes behaviour the server does not have yet. The contract
+PR and the backend PR should therefore merge close together (factory §7 rule 2).
+
+There is no divergence in the parts the contract claims are unchanged:
+
+- `SuggestForDay` (`engine/compression.go:74-77`) returns a non-nil result with
+  `Date = day.Format("2006-01-02")`, and empty proposals for a non-working day. So
+  "exactly five, Mon..Fri, in order" is achievable. `startOfWeek`
+  (`handlers_schedule.go:128-134`) maps Sunday to the previous Monday and works in
+  the parsed (UTC) location.
+- `writeError` (`handlers_settings.go:388-392`) sets `application/json`, so AC-2's
+  Content-Type assertion can pass.
+- AC-1 is already met:
+  - `TestPAC21ConfirmNegativeSlotIndexIs400` exists
+    (`backend/api/pac21_4xx_bodies_test.go:268`).
+  - `NLPConfirmRequest.selected_slot_index` has `minimum: 0`.
+  - The handler answers `invalid selected_slot_index` (`handlers_nlp.go:52`).
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain: []`). Neither edited operation carries an
+`x-uncertain`. U-14 correctly stays with `confirmNaturalLanguage`, which is not
+edited.
+
+### Process findings (non-blocking)
+
+1. There is no `docs/specs/PAC-36.md`, so stage 1 never ran (factory §2). D-1 to D-3
+   therefore live in this document instead of a spec's Decisions section. All three
+   are the conservative choice: no data is deleted, no visibility is widened, and no
+   200 schema changes. Before the plan stage, one of these should happen:
+   - the factory creates the spec with these decisions under "Decisions" ("assumed
+     by the factory, pending owner confirmation"), or
+   - the owner confirms them on PAC-36.
+2. The server has some tolerances the contract does not mention. All of them exist
+   already, and PAC-36 does not change them:
+   - member names match case-insensitively (`{"Week":"2030-01-07"}` takes the 200
+     path);
+   - `{"week":null}` is accepted, though `week` is not nullable;
+   - a UTF-8 BOM before `{` gets a 400.
+   None of them needs a change here.
+
+### Verified clean
+
+- `bash .claude/factory/api-gate.sh factory/pac-36-contract` on `26a3b8a`, as printed:
+  - `make openapi rc=0`, `regenerated: none`
+  - `OK: bundle is in sync (98 paths)`
+  - `OK: MIGRATION.md covers all 119 operations (0 generated)`
+  - `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`
+  - `backend lint rc=0`, `mcp lint rc=0`
+  - `backend test rc=0`, `mcp test rc=0`
+  - backend coverage 54.9% (floor 43%) `rc=0`; mcp coverage 84.0% (floor 75%)
+    `rc=0`
+
+  The web half of openapi-check was not run, because the web types regenerate after
+  merge (§1).
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` gives
+  `d048a3c937fdb68ad930d2558ec70592815f78c17c9bf941a41c0373a4b90d0b`, which matches
+  the manifest's `contractHash`.
+- The only schema change in the bundle diff is `minItems: 1` and `maxItems: 5`.
+  Everything else is descriptions. Both operations stay `handwritten` in
+  `MIGRATION.md`, and `backend/` has no request-validation middleware, so the new
+  bounds constrain nothing at runtime.
+- Both operations keep `requestBody.required: false`, and both request schemas keep
+  `additionalProperties: true`. No well-formed caller found in web, MCP or e2e is
+  newly rejected.
+- The four acceptance criteria in the manifest match §6 with no narrowing. AC-2's
+  malformed list is a subset of the §1 table, and every entry was decoded above.
+- The rejected alternatives were rejected for reasons that hold on the code. §2.2
+  option 2 would change the 200 item that MCP passes through and that the web types
+  describe. §3.1 would break `mcp/tools.go:146`.
