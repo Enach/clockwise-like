@@ -425,3 +425,179 @@ PRODUCT.md and earlier owner decisions.*
 - **D-4 — Hint is advisory only.** The login hint is forwarded only when it is a
   syntactically valid email, and it never influences which Paceday account is
   signed in. Assumed by the factory, pending owner confirmation.
+
+## Challenge — 2026-10-26
+
+Reviewed: commit `54c5458` on `factory/pac-35-spec`, against clockwise-like
+`origin/main` `7de7044` and smart-calendar-flow `origin/main` `4ded854`, and
+the Linear issue PAC-35 text. Reviewed by spec-challenger, which did not write
+this spec.
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **Inherited scope omits two open audit findings on operations this spec
+   touches (README §7 rule 1).**
+   - **API-092** (`docs/factory/api-audit.md:350`, low, Reported): "No Go test
+     coverage" for `/api/auth/detect`, `/api/auth/sso/{domain}`,
+     `/api/auth/callback/oidc/{domain}`, `/api/auth/me`, `/api/auth/logout`
+     (plus `/api/admin/sso`). Every one of those five non-admin paths is touched
+     here (detection is followed, the SSO start gains a hint, the OIDC callback
+     gains a failure redirect, the current-user response is reworked by API-065,
+     logout changes status). PAC-22 claims only the `/api/admin/sso` share of
+     the row (`docs/specs/PAC-22.md:7-8`, `:589-593`), so the non-admin share
+     belongs to whoever touches those paths, which is this spec. Today AC-12
+     proves logout only through the contract and the web client; no AC requires a
+     Go assertion on the logout handler, the SSO start route or `/api/auth/me`.
+   - **API-060** (`api-audit.md:318`, medium, Reported): SAML rows are accepted
+     and the SSO start route then answers 501; an `oidc` row with an empty issuer
+     fails only as a 500 at the start route. The start route is touched (AC-8)
+     and D-3 decides SAML behaviour without naming the finding. PAC-22 (still a
+     draft, not merged) claims API-060.
+
+   *Resolves it*: list both in "Inherited scope". For API-092, either add
+   acceptance criteria that put a passing Go assertion on the statuses this spec
+   changes or relies on for the five non-admin paths, or record (with an owner)
+   that the row is split and which part stays open. For API-060, state the
+   position: either it is resolved here, or it stays with PAC-22 and the reason
+   rule 1 does not apply to this touch is recorded under Decisions as assumed by
+   the factory, pending owner confirmation.
+
+2. **AC-15 and the "Open contract notes" list leave contract text that this
+   spec makes false.** AC-15 checks only that no text still describes the hint
+   as discarded, the session failure as silent, or logout as 200. After AC-4 and
+   AC-11 the following would still pass AC-15 and be false:
+   - `microsoftOAuthCallback`: the `302` description says "Every failure is a
+     non-302 response below", the `502` response ("The Graph profile could not be
+     read … Added by PAC-24") and the `500` description's upsert-failure clause
+     (`contracts/openapi/paths/auth.yaml:178-213`). AC-4 turns those two failures
+     into redirects to the failure state. The operation description at
+     `auth.yaml:160-168` ("a failed fetch is a 502") is false too.
+   - `disconnectCalendar`: summary "Delete the stored calendar OAuth token and
+     clear the session cookie", the description "this also logs the user out",
+     and the `Set-Cookie` header on the `204` (`auth.yaml:414-428`). AC-11 makes
+     all three false.
+
+   README §7 rule 2 says a lying contract is worse than none.
+   *Resolves it*: name both operations under "Open contract notes", and extend
+   AC-15 so it fails while either of them still describes the old behaviour.
+
+3. **§3 promises a disconnect outcome that the rest of the spec excludes for
+   some users, and the change makes those users' result worse than it looks.**
+   §3 says, with no qualifier: "After a user disconnects their calendar they are
+   still signed in, on the same page, and the calendar shows as not connected."
+   §2.4 and §5 say disconnect removes only the Google token row
+   (`backend/auth/token_store.go:53-59`), so for an Outlook or webcal user the
+   calendar does *not* show as not connected: `GET /api/auth/status` answers from
+   the Microsoft token or the webcal URL (`backend/api/handlers_auth.go:97-111`),
+   neither of which is removed. The web app shows the Disconnect button to those
+   users (`smart-calendar-flow/src/components/WorkCalendarConnection.tsx:125-134`,
+   shown whenever `status.connected`) and toasts "Disconnected" (`:88`). Today
+   that user is at least logged out. After this change they stay signed in on a
+   page that says "Disconnected" while the indicator stays green and Paceday
+   keeps reading their calendar. §1 names "to stop Paceday reading it" as a
+   reason users disconnect. AC-11 covers only Google, so nothing tests this
+   outcome.
+
+   *Resolves it*: scope the §3 statement to Google-calendar users, and state the
+   observable outcome for Outlook and webcal users after this change as a
+   Decision (assumed by the factory, pending owner confirmation). Add an
+   acceptance criterion that pins that outcome, whatever it is, so it is a
+   chosen behaviour and not an accident. If the owner judges a "Disconnected"
+   message over a still-connected calendar unacceptable, OQ-5 moves into scope.
+
+### Non-blocking
+
+1. **AC-7 does not say which origin the SSO destination is resolved against.**
+   The contract says `redirect_url` is a "Relative path `/api/auth/sso/<domain>`"
+   (`auth.yaml:808-811`). The web app talks to the API through a base that can
+   differ from its own origin (`smart-calendar-flow/src/lib/api.ts:19-22`,
+   `VITE_API_URL`). A web test asserting the browser went to exactly
+   `redirect_url` would pass while a split-origin deployment sends the user to
+   the web app's own `/api/...` path. §7's claim that following the redirect
+   "works against the current server" depends on this. AC-7 should say the
+   destination is on the API's origin.
+2. **AC-1's "or token generation fails" clause cannot be induced as the code
+   stands.** HS256 signing with a non-empty key (`backend/auth/jwt.go:17-27`)
+   has no failure a unit test can trigger. As written, AC-1 is proven through
+   the empty-secret case only. Say that, or say that the second case needs a
+   test seam the plan must provide.
+3. **AC-6 covers only "the server reports that there is no session".** The
+   completion page's re-read also returns normally, and the page navigates on to
+   `/app`, when `/api/auth/me` answers 404 "user not found" (`auth.yaml`
+   `getCurrentUser` 404; `AuthContext.tsx:64-66` treats it as stale) and on 5xx
+   or network failure. The spec should say what the completion page shows in
+   those cases. "Same as today" is an acceptable answer if it is written down.
+4. **AC-11's "authenticated request made immediately afterwards" needs to be a
+   request that does not need a calendar.** Since PAC-21 the calendar-dependent
+   operations answer `401 {"error":"calendar not connected"}` for a user with no
+   calendar (`e2e/tests/calendar.spec.ts:37-45`). That 401 looks like a signed-out
+   401 unless the body is read, which makes a status-only e2e assertion
+   ambiguous. Also, the e2e journey deletes a seeded token row
+   (`e2e/seed/seed.sql`), so it must not take away a credential another journey
+   depends on.
+5. **The Google start route forces the consent screen** (`oauth2.ApprovalForce`,
+   `backend/auth/google_oauth.go:25`). Forwarding the hint fixes which account
+   is picked, which is the harm §1 item 3 names. The user still sees a Google
+   screen every time. That is fine, but it should be stated so AC-9 passing is
+   not read as "no provider screen".
+6. **An SSO hint whose domain differs from the start route's domain** (for
+   example `/api/auth/sso/acme.com` with a hint at another domain) is not
+   addressed. D-4 and the PAC-45 domain check (`handlers_sso.go:134-141`) keep
+   identity safe, so this is advisory only. AC-10 could still state whether such
+   a hint is forwarded.
+7. **§6 records two protections with no test but no AC**: state checks on the
+   Microsoft and SSO callbacks ("a finding") and "the hint never selects an
+   account" ("needs its own assertion in the plan"). Things the spec says must
+   not change are only gated if an acceptance criterion requires them. Consider
+   promoting both to ACs.
+8. **D-3 sends SAML users to a raw `501` JSON page on the API origin**
+   (`handlers_sso.go:56-58`), the same dead end §2.2 criticises for the
+   Microsoft callback. D-3 is a reasonable conservative choice. The spec should
+   say plainly that this outcome is accepted.
+9. **Bundling.** Seven findings in one spec, and §7 shows they are independently
+   revertable. The issue and audit batch D5 ask for one change, and shipping half
+   leaves nothing incoherent beyond the picture-name coupling §7 already names.
+   No split is requested.
+
+### Criteria I could not falsify
+
+- None outright. Each of AC-1…AC-15 has a test that fails on `7de7044` /
+  `4ded854` and can pass afterwards. Exceptions: AC-1's "token generation fails"
+  half (non-blocking 2), and AC-16, which is a gate run rather than a
+  behavioural criterion.
+
+### Citations I checked and found wrong
+
+- None found. I checked against the two commits named in §2:
+  `sso_detect.go:18-22,42-46`, `routes.go:41,56-61`,
+  `handlers_auth.go:24-39,42-79,135-153`, `handlers_microsoft_auth.go:17-38,41-81`,
+  `handlers_sso.go:49-87,94-151`, `main.go:169-172`, `jwt.go:17-27`,
+  `token_store.go:53-59`, `google_oauth.go:24-26`, `microsoft_oauth.go:35-37`,
+  `oidc.go:61-63`, `handlers_me.go:31-41`, `users.go:14`,
+  `auth.yaml:45-54,132,750,877,938`, `AuthDialog.tsx:32-35,104,108,111-121`,
+  `AuthCallback.tsx:15-31` (no reader of `error=auth_failed` in `src/`),
+  `AuthContext.tsx:16-21,48-62,128-133`, `ConnectionStatus.tsx:15-26`,
+  `WorkCalendarConnection.tsx:84-95`, `schedulingLinks.ts:56,79-81,452,510`,
+  `HostAvatars.tsx:57-58`, `contract.test.ts:84-87`,
+  `handlers_auth_test.go:35-53,55,80`, `auth-session.spec.ts:75,101`,
+  `e2e/README.md:152`, `SEAM-REQUIRED.md` item B. The audit row's `GET` for
+  detection is indeed wrong (`api-audit.md:268`), as §2.1 says.
+
+### Consumers this breaks
+
+- clockwise-like `contracts/openapi/paths/auth.yaml:178-213` (and the generated
+  `backend/api/gen/paceday.gen.go`, smart-calendar-flow
+  `src/api/generated/*`): the Microsoft callback's documented `500`/`502`
+  failure responses change to a redirect. See blocking 2.
+- smart-calendar-flow `src/components/WorkCalendarConnection.tsx:84-95`: for
+  Outlook and webcal users it now shows "Disconnected" and leaves them signed in
+  over a still-connected calendar. See blocking 3.
+- smart-calendar-flow `src/contexts/AuthContext.tsx:16-21` and
+  `src/api/schedulingLinks.ts:56`: these must change together with the backend
+  if OQ-6 renames the field. §7 already records this.
+- Checked and unaffected: `mcp/tools.go:243` uses only `GET /api/auth/status`,
+  which this spec does not change. `backend/api/handlers_auth_test.go:35`
+  (`TestAuthDisconnect`) asserts only the 204 status.
+  `e2e/tests/auth-session.spec.ts:101` is preserved by AC-12.
