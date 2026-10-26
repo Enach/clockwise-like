@@ -241,6 +241,11 @@ its own, and the well-formed journeys are unchanged.
 
 ## 8. What was run
 
-See the manifest's `gates` block and the commit that records the api-gate run.
-`python scripts/openapi_assemble.py --check` printed `OK: bundle is in sync (98 paths)`
-on the host before commit.
+- `python scripts/openapi_assemble.py --check` on the host: `OK: bundle is in sync (98 paths)`.
+- `api-gate.sh factory/pac-36-contract` on the first contract commit: `make openapi`
+  regenerated `backend/api/gen/paceday.gen.go` (the embedded spec only), which is
+  committed with this revision. Every other step printed rc=0 (openapi-check,
+  backend and mcp lint, backend and mcp test, backend coverage 54.9% against a 43%
+  floor, mcp 84.0% against 75%).
+- The gate is re-run on the final commit of this branch. Its output is in the
+  Linear comment on PAC-36 and in the contract PR body.
