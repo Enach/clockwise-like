@@ -315,3 +315,201 @@ mcp coverage rc=0
 merges (factory §1). Until then, the web repo's generated files are behind this
 bundle by `LLMDestinationRefusal` and the new descriptions. No e2e was run,
 because this stage changes no behaviour.
+
+---
+
+## Challenge — 2026-10-26
+
+**Verdict**: accept-with-changes (1 blocking, wording only; no schema shape change)
+
+Reviewed on `factory/pac-66-contract` at `f0cf8ba`, committed state only, from
+the spec, the fragment diff, the bundle and the code. The author's reasoning was
+read only as far as this document states it.
+
+### Blocking
+
+**B-1. The 422 description says a 502 means "a request was sent". The code
+contradicts it.**
+`scheduling.yaml`, `testLLMConnection` 422 description: "Distinct from … the 502
+(a request was sent and the provider's answer was unusable)". §2 of this document
+says the same thing: "a request *was* sent … That is what 502 already means on
+this operation". But `handlers_llm.go:79-82` turns **every** `Complete` error
+into a 502. That includes errors where no inference request ever leaves the
+server:
+- Azure credential acquisition (`llm_azure_openai.go:28-37`)
+- Vertex credential acquisition (`llm_vertex.go:30-37`)
+- Bedrock `config.LoadDefaultConfig` failure (`llm_bedrock.go:38-41`), for
+  example a stored `awsProfile` that does not exist in the deployment's shared
+  config
+
+PAC-66 keeps these as 502. The 500 description lists only settings-load and
+client-construction failures, and the 422 is only for refusals. Spec AC-10's
+"Fails today" note itself says the probe answers 502 for a credential error with
+nothing sent.
+
+Concrete case: the operator approves `my-resource.openai.azure.com`, the stored
+endpoint is `https://my-resource.openai.azure.com`, and the deployment has no
+Azure identity. `POST /api/llm/test {}` returns
+`502 {"error":"azure: credential: …"}`, and the recording transport records
+**zero** requests. A test written from the contract text ("502 ⇒ a request was
+sent") is wrong, and so is any client or operator runbook that reads 502 as
+"the provider answered".
+
+The direction that matters still holds: 422 ⇒ nothing was sent. The converse
+does not.
+
+**Fix (description only):** in the 422 description, replace the parenthetical
+with "and from the 502 (the provider call failed: credential acquisition,
+provider configuration, transport, or an unusable or redirecting answer; a 502
+does not imply a request was sent)". Make the matching correction in §2 ("Why a
+refused redirect is a 502"). The argument for a 502 on AC-8 survives unchanged,
+because 422 still means "refused by policy, nothing sent". Optionally, the 502
+description can list the no-request causes too.
+
+### Requests wrongly permitted
+
+None blocking. Attacked and recorded below:
+
+1. `PATCH /api/settings` with
+   `{"gcpLocation":"us-central1-aiplatform.googleapis.com/v1/projects/OTHER/locations/us-central1/publishers/google/models/m:generateContent#"}`,
+   while `us-central1-aiplatform.googleapis.com` is approved. Under §7 and D-13
+   this is accepted: `net/url` parses the built URL
+   (`llm_vertex.go:39-42`) to the approved host. **Not blocking**, because
+   `gcpProject` (`llm_vertex.go:41`) already reaches any project with no
+   injection at all, so constraining the location alone would not close
+   cross-project steering. The spec accepted this and recorded it as a
+   follow-up (spec round 3 NB-1). Two non-blocking requests:
+   (a) The contract gives two definitions of the Vertex effective host. One is
+   literal: "`<location>-aiplatform.googleapis.com`" (`testLLMConnection`
+   description, manifest `operatorConfiguration.effectiveHost`). The other is
+   "the host the value builds", parsed (§7, `gcpLocation` description). Under
+   the literal string-concatenation reading, the payload above is refused.
+   Under the parsed reading, it is accepted. Pick one wording so the plan
+   cannot choose differently: "the host of the URL the server builds, as
+   parsed by `net/url`".
+   (b) Recommend recording in the follow-up a cheap hardening: require a
+   non-empty `gcpLocation` to be one DNS label, the same rule `awsRegion`
+   already has. No real Vertex location contains `/`, `#`, `@`, `?` or `.`.
+2. `PATCH /api/settings` with `{"azureEndpoint":"https://evil@my-resource.openai.azure.com"}`
+   (userinfo), `"https://my-resource.openai.azure.com:8443"`,
+   `"http://my-resource.openai.azure.com"` and
+   `"https://my-resource.openai.azure.com."`. All are refused by the D-9
+   matching rule as written. Verified clean.
+3. `POST /api/llm/test {"llmProvider":"vertex","gcpLocation":"x"}` is still a
+   400 through `LLMTestRequest` `additionalProperties: false`
+   (`handlers_llm.go:38`). PAC-66 opens no body-borne destination. Verified
+   clean.
+
+### Responses the client cannot handle
+
+None. Checked:
+- **`testLLMConnection` 422 `LLMDestinationRefusal`.** The web client calls
+  `requestApi` (`smart-calendar-flow/src/api/client.ts:1294-1302`). A non-2xx
+  is an `ApiHttpError` and is not routed to the mock fallback (`client.ts:486-490`).
+  `apiErrorMessage` shows `data.error` before any status fallback
+  (`client.ts:351-356`), so the generic 422 text "Some of the submitted data is
+  invalid." (`client.ts:366-367`) is never reached, because `error` is
+  `minLength: 1` and required.
+- **Non-blocking.** The schema does not encode the invariant "`property` is
+  present unless `reason` is `provider_not_enabled`". `{"error":"x","reason":"destination_not_approved"}`
+  validates. The bundle is OpenAPI 3.1, so this could be expressed with a
+  `oneOf` and a discriminator on `reason`, or with `if`/`then`. No current
+  consumer reads `property`, so it does not block.
+- **Non-blocking.** `reason` for a non-empty Azure endpoint with no host (for
+  example `"foo"` or `"https:///x"`, stored before PAC-66) is unstated. It is
+  presumably `destination_not_approved`, since `destination_not_set` is defined
+  as an empty stored value. Say so in the `reason` description.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/client.ts:1294-1302` `llmTest`: renders the 422
+  sentence. Not broken.
+- `smart-calendar-flow/src/api/client.ts:698-710` `settingsPatchBody`, with
+  `previous` taken from the query cache (`src/hooks/useSettings.ts:16`):
+  diff-only, so an unchanged stored destination is never re-sent. The defaults
+  `aws_region: "us-east-1"` and others (`client.ts:110-114`) are mock-only and
+  are not mixed into real reads. Not broken.
+- `smart-calendar-flow/src/api/generated`: additive after regen (a new schema
+  and descriptions). Not broken.
+- `e2e/tests/settings.spec.ts:54-55`: the whole-document PATCH sends back the
+  stored values, which the changed-only rule does not re-check
+  (`handlers_settings.go:129-136`). Not broken.
+- `mcp/tools.go:195-203` `clockwise_parse_command` relays the parse 200.
+  `clockwise_get_settings` (`mcp/tools.go:233-236`) gets descriptions only. No
+  MCP tool calls the probe, PATCH or brief refresh. Not broken.
+- No other send path exists. `NewLLMClientFromSettings` is called only from
+  `handlers_llm.go:73`, `handlers_meeting_briefs.go:74` and `nlp/parser.go:240`.
+  `MeetingBriefService` is constructed only in the brief-refresh handler
+  (`handlers_meeting_briefs.go:72`), so there is no background brief job to
+  miss.
+
+### Contract/implementation divergences
+
+1. B-1 above.
+2. **Non-blocking.** The PAC-66 refusal for parse has to happen before
+   `extractAttendees` (`parser.go:185`, the first `Complete`), not only before
+   the `Complete` at `:197`, or AC-3 / AC-13 ("zero requests") fail. The
+   contract's statement "a refusal happens before `Complete`" (§5) is correct
+   only if it means the first call. Worth one word in the plan.
+
+### Uncertainties not actually resolved
+
+- None claimed. The `x-uncertain` key count is 18 on both `origin/main` and this
+  branch (`grep -cE '^\s*x-uncertain:'`). None sits on `testLLMConnection` or
+  `patchSettings`. `resolvesUncertain: []` is accurate.
+- API-039 (open as "Claimed" on the settings operations PAC-66 touches): the
+  claim is real. `smart-calendar-flow` `fc971cc` ("… (API-039) (#101)") is on
+  `origin/main`, and `src/api/types.ts:11` has `vertex`. Only the register row
+  is stale, as the manifest says.
+
+### Verified clean
+
+- **Probe reason precedence.** A state where nothing is approved for P and the
+  stored host is approved only for another provider has exactly one reason,
+  `provider_not_enabled` (round-3 NB-2 closed).
+- **Changed-only write rule versus AC-5.** D-12 is recorded in the spec and
+  pinned in the manifest's AC-5. `""` is always accepted (AC-15). A
+  provider-only switch is accepted (AC-17). Both are consistent with
+  `validateChangedSettings` (`handlers_settings.go:191-203`).
+- **Bedrock default region.** "Empty means `us-east-1`, applied as an explicit
+  region" matches `llm_bedrock.go:21-23,31-33` (`config.WithRegion`).
+- **Probe provider override.** The body's `llmProvider` replaces the stored
+  one before the client is built (`handlers_llm.go:50-56`). AC-18 keying the
+  check on it is correct.
+- **No schema shape change.** No `pattern` or `format` was added to the shared
+  `Settings`/`SettingsUpdate` map, so `GET` responses for pre-PAC-66 rows stay
+  schema-valid. The rejected-alternative argument in §3 holds.
+- **Manifest `acceptanceTests` against spec AC-1 to AC-20.** All 20 are present.
+  The only narrowing is AC-5's changed-only rule, which is D-12 and recorded,
+  not silent.
+- **Citations checked and correct.** `client.ts:351-356,360-361,1294-1302`,
+  `handlers_llm.go:23-27,73-82`, `llm_azure_openai.go:28-50`,
+  `llm_vertex.go:29-53`, `parser.go:197-200`, `handlers_nlp.go:28-31`,
+  `mcp/tools.go:195-203`.
+- **Gates I ran myself:**
+  - `python scripts/openapi_assemble.py --check` printed
+    `OK: bundle is in sync (98 paths)`, rc=0.
+  - `sha256sum contracts/openapi/openapi.yaml` printed
+    `9d972b2ab4b3a6b1f189903fd4c23c5a923f9fd75fe28dd840f08adce75f921c`, which
+    matches the manifest.
+  - `bash .claude/factory/api-gate.sh factory/pac-66-contract`:
+
+    ```
+    make openapi rc=0
+    regenerated: none
+    OK: bundle is in sync (98 paths)
+    OK: MIGRATION.md covers all 119 operations (0 generated)
+    OK: backend/api/gen matches the contract
+    openapi-check(api) rc=0
+    backend lint rc=0
+    mcp lint rc=0
+    backend test rc=0
+    mcp test rc=0
+    backend  coverage: 43.9% (floor 43%) [3871 generated blocks excluded]
+    backend coverage rc=0
+    mcp      coverage: 84.0% (floor 75%)
+    mcp coverage rc=0
+    ```
+
+  - **Not run:** the web half of `openapi-check`. The web types regenerate after
+    merge (factory §1). No e2e was run, because this stage changes no behaviour.
