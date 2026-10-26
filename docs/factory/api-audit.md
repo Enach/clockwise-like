@@ -430,7 +430,7 @@ any deployment reachable over plaintext HTTP — including a stray redirect, a
 misconfigured health check, or a local dev proxy — the 7-day session cookie
 crosses the wire in the clear and is replayable.
 
-**API-008 — a stale cookie beats a valid bearer token.**
+**API-008 — a stale cookie beats a valid bearer token.** *(fixed by PAC-39, #215; the contract prose now says Bearer wins, NEW-auth-contract-prose)*
 `requireAuth` checks the cookie first. Beyond the usability failure, this means a
 user cannot recover from a poisoned cookie by presenting a good token; they must
 clear site data.
@@ -451,7 +451,7 @@ unadministrable through the API.
 narrow the practical gap, which is why it is medium.
 **API-054 / T8** *(fixed by PAC-21: the 5xx leak, then the 4xx half)* — internal user UUIDs and raw provider error strings are echoed
 in 5xx bodies across every domain.
-**API-062** — the `/api/auth/detect` rate limiter keys on a client-supplied
+**API-062** *(partly fixed by PAC-39, #215: keyed on the socket peer and swept; still per process; contract prose updated by NEW-auth-contract-prose)* — the `/api/auth/detect` rate limiter keys on a client-supplied
 `X-Forwarded-For` and is therefore trivially bypassed, while also leaking memory.
 **API-056** — habit ownership failures return `403` rather than `404`, confirming
 the existence of other users' habit ids.
@@ -644,7 +644,7 @@ one, but it gates how much of C1–C3 is worth doing.
 **E4. Auth middleware and rate limiter** (API-008, API-062, API-068). Prefer the
 `Authorization` header over the cookie in `requireAuth`; key the detect limiter on
 the trusted proxy hop instead of a client-supplied header and give it eviction;
-inject the health version at build time. Backend only, no contract change.
+inject the health version at build time. Backend only, no contract change. *(API-008 and the API-062 key and eviction shipped in PAC-39, #215. No shape changed, but the contract's prose described the old order and key, corrected by NEW-auth-contract-prose.)*
 
 **E5. Scheduling-link lifecycle** (API-049, API-050, API-051, API-073). Make the
 three read paths agree about `active = false`, make alias precedence identical
