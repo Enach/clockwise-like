@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/domain"
@@ -20,51 +18,10 @@ type ssoHandlers struct {
 	ah *authHandlers
 }
 
-// --- Rate limiter (sliding 1-minute window per IP) -------------------------
-
-type ipBucket struct {
-	count     int
-	windowEnd time.Time
-}
-
-var (
-	detectLimiterMu sync.Mutex
-	detectLimiter   = make(map[string]*ipBucket)
-)
-
-const detectRateLimit = 20
-
-func allowDetect(ip string) bool {
-	detectLimiterMu.Lock()
-	defer detectLimiterMu.Unlock()
-
-	now := time.Now()
-	b, ok := detectLimiter[ip]
-	if !ok || now.After(b.windowEnd) {
-		detectLimiter[ip] = &ipBucket{count: 1, windowEnd: now.Add(time.Minute)}
-		return true
-	}
-	if b.count >= detectRateLimit {
-		return false
-	}
-	b.count++
-	return true
-}
-
-func realIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.SplitN(fwd, ",", 2)[0]
-	}
-	return r.RemoteAddr
-}
-
 // --- POST /api/auth/detect (public) ----------------------------------------
 
 func (h *ssoHandlers) detect(w http.ResponseWriter, r *http.Request) {
-	if !allowDetect(realIP(r)) {
+	if !allowDetect(clientIP(r, trustedProxies)) {
 		writeError(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
