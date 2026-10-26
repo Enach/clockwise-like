@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/robfig/cron/v3"
 )
@@ -255,6 +256,18 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 
 	if !validLLMProviders[s.LLMProvider] {
 		add("llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex", "llmProvider")
+	}
+	// PAC-66: destinations of the ambient-credential providers, whichever
+	// provider is selected. Only a changed value reaches the caller (PAC-24
+	// AC-17), and "" is always accepted (spec AC-15).
+	if msg := nlp.AzureEndpointWriteProblem(s.AzureEndpoint); msg != "" {
+		add(msg, "azureEndpoint")
+	}
+	if msg := nlp.GCPLocationWriteProblem(s.GCPLocation); msg != "" {
+		add(msg, "gcpLocation")
+	}
+	if msg := nlp.AWSRegionWriteProblem(s.AWSRegion); msg != "" {
+		add(msg, "awsRegion")
 	}
 	if !validCalendarProviders[s.CalendarProvider] {
 		add("calendarProvider must be one of: google, outlook, webcal", "calendarProvider")

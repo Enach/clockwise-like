@@ -12,6 +12,7 @@ import (
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/scheduler"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/getsentry/sentry-go"
@@ -47,6 +48,14 @@ func main() {
 		log.Printf("WARNING: %s", calDecision.Notice)
 	}
 	calendar.Configure(calDecision)
+
+	// LLM approved hosts (PAC-66). Never fatal: a malformed entry is logged and
+	// approves nothing; unset approves nothing (fail closed).
+	llmHosts, llmNotices := config.DecideLLMApprovedHosts(os.Getenv)
+	for _, n := range llmNotices {
+		log.Printf("WARNING: %s", n)
+	}
+	nlp.SetApprovedHosts(llmHosts)
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {

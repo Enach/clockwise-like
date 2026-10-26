@@ -24,7 +24,18 @@ func NewAzureOpenAIClient(endpoint, deployment, apiVersion string) (LLMClient, e
 	return &AzureOpenAIClient{Endpoint: endpoint, Deployment: deployment, APIVersion: apiVersion}, nil
 }
 
-func (c *AzureOpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
+// requestURL is the inference URL. The appended text starts with "/", so the
+// URL's authority is always the stored endpoint's.
+func (c *AzureOpenAIClient) requestURL() string {
+	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
+		strings.TrimRight(c.Endpoint, "/"), c.Deployment, c.APIVersion)
+}
+
+// azureToken mints the deployment's Entra ID token (or the test seam's).
+func azureToken(ctx context.Context) (string, error) {
+	if f := currentDeps().AzureToken; f != nil {
+		return f(ctx)
+	}
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
 		return "", fmt.Errorf("azure: credential: %w", err)
@@ -35,9 +46,18 @@ func (c *AzureOpenAIClient) Complete(ctx context.Context, system, user string) (
 	if err != nil {
 		return "", fmt.Errorf("azure: get token: %w", err)
 	}
+	return tok.Token, nil
+}
 
-	apiURL := fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
-		strings.TrimRight(c.Endpoint, "/"), c.Deployment, c.APIVersion)
+func (c *AzureOpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
+	if err := c.CheckDestination(ctx); err != nil {
+		return "", err
+	}
+	token, err := azureToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	apiURL := c.requestURL()
 
 	payload := map[string]interface{}{
 		"messages": []map[string]string{
@@ -46,8 +66,8 @@ func (c *AzureOpenAIClient) Complete(ctx context.Context, system, user string) (
 		},
 		"max_tokens": 1024,
 	}
-	return postJSON(ctx, apiURL,
-		map[string]string{"Authorization": "Bearer " + tok.Token},
+	return postJSONWith(ctx, ambientHTTPClient(ProviderAzureOpenAI), apiURL,
+		map[string]string{"Authorization": "Bearer " + token},
 		payload,
 		func(body []byte) (string, error) {
 			var resp struct {

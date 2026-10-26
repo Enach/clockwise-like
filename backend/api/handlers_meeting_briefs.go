@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -21,10 +22,10 @@ type meetingBriefHandlers struct {
 }
 
 type briefResponse struct {
-	Status      string                 `json:"status"`
-	GeneratedAt string                 `json:"generated_at,omitempty"`
-	BriefText   string                 `json:"brief_text,omitempty"`
-	Sources     briefSources           `json:"sources"`
+	Status      string       `json:"status"`
+	GeneratedAt string       `json:"generated_at,omitempty"`
+	BriefText   string       `json:"brief_text,omitempty"`
+	Sources     briefSources `json:"sources"`
 }
 
 type briefSources struct {
@@ -72,7 +73,14 @@ func (h *meetingBriefHandlers) refreshBrief(w http.ResponseWriter, r *http.Reque
 	svc := &engine.MeetingBriefService{DB: h.db}
 	if settings, err := storage.GetOrCreateSettingsByUser(h.db, userID); err == nil {
 		if llm, err := nlp.NewLLMClientFromSettings(settings); err == nil {
-			svc.LLM = llm
+			// PAC-66: a refused destination gives the existing failed brief,
+			// with the reason as its text (spec AC-14), and sends nothing.
+			var refusal *nlp.DestinationRefusal
+			if errors.As(nlp.CheckDestination(ctx, llm), &refusal) {
+				svc.LLMUnavailable = refusal.Message
+			} else {
+				svc.LLM = llm
+			}
 		}
 	}
 	brief, err := svc.Generate(ctx, userID, event, true)

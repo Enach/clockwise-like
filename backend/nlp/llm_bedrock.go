@@ -28,16 +28,33 @@ func NewBedrockClient(region, profile, modelID string) (LLMClient, error) {
 	return &BedrockClient{Region: region, Profile: profile, ModelID: modelID}, nil
 }
 
-func (c *BedrockClient) Complete(ctx context.Context, system, user string) (string, error) {
+// loadConfig resolves the AWS configuration for this client. The region is
+// applied explicitly, so it overrides AWS_REGION and the shared-config region
+// (spec D-7). Loading reads the environment and shared config files only; it
+// acquires no credential and sends nothing.
+func (c *BedrockClient) loadConfig(ctx context.Context) (aws.Config, error) {
+	d := currentDeps()
 	opts := []func(*config.LoadOptions) error{
 		config.WithRegion(c.Region),
+		config.WithHTTPClient(ambientHTTPClient(ProviderBedrock)),
 	}
 	if c.Profile != "" {
 		opts = append(opts, config.WithSharedConfigProfile(c.Profile))
 	}
+	if d.AWSCredentials != nil {
+		opts = append(opts, config.WithCredentialsProvider(d.AWSCredentials))
+	}
 	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
-		return "", fmt.Errorf("bedrock: load config: %w", err)
+		return aws.Config{}, fmt.Errorf("bedrock: load config: %w", err)
+	}
+	return cfg, nil
+}
+
+func (c *BedrockClient) Complete(ctx context.Context, system, user string) (string, error) {
+	cfg, err := c.prepare(ctx)
+	if err != nil {
+		return "", err
 	}
 
 	client := bedrockruntime.NewFromConfig(cfg)
