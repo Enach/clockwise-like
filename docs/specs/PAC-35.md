@@ -1,7 +1,7 @@
 # Spec — PAC-35: Sign-in and sign-out flows that fail, mislead or log the user out
 
 - **Linear**: https://linear.app/paceday/issue/PAC-35
-- **Status**: challenged (revision 2 answers challenge round 2)
+- **Status**: challenged (revision 3 answers challenge round 3)
 - **Author**: spec-author
 - **Inherited scope**:
   - Audit findings (all in `docs/factory/api-audit.md`, batched there as item
@@ -189,6 +189,28 @@ All citations are to `origin/main` of each repo as of 2026-10-26
   `backend/engine/cal_iface.go:33`). So disconnect today also turns Google Meet
   to not connected, for Google users and for Outlook/webcal users holding a
   Google token alike.
+- (revision 3) Outlook users holding a Google token are the common case, not an
+  edge: every Microsoft sign-in sets the calendar provider to Outlook
+  (`backend/auth/microsoft_oauth.go:68`) and the Google sign-in never resets it
+  (`backend/api/handlers_auth.go:62-79` does not touch settings), so anyone who
+  has ever signed in with both is one.
+- (revision 3) Which users count as "Google" is decided by the calendar status:
+  a blank provider, and any value other than Outlook or webcal, is answered as
+  Google (`backend/api/handlers_auth.go:92-95` and the `default` branch of the
+  switch at `:97-111`). The settings write accepts only google, outlook and
+  webcal (`backend/api/handlers_settings.go:32`, `:272`), and migration 024
+  normalises older rows, so no fourth case exists today. The web app decides
+  which disconnect UI to show from the provider that status returns.
+- (revision 3) How the web app treats a disconnect answer today: its API client
+  (`smart-calendar-flow/src/api/client.ts`, `requestApi` at `:375-418`) throws an
+  HTTP error for any non-success status, and both callers then show "Failed to
+  disconnect". It resolves a no-content success, and both callers show a
+  success toast (`ConnectionStatus.tsx:18-19` "Disconnected from Google
+  Calendar", `WorkCalendarConnection.tsx:87-88` "Disconnected"). Any other
+  success answer without a JSON content type is classified as "server
+  unreachable" (`client.ts:414-415`); `withFallback` (`:491-503`) then switches
+  the whole session to preview data and runs the mock disconnect (`:952-954`),
+  which also ends in the success toast.
 
 ### 2.5 Logout (API-063)
 
@@ -274,6 +296,14 @@ All citations are to `origin/main` of each repo as of 2026-10-26
   nothing: any Google sign-in credential they hold is kept, Google Meet stays
   as connected as it was, and the server's answer does not report that a
   disconnect took place (D-8).
+  (revision 3) That answer is one the app treats as a failure, never as a
+  success and never as "server unreachable". So if the app itself sends a
+  disconnect for such a user, for example because its view of the calendar is
+  out of date after the provider changed in another tab, neither place that
+  offers disconnect shows a "disconnected" confirmation, the app does not switch
+  to preview data, and the user is told that disconnecting this kind of
+  calendar is not available yet. Which users count as having a Google calendar
+  follows the server's calendar status (D-8).
 - **Logout answers in a shape both of the app's API clients accept**, with no
   body. Logout still ends the session.
 - **The user's picture has one name end to end.** The picture the server already
@@ -397,10 +427,22 @@ request (connected, when Google is configured on the server); the Outlook
 credential or webcal link is unchanged; and the server's answer does not report
 a successful disconnect (D-8). The test fails today because the Google
 credential is deleted, Google Meet turns not connected, and the session is
-ended.
+ended. For the Outlook user, Teams' connected state also reads exactly as it
+did before the request.
+(revision 3) The web half also covers the app receiving that answer. On each of
+the two surfaces, given the app still shows the calendar as Google and offers
+disconnect (a stale status), when the user disconnects and the server returns
+the D-8 answer, then: the app's API client classifies it as a failure (neither
+a success nor "server unreachable"); no success confirmation is shown; the
+session does not switch to preview data and no preview disconnect runs; and the
+user sees that disconnecting this kind of calendar is not available yet. The
+test fails today because both surfaces show their success toast for a success
+answer, and a non-JSON success answer switches the session to preview data.
 [unit] (server: session kept, status unchanged, Google credential kept, Google
-Meet state unchanged, answer not a success) and [unit] (web: on both surfaces,
-no action offered, honest message, no success message).
+Meet and Teams state unchanged, answer not a success) and [unit] (web: on both
+surfaces, no action offered, honest message, no success message; and on both
+surfaces, receiving the D-8 answer is a failure with no success message and no
+switch to preview data).
 
 AC-18. Given each of the five auth operations named in API-092's non-admin
 share (sign-in method detection, SSO start, SSO sign-in return, current-user
@@ -597,6 +639,14 @@ PRODUCT.md and earlier owner decisions.*
   a user still has no way, through disconnect, to remove a stored Google
   credential; removing credentials for non-Google users is OQ-5's issue.
   Assumed by the factory, pending owner confirmation.
+  *Revision 3*: the "not performed" answer must be one the app's API client
+  classifies as a failure: not as a success, and not as "server unreachable"
+  (which would switch the session to preview data, §2.4). Its exact shape is
+  still the contract stage's choice within that constraint, and AC-17's web
+  half pins the app's handling of it. "A user whose calendar is Google" means
+  what the server's calendar status reports as Google (a blank or unrecognised
+  provider included, §2.4), so the server and the app classify every user the
+  same way. Assumed by the factory, pending owner confirmation.
 
 ## Challenge — 2026-10-26
 
@@ -1111,3 +1161,44 @@ comes from D-8's new server answer.
 - Checked and unaffected: `ConferencingSection.tsx:226-235` disconnects Zoom
   only, not the calendar. `mcp/` has no caller of disconnect (unchanged from
   round 2).
+
+## Revision 3 — 2026-10-26
+
+Answers to the round-3 challenge above. Author: spec-author.
+
+### Blocking
+
+1. **D-8 allowed a "not performed" answer the app would show as a success, or
+   treat as unreachable and switch to preview data.** Citations re-read and
+   confirmed on smart-calendar-flow `origin/main` `4ded854`:
+   `ConnectionStatus.tsx:18-19`, `WorkCalendarConnection.tsx:87-88`,
+   `client.ts:375-418` (non-success throws an HTTP error; no-content resolves;
+   other non-JSON success throws "unreachable" at `:414-415`), `:491-503`
+   (`withFallback` switches to preview data on "unreachable"), `:952-954` (mock
+   disconnect). Resolved with the challenger's first option, not the narrowing:
+   - **D-8** now requires the answer to be one the API client classifies as a
+     failure, neither success nor unreachable; the shape stays the contract
+     stage's choice within that constraint.
+   - **AC-17**'s web half now covers each surface receiving the D-8 answer from
+     a stale Google status: failure classification, no success confirmation, no
+     switch to preview data and no preview disconnect, and the "not available
+     yet" message. It fails today on both surfaces.
+   - **§3** states the same outcome in user terms, so its "at no point is a
+     'disconnected' confirmation shown over a calendar that still shows as
+     connected" is now backed by an AC rather than narrowed.
+   - **§2.4** records how the client treats each kind of answer today.
+
+### Non-blocking taken in this revision
+
+- **1 (common population)**: §2.4 now says that any user who has signed in with
+  both Microsoft and Google is an Outlook user holding a Google credential
+  (`microsoft_oauth.go:68`, `handlers_auth.go:62-79`).
+- **2 (who counts as Google)**: §2.4 records the status endpoint's rule (blank or
+  unrecognised provider means Google, `handlers_auth.go:92-111`); D-8 and §3
+  now say the split follows it.
+- **3 (Teams)**: AC-17's server half now asserts that the Outlook user's Teams
+  connected state is unchanged (`handlers_conferencing.go:208-210`).
+
+### Non-blocking not taken, with reason
+
+- None.
