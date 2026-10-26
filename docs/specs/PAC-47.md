@@ -1,7 +1,8 @@
 # Spec — PAC-47: Selecting Outlook or WebCal shows "connected", then an empty calendar
 
 - **Linear**: https://linear.app/paceday/issue/PAC-47
-- **Status**: challenged — revised after round 2 (see "Revision 1" and "Revision 2")
+- **Status**: challenged — revised after round 3 (see "Revision 1", "Revision 2" and
+  "Revision 3")
 - **Author**: spec-author
 - **Inherited scope**:
   - **U-18** (`docs/factory/api-audit.md:486`). PAC-24 closed the "enforce the
@@ -370,7 +371,10 @@ once the week view shows that calendar instead (§3.1).
      chosen calendar. A feed describes the user's own time, so the user's own busy
      time comes from the feed. It carries no information about other people, so
      other attendees are "unknown", the same as any other unanswerable attendee
-     today. For Outlook it already reads Microsoft, and it keeps doing so.
+     today. The user's own row comes from their chosen calendar whatever the
+     domain of their own address. No answer computed before the user changed
+     their work calendar is reused after the change. For Outlook it already reads
+     Microsoft, and it keeps doing so.
    - *Meeting suggestions* are **unavailable** for an Outlook or WebCal user. This
      covers the dashboard's suggestion dialog and the agent tools that suggest or
      create a meeting (D-11, under D-9). The answer says so. It is not a list of
@@ -378,8 +382,20 @@ once the week view shows that calendar instead (§3.1).
    - *Public booking slots* for a host whose work calendar is Outlook or WebCal
      are computed from that host's chosen calendar (D-13). If that calendar cannot
      be read, no slot that needs that host is offered. A host is never treated as
-     free because their calendar could not be read. Guests still see slot times
-     only, never event details. Google hosts are unchanged (§8 OQ-10).
+     free because their calendar could not be read. The guest is then shown no
+     free times for that day or period, never an error. Guests still see slot
+     times only, never event details. Google hosts are unchanged (§8 OQ-10).
+     For an Outlook host this behaviour is released only once Outlook credentials
+     are refreshed (PAC-67, D-13); until then such a host's slots are computed as
+     today, which is the one exception to the first sentence of this item.
+
+     **Anonymous guests cannot make the server read a host's calendar
+     repeatedly.** A guest's request for a link's slots, whatever period it
+     covers, causes at most one read of each Outlook or WebCal host's calendar.
+     Further slot requests for any link of that host within five minutes of that
+     read cause no further read, whether the read succeeded or failed (D-16).
+     Changing the work calendar or the feed address discards anything read
+     before the change.
    - *The calendar free/busy read used by the agent tools* is **unavailable** for
      an Outlook or WebCal user (D-12), with the same kind of answer as meeting
      suggestions.
@@ -532,8 +548,17 @@ a Microsoft stand-in account `x@z`, when sign-in with Microsoft is started from
 the sign-in page in that browser and completed as `x@z`, then Y holds no
 Microsoft credential and Y's work calendar is still Google, and the browser is
 signed in as the Paceday user for `x@z` (created if absent), as it would be with
-nobody signed in. This passes today. It guards against an implementation of D-7
+nobody signed in. Its outcome is today's behaviour, but it can only run once the
+Microsoft sign-in stand-ins of §3.6 exist, so it is a regression guard for the new
+code rather than a check of today's. It guards against an implementation of D-7
 that treats "a session is present" as "this is a connect".  [e2e]
+
+AC-3i. Given user A signed in (work calendar Google) and a Microsoft stand-in
+account that has already consented, when a Microsoft flow that was not started
+from one of the four connect actions (for example a link on another site that
+starts it directly) completes in A's browser, then A holds no Microsoft
+credential, A's work calendar is unchanged, and no other Paceday user's
+credential or work calendar is changed.  [unit]
 
 AC-3g. Given a WebCal user whose feed has been read successfully, when the
 dashboard and Settings are shown, then neither says "Syncing in real time"; and
@@ -546,7 +571,12 @@ AC-4. Given a WebCal user who also holds a Google credential, and a feed with on
 event this week, when the free/busy query behind the scheduling-link editor is
 asked about the user and two other attendees, then no request reaches Google (or
 its stand-in), the user's busy time is the feed event, and both other attendees'
-coverage is reported as unknown.  [unit]
+coverage is reported as unknown. The test runs twice: once with the user's own
+address on a company domain and once on a personal-mail domain (`@gmail.com`);
+the user's busy time is the feed event in both. It also runs from a warm cache:
+the same query is first answered while the user's work calendar is Google, the
+user then switches to WebCal, and the second answer is the feed event, not the
+Google answer.  [unit]
 
 AC-4b. Given an Outlook user and, separately, a WebCal user, each holding a Google
 credential, when meeting suggestions are requested the way the dashboard's
@@ -566,13 +596,33 @@ who also holds a Google credential, a Microsoft stand-in serving "Board" Tue
 both inside the link's hours, when a guest asks for that week's slots, then no
 offered slot overlaps Tue 10:00–11:00, slots overlapping Thu 10:00–11:00 are
 offered, and no request reaches the Google stand-in. The test is repeated with a
-WebCal host whose feed serves "Board".  [unit]
+WebCal host whose feed serves "Board".  [unit] The Outlook case is released with
+PAC-67 (D-13); its test is written with the rest.
 
 AC-4e. Given a scheduling link whose host's work calendar is Outlook (the
 Microsoft stand-in answers 401) or WebCal (the feed does not answer), and a host
-who holds no Google credential, when a guest asks for slots, then no slot that
-needs that host is offered. No answer offers that host's slots as if they were
-free.  [unit]
+who holds no Google credential, when a guest asks for slots, both for one named
+day and for the whole bookable period, then no slot that needs that host is
+offered. No answer offers that host's slots as if they were free. The named-day
+request is answered with no free times, not with an error; the whole-period
+request lists no bookable day.  [unit] The Outlook case is released with PAC-67
+(D-13); its test is written with the rest.
+
+AC-4g. Given a scheduling link whose only host's work calendar is WebCal, and a
+feed stand-in that counts requests and serves "Board" Tue 10:00–11:00 UTC, when a
+guest asks for the whole bookable period's slots, then asks for Tuesday's slots,
+and a second guest asks for the whole period again, all within five minutes, then
+the feed stand-in records exactly one fetch and no Tuesday slot overlaps
+10:00–11:00. The test is repeated with an Outlook host against the Microsoft
+stand-in: exactly one calendar read is recorded (continuation pages of that one
+read count as part of it). Today it fails: the feed is never fetched and the
+Microsoft stand-in is never called for a host without a Google credential.  [unit]
+
+AC-4h. Given the same WebCal link and a feed that does not answer, when guests
+make ten slot requests for that link within five minutes, then at most one
+connection to the feed address is attempted, and every answer offers no slot that
+needs that host. Given the same host's feed address is then changed, when a guest
+asks again within those five minutes, then the new address is read.  [unit]
 
 AC-4f. Given an Outlook user and, separately, a WebCal user, each holding a Google
 credential, when the calendar free/busy read used by the agent tools is
@@ -674,8 +724,10 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
   every Outlook user is therefore shown not connected about one access-token
   lifetime (roughly an hour) after each connect, and has to reconnect. This is
   recorded in D-1 so the owner can weigh it. The factory recommends PAC-67 as a
-  prerequisite for releasing the Outlook half to users. The WebCal half does not
-  depend on it.
+  prerequisite for releasing the Outlook half to users. For the Outlook
+  booking-slot behaviour of §3.4 it is a **requirement**, not a recommendation:
+  that part is released only after PAC-67 is released (D-13). The WebCal half
+  does not depend on it.
 - **Withdrawing Outlook or WebCal from the picker.** Rejected: PRODUCT.md lists
   both as supported calendars (see Decisions D-1).
 - **Personal calendars**, except for the feed-fetch rules. The personal-calendar
@@ -788,7 +840,20 @@ the frontend never expects a status shape the server no longer sends.
 - **OQ-6 — size and time limits on a feed.** A feed is user-chosen and can be
   arbitrarily large or slow. Owner: contract-author. Resolution: state limits in
   the contract; this spec only requires that exceeding them is reported as not
-  connected (AC-3) rather than hanging the week view.
+  connected (AC-3) rather than hanging the week view. **The public booking page is
+  a consumer of these limits too** (added in Revision 3): a guest's slot request
+  reads every Outlook or WebCal host's calendar, so a slow or oversized feed, or a
+  slow Microsoft answer, must end that host's read within the same limits and
+  count as unreadable (no slot needing that host is offered, §3.4). How often a
+  guest can cause such a read is fixed by §3.4 and D-16, not left to this
+  question.
+- **OQ-11 — bounding Google reads from the public booking page.** A whole-period
+  slot request reads each Google host's calendar once per day of the bookable
+  period, and nothing bounds repeated requests. The reflector concern of §3.4
+  does not apply (the address is Google's, not user-typed), but the volume falls
+  on the host's Google quota. Google hosts are unchanged here (§6). Owner:
+  contract-author, with product (Nicolas Hochart) for the freshness cost.
+  Resolution: a follow-up issue alongside OQ-10.
 - **OQ-7 — a stored plain `http://` feed address.** D-6's reason (keep an embedded
   token off the wire) applies to it too, but upgrading it to HTTPS can break a
   feed served only over HTTP, and refusing it can break an existing personal
@@ -901,6 +966,23 @@ the frontend never expects a status shape the server no longer sends.
   already publishes from Google. It shows no event detail and widens nothing.
   Failing closed when the calendar cannot be read prevents double-booking; the cost
   is that such a host offers no slots until their calendar is readable again.
+
+  Cost, restated in Revision 3 so the owner can weigh it. Slots are collective:
+  one unreadable host empties the whole link. Without token refresh, "readable
+  again" would mean a manual reconnect or sign-in roughly every hour, and the
+  population is not only users who picked Outlook in Settings. Every Microsoft
+  sign-in makes the user an Outlook user. So it would cover every user who has
+  ever signed in with Microsoft, and every collective link on which such a user
+  is an accepted co-host, including links owned by Google hosts. Their booking
+  pages would offer nothing almost all the time, where today they offer every
+  slot. That is why the Outlook half of this decision is released only after
+  PAC-67 (token refresh) is released. Until then an Outlook host's slots are
+  computed exactly as today, and that interim keeps today's known defects for
+  those hosts (§2.4). After PAC-67, a host whose Microsoft credential is revoked
+  or whose refresh fails still offers no slots until they reconnect; that
+  residual cost is accepted. The WebCal half is released with the rest of this
+  spec: a feed needs no token, so its population is only hosts who chose WebCal,
+  and their pages go empty only while the feed itself is unreadable.
 - **D-14 — a Microsoft sign-in from the sign-in page stays a sign-in when a session
   is live.** *Assumed by the factory, pending owner confirmation.* Attaching it
   instead would give the session holder the calendar of whoever completes the
@@ -914,6 +996,20 @@ the frontend never expects a status shape the server no longer sends.
   session. Relabelling it as a unit test would leave exactly that journey
   untested. The stand-ins sit under the PAC-43 declaration and its refusal at
   startup, so production gains no new redirection.
+- **D-16 — a host's calendar is read at most once per guest request and at most
+  once per five minutes across guest requests.** *Assumed by the factory, pending
+  owner confirmation.* An anonymous guest must not be able to turn the booking
+  page into a reflector toward a user-typed address, or exhaust a host's
+  Microsoft quota and so blank their page. A failed read counts, so an
+  unreachable or throttling target is not retried per request. Five minutes is
+  shorter than the 15-minute freshness the free/busy query already uses, so it
+  adds no staleness the product does not already accept. The cost: a meeting the
+  host adds can be offered as free for up to five minutes, and a host whose read
+  failed offers no slots for up to five minutes after the cause is fixed. A
+  change of work calendar or feed address discards the remembered read, so a
+  host who fixes the address sees the effect at once. What is remembered is the
+  host's busy times only, used only for that host's slots, and never shown to
+  anyone beyond the slot times a guest already sees.
 
 ## Challenge — 2026-10-26
 
@@ -1732,3 +1828,70 @@ booking-slot behaviour that Revision 2 introduced (§3.4 bullet 3, D-13, AC-4d/4
 - smart-calendar-flow/src/components/links/LinkEditDrawer.tsx:157: co-host
   coverage chips can show Google-derived busy time for up to 15 minutes after a
   provider switch (Non-blocking 2).
+
+## Revision 3 — 2026-10-26
+
+Answers to the round-3 challenge above. The spec body was edited in place, and
+this section says what changed and where. The citations were re-opened on `main`
+at `7de7044` (api), still the tip of `main`: `handlers_microsoft_auth.go:74`,
+`microsoft_oauth.go:68,74-89`, `booking.go:74-99,123`, `routes.go:26` and
+`handlers_booking.go:171-183,195-198` match what the challenge says. Nothing was
+compiled or run, because this is a text stage.
+
+### Blocking
+
+1. **D-13 understated its cost.** Accepted, and resolved both ways the challenge
+   offered.
+   - **PAC-67 is a release prerequisite** for the Outlook booking-slot behaviour.
+     §3.4 says an Outlook host's slots are computed as today until PAC-67 is
+     released. §5 turns the recommendation into a requirement for that part.
+     AC-4d, AC-4e and AC-4g note that their Outlook cases are released with PAC-67; the
+     tests are still written with the rest.
+   - **D-13 records the cost and the population**: every user who has ever signed
+     in with Microsoft (the callback makes them an Outlook user), and every
+     collective link with such a user as an accepted co-host, including links
+     owned by Google hosts. It says that without refresh "readable again" means a
+     manual reconnect or sign-in about every hour. It records the residual cost
+     after PAC-67 (revoked or unrefreshable credential) as accepted.
+   - The WebCal half still ships with this spec. A feed needs no token, so only
+     hosts who chose WebCal are affected, and only while their feed is
+     unreadable.
+
+2. **An unauthenticated route drove unbounded outbound reads.** Accepted.
+   - §3.4 now bounds the reads. One guest request, for one day or the whole
+     bookable period, reads each Outlook or WebCal host's calendar at most once.
+     Across guest requests, a host's calendar is read at most once per five
+     minutes, whether the read succeeded or failed. A change of work calendar or
+     feed address discards the earlier read (D-16).
+   - **AC-4g** fails today. It checks that a whole-period request, a one-day
+     request and a second guest's whole-period request within five minutes cause
+     exactly one feed fetch, with the feed's event still blocking its slot. It is
+     repeated for Outlook against the Microsoft stand-in. Today the feed and the
+     stand-in are never contacted for a host without a Google credential.
+   - **AC-4h** checks that ten requests against an unreachable feed cause at most
+     one connection attempt, still offer no slot for that host, and that an
+     address change is read at once.
+   - Because a failed read counts against the bound, anonymous traffic can no
+     longer drive Graph into throttling a host and so blank their page.
+   - **OQ-6** now names the public booking page as a consumer of the feed size
+     and time limits. New **OQ-11** records that Google hosts' booking reads stay
+     unbounded here, because Google hosts are unchanged (§6).
+
+### Non-blocking
+
+1. What a guest sees for an unreadable host is now specified. §3.4 says the
+   guest is shown no free times, never an error. AC-4e names both the one-day
+   and the whole-period request, and requires that the one-day answer is not an
+   error.
+2. A cached Google answer surviving a switch. §3.4 says no free/busy answer
+   computed before a work-calendar change is reused after it. AC-4 now runs from
+   a warm cache across the switch.
+3. Personal-mail domains. §3.4 says the user's own row comes from their chosen
+   calendar whatever their address's domain. AC-4 runs with a company address and
+   with a `@gmail.com` address. Other attendees on personal-mail domains are
+   still "unknown", as today.
+4. A Microsoft flow started from outside the product. New **AC-3i** checks that
+   such a flow changes neither the signed-in user's credentials nor their work
+   calendar, nor anyone else's. §3.3 already forbade it.
+5. AC-3h now says it is a regression guard that can run only once the §3.6
+   stand-ins exist, not a check of today's behaviour.
