@@ -565,3 +565,32 @@ plan stage or the follow-up issue: the single wording for the Vertex effective
 host (requests-wrongly-permitted 1a), the DNS-label hardening for `gcpLocation`
 (1b), encoding the `property`/`reason` invariant in the schema, and the `reason`
 for a non-empty Azure endpoint with no host.
+
+### What was run for revision 2
+
+- `python3 scripts/openapi_assemble.py` then `--check`:
+  `OK: bundle is in sync (98 paths)`; `x-uncertain` count still 18; bundle
+  sha256 `ab59fcf458454d8ef2faf79da35f3e4613de05e893132704707f4e5999d2361b`.
+- `bash .claude/factory/api-gate.sh factory/pac-66-contract` on commit `b063b93`
+  printed:
+
+  ```
+  make openapi rc=0
+  regenerated: none
+  OK: bundle is in sync (98 paths)
+  OK: MIGRATION.md covers all 119 operations (0 generated)
+  OK: backend/api/gen matches the contract
+  openapi-check(api) rc=0
+  backend lint rc=0
+  mcp lint rc=0
+  backend test rc=0
+  mcp test rc=0
+  backend  coverage: 43.9% (floor 43%) [3871 generated blocks excluded]
+  backend coverage rc=0
+  mcp      coverage: 84.0% (floor 75%)
+  mcp coverage rc=0
+  ```
+
+- **Not run:** the web half of `openapi-check` (the gate runs with
+  `WEB=/nonexistent`; web types regenerate after this contract merges, factory
+  §1), and no e2e, because this revision changes descriptions only.
