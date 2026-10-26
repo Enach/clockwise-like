@@ -1,7 +1,7 @@
 # Spec — PAC-35: Sign-in and sign-out flows that fail, mislead or log the user out
 
 - **Linear**: https://linear.app/paceday/issue/PAC-35
-- **Status**: challenged (revision 1 answers challenge round 1)
+- **Status**: challenged (revision 2 answers challenge round 2)
 - **Author**: spec-author
 - **Inherited scope**:
   - Audit findings (all in `docs/factory/api-audit.md`, batched there as item
@@ -169,6 +169,26 @@ All citations are to `origin/main` of each repo as of 2026-10-26
   token row (`backend/auth/token_store.go:53-59`). A user whose calendar is
   Outlook or webcal is logged out but their calendar stays connected. See §5 and
   §8 OQ-5.
+- (revision 2) That deletion happens **whatever the user's calendar provider
+  is**: the delete is keyed on the user alone
+  (`DELETE FROM oauth_tokens WHERE user_id = $1`, `token_store.go:57`), while the
+  calendar status picks its branch from the settings provider, not from which
+  credentials exist (`backend/api/handlers_auth.go:92-111`). The Microsoft
+  credential lives on the settings row instead
+  (`backend/auth/microsoft_oauth.go:73-77`) and the webcal link is a settings
+  field, so neither is touched. A user can be an Outlook or webcal user *and*
+  hold a stored Google token: the Google sign-in callback always stores one
+  (`handlers_auth.go:68-71`), and the user can then switch their calendar to
+  webcal, or sign in with Microsoft under the same email, which makes Outlook
+  their provider. For such a user, disconnect today deletes the Google token and
+  nothing of the Outlook or webcal calendar.
+- (revision 2) The stored Google token is used beyond the calendar status:
+  Google Meet reports as connected only while it exists
+  (`backend/api/handlers_conferencing.go:199-204`), and booking and the calendar
+  engine load it (`backend/api/handlers_booking.go:88`,
+  `backend/engine/cal_iface.go:33`). So disconnect today also turns Google Meet
+  to not connected, for Google users and for Outlook/webcal users holding a
+  Google token alike.
 
 ### 2.5 Logout (API-063)
 
@@ -250,7 +270,10 @@ All citations are to `origin/main` of each repo as of 2026-10-26
   does not offer them a disconnect that would do nothing: it tells them that
   disconnecting this kind of calendar is not available yet. At no point is a
   "disconnected" confirmation shown over a calendar that still shows as
-  connected (D-6).
+  connected (D-6). A disconnect request made for such a user anyway deletes
+  nothing: any Google sign-in credential they hold is kept, Google Meet stays
+  as connected as it was, and the server's answer does not report that a
+  disconnect took place (D-8).
 - **Logout answers in a shape both of the app's API clients accept**, with no
   body. Logout still ends the session.
 - **The user's picture has one name end to end.** The picture the server already
@@ -363,8 +386,21 @@ kind of calendar is not available yet; and when a disconnect request is made on
 that user's behalf anyway (bypassing the app), then they remain signed in, their
 calendar status still reads connected with the same provider, their stored
 calendar connection is unchanged, and no "disconnected" confirmation is shown.
-[unit] (server: session kept, status unchanged) and [unit] (web: no action
-offered, honest message, no success message).
+"When they view their calendar connection in the app" means every place the
+app offers a calendar disconnect today: the settings page's calendar section
+and the dashboard's calendar connection card. Each is asserted separately.
+(revision 2) The server half is asserted on a user of each kind (Outlook, and
+webcal) who **also holds a stored Google sign-in credential**, seeded before the
+request. After the request: that Google credential is still stored and
+unchanged; Google Meet's connected state reads exactly as it did before the
+request (connected, when Google is configured on the server); the Outlook
+credential or webcal link is unchanged; and the server's answer does not report
+a successful disconnect (D-8). The test fails today because the Google
+credential is deleted, Google Meet turns not connected, and the session is
+ended.
+[unit] (server: session kept, status unchanged, Google credential kept, Google
+Meet state unchanged, answer not a success) and [unit] (web: on both surfaces,
+no action offered, honest message, no success message).
 
 AC-18. Given each of the five auth operations named in API-092's non-admin
 share (sign-in method detection, SSO start, SSO sign-in return, current-user
@@ -434,7 +470,10 @@ in the plan together with the seam that induces it; none is left unasserted.
   (`AuthDialog.tsx:118-121`). No test protects it; the plan should name one or
   record that none exists.
 - **Disconnect still removes the Google calendar link** for a Google user
-  (`TestAuthDisconnect` asserts only the status code today).
+  (`TestAuthDisconnect` asserts only the status code today). As today, removing
+  it also turns Google Meet to not connected for that user, because Google Meet
+  depends on the same stored credential (§2.4); AC-11 does not change that, and
+  no test protects it today.
 
 ## 7. Rollback
 
@@ -528,12 +567,36 @@ PRODUCT.md and earlier owner decisions.*
   today (today they are logged out and the calendar stays connected); that is
   OQ-5. If the owner judges this unacceptable, OQ-5 moves into scope. Assumed by
   the factory, pending owner confirmation.
+  *Revision 2*: "nothing of theirs is deleted" holds only together with D-8.
+  Today a disconnect request for such a user deletes any Google sign-in
+  credential they hold (§2.4); under D-8 it no longer does, so after this change
+  a disconnect request deletes nothing of theirs, the Google credential
+  included.
 - **D-7 (revision 1) — API-092 is split.** The non-admin share (five paths) is
   resolved here by AC-18; the `/api/admin/sso` share stays with PAC-22. The
   backend implementer of PAC-35 marks the row "Partly fixed (PAC-35)" with the
   non-admin paths struck when AC-18's tests merge; PAC-22's implementer closes
   the rest. Owner of the row edit: PAC-35 backend implementer. Assumed by the
   factory, pending owner confirmation.
+- **D-8 (revision 2) — A disconnect request for a user whose calendar is not
+  Google deletes nothing, the Google credential included.** For a user whose
+  calendar provider is Outlook or webcal, a disconnect request keeps any stored
+  Google sign-in credential, so Google Meet, booking and the calendar engine see
+  the same credential before and after; the session is kept (AC-17); and the
+  server's answer tells the caller that no disconnect was performed for this
+  kind of calendar rather than reporting success (the shape of that answer is
+  the contract stage's choice). Disconnect for a Google-calendar user is
+  unchanged apart from keeping the session (AC-11). Options considered: (a) keep
+  deleting the Google credential for these users, which is today's behaviour but
+  deletes user data the user did not ask to remove (they asked to disconnect an
+  Outlook or webcal calendar, which it does not do) and silently turns Google
+  Meet off; (b) keep it, chosen. (b) follows the factory's conservative rule
+  (never choose an option that deletes user data) and D-6's aim that the app
+  stop claiming a disconnect it does not perform. It widens no visibility: the
+  credential stays exactly where and as it was. Consequence stated plainly: such
+  a user still has no way, through disconnect, to remove a stored Google
+  credential; removing credentials for non-Google users is OQ-5's issue.
+  Assumed by the factory, pending owner confirmation.
 
 ## Challenge — 2026-10-26
 
@@ -882,3 +945,49 @@ finding below.
 - Checked and unaffected: `e2e/tests/auth-session.spec.ts:100-111` asserts the
   post-logout bounce, not the 200, so AC-12's status change does not break it;
   `mcp/` has no caller of disconnect, logout, `/api/auth/me` or detection.
+
+## Revision 2 — 2026-10-26
+
+Answers to the round-2 challenge above. Author: spec-author.
+
+### Blocking
+
+1. **D-6's "nothing of theirs is deleted" was false for Outlook and webcal
+   users holding a Google token, and AC-17 did not decide the outcome.**
+   Citations re-read and confirmed: `backend/auth/token_store.go:53-59` (delete
+   keyed on the user only), `backend/api/handlers_auth.go:92-111` (status
+   branches on the settings provider), `:68-71` (Google sign-in always stores the
+   token), `backend/api/handlers_conferencing.go:199-204` (Google Meet connected
+   only while the token exists), `backend/auth/microsoft_oauth.go:73-77`
+   (Microsoft credential on the settings row).
+   - §2.4 now states that disconnect deletes the stored Google credential
+     whatever the calendar provider, and names what depends on it (Google Meet,
+     booking, the calendar engine).
+   - New **D-8** (assumed by the factory, pending owner confirmation): for a
+     user whose calendar is not Google, a disconnect request no longer deletes
+     the Google credential, and the server's answer does not report success.
+     Chosen because the factory never picks the option that deletes user data;
+     the rejected option (keep deleting) is recorded with its reason.
+   - **AC-17** now asserts the outcome on a seeded Outlook user and a seeded
+     webcal user who each also hold a Google credential: the credential is
+     still stored and unchanged, Google Meet's connected state is unchanged, and
+     the answer is not a success. An implementation that keeps deleting the
+     token now fails AC-17.
+   - **D-6** is not reworded to say the token is deleted, because under D-8 it
+     is not. A revision-2 note under D-6 ties "nothing of theirs is deleted" to
+     D-8 and says it was false before this change. §3's second disconnect bullet
+     states the same outcome in user terms.
+
+### Non-blocking taken in this revision
+
+- **1 (both surfaces)**: AC-17's web half now names both places the app offers
+  a disconnect today (the settings calendar section and the dashboard
+  connection card) and requires each to be asserted.
+- **2 (Google Meet for Google users)**: §6 now says that a Google user's
+  disconnect still turns Google Meet to not connected, as today, and that no
+  test protects it.
+
+### Non-blocking not taken, with reason
+
+- **3 (AC-15 is a review)**: no change; the AC already says it is a review
+  recorded in the contract PR.
