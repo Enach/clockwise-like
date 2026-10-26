@@ -1166,3 +1166,150 @@ mcp coverage rc=0
 **Not run:** web-gate and e2e-gate, for the reason given in Revision 2. The scan change
 this revision specifies is not implemented here (stage 4 does that), so no Go test
 exercises the exemption table yet.
+
+## Challenge (round 4) — 2026-10-26
+
+**Verdict**: accept
+
+Reviewer: contract-challenger, run as a separate agent against the committed state of
+`factory/new-pac21-error-leaks-remaining-contract` at 9133cc5 (revision 4). It read the
+artefacts, the handlers, the validators and `pac21_error_bodies_test.go` on that commit.
+It did not read the author's session.
+
+**Round-3 finding.** Fixed as Revision 4 states. AC-1, the scan entry in
+`consumersAffected` and §5 now name the same ten sites, and each site matches the code (see
+"Verified clean"). Revision 4 changes no fragment and no bundle byte. `47fe9f4..9133cc5`
+touches only this .md and the manifest. In the manifest, only `contractRevision`,
+`gates.apiGate`, AC-1 and the scan entry differ, and AC-1 and the scan entry only gain
+text. The old text is a prefix of the new, so nothing was narrowed.
+
+### Requests wrongly permitted, behaviour wrongly forbidden (blocking)
+
+None.
+
+The round-3 payload no longer has a conflict. `POST /api/habits` with
+`{"title":"","duration_minutes":30}` reaches `handlers_habits.go:117`, which is
+`writeError(w, err.Error(), http.StatusBadRequest)`, with `err` from
+`validateHabitFields`. That is the exemption entry (`handlers_habits.go`, `create`,
+`validateHabitFields`), so the scan permits it. The response stays 400
+`{"error":"title is required"}`, as §5 requires.
+
+### Non-blocking (the implementer should apply these; no contract re-review needed)
+
+1. **The guard fixture does not pin the "other err source" half of the exemption rule.**
+   - **The rule.** AC-1 says an entry matches only when `err` comes from that validator in
+     that function, and "with any other err source is a violation".
+   - **The gap.** The three fixture cases in the scan entry are (a) allowed in `exempted`,
+     (b) a violation outside the table, and (c) a violation at a 5xx. All three pass for a
+     scan that checks only "the enclosing function is in the table and calls the validator
+     somewhere".
+   - **Why it matters.** `addMember` holds two exempted writes (`handlers_manager.go:276`,
+     `:284`). A later `err` from another source in that function, such as a store call
+     written at 422, would pass that weaker scan.
+   - **Fix (fixture only).** Add case (d): inside `exempted`, call `validateHabitFields`,
+     then assign `err` from a different call (`err := json.Unmarshal(...)`) and write
+     `writeError(w, err.Error(), http.StatusBadRequest)`. It must be a violation.
+2. **Fixture lines 18 and 19 also become violations, and the scan entry names only line 13.**
+   - **Today.** At 9133cc5, `TestPAC21GuardCatchesKnownBadPatterns` treats
+     `http.Error(w, "db error", http.StatusInternalServerError)` (fixture line 18) and
+     `http.Error(w, genericServerMessage(code), code)` (line 19) as allowed. `wantLines` is
+     `{3..10}`.
+   - **Under AC-3.** AC-3 requires that no `http.Error` remains for a 5xx in `backend/api`.
+     So line 18 must become a violation, and line 19 too: its computed status cannot be
+     shown to be below 500.
+   - **The manifest already covers this.** The rule "no allowed shape that is still allowed
+     may be removed" implies it. But the scan entry says only "wantLines gains 13".
+   - **Fix.** Read the scan entry as "wantLines gains 13, 18 and 19". Line 20,
+     `writeError(w, genericServerMessage(code), code)`, stays allowed.
+3. **"<literal 4xx>" should read "a 4xx status".**
+   - **The mismatch.** None of the ten sites uses an integer literal. They use
+     `http.StatusBadRequest` (`handlers_habits.go:117,229`, `handlers_settings.go:136`) and
+     `http.StatusUnprocessableEntity` (the other seven).
+   - **The intended reading.** Both kinds of status are what `statusKind` already classifies
+     (`pac21_error_bodies_test.go:200-216`): an integer literal or a `net/http` constant,
+     known at compile time to be 400-499.
+   - **Fix.** The scan should accept both. A literal-only reading would fail all ten sites.
+
+### Responses the client cannot handle
+
+None new. Revision 4 changes no response. The round-3 analysis of `src/api/client.ts`
+`apiErrorMessage`, `AuthContext.tsx:58` and `Dashboard.tsx:113-114` still holds, and the
+web consumers are not affected by a test-only change.
+
+### Consumers affected
+
+- **No new consumer.** The exemption table lives in a test file in `backend/api`.
+- **`mcp/` and `e2e/`.** Unchanged from round 3.
+- **`clockwise-like` main.** It has not moved: `origin/main` = merge base = c954521. So
+  there is no rebase risk to the bundle hash.
+
+### Contract and implementation divergences (non-blocking)
+
+None.
+
+Revision 4 says `validateChangedSettings` messages are "a literal or a property path plus a
+literal". That is accurate if the property path is read to include client-supplied
+map keys:
+- `workingHours.days.<day> is not a valid weekday` and `lunchBreaks.<day> ...`
+  (`handlers_settings.go:325,337`) echo the request's own key.
+- That is input reflection, not server-internal text, so it is not a PAC-21 leak.
+
+### Uncertainties not actually resolved
+
+None. U-03, U-04, U-06 and U-07 stand as round 2 verified them. U-01, U-05 and U-09 are
+carried forward under the round-1 ruling.
+
+### Verified clean
+
+**Commands run in `C:\Users\jouzu\paceday\wt-pac21-contract` at 9133cc5:**
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py --check` | `OK: bundle is in sync (98 paths)`, rc=0 |
+| `python3 scripts/openapi_migration_report.py --check` | `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc=0 |
+| `bash scripts/openapi_gen_go.sh --check` | `OK: backend/api/gen matches the contract`, rc=0 |
+| `sha256sum contracts/openapi/openapi.yaml` | `b8b2fd63…8bf9`, equal to `contractHash` |
+| manifest parsed with `json.load` | ok |
+
+**Not run by the challenger:**
+
+- `api-gate.sh`. The shared host checkout is on `impl/pac-66b-llm-base-url-backend` and I
+  did not switch it. The author's pasted run is at 0e2990c, and 9133cc5 changes only the
+  .md and the manifest.
+- web-gate and e2e-gate.
+- `go build` and the Go tests. No Go code changes at this stage.
+
+**Attacked and found clean:**
+
+- **The ten exemption sites.**
+  - A grep of `backend/api/*.go` (tests excluded) for `writeError`/`http.Error` with
+    `err.Error()` finds 28 sites in handwritten code: the 18 leak sites round 3 listed,
+    plus exactly the ten in AC-1. The three hits under `backend/api/gen/` are in a
+    different package, and `filepath.Glob("*.go")` does not scan them.
+  - For each of the ten, the enclosing function named in AC-1 is the one at that line:
+    `habitsHandlers.create`, `habitsHandlers.update`, `managerHandlers.confirmDetection`,
+    `managerHandlers.addMember` (×2), `managerHandlers.patchMember`,
+    `teamHandlers.inviteMember`, `teamHandlers.createZone`, `teamHandlers.updateZone` and
+    `settingsHandlers.patchSettings`.
+  - Each `err` is the named validator's result, assigned either in an `if err := V(...)`
+    or as `email, err := normalizeManagerEmail(...)`.
+- **"Every non-nil return is a single string literal."** This holds today for all four
+  `fmt.Errorf` validators:
+  - `validateHabitFields` (`handlers_habits.go:31-66`)
+  - `normalizeManagerEmail` (`handlers_manager.go:671-681`, which discards
+    `mail.ParseAddress`'s error)
+  - `validateManagerCadence` (`:691-705`)
+  - `validateNoMeetingZone` (`handlers_teams.go:552-571`, which discards `time.Parse`'s
+    error)
+
+  So the new AC-1 check is satisfiable without touching them.
+- **`validateChangedSettings`.**
+  - Every `add(...)` in `settingsProblems` is a literal, a property name plus a literal, or
+    a `nlp.*WriteProblem` constant (`backend/nlp/destination.go:281-315`).
+  - `validateWorkingHours`/`validateLunchBreaks` return only `&validationError{...}` built
+    from literals and the path.
+  - The one exception is `autoScheduleCron is invalid: <err>` (`handlers_settings.go:253`),
+    which the `patchSettings` entry already replaces and AC-1's marker case pins.
+- **The rejected alternative** (a shared fixed-message type) was rejected for a real
+  reason: the type alone would not prove a message is fixed, because `Msg` could still be
+  built from `err.Error()`. The table plus the validator-body check does prove it.
