@@ -141,11 +141,16 @@ Only `writeError()` responses (most 400s, plus the LLM 502) are JSON.
    `week` to `""` on a decode error; `POST /api/schedule/compress` discards the decode
    error entirely (`_ = json.NewDecoder(...)`). Both return 200 for garbage input, while
    every sibling endpoint returns 400.
+   **Contract changed by PAC-36:** a present, non-`null` body that does not decode is a
+   400 `invalid JSON` on both; absent, empty and `null` bodies stay `{}`.
 
 5. **Week-mode compression cannot fail.** The Mon–Fri loop `continue`s past any engine
    error, so a fully broken calendar returns HTTP 200 with body `null` (nil slice).
    Single-day mode with the same error returns 500. Same input class, two outcomes.
    (Since PAC-28 the week-mode body is `[]`, not `null`; the 200-vs-500 split remains.)
+   **Contract changed by PAC-36:** any failing day fails the whole week-mode request as
+   single-day mode does (401 or 500, no partial results); a week-mode 200 carries
+   exactly five entries.
 
 6. **Nil slices encode as `null`, not `[]`.** Affects `GET /api/focus/blocks`,
    `POST /api/schedule/compress`, `ScheduleSuggestions.slots`,

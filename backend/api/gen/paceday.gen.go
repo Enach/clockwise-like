@@ -800,7 +800,7 @@ type CompressionApplyResult struct {
 	Failed []string `json:"failed"`
 }
 
-// CompressionRequest Both fields optional; `week` takes precedence over `date` when non-empty.
+// CompressionRequest Both fields optional; `week` takes precedence over `date` when non-empty. The whole body is optional too: absent, empty or `null` is treated as `{}`. Any other body that does not decode into this object is a 400 `invalid JSON` (PAC-36, API-035; the decode error was discarded before).
 type CompressionRequest struct {
 	// Date `YYYY-MM-DD`. Used only when `week` is empty. Default: today.
 	Date *openapi_types.Date `json:"date,omitempty"`
@@ -1113,7 +1113,7 @@ type FocusRunBlock struct {
 	Start         time.Time          `json:"Start"`
 }
 
-// FocusRunRequest Optional. A malformed body is silently treated as `{}`.
+// FocusRunRequest Optional. Absent, empty or `null` is treated as `{}`. Any other body that does not decode into this object is a 400 `invalid JSON` (PAC-36, API-035; it was silently treated as `{}` before).
 type FocusRunRequest struct {
 	// Week `YYYY-MM-DD`. Empty or absent -> current week (`time.Now()`). Not snapped to Monday by the handler.
 	Week                 *openapi_types.Date    `json:"week,omitempty"`
