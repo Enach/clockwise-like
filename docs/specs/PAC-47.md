@@ -1,7 +1,7 @@
 # Spec — PAC-47: Selecting Outlook or WebCal shows "connected", then an empty calendar
 
 - **Linear**: https://linear.app/paceday/issue/PAC-47
-- **Status**: challenged — revised after round 1 (see "Revision 1")
+- **Status**: challenged — revised after round 2 (see "Revision 1" and "Revision 2")
 - **Author**: spec-author
 - **Inherited scope**:
   - **U-18** (`docs/factory/api-audit.md:486`). PAC-24 closed the "enforce the
@@ -21,10 +21,29 @@
   - No `x-uncertain` marker sits on the event-list, auth-status, integration-
     availability or disconnect operations today (checked in
     `contracts/openapi/openapi.yaml` on 2026-10-26).
-  - **Not inherited**: API-029 (untagged free/busy slot keys, open) and API-061
-    (disconnect also signs the user out, open). Both sit on operations this spec
-    does not require changing; if the contract stage ends up touching either
-    operation, it inherits that finding.
+  - **Added in Revision 2.** Operations this spec changes whose open findings
+    Revision 1 did not list (touch-it-fix-it):
+    - **API-029** (`docs/factory/api-audit.md:287`, untagged slot and event keys)
+      on the calendar free/busy operation (§3.4 changes its answer for Outlook and
+      WebCal users) and on the personal-calendar preview (§3.5 changes its
+      failure answer). Revision 1 listed it as not inherited, which was already
+      wrong for the preview.
+    - **API-028, API-046, API-077** (`api-audit.md:286,304,335`) on the
+      free/busy query operation, whose WebCal answer AC-4 changes.
+    - **API-011 and API-012** (`api-audit.md:269-270`) on the Microsoft
+      callback, whose behaviour D-7 changes.
+    - **API-064** (`api-audit.md:322`) on the Microsoft start route, if the
+      contract stage changes that route to tell a connect from a sign-in (§3.3).
+    - **API-091 / U-03** (`api-audit.md:349,471`): API-091 lists the calendar
+      free/busy operation as having no consumer, while U-03 records that the MCP
+      tool `clockwise_find_free_slots` calls it. The contract stage makes the two
+      agree when it changes that operation.
+    - No `x-uncertain` marker sits on the meeting-suggestion, booking-slot,
+      free/busy query, calendar free/busy, Microsoft start or Microsoft callback
+      operations (checked in `contracts/openapi/openapi.yaml` on 2026-10-26).
+  - **Not inherited**: API-061 (disconnect also signs the user out, open). It sits
+    on an operation this spec does not require changing; if the contract stage
+    ends up touching it, it inherits that finding.
 
 ## 0. What changed since the issue was written
 
@@ -149,20 +168,45 @@ provider (`:19`).
 
 Onboarding also trusts the flag: it skips the connect step whenever `connected`
 is true (`smart-calendar-flow/src/pages/Onboarding.tsx:61-62`) and always advances
-for `webcal` without checking anything (`:84-85`).
+for `webcal` without checking anything (`:84-85`). Its connect step is itself a
+connect action, which Revision 1 missed: for a user who picked Outlook and is not
+connected it sends the browser to `api.authConnectUrl(provider)`
+(`Onboarding.tsx:78-87`), which for `outlook` is the Microsoft route
+(`src/api/client.ts:947-948`). It runs on a signed-in route, in the user's first
+session.
 
-So there are three connect actions and three status lines in the product today:
-the dashboard's not-connected prompt, the dashboard's status card
-(`ConnectionStatus`) and the Settings work-calendar panel
-(`WorkCalendarConnection`).
+So there are **four** connect actions in the product today: the dashboard's
+not-connected prompt, the dashboard's status card (`ConnectionStatus`), the
+Settings work-calendar panel (`WorkCalendarConnection`) and onboarding's connect
+step. The first three are also the product's three status lines.
 
-### 2.4 Free/busy for a WebCal user is answered from Google
+The same Microsoft route is also the **sign-in** route. The sign-in dialog sends a
+user whose email is detected as Microsoft to `/api/auth/microsoft?login_hint=…`
+(`src/components/auth/AuthDialog.tsx:108`). `/signin` renders the landing page
+with that dialog already open (`src/pages/SignIn.tsx`, `src/pages/Index.tsx:555`)
+whatever the session state, and nothing checks first whether a session is live.
+The server cannot tell a connect from a sign-in today: both reach the same handler,
+which ignores the session (§2.5).
 
-`FreeBusyService` (`backend/engine/freebusy_service.go:119-138`) switches on the
-provider. `outlook` reads the caller's Microsoft credential (`:122-127`). `webcal`
-has no case and falls into `default:` (`:128-137`), which loads the caller's
-**Google** credential and queries Google. A user who said "read this feed" has a
-different calendar queried on their behalf.
+### 2.4 Availability reads: four paths, and Google answers in most of them
+
+Revision 1 called `FreeBusyService` "the free/busy service behind scheduling
+features". That was wrong. Its only caller is `POST /api/freebusy`
+(`backend/api/handlers_freebusy.go:70`), and the only web caller of that
+operation is the co-host coverage chips of the scheduling-link editor
+(`smart-calendar-flow/src/components/links/LinkEditDrawer.tsx:157`,
+`src/api/client.ts:927`). The scheduling features read availability elsewhere:
+
+| Read path | Served to | What it reads today |
+|---|---|---|
+| **Free/busy query**: `FreeBusyService` (`backend/engine/freebusy_service.go:119-138`) | `POST /api/freebusy`, used by the scheduling-link editor | `outlook`: the caller's Microsoft credential (`:122-127`). `webcal`: no case, so it falls into `default:` (`:128-137`), which loads the caller's **Google** credential and queries Google. |
+| **Meeting suggestions**: `SmartScheduler.Suggest` (`backend/engine/smart_schedule.go:59-71`) | `POST /api/schedule/suggest` (`backend/api/handlers_schedule.go:162`), used by the dashboard's `ScheduleSuggestModal.tsx:97` and the MCP tools `clockwise_create_event` (`mcp/tools.go:54`) and `clockwise_suggest_meeting` (`:265`) | Free/busy from `newCalOps` (`:56`), which loads the **Google** credential whatever the provider (`cal_iface.go:84-95`). With no Google credential the answer is the 401 "calendar not connected" (`handlers_schedule.go:164`), even while the status may say connected. |
+| **Public booking slots**: `BookingEngine.hostBusy` (`backend/engine/booking.go:122-135`) | the unauthenticated `GET /api/book/{slug}/slots` (`backend/api/routes.go:26`), used by `PublicBooking.tsx` | Each host's **Google** events, via `calendarClientForUser` (`:202-209`). If no client can be built, or the read fails, the error is dropped (`:123-125`) and the host has **no busy time**: every slot in the link's hours is offered, including slots over the host's real Outlook or feed meetings. |
+| **Calendar free/busy**: `handlers_calendar.go:203-209` | `GET /api/calendar/freebusy` (`routes.go:70`), used by the MCP tool `clockwise_find_free_slots` (`mcp/tools.go:129-139`); no web screen uses it | A **Google** client only, or the 401 without a Google credential. |
+
+So an Outlook user has a different calendar queried on their behalf in three of
+the four paths, and a WebCal user in all four. A booking host with no Google
+credential looks permanently free to guests.
 
 ### 2.5 The readers that exist, and what they lack
 
@@ -179,7 +223,16 @@ different calendar queried on their behalf.
   (`:64-70`). Fetch errors wrap the `net/url` error (`:66`), whose text contains the
   full feed address, and the personal-calendar sync logs that error verbatim
   (`backend/engine/personal_blocker.go:61`, `log.Printf(... %v, err)`), so feed
-  addresses, including any token in them, are written to the server log today. A
+  addresses, including any token in them, are written to the server log today. The
+same errors also leave the process for the error tracker, which Revision 1 did not
+record. The personal-calendar preview answers a failed fetch through
+`writeServerError` (`backend/api/handlers_personal.go:168-171`), and sync answers
+through `writeCalendarFailure` (`:191-192`, `backend/api/server_errors.go:75-80`).
+Both reach `logServerError`, which writes the log line and then calls
+`reportServerError`, which calls `hub.CaptureException(err)`
+(`server_errors.go:16-22,41-49`). Wherever an error-tracker DSN is configured, the
+full feed address, token included, is therefore sent to a third-party service
+today. A
   `webcal://` address (the form calendar apps usually hand out) is passed to
   `http.NewRequestWithContext` as-is (`:60`); the Go client has no transport for
   that scheme. Its 15-minute cache (`:19-22,52-57`) is per instance and has no
@@ -194,7 +247,7 @@ different calendar queried on their behalf.
   (`backend/api/handlers_microsoft_auth.go:17-81`) is mounted without
   `requireAuth` (`backend/api/routes.go:35-36`) and never reads who is signed in.
   On callback it reads the Microsoft account's email (`:62`), resolves a Paceday
-  user **by that email** with `storage.UpsertUser(..., "microsoft", ...)` (`:67`;
+  user **by that email** with `storage.UpsertUser(..., "microsoft", ...)` (`:68`;
   `UpsertUser` is `INSERT ... ON CONFLICT (email) DO UPDATE`,
   `backend/storage/users.go:21-31`, so it creates a user when none has that email),
   stores the Microsoft credential **on that user** and flips that user's provider
@@ -203,7 +256,17 @@ different calendar queried on their behalf.
   The Settings picker already labels it "Sign in with Microsoft"
   (`smart-calendar-flow/src/components/WorkCalendarConnection.tsx:16`). Consequence:
   the credential lands on the account the browser was signed in to only when both
-  accounts share an email address.
+  accounts share an email address. The only binding between the start and the
+  callback is the `ms_oauth_state` cookie (`handlers_microsoft_auth.go:41-45`), so a
+  completion in another browser fails with 400 and stores nothing. A completion in
+  the same browser after its session changed is credited by Microsoft email, as
+  above.
+- **The Microsoft sign-in steps go to fixed addresses.** Authorize and token are
+  hard-coded at `backend/auth/microsoft_oauth.go:14-17`
+  (`login.microsoftonline.com`), and the profile read that names the account is
+  hard-coded at `backend/api/handlers_microsoft_auth.go:93` (`graph.microsoft.com`).
+  None of them can be pointed at a stand-in today, so no test can complete a
+  Microsoft connect.
 
 ### 2.6 What tests cover today
 
@@ -218,7 +281,21 @@ different calendar queried on their behalf.
 - No test, unit or e2e, exercises the work-calendar provider setting with
   `outlook` or `webcal`. That absence is how §2.1–§2.4 survived.
 - No test covers the WebCal personal-calendar branch, the feed address in the
-  sync log, or which account the Microsoft callback attaches its credential to.
+  sync log or the error tracker, or which account the Microsoft callback attaches
+  its credential to.
+- Two existing fixtures serve a WebCal personal feed from a loopback `httptest`
+  server without the test-mode declaration
+  (`backend/api/pac21_calendar_not_connected_test.go:58-66`;
+  `backend/engine/pac21_calendar_credential_test.go:122,134-141`). §3.5 refuses
+  loopback addresses outside a declared test deployment, so both must be adapted
+  (§6).
+- Google meeting suggestions are covered by
+  `TestSmartScheduler_Suggest_WithMock` (`backend/engine/smart_schedule_test.go:137`)
+  and `TestSmartScheduler_Suggest_StepsThirtyMinutes`
+  (`backend/engine/pac21_calendar_credential_test.go:148`). Booking slots are
+  covered by `TestPublicBookingSlotsContract` (`backend/api/handlers_booking_test.go:119`)
+  and the engine tests in `backend/engine/booking_test.go` and
+  `booking_busy_test.go`. None of them uses a non-Google host or user.
 
 ### 2.7 Everything that writes to a calendar writes to Google
 
@@ -267,27 +344,53 @@ once the week view shows that calendar instead (§3.1).
    generic error. The two screens never disagree.
 3. **The way back is for the calendar the user chose, and it keeps the user who
    they are.** Every connect action the product shows (the dashboard's
-   not-connected prompt, the dashboard's calendar status card, and the Settings
-   work-calendar panel) takes a WebCal or Outlook user to fix *that* connection,
-   never to a Google connection. Connecting (or reconnecting) Outlook while signed
-   in **attaches the Microsoft credential to the Paceday account that is signed
-   in**, whatever email the Microsoft account has. It does not sign the browser in
-   as anyone else, does not create a Paceday account, and does not change any other
-   Paceday account. A connection is credited only to the account that started it.
-   Signing in with Microsoft from the sign-in page, with nobody signed in, stays a
-   sign-in, as today.
-4. **Free/busy behind scheduling features is answered only from the chosen
-   calendar.** A WebCal user's free/busy is never answered by querying another
-   provider on their behalf. The feed describes the user's own time, so the user's
-   own busy time comes from the feed; it carries no information about other
-   people, so for other attendees the answer is "unknown", the same as any other
-   unanswerable attendee today. (The standalone free/busy operation no screen uses
-   is outside this spec, §5.)
+   not-connected prompt, the dashboard's calendar status card, the Settings
+   work-calendar panel and onboarding's connect step) takes a WebCal or Outlook
+   user to fix *that* connection, never to a Google connection. An Outlook
+   connection that the signed-in user starts from one of those four connect
+   actions **attaches the Microsoft credential to the account that started it**,
+   whatever email the Microsoft account has. It does not sign the browser in as
+   anyone else, does not create a Paceday account, and does not change any other
+   Paceday account. It is credited only to the account that started it, and only
+   while that account is still the one signed in when the Microsoft step
+   completes. In any other case it is credited to nobody and changes no session.
+
+   **Only those connect actions attach.** Signing in with Microsoft from the
+   sign-in page is always a sign-in, whether or not a session is already live in
+   the browser. It signs the browser in as the Paceday user for that Microsoft
+   account (created if absent) and replaces any live session, exactly as today.
+   It never stores a Microsoft credential on the user whose session was live, and
+   never changes that user's work calendar (D-14). The action that started a flow
+   decides whether it is a connect or a sign-in. A session being present when the
+   flow completes does not make it a connect.
+4. **Availability is read only from the calendar the user chose, or not at
+   all.** No availability read made for an Outlook or WebCal user queries Google,
+   even when a Google credential is on file. For each read path of §2.4:
+   - *The free/busy query behind the scheduling-link editor* answers from the
+     chosen calendar. A feed describes the user's own time, so the user's own busy
+     time comes from the feed. It carries no information about other people, so
+     other attendees are "unknown", the same as any other unanswerable attendee
+     today. For Outlook it already reads Microsoft, and it keeps doing so.
+   - *Meeting suggestions* are **unavailable** for an Outlook or WebCal user. This
+     covers the dashboard's suggestion dialog and the agent tools that suggest or
+     create a meeting (D-11, under D-9). The answer says so. It is not a list of
+     suggestions and not "calendar not connected".
+   - *Public booking slots* for a host whose work calendar is Outlook or WebCal
+     are computed from that host's chosen calendar (D-13). If that calendar cannot
+     be read, no slot that needs that host is offered. A host is never treated as
+     free because their calendar could not be read. Guests still see slot times
+     only, never event details. Google hosts are unchanged (§8 OQ-10).
+   - *The calendar free/busy read used by the agent tools* is **unavailable** for
+     an Outlook or WebCal user (D-12), with the same kind of answer as meeting
+     suggestions.
+
+   Google users get the same answers as today on all four paths.
 5. **A feed address is a secret and an untrusted destination, wherever the server
    fetches one.** This applies to every server-side feed fetch: the work calendar
    *and* personal calendars, which use the same reader today. Private iCal
-   addresses embed an access token, so the address never appears in an error shown
-   to the user or written to the server log. The server fetches only from
+   addresses embed an access token, so the address leaves the process in no error
+   report of any kind: not in a response, not in the server log, and not in the
+   error tracker or any other third-party report. The server fetches only from
    addresses on the public internet; in a deployment declared as a test deployment
    it may instead reach only the same non-routable stand-in ranges the calendar
    stand-in already uses, and nothing else. The rule holds for every hop: a
@@ -296,9 +399,12 @@ once the week view shows that calendar instead (§3.1).
    read as its HTTPS equivalent. A refused or failed personal-calendar fetch is
    treated like any other failed read: it removes none of the blocks already
    placed from that calendar.
-6. **Outlook can be proven against a stand-in**, under the same test-mode
-   declaration that already governs the Google calendar stand-in, and is refused
-   at startup without it — exactly as the Google redirection is.
+6. **Outlook can be proven against a stand-in, end to end.** Under the same
+   test-mode declaration that already governs the Google calendar stand-in, both
+   the Microsoft calendar reads and every Microsoft sign-in step can be redirected
+   to stand-ins. The sign-in steps are authorize, token exchange, and the profile
+   read that names the account. Each redirection is refused at startup without the
+   declaration, exactly as the Google redirection is (D-15).
 7. **Outlook and feed events are read-only in the product.** For an event shown
    because the user's work calendar is Outlook or WebCal, the week view does not
    offer move, edit, delete, reschedule or add/remove-conference-link. If such a
@@ -321,7 +427,10 @@ once the week view shows that calendar instead (§3.1).
    (in its status text or in a connect or disconnect message) for a user whose
    work calendar is Outlook or WebCal. Onboarding never shows a WebCal or Outlook
    calendar as connected unless the status says so; it may still let the user
-   continue to the next step.
+   continue to the next step. The product's agent tools are a surface too. No
+   tool description or answer calls the user's chosen calendar "Google Calendar".
+   The tools that change or delete an event pass on the read-only refusal of §3.7
+   as a read-only refusal, not as a generic failure.
 
 ## 4. Acceptance criteria
 
@@ -396,23 +505,35 @@ then it reports not connected.  [unit]
 
 AC-3d. Given AC-3's not-connected state for a WebCal or Outlook user, when they
 use **each** connect action the product shows (the dashboard's not-connected
-prompt, the dashboard's calendar status card, and the Settings work-calendar
-panel), then each leads to reconnecting the provider they chose (for WebCal, to
-editing the feed address; for Outlook, to the Microsoft connection), and none
-starts a Google connection.  [e2e]
+prompt, the dashboard's calendar status card, the Settings work-calendar panel and
+onboarding's connect step), then each leads to reconnecting the provider they
+chose (for WebCal, to editing the feed address; for Outlook, to the Microsoft
+connection), and none starts a Google connection.  [e2e]
 
 AC-3e. Given user A signed in with Google as `a@x`, a separate existing Paceday
 user B whose email is `b@y`, and a Microsoft stand-in account whose email is
-`b@y`, when A connects Outlook from Settings and completes the Microsoft step,
-then A holds the Microsoft credential and A's work calendar is Outlook; B's
-credentials and settings are unchanged; no Paceday user is created; and the
-browser's session is still A's (the next authenticated request is answered for
-A).  [e2e]
+`b@y`, when A connects Outlook and completes the Microsoft step, then A holds the
+Microsoft credential and A's work calendar is Outlook; B's credentials and
+settings are unchanged; no Paceday user is created; and the browser's session is
+still A's (the next authenticated request is answered for A). The test runs once
+from each of the four connect actions: Settings, onboarding's connect step (with
+A a user who has not finished onboarding, who then continues onboarding as A), the
+dashboard's not-connected prompt and the dashboard's status card.  [e2e]
 
-AC-3f. Given user A started an Outlook connection, when the Microsoft step is
-completed in a browser whose session is user C's (or no session), then no
-Microsoft credential is stored on A or C by that completion and C's session is
-not replaced.  [unit]
+AC-3f. Given user A started an Outlook connect from a connect action, and in the
+same browser A's session is then replaced by user C's session (or signed out)
+before the Microsoft step completes, when the Microsoft step completes in that
+browser, then no Microsoft credential is stored on A or C, neither's work calendar
+changes, the browser still holds C's session (or none), no Paceday user is
+created, and no session is issued.  [unit]
+
+AC-3h. Given user Y signed in with Google (work calendar Google) in a browser, and
+a Microsoft stand-in account `x@z`, when sign-in with Microsoft is started from
+the sign-in page in that browser and completed as `x@z`, then Y holds no
+Microsoft credential and Y's work calendar is still Google, and the browser is
+signed in as the Paceday user for `x@z` (created if absent), as it would be with
+nobody signed in. This passes today. It guards against an implementation of D-7
+that treats "a session is present" as "this is a connect".  [e2e]
 
 AC-3g. Given a WebCal user whose feed has been read successfully, when the
 dashboard and Settings are shown, then neither says "Syncing in real time"; and
@@ -422,10 +543,42 @@ message is shown, then none names Google Calendar.  [e2e]
 **Free/busy**
 
 AC-4. Given a WebCal user who also holds a Google credential, and a feed with one
-event this week, when the free/busy service behind scheduling features is asked
-about the user and two other attendees, then no request reaches Google (or its
-stand-in), the user's busy time is the feed event, and both other attendees'
+event this week, when the free/busy query behind the scheduling-link editor is
+asked about the user and two other attendees, then no request reaches Google (or
+its stand-in), the user's busy time is the feed event, and both other attendees'
 coverage is reported as unknown.  [unit]
+
+AC-4b. Given an Outlook user and, separately, a WebCal user, each holding a Google
+credential, when meeting suggestions are requested the way the dashboard's
+suggestion dialog and the agent tools request them, then the answer says
+suggestions are unavailable for their calendar (not a list of suggestions, not
+"calendar not connected"), and no request reaches the Google stand-in. The same
+users without a Google credential get the same answer.  [contract]
+
+AC-4c. Given that answer, when the dashboard's suggestion dialog is used, then it
+says suggestions are unavailable for the user's calendar. It does not say
+"connect your calendar" and does not show an empty list as if there were no free
+time.  [unit]
+
+AC-4d. Given a scheduling link whose only host's work calendar is Outlook, a host
+who also holds a Google credential, a Microsoft stand-in serving "Board" Tue
+10:00–11:00 UTC and a Google stand-in serving "GOOGLE-ONLY" Thu 10:00–11:00 UTC,
+both inside the link's hours, when a guest asks for that week's slots, then no
+offered slot overlaps Tue 10:00–11:00, slots overlapping Thu 10:00–11:00 are
+offered, and no request reaches the Google stand-in. The test is repeated with a
+WebCal host whose feed serves "Board".  [unit]
+
+AC-4e. Given a scheduling link whose host's work calendar is Outlook (the
+Microsoft stand-in answers 401) or WebCal (the feed does not answer), and a host
+who holds no Google credential, when a guest asks for slots, then no slot that
+needs that host is offered. No answer offers that host's slots as if they were
+free.  [unit]
+
+AC-4f. Given an Outlook user and, separately, a WebCal user, each holding a Google
+credential, when the calendar free/busy read used by the agent tools is
+requested, then the answer says it is unavailable for their calendar and no
+request reaches the Google stand-in. For a Google user the answer is unchanged.
+[contract]
 
 **The feed address**
 
@@ -434,8 +587,10 @@ tested once for the work calendar and once for a WebCal personal calendar
 (preview, and the sync that the cron also runs).
 
 AC-5. Given a feed address containing a query-string token and a fetch that
-fails, when the failure is logged and answered, then neither the server log line
-nor any response body contains the token or the full address.  [unit]
+fails, when the failure is logged, reported and answered, then the token and the
+full address appear in none of these: the server log line, the error-tracker
+report (observed where the server hands an error to the tracker), or any response
+body.  [unit]
 
 AC-5b. Given a deployment with no test-mode declaration, and a stored feed address
 whose host resolves to a loopback, RFC 1918, link-local or unique-local address,
@@ -454,14 +609,21 @@ refused address on any later lookup, when the server reads the feed, then no
 connection is made to the refused address.  [unit]
 
 AC-5f. Given a WebCal personal calendar that already has blockers placed in the
-work calendar, when a sync's feed fetch is refused or fails, then every existing
-blocker is still in place.  [unit]
+work calendar, when a sync's feed fetch is refused, fails, or gets a non-2xx
+answer whose body still parses as an iCalendar document (for example a 503 served
+as `text/calendar` with no events), then every existing blocker is still in place.
+The non-2xx case is the one that fails today.  [unit]
 
 **Stand-in redirection**
 
-AC-6. Given a deployment that redirects Microsoft calendar traffic to a stand-in
+AC-6. Given a deployment that redirects Microsoft calendar traffic, or any
+Microsoft sign-in step (authorize, token exchange, profile read), to a stand-in
 without the test-mode declaration, when the server starts, then it refuses to
 start, with the same behaviour the Google calendar redirection has today.  [unit]
+
+AC-6b. Given a declared test deployment with every Microsoft address redirected to
+stand-ins, when the Outlook journey of AC-3e runs, then it completes and no
+request leaves for a Microsoft address.  [e2e]
 
 **Writes go only to the chosen calendar**
 
@@ -508,7 +670,12 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
   They do not write, and routing them is part of the same follow-up (OQ-1).
 - **Outlook token refresh and revocation.** PAC-67. AC-1 assumes a valid token;
   an expired one is handled by AC-3b's not-connected path, which is honest if not
-  convenient.
+  convenient. Nothing refreshes the Microsoft access token today. In practice,
+  every Outlook user is therefore shown not connected about one access-token
+  lifetime (roughly an hour) after each connect, and has to reconnect. This is
+  recorded in D-1 so the owner can weigh it. The factory recommends PAC-67 as a
+  prerequisite for releasing the Outlook half to users. The WebCal half does not
+  depend on it.
 - **Withdrawing Outlook or WebCal from the picker.** Rejected: PRODUCT.md lists
   both as supported calendars (see Decisions D-1).
 - **Personal calendars**, except for the feed-fetch rules. The personal-calendar
@@ -519,8 +686,15 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
 - **What "disconnect" does for an Outlook or WebCal user.** Today it deletes the
   Google credential and signs the user out (API-061). Not changed here; recorded
   as §8 OQ-4.
-- **The standalone free/busy operation used by no frontend screen** (API-091).
-  Only the free/busy service behind scheduling features is in scope (AC-4).
+- **Computing meeting suggestions, or the agent tools' calendar free/busy, from
+  Outlook or a feed.** Both are reported unavailable for Outlook and WebCal users
+  (§3.4, D-11, D-12), not answered from the chosen calendar. Affected population:
+  every Outlook and WebCal user. Until OQ-1 is answered they have no meeting
+  suggestions in the dashboard or in the agent tools, and no free-slot search in
+  the agent tools.
+- **Booking slots for a Google host whose calendar cannot be read.** Such a host
+  is still offered as free (§2.4). Changing that changes Google users' booking
+  pages; it is recorded as §8 OQ-10.
 - **Google's connection status semantics** (§8 OQ-3).
 
 ## 6. What must not change
@@ -553,6 +727,21 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
   nothing protects the WebCal branch today (§2.6).
 - **Nothing a feature already wrote to a user's Google calendar is removed** by
   §3.8 taking effect.
+- **Google users' meeting suggestions, booking slots and agent tools answer as
+  today.** Protected by `TestSmartScheduler_Suggest_WithMock`,
+  `TestSmartScheduler_Suggest_StepsThirtyMinutes`, `TestPublicBookingSlotsContract`,
+  `backend/engine/booking_test.go`, `booking_busy_test.go` and `mcp/tools_test.go`.
+  No test pins the agent tools' calendar free/busy read for a Google user against
+  the server; the plan stage adds one beside AC-4f.
+- **The existing loopback WebCal fixtures keep testing what they test.**
+  `backend/api/pac21_calendar_not_connected_test.go:58-66` and
+  `backend/engine/pac21_calendar_credential_test.go:122,134-141` serve a feed from
+  loopback without the test-mode declaration, which §3.5 refuses. They are adapted
+  (under the declaration, or on an allowed stand-in address). They are never
+  skipped or deleted.
+- **Signing in with Microsoft from the sign-in page while a session is live**
+  still signs in as the Microsoft account's user and replaces the session, as
+  today (D-14, AC-3h).
 
 ## 7. Rollback
 
@@ -611,7 +800,15 @@ the frontend never expects a status shape the server no longer sends.
   plans the same redirection (`docs/specs/PAC-50.md:81`). Owner: contract-author
   of whichever of PAC-47 and PAC-50 reaches stage 2 first. Resolution: that
   feature builds it under the PAC-43 test-mode declaration and the other reuses
-  it; AC-6 is satisfied by either.
+  it. The Graph seam covers the calendar reads and the profile read, which is a
+  Graph address. It does not cover the sign-in authorize and token addresses on
+  `login.microsoftonline.com`, which AC-6/AC-6b also require (§3.6). PAC-47's
+  contract stage owns those, whichever feature builds the Graph seam.
+- **OQ-10 — booking slots for a Google host whose calendar cannot be read.** Today
+  such a host is offered as free (§2.4). §3.4 makes Outlook and WebCal hosts fail
+  closed; Google hosts are unchanged here because the change would alter Google
+  users' booking pages. Owner: product (Nicolas Hochart). Resolution: a follow-up
+  issue; the factory recommends fail-closed for every host.
 - **OQ-9 — closing the parent issue.** The issue asks that the status endpoint stop
   reporting any unverified connection; Google stays unverified here (D-4, OQ-3).
   Owner: product. Resolution: PAC-47 is not closed by this feature while OQ-3 is
@@ -623,7 +820,9 @@ the frontend never expects a status shape the server no longer sends.
   factory, pending owner confirmation.* PRODUCT.md lists Microsoft 365/Outlook and
   read-only webcal/ICS feeds as calendars Paceday connects to; withdrawing them
   would contradict a recorded product fact, and the ticket's acceptance criteria
-  require both to list events.
+  require both to list events. Cost recorded in Revision 2: until PAC-67 adds
+  token refresh, an Outlook user is shown not connected about an hour after each
+  connect (§5).
 - **D-2 — scope is reading the week and free/busy, plus stopping writes to a
   calendar the user did not choose.** *Assumed by the factory, pending owner
   confirmation.* Revised in Revision 1: the first version left write-side
@@ -678,6 +877,43 @@ the frontend never expects a status shape the server no longer sends.
   A refused fetch fails the read and removes no existing blocker (AC-5f), so no
   user data is lost; a personal calendar whose feed sits on a private address
   stops refreshing, which is the intended effect.
+- **D-11 — meeting suggestions are unavailable for Outlook and WebCal users.**
+  *Assumed by the factory, pending owner confirmation.* Reading Google contradicts
+  §3.4. D-9 already stops smart scheduling's writes for these users, and a
+  suggestion is the first half of that flow: the agent's create-event tool asks for
+  suggestions and then creates the event. Offering suggestions whose booking is
+  then refused is a dead end. Computing them from Outlook or a feed (attendee
+  free/busy on another provider) belongs to the follow-up of OQ-1. Cost: every
+  Outlook and WebCal user loses meeting suggestions until then.
+- **D-12 — the agent tools' calendar free/busy read is unavailable for Outlook and
+  WebCal users.** *Assumed by the factory, pending owner confirmation.* Its only
+  consumer is one agent tool. Answering "unavailable" ends the Google read with the
+  smallest change. Answering from the chosen calendar would duplicate the
+  scheduling-link editor's query (§3.4), and a follow-up can do that. Cost: the
+  agent's free-slot search does not work for these users.
+- **D-13 — booking slots are computed from each host's chosen calendar, and fail
+  closed when it cannot be read.** *Assumed by the factory, pending owner
+  confirmation.* Each alternative harms someone. Keeping Google lets guests book
+  over the host's real meetings, and a host with no Google credential looks
+  permanently free. "Unavailable" makes every booking link of such a host
+  unusable. Reading the calendar the host chose tells guests only which slot times
+  are free, the same kind of information a booking link exists to publish and
+  already publishes from Google. It shows no event detail and widens nothing.
+  Failing closed when the calendar cannot be read prevents double-booking; the cost
+  is that such a host offers no slots until their calendar is readable again.
+- **D-14 — a Microsoft sign-in from the sign-in page stays a sign-in when a session
+  is live.** *Assumed by the factory, pending owner confirmation.* Attaching it
+  instead would give the session holder the calendar of whoever completes the
+  Microsoft step, which widens who can see data. Refusing to sign in while a
+  session is live would be new behaviour that strands a user on a shared machine.
+  Today's behaviour (sign in as the Microsoft account's user, replace the session)
+  is kept, and it attaches nothing to the user whose session was live.
+- **D-15 — the Microsoft sign-in steps get test-mode stand-ins, so AC-3e stays
+  end to end.** *Assumed by the factory, pending owner confirmation.* AC-3e is the
+  only check of D-7's account binding through the browser, the cookie and the
+  session. Relabelling it as a unit test would leave exactly that journey
+  untested. The stand-ins sit under the PAC-43 declaration and its refusal at
+  startup, so production gains no new redirection.
 
 ## Challenge — 2026-10-26
 
@@ -1240,3 +1476,93 @@ are in code paths that Revision 1 brought into scope.
 - backend/api/pac21_calendar_not_connected_test.go:58-66 and
   backend/engine/pac21_calendar_credential_test.go:122,134-141: their loopback
   feeds are refused under AC-5b (Non-blocking 6).
+
+## Revision 2 — 2026-10-26
+
+Answers to the round-2 challenge above. The spec body was edited in place, and
+this section says what changed and where. Every new citation was opened on `main`
+at `7de7044` (api) and `4ded854` (web), which are still the tips of both `main`
+branches. Nothing was compiled or run, because this is a text stage.
+
+### Blocking
+
+1. **Three scheduling read paths still answered from Google.** Accepted; each
+   cited line matches the code.
+   - §2.4 is rewritten as a table of the four read paths. It corrects Revision 1's
+     claim about `FreeBusyService`: its only caller is `POST /api/freebusy`,
+     which the scheduling-link editor uses.
+   - §3.4 states one outcome for each path.
+     - **(a) Free/busy query** (scheduling-link editor): answered from the chosen
+       calendar. AC-4 is relabelled to that path.
+     - **(b) Meeting suggestions** (dashboard dialog and both MCP tools):
+       unavailable under D-9 (D-11). New AC-4b checks the answer and that no
+       request reaches the Google stand-in, with and without a Google credential.
+       New AC-4c checks the dialog's message.
+     - **(c) Public booking slots**: answered from each host's chosen calendar,
+       and failing closed when it cannot be read (D-13). New AC-4d checks that the
+       Outlook (and WebCal) meeting blocks a slot, that the Google-only event does
+       not, and that no request reaches the Google stand-in. New AC-4e checks that
+       an unreadable host is never offered as free; it fails today.
+     - **(d) Calendar free/busy** (MCP `clockwise_find_free_slots`): unavailable
+       (D-12). New AC-4f checks it, and §6 keeps Google users unchanged.
+   - §5 drops the "no screen uses it" exclusion and lists what stays unanswered
+     (suggestions and agent free/busy from Outlook or a feed), with the affected
+     population. It adds Google hosts' fail-open booking slots as OQ-10.
+   - Inherited scope now lists the open findings on the operations these paths
+     change: API-029, API-028, API-046, API-077 and API-091/U-03. API-011,
+     API-012 and API-064 on the Microsoft routes, which Revision 1 already changed
+     without listing them, are added too.
+
+2. **Feed addresses reach Sentry.** Accepted. §2.5 records the error-tracker path
+   (`handlers_personal.go:168-171,191-192` → `server_errors.go:41-49` →
+   `CaptureException`). §3.5 now says the address leaves the process in no error
+   report of any kind: response, server log or error tracker. AC-5 now observes
+   the error-tracker report at the point where the server hands it the error, and
+   it still applies to both callers (work calendar and personal calendars).
+
+3. **Microsoft sign-in with a live session.** Accepted. §2.3 now records that the
+   sign-in dialog opens on `/signin` whatever the session state and uses the same
+   route as the connect actions. §3.3 now says:
+   - only a connect action started by the signed-in user attaches a credential,
+     and only while that user is still the one signed in;
+   - a sign-in from the sign-in page is always a sign-in, even with a live
+     session, and replaces the session as today (D-14);
+   - the presence of a session at completion is not evidence of a connect.
+
+   New AC-3h checks that, in that case, no Microsoft credential lands on the
+   live-session user and that user's work calendar is unchanged. §6 adds the same
+   behaviour as a must-not-change.
+
+4. **Onboarding is a fourth connect action.** Accepted. §2.3 now counts four
+   connect actions, citing `Onboarding.tsx:78-87` and `client.ts:947-948`. §3.3 and
+   AC-3d name onboarding's connect step. AC-3e now runs once from each of the four
+   connect actions, onboarding included, with A a user who has not finished
+   onboarding.
+
+5. **AC-3e lacked the Microsoft sign-in stand-ins.** Answered by covering the
+   endpoints rather than relabelling (D-15). §2.5 records the fixed authorize,
+   token and profile addresses. §3.6 and AC-6 now cover every Microsoft sign-in
+   step under the same test-mode declaration and startup refusal. New AC-6b checks
+   that the AC-3e journey completes against stand-ins with no request to a
+   Microsoft address. OQ-8 now says the Graph seam covers the profile read but
+   not the `login.microsoftonline.com` endpoints, and that PAC-47's contract
+   stage owns those.
+
+### Non-blocking
+
+1. AC-3f is rewritten for the case that fails today: the flow starts and finishes
+   in the same browser, and the session changes or ends in between. It now also
+   requires that no user is created and no session is issued. §2.5 records that a
+   completion in another browser already fails at the state cookie.
+2. AC-5f now names the non-2xx answer that still parses as iCalendar, which is the
+   case that fails today.
+3. Token expiry: §5 and D-1 now say every Outlook user is shown not connected
+   about an hour after each connect, until PAC-67. The factory recommends PAC-67
+   as a prerequisite for releasing the Outlook half.
+4. MCP surface: §3.9 now says what the agent tools owe (no "Google Calendar"
+   wording for the chosen calendar, and the read-only refusal passed on as one).
+   §6 protects Google users' tool answers with `mcp/tools_test.go`. The MCP read
+   paths are handled in Blocking 1 above.
+5. `UpsertUser` is cited at `handlers_microsoft_auth.go:68`.
+6. §2.6 and §6 name the two loopback fixtures and require that they be adapted,
+   never skipped or deleted.
