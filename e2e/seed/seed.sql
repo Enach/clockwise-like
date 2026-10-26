@@ -76,7 +76,9 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('66666666-6666-4666-8666-666666666666', 'e2e.focus@paceday.test',     'E2E Focus User',          '', 'google', 'e2e-focus'),
   ('77777777-7777-4777-8777-777777777777', 'e2e.manager@paceday.test',   'E2E Connected Manager',   '', 'google', 'e2e-manager'),
   ('88888888-8888-4888-8888-888888888888', 'e2e.seam@paceday.test',      'E2E Seam User',           '', 'google', 'e2e-seam'),
-  ('99999999-9999-4999-8999-999999999999', 'e2e.rejected@paceday.test',  'E2E Rejected Credential', '', 'google', 'e2e-rejected');
+  ('99999999-9999-4999-8999-999999999999', 'e2e.rejected@paceday.test',  'E2E Rejected Credential', '', 'google', 'e2e-rejected'),
+  -- PAC-35 AC-11: disconnects its own calendar, so no other journey loses one.
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e.disconnect@paceday.test', 'E2E Disconnect User',     '', 'google', 'e2e-disconnect');
 
 -- ON DELETE CASCADE from users removes these on the next run.
 INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
@@ -84,7 +86,8 @@ INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar
   ('66666666-6666-4666-8666-666666666666', 'e2e-focus-work',     'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('77777777-7777-4777-8777-777777777777', 'e2e-manager-work',   'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('88888888-8888-4888-8888-888888888888', 'e2e-seam-work',      'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
-  ('99999999-9999-4999-8999-999999999999', 'e2e-rejected-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+  ('99999999-9999-4999-8999-999999999999', 'e2e-rejected-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e-disconnect-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
 
 -- AC-25: a google personal calendar for the seam user. credentials_json is an
 -- oauth2.Token as backend/calendar/personal_reader.go tokenFromJSON reads it.
@@ -112,7 +115,8 @@ VALUES
   ('66666666-6666-4666-8666-666666666666', 'UTC', '09:00', '18:00', 240, 'google'),
   ('77777777-7777-4777-8777-777777777777', 'UTC', '09:00', '18:00', 240, 'google'),
   ('88888888-8888-4888-8888-888888888888', 'UTC', '09:00', '18:00', 240, 'google'),
-  ('99999999-9999-4999-8999-999999999999', 'UTC', '09:00', '18:00', 240, 'google')
+  ('99999999-9999-4999-8999-999999999999', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'UTC', '09:00', '18:00', 240, 'google')
 ON CONFLICT (user_id) DO UPDATE SET
   timezone = EXCLUDED.timezone,
   work_start = EXCLUDED.work_start,
@@ -138,7 +142,8 @@ INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_wi
   ('66666666-6666-4666-8666-666666666666', false, '2024-01-01T00:00:00Z', true),
   ('77777777-7777-4777-8777-777777777777', true,  '2024-01-01T00:00:00Z', true),
   ('88888888-8888-4888-8888-888888888888', true,  '2024-01-01T00:00:00Z', true),
-  ('99999999-9999-4999-8999-999999999999', false, '2024-01-01T00:00:00Z', true)
+  ('99999999-9999-4999-8999-999999999999', false, '2024-01-01T00:00:00Z', true),
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', false, '2024-01-01T00:00:00Z', true)
 ON CONFLICT (user_id) DO UPDATE SET
   is_manager = EXCLUDED.is_manager,
   detected_at = EXCLUDED.detected_at,
