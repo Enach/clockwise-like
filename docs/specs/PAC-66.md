@@ -1,7 +1,7 @@
 # Spec — PAC-66: A user can point the server's cloud-identity LLM requests at a host of their choice
 
 - **Linear**: https://linear.app/paceday/issue/PAC-66
-- **Status**: challenged (round 1 answered in "Revision 1")
+- **Status**: challenged (round 1 answered in "Revision 1", round 2 in "Revision 2")
 - **Author**: spec-author
 - **Inherited scope**:
   - No `x-uncertain` marker sits on the provider-probe operation or on the
@@ -31,7 +31,7 @@
       pulls API-080 into scope. No `x-uncertain` marker sits on it.
     - Meeting-brief refresh (`POST /api/meetings/{event_id}/brief/refresh`). Its
       response shape does not change (AC-14 reuses the documented 200
-      `status: "failed"`, `contracts/openapi/paths/habits.yaml:481-483`). No open
+      `status: "failed"`, `contracts/openapi/paths/habits.yaml:487-488`). No open
       audit finding and no `x-uncertain` marker sits on it (the `habits.yaml:463`
       marker is on `getMeetingBrief`).
 
@@ -130,7 +130,12 @@ deployment's identity can reach.
   (`aws-sdk-go-v2/service/bedrockruntime@v1.57.1/endpoints.go:222-230`,
   `IsValidHostLabel`), and every host they build sits under an AWS partition
   domain. As far as this read shows, Bedrock's host **cannot** be steered outside
-  AWS from the user's settings today. Two things are still true: nothing in
+  AWS from the user's settings today. *(Revision 2)* An empty stored region is
+  replaced by a hard-coded `us-east-1` (`llm_bedrock.go:21-23`) and passed as an
+  explicit `config.WithRegion` (`:31-33`). The SDK reads load options before the
+  environment and shared config (`aws-sdk-go-v2/config@v1.32.35/provider.go:113-123`,
+  `config.go:212`), so `AWS_REGION` and the shared-config region are never used
+  for an inference request. Two things are still true: nothing in
   Paceday enforces that, and the user picks *which* of the deployment's AWS
   profiles signs the request (see §8 OQ-4).
 
@@ -138,7 +143,11 @@ deployment's identity can reach.
 
 - Provider probe: `testLLM` (`backend/api/handlers_llm.go:29-91`) loads the
   caller's settings (`:44`), lets the body override only provider, model and key
-  (`:23-27`, `:50-62`), and calls `Complete` (`:79`).
+  (`:23-27`, `:50-62`), and calls `Complete` (`:79`). *(Revision 2)* The provider
+  override is how the web app always probes: "Test connection" sends
+  `llmProvider` from the unsaved form (`smart-calendar-flow/src/pages/Settings.tsx:173`,
+  `src/api/client.ts:712-716`). So the provider a probe uses can differ from the
+  saved one, while the destination properties always come from the saved row.
 - Natural-language parse: `NLPService.Parse` → `buildLLMClient` →
   `NewLLMClientFromSettings` (`backend/nlp/parser.go:173-184`, `:239-241`).
 - Meeting-brief regeneration: `backend/api/handlers_meeting_briefs.go:73-77`.
@@ -183,8 +192,13 @@ The deployment's cloud identity leaves the server only toward destinations the
 **operator** has approved. A user cannot add to that set.
 
 - The operator names the approved inference destinations in deployment
-  configuration. Approval is by exact host and covers secure transport only. No
-  user, whatever their settings, can widen it.
+  configuration, **separately for each ambient provider**. Each provider's
+  credential goes only to hosts approved for that provider: a host approved for
+  Vertex is not approved for Azure. Approval is by exact host and covers secure
+  transport only. No user, whatever their settings, can widen it. *(Revision 2)*
+- The rule follows the provider a request will actually use, not the provider
+  the user has saved. A probe that names an ambient provider for one try only is
+  checked exactly as if that provider were saved. *(Revision 2)*
 - If the operator has approved nothing, requests that would carry the deployment
   identity are not sent at all. The user is told, in plain words, that this
   provider is not enabled on this deployment. Fail closed (see Decisions D-1).
@@ -241,23 +255,40 @@ operator's deployment configuration.
   endpoint, AWS STS or shared config) is served by the sentinel source and is
   **not counted**: §5 keeps that traffic out of scope, and an implementation may
   acquire the credential before or after it decides to refuse.
+- **Refusal does not depend on the credential.** *(Revision 2)* A destination
+  refusal is reported with the outcome its criterion states even when acquiring
+  the credential would fail. The compose stack in AC-10 has no cloud identity, so
+  an implementation that acquires first and reports the acquisition failure fails
+  AC-10. Whether acquisition is attempted before the refusal is still free; only
+  the reported outcome is pinned.
+- **Successful answer.** *(Revision 2)* In every criterion that counts "exactly
+  one request" (AC-6, AC-16, AC-19), the recording transport answers the
+  inference request with a well-formed success, so SDK retries (the AWS SDK
+  retries failed requests by default) cannot inflate the count.
 - **Zero requests** means the recording transport records no request at all. It
   also implies that the sentinel credential appears in no recorded request to an
   unapproved host and in no response body.
 - **Effective host** of a destination value is the host (and scheme) of the
   inference request that would actually be sent, after every default is applied:
   - Azure: the host of the stored endpoint. An empty endpoint has **no** effective
-    host. At send time it is refused like an unapproved one (no request; the
-    provider is reported as not configured).
+    host. At send time it is refused (no request), and the error says the Azure
+    endpoint is not set, not that it is "not approved" (AC-20). *(Revision 2:
+    one message chosen.)*
   - Vertex: the host built from the location. An empty location means the
     built-in default region (`us-central1` today, `llm_vertex.go:20-22`), so its
     effective host is that region's host, which is sent to only if approved.
   - Bedrock: the host the request would actually be sent to once the AWS
     configuration is resolved (region, the stored profile, and any
-    operator-controlled endpoint override). An empty region means the
-    deployment's own configured region. At **write** time the Bedrock region is
-    checked only for validity as a region name (a single host label); the host
-    itself is enforced at send time (AC-1, AC-4).
+    operator-controlled endpoint override). An empty region means the built-in
+    default region (`us-east-1` today, `llm_bedrock.go:21-23`). It is **not** the
+    deployment's configured region: the default is applied as an explicit region
+    that overrides `AWS_REGION` and the shared-config region (§2.2). Its effective
+    host is that region's resolved host, which is sent to only if approved
+    (AC-19). This spec does not change which region an empty value means (D-7).
+    At **write** time the Bedrock region is checked only for validity as a region
+    name (a single host label); the host itself is enforced at send time (AC-1,
+    AC-4). *(Revision 2: corrected; Revision 1 said "the deployment's own
+    configured region", which the code does not do.)*
 
 AC-1. Given the operator has approved exactly one Azure inference host, and a
 user's stored Azure endpoint names a different host, when that user probes their
@@ -338,9 +369,10 @@ credential-acquisition error, because today's code tries to send.* That exactly
 one request reaches an approved host is proven at unit level by AC-6, where the
 sentinel credential and the recording transport stand in for a cloud identity
 and a trusted TLS fake. The compose stack cannot provide either without a real
-cloud account.
+cloud account. *(Revision 2)* The probe half relies on the shared Given
+"Refusal does not depend on the credential".
 
-AC-11. Given a refusal under AC-1 to AC-9, AC-13 or AC-14, when the response
+AC-11. Given a refusal under AC-1 to AC-9, AC-13, AC-14 or AC-16 to AC-20, when the response
 body (and, for AC-14, the stored brief) is read, then
 it contains no token, no key, and no part of the deployment's credential, and its
 error text (the `error` member, or the brief text for AC-14) is a non-empty
@@ -391,6 +423,40 @@ destination property; PAC-24 AC-17) and the next probe is refused as in AC-1.
 [unit] *(Revision 1, challenge non-blocking 1: this case is refused at send time
 only.)*
 
+AC-18. *(Revision 2)* Given, for each ambient provider P, a user whose saved
+provider is not P (a user-key provider such as OpenAI, and as a separate case a
+different ambient provider), when the user probes with a request that names P as
+the provider for that probe only (as the settings page's "Test connection" does),
+then:
+(a) if the user's stored destination for P has an effective host that is not
+approved for P, zero requests are recorded and the response is a 4xx JSON error
+naming the destination as not approved, as in AC-1;
+(b) if the operator has approved nothing for P, zero requests are recorded and the
+response is a 4xx JSON error saying P is not enabled on this deployment, as in
+AC-4;
+(c) if the stored destination's effective host is approved only for a different
+ambient provider, the outcome is as in (a).
+In every case the saved provider is unchanged afterwards. [unit]
+*Fails today: (a) and (b) send the request with the sentinel credential to the
+stored host. Catches an implementation that keys its check on the saved provider.*
+
+AC-19. *(Revision 2)* Given Bedrock is approved only for the resolved host of a
+region other than the built-in default region, the deployment's own AWS region
+configuration names that approved region, and a user's stored Bedrock region is
+empty, when the user probes, then zero requests are recorded and the response is a
+4xx JSON error as in AC-1. Given instead that the default region's resolved host is
+approved, the same probe sends exactly one request, to that host, over secure
+transport. [unit]
+*Pins the effective host of an empty Bedrock region. The first half fails today:
+the request goes to the default region's host.*
+
+AC-20. *(Revision 2)* Given at least one approved Azure host, and a user with Azure
+selected (saved, or named in the probe request) whose stored Azure endpoint is
+empty, when the user probes, then zero requests are recorded and the response is a
+4xx JSON error saying the Azure endpoint is not set. [unit]
+*Fails today: the probe answers 502, because the request cannot be completed
+against a URL with no host.*
+
 ## 5. Explicitly out of scope
 
 - **OpenAI, Anthropic and Ollama base URLs** (channel 2 in §0). They carry the
@@ -410,8 +476,9 @@ only.)*
   traffic (see "Recording transport" in §4).
 - **New response shapes for parse and brief refresh.** A send-time refusal reuses
   each operation's existing "LLM unusable" shape (AC-13, AC-14), so the web
-  natural-language bar, the brief panel and the MCP tool `clockwise_parse_command`
-  need no change.
+  natural-language bar and the MCP tool `clockwise_parse_command` (the two parse
+  consumers) need no change. No web code calls brief refresh today.
+  *(Revision 2: "the brief panel" removed; it does not exist.)*
 - **Encrypting stored settings at rest** (`docs/security.md:87`).
 - **Any change to the web app.** The existing settings page already shows a
   server error string. Better guidance in the form is a follow-up once the
@@ -434,9 +501,11 @@ only.)*
   `TestNLPService_Parse_WithOllama` :282). *(Revision 1: the earlier claim that no
   test protects them was wrong.)* No **probe-level** test covers the Ollama or
   Anthropic branches. The plan should add one for each.
-- The parse and brief-refresh response shapes, which the web natural-language
-  bar, the brief panel and `mcp/tools.go:195-203` (`clockwise_parse_command`)
-  read. AC-13 and AC-14 pin them for the refusal case.
+- The parse and brief-refresh response shapes. Parse is read by the web
+  natural-language bar (`smart-calendar-flow/src/api/client.ts:1155`) and by
+  `mcp/tools.go:195-203` (`clockwise_parse_command`). Brief refresh has no
+  consumer in the web app today *(Revision 2)*. AC-13 and AC-14 pin both shapes
+  for the refusal case.
 - The key-handling e2e journey in `e2e/tests/settings.spec.ts:40-60` still passes.
 - A deployment whose operator approves its Azure, Vertex or Bedrock host keeps
   working with no change to any user's stored settings (AC-6).
@@ -488,6 +557,11 @@ and it reopens the vulnerability.
   The plan stage should confirm this with a recording-transport test on the
   Bedrock branch (AC-1/AC-4/AC-5 cover it) rather than trust this reading. Owner:
   plan-author.
+- **OQ-7 — Should an empty Bedrock region mean the deployment's region?**
+  *(Revision 2)* Today it means `us-east-1`, whatever the deployment configures
+  (§2.2). This spec keeps that (D-7). An operator who approves only their own
+  region's host will see users with an empty region refused until they set a
+  region. Changing the meaning is a behaviour change. Owner: product owner.
 
 ## Decisions
 
@@ -517,6 +591,13 @@ PAC-24 decision that endpoints, regions and profiles "identify or bill the owner
   fatal.** The server still starts, so the rest of the product stays available;
   the entry approves nothing (fail closed, as D-1). *Assumed by the factory,
   pending owner confirmation.*
+- **D-7 — An empty Bedrock region keeps meaning the built-in default region.**
+  *(Revision 2)* No change to which region is used; the default region's host is
+  sent to only if approved (AC-19). Refusing is the conservative outcome when it is
+  not approved. *Assumed by the factory, pending owner confirmation.*
+- **D-8 — Approval is per provider.** *(Revision 2)* Each ambient provider has its
+  own approved set, and a provider's credential is never sent to a host approved
+  only for another provider. *Assumed by the factory, pending owner confirmation.*
 
 ## Challenge — 2026-10-26
 
@@ -869,3 +950,57 @@ fetching from the calendar (`handlers_meeting_briefs.go:64-67`).
   already throws on a non-2xx and shows the server's message, so a 4xx in place of
   today's 502 renders. Parse and brief refresh keep their response shapes for the
   web client (`client.ts:1155`) and `clockwise-like/mcp/tools.go:195-203`.
+
+## Revision 2 — 2026-10-26
+
+Answers to the round-2 challenge. The spec sections above are changed in place;
+changes are marked *(Revision 2)*.
+
+### Blocking
+
+1. **A probe that overrides the provider.** Accepted. §2.3 now records that the
+   probe may name a provider for one try and that the web settings page always
+   does so from the unsaved form (`smart-calendar-flow/src/pages/Settings.tsx:173`,
+   `src/api/client.ts:712-716`). §3 states that the rule follows the provider the
+   request will actually use, not the saved one. New AC-18 covers each ambient
+   provider with the saved provider set to a user-key provider and, as a separate
+   case, to a different ambient provider: (a) stored destination unapproved gives
+   zero requests and the AC-1 error; (b) nothing approved for the named provider
+   gives zero requests and the AC-4 error; (c) a stored host approved only for a
+   different provider is treated as unapproved. The saved provider must be
+   unchanged afterwards. An implementation that keys its check on the saved
+   provider fails (a) and (b), which is the case the challenge described (saved
+   `openai`, unapproved Azure endpoint, probe naming `azure_openai`).
+2. **The effective host of an empty Bedrock region.** Accepted; the challenge is
+   right and Revision 1 was wrong. Checked on the code: `NewBedrockClient`
+   substitutes `us-east-1` for an empty region (`backend/nlp/llm_bedrock.go:21-23`)
+   and `Complete` passes it with `config.WithRegion` (`:31-33`). The SDK consults
+   load options before the environment and shared config
+   (`aws-sdk-go-v2/config@v1.32.35/config.go:212`, `provider.go:113-123`), so the
+   deployment's configured region is never used. §2.2 and the §4 definition now
+   say an empty region means the built-in default region, sent to only if its
+   resolved host is approved. New AC-19 is the Bedrock version of AC-16: with the
+   deployment's own region configured to the only approved region, an empty
+   stored region is refused; with the default region's host approved, exactly one
+   request goes to it. The spec does not change which region an empty value
+   means; that is recorded as D-7, and the alternative is OQ-7 for the owner.
+
+### Non-blocking, also taken
+
+- NB-1: new shared Given "Refusal does not depend on the credential". The
+  reported outcome of a refusal is pinned even when acquisition would fail; the
+  order of acquisition and refusal stays free. AC-10 points at it.
+- NB-2: §3 and new D-8: each ambient provider has its own approved set. AC-18 (c)
+  tests a host approved only for another provider.
+- NB-3: new shared Given "Successful answer": in AC-6, AC-16 and AC-19 the
+  recording transport answers the inference request with a success, so SDK
+  retries cannot change the count.
+- NB-4: one message chosen for an empty Azure endpoint ("the Azure endpoint is
+  not set"), pinned by new AC-20. AC-1's "not approved" message applies to a
+  non-empty endpoint.
+- NB-5: "the brief panel" removed from §5 and §6. Parse has two consumers (the
+  web client, `client.ts:1155`, and `mcp/tools.go:195-203`); no web code calls
+  brief refresh. D-5's wording did not name the panel and is unchanged.
+- Citation found wrong: the Inherited-scope reference to the brief-refresh
+  "failed" sentence is now `habits.yaml:487-488`.
+- AC-11 now also covers the refusals in AC-16 to AC-20.
