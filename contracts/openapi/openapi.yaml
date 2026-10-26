@@ -755,9 +755,23 @@ paths:
       tags:
       - auth
       summary: Detect which auth provider an email address should use
-      description: 'Rate limited to 20 requests per minute per client IP (sliding window,
+      description: 'Rate limited to 20 requests per minute per client IP (fixed one-minute
 
-        in-process map keyed by X-Real-IP / first X-Forwarded-For / RemoteAddr).
+        window per key, in-process map; expired buckets are swept at most once a
+
+        minute). Since PAC-39 (#215, API-062) the key is the IP of the socket peer
+
+        (`RemoteAddr` without its port). `X-Forwarded-For` is never read. A
+
+        client-supplied `X-Real-IP` is ignored; `X-Real-IP` is used only when the
+
+        socket peer is inside the operator''s `TRUSTED_PROXIES` allowlist (empty
+
+        by default, so no proxy is trusted) and holds a valid IP. Still open
+
+        (API-062): the map is per process, so the effective limit is
+
+        20/min x replicas.
 
         '
       security: []
@@ -781,7 +795,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: '"rate limit exceeded" — more than 20 detects/minute from this IP.'
+          description: '"rate limit exceeded" — more than 20 detects in the current one-minute window
+            from this client IP (socket peer, or X-Real-IP from a trusted proxy).'
           content:
             application/json:
               schema:
@@ -10311,9 +10326,15 @@ components:
 
         (user uuid, string), `email`, `exp` (+7 days), `iat`.
 
-        middleware.requireAuth accepts it as `Authorization: Bearer <jwt>` ONLY
+        middleware.requireAuth accepts it as `Authorization: Bearer <jwt>`.
 
-        when the `auth_token` cookie is absent or empty — the cookie wins.
+        Since PAC-39 (API-008) the header wins over the `auth_token` cookie: when
+
+        a `Bearer ` header is present its token is the only credential
+
+        considered, whatever the cookie holds, and an invalid bearer token is a
+
+        401 with no fallback to the cookie.
 
         '
     cookieAuth:
@@ -10326,6 +10347,8 @@ components:
 
         frontend uses (both fetch wrappers send `credentials: "include"` and
 
-        never set an Authorization header). It is checked before bearerAuth.
+        never set an Authorization header). It is consulted only when the request
+
+        carries no `Authorization: Bearer` header (PAC-39, API-008).
 
         '
