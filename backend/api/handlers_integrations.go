@@ -38,7 +38,7 @@ func (h *integrationsHandlers) slackConnect(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	state := randomState()
-	http.SetCookie(w, &http.Cookie{Name: "slack_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true})
+	setCookie(w, &http.Cookie{Name: "slack_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 
 	q := url.Values{}
 	q.Set("client_id", clientID)
@@ -171,7 +171,7 @@ func (h *integrationsHandlers) notionConnect(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	state := randomState()
-	http.SetCookie(w, &http.Cookie{Name: "notion_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true})
+	setCookie(w, &http.Cookie{Name: "notion_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 
 	q := url.Values{}
 	q.Set("client_id", clientID)

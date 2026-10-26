@@ -85,7 +85,7 @@ func (h *conferencingHandlers) startZoomOAuth(w http.ResponseWriter, r *http.Req
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name: "zoom_oauth_state", Value: state, Path: "/", MaxAge: 300,
 		HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
@@ -99,7 +99,7 @@ func (h *conferencingHandlers) zoomCallback(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "zoom_oauth_state", MaxAge: -1, Path: "/"})
+	setCookie(w, &http.Cookie{Name: "zoom_oauth_state", MaxAge: -1, Path: "/"})
 
 	tok, err := conference.ZoomExchangeCode(
 		r.Context(), os.Getenv("ZOOM_CLIENT_ID"), os.Getenv("ZOOM_CLIENT_SECRET"),

@@ -57,6 +57,14 @@ func main() {
 	}
 	nlp.SetApprovedHosts(llmHosts)
 
+	// Cookie Secure attribute (PAC-20). Never fatal; anything but an explicit
+	// PACEDAY_INSECURE_COOKIES=true keeps every cookie Secure (fail closed).
+	secureCookies, cookieNotice := config.DecideSecureCookies(os.Getenv)
+	if cookieNotice != "" {
+		log.Printf("WARNING: %s", cookieNotice)
+	}
+	api.SetSecureCookies(secureCookies)
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("DATABASE_URL environment variable is required")

@@ -26,7 +26,7 @@ func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    state,
 		Path:     "/",
@@ -44,7 +44,7 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "oauth_state", MaxAge: -1, Path: "/"})
+	setCookie(w, &http.Cookie{Name: "oauth_state", MaxAge: -1, Path: "/"})
 
 	token, err := auth.ExchangeCode(r.Context(), h.oauthConfig, r.URL.Query().Get("code"))
 	if err != nil {
@@ -139,7 +139,7 @@ func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Clear auth cookie
-	http.SetCookie(w, &http.Cookie{Name: "auth_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	setCookie(w, &http.Cookie{Name: "auth_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -151,7 +151,7 @@ func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) {
 	if err != nil {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "auth_token",
 		Value:    jwtToken,
 		Path:     "/",
