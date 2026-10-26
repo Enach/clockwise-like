@@ -64,10 +64,11 @@ test.describe('focus time — what is reachable without a calendar provider', ()
 
     // The point of this assertion is the NEGATIVE: the endpoint must not
     // return 200 with an empty CreatedBlocks array, because a caller cannot
-    // tell that apart from "there was no room this week". A 500 carrying
-    // "not authenticated" is the current, honest behaviour.
+    // tell that apart from "there was no room this week". A 500 is the
+    // current, honest behaviour; since PAC-21 its body is the generic message
+    // and the cause ("not authenticated") goes to the server log only.
     expect(res.status()).toBe(500);
-    expect(await res.text()).toContain('not authenticated');
+    expect((await res.text()).trim()).toBe('internal error');
 
     // And nothing must have been written.
     const blocks = await authedApi.get('/api/focus/blocks', {

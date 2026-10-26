@@ -231,8 +231,12 @@ test.describe('calendar — a connected calendar (PAC-43, through the stand-in)'
 
     const res = await apiAs(rejected).get('/api/calendar/events', { start, end });
     expect(res.ok(), await res.text()).toBe(false);
-    // The provider's refusal is what the backend relays.
-    expect(await res.text()).toMatch(/401|invalid authentication credentials/i);
+    // Refused with the generic 5xx body: since PAC-21 the provider's own
+    // error text goes to the server log and Sentry, never to the client.
+    expect(res.status()).toBe(500);
+    const body = await res.text();
+    expect(body.trim()).toBe('internal error');
+    expect(body).not.toMatch(/invalid authentication credentials|googleapi/i);
 
     // It really reached the stand-in and was refused there — not refused
     // locally for want of a token.
