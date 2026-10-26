@@ -2328,3 +2328,119 @@ on c954521 before writing it.
   a non-canonical spelling is refused.
 - Citation fix: §B6 no longer cites `TestBuildLLMClient_DefaultModels` as
   protecting OpenAI and Anthropic; it builds an Ollama client only.
+
+## Challenge (Part B, round 3) — 2026-10-26
+
+**Verdict**: accept
+
+Reviewed Part B on `factory/new-pac66b-llm-base-url-spec` at 40f5d4c (committed
+state only). I checked it against the code at c954521 (= `origin/main`),
+`smart-calendar-flow` at d9e0786 (`origin/main`), the contract fragments, and the
+two earlier Part B challenges. Revision B2 resolves the round-2 blocker.
+
+- §B2.1 now states the stored defaults, and they match the code:
+  `002_llm_providers.up.sql:10` (Ollama base URL `http://localhost:11434`) and
+  `:13-14` (provider `ollama`); `001_initial.up.sql:22` (shared base URL default
+  `''`); and the three `INSERT INTO settings (user_id)` sites
+  (`storage/settings.go:246`, `storage/personal_calendars.go:165`,
+  `auth/microsoft_oauth.go:65`).
+- I also checked the other ways a settings row comes into being:
+  - The only full-column insert is the save upsert (`storage/settings.go:301`).
+    It is reached only from the PATCH handler (`handlers_settings.go:139`),
+    which reads, and so creates, the row first.
+  - Migration 024 copies only passive preferences to new rows and leaves
+    "every credential, provider, endpoint" at the column default
+    (`024_settings_per_user.up.sql:105-131`).
+  - The e2e seed names no LLM column (`e2e/seed/seed.sql:105`).
+
+  So no path creates a row in the "both empty" state. The one exception is
+  migration 024 step 2: it gives the legacy shared row, with whatever base URLs
+  it held, to the earliest user. That is a value stored before this change, so
+  AC-B14 covers it.
+- AC-B17's Ollama half now separates today from afterwards. With the
+  Ollama-specific base URL forced, `llm_factory.go:40-42` sends to the forced
+  address today. After the change the probe is refused. The OpenAI half reaches
+  `client.Complete` and today gives a 502 on failure (`handlers_llm.go:89-92`,
+  `writeProviderFailure` at `:104-109`), as the corrected note says.
+- AC-B9 now names the property it saves. D-B9 and OQ-B7 state the
+  web-field friction plainly.
+- D-B6 decides all three open redirect cases, and AC-B7 lists them.
+
+Nothing below blocks. I found no request or behaviour that the spec wrongly
+permits or forbids, no consumer that breaks without being named, and no
+statement the code contradicts.
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **§B3 "Clearing means the provider's default" is not true for the
+   Ollama-specific base URL.** Clearing that property makes the **shared** base
+   URL Ollama's destination, and the built-in local default applies only when
+   both are empty. §B4's effective-destination definition and D-B9 state this
+   correctly. §B3's sentence reads as if clearing always restores
+   `http://localhost:11434`. That matters for the recovery path D-B9 describes:
+   clearing `ollamaBaseUrl` through the API hands Ollama to whatever the web
+   field last wrote. Align the §B3 sentence with §B4.
+2. **The redirect, path and query criteria are written for the probe only.**
+   AC-B7, AC-B18 (last sentence) and AC-B19 (positive half) observe the probe.
+   §B3 says the rules apply "on every path". AC-B12 pins refusals on parse and
+   brief refresh, but no criterion pins "no redirect followed" or "exactly the
+   chat path, no query" for those two paths. Today all three paths share one
+   sending step (`postJSON`, `parser.go:126-144`), so the gap matters only if
+   the plan places the rule above that step. One criterion on a non-probe path
+   (for example, parse against an approved destination that redirects records
+   exactly one request) would close the gap.
+3. **The hosted default experience lands in AI-dependent UI, not only in
+   settings.** §B7 says choosing another provider removes the message. The web
+   app's provider list also offers "None (AI features off)"
+   (`smart-calendar-flow/src/pages/Settings.tsx:59`). The
+   release note could name that as the way to silence it for a user who wants
+   no AI. This is wording only. OQ-B2 remains the real fix.
+
+### Criteria I could not falsify
+
+- AC-B13: a manual Linear check, as in rounds 1 and 2.
+- AC-B15 for Ollama, and the spelling cases of AC-B5/AC-B6, until OQ-B6 fixes
+  the entry syntax. OQ-B6 now states the conservative reading, so a test can be
+  written against "a non-canonical spelling is refused". The criteria are
+  falsifiable on that reading, but the reading itself is still open.
+
+### Citations I checked and found wrong
+
+- None. These Revision B2 citations were re-read on c954521 and are correct:
+  - `002_llm_providers.up.sql:10,13-14`
+  - `storage/settings.go:246`, `storage/personal_calendars.go:165` and
+    `auth/microsoft_oauth.go:65`
+  - `llm_factory.go:40-42`
+  - `docker-compose.yml:50-52` ("configured per-user in the Settings page") and
+    `docker-compose.prod.yml:89-91` ("no server-level env vars needed")
+  - `config/llm_hosts_test.go:87-89` (the "a user-key provider has an approved
+    set" assertion)
+  - `.env.example:50`
+  - `scheduling.yaml:522-528,1943-1945,1997-1999`, with the `x-uncertain`
+    markers still at :246, :376, :1046 and :1327
+  - `contracts/features/PAC-66.yaml:135-136`
+
+  The send paths are unchanged: `Complete` is called only at
+  `handlers_llm.go:89`, `parser.go:210,240` and `meeting_brief_service.go:87`.
+  `MeetingBriefService` is built only in `handlers_meeting_briefs.go:74`, so no
+  background job generates briefs outside the checked path.
+
+### Consumers this breaks
+
+- The tests §B6 lists, as §B6 says. No further backend test was found.
+- `e2e/`: no test calls parse or brief refresh, or stores a base URL. Only
+  `audit.spec.ts` mentions `nlp_parsed`, and it writes audit rows directly. The
+  key journey `settings.spec.ts:40-60` saves an OpenAI key and never probes, so
+  it is unaffected.
+- `smart-calendar-flow`: nothing breaks at runtime.
+  - The web app sends `llmBaseUrl` only (`src/api/client.ts:594`), and an
+    unchanged value is not re-validated (`handlers_settings.go:163-202`), so
+    saving a stale stored value back is still accepted.
+  - The Ollama check in `client.ts:1311` runs only in the offline mock fallback.
+  - If the refusal's `property` enum grows, the generated
+    `LLMDestinationRefusal` schema is regenerated in the usual order.
+- `mcp/`: reads and writes no base URL and builds no LLM client.
