@@ -1,7 +1,8 @@
 # Spec — PAC-67: Per-user Outlook and Zoom credentials have no refresh or revocation lifecycle
 
 - **Linear**: https://linear.app/paceday/issue/PAC-67
-- **Status**: challenged (round 1 answered in "Revision 1", round 2 in "Revision 2")
+- **Status**: challenged (round 1 answered in "Revision 1", round 2 in "Revision 2",
+  round 3 in "Revision 3")
 - **Author**: spec-author
 - **Origin**: PR Enach/clockwise-like#204 (PAC-24) merge condition 3,
   `calendarCredentialLifecycle`; PAC-24 spec §0 and OQ-6
@@ -46,6 +47,25 @@
     response does **not** change under this spec (AC-8, D-6). Open findings
     **API-028** (`:262`), **API-046** (`:280`) and **API-077** (`:311`):
     conditional.
+  - **Team availability** (`GET /api/teams/{id}/availability`,
+    `openapi.yaml:4964`). Renews every team member's Google credential on a
+    member's request (§2.9). Reached by AC-26 and AC-27; its response does
+    **not** change (D-12). Checked: no `x-uncertain`, no audit finding.
+    Nothing inherited.
+  - **Public booking slots** (`GET /api/book/{slug}/slots`,
+    `openapi.yaml:1359`). Unauthenticated; renews each host's Google credential
+    (§2.9). Reached by AC-28; response unchanged (D-12). Checked: no
+    `x-uncertain`, no audit finding. Nothing inherited.
+  - **Public booking creation** (`POST /api/book/{slug}`,
+    `openapi.yaml:1299`). Unauthenticated; renews each host's Google credential
+    (§2.9). Reached by AC-28; response unchanged (D-12). No `x-uncertain`.
+    Open findings **API-051** (`api-audit.md:285`) and **API-073** (`:307`):
+    conditional.
+  - **Consumers acting for the credential's owner only** (scheduled
+    auto-decline, background habit re-optimisation and analytics recompute,
+    manager team detection, §2.9). They become subject to loss recording
+    (AC-29, D-13); none of their responses changes, so no operation's contract
+    is edited and nothing is inherited from them.
   - **Google-backed operations** whose failure response would change if the
     contract stage chose to change it, notably **`GET /api/calendar/freebusy`**
     (`openapi.yaml:1483`), which carries **U-03** (`:1493-1494`,
@@ -191,6 +211,8 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
 - **Failure is invisible.** Status reports Google connected whenever a row exists
   (`handlers_auth.go:113-131`), whether or not the refresh token still works.
 - **No revocation.** Disconnect deletes the row and sends nothing to Google.
+- **Not only read for its owner's actions.** Team availability and the public
+  booking routes read and renew *other* users' Google credentials (§2.9).
 
 ### 2.4 Failure surfacing today
 
@@ -284,6 +306,44 @@ the Teams or Zoom credential is read. Listing events behaves the same way: it
 always uses the Google credential, whatever the calendar provider
 (`backend/api/handlers_calendar.go:133-144`).
 
+### 2.9 Credentials used on someone else's behalf
+
+Every Google consumer builds a refreshing token source over the stored
+credential, so once AC-6 persists renewals, each of these reads becomes a write
+to the credential's owner's row. Three paths use a credential whose owner is
+not the one making the request:
+
+- **Team availability** (`GET /api/teams/{id}/availability`, route
+  `backend/api/routes.go:236`). A team member's request loops over every member
+  and loads and renews *that member's* Google credential
+  (`backend/engine/team_availability.go:78-88`, `auth.LoadUserToken(e.DB,
+  m.UserID)`). Any failure for a member is swallowed: that member simply
+  contributes no busy periods (`:85-99`).
+- **Public booking slots** (`GET /api/book/{slug}/slots`) and **booking
+  creation** (`POST /api/book/{slug}`), both outside authentication
+  (`backend/api/routes.go:23-27`). Slots compute each host's busy time with that
+  host's Google credential (`backend/engine/booking.go:93`, `:114-124`, client
+  built at `:202-208`); creation writes the event to each host's calendar with
+  that host's credential (`:252`) and ignores a failure (`:269-272`), so the
+  booking is saved and confirmed anyway. No user is acting at all.
+- `GET /api/book/{slug}` (link info) only checks whether a host has a stored
+  credential row (`backend/api/handlers_booking.go:88-90`); it never uses or
+  renews it.
+
+Every other Google consumer acts for the credential's owner, triggered either
+by the owner's request or by a job running for the owner: scheduled
+auto-decline every 15 minutes (`backend/engine/auto_decline.go:77-87`,
+`backend/main.go:119-124`), habit re-optimisation
+run in the background after the owner's habit edits (`habits.go:250-254`,
+`backend/api/handlers_habits.go:139,241,384`), analytics computation and its
+background recompute (`analytics.go:212-216`,
+`backend/api/handlers_analytics.go:33,91`), and manager team detection, on the
+manager's request and in a weekly batch (`manager.go:191-195`,
+`backend/api/handlers_manager.go:80,102`, `backend/main.go:150-162`). Team
+analytics reads only stored weekly rows (`team_availability.go:175-176`) and
+uses no credential. The Outlook and Zoom credentials are only ever used for
+their owner's own actions (§2.1, §2.2, §2.7).
+
 ## 3. Desired behaviour
 
 From the user's point of view:
@@ -295,6 +355,15 @@ From the user's point of view:
 - **Renewal is private to the user.** A renewed credential is stored for the user
   it belongs to and nobody else. One user's credential expiring, renewing or dying
   has no effect on any other user's connection or calendar reads.
+- **Everything about a credential belongs to its owner, whoever caused it to be
+  used.** Paceday sometimes uses one user's credential for someone else: a
+  teammate asking for team availability, an anonymous visitor on a booking page,
+  a scheduled job (§2.9). Whoever or whatever triggered the use, the renewed
+  credential is stored for its owner, the owner's status surfaces change, and
+  the connection-lost entry goes to the owner's activity log. The person or job
+  that triggered it gets nothing: no entry in their log, no change to their
+  status, and no answer that tells them more about the owner's connection than
+  today's answer does.
 - **Renewal survives rotation and concurrency.** Where the provider issues a new
   refresh credential on renewal, the new one is kept. Two simultaneous actions by
   the same user do not leave the stored credential unusable.
@@ -303,7 +372,9 @@ From the user's point of view:
   tells the user whether that provider is connected (§2.6) shows it as not
   connected — including when it is not the user's calendar provider — and the
   user's own activity log gets one entry saying so, not one per failed request
-  and not one per simultaneous request. If the user reconnects and the new
+  and not one per simultaneous request. This holds on every path that renews
+  the credential, including the paths in §2.9 that use it for someone else or
+  for a scheduled job. If the user reconnects and the new
   credential is later lost too, that second loss gets its own entry. A temporary failure
   (network, provider outage) does not mark the connection dead and is not
   recorded as a loss.
@@ -374,7 +445,16 @@ calendar provider is (§2.8).
 credential that was usable (just connected or reconnected, or last renewed or
 used successfully) and ends when A reconnects that provider successfully or
 disconnects it. "Reconnect" for Outlook means a Microsoft sign-in that resolves
-to A (§2.1, OQ-10).
+to A (§2.1, OQ-10); for Google it means a Google sign-in that resolves to A,
+since the Google callback also attaches the credential to the user matched by
+email (`backend/api/handlers_auth.go:63-70`, OQ-10).
+
+"Owner" means the user a stored credential belongs to. In AC-1 to AC-25 the
+owner is also the acting user A. AC-26 to AC-29 cover paths where the credential
+is used for someone else, or for no user (§2.9). On every path, renewal
+write-back, status changes and connection-lost entries apply to the owner only
+(D-12). "Attributed to A" in any criterion means attributed to A *as the
+credential's owner*, never as whoever made the request.
 
 **Refresh** (ticket acceptance 1)
 
@@ -421,8 +501,8 @@ row), then:
 (a) the action's observable result is the one in the table;
 (b) every status surface named for that provider in the §4 preamble reports it
 not connected;
-(c) A's audit log holds exactly one new entry, attributed to A, naming the
-provider and that the connection was lost;
+(c) A's audit log holds exactly one new entry, attributed to A as the
+credential's owner, naming the provider and that the connection was lost;
 (d) B's status surfaces and audit log are unchanged.
 Fails today: no row satisfies (b) or (c).  [contract]
 
@@ -431,7 +511,7 @@ Fails today: no row satisfies (b) or (c).  [contract]
 | Outlook | availability lookup (A's calendar provider is Outlook) | succeeds as today: each attendee that would have been queried has unknown coverage and no busy periods (D-6) |
 | Outlook | Teams meeting creation, standalone and on an existing event (on-event: A holds a working Google credential) | fails with an error telling A to reconnect Outlook |
 | Zoom | Zoom meeting creation, standalone and on an existing event (on-event: A holds a working Google credential) | fails with an error telling A to reconnect Zoom |
-| Google | availability lookup (A's calendar provider is Google) | succeeds as today, as for Outlook (D-6) |
+| Google | availability lookup (A's calendar provider is not Outlook: Google or WebCal; the lookup uses the Google credential for every provider other than Outlook, `freebusy_service.go:122-138`) | succeeds as today, as for Outlook (D-6) |
 | Google | listing A's calendar events (any calendar provider: listing always uses the Google credential, §2.8) | fails with the same status and error shape that operation returns for a failed Google call today (D-7) |
 | Google | Teams or Zoom meeting creation on an existing event (A's Teams or Zoom credential is valid) | fails with the same status and error shape the on-event action returns today when the event cannot be read through Google (D-7, D-10); the Teams or Zoom credential is not read (AC-23) |
 
@@ -503,6 +583,52 @@ process, then each action's result is the one in the AC-8 table, every status
 surface for that provider reports not connected, and A's audit log holds
 exactly **one** new connection-lost entry for that provider. Whether this holds
 across several backend processes is OQ-9.  [unit]
+
+**Credentials used for someone else** (§2.9, D-12)
+
+AC-26. Given A and B are members of the same team, B's Google access token is
+expired and the double permanently refuses B's refresh (`invalid_grant`), and
+A's own Google credential is valid, when A requests the team's availability,
+then: the response is the one returned today when B's calendar cannot be read
+(B contributes no busy periods), with no field that says B's connection was
+lost; B's Google Meet row and, when B's calendar provider is Google, B's
+calendar connection status report not connected; B's audit log holds exactly
+one new connection-lost entry naming Google; and A's audit log, A's status
+surfaces and A's stored credential are unchanged. If A and a third member C
+request the team's availability concurrently within one backend process and
+both reach B's refusal, B still gets exactly one entry and neither A's nor C's
+log changes. Fails against an implementation that writes the entry to the
+requester's log, or writes none.  [contract]
+
+AC-27. Given A and B are members of the same team and B's Google access token
+is expired with a valid refresh token, when A requests the team's
+availability, then the double receives exactly one refresh request carrying B's
+refresh token, B's stored credential afterwards holds the new access token and
+expiry, A's stored credential is identical before and after, and the response
+includes B's busy periods as it does today for a working credential. Fails
+today: B's renewal is not stored.  [unit]
+
+AC-28. Given a public scheduling link whose host H has an expired Google access
+token and the double permanently refuses H's refresh, when an unauthenticated
+visitor requests the link's slots, and separately when a visitor creates a
+booking on it, then: each response has the same status and body it has today
+when the host's calendar cannot be read or written (slots computed without H's
+calendar events; the booking saved and confirmed without an event on H's
+calendar); neither response says H's connection was lost; H's status surfaces
+report Google not connected; and H's audit log holds exactly one new
+connection-lost entry naming Google for this loss, however many slot and
+booking requests reach the refusal. No other user's log or status changes.
+Separately, given H's token is expired with a valid refresh token, the renewed
+token is stored for H only. Fails today: no entry and no status change for H.
+[contract]
+
+AC-29. Given B's Google access token is expired and the double permanently
+refuses B's refresh, when a job runs for B with no request from B (the
+scheduled auto-decline run, and separately the weekly manager team detection
+batch for B), then B's status surfaces report Google not connected, B's audit log
+holds exactly one new connection-lost entry naming Google for this loss, no
+other user's log or status changes, and the job's outcome for B is what it is
+today. Fails today: no entry and no status change.  [unit]
 
 **Disconnect and revocation** (ticket acceptance 2)
 
@@ -578,6 +704,14 @@ today: such a listing is non-conforming.  [contract]
   credential** (§2.8). It fails with 401 today and keeps doing so; reading
   events from Outlook belongs to PAC-47.
 - **Changing what the on-event action answers when Google is refused** (D-10).
+- **Telling a requester or booking visitor that a teammate's or host's
+  connection was lost.** Team availability and public booking answers stay as
+  they are today (D-12); exposing another user's credential state to them would
+  widen who sees data.
+- **Booking confirmed without an event on a host's calendar** when the host's
+  credential is dead (§2.9). Today's behaviour; the host is now told through
+  their status and activity log, but making booking creation fail or warn is a
+  product decision for a follow-up.
 - **Bypassing the availability cache after a disconnect-then-reconnect** inside
   15 minutes when no refusal occurred. AC-20 covers only results computed from a
   refused credential (D-11).
@@ -617,6 +751,13 @@ today: such a listing is non-conforming.  [contract]
   a credential (Zoom is not a calendar), so the contract stage will reword that
   description; the rewording must widen it to cover the new kinds and must not
   change what any of the seven existing kinds means.
+- **Team availability and public booking responses do not change** (D-12).
+  Protected today by `TestTeamAvailability_UsesInjectedEngineAndQuery`
+  (`backend/api/handlers_teams_test.go:354`), `TestPublicBookingSlotsContract`
+  and `TestPublicBookingCreateContract`
+  (`backend/api/handlers_booking_test.go:119,149`) and the e2e journey
+  `e2e/tests/public-booking.spec.ts`. None of them runs with a refused host or
+  member credential; AC-26 and AC-28 add that.
 - **The existing Zoom disconnect caller keeps working** whatever the new
   response carries (`smart-calendar-flow/src/api/client.ts:1463` treats it as
   no content; `src/components/ConferencingSection.tsx:98` ignores the result).
@@ -672,7 +813,9 @@ they asked for by disconnecting.
   sign-in that resolves to A. What A should see otherwise (refusal, a warning,
   linking by Microsoft account identity) is a product decision; this feature
   assumes no change to sign-in matching (in the spirit of D-4, sign-in
-  behaviour is not changed for the lifecycle).
+  behaviour is not changed for the lifecycle). The same applies to Google: its
+  sign-in also resolves the user by email (`backend/api/handlers_auth.go:63-70`),
+  and AC-12, AC-20 and AC-24 assume a Google sign-in that resolves to A.
 
 ## Decisions
 
@@ -741,6 +884,24 @@ per-user settings rows were created, `:1001-1002`).*
   window. Rationale: smallest behaviour change that closes the defect the
   challenge found; nothing is deleted and no one sees more data. *Assumed by the
   factory, pending owner confirmation.*
+- **D-12 — Renewal, status and loss always belong to the credential's owner,
+  and other people's answers do not change.** When a credential is used for
+  someone else (team availability, public booking) or for a job, the renewed
+  credential is written for its owner, the owner's status surfaces change and
+  the connection-lost entry goes to the owner's activity log. The requester's
+  log and status are untouched, and team availability and booking responses
+  stay exactly as today. Rationale: attributing to the requester would show A
+  B's credential state and leave B uninformed; recording nothing would leave
+  B's dead credential invisible; changing the responses would widen who sees
+  data. *Assumed by the factory, pending owner confirmation.*
+- **D-13 — Loss recording applies to every consumer that renews the
+  credential,** not only the actions in the AC-8 table, including scheduled
+  and background jobs acting for the owner (§2.9). This adds no proactive
+  refresh (§5): a credential is still renewed only when something needs it.
+  Rationale: §3 promises the loss is visible "every place"; narrowing it to a
+  list of actions would leave a dead credential invisible to a user whose only
+  use is through a job or a teammate. *Assumed by the factory, pending owner
+  confirmation.*
 
 ## Challenge — 2026-10-26
 
@@ -1286,3 +1447,54 @@ round-1 and round-2 lists stand). New in Revision 2:
 - None beyond those §2.4 and §6 already name, provided Blocking 1 resolves with
   "responses unchanged" for team availability and booking. The web consumers of
   team availability and the public booking page then see no change.
+
+## Revision 3 — 2026-10-26
+
+Answers the one blocking finding of the round-3 challenge and its three
+non-blocking ones. Re-checked against the backend and contract at `16f3100`
+(still `origin/main`).
+
+### Blocking 1 — credentials used on another user's behalf
+
+Accepted. Re-read and confirmed: team availability loads and renews every
+member's Google credential (`backend/engine/team_availability.go:78-88`); public
+booking slots and creation, both unauthenticated (`routes.go:23-27`), use each
+host's credential (`backend/engine/booking.go:93,114-124,202-208,252`). I also
+looked for any other path using a credential for someone other than its owner:
+team analytics reads stored rows only (`team_availability.go:175-176`), manager
+analytics queries members with the manager's own credential, and `GET
+/api/book/{slug}` only checks a credential row exists
+(`handlers_booking.go:88-90`). There are no others. Changes:
+
+- (a) New §2.9 records these three paths, and §2.3 no longer implies the
+  Google credential is read only for its owner.
+- (b) §3 gains the owner rule: renewal write-back, the status change and the
+  connection-lost entry always belong to **the credential's owner**, whoever
+  or whatever triggered the use (another user, an unauthenticated visitor, a
+  scheduled job). The triggering user's log and status are untouched, and no
+  answer tells them more about the owner's connection than today. The §4
+  preamble defines "owner"; AC-8(c) now reads "attributed to A as the
+  credential's owner". D-12 records the decision.
+- (c) New AC-26 pins it for team availability: B's refusal inside A's request
+  gives B the not-connected status and one entry. A's log, status and
+  credential are unchanged, and the response is today's. Concurrent requests
+  by A and C still give B one entry. New AC-27 pins the renewal write-back for
+  B only on the same path.
+- (d) New AC-28 covers the public booking path. Slots and booking creation
+  responses are unchanged. The host's surfaces report not connected and the
+  host gets one entry per loss. The renewal is stored for the host only.
+- (e) Inherited scope lists the three operations as unchanged. None carries an
+  `x-uncertain`. `POST /api/book/{slug}` has API-051 and API-073 as
+  conditional.
+
+### Non-blocking
+
+1. Loss recording applies to every consumer that renews the credential (D-13),
+   so §3's "every place" stands rather than being narrowed. §2.9 lists the
+   owner-only consumers. New AC-29 pins a job with no request from the owner
+   (scheduled auto-decline, weekly team detection batch). No proactive refresh is
+   added (§5).
+2. The §4 preamble now defines a Google reconnect as a Google sign-in that
+   resolves to A (`handlers_auth.go:63-70`). OQ-10 is extended to Google.
+3. The AC-8 Google availability row now reads "calendar provider is not
+   Outlook: Google or WebCal" (`freebusy_service.go:122-138`).
