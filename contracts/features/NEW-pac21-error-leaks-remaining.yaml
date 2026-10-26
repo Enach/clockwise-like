@@ -95,7 +95,7 @@
   "gates": {
     "contractApproval": "contract-challenger review on this branch, then a GitHub PR",
     "assembler": "python3 scripts/openapi_assemble.py --check",
-    "apiGate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-pac21-error-leaks-remaining-contract (not run by the contract author: the host checkout was on another stage's branch; the equivalent steps were run in a worktree, see the .md §9)",
+    "apiGate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-pac21-error-leaks-remaining-contract: every step rc=0 at 22f0468 (revision 2), regenerated: none. Output in the .md, Revision 2.",
     "webGate": "Not run at this stage: the web repo's generated types are regenerated after this contract merges (factory §1). Its openapi-check reports drift until then.",
     "defaultBranch": "main",
     "ci": "local",

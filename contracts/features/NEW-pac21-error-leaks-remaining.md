@@ -576,3 +576,35 @@ revision: `aae17626d4dfb49c0ac1c2d5c7d3b41448f2544c9771bbba3dcd876767127311`
 
 ### What was run for revision 2
 
+In the worktree, before committing 22f0468:
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py` | wrote the bundle: 98 paths, 119 operations, x-uncertain 14 |
+| `python3 scripts/openapi_migration_report.py` | 119 operations, 0 generated |
+| `bash scripts/openapi_gen_go.sh` | rewrote `backend/api/gen/paceday.gen.go` (description comments only) |
+| scripted scan of the bundle | 18 operations reference `CalendarNotConnected`; every 5xx is `application/json` only and none matches the AC-3 prose pattern; neither `patchEvent` nor `suggestMeetingSlots` carries an operation-scoped `x-uncertain` |
+
+Then, with the host checkout switched to this branch at 22f0468:
+
+```
+$ bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-pac21-error-leaks-remaining-contract
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 48.3% (floor 43%) [3896 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+**Not run:** web-gate and e2e-gate. The web types are regenerated from the bundle only
+after this contract merges (factory §1), so the web half reports drift until then; no
+behaviour changes in this stage for e2e to observe.
