@@ -608,3 +608,189 @@ mcp coverage rc=0
 **Not run:** web-gate and e2e-gate. The web types are regenerated from the bundle only
 after this contract merges (factory §1), so the web half reports drift until then; no
 behaviour changes in this stage for e2e to observe.
+
+## Challenge (round 2) — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewer: contract-challenger, run as a separate agent against the committed state of
+`factory/new-pac21-error-leaks-remaining-contract` at 8394b21 (revision 2). It read the
+artefacts, the handlers and engine code on that commit, the e2e suite, `mcp/`, the backend
+tests, and the web consumers on `smart-calendar-flow` main (66d6f20). It did not read the
+author's session.
+
+**Round-1 findings.** All four round-1 blocking findings are fixed as stated in Revision 2.
+The checks are listed under "Verified clean". Two new blocking findings follow. Both are
+contract and manifest edits only.
+
+### Requests wrongly permitted, behaviour wrongly forbidden (blocking)
+
+1. **`previewCompression` week mode: the contract both requires and forbids a 500 for a
+   credential-store failure.**
+   - **Payload:** `POST /api/schedule/compress` with `{"week":"2026-10-26"}`, from a
+     signed-in user for whom reading the credential store fails (closed DB, as in
+     `TestPAC21ForcedStorageErrorReturnsGenericJSON`).
+   - **What the contract says, three ways:**
+     - AC-2: "A credential-store read error on the same operations is a 500
+       {"error":"internal error"}, not a 401". `previewCompression` is one of the 18, and
+       AC-2 says "previewCompression in both modes".
+     - `CalendarNotConnected`: "A failure to READ the credential store is not this response;
+       it is the operation's 500."
+     - `previewCompression`, however, has a 500 described as "**Single-day mode only**". Its
+       operation description still says "week mode never returns 500, and returns `[]` if all
+       five days error".
+   - **What the server does today:** `handlers_schedule.go:37-42` `continue`s on every
+     per-day error, so a store failure in week mode gives `200 []`.
+   - **Why it blocks:** an implementer cannot satisfy AC-2 and the 500 description at the
+     same time. If the implementer keeps week mode as written, a database outage in week
+     mode is reported as "nothing to compress". §2.4 rejects exactly that for the
+     no-calendar case.
+   - **Fix (schema prose and manifest only):**
+     - Change the 500 description to: "Single-day mode: engine failure for a user who has a
+       stored Google credential. Both modes: reading the credential store failed. Body
+       `{"error":"internal error"}`."
+     - Change the operation description from "week mode never returns 500" to "week mode
+       skips days whose engine call errors, and returns `[]` if all five do. The credential
+       check that runs before any day is computed can still answer 401 or 500."
+     - The alternative is to exempt week mode in AC-2 and in the `CalendarNotConnected`
+       prose. I would not accept that. It is the less conservative choice, and it
+       contradicts §2.3.
+
+2. **`consumersAffected` misses three backend tests that break by design. AC-3 makes one
+   of them undeletable without breaking a hard rule.**
+   - **Which tests**, all in `backend/api/pac21_error_bodies_test.go`:
+     - `TestPAC21ForcedStorageErrorReturnsGenericJSON` (`:63-124`). It has five cases with
+       `json: false`: settings get, focus blocks, teams create, teams list and manager
+       profile. Each asserts `Content-Type` text/plain and a bare `internal error` or
+       `db error` body (`:106-112`). All five 500s become JSON.
+     - `TestPAC21WriteServerErrorTextKeepsPlainContentType` (`:158-171`) tests
+       `writeServerErrorText` itself. AC-3 says "no writeServerErrorText ... remains". The
+       test therefore has to be deleted. The factory forbids deleting a test to go green
+       unless the artefact says why.
+     - `TestPAC21CreateMeetingKeepsPolicyRefusalTextOnly` (`:376-399`) asserts
+       `TrimSpace(body) == "out-of-hours meeting allowance reached"` and `== "internal
+       error"` on `createMeeting` and on `writeCreateMeetingFailure` (nlp confirm). Both
+       bodies become `{"error":"..."}`.
+   - **Why it blocks:** the manifest lists `handlers_settings_autoschedule_test.go:73` as
+     the only backend test that breaks by design, so it reads as complete, and it is not. An
+     implementer who hits these failures has nothing in the contract that permits rewriting
+     them. The permission matters most for the deletion.
+   - **Fix (manifest only):** add the three tests to `consumersAffected` with
+     `breaks: yes, by design`. Say what replaces each one:
+     - the five `json: false` cases become `json: true`;
+     - `TestPAC21WriteServerErrorTextKeepsPlainContentType` is replaced by the AC-3 source
+       scan and is deleted together with `writeServerErrorText`;
+     - the refusal test asserts the JSON envelope with the same two messages.
+
+### Responses the client cannot handle
+
+None of these blocks. I checked:
+
+- **`syncPersonalCalendar` 401 (new in revision 2).** The web client is `client.ts:1283`
+  (`withFallback` → `requestApi`). The 401 reaches `apiErrorMessage` with
+  `data.error = "calendar not connected"`, and `apiErrorMessage` prefers `data.error`
+  (`client.ts:352-355`). The user sees that sentence, not "Your session expired". The only
+  sign-out is `AuthContext.tsx:58`, on `GET /api/auth/me`.
+- **`patchEvent` 200 (U-04).** The declared schema was already `GoogleCalendarEventRaw` on
+  main. Revision 2 changes only prose, so REGEN changes no web type for it.
+
+### Consumers affected
+
+- **New in revision 2:**
+  - `e2e/tests/seam.spec.ts:383-433` (AC-25 sync). The SEAM user has a work credential. The
+    test asserts an `events.insert` through it, so the 200 holds.
+  - `mcp/` does not call `/api/personal-calendars`.
+  - `backend/api/handlers_personal*_test.go` use `fakePersonalBlocker`, so the 401 mapping
+    does not reach them.
+- **Confirmed unchanged from round 1:**
+  - `e2e/tests/focus-time.spec.ts:70-71`
+  - `e2e/tests/calendar.spec.ts:236-238`
+  - `e2e/tests/seam.spec.ts:110-112`
+  - `handlers_settings_autoschedule_test.go:73`
+  - A grep of `e2e/tests` for `toBe(500)`, `'internal error'` and `text/plain` finds only
+    these sites.
+- **Missing from the manifest:** see blocking finding 2.
+
+### Contract and implementation divergences (non-blocking)
+
+1. **The `CalendarNotConnected` description misstates the web app.** It says "The web app's
+   Dashboard already treats a 401 on a calendar read as 'connect a calendar'".
+   `Dashboard.tsx:113-114` derives `calendarNotConnected` from `GET /api/auth/status`
+   (`authStatus?.connected === false`), not from the 401. Round 1 recorded this under
+   "Responses". The shared response's prose should say "Dashboard decides 'not connected'
+   from /api/auth/status; no web code signs the user out on this 401".
+2. **Two 500 descriptions do not name the credential-store read failure.** The
+   `addEventConference` 500 ("Google Meet creation, settings load, or the event update
+   failed") and the `removeEventConference` 500 do not mention it. Both reach `calClient`,
+   and AC-2 asserts a 500 for a store failure on them. The other six original 401
+   operations do name it. Add "or the stored credential could not be read".
+3. **`patchEvent` 404 covers more than a missing event.** `handlers_events.go:53-56` maps
+   any `GetEvent` error to the 404, including a Google 5xx or a network failure. The
+   contract now says `event not found` with no qualifier. That describes the body
+   correctly, but not the condition. Add "(any failure to read the event, not only a
+   missing one)" to the 404 description, or add it to `doesNotResolve`.
+
+### Uncertainties not actually resolved
+
+None. U-04 and U-07 are now determined from code, and a named test pins each one.
+
+- **U-04.** `handlers_events.go:81-87` encodes `updated` (`*calendar.Event`) directly, so
+  the description matches.
+- **U-07.** `engine/smart_schedule.go:100-136` sets
+  `t := max(free.start, req.RangeStart)` and adds 30 minutes on every branch (113, 121,
+  135). `freeBlocks` comes from `subtractIntervals(interval{RangeStart, RangeEnd}, busy)`
+  (`:84`). On an empty calendar every candidate is therefore `RangeStart + k·30m`. AC-6's
+  `:07` construction can be satisfied (a 09:07 start inside work hours yields 09:07) and
+  falsifies a 15-minute grid.
+- **U-03 and U-06.** These are unchanged from round 1 and sound.
+  `handlers_nlp.go:49` still checks only the upper bound, and `minimum: 0` is in the bundle.
+- U-01, U-05 and U-09 are carried forward under the round-1 ruling.
+
+### Verified clean
+
+**Commands run in `C:\Users\jouzu\paceday\wt-pac21-contract` at 8394b21:**
+
+| Command | Result |
+|---|---|
+| `python3 scripts/openapi_assemble.py --check` | `OK: bundle is in sync (98 paths)`, rc=0 |
+| `python3 scripts/openapi_migration_report.py --check` | `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc=0 |
+| `bash scripts/openapi_gen_go.sh --check` | `OK: backend/api/gen matches the contract`, rc=0 |
+| `sha256sum contracts/openapi/openapi.yaml` | `aae17626…127311`, equal to the manifest's `contractHash` |
+
+**Not run by the challenger:**
+
+- `api-gate.sh`. The shared host checkout is on `impl/pac-66b-llm-base-url-backend`, and I
+  did not switch it. The author's pasted api-gate run is at 22f0468, and 8394b21 changes
+  only the .md and manifest. I did not re-run it, and I am not claiming it.
+- web-gate, e2e-gate, `go build` and the Go tests.
+
+**Attacked and found clean** (scripted scan of the bundle):
+
+- **The 401 set.** Exactly 18 operations reference `CalendarNotConnected`, the same set as
+  `operationsChanged4xx`. Every one of the 18 declares a 500.
+- **5xx bodies.** All 113 5xx responses are `application/json` only. None matches the AC-3
+  prose pattern.
+- **Markers.** `x-uncertain` is gone from `patchEvent` and `suggestMeetingSlots`. The only
+  remaining operation-scoped marker is on `getSchedulingLink`, which this change does not
+  touch.
+- **`NLPConfirmRequest.selected_slot_index`.** `minimum: 0`, with a 400 described for
+  negative and out-of-range values.
+- **Round-1 finding 2 (the dash).** The three provider sentences use U+2014 in both 400s,
+  matching `handlers_conferencing.go:42,141`.
+- **Round-1 finding 3 (the patchSettings catalogue).**
+  - `handlers_settings.go:75-83` gives `invalid JSON: <read err>` only for `io.ReadAll`
+    failures. That case becomes `invalid JSON`.
+  - A non-object or `null` body gives the unchanged `invalid JSON: the body must be an
+    object`.
+  - Type mismatches come from `:118-121`. No custom `UnmarshalJSON` exists in
+    `backend/storage`, so the only errors there are JSON syntax and type errors, and the
+    `<property> has the wrong type` sentence covers the type case.
+- **Round-1 non-blocking finding 4.** `event has no time` is kept. It matches
+  `handlers_conferencing.go:196,204`.
+- **`syncPersonalCalendar` ordering.** `engine/personal_blocker.go:85-96` reads the feed
+  before `newCalOps`. A no-credential user with a failing feed therefore gets the 500, and
+  the 500 description and AC-2 ("whose feed reads successfully") both say so.
+  `newCalOps` (`engine/cal_iface.go:53-58`) currently folds a store error and a missing
+  token into one `not authenticated`. Splitting them is an implementation task. The
+  contract states the split, and `auth.LoadUserToken` makes it possible, as round 1
+  verified.
