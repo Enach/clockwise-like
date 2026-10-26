@@ -180,3 +180,133 @@ only ever sends a valid link id for a real host, so its happy path is unchanged.
   mcp test, backend coverage 54.9% against a 43% floor, mcp 84.0% against 75%.
 - The gate is re-run on the final commit of this branch. Its output is in the
   Linear comment on PAC-30.
+
+---
+
+## Challenge — 2026-10-26
+
+Reviewed by `contract-challenger` on the committed state of `factory/pac-30-contract`
+(`a546531`). Inputs: the fragment diff, the bundle, this file and the manifest, the
+PAC-30 Linear issue body, API-020/API-048/API-069 in `docs/factory/api-audit.md`, the
+handlers and storage functions, and the web consumers. Not read: the author's reasoning
+beyond this file.
+
+**Verdict**: accept-with-changes (one blocking finding, B-1: a consumer statement that
+the code and the fragment contradict)
+
+### Requests wrongly permitted
+
+None found at the schema level. No request body is involved; `{id}` is the shared
+`SchedulingLinkIdPath` (uuid), and the invalid-id 400 is unchanged and still matches
+`uuid.Parse` at `handlers_scheduling_links.go:661` and `:683`.
+
+### Responses the client cannot handle
+
+None. The new 404 is `BookingError` `{"error":"not found"}` with
+`Content-Type: application/json` (`writeError`, `handlers_settings.go:388-391`).
+In the web, `requestApi` turns a non-2xx into `ApiHttpError` (`src/api/client.ts:428`),
+`withFallback` rethrows it because it is not `ApiUnreachableError`
+(`client.ts:512-524`), and `apiErrorMessage` renders `data.error`, so the toast reads
+"not found" (`client.ts:372-377`; `src/pages/Links.tsx:318,327,345`). Nothing maps
+over or dereferences the 404 body.
+
+### Consumers affected
+
+- smart-calendar-flow `src/api/schedulingLinks.ts:483-497` (`acceptInvite`,
+  `declineInvite`) and `:606-612` (`leaveLink`): error toast instead of a false
+  success on a miss. No break.
+- clockwise-like `mcp/`, `e2e/tests`: grepped for `host-invites`, `/accept`,
+  `/decline`, `/leave`; no caller (the only hit is inside `e2e/node_modules`). No break.
+- **B-1 (blocking): the stated effect on the web consumer is wrong for a deleted link.**
+  The manifest (`consumersAffected[0].detail`) and section 5 of this file say: "A stale
+  invite (link deleted, or the owner removed the host) now rejects with ApiHttpError
+  404". For "link deleted" this is false:
+  - `DELETE /api/scheduling-links/{id}` is a soft delete,
+    `UPDATE scheduling_links SET active = false` (`storage/scheduling_links.go:159-163`),
+    and this fragment's own `deleteSchedulingLink` says so (`booking.yaml:606-613`).
+    The `scheduling_link_hosts` row survives (the `ON DELETE CASCADE` at
+    `migrations/009_scheduling_links.up.sql:18` never fires).
+  - `GET /api/scheduling-links/host-invites` still lists that pending invite:
+    `GetPendingInvitesForUser` has no `active` filter (`storage/scheduling_links.go:300-304`)
+    and neither has `GetSchedulingLinkByID` (`:108-117`), so `listHostInvites`
+    (`handlers_scheduling_links.go:635-655`) emits it.
+  - Payload: owner creates link L, invites B (pending row), owner
+    `DELETE /api/scheduling-links/L` -> 204. B loads `/links`, the banner shows the
+    invite, B clicks Accept (`Links.tsx:256`) ->
+    `POST /api/scheduling-links/host-invites/L/accept`. Under this contract the UPDATE
+    matches B's row: **200 `{"status":"accepted"}`**, toast "Invite accepted", and B is
+    now an accepted host of a deactivated link. Not 404.
+
+  The plan and the implementer will read the manifest as a promise that this case is
+  fixed. Fix (contract text only, no shape change):
+  1. In the manifest `consumersAffected[0].detail` and in section 5, drop "link deleted"
+     from the 404 case and state that an invite on a deactivated link is still listed
+     and still accepts/declines with 200.
+  2. In the accept/decline descriptions (both spellings) add one sentence: "A
+     deactivated link (`active=false`, see `deleteSchedulingLink`) keeps its host rows,
+     so accept/decline on it match and return 200." The 404 wording "no link has that
+     id" is then unambiguous.
+  3. Record that as a Decision (D-5, assumed by the factory, pending owner confirmation)
+     and add a follow-up (the invite list and accept/decline ignore `active`). Do not
+     widen PAC-30 to a 404 on inactive links without an owner answer: no criterion
+     asks for it.
+
+### Contract/implementation divergences
+
+None besides B-1. The 404s are the behaviour the implementation PR adds; the "Before"
+column of section 1 matches the handlers today (`handlers_scheduling_links.go:659-706`;
+no `RowsAffected` check in `storage/scheduling_links.go:320-333`). The documented leave
+order (400 invalid id, 404 no link, 400 owner, then the DELETE) matches `:681-706`.
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain: []`). The two `x-uncertain` markers in `booking.yaml`
+(`getSchedulingLink` at :515, a conference schema at :1831) are on an operation and a
+schema this feature does not edit, so factory section 7 rule 1 does not apply.
+
+### Non-blocking
+
+- N-1 There is no `docs/specs/PAC-30.md`. The author says so in section 0; recorded
+  here as the finding section 0 invites. The acceptance criteria live only in the
+  manifest and this file.
+- N-2 Scope is narrower than the issue body. PAC-30's "Work" names three items; the
+  contract does API-020 only, API-048 is already fixed by PAC-61 (the contract says
+  so), and API-069 is deferred (D-4). The deferral is explicit, not silent, but the
+  parent issue cannot be closed by this stream; API-069 needs its own Linear issue.
+- N-3 D-1 ("does not reveal whether a link exists") holds for these five operations,
+  but `getSchedulingLink` already answers 200/404 to any authenticated caller (its
+  `x-uncertain`, `booking.yaml:510-517`). Better wording: "these operations add no new
+  existence oracle".
+- N-4 The owner can decline their own host row and gets 200 (follow-up
+  `owner-decline`). Stated in the contract, not a PAC-30 regression; agreed it stays
+  out of scope.
+
+### Verified clean
+
+- `python scripts/openapi_assemble.py --check` -> `OK: bundle is in sync (98 paths)`, rc=0.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` ->
+  `14399e6ae15234fc8a0151c90197a8227013d4f29b9a65b74cce668b958908ed`, equal to
+  `contractHash` in the manifest.
+- `api-gate.sh factory/pac-30-contract` on `a546531`: `make openapi rc=0`,
+  `regenerated: none`, `openapi-check(api) rc=0` (bundle in sync, MIGRATION.md covers
+  119 operations, gen matches), backend lint/test rc=0, mcp lint/test rc=0, backend
+  coverage 54.9% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0.
+- The API-020 mistake: `POST /api/scheduling-links/host-invites/<host-row id>/accept`
+  -> UPDATE `WHERE link_id=<host-row id>` matches nothing -> 404, nothing written.
+  Correct.
+- "Removed by the owner": `RemoveLinkHostsExcept` hard-deletes the row
+  (`storage/scheduling_links.go:248-258`), so a later accept/decline/leave is 404.
+  Correct.
+- Leave as owner (400 before any DELETE), leave twice (second DELETE removes 0 rows ->
+  404), leave on a random UUID (404 from the lookup): all as documented. Leave no
+  longer distinguishes "existing link, not a host" from "no link" (both 404), so the
+  claim that leave reveals less than before holds.
+- Cross-user write: both statements key on `user_id = $2` from the session; the 404
+  does not change that. Nobody sees more data, nothing is deleted that was not deleted
+  before.
+- Accept twice, or declined then accept (D-2): the UPDATE matches any status, so 200
+  as the contract says.
+- AC-1..AC-3 match the criteria in section 6 and each is falsifiable (the row-level
+  "unchanged" read-back rules out write-then-404).
+- `SchedulingLinkInviteResponse` change is description only; `required` and
+  `additionalProperties` are unchanged.
