@@ -1996,3 +1996,155 @@ changed text is marked *(Revision B1)*.
   AC-B11), and the web change waits for OQ-B2.
 - NB-7 (PRODUCT.md location): the file is `smart-calendar-flow/PRODUCT.md`
   (:34, :90); the quotes stand.
+
+## Challenge (Part B, round 2) — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewed Part B on `factory/new-pac66b-llm-base-url-spec` at 0d67c86 (committed
+state only), against the code at c954521 (= `origin/main`), `smart-calendar-flow`
+at d9e0786 (`origin/main`), the contract fragments and the earlier Part B
+challenge. Revision B1 resolves both round-1 blockers. Path steering is now a
+requirement with falsifiable criteria (AC-B18, AC-B19, D-B8). §B6 now puts every
+test that round 1 named into one of four groups, and the public-host Given for
+`TestOpenAIClient_Complete`/`TestAnthropicClient_Complete` gives them a test-only
+route that D-B3 does not forbid. The new citations check out: `parser.go:44,78,114`
+(string concatenation), `parser_test.go:317,351,395` (all three store the test
+server as an Ollama `LLMBaseURL`), `destination_test.go:252-262`,
+`pac66_llm_destination_test.go:448-475` and `pac24_scope_test.go:86,112-118`.
+One new blocking finding comes from something both earlier rounds missed: the
+stored defaults of a settings row.
+
+### Blocking
+
+1. **The spec assumes an untouched account has empty Ollama settings. On every
+   real account the Ollama address is stored as `http://localhost:11434` and the
+   provider is stored as `ollama`. Because of that, AC-B17's Ollama half does not
+   test what it says, and its "fails today" note is wrong.**
+   `002_llm_providers.up.sql:10` adds `ollama_base_url ... DEFAULT
+   'http://localhost:11434'`, and `:13-14` makes `llm_provider` default to
+   `'ollama'` (and rewrote existing empty values to it). Settings rows are created
+   by `INSERT INTO settings (user_id)` (`storage/settings.go:246`,
+   `storage/personal_calendars.go:165`, `auth/microsoft_oauth.go:65`), so they take
+   these defaults. I checked this on 2026-10-26 by applying the migrations to a
+   scratch `postgres:16-alpine` and inserting a row that way. It read back
+   `ollama | [] | http://localhost:11434 | llama3`. The factory prefers the Ollama
+   base URL over the shared one (`llm_factory.go:40-46`), so on such a row the
+   shared base URL is never Ollama's destination.
+   - AC-B17 creates its user the normal way (e2e tests insert into `users` only,
+     e.g. `e2e/tests/settings.spec.ts:19`, and the settings row comes from
+     `GetOrCreateSettingsByUser`). It then forces the **shared** base URL to the
+     database's address and probes with Ollama. That probe's effective
+     destination is `http://localhost:11434`, not the forced address. Today the
+     server contacts its own loopback, not "the address" as the note claims.
+     After the change it refuses because nothing is approved for Ollama, whatever
+     address is stored. So the Ollama half proves nothing about a shared base URL
+     that points at an internal service.
+   - AC-B9 says "a user saves exactly that destination" without naming the
+     property. Through the web app's only field (the shared base URL,
+     `Settings.tsx:741-752`, `client.ts:594`), the save is accepted under AC-B3,
+     but the probe still goes to the stored `http://localhost:11434` and is
+     refused. The criterion passes only if the test writes `ollamaBaseUrl`
+     through the API. D-B1's journey ("the operator approves an Ollama host,
+     users use it") then holds only for API users, or for an operator who approves
+     `http://localhost:11434`. The behaviour is not new: today the web value is
+     ignored in the same way. But the spec gives D-B1's web journey as the reason
+     for keeping Ollama and does not say it does not work.
+   - AC-B10's Given ("both base URLs empty") is not the state an account starts
+     in. The effective destination is the same, so the criterion stays valid, but
+     the default case is a stored `http://localhost:11434`.
+
+   *Resolve*:
+   (i) State the stored defaults in §B2, citing the migration lines.
+   (ii) Rewrite AC-B17's Ollama half so its Given makes the forced value Ollama's
+   effective destination. For example, force the Ollama base URL, or force both
+   properties. Then correct its "fails today" note.
+   (iii) Name the property AC-B9 saves.
+   (iv) Say plainly that on a deployment that approves an Ollama host, a value
+   entered in the web app's field is not used for Ollama while the stored Ollama
+   base URL is non-empty, and that the refusal then names a property the web app
+   cannot show or clear. Either accept that friction in Decisions, or record it as
+   a follow-up beside OQ-B2.
+
+### Non-blocking
+
+1. **The refusal becomes the default experience, and §B1/§B7 do not say so.**
+   Every account that never opened the LLM settings is an Ollama account with a
+   localhost address (Blocking 1). Today each natural-language parse and each
+   brief refresh by such an account makes the server POST to its own
+   `localhost:11434`, which is part of §B1 item 1 by default, not by the user's
+   choice. After the change, on the hosted product and on any deployment that
+   approves no Ollama host, every such account is told "Ollama is not enabled on
+   this deployment" by the natural-language bar and by every refreshed brief.
+   Neither §B1's "Who is affected" nor §B7's upgrade note says this, and it makes
+   OQ-B2 more urgent than it reads.
+2. **A test that asserts "a user-key provider has no approved set" is not in
+   §B6.** `backend/config/llm_hosts_test.go:87-89`
+   (`TestDecideLLMApprovedHosts_PerProvider`) fails with exactly that message if
+   `openai` is enabled or has an approved host. D-B2 and D-B3 give OpenAI and
+   Anthropic approved sets. Whether this assertion still holds depends on where
+   the plan keeps those sets. List it in §B6 as superseded (by D-B2/D-B3) or as
+   kept, so the plan has authority either way.
+3. **The redirect rule leaves three cases open.** D-B8 allows only the chat
+   operation with no query. AC-B7 lists a different path but not (a) the same
+   chat path with a query added, or (b) a redirect that changes the method (Go
+   turns a POST into a GET on 301/302/303). §B3 says a redirect "never takes a
+   user's key to any other host" but does not say (c) whether a redirect between
+   two destinations that are both approved for the same provider is followed
+   without the key, or not followed at all. Each case is untestable until the
+   spec decides it.
+4. **The upgrade note names only `.env.example`.** `docker-compose.yml:50-52` and
+   `docker-compose.prod.yml:89-91` say the same thing ("configured per-user in
+   the Settings page ... no server-level env vars needed"), and §B7 should name
+   them too.
+5. **Which spellings of a public host count as approved is not stated.** AC-B6
+   refuses a "non-default port". It does not say whether an explicit `:443`, an
+   upper-case host or a trailing-dot host counts as the approved public host.
+   OQ-B6 can settle this, but the question should name these spellings, because
+   AC-B5 and AC-B15 depend on the answer.
+
+### Criteria I could not falsify
+
+- AC-B13: a manual Linear check, as round 1 said.
+- AC-B15 for Ollama, until OQ-B6 fixes the entry syntax.
+- AC-B17's Ollama half as written: it gives the same result whether or not a
+  shared base URL that points at an internal service is checked (Blocking 1).
+
+### Citations I checked and found wrong
+
+- AC-B17 note: "both probes return 502 after the server contacted the
+  address". For the Ollama probe the server contacts the stored
+  `http://localhost:11434` (`002_llm_providers.up.sql:10`, `llm_factory.go:40-46`),
+  not the forced shared address.
+- §B6: `TestBuildLLMClient_DefaultModels` (`parser_test.go:143`) is cited as
+  protecting OpenAI and Anthropic with no base URL. It builds an Ollama client
+  only and asserts its default model (`llama3.2`). The protection comes from
+  AC-B5, as §B6 itself goes on to say.
+- Everything else I re-checked is correct: `llm_factory.go:13-58`,
+  `parser.go:33-36,44,66-69,78,102-105,114,126-128,193,253`,
+  `handlers_llm.go:75,85,89`, `handlers_meeting_briefs.go:76,80`,
+  `destination.go:163-176`, `handlers_settings.go:206-282` (changed-value
+  validation at `:163-202`), `server_errors.go:50-56`,
+  `scheduling.yaml:522-528,1943-1945,1997-1999` and the `x-uncertain` lines
+  :246, :376, :1046 and :1327, `api-audit.md:283,324`,
+  `contracts/features/PAC-66.yaml:135-136`, `.env.example:50`,
+  `docker-compose.yml:56-58`. No other send path exists: `Complete` is called
+  only at `handlers_llm.go:89`, `parser.go:210,240` (parse sends twice, attendee
+  extraction then the main prompt, both after the check at `:193`) and
+  `meeting_brief_service.go:87`. `mcp/` builds no LLM client.
+
+### Consumers this breaks
+
+- `clockwise-like/backend/config/llm_hosts_test.go:87-89`: possibly, depending on
+  where the plan keeps the approved sets for OpenAI and Anthropic
+  (Non-blocking 2).
+- Every account still on the stored defaults: parse and brief refresh change from
+  a connection failure to "Ollama is not enabled on this deployment" on any
+  deployment that approves no Ollama host (Non-blocking 1). No stored value is
+  changed.
+- `smart-calendar-flow`: nothing breaks at runtime. `llmTest` reads only the
+  success body (`src/api/client.ts:1293-1302`). The web app never sends
+  `ollamaBaseUrl`, which is why its Ollama field has no effect (Blocking 1).
+  If the refusal's `property` enum gains a value, the generated
+  `LLMDestinationRefusal` schema must be regenerated in the usual order.
+- The tests §B6 lists, as §B6 says.
