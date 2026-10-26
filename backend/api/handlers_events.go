@@ -80,7 +80,7 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, existing)
 	if err != nil {
-		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -96,7 +96,7 @@ func (h *eventHandlers) deleteEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := client.DeleteEvent(r.Context(), client.CurrentCalendarID(), eventID); err != nil {
-		writeError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "delete failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -112,7 +112,7 @@ func (h *eventHandlers) listRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	rooms, err := client.ListRooms(r.Context(), q)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "listRooms", err, http.StatusInternalServerError)
 		return
 	}
 	if rooms == nil {
@@ -132,7 +132,7 @@ func (h *eventHandlers) suggestAttendees(w http.ResponseWriter, r *http.Request)
 	}
 	suggestions, err := client.SuggestAttendees(r.Context(), q, 30*24*time.Hour)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "suggestAttendees", err, http.StatusInternalServerError)
 		return
 	}
 	if suggestions == nil {

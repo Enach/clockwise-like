@@ -182,7 +182,7 @@ model is per-user:
 - **`GET /api/auth/status`** — branches on the global settings row and returns
   the global `CalendarEmail` (`handlers_auth.go:82-107`).
 
-### T8. Raw Go and provider error strings echoed to clients *(added)*
+### T8. Raw Go and provider error strings echoed to clients *(added; 5xx half fixed by PAC-21)*
 
 Reported by the calendar and habits agents and visible throughout: `"not
 connected: "+err.Error()`, `"event not found: "+err.Error()`,
@@ -190,6 +190,16 @@ connected: "+err.Error()`, `"event not found: "+err.Error()`,
 `writeError(w, err.Error(), 500)`. `GET /api/analytics/meetings` is the worst
 case — a user with no connected calendar gets `"internal error: no token for
 user <uuid>"`, echoing an internal user id.
+
+**PAC-21** fixed the 5xx half: every 5xx answer in `backend/api` now goes through
+`writeServerError` (JSON envelope) or `writeServerErrorText` (operations whose
+contract still documents `text/plain`), both of which log the detail and send it to
+Sentry, and `pac21_error_bodies_test.go` fails on any new 5xx write with an
+error-derived message. Still open: the 4xx bodies that embed an error
+(`"not connected: "+err.Error()` on 401, `"event not found: "+err.Error()` on 404,
+`invalid JSON: <err>` on 400), the contract prose that still describes `<err>` in
+5xx bodies, and moving the remaining `text/plain` 5xx onto the JSON envelope
+(both contract changes).
 
 ### T9. Responses built from pre-write in-memory state *(added)*
 
@@ -285,7 +295,7 @@ Domain key: `auth`, `cal` (calendar), `sched` (scheduling), `book` (booking),
 | API-051 | medium | Reported | book | `POST /api/book/{slug}` | `uses_count` is a `SELECT COUNT(*) … WHERE status <> 'cancelled'` subquery, not a stored counter. | Cancelling a booking re-opens an exhausted `single_use` link. | book (b) |
 | API-052 | medium | Reported | book | `POST /api/conference/create` | No validation: missing `title`/`start`/`end` decode to Go zero values and are sent to the provider. | A `{}` request reaches Zoom/Meet with a blank title and the year 1. No frontend consumer today, so latent. | book (b) |
 | API-053 | medium | Reported | book | `POST /api/scheduling-links` (`days` alias) | `dayNumbers` drops unrecognised tokens, so `{"days":["Montag"]}` becomes `[]` and fails as "at least one day is required". | The error does not explain that the day names were not understood. | book (b) |
-| API-054 | medium | Reported | hab | `GET /api/analytics/meetings` | `calOpsForUser` failure is wrapped as `"internal error: no token for user <uuid>"` and returned to the client. | A user with no connected calendar gets a 500 containing an internal user id instead of a 4xx telling them to connect a calendar. T8's worst case. | hab (a)13 |
+| API-054 | medium | Partly fixed (PAC-21) | hab | `GET /api/analytics/meetings` | `calOpsForUser` failure is wrapped as `"internal error: no token for user <uuid>"` and returned to the client. **PAC-21:** the body is now `{"error":"internal error"}` and the detail goes to the server log and Sentry only. Still a 500, not a 4xx: changing the status is a contract change. | A user with no connected calendar gets a 500 containing an internal user id instead of a 4xx telling them to connect a calendar. T8's worst case. | hab (a)13 |
 | API-055 | medium | Reported | hab | `GET /api/analytics/week` vs `GET /api/analytics/trends` | `week_start` is `"2006-01-02"` on one and RFC3339 on the other (`handlers_analytics.go:137` vs raw `storage.AnalyticsWeek`). `breakdown` exists only on `/week`. | The same logical field has two types; the trends endpoint cannot render the week chart without client-side recomputation. | hab (a)6, (a)7 |
 | API-056 | medium | Reported | hab | `PATCH/DELETE /api/habits/{id}`, `GET /api/habits/{id}/occurrences` vs `PATCH …/occurrences/{occurrenceId}` | The first three return `403 forbidden` for another user's habit (leaking existence); the last scopes inside the SQL and returns `404 not found`. | Inconsistent, and the 403 path confirms that a habit id exists. | hab (a)12 |
 | API-057 | medium | Reported | hab | `GET /api/analytics/week`, `/trends` | `AnalyticsEngine.compute` never assigns `BufferMinutes` (`engine/analytics.go:185-207`) despite `ComputeBufferBlocks` existing and being used by the habits engine. | `buffer_minutes` is always `0`. Any buffer chart shows a flat zero line. | hab (a)14 / `x-uncertain` |
@@ -425,7 +435,7 @@ unadministrable through the API.
 **API-027** *(fixed by PAC-20)* — the Slack and Notion OAuth state cookies omit `SameSite`
 (and `Secure`), unlike every other state cookie in the codebase. Browser defaults
 narrow the practical gap, which is why it is medium.
-**API-054 / T8** — internal user UUIDs and raw provider error strings are echoed
+**API-054 / T8** *(5xx leak fixed by PAC-21; API-054's 4xx half open)* — internal user UUIDs and raw provider error strings are echoed
 in 5xx bodies across every domain.
 **API-062** — the `/api/auth/detect` rate limiter keys on a client-supplied
 `X-Forwarded-For` and is therefore trivially bypassed, while also leaking memory.

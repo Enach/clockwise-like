@@ -47,7 +47,7 @@ func (h *teamHandlers) createTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	team, err := storage.CreateTeam(h.db, strings.TrimSpace(body.Name), userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "createTeam", err, http.StatusInternalServerError)
 		return
 	}
 	// Creator is owner.
@@ -67,7 +67,7 @@ func (h *teamHandlers) listTeams(w http.ResponseWriter, r *http.Request) {
 	}
 	teams, err := storage.ListTeamsForUser(h.db, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "listTeams", err, http.StatusInternalServerError)
 		return
 	}
 	if teams == nil {
@@ -97,7 +97,7 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "getTeam", err, http.StatusInternalServerError)
 		return
 	}
 	members, _ := storage.ListTeamMembers(h.db, teamID)
@@ -137,7 +137,7 @@ func (h *teamHandlers) patchTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := storage.RenameTeam(h.db, teamID, strings.TrimSpace(body.Name)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "patchTeam", err, http.StatusInternalServerError)
 		return
 	}
 	team, _ := storage.GetTeam(h.db, teamID)
@@ -158,7 +158,7 @@ func (h *teamHandlers) deleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := storage.DeleteTeam(h.db, teamID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "deleteTeam", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -191,7 +191,7 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 
 	invite, err := storage.CreateTeamInvite(h.db, teamID, email, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "inviteMember", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -222,7 +222,7 @@ func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "getInvite", err, http.StatusInternalServerError)
 		return
 	}
 	if invite.Status != "pending" {
@@ -262,7 +262,7 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "acceptInvite", err, http.StatusInternalServerError)
 		return
 	}
 	if invite.Status != "pending" {
@@ -276,11 +276,11 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := storage.AddTeamMember(h.db, invite.TeamID, userID, "member"); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "acceptInvite", err, http.StatusInternalServerError)
 		return
 	}
 	if err := storage.AcceptTeamInvite(h.db, invite.ID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "acceptInvite", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -308,7 +308,7 @@ func (h *teamHandlers) removeMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := storage.RemoveTeamMember(h.db, teamID, targetID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "removeMember", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -346,7 +346,7 @@ func (h *teamHandlers) createZone(w http.ResponseWriter, r *http.Request) {
 	storageDay := storageWeekday(body.DayOfWeek)
 	zone, err := storage.CreateNoMeetingZone(h.db, teamID, storageDay, body.StartTime, body.EndTime, body.Label)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "createZone", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -395,7 +395,7 @@ func (h *teamHandlers) updateZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "updateZone", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -417,7 +417,7 @@ func (h *teamHandlers) listZones(w http.ResponseWriter, r *http.Request) {
 	}
 	zones, err := storage.ListNoMeetingZones(h.db, teamID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "listZones", err, http.StatusInternalServerError)
 		return
 	}
 	if zones == nil {
@@ -448,7 +448,7 @@ func (h *teamHandlers) deleteZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := storage.DeleteNoMeetingZone(h.db, zoneID, teamID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "deleteZone", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -487,7 +487,7 @@ func (h *teamHandlers) availability(w http.ResponseWriter, r *http.Request) {
 	eng := h.availabilityEngine
 	slots, err := eng.FindSlots(r.Context(), teamID, day, durationMinutes)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "availability", err, http.StatusInternalServerError)
 		return
 	}
 	if slots == nil {
@@ -524,7 +524,7 @@ func (h *teamHandlers) analyticsHandler(w http.ResponseWriter, r *http.Request) 
 	eng := h.availabilityEngine
 	analytics, err := eng.GetTeamAnalytics(r.Context(), teamID, weekStart)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "analyticsHandler", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

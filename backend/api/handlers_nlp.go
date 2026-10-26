@@ -27,7 +27,7 @@ func (h *nlpHandlers) parse(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.Parse(r.Context(), body.Text)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "parse", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -60,7 +60,7 @@ func (h *nlpHandlers) confirm(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.smart.CreateMeeting(r.Context(), req, slot)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeCreateMeetingFailure(w, r, "confirm", err)
 		return
 	}
 

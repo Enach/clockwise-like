@@ -167,7 +167,7 @@ func (h *calendarHandlers) listEvents(w http.ResponseWriter, r *http.Request) {
 
 	events, err := client.ListEvents(r.Context(), client.CalendarID, timeMin, timeMax)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "listEvents", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -209,7 +209,7 @@ func (h *calendarHandlers) freeBusy(w http.ResponseWriter, r *http.Request) {
 
 	result, err := client.GetFreeBusy(r.Context(), emails, timeMin, timeMax)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "freeBusy", err, http.StatusInternalServerError)
 		return
 	}
 

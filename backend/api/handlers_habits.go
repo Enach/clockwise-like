@@ -129,7 +129,7 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 		Color:           body.Color,
 	})
 	if err != nil {
-		writeError(w, "create failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -232,7 +232,7 @@ func (h *habitsHandlers) update(w http.ResponseWriter, r *http.Request) {
 
 	result, err := storage.UpdateHabit(h.db, id, &updated)
 	if err != nil {
-		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -269,7 +269,7 @@ func (h *habitsHandlers) deactivate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := storage.DeactivateHabit(h.db, id); err != nil {
-		writeError(w, "deactivate failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "deactivate failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

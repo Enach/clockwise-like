@@ -44,7 +44,7 @@ type settingsHandlers struct {
 func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "getSettings", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -100,12 +100,12 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	stored, err := json.Marshal(s)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	// Decoding onto the stored record is the merge; maps would be merged into,
@@ -129,7 +129,7 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 
 	changed, err := changedSettingsProperties(stored, s)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	if err := validateChangedSettings(s, changed); err != nil {
@@ -137,12 +137,12 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	updated, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

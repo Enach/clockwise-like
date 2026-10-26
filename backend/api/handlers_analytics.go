@@ -32,7 +32,7 @@ func (h *analyticsHandlers) week(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.eng.ComputeWeek(r.Context(), userID, date)
 	if err != nil {
-		writeError(w, "compute failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "compute failed", err, http.StatusInternalServerError)
 		return
 	}
 	if result == nil {
@@ -73,7 +73,7 @@ func (h *analyticsHandlers) meetings(w http.ResponseWriter, r *http.Request) {
 
 	list, err := h.eng.WeekMeetings(r.Context(), userID, date)
 	if err != nil {
-		writeError(w, "internal error: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "internal error", err, http.StatusInternalServerError)
 		return
 	}
 	if list == nil {

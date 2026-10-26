@@ -41,6 +41,7 @@ func (h *managerHandlers) getProfile(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	p, err := storage.GetOrCreateUserProfile(h.db, userID)
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -67,6 +68,7 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 
 	p, err := storage.GetOrCreateUserProfile(h.db, userID)
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -101,7 +103,7 @@ func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 
 	result, err := eng.DetectTeam(ctx, userID)
 	if err != nil {
-		http.Error(w, "detection error: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "detection error", err, http.StatusInternalServerError)
 		return
 	}
 	type candidateResponse struct {
@@ -115,6 +117,7 @@ func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 		_, lookupErr := storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, candidate.Email)
 		alreadyAssigned := lookupErr == nil
 		if lookupErr != nil && lookupErr != sql.ErrNoRows {
+			logServerError(r, "db error", lookupErr, http.StatusInternalServerError)
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
 		}
@@ -167,6 +170,7 @@ func (h *managerHandlers) confirmDetection(w http.ResponseWriter, r *http.Reques
 	}
 	assigned, skipped, total, err := storage.ConfirmManagerTeamMembers(h.db, userID, *teamID, normalized)
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -198,6 +202,7 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 
 	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -302,6 +307,7 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 		err = storage.UpsertManagerTeamMember(h.db, m)
 	}
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -357,6 +363,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	} else if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -389,6 +396,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		err = storage.PatchManagerTeamMemberForTeam(h.db, userID, *teamID, email, displayName, cadence, customDays)
 	}
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -412,12 +420,13 @@ func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	// are what count (PAC-54).
 	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	gaps, err := h.newEngine().GetGaps(r.Context(), userID, members)
 	if err != nil {
-		http.Error(w, "gap detection error: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "gap detection error", err, http.StatusInternalServerError)
 		return
 	}
 	if gaps == nil {
@@ -454,6 +463,7 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	} else if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -492,6 +502,7 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	months := 3
 	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}

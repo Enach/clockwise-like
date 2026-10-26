@@ -45,7 +45,7 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "testLLM", err, http.StatusInternalServerError)
 		return
 	}
 	storedKey := s.LLMAPIKey
@@ -74,7 +74,8 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 
 	client, err := nlp.NewLLMClientFromSettings(s)
 	if err != nil {
-		writeError(w, redact(err.Error()), http.StatusInternalServerError)
+		// The detail is logged with both keys redacted (AC-14); the body is generic (PAC-21).
+		writeServerError(w, r, "build LLM client", errors.New(redact(err.Error())), http.StatusInternalServerError)
 		return
 	}
 
@@ -82,12 +83,12 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 	// sends nothing to a destination the operator has not approved. The check
 	// needs no credential, so the refusal is reported even where none exists.
 	if err := nlp.CheckDestination(r.Context(), client); err != nil {
-		writeProviderFailure(w, err, redact)
+		writeProviderFailure(w, r, err, redact)
 		return
 	}
 	response, err := client.Complete(r.Context(), "You are a helpful assistant.", "Say hello")
 	if err != nil {
-		writeProviderFailure(w, err, redact)
+		writeProviderFailure(w, r, err, redact)
 		return
 	}
 
@@ -102,10 +103,10 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 // writeProviderFailure answers a failed provider call: a PAC-66 destination
 // refusal is a 422 LLMDestinationRefusal (nothing was sent); anything else is
 // the 502 it has always been.
-func writeProviderFailure(w http.ResponseWriter, err error, redact func(string) string) {
+func writeProviderFailure(w http.ResponseWriter, r *http.Request, err error, redact func(string) string) {
 	var refusal *nlp.DestinationRefusal
 	if !errors.As(err, &refusal) {
-		writeError(w, redact(err.Error()), http.StatusBadGateway)
+		writeServerError(w, r, "LLM provider call", errors.New(redact(err.Error())), http.StatusBadGateway)
 		return
 	}
 	body := gen.LLMDestinationRefusal{

@@ -347,11 +347,11 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	link.OwnerUserID = userID
 	created, err := storage.CreateSchedulingLink(h.db, &link)
 	if err != nil {
-		writeError(w, "create failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
 	if _, err = storage.AddLinkHost(h.db, created.ID, userID, "accepted"); err != nil {
-		writeError(w, "owner host failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "owner host failed", err, http.StatusInternalServerError)
 		return
 	}
 	for _, email := range input.CoHostEmails {
@@ -500,7 +500,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	}
 	result, err := storage.UpdateSchedulingLink(h.db, id, &updated)
 	if err != nil {
-		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
 	if patch.CoHostEmails != nil {
@@ -545,7 +545,7 @@ func (h *schedulingLinkHandlers) deleteLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := storage.DeleteSchedulingLink(h.db, id); err != nil {
-		writeError(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "delete failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -621,7 +621,7 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	// a new invitee gets a pending row and 201.
 	host, created, err := storage.InviteLinkHost(h.db, id, invitee.ID)
 	if err != nil {
-		writeError(w, "invite failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "invite failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -664,7 +664,7 @@ func (h *schedulingLinkHandlers) respondToInvite(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := storage.RespondToHostInvite(h.db, linkID, userID, status); err != nil {
-		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -699,7 +699,7 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := storage.RemoveLinkHost(h.db, id, userID); err != nil {
-		writeError(w, "leave failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "leave failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

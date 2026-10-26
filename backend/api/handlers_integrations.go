@@ -64,7 +64,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		os.Getenv("SLACK_REDIRECT_URI"),
 	)
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		writeServerErrorText(w, r, "token exchange failed", err, http.StatusBadGateway)
 		return
 	}
 
@@ -79,6 +79,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		ConnectedAt:   time.Now().UTC(),
 	}
 	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -197,7 +198,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		os.Getenv("NOTION_REDIRECT_URI"),
 	)
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		writeServerErrorText(w, r, "token exchange failed", err, http.StatusBadGateway)
 		return
 	}
 
@@ -210,6 +211,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		ConnectedAt:   time.Now().UTC(),
 	}
 	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
