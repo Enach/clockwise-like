@@ -16,6 +16,7 @@
         "backend/api/handlers_focus.go",
         "backend/api/handlers_schedule.go",
         "backend/api (tests beside the two handlers)",
+        "backend/api/empty_arrays_test.go (re-assert TestCompress_WeekEveryDayFails_EncodesEmptyArray as 500, never delete it)",
         "contracts",
         "docs/factory"
       ],
@@ -96,7 +97,8 @@
     { "consumer": "clockwise-like mcp/tools.go:146 clockwise_run_focus_engine", "breaks": "no", "detail": "Posts the literal body null, which stays valid (D-2)." },
     { "consumer": "clockwise-like mcp/tools.go:177 clockwise_compress_schedule", "breaks": "no", "detail": "Posts {} or {date}; single-day mode only." },
     { "consumer": "clockwise-like e2e/tests/focus-time.spec.ts, seam.spec.ts", "breaks": "no", "detail": "Well-formed bodies; single-day compression only." },
-    { "consumer": "clockwise-like backend/api/handlers_schedule_test.go TestCompress_Week", "breaks": "no", "detail": "Mock returns a result for every day: still 200, now exactly five entries." }
+    { "consumer": "clockwise-like backend/api/handlers_schedule_test.go TestCompress_Week", "breaks": "no", "detail": "Mock returns a result for every day: still 200, now exactly five entries." },
+    { "consumer": "clockwise-like backend/api/empty_arrays_test.go:35 TestCompress_WeekEveryDayFails_EncodesEmptyArray", "breaks": "yes", "detail": "Pins week-mode 200 [] when every day fails (PAC-28). Re-asserted, not deleted: the same input ({\"week\":\"2025-01-06\"}, mockCompressor{err: calendar down}) becomes 500 {\"error\":\"internal error\"} per AC-3. The implementer may rename it to match the new assertion; the PAC-28 empty-array guarantee for the other operations in that file is untouched." }
   ],
 
   "followUps": {

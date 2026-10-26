@@ -200,10 +200,13 @@ might not.
 | `e2e/tests/focus-time.spec.ts`, `seam.spec.ts` | Post `{ week }` / `{ date }`, well formed. No change. |
 | `backend/api/handlers_schedule_test.go` `TestCompress_Week` | The mock returns a result for every day. Still 200, now with exactly 5 entries. |
 | `backend/api/pac21_calendar_not_connected_test.go` | Asserts a 401/500 before any day is computed. Unchanged. |
+| `backend/api/empty_arrays_test.go:35` `TestCompress_WeekEveryDayFails_EncodesEmptyArray` (PAC-28) | **Breaks.** It pins week-mode 200 `[]` when every day fails. The same input (`{"week":"2025-01-06"}`, `mockCompressor{err: ...}`) now gets 500 `{"error":"internal error"}` (AC-3). The implementer re-asserts it as that 500; it is not deleted or skipped. The file is in `backend.allowedPaths` for this reason only; the other PAC-28 empty-array tests in it are unchanged. |
 
 No consumer sends a malformed body on purpose, so nothing breaks there. The only
 observable change for a well-formed caller is a week-mode preview with a failing day:
-it now gets an error instead of a short 200.
+it now gets an error instead of a short 200. One existing test pins the old
+behaviour (`TestCompress_WeekEveryDayFails_EncodesEmptyArray`, above) and is
+re-asserted, not removed.
 
 ## 6. Acceptance criteria, as they apply at the HTTP boundary
 
@@ -405,3 +408,39 @@ edited.
 - The rejected alternatives were rejected for reasons that hold on the code. §2.2
   option 2 would change the 200 item that MCP passes through and that the web types
   describe. §3.1 would break `mcp/tools.go:146`.
+
+## Revision — 2026-10-26 (answers challenge round 1)
+
+The bundle (`contracts/openapi/openapi.yaml`) is unchanged by this revision, so
+`contractRevision` stays `1` and `contractHash` stays
+`d048a3c937fdb68ad930d2558ec70592815f78c17c9bf941a41c0373a4b90d0b`. Only the
+manifest and this document change.
+
+### Blocking finding 1: unlisted consumer `TestCompress_WeekEveryDayFails_EncodesEmptyArray`
+
+**Accepted.** The challenger is right: `backend/api/empty_arrays_test.go:35`
+(PAC-28) asserts week-mode 200 `[]` when every day fails, which is exactly the
+response this contract removes (200 is now `minItems: 1`; a failing week day is a
+500). It was missed because the consumer search covered tests beside the two
+handlers and not the cross-cutting PAC-28 file.
+
+Fixed, manifest and doc only, no schema change:
+
+- `consumersAffected` gains
+  `backend/api/empty_arrays_test.go:35 TestCompress_WeekEveryDayFails_EncodesEmptyArray`
+  with `breaks: yes`: re-asserted as 500 `{"error":"internal error"}` per AC-3,
+  never deleted or skipped.
+- `repositories.backend.allowedPaths` gains `backend/api/empty_arrays_test.go`,
+  scoped to re-asserting that one test.
+- §5 gains the row, and its closing paragraph names the break.
+
+### Non-blocking findings
+
+- `mockCompressor` cannot fail one weekday, and an unset mock returns a `nil`
+  result. Noted for the plan stage, which must name a per-day seam for AC-3. No
+  contract change.
+- Missing `docs/specs/PAC-36.md` (process finding 1): unchanged by this revision.
+  D-1 to D-3 stay "assumed by the factory, pending owner confirmation" in §4 and the
+  manifest. Either the spec is created or the owner confirms on PAC-36 before the
+  plan stage.
+- Existing server tolerances (process finding 2): out of scope, unchanged.
