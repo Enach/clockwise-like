@@ -195,8 +195,18 @@ These are deliberately not changed here:
   `listCalendarEvents` 400, the daily-recap 400s and the teams `not found`. Their text
   is fixed and leaks nothing. Unifying them on the envelope is the separate
   error-envelope issue.
-- **Validation errors whose text is a fixed server sentence are not leaks.**
-  Examples are the habits, manager, teams and settings validators. They are unchanged.
+- **Validation errors whose text is a fixed server sentence are not leaks.** They are
+  unchanged, and they are exactly the ten call sites AC-1's scan exempts by name
+  (revision 4). Each writes `writeError(w, err.Error(), <4xx>)` with `err` from the
+  validator named:
+  - `handlers_habits.go` `create` (:117) and `update` (:229): `validateHabitFields`
+  - `handlers_manager.go` `confirmDetection` (:166) and `addMember` (:276): `normalizeManagerEmail`
+  - `handlers_manager.go` `addMember` (:284) and `patchMember` (:386): `validateManagerCadence`
+  - `handlers_teams.go` `inviteMember` (:188): `normalizeManagerEmail`
+  - `handlers_teams.go` `createZone` (:340) and `updateZone` (:386): `validateNoMeetingZone`
+  - `handlers_settings.go` `patchSettings` (:136): `validateChangedSettings` (its catalogue
+    is `SettingsValidationError`; only the `autoScheduleCron` message changes, per the
+    `patchSettings` entry, so that every sentence it can return is fixed)
 - **The out-of-hours allowance refusal stays a 500.** It is now JSON.
 
 ## 6. The `x-uncertain` markers on touched operations: a deviation the challenger must rule on
@@ -239,7 +249,8 @@ is affected:
 These map to the acceptance criteria in the manifest:
 
 - **AC-1**: Inject a marker string into every former 4xx leak site and assert it never
-  reaches the body. Widen the #217 source scan from 5xx to every status.
+  reaches the body. Widen the #217 source scan from 5xx to every status, exempting by
+  name only the ten fixed-sentence validator sites listed in §5 (revision 4).
 - **AC-2**: Run the 18 operations as a no-calendar user and get 401 with the exact body.
   The same operations with a token-store failure give a 500.
 - **AC-3**: A test over the bundle fails on any non-JSON 5xx or on raw-error prose.
@@ -1068,3 +1079,57 @@ None.
 
   The validators return only fixed sentences. For example, `normalizeManagerEmail`
   (`handlers_manager.go:671-681`) discards the error from `mail.ParseAddress`.
+
+## Revision 4 — 2026-10-26
+
+Author: contract-author, answering the round-3 challenge above. No fragment, operation,
+status code, schema or media type changes; the bundle is untouched and `contractHash`
+stays `b8b2fd6394f63e3c94ff4f4237556f3c8d963e12da21ee84c1b3232ff09b8bf9`. The edits are
+the manifest (`contractRevision` 4, AC-1, the scan entry in `consumersAffected`) and this
+document (§5, §8, this section).
+
+### Blocking findings
+
+1. **AC-1's widened scan forbade ten 4xx sites that §5 keeps. Accepted; fixed with named
+   exemptions, the challenger's first option.**
+   - **Checked first.** At 47fe9f4 a grep of the four files for `err.Error()` finds the ten
+     sites exactly as the challenger listed them. Each enclosing function and validator was
+     read: `create`/`update` → `validateHabitFields`, `confirmDetection`/`addMember` →
+     `normalizeManagerEmail`, `addMember`/`patchMember` → `validateManagerCadence`,
+     `inviteMember` → `normalizeManagerEmail`, `createZone`/`updateZone` →
+     `validateNoMeetingZone`, `patchSettings` → `validateChangedSettings`. The four
+     `fmt.Errorf` validators return only string literals with no arguments;
+     `normalizeManagerEmail` discards the `mail.ParseAddress` error.
+     `validateChangedSettings` returns `&validationError{p.msg}`: every message is a literal
+     or a property path plus a literal, except `autoScheduleCron is invalid: <err>`, which
+     the `patchSettings` entry already replaces with a fixed sentence. One correction to the
+     finding: `patchSettings` *is* in `operationsChanged4xx`, but for that catalogue message,
+     not for the `:136` write, which stays as it is.
+   - **AC-1** now lists the ten sites by file, enclosing function and validator. The scan
+     takes an exemption table keyed by (file, enclosing function, validator). An entry
+     matches only a `writeError(w, err.Error(), <literal 4xx>)` whose `err` comes from a
+     call to that validator in that function. The same shape anywhere else, at a 5xx or
+     computed status, or with `err` from another source, is a violation.
+   - **Fixed sentences are checked, not asserted.** For the four `fmt.Errorf` validators,
+     the test checks that every non-nil return is `fmt.Errorf` or `errors.New` with a
+     single string literal. For `validateChangedSettings`, the guarantee is the
+     `SettingsValidationError` catalogue plus AC-1's `autoScheduleCron` marker case.
+   - **A later exemption** must name its file, function and validator in the table and
+     show that the validator returns only fixed sentences.
+   - **Guard fixture** (scan entry in `consumersAffected`): the guard test passes its own
+     one-entry table (`fixture.go`, function `exempted`, `validateHabitFields`). The fixture
+     gains one allowed case (that validator's error written at 400 inside `exempted`) and
+     two violations (the same write in a function not in the table, and inside `exempted`
+     at a 5xx). Line 13 stays a violation for any other name.
+   - **§5** now cites the same ten sites, so "unchanged" and AC-1 name the same list. The
+     response text at all ten sites does not change.
+   - **Rejected alternative:** a shared fixed-message error type (like
+     `validationErr.Msg`, fixture line 15) for the ten sites. It would avoid a table, but
+     it rewrites five validators and ten handlers in a change whose subject is error
+     leaks, and the type alone would not prove the message is fixed: any caller could
+     still build `Msg` from `err.Error()`. A named table keeps the diff to the test and
+     makes every exemption visible in review.
+
+### What was run for revision 4
+
+RUNLOG_PLACEHOLDER
