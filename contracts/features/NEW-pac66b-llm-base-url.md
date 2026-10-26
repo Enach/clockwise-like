@@ -335,3 +335,167 @@ after this contract merges (factory §1). Until then the web repo's generated
 files are behind this bundle by two `LLMDestinationRefusal.property` values and
 the new descriptions. No e2e was run, because this stage changes no behaviour;
 AC-B17 is the implementation stage's e2e.
+
+---
+
+## Challenge — 2026-10-26
+
+**Verdict**: accept
+
+Reviewed the committed state of `factory/new-pac66b-llm-base-url-contract` at
+`b7da681` (fragment `contracts/openapi/paths/scheduling.yaml`, bundle, manifest,
+this rationale) against spec PAC-66 Part B §B3/§B4, the current handlers
+(`backend/api/handlers_llm.go`, `backend/api/handlers_settings.go`), the client
+code (`backend/nlp/parser.go`, `backend/nlp/llm_factory.go`), the web consumer
+(`smart-calendar-flow` `main`), `mcp/` and `e2e/`. 0 blocking.
+
+### Requests wrongly permitted
+
+None found. Attempts, each answered by the contract text as written:
+
+1. `PATCH /api/settings` `{"llmBaseUrl": "http://postgres:5432"}` (provider
+   `openai`, nothing approved for Ollama): refused, approved for none of the
+   three (400, message `llmBaseUrl must be ...`; AC-B3, AC-B17).
+2. `PATCH /api/settings` with `{"llmBaseUrl": "https://api.openai.com/v1"}`,
+   `{"llmBaseUrl": "https://api.openai.com?"}` or
+   `{"llmBaseUrl": "https://api.openai.com#"}`: refused (path, empty query,
+   empty fragment; D-B8 text on the operation and on the property; AC-B19).
+3. `PATCH /api/settings` with `{"llmBaseUrl": "https://user:pw@api.openai.com"}`
+   or `{"llmBaseUrl": " https://api.openai.com"}`: refused (userinfo,
+   whitespace; nothing trimmed).
+4. `PATCH /api/settings` with `{"llmBaseUrl": "http://api.openai.com"}` or
+   `{"llmBaseUrl": "https://api.openai.com:8443"}`: refused unless the same
+   origin is an approved Ollama origin (AC-B6). In that case the write is
+   accepted and the send-time rule refuses it for `openai`/`anthropic`:
+   `POST /api/llm/test` `{"llmProvider":"openai","llmApiKey":"sk-x"}` is a 422
+   `destination_not_approved`, `property: llmBaseUrl` (AC-B11). The
+   key-carrying path is closed at send time, which is where the contract puts it.
+5. `POST /api/llm/test` `{"llmProvider":"anthropic"}` with no key on file and a
+   stored `llmBaseUrl` of `http://169.254.169.254`: today
+   `llm_factory.go:31-33` returns the 500 `LLM not configured` before any
+   destination is looked at. The contract requires the 422 instead ("before
+   anything else about the request", repeated on the 500), so the oracle
+   "key on file?" vs "destination allowed?" is not reopened.
+6. `POST /api/llm/test` `{"llmProvider":"ollama"}` with `ollamaBaseUrl: ""`,
+   `llmBaseUrl: ""`, nothing approved for Ollama: 422 `provider_not_enabled`,
+   no `property` (AC-B8). With an Ollama origin approved but not
+   `http://localhost:11434`: 422 `destination_not_approved`,
+   `property: ollamaBaseUrl` (AC-B10), matching the `property` description.
+7. `POST /api/llm/test` `{"llmProvider":"ollama"}` with `ollamaBaseUrl: "http:/"`:
+   non-empty, so no fallback to `llmBaseUrl` (fallback only on `""`, as
+   `llm_factory.go:40-46` does today); refused with `property: ollamaBaseUrl`.
+8. An approved destination answering `307 Location: http://10.0.0.1/v1/messages`:
+   never followed; 502 with the fixed `upstream provider error` body; the key
+   is in the first request only (AC-B7). The 502 description and the operation
+   text agree.
+9. `PATCH /api/settings` `{"llmProvider":"openai"}` on a row whose
+   pre-existing `llmBaseUrl` is `http://10.0.0.1`: accepted (provider-only
+   change, AC-B14), and the next probe is the 422. Write and send rules
+   together leave no window in which the key is sent.
+10. `POST /api/llm/test` `{"llmProvider":"openai","llmBaseUrl":"https://x"}`:
+    still 400. `LLMTestRequest` keeps `additionalProperties: false` and the
+    handler uses `DisallowUnknownFields` (`handlers_llm.go:38-43`). No request
+    property can add a destination.
+
+### Responses the client cannot handle
+
+None found.
+
+- `testLLMConnection` may now return
+  `422 {"error":"ollama is not enabled on this deployment; ...","reason":"provider_not_enabled"}`
+  where it returned a 502 or a 200. `smart-calendar-flow/src/pages/Settings.tsx:179-180`
+  catches it and shows `apiErrorMessage(e)`, which reads `data.error` first
+  (`src/api/client.ts:351-356`). `withFallback` rethrows non-network errors
+  (`client.ts:497-503`), so the mock path is not taken.
+- `LLMDestinationRefusal.property` gains `llmBaseUrl` and `ollamaBaseUrl`. The
+  web repo imports only `SettingsUpdate` from the zod file (`client.ts:2`), and
+  no hand-written code references `LLMDestinationRefusal`, `destination_not_*`
+  or `provider_not_enabled` (grep of `src/` outside `generated/`: no hits). A
+  stale enum before the regen breaks nothing.
+- No `pattern` was added to `llmBaseUrl` / `ollamaBaseUrl`, so `GET /api/settings`
+  of a pre-PAC-66-B row still validates against the generated `Settings` /
+  `SettingsUpdate` schemas the web client parses.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/client.ts:700-708` (diff-only PATCH): an
+  unchanged `llmBaseUrl` is not sent, and the server does not re-check an
+  unchanged value, so a stale stored value never blocks an unrelated save.
+- `smart-calendar-flow/src/pages/Settings.tsx:742-747`: the Base URL field
+  writes `llmBaseUrl` and is rendered only while the draft provider is `ollama`.
+  On a deployment with no Ollama origin approved, saving any non-empty address
+  there is a 400. That is correct, and recorded as follow-up OQ-B7.
+- `mcp/tools.go:236` only reads `/api/settings/`; `clockwise_parse_command`
+  relays the parse 200. No MCP tool writes a base URL. Unaffected.
+- `e2e/tests/settings.spec.ts:44` sets `llmProvider`/`llmApiKey`, never a base
+  URL, and never probes. `e2e/tests/llm-destination.spec.ts` is Azure-only, and
+  `e2e/docker-compose.e2e.yml:120` sets only the Azure variable, which is
+  AC-B17's Given. No other e2e test calls an LLM-backed path
+  (`audit.spec.ts:47` only inserts an audit row).
+- Default accounts (provider `ollama`, `ollamaBaseUrl` `http://localhost:11434`;
+  migration `002_llm_providers.up.sql:10,14`) break by design, as the manifest
+  says.
+
+### Contract/implementation divergences
+
+None that the contract fails to declare. Where the described behaviour differs
+from today's server (no destination check for openai/anthropic/ollama;
+`http.DefaultClient` following redirects, `parser.go:122-123`; the 500 for a
+missing key preceding everything, `llm_factory.go:22-24,31-33`), the spec's
+"Fails today" lines and the manifest's `operationsChanged` say so. The two
+PAC-21 corrections (502 `upstream provider error`, 500 `internal error`) match
+`writeServerError` as used in `handlers_llm.go:75-78,107-109`. The header line
+references on `llmApiKey` (`parser.go:45,80`) are correct.
+
+### Uncertainties not actually resolved
+
+None claimed: `resolvesUncertain` is empty. The bundle has 18 `x-uncertain:`
+keys on `origin/main` and 18 here; none is on `testLLMConnection` or
+`patchSettings`.
+
+### Non-blocking
+
+1. §3 rejects a "selected provider" write rule partly because "the web app's
+   form lets a user type an Ollama address in the Ollama field while OpenAI is
+   still selected". `Settings.tsx:742` renders that field only while the draft
+   provider is `ollama`, so the case arises only if the user switches the draft
+   back before saving. The second reason (the write would depend on another
+   property in the same body) still carries the rejection. No schema change.
+2. §8 and the manifest point at `docker-compose.yml:50-52`; the PAC-66
+   approved-host variables are at `:56-58` (50-52 is the comment above them).
+   `docker-compose.prod.yml:89-91` is a comment saying LLM providers need "no
+   server-level env vars", which has been false since PAC-66 and is more so
+   here. The implementation stage should rewrite it rather than add beside it
+   (spec §B7).
+3. The `llmApiKey` description calls the key "the `Authorization` header
+   value" for `openai`; the header is `Bearer <key>` (`parser.go:45`). Wording
+   carried from PAC-24; harmless.
+
+### Verified clean
+
+- Manifest `acceptanceTests` AC-B1..AC-B19 against spec §B4: same Given/When/Then,
+  no narrowing (the AC-B9 second half, the AC-B10 starting state, and AC-B17's
+  two forced values and OpenAI key on file are all carried).
+- Write rule vs send rule: every value the write accepts but a provider must not
+  use is refused at send time for that provider (items 4 and 9 above). `""` is
+  always accepted, and unchanged values are not re-checked (consistent with
+  `changedSettingsProperties` / `validateChangedSettings`,
+  `handlers_settings.go:130-135,166-203`).
+- The schema description fixes `property` for every Ollama fallback state (both
+  empty, `ollamaBaseUrl` set, only `llmBaseUrl` set).
+- Per-provider separation: no shared list; an Ollama-approved origin never
+  approves a key-carrying send (AC-B11); IP literals are allowed only in the
+  Ollama list.
+- Commands run on `b7da681`:
+  - `python3 scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98 paths)`, rc=0.
+  - `sha256sum contracts/openapi/openapi.yaml`:
+    `a63233518d6b4f05be9fd93d83d80c5b4380e2f1595eb8a66d1dbe3a071a3dcc`, equal to
+    the manifest's `contractHash`.
+  - `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-pac66b-llm-base-url-contract`:
+    `make openapi rc=0`, `regenerated: none`, `OK: backend/api/gen matches the contract`,
+    `openapi-check(api) rc=0`, `backend lint rc=0`, `mcp lint rc=0`,
+    `backend test rc=0`, `mcp test rc=0`, `backend coverage rc=0` (48.3%, floor 43%),
+    `mcp coverage rc=0` (84.0%, floor 75%).
+  - Not run: the web gate and the e2e gate. The web regen follows the merge
+    (factory §1), and this stage changes no behaviour. This stage posted no
+    Linear comment.
