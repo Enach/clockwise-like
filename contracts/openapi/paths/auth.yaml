@@ -4,8 +4,11 @@
 # backend/auth/*.go + backend/storage/{users,orgs,sso_providers}.go.
 #
 # Auth transport note (backend/api/middleware.go requireAuth):
-#   the JWT is read from the `auth_token` cookie FIRST; only if that cookie is
-#   absent/empty is `Authorization: Bearer <jwt>` consulted. Both work.
+#   since PAC-39 (#215, API-008) an `Authorization: Bearer <jwt>` header wins:
+#   when the header has the `Bearer ` prefix its token is the ONLY credential
+#   considered (an invalid one is a 401, never retried with the cookie). Only a
+#   request with no `Bearer` header (none, or another scheme) falls back to the
+#   `auth_token` cookie. Both work.
 #   Protected operations below carry no `security:` key and therefore inherit the
 #   global scheme (`bearerAuth`); `cookieAuth` is the transport the shipped
 #   frontend actually uses (it never sets an Authorization header).
@@ -221,8 +224,15 @@ paths:
       tags: [auth]
       summary: Detect which auth provider an email address should use
       description: |
-        Rate limited to 20 requests per minute per client IP (sliding window,
-        in-process map keyed by X-Real-IP / first X-Forwarded-For / RemoteAddr).
+        Rate limited to 20 requests per minute per client IP (fixed one-minute
+        window per key, in-process map; expired buckets are swept at most once a
+        minute). Since PAC-39 (#215, API-062) the key is the IP of the socket peer
+        (`RemoteAddr` without its port). `X-Forwarded-For` is never read. A
+        client-supplied `X-Real-IP` is ignored; `X-Real-IP` is used only when the
+        socket peer is inside the operator's `TRUSTED_PROXIES` allowlist (empty
+        by default, so no proxy is trusted) and holds a valid IP. Still open
+        (API-062): the map is per process, so the effective limit is
+        20/min x replicas.
       security: []
       requestBody:
         required: true
@@ -244,7 +254,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: '"rate limit exceeded" — more than 20 detects/minute from this IP.'
+          description: '"rate limit exceeded" — more than 20 detects in the current one-minute window from this client IP (socket peer, or X-Real-IP from a trusted proxy).'
           content:
             application/json:
               schema:
@@ -631,8 +641,11 @@ components:
       description: |
         HS256 JWT issued by backend/auth/jwt.go GenerateToken. Claims: `sub`
         (user uuid, string), `email`, `exp` (+7 days), `iat`.
-        middleware.requireAuth accepts it as `Authorization: Bearer <jwt>` ONLY
-        when the `auth_token` cookie is absent or empty — the cookie wins.
+        middleware.requireAuth accepts it as `Authorization: Bearer <jwt>`.
+        Since PAC-39 (API-008) the header wins over the `auth_token` cookie: when
+        a `Bearer ` header is present its token is the only credential
+        considered, whatever the cookie holds, and an invalid bearer token is a
+        401 with no fallback to the cookie.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -641,7 +654,8 @@ components:
         The same HS256 JWT, set httpOnly / SameSite=Lax / Max-Age=604800 / Path=/
         by the OAuth and OIDC callbacks. This is the transport the shipped
         frontend uses (both fetch wrappers send `credentials: "include"` and
-        never set an Authorization header). It is checked before bearerAuth.
+        never set an Authorization header). It is consulted only when the request
+        carries no `Authorization: Bearer` header (PAC-39, API-008).
 
   schemas:
     ErrorResponse:
