@@ -413,3 +413,180 @@ never shared).*
   revocation does not exist (OQ-1), Paceday does not fall back to revoking all of
   the user's Microsoft sessions; that would act on far more than the user asked.
   *Assumed by the factory, pending owner confirmation.*
+
+## Challenge — 2026-10-26
+
+**Verdict**: accept-with-changes
+
+Reviewed against the committed spec (910145e), the Linear issue text, the
+backend at `16f3100`, `contracts/openapi/` and `smart-calendar-flow` at
+`d9e0786`. The spec correctly understands the issue's problem, and almost every
+§2 citation I checked is accurate. The defects are in what AC-8 leaves undefined
+and in an understated inherited scope.
+
+### Blocking
+
+1. **AC-8 and AC-10 say "the action fails" for availability lookups. Those
+   lookups degrade by design today instead of failing, and the spec does not say
+   which behaviour it wants.** `FreeBusyService.Query`
+   (`backend/engine/freebusy_service.go:74-155`) never returns a provider error.
+   A failed Outlook or Google fetch becomes `coverage: "unknown"` with empty busy
+   slots in a 200, and that result is **cached for 15 minutes** (`:140-152`).
+   Two consumers depend on the 200: `POST /api/freebusy`
+   (`backend/api/handlers_freebusy.go`) and the manager team-stats path
+   (`backend/engine/manager.go:484-487`, which uses the result only when
+   `err == nil`). Read literally, AC-8 requires both to start failing, which
+   breaks them. Read loosely, a test of Teams creation alone satisfies AC-8, so
+   the lookup that AC-1 names is never exercised. The cache causes a further
+   problem: after AC-12's reconnect, a lookup can keep returning the cached
+   "unknown" for up to 15 minutes, so AC-12's "actions succeed" does not hold
+   for this action as written. *Resolves when* AC-8 and AC-10 name the actions
+   they apply to and state, per action, the observable result when the
+   credential is dead or failing temporarily. That result is either an error the
+   user sees, or the existing degraded response plus the status change. AC-12
+   must also state whether a result computed from a dead credential may outlive
+   a reconnect.
+
+2. **The spec does not define "connection status". Under D-1, two status
+   surfaces would keep reporting connected after AC-8 passes.**
+   `GET /api/auth/status` reports only the user's current `calendar_provider`
+   (`backend/api/handlers_auth.go:97-132`). It says nothing about Zoom. It also
+   says nothing about Outlook for a user whose calendar provider is not Outlook
+   but whose Microsoft credential still drives Teams. The other surface is
+   `GET /api/conference/providers`, which derives `teams` from
+   `microsoftToken != nil` and `google_meet` from `googleToken != nil`
+   (`backend/api/handlers_conferencing.go:173,179`). D-1 keeps the refused
+   credential stored. A test of AC-8 that checks auth status alone therefore
+   passes while `teams` and `google_meet` still report `connected: true`. That is
+   the "connected but unusable" state §3 forbids. AC-13 already requires Teams to
+   report not connected after a disconnect; AC-8 has no equivalent. *Resolves
+   when* AC-8 and AC-12 name every status surface that must report not
+   connected, for each of Outlook, Zoom and Google. That means auth status plus
+   the `zoom`, `teams` and `google_meet` rows of conferencing providers. They
+   must also cover the case where the lost credential is not the user's current
+   calendar provider.
+
+3. **The new audit entries change the `GET /api/audit` contract, and the spec
+   does not list that operation.** AC-8, AC-15 and AC-16 require new audit
+   entries. `AuditEntry.action` is a **closed** enum of seven values
+   (`contracts/openapi/paths/calendar.yaml:1669-1672`, enum at `:1716-1723`):
+   "adding an eighth action is a contract change". The inherited-scope section
+   names the auth status, disconnect, sign-in, callback and conferencing
+   operations, but not `GET /api/audit`. Three web consumers are affected:
+   - `smart-calendar-flow/src/api/generated/schemas.ts:38`: `AuditEntry` uses
+     `z.enum` over the seven values. The day this schema is applied, a new value
+     throws a validation error and the whole response is lost.
+   - `smart-calendar-flow/src/api/client.ts:478`: the normaliser passes unknown
+     strings through unchanged.
+   - `smart-calendar-flow/src/pages/Audit.tsx:97`: renders `entry.action` raw,
+     so a new value shows up as a bare identifier.
+
+   *Resolves when* the spec does three things: lists `GET /api/audit` as an
+   operation this feature changes; requires the new action values to be added to
+   the enum without removing any (PAC-23's no-shrink rule); and records in §6
+   that existing values keep their meaning. I checked that operation's inherited
+   items: U-02, API-005 and API-074 are all resolved, so no further scope comes
+   with it.
+
+4. **The inherited-scope section is incomplete, so its claim about which
+   markers and findings apply does not hold.**
+   - `POST /api/events/{id}/conference` (`contracts/openapi/openapi.yaml:1717`)
+     also creates Teams and Zoom meetings with the static token, via
+     `ProviderForRequest` (`backend/api/handlers_conferencing.go:33-48`,
+     `:337-345`). AC-3 and AC-8 reach it ("creates a Zoom meeting", "Zoom
+     action"), but it lies outside the cited ranges (`:800-830`, `:934-1230`,
+     `:1545-1630`). I found no `x-uncertain` and no audit finding on it, but the
+     spec has to say so.
+   - The spec omits open findings on operations it does name: **API-052**
+     (`POST /api/conference/create`, Reported, `docs/factory/api-audit.md:286`),
+     **API-091** (same operation, `:325`) and **API-070**
+     (`GET /api/conference/providers`, Reported, `:304`). AC-3 changes conference
+     create, and AC-8 and AC-13 change what the providers operation reports.
+   - Blocking 1 might be resolved by changing the failure response of
+     Google-backed operations. In that case each of those operations comes into
+     scope too, including `GET /api/calendar/freebusy`, which carries U-03
+     (`contracts/openapi/openapi.yaml:1493-1494`) and API-091.
+
+   *Resolves when* the inherited-scope section lists each of these with the same
+   condition used for API-061: it comes into scope if the contract stage edits
+   that operation.
+
+### Non-blocking
+
+1. AC-15 requires the Zoom disconnect response to tell A that revocation was not
+   confirmed. Today that operation returns 204 and the web caller ignores the
+   result (`smart-calendar-flow/src/api/client.ts:1463`,
+   `src/components/ConferencingSection.tsx:98`). §5 rightly leaves the copy to
+   the web repo. §6 should still note that the existing caller must keep working
+   whatever the new response is.
+2. The spec does not say what conferencing becomes when a Teams user
+   (`conferencing_provider = 'teams'`) disconnects Outlook. Zoom disconnect
+   returns conferencing to Meet (§6), and D-3 covers only the calendar provider.
+   A sentence settling the Teams case would close the gap.
+3. `ClearZoomTokens` sets conferencing to `meet` even when the user had chosen
+   Teams (`backend/storage/conferencing.go:12`), and §6 keeps this as "must not
+   change". It is worth an explicit decision rather than an inherited accident.
+4. AC-5's "run concurrently" does not say whether two backend processes count.
+   If the deployment can run more than one replica, the criterion should say
+   whether it must hold across replicas.
+5. AC-1 says the lookup "reads A's Outlook calendar". It actually queries the
+   *attendees'* free/busy using A's credential (`freebusy_service.go:123-127`).
+   The test is the same either way; the wording should match the code.
+6. The Decisions preamble attributes "credentials belong to one user and are
+   never shared" to `docs/specs/PAC-24.md:986`. That section records that
+   `microsoft_tokens` and `zoom_tokens` are not copied between users (table at
+   `:1001-1002`). That supports the claim but does not say it. Quote what is
+   there.
+7. §2.5 says the Microsoft and Zoom hosts are routed to the refusing sink. That
+   is true, but Google's hosts are in the same list (`e2e/fake.ts:27-35`); the
+   Google stand-in is reached another way. This is harmless, but the sentence
+   implies Google is not in the sink list.
+
+### Criteria I could not falsify
+- AC-8 for availability lookups: no test can tell pass from fail until the spec
+  states the expected result of a lookup on a dead credential (Blocking 1).
+- AC-12 for availability lookups: the 15-minute cache makes the outcome depend
+  on timing (Blocking 1).
+
+Every other criterion has a test that fails today and would pass afterwards:
+- AC-1, AC-3, AC-4, AC-6: no refresh request or write-back exists today.
+- AC-2, AC-18, AC-19: pin behaviour that is already true, as the spec says.
+- AC-5: nothing serialises renewal today.
+- AC-7: passes today; it guards against eager refresh.
+- AC-9, AC-10: no credential audit entries exist.
+- AC-11: `SaveMicrosoftToken` and `SaveZoomTokens` overwrite the stored
+  credential with whatever the exchange returned.
+- AC-13, AC-17: there is no Outlook disconnect route.
+- AC-14, AC-15, AC-16: there is no revocation call and no disconnect audit
+  entry.
+
+### Citations I checked and found wrong
+- None that matter. Non-blocking 6 and 7 cover two imprecise ones. The
+  following are correct:
+  - Microsoft: `microsoft_oauth.go:30,43-47,52-70,68,74-89`;
+    `handlers_microsoft_auth.go:56,72,73`; `freebusy_service.go:123-127`.
+  - Conferencing: `handlers_conferencing.go:40-44,109,112,113,139-144,152-155,169,176,178-179,186-192,342-345`;
+    `client_factory.go:20-21,78-79`.
+  - Auth and routes: `handlers_auth.go:70,98-105,113-131,135-144`;
+    `routes.go:39,48,127`.
+  - Zoom: `personal_calendars.go:157-168`; `zoom_oauth.go:19,32-60`;
+    `factory.go:17-21`; `zoom.go:36`; `conferencing.go:11-14`.
+  - Google: `token_store.go:16-30,40-59`; `google_oauth.go:32-33`;
+    `handlers_calendar.go:143`. As §2.3 says, the sign-in callback's
+    `UpsertUserToken` is the only writer of Google tokens.
+  - Tests: `settings_test.go:154-180`; `pac24_scope_test.go:128-164`;
+    `handlers_auth_test.go:42-50` (asserts the status code only).
+  - Other: `focus_blocks.go:80-90` (seven callers, none credential-related);
+    `settings.go:200`; `personal_reader.go:18-30`; `personal_blocker.go:72,87`;
+    `PRODUCT.md:90`; api-audit rows API-011, API-012 and API-061.
+
+### Consumers this breaks
+- clockwise-like/backend/engine/manager.go:486: expects `FreeBusyService.Query`
+  to succeed. It breaks if AC-8 is read as "availability lookups fail"
+  (Blocking 1).
+- clockwise-like `POST /api/freebusy` (`backend/api/handlers_freebusy.go`) and
+  its web caller: the same risk (Blocking 1).
+- smart-calendar-flow/src/api/generated/schemas.ts:38 and src/pages/Audit.tsx:97:
+  new audit action values (Blocking 3).
+- smart-calendar-flow/src/api/client.ts:1463: Zoom disconnect is typed `void`
+  and must keep working if the response gains a body (Non-blocking 1).
