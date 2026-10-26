@@ -599,6 +599,33 @@ PAC-24 decision that endpoints, regions and profiles "identify or bill the owner
   own approved set, and a provider's credential is never sent to a host approved
   only for another provider. *Assumed by the factory, pending owner confirmation.*
 
+*Decisions taken at stage 2 (contract revision 1, `contracts/features/PAC-66.md`).
+They settle questions this spec left to the contract stage (OQ-2, OQ-3, and the
+round-3 challenge's non-blocking items). None changes a criterion above.*
+
+- **D-9 — Exact-host matching rule (OQ-2).** A destination matches only with
+  scheme `https`, port absent or 443, no userinfo, and a host equal (ASCII
+  case-insensitive) to an entry for that provider. A trailing dot is not
+  stripped. No wildcards, suffixes or subdomains. *Assumed by the factory,
+  pending owner confirmation.*
+- **D-10 — Operator entries (AC-12, round-3 NB-5).** Three variables,
+  `PACEDAY_LLM_APPROVED_HOSTS_{AZURE_OPENAI,VERTEX,BEDROCK}`, comma-separated. An
+  entry is a bare host name, or `https://<host>` with an optional trailing `/`
+  (reduced to its host). Anything else is malformed and is logged and ignored
+  (D-6). *Assumed by the factory, pending owner confirmation.*
+- **D-11 — No write-time check on provider selection (OQ-3).** Selecting an
+  ambient provider with nothing approved is accepted on write and refused at
+  send time (AC-4, AC-17). *Assumed by the factory, pending owner confirmation.*
+- **D-12 — AC-5 applies only when the value changes (round-3 NB-3).** A write
+  that sends back an unapproved value already stored is accepted under PAC-24
+  AC-17, and the value is refused at send time (AC-9). *Assumed by the factory,
+  pending owner confirmation.*
+- **D-13 — Host approval does not constrain the path (round-3 NB-1).** As AC-6
+  says, a value whose effective host is approved is accepted whatever its path.
+  Path and project steering on an approved host is recorded as a follow-up
+  (contract §7) with the product owner as owner. *Assumed by the factory,
+  pending owner confirmation.*
+
 ## Challenge — 2026-10-26
 
 **Verdict**: accept-with-changes
