@@ -185,3 +185,168 @@ not read the body.
   only changes after it); that output is in the Linear comment on PAC-29.
 - web-gate: not run at this stage (the web types regenerate after the contract merges,
   factory §1).
+
+## Challenge — 2026-10-27
+
+Reviewer: `contract-challenger`, against the committed state of `factory/pac-29-contract`
+at `1f07d4a`. Read: this file, `PAC-29.yaml`, the fragment diff against `origin/main`,
+the PAC-29 Linear issue body, `docs/factory/api-audit.md` (API-017, U-04, U-14, C4), the
+three handlers, `toCalendarEventDTO`, `SmartScheduler.CreateMeeting`, `mcp/tools.go`,
+`e2e/tests/seam.spec.ts`, and the web consumers in `smart-calendar-flow` (`main`).
+
+**Verdict**: accept-with-changes. The response change itself (the three 200 bodies become
+`CalendarEvent`) is correct and I could not break it. Two blocking findings sit on the
+operation this contract touches (`patchEvent`) and must be settled before the contract
+merges.
+
+### Blocking
+
+**B-1. D-1 contradicts factory §7.1 and the issue it implements.** README §7.1 ("Touch
+it, fix it") is binding: a feature that modifies an operation carrying an open audit
+finding on that operation must resolve it. PAC-29 modifies `patchEvent` (its 200
+response), and `patchEvent` carries four open findings: API-018 (`send_updates`,
+`room_resource_email`, `attendee_details` discarded), API-043 (all-day to timed), API-044
+(room stripped) and API-045 (every `GetEvent` failure is 404). The PAC-29 issue body also
+asks for them explicitly ("While in this handler, fix the adjacent PATCH defects") and
+lists all six findings. D-1 defers them on the factory's own authority, and the
+`followUps` name owners but no issue: a Linear search for `API-018` and `API-045` finds
+no issue other than PAC-29, so closing PAC-29 would leave those findings with no tracking
+issue at all. (API-042 is on `DELETE`, which this contract does not touch, so §7.1 does
+not require it here.) "Assumed by the factory" is for product decisions with no owner
+answer; it does not override a binding factory rule.
+Fix, one of:
+(a) extend this contract to resolve API-018/043/044/045 on `patchEvent`, choosing the
+most conservative option per finding and recording each under Decisions; or
+(b) get an owner decision that PAC-29 is split, recorded in §4 as owner-confirmed, with
+one Linear issue per deferred finding filed and linked from `followUps` before merge,
+and the PAC-29 issue body amended so it no longer asks for them.
+
+**B-2. `EventPatchRequest` forbids the request the only web consumer sends.**
+`EventPatchRequest` declares `additionalProperties: false`, while its own description
+says "Unknown keys are silently ignored by encoding/json", which is what
+`patchEvent`'s anonymous body struct does (`backend/api/handlers_events.go`, `patchEvent`).
+The web sends extra keys on every call:
+`smart-calendar-flow/src/api/client.ts:1360-1367` posts `{...patch, send_updates}`, and
+`src/components/EventEditForm.tsx:95-107` adds `room_resource_email` and
+`attendee_details`. The request
+
+```
+PATCH /api/events/evt-1
+{"title":"Standup","start":"2026-05-01T10:00:00Z","end":"2026-05-01T10:30:00Z",
+ "room_resource_email":"","attendee_details":[{"email":"a@x.com"}],
+ "attendees":["a@x.com"],"send_updates":"all"}
+```
+
+is answered 200 by the server (extra keys ignored), but the contract rejects it. AC-4
+asks the frontend stage to type `updateEvent` with the generated types, which makes this
+mismatch visible exactly when the frontend implements this contract. This is the contract
+side of API-018 on the operation PAC-29 touches, and §7.2 says the contract describes what
+the server does.
+Fix (contract shape only): declare `send_updates` (string), `room_resource_email`
+(string) and `attendee_details` (array) on `EventPatchRequest`, each described as
+"accepted and ignored by the server (API-018)", or relax `additionalProperties` to
+`true` with that note. If B-1 is resolved by option (a), these properties get their real
+semantics there instead.
+
+### Requests wrongly permitted
+
+None found on the response change. The request bodies of the three operations are
+unchanged by this diff. See B-2 for the one request this contract wrongly forbids.
+
+### Responses the client cannot handle
+
+None. Payloads tried for each of the three operations, as `toCalendarEventDTO` would
+emit them (`backend/api/handlers_calendar.go:65`):
+
+```
+{"id":"new-evt","title":"","start":"2026-05-01","end":"2026-05-02"}
+{"id":"evt-1","title":"New","start":"2026-05-01T10:00:00Z","end":"2026-05-01T10:30:00Z",
+ "attendees":["a@x.com"],"attendee_details":[{"email":"a@x.com","rsvp":"pending"}],
+ "conference":{"provider":"google_meet","url":"https://meet.google.com/abc","label":"Google Meet"}}
+```
+
+`id`/`title`/`start`/`end` have no `omitempty` (`handlers_calendar.go:24-27`), so
+`required: [id, title, start, end]` holds even for empty values. The only consumers
+that read the body, `Dashboard.tsx:198-199`, `Dashboard.tsx:217-224` and
+`ScheduleSuggestModal.tsx:119-125`, read `ev.title` only; an empty title renders
+`Scheduled ""`, not a crash. All-day bare dates, missing `attendees`, room-only
+attendee lists and absent `conference` are covered by the existing schema and are not
+read by these consumers.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/client.ts:1155-1167` (non-blocking, frontend stage):
+  the `scheduleCreate` mock arm builds a hand-written `CalendarEvent` with
+  `color: "#3B82F6"` (not in the generated `color` enum) and `coverage` (not in the
+  generated schema). `withFallback<T>` (`client.ts:524`) requires both arms to share `T`,
+  so typing the method with the generated `CalendarEvent` (AC-4) will not compile until
+  the mock arm changes. `client.ts` is in the frontend allowed paths, so AC-4 is still
+  achievable; the plan should name this.
+- `mcp/tools.go:79-80, 113-114` (`clockwise_create_event`, `clockwise_update_event`):
+  output text changes from Google keys to DTO keys (D-4). No MCP code parses it; the tool
+  descriptions promise no shape; `clockwise_list_events` already returns the DTO, so MCP
+  becomes consistent. Agreed with the manifest.
+- `e2e/tests/seam.spec.ts:248-267, 324-335`: assert on the fake Google request only.
+  Unaffected, as stated.
+- `backend/api/pac21_4xx_bodies_test.go:104` `TestPatchEvent_SuccessBodyIsRawGoogleEvent`:
+  on `main` it pins the opposite of this contract from the moment the contract merges
+  until the backend PR lands. Stated honestly in the descriptions; see N-1.
+- Web code outside `src/api/generated/` references none of the four deleted
+  `Google*` schemas (grepped `src`).
+
+### Contract/implementation divergences
+
+1. All three 200 descriptions describe the server *after* the implementation PR (each
+   says so). Between the merges, the contract and `main` disagree, and §7.2 says the
+   contract describes what is. I accept the explicit wording on the PAC-30 precedent,
+   but see N-1.
+2. B-2 above (`additionalProperties: false` vs "unknown keys are silently ignored").
+
+### Uncertainties not actually resolved
+
+None that the manifest claims. U-04: settled by decision (CalendarEvent is
+authoritative) and pinned by AC-1/AC-3 once written. U-14: the schema is gone and both
+operations reference `CalendarEvent`; lines containing `x-uncertain` in the bundle drop
+from 14 to 13 (`grep -c`, origin/main vs HEAD). The `CalendarEvent.is_personal_block`
+marker now reaches three more operations (D-3); for these operations the behaviour is
+determined (always omitted, `toCalendarEventDTO` never sets it), so it does not block.
+
+### Non-blocking
+
+- **N-1** Merge the backend implementation PR directly after this contract, and use
+  `Part of PAC-29` (not `Fixes PAC-29`) on the contract PR, so the window in which `main`
+  has a test asserting the raw body against a contract saying DTO is short and nothing
+  closes PAC-29 early.
+- **N-2** There is no `docs/specs/PAC-29.md` (§0 says so). The "three acceptance
+  criteria supplied with the contract stage" exist only as paraphrased in §6; I could
+  check the manifest's AC-1..AC-5 against the issue body (the PATCH analogue of
+  `TestToCalendarEventDTO_JSONShape`, the deleted `GoogleCalendarEvent`) but not against
+  the supplied criteria themselves. Narrowing relative to the issue body is B-1.
+- **N-3** `scheduling.notes.md` uncertainty table row 2 still names
+  `paths./api/nlp/confirm.post.x-uncertain`, which no longer exists in the fragment (the
+  400 for a negative index is described in the operation). Stale row on a touched
+  operation; strike it like row 3.
+
+### Verified clean
+
+- `bash .claude/factory/api-gate.sh factory/pac-29-contract` run by the challenger on
+  `1f07d4a`: `make openapi rc=0`, `regenerated: none`, `OK: bundle is in sync (98 paths)`,
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+  backend coverage 55.4% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0.
+- `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98 paths)`, rc=0.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` =
+  `268a1834cd4a860c2d98c36959e252f2327004994d62a3d9c95af7cc25bedf21`, matching
+  `contractHash`.
+- All three handlers encode a `*googlecalendar.Event`: `patchEvent` the result of
+  `UpdateEvent` (`handlers_events.go:88`), `createMeeting` and `confirm` the result of
+  `SmartScheduler.CreateMeeting` (`engine/smart_schedule.go:288`, which returns the
+  `createEvent` result unmodified). So `toCalendarEventDTO` applies to all three with no
+  provider other than Google on these paths, and the list and the mutations go through
+  one converter.
+- Room filtering (D-2): the DTO drops `*@resource.calendar.google.com` from both
+  `attendees` and `attendee_details` (`handlers_calendar.go:93-97`); the response
+  descriptions say so. Shows the caller less than the raw body did, never more.
+- Web generated types: `GoogleCalendarEvent*` appear only in `src/api/generated/`.
+- No rejected alternative in §3 was rejected without a reason I could check.
