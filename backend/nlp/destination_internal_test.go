@@ -24,6 +24,20 @@ func TestApprovedOnlyTransport_RefusesAtTheMomentOfSending(t *testing.T) {
 	t.Cleanup(SetApprovedHosts(config.LLMApprovedHosts{ProviderVertex: {"europe-west4-aiplatform.googleapis.com": true}}))
 	t.Cleanup(SetAmbientDeps(AmbientDeps{Transport: inner}))
 	c := ambientHTTPClient(ProviderVertex)
+	send := func(target, host string) error {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, target, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if host != "" {
+			req.Host = host
+		}
+		resp, err := c.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return err
+	}
 
 	for _, target := range []string{
 		"https://attacker.example/x",
@@ -31,34 +45,26 @@ func TestApprovedOnlyTransport_RefusesAtTheMomentOfSending(t *testing.T) {
 		"https://europe-west4-aiplatform.googleapis.com:8443/x",
 		"https://u@europe-west4-aiplatform.googleapis.com/x",
 	} {
-		req, _ := http.NewRequest(http.MethodPost, target, strings.NewReader("{}"))
-		_, err := c.Do(req)
 		var r *DestinationRefusal
-		if !errors.As(err, &r) {
+		if err := send(target, ""); !errors.As(err, &r) {
 			t.Errorf("%s: err = %v, want a refusal", target, err)
 		}
 	}
 	// A Host header that differs from the URL's host is refused too.
-	req, _ := http.NewRequest(http.MethodPost, "https://europe-west4-aiplatform.googleapis.com/x", nil)
-	req.Host = "attacker.example"
-	if _, err := c.Do(req); err == nil {
+	if err := send("https://europe-west4-aiplatform.googleapis.com/x", "attacker.example"); err == nil {
 		t.Error("a mismatched Host header was sent")
 	}
 	if inner.n != 0 {
 		t.Fatalf("%d requests reached the network, want zero", inner.n)
 	}
 
-	req, _ = http.NewRequest(http.MethodPost, "https://Europe-West4-aiplatform.googleapis.com/x", nil)
-	resp, err := c.Do(req)
-	if err != nil || inner.n != 1 {
+	if err := send("https://Europe-West4-aiplatform.googleapis.com/x", ""); err != nil || inner.n != 1 {
 		t.Fatalf("approved request: err %v, sent %d, want sent once", err, inner.n)
 	}
-	_ = resp.Body.Close()
 
 	// A transport refusal is attributed to the provider the client was made for.
 	t.Cleanup(SetApprovedHosts(config.LLMApprovedHosts{ProviderAzureOpenAI: {"europe-west4-aiplatform.googleapis.com": true}}))
-	req, _ = http.NewRequest(http.MethodPost, "https://europe-west4-aiplatform.googleapis.com/x", nil)
-	if _, err := c.Do(req); err == nil || inner.n != 1 {
+	if err := send("https://europe-west4-aiplatform.googleapis.com/x", ""); err == nil || inner.n != 1 {
 		t.Errorf("a host approved only for azure_openai was sent the vertex credential (D-8)")
 	}
 }
