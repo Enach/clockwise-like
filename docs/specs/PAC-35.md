@@ -1202,3 +1202,97 @@ Answers to the round-3 challenge above. Author: spec-author.
 ### Non-blocking not taken, with reason
 
 - None.
+
+## Challenge — 2026-10-26 (round 4)
+
+Reviewed: commit `7c7d2c8` on `factory/pac-35-spec` (revision 3), against
+clockwise-like `origin/main` `7de7044` and smart-calendar-flow `origin/main`
+`4ded854` (both still the tips of `main` at review time). Reviewed by
+spec-challenger, which did not write this spec. Scope: whether revision 3
+resolves the round-3 blocking finding, and the new text it added (§2.4 three
+revision-3 bullets, §3 revision-3 paragraph, AC-17 web half on receiving the
+D-8 answer, AC-17 Teams line, D-8 revision-3 note).
+
+**Verdict**: accept
+
+Round-3 blocking 1 is resolved. D-8 now requires the "not performed" answer to
+be classified by the API client as a failure, neither success nor unreachable.
+AC-17's web half now covers both surfaces receiving that answer from a stale
+Google status. It asserts the failure classification, no success
+confirmation, no preview switch and no preview disconnect, and the "not
+available yet" message. Both checks fail today: each surface toasts its success
+message on a `204` (`ConnectionStatus.tsx:18-19`,
+`WorkCalendarConnection.tsx:87-88`), and a non-JSON `2xx` throws
+`ApiUnreachableError` (`client.ts:414-415`). `withFallback` then sets mock
+mode and runs the mock disconnect (`client.ts:491-503`, `:952-954`). Both can
+pass afterwards. Round-3 non-blocking 1-3 are taken. I found nothing that
+blocks.
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **D-8's "what the calendar status reports as Google" also covers the status
+   endpoint's error branch.** When the settings row cannot be read, the status
+   endpoint answers `{"connected": false, "provider": "google"}`
+   (`backend/api/handlers_auth.go:86-90`). Read literally, D-8 then classifies
+   the user as Google. A disconnect whose settings read fails could then go
+   down the Google path and delete the Google credential of a user who is in
+   fact Outlook or webcal, which is the deletion D-8 exists to prevent. The
+   revision-3 note says "a blank or unrecognised provider included", so the
+   intent is about provider *values*, not an unreadable row. One sentence
+   would close it: when the provider cannot be determined, disconnect deletes
+   nothing and answers a failure.
+2. **After the D-8 answer, AC-17 does not say what the surface shows next.**
+   Both callers invalidate the `["auth"]` query only on success
+   (`ConnectionStatus.tsx:20`, `WorkCalendarConnection.tsx:89`). So after the
+   failure the stale view can still read "Google — connected" with a
+   Disconnect button, next to a message saying disconnect is not available for
+   this kind of calendar. That is not a false confirmation, so §3 holds, but
+   the message and the view disagree. The spec could require the surface to
+   show the server's current status after the D-8 answer, or record that the
+   stale view is accepted.
+3. **AC-17's message requires the D-8 answer to be distinguishable from other
+   failures.** Today both surfaces map every failure to "Failed to
+   disconnect". The "not available yet" message on receipt of the D-8 answer
+   therefore needs an answer the app can tell apart from a `500` or a
+   middleware `401`. AC-17 already forces this, and the shape is the contract
+   stage's choice under D-8. This note is for the contract-challenger, so
+   nobody reuses a status the app already maps to a generic message
+   (`apiErrorMessage`, `client.ts:351-369`).
+
+### Criteria I could not falsify
+
+- AC-16: a gate run, not a behavioural criterion (unchanged).
+- All others have a test that fails on `7de7044` / `4ded854` and can pass
+  afterwards. That includes AC-17's new web half (see above).
+
+### Citations I checked and found wrong
+
+- None. I checked revision 3's new citations:
+  - clockwise-like `7de7044`:
+    - `backend/auth/microsoft_oauth.go:68` (`UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook'`)
+    - `backend/api/handlers_auth.go:62-79` (the Google callback upserts the user and the token, associates the org and touches no settings)
+    - `:92-111` (blank becomes google, and the `default` branch answers google)
+    - `backend/api/handlers_settings.go:32`, `:272` (only google, outlook and webcal are accepted)
+    - `backend/api/handlers_conferencing.go:199-210` (Google Meet keyed on the Google token, Teams on the Microsoft token)
+  - smart-calendar-flow `4ded854`:
+    - `src/api/client.ts:375-418` (non-ok throws `ApiHttpError`, `204` resolves, a non-JSON `2xx` throws `ApiUnreachableError` at `:414-415`)
+    - `:491-503` (`withFallback` falls back only on unreachable)
+    - `:952-954` (mock disconnect)
+    - `ConnectionStatus.tsx:18-19`
+    - `WorkCalendarConnection.tsx:87-88`
+  - I also checked that the web app has no global 401 or HTTP-error handler that
+    would sign the user out on a D-8 answer: there is no `QueryCache` or
+    `MutationCache` error hook in `src/`.
+
+### Consumers this breaks
+
+- No new ones beyond round 3's list. smart-calendar-flow
+  `src/components/ConnectionStatus.tsx:15-26` and
+  `src/components/WorkCalendarConnection.tsx:84-95` must change for AC-17
+  (expected). `src/api/contract.test.ts:84-87` and the generated
+  `src/api/generated/*` gain the D-8 response (expected under AC-15).
+- Checked and unaffected: `mcp/` has no caller of disconnect (unchanged).
