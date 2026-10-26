@@ -284,6 +284,34 @@ this follow-up covers.
 
 ## 9. What was run
 
-Recorded in the commit that adds this file and in the Linear comment, with the
-gate output verbatim. If a gate could not run, that is stated there rather than
-here.
+On this branch, at the commit that regenerated `backend/api/gen` (the bundle is
+unchanged since; sha256 `9d972b2a…f921c`, as in the manifest):
+
+- `python3 scripts/openapi_assemble.py --check` printed
+  `OK: bundle is in sync (98 paths)`. The `x-uncertain` count is still 18.
+- `bash .claude/factory/api-gate.sh factory/pac-66-contract` ran twice. The first
+  run printed `regenerated: backend/api/gen/paceday.gen.go`, which was committed.
+  The second run, on that commit, printed:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 43.9% (floor 43%) [3871 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+**Not run:** the web half of `make openapi-check`. The gate runs with
+`WEB=/nonexistent`, and the web types are regenerated only after this contract
+merges (factory §1). Until then, the web repo's generated files are behind this
+bundle by `LLMDestinationRefusal` and the new descriptions. No e2e was run,
+because this stage changes no behaviour.
