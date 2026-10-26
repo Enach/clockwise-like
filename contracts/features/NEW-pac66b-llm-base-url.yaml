@@ -5,7 +5,7 @@
   "linearIssueNote": "PAC-66-B is not yet filed in Linear (spec Part B header, AC-B13). Until it is, the parent PAC-66 is the tracking issue; PAC-66 must not close before PAC-66-B exists and is linked to it (spec D-4).",
   "status": "draft",
   "contractRevision": "1",
-  "contractHash": "SEE_contractHashOf",
+  "contractHash": "a63233518d6b4f05be9fd93d83d80c5b4380e2f1595eb8a66d1dbe3a071a3dcc",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it, computed after `python3 scripts/openapi_assemble.py` and verified with `python3 scripts/openapi_assemble.py --check` (exit 0, `OK: bundle is in sync (98 paths)`). Reproduce with: `python3 scripts/openapi_assemble.py && python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`.",
   "contractDoc": "contracts/features/NEW-pac66b-llm-base-url.md",
   "specDoc": "docs/specs/PAC-66.md (Part B, accepted at challenge round 3, 0 blocking)",
