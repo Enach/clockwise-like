@@ -108,8 +108,9 @@ test.describe('AC-11 — the shipped binary does not follow a redirection', () =
         end: `${isoDate(weekDay(1, 0))}T00:00:00Z`,
       });
       expect(res.status()).toBe(500);
+      expect(res.headers()['content-type']).toMatch(/^application\/json/);
       const body = await res.text();
-      expect(body.trim()).toBe('internal error');
+      expect(JSON.parse(body)).toEqual({ error: 'internal error' });
       expect(body).not.toContain('redirect');
     } finally {
       await fake.disarmRedirect(LABEL);

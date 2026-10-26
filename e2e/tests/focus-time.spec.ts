@@ -3,7 +3,7 @@
  *
  * POST /api/focus/run -> engine.FocusTimeEngine.RunForUser -> newCalOps()
  * (engine/cal_iface.go), which loads the user's oauth token and returns
- * "not authenticated" when there is none; with one, processDay() lists each
+ * ErrCalendarNotConnected when there is none; with one, processDay() lists each
  * weekday's events and creates the focus blocks AS calendar events — the
  * focus_blocks table stores their event ids. There is no focus block without
  * a calendar.
@@ -64,17 +64,34 @@ test.describe('focus time — what is reachable without a calendar provider', ()
 
     // The point of this assertion is the NEGATIVE: the endpoint must not
     // return 200 with an empty CreatedBlocks array, because a caller cannot
-    // tell that apart from "there was no room this week". A 500 is the
-    // current, honest behaviour; since PAC-21 its body is the generic message
-    // and the cause ("not authenticated") goes to the server log only.
-    expect(res.status()).toBe(500);
-    expect((await res.text()).trim()).toBe('internal error');
+    // tell that apart from "there was no room this week". Since PAC-21
+    // (API-054) it is the documented 401 CalendarNotConnected: JSON, one
+    // fixed message, no provider or Go error text, no user id. The
+    // middleware's own 401 is text/plain, so the two are told apart.
+    expect(res.status()).toBe(401);
+    expect(res.headers()['content-type']).toMatch(/^application\/json/);
+    expect(await res.json()).toEqual({ error: 'calendar not connected' });
 
     // And nothing must have been written.
     const blocks = await authedApi.get('/api/focus/blocks', {
       week: isoDate(mondayOf(new Date())),
     });
     expect(await blocks.json()).toEqual([]);
+  });
+
+  test('the analytics meeting list answers 401 calendar not connected, not a 500 (API-054)', async ({
+    authedApi,
+  }) => {
+    // Before PAC-21 this was a 500 whose body named the user id
+    // ("internal error: no token for user <uuid>"), then a bare 500.
+    const res = await authedApi.get('/api/analytics/meetings', {
+      date: isoDate(mondayOf(new Date())),
+    });
+    expect(res.status()).toBe(401);
+    expect(res.headers()['content-type']).toMatch(/^application\/json/);
+    const body = await res.text();
+    expect(JSON.parse(body)).toEqual({ error: 'calendar not connected' });
+    expect(body).not.toMatch(/token|user [0-9a-f-]{36}/i);
   });
 
 });
