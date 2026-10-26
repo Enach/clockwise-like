@@ -287,3 +287,37 @@ AC-1 to AC-6, AC-8 to AC-10 and AC-14 are falsifiable as written. Each one fails
 3. **`GET /api/auth/me` also shows membership.** Added to §2 (`routes.go:59`, `handlers_me.go:22-29`, `users.go:17,68-72`), and the §4 definitions of "not joined" / "joined" now check the current-user response as well as the member listing.
 4. **AC-9 timeout bound.** AC-9 now bounds the separate lookup by the identity call's own time limit (`handlers_auth.go:178`, `handlers_microsoft_auth.go:90`); recorded as D-6, assumed by the factory, pending owner confirmation.
 5. **Sequential tenants before a pin.** One sentence added to §3's two-tenants bullet: earlier members are kept, the new tenant's users join, and each was verified when they joined.
+
+## Challenge — 2026-10-26 (round 3)
+
+*spec-challenger, against commit `06e6ab9` on `factory/pac-68-spec` (committed state only). Citations checked against that commit, whose code is the same as `main` at `2e1f392`. The Linear issue body was re-read.*
+
+**Verdict**: accept
+
+Revision 2 resolves the round-2 blocking finding. §3 now states one Microsoft rule with two required conditions: the verified-domain answer lists the domain, and the tenant equals the pin if there is one. D-3 and AC-9 say the same. AC-7 names the verified-domain answer in the Given of all three branches. AC-16 covers the case round 2 raised: pinned tenant, domain no longer verified or lookup failed, not joined. I found no remaining statement that permits a join §3 forbids, or the reverse. The Blocking section is empty, and that is the honest result, not an omission.
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **The Microsoft rule is stricter than the issue's resolution, and the spec does not say so where a stage-2 reader will look.** The Linear issue says a Microsoft account joins when its `tid` equals the pinned tenant, *or*, on first contact, when the verified domains contain the org domain. The spec requires both whenever a pin exists (§3, D-3, AC-16). This is the more conservative option, and Revision 2 explains why (PAC-50 keeps the pin after a domain leaves the tenant). But D-3 does not say that it departs from the issue text. One clause in D-3 ("narrower than the issue's 'pin, or verified domains on first contact'") would stop the contract author from "restoring" the issue's wording.
+2. **AC-15's first clause depends on a fact the plan has not established yet.** AC-15 allows "sign-in identity scopes that need no tenant-admin consent". D-5 makes that conditional on the plan confirming they need none. The criterion is falsifiable either way, because the requested scope list can be inspected. Still, if the plan finds that `openid` needs admin consent, AC-15 forbids it, and the tenant id must then come from the separate lookup (AC-9 path). The spec covers both outcomes, so this is not blocking. Stage 3 should record which outcome applies.
+3. **AC-16's second sentence restates AC-9.** "The same holds when that verified-domain lookup errors or times out" is already covered by AC-9's "whether or not the account's tenant equals the pin". The duplication is harmless. A test author should write one test for it, not two that drift apart.
+4. **Citation range.** §2 cites the Microsoft identity fetch as `handlers_microsoft_auth.go:89-108`. The function is `:88-105`, and `:106-108` start `microsoftConfig`. The claim is correct, but the range is a few lines off.
+
+### Criteria I could not falsify
+
+- AC-11, AC-12, AC-13: regression guards, labelled as such. They pass before and after the change.
+- AC-14: falsifiable only if the plan adds a sign-in stand-in (OQ-4). Otherwise the spec already drops it with a stated reason.
+
+AC-1 to AC-10, AC-15 and AC-16 are falsifiable as written. AC-1 to AC-8, AC-10's Microsoft half and AC-16 each fail today, because both social callbacks call `AssociateUserWithOrg` on the email domain unconditionally (`handlers_auth.go:76`, `handlers_microsoft_auth.go:76`, `orgs.go:42-52`). Each passes once the evidence rule exists. AC-9's bound is testable with an injected lookup slower than the 5 s limit (`handlers_auth.go:178`, `handlers_microsoft_auth.go:90`). AC-15's first clause is testable by inspecting the requested scopes (`microsoft_oauth.go:30`).
+
+### Citations I checked and found wrong
+
+- None that are wrong. One range is imprecise (non-blocking 4). I checked Revision 2's new citations and found them correct: `routes.go:59` (`GET /api/auth/me` behind `requireAuth`); `handlers_me.go:22-29` (`GetUserByID` then encode); `users.go:17` (`Org *Org json:"org,omitempty"`) and `:68-72` (org loaded only when `org_id` is set); the 5 s client timeouts at `handlers_auth.go:178` and `handlers_microsoft_auth.go:90`; the success paths `handlers_auth.go:62-79` and `handlers_microsoft_auth.go:62-79`; identity-failure behaviour `handlers_auth.go:56-60` (500) and `handlers_microsoft_auth.go:62-66` (502); the scopes `microsoft_oauth.go:30` and the `/common` endpoint `:15-16`. The session JWT carries only user id and email (`handlers_auth.go:146-150`). No session minted before or after this change embeds organisation, so the change needs no re-issue.
+
+### Consumers this breaks
+
+- None found. Organisation membership is read by `handlers_org.go:26-31`, the SSO admin handlers (`handlers_sso.go:203,233,269,274,293,298`), `GET /api/auth/me` (`users.go:68-72`) and `ListSSOProvidersByOrg` (`sso_providers.go:82-92`, joins `organizations` on `domain`, reached only from the org-gated SSO listing). Each one already handles "no organisation", or is reached only by a user who has one. `mcp/` and `e2e/` do not read membership. In `smart-calendar-flow/src` (at `d9e0786`), no file outside `src/api/generated/` references the member listing or a user's `org`.
