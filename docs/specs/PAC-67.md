@@ -1,7 +1,7 @@
 # Spec — PAC-67: Per-user Outlook and Zoom credentials have no refresh or revocation lifecycle
 
 - **Linear**: https://linear.app/paceday/issue/PAC-67
-- **Status**: challenged (round 1 answered in "Revision 1")
+- **Status**: challenged (round 1 answered in "Revision 1", round 2 in "Revision 2")
 - **Author**: spec-author
 - **Origin**: PR Enach/clockwise-like#204 (PAC-24) merge condition 3,
   `calendarCredentialLifecycle`; PAC-24 spec §0 and OQ-6
@@ -34,10 +34,11 @@
     `openapi.yaml:1545`). Reached by AC-3, AC-5 and AC-8. **API-052** (`:286`,
     no validation) and **API-091** (`:325`, no frontend consumer): conditional.
   - **Conference on an event** (`POST /api/events/{id}/conference`,
-    `openapi.yaml:1717`). Also creates Teams and Zoom meetings from the stored
-    credential (`backend/api/handlers_conferencing.go:33-48`, `:337-345`), so
-    AC-3, AC-5 and AC-8 reach it. Checked: no `x-uncertain` on it and no audit
-    finding names it. Nothing inherited.
+    `openapi.yaml:1717`). Creates Teams and Zoom meetings from the stored
+    credential (`backend/api/handlers_conferencing.go:33-48`, `:337-345`), but
+    only after reading the event with the **Google** credential (§2.8), so
+    AC-3, AC-5, AC-8, AC-10, AC-12 and AC-23 reach it. Checked: no
+    `x-uncertain` on it and no audit finding names it. Nothing inherited.
   - **Activity log** (`GET /api/audit`, `openapi.yaml:371`). **Changed**: AC-8,
     AC-15 and AC-16 add entry kinds to a closed set (§2.4, AC-22). U-02, API-005
     and API-074 are all resolved; nothing further inherited.
@@ -140,6 +141,13 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
   a response without a refresh token would store an empty one, which status then
   reports as disconnected (`handlers_auth.go:100`). Whether Microsoft ever omits
   it with `offline_access` requested is not established (OQ-6).
+- **A Microsoft sign-in attaches the credential to the user matched by email,
+  not to whoever is signed in.** The callback reads the Microsoft account's
+  email, upserts the user by email (`backend/api/handlers_microsoft_auth.go:62-71`;
+  `ON CONFLICT (email)`, `backend/storage/users.go:21-25`), stores the credential
+  on that user (`:72`) and issues a session for them (`:77`). So "A reconnects
+  Outlook" reaches A only while A's Microsoft email equals A's Paceday email.
+  See OQ-10.
 
 ### 2.2 Zoom credential
 
@@ -250,6 +258,32 @@ Two consumers rely on the call succeeding: `POST /api/freebusy`
 manager team stats (`backend/engine/manager.go:484-499`, which uses a result
 only when there is no error and coverage is `known`).
 
+### 2.8 Meeting creation on an existing event reads the Google credential first
+
+There are two meeting-creation actions, and they do not read the same
+credentials.
+
+- **Standalone create** (`createConference`,
+  `backend/api/handlers_conferencing.go:120-158`) reads only the user's settings
+  and the Teams (Microsoft) or Zoom credential.
+- **On an existing event** (`addEventConference`,
+  `backend/api/handlers_conferencing.go:251-358`) first builds a calendar client
+  from the user's **Google** credential (`:267-271`; `loadEventClient` is
+  `eventHandlers.calClient`, `:52-55`, which calls `auth.LoadUserToken`,
+  `backend/api/handlers_events.go:24-32`), whatever the user's calendar provider
+  is. Without a Google credential it answers 401 "not authenticated" (`:268-270`).
+  It then reads the event with that client; any failure there, including a
+  failed Google refresh, answers 404 "event not found: ..." (`:272-275`). Only
+  after that does it read the Teams or Zoom credential (`:337-345`), and after
+  the meeting is created it writes the link back to the event with the Google
+  client again (`:351-355`).
+
+So on the on-event path the Google credential is a precondition for ever
+reaching Teams or Zoom, and a dead Google credential stops the request before
+the Teams or Zoom credential is read. Listing events behaves the same way: it
+always uses the Google credential, whatever the calendar provider
+(`backend/api/handlers_calendar.go:133-144`).
+
 ## 3. Desired behaviour
 
 From the user's point of view:
@@ -264,11 +298,13 @@ From the user's point of view:
 - **Renewal survives rotation and concurrency.** Where the provider issues a new
   refresh credential on renewal, the new one is kept. Two simultaneous actions by
   the same user do not leave the stored credential unusable.
-- **A dead credential is visible, once.** When renewal is refused by the provider
+- **A dead credential is visible, once per loss.** When renewal is refused by the provider
   (revoked, expired refresh credential, consent withdrawn), every place that
   tells the user whether that provider is connected (§2.6) shows it as not
   connected — including when it is not the user's calendar provider — and the
-  user's own activity log gets one entry saying so, not one per failed request. A temporary failure
+  user's own activity log gets one entry saying so, not one per failed request
+  and not one per simultaneous request. If the user reconnects and the new
+  credential is later lost too, that second loss gets its own entry. A temporary failure
   (network, provider outage) does not mark the connection dead and is not
   recorded as a loss.
 - **Availability lookups keep degrading, not failing.** A lookup that cannot use
@@ -283,6 +319,11 @@ From the user's point of view:
   a way to revoke a single grant, and the connection reports not connected.
   Other users are untouched. If revocation cannot be confirmed, the local
   credential is still removed and the user is told.
+- **Adding a meeting to an existing event still needs the Google connection.**
+  That action reads the event through Google before it reaches Teams or Zoom
+  (§2.8). When the Google credential is the one that is dead, the user is told
+  through the Google status and activity log, exactly as for any other Google
+  action; the Teams or Zoom connection is neither tried nor reported lost.
 - **Reconnecting never makes things worse.** A reconnect that returns no new
   refresh credential does not erase a working one.
 - **Connecting Outlook changes only the caller's calendar provider** — already
@@ -313,8 +354,27 @@ not required to appear. "Reports not connected" on the Teams row also means it
 does not report the provider as usable by any other field of that row.
 
 The actions each criterion applies to are named. "Meeting creation" means both
-creating a meeting on an existing event and the standalone create; both read
-the same stored credential (§2.1, §2.2, inherited scope).
+**standalone** meeting creation and meeting creation **on an existing event**.
+They do not read the same credentials: the standalone create reads only the
+Teams or Zoom credential, while the on-event action first reads the event with
+A's **Google** credential and writes the link back with it, whatever A's
+calendar provider is (§2.8).
+
+- **Google precondition.** Every criterion below that runs the on-event variant
+  for a Teams or Zoom meeting does so with A holding a working Google
+  credential, unless the criterion says otherwise. Where the Google credential
+  is the one refused on that path, AC-8's Google on-event row and AC-23 apply.
+- **Users without a Google credential** cannot use the on-event variant today
+  (401) or after this feature; that variant is out of scope for them (§5) and
+  belongs with PAC-47, which owns Outlook as the working calendar for events.
+  For them, "meeting creation" in these criteria means the standalone create
+  only.
+
+"Loss" means one episode: it starts at the first permanent refusal of a
+credential that was usable (just connected or reconnected, or last renewed or
+used successfully) and ends when A reconnects that provider successfully or
+disconnects it. "Reconnect" for Outlook means a Microsoft sign-in that resolves
+to A (§2.1, OQ-10).
 
 **Refresh** (ticket acceptance 1)
 
@@ -331,7 +391,8 @@ action in AC-1 runs for A, then B's stored credential is identical before and
 after, and no request carrying B's tokens reaches the double.  [unit]
 
 AC-3. Given A has an expired Zoom access token and a valid refresh token, when A
-creates a Zoom meeting (on an event, and separately standalone), then the meeting is created with a refreshed access token
+creates a Zoom meeting (standalone, and separately on an existing event with A
+holding a working Google credential), then the meeting is created with a refreshed access token
 and A's stored Zoom credential holds the new access token. Fails today: the
 double's 401 is returned.  [unit]
 
@@ -368,19 +429,21 @@ Fails today: no row satisfies (b) or (c).  [contract]
 | Provider | Action (precondition) | Observable result |
 |---|---|---|
 | Outlook | availability lookup (A's calendar provider is Outlook) | succeeds as today: each attendee that would have been queried has unknown coverage and no busy periods (D-6) |
-| Outlook | Teams meeting creation | fails with an error telling A to reconnect Outlook |
-| Zoom | Zoom meeting creation | fails with an error telling A to reconnect Zoom |
+| Outlook | Teams meeting creation, standalone and on an existing event (on-event: A holds a working Google credential) | fails with an error telling A to reconnect Outlook |
+| Zoom | Zoom meeting creation, standalone and on an existing event (on-event: A holds a working Google credential) | fails with an error telling A to reconnect Zoom |
 | Google | availability lookup (A's calendar provider is Google) | succeeds as today, as for Outlook (D-6) |
-| Google | listing A's calendar events (A's calendar provider is Google) | fails with the same status and error shape that operation returns for a failed Google call today (D-7) |
+| Google | listing A's calendar events (any calendar provider: listing always uses the Google credential, §2.8) | fails with the same status and error shape that operation returns for a failed Google call today (D-7) |
+| Google | Teams or Zoom meeting creation on an existing event (A's Teams or Zoom credential is valid) | fails with the same status and error shape the on-event action returns today when the event cannot be read through Google (D-7, D-10); the Teams or Zoom credential is not read (AC-23) |
 
 AC-9. Given the state after AC-8, when three more actions for A hit the same dead
 credential, then A's audit log still holds exactly one connection-lost entry for
-that provider.  [unit]
+that provider for this loss.  [unit]
 
 AC-10. Given the double answers A's refresh with a temporary failure (timeout or
 5xx), when each action in the AC-8 table runs for A, then: availability lookups
 succeed with unknown coverage as today; meeting creation fails with an error
-that does **not** tell A to reconnect; listing events fails as it does today;
+that does **not** tell A to reconnect (when the temporary failure is Google's on
+the on-event path, it fails as it does today); listing events fails as it does today;
 every status surface for that provider still reports connected; and no
 connection-lost audit entry is written.  [unit]
 
@@ -388,11 +451,14 @@ AC-11. Given A has a working stored Outlook (separately Zoom) credential, when A
 reconnects and the exchange returns an access token but no refresh token, then
 A's stored refresh token is unchanged and A remains connected.  [unit]
 
-AC-12. Given A's connection to a provider was reported lost (AC-8), when A
-reconnects that provider successfully, then every status surface that AC-8 set
-to not connected reports connected again, and the AC-8 table's actions for that
-provider succeed with the new credential (meeting creation creates a meeting;
-listing events returns events).  [unit]
+AC-12. Given A's connection to Outlook, Zoom or Google was reported lost
+(AC-8), when A reconnects that provider successfully, then every status surface
+that AC-8 set to not connected reports connected again, and the AC-8 table's
+actions for that provider succeed with the new credential (meeting creation
+creates a meeting, standalone and, with A holding a working Google credential,
+on an existing event; listing events returns events; on-event meeting creation
+after a Google reconnect creates the meeting with A's valid Teams or Zoom
+credential).  [unit]
 
 AC-20. Given an availability lookup for A returned unknown coverage for an
 attendee because A's credential was refused (AC-8), when A reconnects
@@ -410,6 +476,33 @@ written. Separately, given A's calendar provider is Outlook and A also holds a
 Google credential, when A's Google refresh is permanently refused on a Google
 action, then the Google Meet row reports not connected and the calendar
 connection status is unchanged.  [unit]
+
+AC-23. Given A requests a Teams (separately Zoom) meeting on an existing event
+and the double permanently refuses A's **Google** refresh (`invalid_grant`),
+then the response is the one in AC-8's Google on-event row; no request carrying
+A's Microsoft or Zoom tokens reaches the double, even when that credential is
+also expired or would also be refused; the Google Meet row and, when A's
+calendar provider is Google, the calendar connection status report Google not
+connected; A's audit log holds exactly one new connection-lost entry, naming
+Google; and the Teams or Zoom row is unchanged and no Teams or Zoom
+connection-lost entry is written.  [unit]
+
+AC-24. Given A's Outlook (separately Zoom, separately Google) credential was
+reported lost (AC-8), and A then reconnects successfully (AC-12), when the
+double later permanently refuses the **new** credential's refresh on an action
+from the AC-8 table, then A's audit log holds exactly **two** connection-lost
+entries for that provider (one per loss), every status surface for that
+provider reports not connected again, and further actions on the second dead
+credential add no entry (AC-9 applies per loss). Fails against an
+implementation that records at most one loss per user and provider ever.  [unit]
+
+AC-25. Given A's Outlook (separately Zoom, separately Google) credential is
+expired and the double permanently refuses its refresh, when two or more
+actions for A that need that credential run concurrently within one backend
+process, then each action's result is the one in the AC-8 table, every status
+surface for that provider reports not connected, and A's audit log holds
+exactly **one** new connection-lost entry for that provider. Whether this holds
+across several backend processes is OQ-9.  [unit]
 
 **Disconnect and revocation** (ticket acceptance 2)
 
@@ -476,7 +569,18 @@ today: such a listing is non-conforming.  [contract]
 - **Renewal coordination across several backend processes** (OQ-9).
 - **Provider error text echoed to the client (T8).**
 - **Frontend copy and placement** of the reconnect prompt and disconnect
-  controls; the web repo implements against the contract after stage 2.
+  controls; the web repo implements against the contract after stage 2. The
+  frontend stage **owes** the message that Zoom revocation could not be
+  confirmed (D-2, AC-15): today's caller shows a success toast whatever the
+  response says (`smart-calendar-flow/src/components/ConferencingSection.tsx:98-99`),
+  so the backend PR alone does not satisfy D-2.
+- **Meeting creation on an existing event for users without a Google
+  credential** (§2.8). It fails with 401 today and keeps doing so; reading
+  events from Outlook belongs to PAC-47.
+- **Changing what the on-event action answers when Google is refused** (D-10).
+- **Bypassing the availability cache after a disconnect-then-reconnect** inside
+  15 minutes when no refusal occurred. AC-20 covers only results computed from a
+  refused credential (D-11).
 
 ## 6. What must not change
 
@@ -507,6 +611,12 @@ today: such a listing is non-conforming.  [contract]
   its 200 with per-attendee coverage when a credential fails, and manager team
   stats keep treating unknown coverage as "no data" (§2.7). No test today
   asserts the degraded 200 on a refused refresh; AC-8 adds one.
+- **New activity-log kinds do not redefine the existing ones.** The activity
+  log entry schema describes every entry as about the calling user's own
+  calendar (`contracts/openapi/openapi.yaml:5545`). Connection entries are about
+  a credential (Zoom is not a calendar), so the contract stage will reword that
+  description; the rewording must widen it to cover the new kinds and must not
+  change what any of the seven existing kinds means.
 - **The existing Zoom disconnect caller keeps working** whatever the new
   response carries (`smart-calendar-flow/src/api/client.ts:1463` treats it as
   no content; `src/components/ConferencingSection.tsx:98` ignores the result).
@@ -551,7 +661,18 @@ they asked for by disconnecting.
   plan-author. AC-5 is stated for one process. If the deployment runs several
   replicas or a separate scheduler process sharing the database, the plan must
   say whether rotation-safe renewal holds across them, and the spec gains a
-  criterion.
+  criterion. The same applies to AC-25: one connection-lost entry per loss is
+  required within one process; across processes is undecided here.
+- **OQ-10 — Outlook reconnect when the Microsoft email no longer matches.**
+  Owner: product owner, with contract-author. A Microsoft sign-in attaches the
+  credential to the user matched by the Microsoft account's email and signs the
+  browser in as that user (§2.1). If A's Microsoft email differs from A's
+  Paceday email, the reconnect AC-8 asks for signs the browser into another
+  (possibly new) account and leaves A reported lost. The criteria assume a
+  sign-in that resolves to A. What A should see otherwise (refusal, a warning,
+  linking by Microsoft account identity) is a product decision; this feature
+  assumes no change to sign-in matching (in the spirit of D-4, sign-in
+  behaviour is not changed for the lifecycle).
 
 ## Decisions
 
@@ -604,6 +725,21 @@ per-user settings rows were created, `:1001-1002`).*
   including when the user had chosen Teams (`backend/storage/conferencing.go:12`).
   Changing it is a separate behaviour change not needed for the lifecycle; it is
   recorded here so it is a decision rather than an accident. *Assumed by the
+  factory, pending owner confirmation.*
+- **D-10 — When Google is refused on the on-event meeting path, the response
+  stays what it is today** (404 with an event-not-found error, §2.8); the loss
+  is surfaced on Google's status surfaces and in the activity log (AC-23), and
+  the Teams or Zoom credential is not read, renewed or reported. Rationale: it
+  follows D-7 (no Google operation's failure response changes) and keeps a
+  Google failure from being blamed on a Teams or Zoom connection that may be
+  fine. The response is misleading to a user; changing it is a contract change
+  for the contract stage or a follow-up, not assumed here. *Assumed by the
+  factory, pending owner confirmation.*
+- **D-11 — A reconnect invalidates only availability results computed from a
+  refused credential.** A disconnect followed by a reconnect within 15 minutes,
+  with no refusal, may still serve a cached result (§2.7) for the rest of that
+  window. Rationale: smallest behaviour change that closes the defect the
+  challenge found; nothing is deleted and no one sees more data. *Assumed by the
   factory, pending owner confirmation.*
 
 ## Challenge — 2026-10-26
@@ -983,3 +1119,56 @@ of AC-11 is sound.
   `src/pages/Onboarding.tsx:61,84`) already treat it as "connect your
   calendar", not as a logged-out session, so AC-8(b) reaching them is the
   intended effect.
+
+## Revision 2 — 2026-10-26
+
+Answers the two blocking findings of the round-2 challenge and its non-blocking
+ones. Re-checked against the backend at `16f3100` (= `origin/main`).
+
+### Blocking 1 — the on-event action also reads the Google credential
+
+Accepted; the sentence was wrong. Re-read: `addEventConference` builds its
+client through `loadEventClient` (`backend/api/handlers_conferencing.go:52-55`,
+`:267-271`), which is `eventHandlers.calClient` over `auth.LoadUserToken`
+(`backend/api/handlers_events.go:24-32`); no Google credential gives 401, a
+failed Google read gives 404 "event not found" (`:272-275`), and the link is
+written back through Google (`:351-355`). Changes:
+
+- (a) The §4 preamble sentence is corrected: the standalone create reads only
+  Teams or Zoom; the on-event action reads Google first and writes back with
+  it. New §2.8 records this, and the inherited-scope entry for the on-event
+  operation says so.
+- (b) The §4 preamble states the Google precondition for every criterion that
+  runs the on-event variant, and AC-3, AC-8's Teams and Zoom rows and AC-12
+  state it inline. For users without a Google credential the on-event variant
+  is scoped out (§5) and assigned to PAC-47; for them "meeting creation" means
+  the standalone create.
+- (c) When Google is the refused credential on that path: AC-8 gains a Google
+  on-event row (result: today's failure, D-10), so AC-8(b)-(d) give the status
+  surfaces (Google Meet row, and calendar status when the calendar provider is
+  Google) and one Google connection-lost entry. New AC-23 pins that the Teams or
+  Zoom credential is never read, its row is unchanged and no Teams or Zoom loss
+  is written. AC-10 states the temporary-failure case; AC-12 covers reconnecting
+  Google and then creating the meeting.
+
+### Blocking 2 — "visible, once" not tied to one loss
+
+Accepted. §3 now says "once per loss" and that a loss after a reconnect gets its
+own entry. The §4 preamble defines a loss episode (first permanent refusal of a
+usable credential, until a successful reconnect or a disconnect). AC-9 is
+scoped to one loss. New AC-24: lose, reconnect, lose writes exactly two
+entries, for each of Outlook, Zoom and Google. New AC-25: concurrent refusals
+inside one backend process write exactly one entry; the multi-process case is
+added to OQ-9.
+
+### Non-blocking
+
+1. Outlook reconnect resolves by email: §2.1 records it; the preamble defines
+   reconnect as a sign-in that resolves to A; OQ-10 holds the mismatch case.
+2. AC-12 now names Outlook, Zoom and Google.
+3. The listing-events row now says listing always uses the Google credential,
+   whatever the calendar provider (§2.8), which AC-21's second half relies on.
+4. Disconnect-then-reconnect inside the cache window: D-11 (not covered) and §5.
+5. §6 now says the activity-log entry description is widened by the contract
+   stage without redefining the seven existing kinds.
+6. §5 now says the frontend stage owes the unconfirmed-revocation message.
