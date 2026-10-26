@@ -444,3 +444,167 @@ Fixed, manifest and doc only, no schema change:
   manifest. Either the spec is created or the owner confirms on PAC-36 before the
   plan stage.
 - Existing server tolerances (process finding 2): out of scope, unchanged.
+
+## Challenge — 2026-10-26 (round 2)
+
+**Verdict**: accept
+
+Reviewed on `factory/pac-36-contract` at `c79a8dc`, committed state only. Checked
+against `backend/api/handlers_focus.go`, `handlers_schedule.go`, `server_errors.go`,
+`engine/compression.go`, the tests in `backend/api`, `mcp/tools.go`, `e2e/tests`,
+and `smart-calendar-flow` `origin/main` at `8179a33`. The round-1 blocking finding
+is fixed. No new blocking finding.
+
+### Round-1 blocking finding: closed
+
+`backend/api/empty_arrays_test.go:35`
+`TestCompress_WeekEveryDayFails_EncodesEmptyArray` is now in `consumersAffected`
+with `breaks: yes`. It is re-asserted as 500 `{"error":"internal error"}`, not
+deleted. The path is in `backend.allowedPaths`, and §5 has the row. A repo-wide grep
+of `/api/schedule/compress` and `/api/focus/run` across `backend/`, `mcp/` and `e2e/`
+finds no other test that pins a week-mode 200 with fewer than five entries, or a
+malformed body answered 200. Every existing test posts a well-formed body:
+
+- `handlers_focus_test.go:41,61,76,91`
+- `handlers_schedule_test.go:58,73,87,102,116`
+- `interfaces_contract_test.go:98`
+- `pac21_calendar_not_connected_test.go:92-95,212`
+
+### Requests wrongly permitted
+
+None. I ran each body through `json.NewDecoder(...).Decode` into the
+`previewCompression` body struct (`{Date, Week string}`), in an independent Go
+scratch program. The rule is: error other than `io.EOF` gives 400, otherwise the
+200 path.
+
+| Body | Decode | Contract |
+|---|---|---|
+| empty, `"  \n"` | `io.EOF` | `{}`. Matches |
+| `null`, `{}`, `{"x":1}`, `{"week":null}`, `{} garbage`, `{"Week":"2030-01-07"}` | nil | 200 path. Matches (the last is an existing case-insensitive tolerance) |
+| `{`, `{"week":` | `unexpected EOF` | 400. Matches |
+| `not json` | syntax error | 400. Matches |
+| `[]`, `"2030-01-07"`, `5`, `true` | cannot unmarshal into struct | 400. Matches |
+| `{"week":5}`, `{"date":true}` | `UnmarshalTypeError` | 400. Matches |
+| `{"date":"2030-01-07","week":5}` | `UnmarshalTypeError`. Go still fills `date` | 400. Matches, *provided the handler checks the error before reading `date`* |
+| `{"week":"bad"}` | nil | 400 `invalid week format`, unchanged. Matches |
+| UTF-8 BOM + `{}` | invalid character | 400. Consistent with the rule. Today a BOM body gets 200, so this is new, but the rule covers it |
+
+### Responses the client cannot handle
+
+None blocking.
+
+- `previewCompression` 200 `minItems: 1, maxItems: 5`. I generated the web
+  artefacts with the web repo's pinned generators (`openapi-typescript` 7.4.4,
+  `typed-openapi` 4.1.0 `--runtime zod --schemas-only`, the flags in
+  `scripts/openapi-gen.sh`), from both bundles, in a scratch directory:
+  - The main bundle reproduces the committed `src/api/generated/types.ts`
+    byte for byte.
+  - From the branch bundle, `types.ts` changes in JSDoc descriptions only. There
+    are no tuple types, because the script passes no `--array-length`.
+  - `schemas.ts` is unchanged apart from the output-file import name. The 200 is
+    an inline array, so no zod schema carries the new bounds.
+
+  So the post-merge regeneration cannot break a type check in the web repo.
+- The real `SuggestForDay` (`engine/compression.go:56-120`) returns either an
+  error or a non-nil result. A non-working day is a result with empty
+  `proposals`, not an error. So `[null]` and a short array cannot come from the
+  production engine. They can come only from the test double `mockCompressor{}`
+  (round 1, non-blocking).
+- Web `client.ts:1162` mock fallback `() => []` is now outside the 200 schema.
+  It is mock mode only, and no screen calls `compressionPreview`. Round-1
+  non-blocking item, still open for the frontend stage.
+
+### Consumers affected
+
+No change to the manifest's list. Re-verified:
+
+- `mcp/tools.go:146` posts `nil`, which becomes the literal `null`. It stays on the
+  200 path (D-2).
+- `mcp/tools.go:169-178` posts `{}` or `{"date": <user string>}`. The value is
+  always a string, so the request is never a decode failure. A bad date is still
+  the 400 `invalid date format`, unchanged.
+- `mcp/tools.go:308` `decodeCompressionProposals` reads a single-day array and is
+  unaffected by the bounds.
+- `e2e/tests/seam.spec.ts:226` uses single-day compression.
+  `focus-time.spec.ts:61,120,189` and `seam.spec.ts:198,211` post `{ week }`.
+- Web `client.ts:1025` (`{ week }`) and `:1161` (`{date?, week?}`) send well-formed
+  objects. `client.ts` validates no compression response with zod. Its only
+  generated-schema import is `CalendarDisconnectUnsupported` / `SettingsUpdate`
+  (`client.ts:2`).
+
+### Contract/implementation divergences
+
+None in what the contract claims is unchanged:
+
+- `writeCalendarFailure` (`server_errors.go:75-81`) maps only
+  `ErrCalendarNotConnected` (via `errors.Is`) to the 401. Everything else becomes
+  the 500 `internal error`. So "401 or 500, nothing else" is exactly what the
+  week-mode failure path can return.
+- The handler's behaviour changes (`handlers_focus.go:23-25`,
+  `handlers_schedule.go:25` and `:62-64`) are the expected stage-2 gap, as recorded
+  in round 1.
+
+One non-blocking inaccuracy in history text: the `previewCompression` description
+and `CompressionRequest` say a non-decodable body "answered 200 for today". That
+is not always true, because Go's decoder keeps filling the other members after an
+`UnmarshalTypeError`:
+
+- `{"date":"2030-01-07","week":5}` was answered 200 for **2030-01-07**;
+- `{"week":"2030-01-13","date":true}` was answered 200 in **week mode** for that
+  week.
+
+The post-PAC-36 behaviour (400) is stated correctly. Only the "before" clause is
+too broad. Optional wording fix, no schema change.
+
+### Uncertainties not actually resolved
+
+None claimed. One note for completeness: `runFocus`'s 200 (`FocusRunResult`,
+`scheduling.yaml:1136-1140`) carries a prose "x-uncertain at field level" on
+`skippedDays`. It is not an `x-uncertain` key, so the contract gate does not see
+it, and PAC-36 does not change that response. §7's "carry no `x-uncertain`" is
+therefore accurate for the key. A strict reading of factory §7 rule 1 ("touch it,
+fix it") could ask for it to be resolved. It is non-blocking here because this
+contract touches only the request side and the error responses of `runFocus`.
+Worth a line in the follow-ups if the owner reads the rule strictly.
+
+### Process findings (non-blocking, carried from round 1)
+
+- There is still no `docs/specs/PAC-36.md`. D-1 to D-3 are recorded only in §4
+  and in the manifest. Before the plan stage, either the spec is created or the
+  owner confirms on PAC-36.
+- An observation for the owner who confirms D-1: `SuggestForDay` builds
+  `dayStart` from the UTC date components in the user's location. It reads the
+  working window from `date.In(loc)`, which for a negative UTC offset is the
+  previous calendar day. This is a pre-existing engine behaviour, outside this
+  contract. It can make a working Monday look like a non-working day (an empty
+  entry), which a five-entry 200 now presents as a computed result. Suggest a
+  triage follow-up. It does not affect the contract shape.
+
+### Verified clean
+
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-36-contract`
+  on `c79a8dc` printed, verbatim:
+  - `make openapi rc=0`, `regenerated: none`
+  - `OK: bundle is in sync (98 paths)`
+  - `OK: MIGRATION.md covers all 119 operations (0 generated)`
+  - `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`
+  - `backend lint rc=0`, `mcp lint rc=0`
+  - `backend test rc=0`, `mcp test rc=0`
+  - `backend coverage: 54.9% (floor 43%)`, `backend coverage rc=0`
+  - `mcp coverage: 84.0% (floor 75%)`, `mcp coverage rc=0`
+
+  Script exit 0. The web gate and the e2e gate were not run. The manifest assigns
+  them to after the merge, and the generated web diff was checked by hand above
+  instead.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` gives
+  `d048a3c937fdb68ad930d2558ec70592815f78c17c9bf941a41c0373a4b90d0b`, which matches
+  `contractHash`.
+- The fragment diff against `origin/main` (`scheduling.yaml`,
+  `scheduling.notes.md`) and the regenerated `backend/api/gen/paceday.gen.go` were
+  read in full. The only structural change is `minItems: 1` / `maxItems: 5`.
+  `requestBody.required: false` and `additionalProperties: true` are kept on both
+  operations.
+- `API-034` and `API-035` (`docs/factory/api-audit.md:292-293`) each name exactly
+  the operations this contract changes, so `resolvesFindings` does not overclaim.
+  `API-024` is already `Fixed (PAC-21)`.
+- The manifest `acceptanceTests` AC-1 to AC-4 match §6 with no narrowing.
