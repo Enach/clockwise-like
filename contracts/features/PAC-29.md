@@ -173,7 +173,15 @@ not read the body.
   `OK: bundle is in sync (98 paths)`, rc=0.
 - `sha256sum contracts/openapi/openapi.yaml` (LF):
   `268a1834cd4a860c2d98c36959e252f2327004994d62a3d9c95af7cc25bedf21`.
-- `api-gate.sh factory/pac-29-contract`: result in the Linear comment on PAC-29 and in
-  the commit that follows it (the gate regenerates `backend/api/gen`).
+- `api-gate.sh factory/pac-29-contract` on `addf2e4` (the fragment change): `make openapi
+  rc=0`, `regenerated: backend/api/gen/paceday.gen.go` (embedded spec, the 200 response
+  types of the three operations, the four deleted `Google*` types), committed unchanged
+  as `1024a52`. Every other step rc=0.
+- `api-gate.sh factory/pac-29-contract` on `1024a52`: `make openapi rc=0`,
+  `regenerated: none`, `openapi-check(api) rc=0` (bundle in sync, MIGRATION.md covers all
+  119 operations, `backend/api/gen` matches the contract), backend lint rc=0, mcp lint
+  rc=0, backend test rc=0, mcp test rc=0, backend coverage 55.4% (floor 43%) rc=0, mcp
+  coverage 84.0% (floor 75%) rc=0. Re-run on the final commit of this branch (this file
+  only changes after it); that output is in the Linear comment on PAC-29.
 - web-gate: not run at this stage (the web types regenerate after the contract merges,
   factory §1).
