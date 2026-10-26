@@ -21,8 +21,11 @@ func NewGoogleOAuthConfig(clientID, clientSecret, redirectURL string) *oauth2.Co
 	}
 }
 
-func GetAuthURL(config *oauth2.Config, state string) string {
-	return config.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+// GetAuthURL builds Google's consent URL. A non-empty loginHint (already
+// checked with ValidLoginHint) is sent as login_hint (PAC-35, API-064).
+func GetAuthURL(config *oauth2.Config, state, loginHint string) string {
+	opts := append([]oauth2.AuthCodeOption{oauth2.AccessTypeOffline, oauth2.ApprovalForce}, loginHintOption(loginHint)...)
+	return config.AuthCodeURL(state, opts...)
 }
 
 func ExchangeCode(ctx context.Context, config *oauth2.Config, code string) (*oauth2.Token, error) {
