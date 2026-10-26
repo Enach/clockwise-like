@@ -12,6 +12,9 @@ services:
   backend:
     environment:
       - GO_ENV=development
+      # PAC-20: the dev stack is served over plain HTTP, so cookies drop the
+      # Secure attribute here. Never set this in production.
+      - PACEDAY_INSECURE_COOKIES=true
     ports:
       - "8080:8080"
     restart: "no"

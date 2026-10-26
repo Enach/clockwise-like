@@ -93,7 +93,9 @@ function sessionCookie(token: string): Cookie {
     domain: url.hostname,
     path: '/',
     expires: Math.floor(Date.now() / 1000) + 7 * 24 * 3600,
-    // Mirrors backend/api/handlers_auth.go issueJWT() exactly.
+    // Mirrors backend/api/handlers_auth.go issueJWT() exactly. secure is false
+    // because the e2e stack sets PACEDAY_INSECURE_COOKIES=true (PAC-20); in
+    // production the backend adds Secure to this cookie.
     httpOnly: true,
     secure: false,
     sameSite: 'Lax',

@@ -29,6 +29,8 @@ services:
       - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-}
       # IPs/CIDRs whose X-Real-IP the backend trusts (PAC-39). Empty = none.
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      # PAC-20: empty = every cookie is Secure. true only for plain-HTTP dev.
+      - PACEDAY_INSECURE_COOKIES=${PACEDAY_INSECURE_COOKIES:-}
       # Microsoft OAuth
       - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
       - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}

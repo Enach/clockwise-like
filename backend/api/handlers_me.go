@@ -29,7 +29,7 @@ func (h *meHandlers) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *meHandlers) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "auth_token",
 		Value:    "",
 		Path:     "/",

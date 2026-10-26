@@ -75,7 +75,7 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "sso_state",
 		Value:    state + "|" + d,
 		Path:     "/",
@@ -101,7 +101,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "sso_state", MaxAge: -1, Path: "/"})
+	setCookie(w, &http.Cookie{Name: "sso_state", MaxAge: -1, Path: "/"})
 
 	provider, err := storage.GetSSOProviderByDomain(h.ah.db, d)
 	if err != nil || provider == nil {

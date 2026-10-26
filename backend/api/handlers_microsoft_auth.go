@@ -25,7 +25,7 @@ func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Reques
 	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "ms_oauth_state",
 		Value:    state,
 		Path:     "/",
@@ -43,7 +43,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "ms_oauth_state", MaxAge: -1, Path: "/"})
+	setCookie(w, &http.Cookie{Name: "ms_oauth_state", MaxAge: -1, Path: "/"})
 
 	cfg := microsoftConfig()
 	if cfg == nil {
