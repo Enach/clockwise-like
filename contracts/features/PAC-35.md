@@ -612,3 +612,129 @@ both were committed.) The same gate was run again on the commit carrying this
 section and the manifest: identical rc lines, all `rc=0`, `regenerated: none`,
 coverage unchanged (backend 53.2%, mcp 84.0%). The web gate is not run at this
 stage: web types regenerate after the contract merges (factory §1).
+
+---
+
+## Challenge — 2026-10-26 (round 2)
+
+Reviewer: contract-challenger. Reviewed the committed state of
+`factory/pac-35-contract` at `590b76a` (contract revision 2) against spec
+`docs/specs/PAC-35.md`, the handlers on this branch, and smart-calendar-flow
+`origin/main` `4ded854`. Focus: whether revision 2 resolves round 1's blocking
+item, and what the tightened LoginHint rule now wrongly forbids.
+
+**Verdict**: accept-with-changes (1 blocking)
+
+### Requests wrongly permitted
+
+None. Round 1 blocking 1 is resolved: every value in round 1's table that
+should be dropped is dropped by the revision 2 rule (re-run below), and the
+schema is still a plain `string`, so none of them is a 400.
+
+### Requests wrongly forbidden (blocking)
+
+1. **`GET /api/auth/google?login_hint=o%27brien%40acme.com`** (decoded
+   `o'brien@acme.com`; same on `/api/auth/microsoft`, and on
+   `/api/auth/sso/acme.com` for an SSO domain) — the revision 2 LoginHint rule
+   **drops** it, because condition (4) limits the local part to
+   `A-Z a-z 0-9 . _ + -` and `'` is not in that set. But:
+   - the web app sends exactly this value. `AuthDialog.tsx:37` validates with
+     zod 4's `z.string().trim().email()`, whose regex
+     (`node_modules/zod/v4/core/regexes.js:31`) allows `'` in the local part
+     (`[A-Za-z0-9_'+\-\.]*`), and `AuthDialog.tsx:104,108` append it as
+     `login_hint`. I ran it: zod accepts `o'brien@acme.com` (`true`);
+   - `net/mail.ParseAddress` accepts it (`'` is RFC 5322 `atext`); I ran the
+     five conditions as written (Go 1.25.5, `net/mail` + `regexp`):
+     `o'brien@acme.com parse_ok=true rule=false`;
+   - spec AC-9 says that for "a user who enters an email that routes to
+     Google", Google's request "carries a login hint equal to that email", and
+     D-4 says the hint is forwarded when it is "a syntactically valid email".
+     `o'brien@acme.com` is both. So a test written from AC-9 with an
+     apostrophe address fails against an implementation that follows the
+     contract exactly. The contract forbids a behaviour the spec requires, for
+     a common real-world name shape (O'Brien, D'Angelo).
+   - Revision 2's rationale also states "the web app's zod `.email()` check
+     already refuses these values before sending, so no hint the web app sends
+     today is lost". The web code contradicts the second half of that sentence.
+
+   The `'` was not in round 1's proposed set either; this is round 1's
+   proposal being too narrow, not the author departing from it.
+   **Fix (contract shape only):** in
+   `components.parameters.LoginHint.description`, condition (4) becomes "the
+   local part uses only `A-Z a-z 0-9 . _ + - '`" (add the apostrophe), add
+   `o'brien@acme.com` to the "Example forwarded" list so the plan's AC-9 test
+   pins it, and mirror both in the manifest's `schemasChanged` LoginHint line.
+   Keep the schema a plain `string`. This does not reopen round 1: `'` is not a
+   URL delimiter, the OAuth library URL-encodes it (`%27`), and every value in
+   round 1's table stays dropped because each of them fails on `& ? # [` or on
+   condition (5), not on the local-part set. Also correct the revision 2
+   sentence about zod so it is true (see non-blocking 1).
+
+### Responses the client cannot handle
+
+None new. Revision 2 changed only the LoginHint description, the generated Go
+doc comments and the manifest; no response schema or status moved. Round 1's
+checks of the 409, the 204 logout, the `provider` enum and the failure
+redirect stand.
+
+### Consumers affected
+
+No change from round 1. The only consumer of `login_hint` is
+`smart-calendar-flow/src/components/auth/AuthDialog.tsx:104,108` (the SSO
+branch at `:111-113` sends no hint until AC-7's web change). `mcp/` and `e2e/`
+do not send `login_hint` (`git grep login_hint` over both: no match outside
+docs).
+
+### Contract/implementation divergences
+
+1. Contract revision 2 rationale (section "Revision 2", "Why this is the
+   conservative choice") says no hint the web app sends today is lost; the web
+   validator at `AuthDialog.tsx:37` accepts `o'brien@acme.com` and
+   `alice@acme-.com`, both of which the rule drops. The first is the blocking
+   item above.
+
+### Uncertainties not actually resolved
+
+None. The fragment's two `x-uncertain` markers (`auth.yaml:1073`, `:1134`) are
+on `SsoProviderCreateRequest` and `SsoProviderResponse` (PAC-22), not on a
+touched operation. U-13 stands as settled in round 1.
+
+### Verified clean
+
+- **Gate, run by me on the committed branch at `590b76a`**
+  (`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-35-contract`):
+  `make openapi rc=0`, `regenerated: none`, `OK: bundle is in sync (98 paths)`,
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+  `backend coverage: 53.2% (floor 43%)`, `backend coverage rc=0`,
+  `mcp coverage: 84.0% (floor 75%)`, `mcp coverage rc=0`. Web gate not run
+  (web types regenerate after merge, factory §1).
+- **`contractHash`**: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`
+  = `cef68ec6…80d1`, matches the manifest.
+- **Round 1 blocking 1, re-attacked with my own implementation of the five
+  conditions**: `alice@acme.com&prompt=none` dropped; `alice@acme.com` and
+  `a.b+tag@mail.acme.co.uk` forwarded. The author's added "last label contains
+  a letter" clause is right: without it `alice@127.0.0.1` passes condition (5)
+  as I worded it in round 1.
+- **Generated Go**: `LoginHint` is `type LoginHint = string` and each start
+  route's param is `*LoginHint` (`backend/api/gen/paceday.gen.go:2843,3017,3049`),
+  so no generated wrapper can 400 a hint.
+- **Repeated `login_hint`** (round 1 non-blocking 1): the description now says
+  first value (`url.Values.Get`). Taken.
+- **Bundle carries the rule**: the regenerated `openapi.yaml` contains the
+  revision 2 description including the `alice@acme.com&prompt=none` example.
+
+Non-blocking:
+1. Revision 2's zod sentence: after the fix above, `alice@acme-.com` (zod
+   accepts a label ending in `-`) is still dropped, which is correct (not a
+   valid hostname, RFC 1123), but the sentence should say "no hint the web app
+   sends today is lost, except values whose domain is not a valid hostname"
+   rather than "none".
+2. Round 1's two description omissions (org association kept on a failed
+   Google/SSO sign-in; `settings.calendar_provider = 'outlook'` kept on a
+   failed Microsoft sign-in, which makes that user's later disconnect a 409):
+   still worth one sentence each in the failure-redirect descriptions. Not
+   blocking: no status or schema changes.
+3. Manifest `status` stays `draft` until the blocking item is fixed; agreed
+   with the author's reasoning.
