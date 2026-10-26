@@ -29,7 +29,7 @@ func TestNewGoogleOAuthConfig(t *testing.T) {
 
 func TestGetAuthURL(t *testing.T) {
 	config := NewGoogleOAuthConfig("client-id", "secret", "http://localhost/callback")
-	url := GetAuthURL(config, "test-state")
+	url := GetAuthURL(config, "test-state", "")
 	if url == "" {
 		t.Error("URL should not be empty")
 	}

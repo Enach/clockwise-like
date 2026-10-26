@@ -37,5 +37,6 @@ func (h *meHandlers) logout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-	w.WriteHeader(http.StatusOK)
+	// 204: no body, which both web API clients accept (PAC-35, API-063).
+	w.WriteHeader(http.StatusNoContent)
 }

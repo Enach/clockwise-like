@@ -83,7 +83,13 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, client.AuthURL(state), http.StatusFound)
+	// A hint is forwarded only when it belongs to this domain, so one
+	// organisation's IdP is never sent an outside address (PAC-35, D-10).
+	hint := loginHintFrom(r)
+	if hint != "" && !domain.EmailBelongsToDomain(hint, d) {
+		hint = ""
+	}
+	http.Redirect(w, r, client.AuthURL(state, hint), http.StatusFound)
 }
 
 // --- GET /api/auth/callback/oidc/{domain} (public) --------------------------
@@ -147,7 +153,10 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, userInfo.Email)
 
-	h.ah.issueJWT(w, user)
+	if err := h.ah.issueJWT(w, user); err != nil {
+		h.ah.signInFailed(w, r, "issue session", err)
+		return
+	}
 	http.Redirect(w, r, h.ah.frontendURL+"/auth/callback?provider=sso", http.StatusFound)
 }
 
