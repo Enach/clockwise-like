@@ -102,8 +102,9 @@ func currentApproved() config.LLMApprovedHosts {
 }
 
 // DestinationRefusal is a send-time refusal: the request would carry the
-// deployment's cloud credential to a destination the operator did not approve
-// for Provider, so nothing was sent. Message is a sentence for the user and
+// deployment's cloud credential (PAC-66), the caller's own key or a keyless
+// Ollama request (PAC-66-B) to a destination not approved for Provider, so
+// nothing was sent. Message is a sentence for the user and
 // never carries a credential.
 type DestinationRefusal struct {
 	Provider string
