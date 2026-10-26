@@ -218,3 +218,43 @@ I checked these and found them correct: `orgs.go:11-52` (upsert on domain, uncon
 
 - Microsoft user upsert: `:68` to `:67` (§2).
 - Teams: §2 now says the org id column is read but never written, so teams are not a membership consumer today.
+
+## Challenge — 2026-10-26 (round 2)
+
+*spec-challenger, against commit `3e0ade8` on `factory/pac-68-spec` (committed state only). Citations checked against that commit, whose code is the same as `main` at `2e1f392`. The Linear issue body was re-read.*
+
+**Verdict**: accept-with-changes
+
+Revision 1 resolves both round-1 blocking findings. (1) OQ-1, §2, §3 "Limit" and §5 now describe email-keyed account matching on both providers and across them. AC-10 is not narrowed. (2) AC-14 now observes `GET /api/org/members` at the API and drops the page. I re-checked the citations Revision 1 added (`users.go:21-31`, `handlers_auth.go:63,70`, `handlers_microsoft_auth.go:67,72`, `handlers_auth.go:56-60`, `handlers_microsoft_auth.go:62-66`) and they say what the spec says. One new blocking finding comes from text that existed in the draft but now matters, because AC-9 and AC-15 depend on it.
+
+### Blocking
+
+1. **The Microsoft rule for a pinned organisation says two different things. They disagree on whether a sign-in from the pinned tenant joins when the verified-domain evidence is negative or unavailable.**
+   - §3 says the user joins "only when the tenant the account signed in from is shown, by Microsoft, to have proven ownership of the email's domain". It then adds that, if the org is pinned, "the account's tenant must be that tenant". That reads as both conditions being required.
+   - AC-7 says: "pinned to tenant T1 (or not yet pinned, with the tenant's verified-domain answer containing `acme.com`) … from T1 … then it belongs to the `acme.com` organisation". Here the verified-domain answer is a condition only in the unpinned branch.
+
+   Take an org pinned to T1 and a `frank@acme.com` sign-in from T1 where the verified-domain lookup errors, or where the answer does not list `acme.com` (for example after the domain was moved out of T1 and the pin stayed, which PAC-50 NB5 allows). Under §3 he is not joined; AC-9 and AC-5 say so too. Under AC-7 he is joined. A test author writing AC-7's pinned branch with no verified-domain answer would write a test that §3 forbids. The choice also decides whether AC-15/D-5 apply to pinned orgs at all. **Resolves when** §3 and AC-7 state the same rule for the pinned case: either the tenant must equal the pin *and* the verified-domain answer must list the domain, or the pin alone suffices. AC-7's pinned branch should also say what the verified-domain answer is in its "Given". If the spec keeps "pin alone suffices", it should say why that does not widen membership after a domain leaves the pinned tenant, given that PAC-50 keeps the pin in that case (`docs/specs/PAC-50.md:126`, `tid_changed`).
+
+### Non-blocking
+
+1. **AC-15 asserts something Paceday cannot observe offline.** A tenant's consent policy is enforced by Microsoft, not by the callback. An injected unit test can model only two things: the evidence lookup being refused, which is already AC-9's outcome, and the permission set the sign-in start requests. As written, one author will test "lookup returns insufficient-privileges → not joined" and another will test the requested permission list. State the observable: the permissions requested at Microsoft sign-in start are today's set (or a named set), and a refused evidence lookup gives AC-9's outcome.
+2. **D-5's "a Microsoft permission beyond what sign-in requests today" does not say whether adding the `openid` scope counts.** OQ-2 names an ID token (`openid`) as one source of the tenant id, and the Linear issue's resolution names the ID token's `tid`. A literal reading of D-5 forbids adding `openid`, even though it needs no admin consent. If that is intended, say so. If D-5 means "a permission a restrictive tenant can refuse", say that instead. Otherwise stage 2 inherits the ambiguity.
+3. **§2 "What membership grants today" leaves out one place membership is visible.** `GET /api/auth/me` (`backend/api/routes.go:59`, `handlers_me.go:22-28`) encodes the user with an `org` object (`id, name, domain`) whenever `org_id` is set (`backend/storage/users.go:17,68-72`). §4's definition of "not joined" checks only the member listing. Adding "and the current-user response carries no organisation" would give AC-1–AC-9 a second observable, at no cost. No consumer breaks: no code in `smart-calendar-flow/src` reads `org` from that response. `AuthContext.tsx:50` and `schedulingLinks.ts:452,510,570` call it but do not read the field.
+4. **AC-9 sets no bound on how long the separate lookup may take.** "Errors or times out" without a limit means the success path of every unpinned Microsoft sign-in can be delayed indefinitely by a slow Graph answer. Today's identity calls use 5 s client timeouts (`handlers_auth.go:178`, `handlers_microsoft_auth.go:90`). Stating a maximum added latency, or "no longer than the identity call's", would make "times out" testable.
+5. **Sequential tenants before a pin.** The §3 sentence about two tenants holding one domain is correct for concurrent claims. Under D-3 and D-1, if a domain moves from tenant A to tenant B while unpinned, members joined from A are kept and B's users also join. Microsoft verified both tenants for the domain at the time each joined, so this is acceptable. One sentence would stop the plan from treating it as a gap.
+
+### Criteria I could not falsify
+
+- AC-15: see non-blocking 1. No offline test can distinguish "the tenant restricts consent" from "the evidence lookup failed", which AC-9 already covers.
+- AC-7, pinned branch: falsifiable only once blocking 1 settles whether a verified-domain answer is part of the "Given".
+- AC-11, AC-12, AC-13: regression guards, now labelled as such.
+
+AC-1 to AC-6, AC-8 to AC-10 and AC-14 are falsifiable as written. Each one fails today, because `AssociateUserWithOrg` joins or creates by email domain on both social callbacks (`orgs.go:42-52`, `handlers_auth.go:76`, `handlers_microsoft_auth.go:76`). Each one passes once the evidence rule exists. AC-14 remains subject to OQ-4.
+
+### Citations I checked and found wrong
+
+- None. Re-checked and found correct: `users.go:21-35` (email-only conflict key; `provider` not updated); `orgs.go:18-52`; `handlers_auth.go:49-80,164-193` (no `hd`/`verified_email` field; 5 s timeout); `handlers_microsoft_auth.go:54-105` (Graph `/me?$select=id,mail,displayName`; 502 on missing mail); `microsoft_oauth.go:14-33` (`/common`, no `openid`); `google_oauth.go:16-19`; `handlers_sso.go:177-191,203,269,293`; `handlers_org.go:26-31`; PAC-50 `:118`, `:126`, `:183`, `:273`. The Linear issue's draft acceptance ("signs up", "not re-evaluated") is consistent with the spec, as recorded in round 1 non-blocking 5.
+
+### Consumers this breaks
+
+- None found. Membership is read only by `handlers_org.go:26-31`, the SSO admin handlers (`handlers_sso.go:203,233,269,274,293,298`) and the `org` field of `GET /api/auth/me` (`handlers_me.go:28`). Nothing in `mcp/` or `e2e/` reads it, and no file in `smart-calendar-flow/src` outside `src/api/generated/` reads it. The `client.ts:919` "current org domain" text describes a mock free/busy heuristic, not a server read. Every changed outcome is an existing "no organisation" state.
