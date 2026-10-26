@@ -991,3 +991,123 @@ Answers to the round-2 challenge above. Author: spec-author.
 
 - **3 (AC-15 is a review)**: no change; the AC already says it is a review
   recorded in the contract PR.
+
+## Challenge — 2026-10-26 (round 3)
+
+Reviewed: commit `943cfd4` on `factory/pac-35-spec` (revision 2), against
+clockwise-like `origin/main` `7de7044` and smart-calendar-flow `origin/main`
+`4ded854` (both still the tips of `main` at review time). Reviewed by
+spec-challenger, which did not write this spec. Scope: whether revision 2
+resolves the round-2 blocking finding, and the new text it added (§2.4 two
+revision-2 bullets, §3 second disconnect bullet, AC-17 rewrite, D-6 note, D-8,
+§6 Google Meet line).
+
+**Verdict**: accept-with-changes
+
+Round-2 blocking 1 is resolved. §2.4 now says the Google credential is
+deleted whatever the provider. D-8 chooses to keep it, and AC-17 now fails
+an implementation that keeps deleting it: the seeded Outlook and webcal users
+each hold a Google credential, and the AC asserts on that credential and on
+Google Meet's state. Round-2 non-blocking 1 and 2 are taken. One new finding
+comes from D-8's new server answer.
+
+### Blocking
+
+1. **D-8 lets the contract choose a "not performed" answer that the app's two
+   disconnect callers would show as a success, so §3's "at no point is a
+   'disconnected' confirmation shown over a calendar that still shows as
+   connected" is not guaranteed.** D-8 leaves the shape to the contract stage.
+   It requires only that the answer "does not report that a disconnect took
+   place". A `2xx` answer with a body saying nothing was done satisfies that
+   wording. Both callers treat any resolved call as success:
+   - `smart-calendar-flow/src/components/ConnectionStatus.tsx:18-19` toasts
+     "Disconnected from Google Calendar".
+   - `src/components/WorkCalendarConnection.tsx:87-88` toasts "Disconnected".
+
+   The client behind them (`src/api/client.ts:949-956`, `requestApi` at
+   `:375-418`) treats a response like this:
+   - Any non-`2xx` throws `ApiHttpError`, and both callers then show "Failed
+     to disconnect".
+   - A `204` resolves.
+   - Any other `2xx` without a JSON content type throws `ApiUnreachableError`
+     (`:414-415`). `withFallback` (`:491-503`) then switches the whole session
+     to preview data and runs the mock disconnect (`:952-954`), which also
+     ends in the "Disconnected" toast.
+
+   AC-17's web half asserts only that no action is offered. Its "anyway" half
+   is server-only ("bypassing the app"). So no criterion covers the app
+   receiving the D-8 answer. That can happen whenever the cached status still
+   shows Google while the server holds Outlook or webcal, for example after a
+   provider change in another tab. The contract stage could pick a `2xx`
+   shape that meets D-8 and passes every AC, and the user would still see the
+   false confirmation, or be dropped into demo data.
+
+   *Resolves it*: state, in D-8 or AC-17, that the "not performed" answer is
+   one the app's API client classifies as a failure and not as success or
+   unreachable. Add to AC-17's web half that when either surface receives
+   that answer, no success confirmation is shown and the session does not
+   switch to preview data. Alternatively, narrow §3's "at no point" sentence
+   to what the ACs actually pin, and record the remaining gap as a Decision
+   (assumed by the factory, pending owner confirmation).
+
+### Non-blocking
+
+1. **The Outlook-and-Google-credential population is the common case, not an
+   edge.** Every Microsoft sign-in sets the provider to Outlook
+   (`backend/auth/microsoft_oauth.go:68`). The Google sign-in never resets it
+   (`handlers_auth.go:62-79` does not touch settings). So any user who has
+   ever signed in with both is an Outlook user holding a Google credential.
+   D-8 handles them correctly. This is only worth a sentence in §2.4 so the
+   owner can weigh D-8 knowing how many users it covers.
+2. **"A user whose calendar is Google" should be defined as the status
+   endpoint defines it.** The status endpoint treats a blank provider as
+   Google (`handlers_auth.go:92-95`), and the web app decides from the
+   `provider` that status returns. D-8 and AC-11/17 say "Google",
+   "Outlook or webcal". The settings write accepts only those three values
+   (`handlers_settings.go:32`, `:272`), and migration 024 normalises old rows.
+   So no fourth case exists today, but the spec should say that D-8's split
+   follows the status endpoint's rule. Otherwise the server and the app could
+   classify a blank-provider user differently.
+3. **For the Outlook user in AC-17, Teams is implied but not stated.** "The
+   Outlook credential … is unchanged" implies Teams' connected state is
+   unchanged (`handlers_conferencing.go:209-210`). Stating it next to the
+   Google Meet assertion would make the server half complete.
+
+### Criteria I could not falsify
+
+- AC-16: a gate run, not a behavioural criterion (unchanged).
+- All others have a test that fails on `7de7044` / `4ded854` and can pass
+  afterwards. AC-17's server half now fails today, because the Google
+  credential is deleted, Google Meet turns not connected, and the session
+  cookie is expired (`handlers_auth.go:137`, `:142`). It can pass afterwards.
+  AC-17 has no web assertion for receiving the D-8 answer (blocking 1).
+
+### Citations I checked and found wrong
+
+- None. I checked revision 2's new citations against `7de7044`:
+  - `token_store.go:57` (delete keyed on `user_id` only)
+  - `handlers_auth.go:92-111` (status branches on the settings provider,
+    blank means Google)
+  - `:68-71` (the Google callback always stores the token)
+  - `microsoft_oauth.go:73-77` (the Outlook credential is read from the
+    settings row; it is written, and the provider set to `outlook`, at `:68`)
+  - `handlers_conferencing.go:199-204` (Google Meet is listed only when Google
+    is configured, and is connected while the token exists)
+  - `handlers_booking.go:88` (host coverage counts the Google token)
+  - `engine/cal_iface.go:33` (the calendar engine loads the Google token)
+
+### Consumers this breaks
+
+- smart-calendar-flow `src/components/ConnectionStatus.tsx:15-26` and
+  `src/components/WorkCalendarConnection.tsx:84-95`, through
+  `src/api/client.ts:949-956`: both show a success toast for any `2xx`
+  disconnect answer. With a non-JSON `2xx`, the session also falls into
+  preview mode. See blocking 1.
+- smart-calendar-flow `src/api/contract.test.ts:84-87` and the generated
+  `src/api/generated/types.ts` (`disconnectCalendar`, 204 only): the new D-8
+  answer adds a response to this operation, which the contract stage must
+  regenerate and the test must cover. This is expected under AC-15; it is
+  listed so it is not missed.
+- Checked and unaffected: `ConferencingSection.tsx:226-235` disconnects Zoom
+  only, not the calendar. `mcp/` has no caller of disconnect (unchanged from
+  round 2).
