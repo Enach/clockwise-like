@@ -3,8 +3,10 @@
 - **Linear issue**: [PAC-29](https://linear.app/paceday/issue/PAC-29)
 - **Spec**: none (see §0)
 - **Stage**: contract-author, then contract-challenger
+- **Contract revision**: 2 (revision 1 was challenged; §9 answers the challenge)
 - **Fragments edited**: `contracts/openapi/paths/calendar.yaml` (`patchEvent`,
-  `CalendarEvent` descriptions, `GoogleCalendarEventRaw` deleted) and
+  `deleteEvent`, `EventPatchRequest`, `CalendarEvent` descriptions,
+  `GoogleCalendarEventRaw` deleted) and
   `contracts/openapi/paths/scheduling.yaml` (`createScheduledMeeting`,
   `confirmNaturalLanguage`, `GoogleCalendarEvent` / `GoogleEventDateTime` /
   `GoogleEventAttendee` deleted), plus their companion `*.notes.md`.
@@ -32,18 +34,25 @@ are what a spec would have had to settle; with no spec file to hold a Decisions
 section, they are recorded in §4 and in the manifest as "assumed by the factory,
 pending owner confirmation".
 
-### Scope: one finding, not six
+### Scope: all six findings the issue names
 
-The issue body names six findings. The criteria this stage was given cover one:
+The issue body names six findings and asks for all of them ("While in this handler,
+fix the adjacent PATCH defects"). Revision 1 resolved only API-017 and deferred the
+rest (D-1); the challenge rejected that under factory §7.1 (B-1, §9). Revision 2
+resolves all six:
 
 | Finding | What | Here? |
 |---|---|---|
 | API-017 | Raw `calendar/v3.Event` on PATCH, schedule/create, nlp/confirm | **Yes** (+ U-04, U-14) |
-| API-018 | PATCH discards `send_updates`, `room_resource_email`, `attendee_details` | No, D-1 |
-| API-042 | DELETE ignores `send_updates` | No, D-1 |
-| API-043 | PATCH start/end converts all-day to timed | No, D-1 |
-| API-044 | PATCH `attendees` strips the room | No, D-1 |
-| API-045 | PATCH 404 vs DELETE 500 for the same failure | No, D-1 |
+| API-018 | PATCH discards `send_updates`, `room_resource_email`, `attendee_details` | **Yes** (rev 2): D-5, D-6, D-7 |
+| API-042 | DELETE ignores `send_updates` | **Yes** (rev 2): D-5 |
+| API-043 | PATCH start/end converts all-day to timed | **Yes** (rev 2): D-8 |
+| API-044 | PATCH `attendees` strips the room | **Yes** (rev 2): D-6 |
+| API-045 | PATCH 404 vs DELETE 500 for the same failure | **Yes** (rev 2): D-9 |
+
+API-042 is on `DELETE`, which §7.1 alone would not pull in; it is included because
+API-045 cannot be resolved without changing `DELETE`'s 404 (and touching `DELETE` then
+makes §7.1 apply to it), and because the issue body asks for it.
 
 ## 1. What changes at the HTTP boundary
 
@@ -52,9 +61,12 @@ The issue body names six findings. The criteria this stage was given cover one:
 | `patchEvent` `PATCH /api/events/{id}` | 200 body is the `calendar/v3.Event` from `UpdateEvent`, re-encoded (`handlers_events.go`, last line of `patchEvent`): `summary`, `start.dateTime`, `htmlLink`, ... Contract: `GoogleCalendarEventRaw`. | 200 body is `toCalendarEventDTO(updated)`: **`CalendarEvent`**. |
 | `createScheduledMeeting` `POST /api/schedule/create` | 200 body is the created `calendar/v3.Event`. Contract: `GoogleCalendarEvent`. | **`CalendarEvent`**. |
 | `confirmNaturalLanguage` `POST /api/nlp/confirm` | Same as above. | **`CalendarEvent`**. |
+| `patchEvent` request (rev 2) | `EventPatchRequest` declares six keys; the web's `send_updates`, `room_resource_email`, `attendee_details` are discarded by the decoder. `start`/`end` date-time only, always written as `dateTime`. `attendees` replaces the whole list with email-only entries. | Declares all nine keys. `send_updates` honoured (absent = `none`); a bare-date `start`/`end` is written as `date`; `attendees` keeps existing guests' entries and every room; `room_resource_email` adds a room; `attendee_details` accepted and ignored. |
+| `patchEvent` errors (rev 2) | 400 `invalid body` only; every GetEvent failure is 404. | Three more fixed 400 bodies (`invalid send_updates`, `invalid room_resource_email`, mixed start/end kinds); 404 only for a Google 404/410, other GetEvent failures 500. |
+| `deleteEvent` (rev 2) | No query parameter read; every failure 500. | `send_updates` query parameter (`all`/`none`, absent = `none`, else 400) passed to Google; Google 404/410 is a 404. |
 
-Nothing else moves: no request body, error response, status code, audit row or route
-changes. `CalendarEvent` itself is unchanged in shape; only its description now names
+Nothing else moves: no route, audit row or `CalendarEvent` shape changes, and no
+other operation's request or error responses change. `CalendarEvent` itself is unchanged in shape; only its description now names
 the four operations that return it. The four `Google*` schemas lose their only
 references and are deleted, which takes the `GoogleCalendarEvent` `x-uncertain` (U-14)
 with them (bundle `x-uncertain` count 13 → 12).
@@ -95,17 +107,33 @@ still lands in `src/api/generated` and invites a consumer to type against it.
 - **204 No Content for PATCH and let the client re-read.** The web's `updateEvent` is
   typed `Promise<CalendarEvent>` and the MCP `clockwise_update_event` tool returns the
   body to its caller; an empty body would degrade both for no gain. Rejected.
-- **Fix API-018/042..045 in the same contract** (the issue body asks for it). Each needs
-  a decision no owner has made: `send_updates` emails guests (a user-visible side
-  effect), and keeping all-day-ness or the room changes what PATCH writes to Google.
-  None is in the acceptance criteria. Deferred (D-1), each listed as a follow-up.
+- **Defer API-018/042..045 to follow-ups** (revision 1, D-1). Rejected by the challenge
+  (B-1): factory §7.1 is binding on an operation this contract modifies, the issue body
+  asks for the fixes, and no other issue tracks them. Revision 2 resolves them (§9).
+- **Write `attendee_details` through to Google** (names and RSVPs from the client).
+  Would let one user set another person's RSVP on Google, and the list DTO the web edits
+  from carries no more than Google already has. Rejected (D-7): existing entries are
+  kept from Google instead.
+- **`room_resource_email: ""` removes the room.** The web cannot see the room (the DTO
+  filters it) and sends `""` or nothing when no room is picked, so this would delete
+  bookings the user never saw. Rejected (D-6).
+- **Reject a date-time `start`/`end` on an all-day event** instead of converting. The
+  web edit form always sends both, so every title edit of an all-day event would fail.
+  Rejected (D-8): a bare date keeps it all-day, two date-times convert it explicitly,
+  only a mixed pair is a 400.
+- **Make DELETE of a missing event a 204 (idempotent).** Hides a wrong id from the
+  caller and disagrees with PATCH. Rejected (D-9): 404 on both.
+- **`send_updates` default `all`.** Would start emailing guests on every drag-reschedule
+  and MCP call that does not send the key. Rejected (D-5): absent means `none`, today's
+  behaviour.
 - **Add `room_resource_email` to the DTO** so PATCH responses show the room. A new field
   on the list too, no criterion asks for it, and it is API-044's territory. Rejected (D-2).
 
 ## 4. Decisions (assumed by the factory, pending owner confirmation)
 
-- **D-1** PAC-29 resolves API-017 (with U-04, U-14) only. API-018, API-042, API-043,
-  API-044 and API-045 are follow-ups. Assumed by the factory, pending owner confirmation.
+- **D-1** (revision 1) ~~PAC-29 resolves API-017 (with U-04, U-14) only. API-018,
+  API-042, API-043, API-044 and API-045 are follow-ups.~~ **Withdrawn in revision 2**
+  (challenge B-1): PAC-29 resolves all six findings; D-5..D-9 record how.
 - **D-2** The three responses use `toCalendarEventDTO` unchanged, room filtering
   included; no field is added to `CalendarEvent`. Assumed by the factory, pending owner
   confirmation.
@@ -116,7 +144,35 @@ still lands in `src/api/generated` and invites a consumer to type against it.
   backend body through; their text output changes to the DTO keys with no MCP code
   change. Assumed by the factory, pending owner confirmation.
 
-None of these deletes user data or widens who can see data. D-2 shows the caller less
+- **D-5** `send_updates` on PATCH (body) and DELETE (query) is `all` or `none`, passed
+  to Google as `sendUpdates`; absent or null means `none`, any other value is a 400 and
+  nothing is written. `none` is what every call did before PAC-29, so a client that does
+  not send the key (MCP) or sends `none` (drag-reschedule) sees no change; only an
+  explicit `all` (the web's "notify guests" checkbox, off by default) emails guests, who
+  are already on the event. Assumed by the factory, pending owner confirmation.
+- **D-6** Rooms are never removed by PATCH. `attendees` replaces the non-room guests and
+  keeps every existing room resource attendee; a non-empty `room_resource_email` (a
+  `*@resource.calendar.google.com` address, else 400) adds that room if absent; `""`,
+  null or absent leaves rooms unchanged. Removing or swapping a room needs the DTO to
+  expose it, which no criterion asks for (follow-up, not a finding). Assumed by the
+  factory, pending owner confirmation.
+- **D-7** `attendee_details` is declared, accepted and ignored. Existing attendees keep
+  their Google entry (display name, RSVP, organizer, optional) when `attendees` still
+  lists them; a new email is added email-only. A client never sets another person's RSVP.
+  Assumed by the factory, pending owner confirmation.
+- **D-8** `start` / `end` accept a bare `YYYY-MM-DD` date (written as Google `date`) or an
+  RFC3339 date-time (written as `dateTime` in UTC). If after applying the patch one side
+  is a date and the other a date-time, the request is a 400 and nothing is written. The
+  web edit form omits `start` / `end` for an all-day event whose date and times the user
+  did not change, so editing its title keeps it all-day. Assumed by the factory, pending
+  owner confirmation.
+- **D-9** A Google 404 or 410 is a 404 `event not found` on both PATCH (from GetEvent)
+  and DELETE; any other Google failure is a 500 `internal error` on both. Assumed by the
+  factory, pending owner confirmation.
+
+None of these deletes user data or widens who can see data. D-6 and D-7 stop PATCH from
+deleting rooms, names and RSVPs it deleted before; D-8 stops it from silently converting
+all-day events; D-5 notifies only people already on the event, only on explicit request. D-2 shows the caller less
 than the raw body did (no room attendee, no `htmlLink`, no organizer/creator objects),
 never more.
 
@@ -135,6 +191,13 @@ Searched: `smart-calendar-flow/src`, `clockwise-like/mcp`, `clockwise-like/e2e/t
 | backend `pac21_4xx_bodies_test.go` `TestPatchEvent_SuccessBodyIsRawGoogleEvent` | Yes, by design | It pins the raw body this contract replaces; the backend stage rewrites it to assert the DTO (AC-1), never skips or deletes it without a replacement. |
 | backend `TestCreateMeeting_Success`, `TestNLPConfirm_Success` | No | Assert status only; extended by AC-2. |
 | `e2e/tests/seam.spec.ts` event patch, NLP confirm | No | Assert on the fake Google request, not the response body. |
+| web `EventEditForm.tsx` save (rev 2) | No (fixed) | Its request (`send_updates`, `room_resource_email`, `attendee_details`) becomes valid under the contract (B-2). The "notify guests" checkbox now notifies (D-5); a picked room is added (D-6); the room and guests' RSVPs survive a save (D-6, D-7). For an all-day event the frontend stage omits `start` / `end` unless the user changed the date or times (D-8, AC-9). |
+| web `RescheduleSuggestions.tsx`, `Dashboard.tsx` drag reschedule (rev 2) | No | Send date-time `start`/`end` with `send_updates: "none"`; same behaviour, now keeping the room and RSVPs. |
+| web `client.ts` `deleteEvent` / `EventEditForm.tsx` delete (rev 2) | No (fixed) | Sends `?send_updates=all` or `none`, now honoured. Deleting an already-deleted event is a 404 instead of a 500; the caller shows the API error toast either way. |
+| `mcp/tools.go` `clockwise_update_event` (rev 2) | No | Sends no `send_updates` (= `none`, today's behaviour). Its `start`/`end` description says RFC3339, which the new pattern accepts; `attendees` now keeps rooms and RSVPs. |
+| `mcp/tools.go` `clockwise_delete_event` (rev 2) | No (error text) | Sends no query parameter (= `none`). A missing event now yields an MCP error text carrying 404 instead of 500. |
+| backend `pac21_4xx_bodies_test.go` `TestPAC21PatchEventNotFoundIsFixed` (rev 2) | No | Its fake Google answers GET with 404, which stays a 404 under D-9. |
+| backend `pac21_calendar_not_connected_test.go` patchEvent / deleteEvent rows (rev 2) | No | The no-credential path is unchanged (401). |
 
 ## 6. Acceptance criteria, as they apply
 
@@ -150,6 +213,32 @@ The three criteria given to this stage, and the tests that make them falsifiable
    title, typed with the generated `CalendarEvent`).
 3. *"api-gate and web-gate rc=0"* → **AC-5**.
 
+Revision 2 adds the tests for the findings it now resolves (factory §7.1), all backend
+handler tests against a fake Google except AC-9:
+
+- **AC-6** (API-018, API-042, D-5): PATCH with `send_updates: "all"` makes Google's update
+  request carry `sendUpdates=all`; absent or `"none"` carries `sendUpdates=none`;
+  `"bogus"` is a 400
+  `invalid send_updates` with no update request. The same three cases for
+  `DELETE ?send_updates=`.
+- **AC-7** (API-043, D-8): on an all-day event, PATCH `{"start":"2026-05-04","end":"2026-05-05"}`
+  writes `start.date`/`end.date` and no `dateTime`; PATCH `{"title":"x"}` leaves `date`
+  intact; PATCH `{"start":"2026-05-04T10:00:00Z"}` alone is a 400 with no update request;
+  both date-times convert it to timed.
+- **AC-8** (API-018, API-044, D-6, D-7): event with attendees `a@x.com` (displayName A,
+  accepted) and `room-1@resource.calendar.google.com`; PATCH
+  `{"attendees":["a@x.com","b@x.com"],"attendee_details":[{"email":"a@x.com","rsvp":"declined"}],"room_resource_email":""}`
+  writes `a@x.com` with displayName A and `accepted`, `b@x.com` email-only, and the room;
+  with `"room_resource_email":"room-2@resource.calendar.google.com"` both rooms are
+  written; with `"room_resource_email":"x@example.com"` it is a 400. The challenger's
+  B-2 request is answered 200.
+- **AC-9** [web unit] (D-8): `EventEditForm` saving an all-day event (`start` a bare
+  date) with only the title changed sends no `start`/`end`; with a changed time it sends
+  both as date-times.
+- **AC-10** (API-045, D-9): GetEvent answering 500 makes PATCH a 500 `internal error`
+  (not 404); GetEvent 404 or 410 stays a 404. DELETE answered 404 or 410 by Google is a
+  404 `event not found`; answered 500 is a 500.
+
 AC-1..AC-3 are backend handler tests; AC-4 is a web unit test. No new e2e scenario is
 required: the existing seam scenarios exercise PATCH and NLP confirm end to end and do
 not read the body.
@@ -163,8 +252,10 @@ not read the body.
 - `CalendarEvent.is_personal_block` keeps its `x-uncertain` (D-3). It is on a schema
   property, not on any of the three operations, and asks whether the list's DTO field
   is dead; PAC-29 neither reads nor writes it.
-- Finding resolved: **API-017**. The implementation PR updates its status in
-  `docs/factory/api-audit.md` (and the U-04 / U-14 rows).
+- Findings resolved: **API-017**, and in revision 2 **API-018, API-042, API-043,
+  API-044, API-045**. The implementation PR updates their status in
+  `docs/factory/api-audit.md` (and the U-04 / U-14 rows). After revision 2 no open audit
+  finding remains on `patchEvent` or `deleteEvent`.
 
 ## 8. What was run
 
@@ -350,3 +441,71 @@ determined (always omitted, `toCalendarEventDTO` never sets it), so it does not 
   descriptions say so. Shows the caller less than the raw body did, never more.
 - Web generated types: `GoogleCalendarEvent*` appear only in `src/api/generated/`.
 - No rejected alternative in §3 was rejected without a reason I could check.
+
+## 9. Revision — 2026-10-27 (contract revision 2, answering the round 1 challenge)
+
+Author: `contract-author`. The response change of revision 1 is unchanged. This revision
+answers the two blocking findings and N-3. N-1 and N-2 are addressed where noted.
+
+### B-1. D-1 broke factory §7.1: resolved by option (a)
+
+Option (b) needs an owner decision to split PAC-29, and no owner has recorded one. Option
+(a) needs only factory decisions, and the issue body already asks for these fixes, so
+(a) is the option that follows the factory without an owner. D-1 is withdrawn. Revision 2
+resolves API-018, API-043, API-044 and API-045 on `patchEvent`, and API-042 and the
+`DELETE` half of API-045 on `deleteEvent` (§0 says why `DELETE` is in scope). Each fix
+takes the most conservative option and is recorded as an assumed decision in §4:
+
+| Finding | Contract change | Decision | Why it is the conservative option |
+|---|---|---|---|
+| API-018 `send_updates` | Declared on `EventPatchRequest`, enum `all`/`none`; absent/null = `none`; passed to Google; other values 400 | D-5 | `none` is today's behaviour for every caller that does not opt in. Only the web's explicit "notify guests" checkbox (default off) sends `all`, and it emails only people already on the event. |
+| API-042 `DELETE ?send_updates` | Declared query parameter, same enum and default | D-5 | Same as above. |
+| API-018 `room_resource_email` | Declared; non-empty adds the room; `""`/null/absent leaves rooms unchanged; must be `*@resource.calendar.google.com` | D-6 | Never removes a booking. The web cannot see rooms (the DTO filters them) and sends `""` or nothing when no room is picked, so "empty removes" would delete bookings the user never saw. |
+| API-018 `attendee_details` | Declared, accepted and ignored | D-7 | Writing it through would let one user set another's RSVP. Names and RSVPs are kept from Google instead (next row), which is what the field was trying to preserve. |
+| API-044 room stripped | `attendees` replaces only non-room attendees, keeps every room, and keeps existing attendees' Google entries | D-6, D-7 | Stops PATCH deleting rooms, names and RSVPs. `[]` still clears guests, as today. |
+| API-043 all-day to timed | `start`/`end` accept a bare date (kept all-day) or a date-time; a date/date-time mix is a 400 | D-8 | No silent conversion. Rejecting date-times on an all-day event was rejected because the web form sends both on every save (§3). The frontend stage omits unchanged `start`/`end` for all-day events (AC-9). |
+| API-045 404 vs 500 | Only a Google 404/410 is a 404 on PATCH and DELETE; anything else is a 500 on both | D-9 | One meaning of "not found" on one path. A transport or permission failure no longer claims the event does not exist. |
+
+Tests: AC-6 to AC-10 (§6 and the manifest). `followUps` no longer lists any audit
+finding. Its one entry (removing or swapping a room needs the DTO to expose rooms) is a
+product question that D-6 raises, not an audit finding. The PAC-29 issue body already
+asks for all six fixes, so it does not need amending.
+
+### B-2. `EventPatchRequest` forbade the web's request: resolved
+
+`send_updates`, `room_resource_email` and `attendee_details` are declared on
+`EventPatchRequest` with their real semantics under B-1 (a), as the challenge allowed.
+`additionalProperties: false` stays: every key the only web consumer
+(`client.ts` `updateEvent`, `EventEditForm.tsx` save) and the MCP tool send is now declared,
+so the contract still forbids a key the server would silently drop. The description no
+longer says "unknown keys are silently ignored" without saying what the contract does
+about it. The challenge's example request
+
+```
+PATCH /api/events/evt-1
+{"title":"Standup","start":"2026-05-01T10:00:00Z","end":"2026-05-01T10:30:00Z",
+ "room_resource_email":"","attendee_details":[{"email":"a@x.com"}],
+ "attendees":["a@x.com"],"send_updates":"all"}
+```
+
+is valid against the revised schema (`""` matches the `room_resource_email` pattern,
+`attendee_details` items are free-form objects, `send_updates` is in the enum, both
+times match the `start`/`end` pattern). AC-8 asserts the server answers it 200.
+
+One request shape changes from valid to invalid: `start`/`end` lose `format: date-time`
+and gain a pattern that accepts either an RFC3339 date-time or a `YYYY-MM-DD` date. The
+date-times the web (`toISOString()`) and MCP (RFC3339) send still match; only a lowercase `t` /
+`z`, which RFC3339 permits but no consumer sends, no longer matches. The generated Go field becomes a
+string, and the handler is hand-written, so nothing consumes the generated type
+(MIGRATION.md: 0 generated).
+
+### Non-blocking
+
+- **N-1** Accepted. The contract PR uses `Part of PAC-29`, never `Fixes PAC-29`.
+  Revision 2 widens the window in which the contract describes the server after the
+  implementation PR, so every changed description says what `main` does until then
+  (`patchEvent` and `deleteEvent` descriptions).
+- **N-2** Acknowledged, unchanged. There is still no `docs/specs/PAC-29.md` (§0). The
+  three supplied criteria are quoted verbatim in §6. Revision 2's extra tests come from
+  the issue body and factory §7.1, not from those criteria.
+- **N-3** Fixed. `scheduling.notes.md` row 2 is struck through with the reason.

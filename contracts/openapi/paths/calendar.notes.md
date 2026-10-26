@@ -46,6 +46,13 @@ The backend body struct (`handlers_events.go:37`) accepts only
 with no error. Consequence: attendee RSVP/display-name edits and room changes
 made through this endpoint are no-ops, and guests are never notified.
 
+**PAC-29 (contract revision 2):** `EventPatchRequest` declares all three keys.
+`send_updates` (`all` | `none`, absent = `none`) is passed to Google; `room_resource_email`
+adds that room and never removes one; `attendee_details` is accepted and ignored, while
+`attendees` now keeps each existing guest's Google entry (name, RSVP) and every room
+(API-044). A bare `YYYY-MM-DD` `start` / `end` keeps an event all-day (API-043). Resolves
+API-018 once the implementation lands.
+
 ### 4. `PATCH /api/events/{id}` — response shape is wrong side of the DTO boundary
 Frontend types the response as `CalendarEvent`. The handler encodes the **raw
 `google.golang.org/api/calendar/v3.Event`** it got back from `UpdateEvent`
@@ -57,12 +64,17 @@ Any frontend code reading `.title` off the PATCH result gets `undefined`.
 
 **PAC-29 (contract):** the 200 body is now specified as `CalendarEvent`, built by
 `toCalendarEventDTO` like the list, and `GoogleCalendarEventRaw` is deleted. Resolves
-API-017 and U-04 once the implementation lands. Items (3), (5) and the all-day / room /
-404 defects (API-018, API-042..045) are not changed by PAC-29.
+API-017 and U-04 once the implementation lands. Contract revision 2 also specifies
+items (3) and (5) and the all-day / room / 404 defects (API-018, API-042..045); see the
+notes under (3) and (5) and `contracts/features/PAC-29.md` §9.
 
 ### 5. `DELETE /api/events/{id}` — `send_updates` query param ignored
 Same as (3): `client.ts:1187` sends `?send_updates=none|all`; the handler reads no
 query parameters at all.
+
+**PAC-29 (contract revision 2):** the `send_updates` query parameter is declared
+(`all` | `none`, absent = `none`, anything else 400) and passed to Google, and a Google
+404 / 410 is a 404 on both PATCH and DELETE (API-042, API-045).
 
 ### 6. `POST /api/freebusy` — participant shape disagrees three ways
 - Frontend `ParticipantCoverage` (`types.ts`) is `{email, status, provider?}`.
