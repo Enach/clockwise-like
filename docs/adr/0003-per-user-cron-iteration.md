@@ -1,6 +1,6 @@
 # ADR 0003: Per-user cron iteration (FocusCron + PersonalBlocker)
 
-- Status: accepted
+- Status: accepted; the `FocusCron` half (decision items 2 and 4, and the restart-only consequence) is superseded by PAC-49 — a one-minute, per-user-timezone loop with a stored watermark (`backend/scheduler/cron.go`, spec `docs/specs/PAC-49.md` v3.1 §4.3)
 - Date: 2026-05-10
 - Project: Paceday
 

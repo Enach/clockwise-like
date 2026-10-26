@@ -31,10 +31,13 @@ Migration 018's own comment documents this as deliberate half-finished work.
 `calendar_provider='outlook'` at `WHERE id=1`, so one user connecting Outlook
 shares their refresh token and flips the whole deployment (PAC-48).
 
-### `ListUsersWithAutoSchedule` has no `user_id` predicate
-The cron is dead today because of it — and it is a migration landmine: copying
-`auto_schedule_enabled` on PAC-24's migration day would mass-write focus blocks
-into every user's real calendar. PAC-49.
+### ~~`ListUsersWithAutoSchedule` has no `user_id` predicate~~ (closed)
+Closed by migration 024 (PAC-24: every settings row has an owner) and, for the
+scheduler itself, by PAC-49: the listing is gone. `FocusCron` now ticks every
+minute, re-reads the opted-in users on each tick (`ListAutoScheduleCandidates`),
+evaluates each schedule in the user's own timezone, and runs a user only when
+their next slot after `settings.auto_schedule_last_run` (migration 027) has come.
+Saving settings takes effect at the next minute; there is no `Reload`.
 
 ---
 
