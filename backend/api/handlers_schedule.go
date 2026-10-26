@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -52,7 +53,7 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 		}
 		res, err := h.eng.SuggestForDay(r.Context(), target)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeServerErrorText(w, r, "compress", err, http.StatusInternalServerError)
 			return
 		}
 		results = append(results, res)
@@ -95,7 +96,7 @@ func (h *scheduleHandlers) applyCompress(w http.ResponseWriter, r *http.Request)
 
 	applied, engineFailed, err := h.eng.Apply(r.Context(), proposals)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "applyCompress", err, http.StatusInternalServerError)
 		return
 	}
 	failed = append(failed, engineFailed...)
@@ -146,7 +147,7 @@ func (h *scheduleHandlers) suggestMeeting(w http.ResponseWriter, r *http.Request
 	}
 	suggestions, err := h.smart.Suggest(r.Context(), req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "suggestMeeting", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -184,7 +185,7 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 
 	created, err := h.smart.CreateMeeting(r.Context(), req, slot)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeCreateMeetingFailure(w, r, "createMeeting", err)
 		return
 	}
 
@@ -192,4 +193,15 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(created)
+}
+
+// writeCreateMeetingFailure answers a failed SmartScheduler.CreateMeeting. The
+// out-of-hours refusal keeps its documented fixed text (its 500 status is
+// API-036); every other failure is logged and answered generically (PAC-21).
+func writeCreateMeetingFailure(w http.ResponseWriter, r *http.Request, op string, err error) {
+	if errors.Is(err, engine.ErrOutOfHoursAllowance) {
+		http.Error(w, "out-of-hours meeting allowance reached", http.StatusInternalServerError)
+		return
+	}
+	writeServerErrorText(w, r, op, err, http.StatusInternalServerError)
 }

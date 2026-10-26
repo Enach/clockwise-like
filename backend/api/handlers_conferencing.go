@@ -106,11 +106,11 @@ func (h *conferencingHandlers) zoomCallback(w http.ResponseWriter, r *http.Reque
 		os.Getenv("ZOOM_REDIRECT_URL"), r.URL.Query().Get("code"),
 	)
 	if err != nil {
-		http.Error(w, "zoom token exchange: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "zoom token exchange", err, http.StatusInternalServerError)
 		return
 	}
 	if err := storage.SaveZoomTokens(h.db, userIDFromCtx(r.Context()), tok.AccessToken, tok.RefreshToken); err != nil {
-		http.Error(w, "save zoom token: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "save zoom token", err, http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/?connected=true&provider=zoom", http.StatusFound)
@@ -130,7 +130,7 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 	userID := userIDFromCtx(r.Context())
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
-		writeError(w, "settings: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -151,7 +151,7 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 	}
 	details, err := provider.CreateMeeting(r.Context(), req.Title, req.Start, req.End)
 	if err != nil {
-		writeError(w, "create meeting: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "create meeting", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -162,7 +162,7 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 	userID := userIDFromCtx(r.Context())
 	settings, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
-		writeError(w, "settings: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
 		return
 	}
 	googleToken, _ := auth.LoadUserToken(h.db, userID)
@@ -185,7 +185,7 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 
 func (h *conferencingHandlers) disconnectZoom(w http.ResponseWriter, r *http.Request) {
 	if err := storage.ClearZoomTokens(h.db, userIDFromCtx(r.Context())); err != nil {
-		writeError(w, "disconnect zoom: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "disconnect zoom", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -292,7 +292,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 		}
 		setExternalConference(event, req.Provider, req.URL)
 		if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
-			writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+			writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -303,7 +303,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 	if req.Provider == "google_meet" {
 		updated, err := client.AddGoogleMeet(r.Context(), client.CurrentCalendarID(), eventID, event)
 		if err != nil {
-			writeError(w, "create Google Meet: "+err.Error(), http.StatusInternalServerError)
+			writeServerError(w, r, "create Google Meet", err, http.StatusInternalServerError)
 			return
 		}
 		url := updated.HangoutLink
@@ -321,7 +321,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 
 	settings, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		writeError(w, "settings: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
 		return
 	}
 	start, err := eventTime(event.Start)
@@ -341,7 +341,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 	}
 	details, err := provider.CreateMeeting(r.Context(), event.Summary, start, end)
 	if err != nil {
-		writeError(w, "create meeting: "+err.Error(), http.StatusBadGateway)
+		writeServerError(w, r, "create meeting", err, http.StatusBadGateway)
 		return
 	}
 	if details == nil || details.JoinURL == "" {
@@ -350,7 +350,7 @@ func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http
 	}
 	setExternalConference(event, req.Provider, details.JoinURL)
 	if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
-		writeError(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -373,13 +373,13 @@ func (h *conferencingHandlers) removeEventConference(w http.ResponseWriter, r *h
 	if event.ConferenceData != nil || event.HangoutLink != "" {
 		event, err = client.ClearGoogleMeet(r.Context(), client.CurrentCalendarID(), eventID, event)
 		if err != nil {
-			writeError(w, "remove Google Meet: "+err.Error(), http.StatusInternalServerError)
+			writeServerError(w, r, "remove Google Meet", err, http.StatusInternalServerError)
 			return
 		}
 	}
 	if removeExternalConference(event) {
 		if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
-			writeError(w, "remove conference: "+err.Error(), http.StatusInternalServerError)
+			writeServerError(w, r, "remove conference", err, http.StatusInternalServerError)
 			return
 		}
 	}

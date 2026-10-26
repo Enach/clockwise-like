@@ -36,7 +36,7 @@ func (h *ssoHandlers) detect(w http.ResponseWriter, r *http.Request) {
 
 	result, err := auth.DetectAuthProvider(r.Context(), h.ah.db, body.Email)
 	if err != nil {
-		writeError(w, "detection failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "detection failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -67,7 +67,7 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 		redirectURL,
 	)
 	if err != nil {
-		writeError(w, "OIDC setup: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "OIDC setup", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -118,13 +118,13 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		redirectURL,
 	)
 	if err != nil {
-		http.Error(w, "OIDC setup: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "OIDC setup", err, http.StatusInternalServerError)
 		return
 	}
 
 	userInfo, _, err := client.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "OIDC exchange: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "OIDC exchange", err, http.StatusInternalServerError)
 		return
 	}
 	if userInfo.Email == "" {
@@ -142,7 +142,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 
 	user, err := storage.UpsertUser(h.ah.db, userInfo.Email, userInfo.Name, "", "sso", userInfo.Sub)
 	if err != nil {
-		http.Error(w, "upsert user: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "upsert user", err, http.StatusInternalServerError)
 		return
 	}
 	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, userInfo.Email)
@@ -210,7 +210,7 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 		SAMLCert:         body.SAMLCert,
 	})
 	if err != nil {
-		writeError(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "save failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -230,7 +230,7 @@ func (h *ssoHandlers) listSSOProviders(w http.ResponseWriter, r *http.Request) {
 
 	providers, err := storage.ListSSOProvidersByOrg(h.ah.db, *user.OrgID)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "listSSOProviders", err, http.StatusInternalServerError)
 		return
 	}
 	if providers == nil {
@@ -263,7 +263,7 @@ func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := storage.DeleteSSOProvider(h.ah.db, d); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "deleteSSOProvider", err, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

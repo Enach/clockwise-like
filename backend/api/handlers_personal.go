@@ -52,7 +52,7 @@ func toPersonalCalendarDTO(c *storage.PersonalCalendar) personalCalendarDTO {
 func (h *personalHandlers) list(w http.ResponseWriter, r *http.Request) {
 	cals, err := storage.ListPersonalCalendarsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "list", err, http.StatusInternalServerError)
 		return
 	}
 	out := make([]personalCalendarDTO, 0, len(cals))
@@ -87,7 +87,7 @@ func (h *personalHandlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := storage.InsertPersonalCalendar(h.db, pc)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "create", err, http.StatusInternalServerError)
 		return
 	}
 	pc.ID = id
@@ -113,7 +113,7 @@ func (h *personalHandlers) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	cal, err := storage.UpdatePersonalCalendar(h.db, id, userIDFromCtx(r.Context()), req.Name, req.URL, req.Enabled)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "patch", err, http.StatusInternalServerError)
 		return
 	}
 	if cal == nil {
@@ -132,7 +132,7 @@ func (h *personalHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := storage.DeletePersonalCalendarForUser(h.db, id, userIDFromCtx(r.Context()))
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "delete", err, http.StatusInternalServerError)
 		return
 	}
 	if !deleted {
@@ -167,7 +167,7 @@ func (h *personalHandlers) preview(w http.ResponseWriter, r *http.Request) {
 	end := start.AddDate(0, 0, 14)
 	events, err := h.blocker.Preview(r.Context(), id, start, end)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "preview", err, http.StatusInternalServerError)
 		return
 	}
 	if events == nil {
@@ -189,11 +189,11 @@ func (h *personalHandlers) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.blocker.Sync(r.Context(), id); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "sync", err, http.StatusInternalServerError)
 		return
 	}
 	if err := storage.MarkPersonalCalendarSynced(h.db, id, userID); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "mark synced", err, http.StatusInternalServerError)
 		return
 	}
 	cal, err := storage.GetPersonalCalendar(h.db, id)

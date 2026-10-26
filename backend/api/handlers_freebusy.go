@@ -69,7 +69,7 @@ func (h *freeBusyHandlers) query(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.svc.Query(r.Context(), userID, body.Emails, start, end)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "query", err, http.StatusInternalServerError)
 		return
 	}
 

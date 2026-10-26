@@ -48,27 +48,27 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.ExchangeCode(r.Context(), h.oauthConfig, r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "token exchange failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Fetch user profile from Google
 	info, err := fetchGoogleUserInfo(r.Context(), token, h.oauthConfig)
 	if err != nil {
-		http.Error(w, "userinfo failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "userinfo failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Upsert user row
 	user, err := storage.UpsertUser(h.db, info.Email, info.Name, info.Picture, "google", info.ID)
 	if err != nil {
-		http.Error(w, "upsert user failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "upsert user failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Store OAuth token associated with user
 	if err := auth.UpsertUserToken(h.db, user.ID, token); err != nil {
-		http.Error(w, "save token failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "save token failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	if err := auth.DeleteUserToken(h.db, userID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerErrorText(w, r, "disconnect", err, http.StatusInternalServerError)
 		return
 	}
 	// Clear auth cookie

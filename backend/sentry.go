@@ -58,8 +58,9 @@ func scrubSensitive(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	return event
 }
 
-// scrubRequest removes sensitive headers, all cookies, and any request body
-// from a captured HTTP request. Request bodies are never attached.
+// scrubRequest removes sensitive headers, all cookies, the query string and
+// any request body from a captured HTTP request. Request bodies are never
+// attached.
 func scrubRequest(req *sentry.Request) {
 	if req == nil {
 		return
@@ -75,6 +76,10 @@ func scrubRequest(req *sentry.Request) {
 	req.Cookies = ""
 	// Never ship request bodies (may contain tokens/secrets/PII).
 	req.Data = ""
+	// Never ship the query string: on OAuth callbacks (Google, Microsoft,
+	// Zoom, Slack, Notion, OIDC) it carries the authorization code and state,
+	// and sentry-go's default filter does not match either (PAC-14 §2, PAC-21).
+	req.QueryString = ""
 }
 
 func scrubStringMap(m map[string]string) {
