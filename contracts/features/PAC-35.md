@@ -1103,4 +1103,29 @@ Go diff is the embedded description text only.
 
 ### Gates run for revision 4
 
-See below (appended after the run on the final commit).
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-35-contract`
+on the fragment commit `9700144` copied back the regenerated
+`contracts/openapi/openapi.yaml` and `backend/api/gen/paceday.gen.go`
+(committed in `f8caa24`); every step printed rc=0. Re-run on `772d06c`
+(regenerated files and this revision's text committed), exit 0:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 53.2% (floor 43%) [3899 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+This commit adds only this gate record to this file. The web gate is not run
+at this stage (web types regenerate after the contract merges, factory §1);
+the e2e gate is not run (no behaviour changed at this stage).
