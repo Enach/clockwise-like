@@ -663,8 +663,15 @@ func (h *schedulingLinkHandlers) respondToInvite(w http.ResponseWriter, r *http.
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	if err := storage.RespondToHostInvite(h.db, linkID, userID, status); err != nil {
+	matched, err := storage.RespondToHostInvite(h.db, linkID, userID, status)
+	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
+		return
+	}
+	if !matched {
+		// PAC-30: no host row for the caller on this link (or no such link).
+		// Same 404 for both, so the answer does not reveal whether a link exists.
+		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -698,8 +705,14 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 		writeError(w, "owner cannot leave link", http.StatusBadRequest)
 		return
 	}
-	if err := storage.RemoveLinkHost(h.db, id, userID); err != nil {
+	removed, err := storage.RemoveLinkHost(h.db, id, userID)
+	if err != nil {
 		writeServerError(w, r, "leave failed", err, http.StatusInternalServerError)
+		return
+	}
+	if !removed {
+		// PAC-30: the caller has no host row on this link; nothing was deleted.
+		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

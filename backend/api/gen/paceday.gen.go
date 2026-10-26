@@ -2196,7 +2196,7 @@ type SchedulingLinkHostRecord struct {
 // SchedulingLinkHostRecordStatus defines model for SchedulingLinkHostRecord.Status.
 type SchedulingLinkHostRecordStatus string
 
-// SchedulingLinkInviteResponse Echo of the status that was written. The only body accept/decline ever returns.
+// SchedulingLinkInviteResponse Echo of the status that was written. The only 200 body accept/decline returns.
 type SchedulingLinkInviteResponse struct {
 	Status SchedulingLinkInviteResponseStatus `json:"status"`
 }
@@ -14678,6 +14678,15 @@ func (response AcceptSchedulingLinkHostInvite401TextResponse) VisitAcceptSchedul
 	return err
 }
 
+type AcceptSchedulingLinkHostInvite404JSONResponse BookingError
+
+func (response AcceptSchedulingLinkHostInvite404JSONResponse) VisitAcceptSchedulingLinkHostInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type AcceptSchedulingLinkHostInvite500JSONResponse BookingError
 
 func (response AcceptSchedulingLinkHostInvite500JSONResponse) VisitAcceptSchedulingLinkHostInviteResponse(w http.ResponseWriter) error {
@@ -14721,6 +14730,15 @@ func (response DeclineSchedulingLinkHostInvite401TextResponse) VisitDeclineSched
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DeclineSchedulingLinkHostInvite404JSONResponse BookingError
+
+func (response DeclineSchedulingLinkHostInvite404JSONResponse) VisitDeclineSchedulingLinkHostInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeclineSchedulingLinkHostInvite500JSONResponse BookingError
@@ -15003,6 +15021,15 @@ func (response AcceptSchedulingLinkInviteByLink401TextResponse) VisitAcceptSched
 	return err
 }
 
+type AcceptSchedulingLinkInviteByLink404JSONResponse BookingError
+
+func (response AcceptSchedulingLinkInviteByLink404JSONResponse) VisitAcceptSchedulingLinkInviteByLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type AcceptSchedulingLinkInviteByLink500JSONResponse BookingError
 
 func (response AcceptSchedulingLinkInviteByLink500JSONResponse) VisitAcceptSchedulingLinkInviteByLinkResponse(w http.ResponseWriter) error {
@@ -15109,6 +15136,15 @@ func (response DeclineSchedulingLinkInviteByLink401TextResponse) VisitDeclineSch
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DeclineSchedulingLinkInviteByLink404JSONResponse BookingError
+
+func (response DeclineSchedulingLinkInviteByLink404JSONResponse) VisitDeclineSchedulingLinkInviteByLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeclineSchedulingLinkInviteByLink500JSONResponse BookingError
