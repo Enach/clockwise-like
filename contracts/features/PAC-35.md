@@ -1129,3 +1129,150 @@ mcp coverage rc=0
 This commit adds only this gate record to this file. The web gate is not run
 at this stage (web types regenerate after the contract merges, factory §1);
 the e2e gate is not run (no behaviour changed at this stage).
+
+---
+
+## Challenge — 2026-10-26 (round 4)
+
+Reviewer: contract-challenger. Reviewed the committed state of
+`factory/pac-35-contract` at `b34034e` (contract revision 4) against spec
+`docs/specs/PAC-35.md`, the handlers on this branch, and smart-calendar-flow
+`origin/main` `4ded854`. Focus: whether revision 4 resolves round 3's blocking
+item, then a fresh pass over the parts earlier rounds did not attack (the
+`provider` enum against every writer of `users.provider`, the SSO detect ->
+start path, the web's use of generated types, the failure-state landing page).
+
+**Verdict**: accept
+
+### Requests wrongly permitted
+
+None. I re-ran the LoginHint rule as `components.parameters.LoginHint` states
+it (scratch Go program: `url.ParseQuery` + `Values.Get`, then the five
+conditions with `net/mail` and `regexp`):
+
+| start request query | hint considered | forwarded |
+|---|---|---|
+| `login_hint=alice%40acme.com` | `alice@acme.com` | yes |
+| `login_hint=o%27brien%40acme.com` | `o'brien@acme.com` | yes |
+| `login_hint=alice%40acme.com%26prompt%3Dnone` | `alice@acme.com&prompt=none` | no |
+| `login_hint=alice%26prompt%3Dnone%40acme.com` | `alice&prompt=none@acme.com` | no |
+| `login_hint=alice%40acme.com%3Fx%3Dy`, `...%23frag` | with `?x=y` / `#frag` | no |
+| `login_hint=alice%40acme.com%0D%0Aprompt%3Dnone` | CRLF inside | no |
+| `alice@[127.0.0.1]`, `alice@localhost`, `alice@acme`, `alice@acme.123` | as given | no |
+| `"a b"@acme.com`, `Alice <alice@acme.com>`, empty | as given | no |
+| `login_hint=x%40evil.com&login_hint=alice%40acme.com` | `x@evil.com` (first) | yes, as the description says |
+| `login_hint=alice@acme.com&prompt=none` (unencoded `&`) | `alice@acme.com` | yes; `prompt=none` is a separate start-request parameter, which the `Location` description says is never copied |
+
+Every documented example behaves as documented, and the schema is still a
+plain `string` (generated Go `LoginHint = string`), so none of these is a 400.
+
+### Requests wrongly forbidden
+
+None. Round 2/3's apostrophe case still forwards on all three start routes.
+
+### Statements the code contradicts
+
+None. Round 3 blocking 1 is resolved: `git grep -i` for "every client",
+"end to end" and "single name" over `contracts/openapi/paths/auth.yaml`,
+`contracts/openapi/openapi.yaml` and `contracts/features/PAC-35.yaml` finds no
+picture-name claim (the only bundle hit is the unrelated U-20 note). The
+`getCurrentUser` and `CurrentUserResponse.avatarUrl` descriptions are scoped to
+the current-user read and name `SchedulingLinkHost` / `PublicHost` as carrying
+`avatar_url`, which matches `handlers_scheduling_links.go:57`,
+`handlers_booking.go:34` and the web's `src/api/schedulingLinks.ts`.
+
+New statements attacked this round, all true on this branch:
+- **`CurrentUserResponse.provider` enum `[google, microsoft, sso]`.** Every
+  `INSERT INTO users` in the repository: `storage.UpsertUser` (callers pass the
+  three literals); `e2e/seed/seed.sql:70-79` writes `'google'` on every row;
+  every other insert (`handlers_teams_test.go:54`, `token_store_test.go:39`,
+  `engine/*_test.go`, `scheduler/cron_test.go:62`, `storage/*_test.go`,
+  `e2e/tests/{audit,llm-destination,settings,time-format}.spec.ts`) omits the
+  column and gets the migration 006 default `'google'`. No `UPDATE users`
+  touches `provider` (only `orgs.go:36`, `org_id`), and `UpsertUser`'s
+  `ON CONFLICT` does not set it, so "provider of the FIRST sign-in" holds.
+- **`SsoDetectResponse.redirect_url`** "lowercased and trimmed, not
+  URL-escaped": `sso_detect.go:45` formats `domain.ExtractDomain(email)`,
+  which is `strings.ToLower(strings.TrimSpace(...))` (`domain/domain.go:16-22`),
+  with no escaping.
+- **`CalendarDisconnectUnsupported.provider` "as `getAuthStatus` reports it"**:
+  `status` answers exactly `outlook` / `webcal` on those branches
+  (`handlers_auth.go:97-111`), so the enum is the full non-Google set.
+- **ssoOidcCallback encodings** after PAC-21 (#220, already in this branch):
+  400s and 403 still `http.Error` text/plain, 404 `writeError` JSON, 500
+  `writeServerError` JSON (`handlers_sso.go:88-150`), as the description says.
+
+### Responses the client cannot handle
+
+None. The web imports exactly one generated symbol outside `src/api/generated`
+(`SettingsUpdate`, `src/api/client.ts:2`), so regenerating types for the 204
+logout, the 409 disconnect, the `provider` enum and the `LoginHint` parameter
+breaks no compile. The failure Location `/?error=auth_failed` lands on the
+public `Index` route (`src/App.tsx:38`), which does not redirect a signed-in
+user away (`src/pages/Index.tsx` navigates only on a click), so the query
+string survives for the web PR's AC-5 to read.
+
+### Consumers affected
+
+Re-grepped both repos plus `mcp/` and `e2e/`; same list as the manifest's
+`consumersAffected`:
+- smart-calendar-flow `src/contexts/AuthContext.tsx:128` (logout via
+  `apiFetch`, tolerates 204); `src/api/client.ts:949-951` and its callers
+  `src/components/ConnectionStatus.tsx:18`,
+  `src/components/WorkCalendarConnection.tsx:87` (409 lands in the `catch`,
+  "Failed to disconnect", no success toast); `src/api/contract.test.ts:84-87`;
+  `src/components/auth/AuthDialog.tsx:104,108`; `src/pages/AuthCallback.tsx:25`.
+- clockwise-like `backend/api/handlers_auth_test.go` `TestAuthDisconnect`
+  (fixture break, as listed), `e2e/tests/auth-session.spec.ts` (no logout
+  status assertion, no hint, no disconnect).
+- `mcp/`: no reference to any touched path, `login_hint`, `auth_failed` or
+  `avatarUrl`.
+
+### Contract/implementation divergences
+
+None beyond the PAC-35 changes the contract specifies and `auth.notes.md`
+flags as not yet implemented.
+
+### Uncertainties not actually resolved
+
+None on a touched operation. The two `x-uncertain` markers left in
+`auth.yaml` (`:1080`, `:1141`) are on `SsoProviderCreateRequest` and
+`SsoProviderResponse`, the admin schemas PAC-22 owns (spec D-5, D-7).
+
+### Verified clean
+
+- **Gate, run by me on `b34034e`**
+  (`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-35-contract`,
+  exit 0): `make openapi rc=0`, `regenerated: none`,
+  `OK: bundle is in sync (98 paths)`,
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`,
+  `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+  `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+  `backend coverage: 53.2% (floor 43%)`, `backend coverage rc=0`,
+  `mcp coverage: 84.0% (floor 75%)`, `mcp coverage rc=0`. Working tree clean
+  afterwards. Web gate not run (web types regenerate after this contract
+  merges, factory §1); e2e gate not run (no behaviour changes at this stage).
+- **`contractHash`**: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`
+  = `048e54898623134cd190be0f3a48ea7ca633dc7ebc83df18c1e3e05ab7b204a9`,
+  matches the manifest.
+- **LoginHint rule and D-10**: table above; D-10 unchanged since round 3
+  (`EmailBelongsToDomain`, exact, case-insensitive).
+- **Manifest vs spec**: AC-1..AC-18 present, none narrowed since round 3;
+  D-9 and D-10 are recorded in the spec's Decisions
+  (`docs/specs/PAC-35.md:654,661`) as assumed by the factory, pending owner
+  confirmation.
+
+Non-blocking:
+1. Round 3 non-blocking 1 (org association kept on a failed Google/SSO session
+   issue; `calendar_provider = 'outlook'` kept after a failed Microsoft session
+   issue) and 2 (`OrgMember.provider` still carries an `x-uncertain` that
+   U-13's evidence settles) remain open by the author's choice. The plan should
+   pin the first in tests; the second needs a follow-up issue.
+2. A browser that already holds a valid `auth_token` for another account keeps
+   it after a failed session issue (the failure path neither sets nor expires
+   the cookie, as documented). So `/?error=auth_failed` can be shown to someone
+   still signed in as the earlier account. That is the conservative choice and
+   the contract states it; the AC-5 web test should cover the page with a
+   signed-in user so the error is not hidden.
+3. Manifest `status` may move from `draft` once the author records this
+   verdict; that edit is the author's, not mine.
