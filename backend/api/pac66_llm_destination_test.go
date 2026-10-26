@@ -443,8 +443,10 @@ func TestPAC66_ProbeEmptyAzureEndpointIsNotSet(t *testing.T) { // AC-20
 	}
 }
 
-// §6: the user-key and keyless providers behave as before. The spec asks for a
-// probe-level test of the Anthropic and Ollama branches.
+// §6 as narrowed by PAC-66-B §B6: the Anthropic case is superseded by AC-B2
+// and AC-B6 (a user-chosen http://127.0.0.1 destination is now refused); the
+// Ollama case keeps its 200 under AC-B9's Given (the test server's origin is
+// approved for Ollama). The ambient transport still records nothing.
 func TestPAC66_UserKeyAndKeylessProbesUnchanged(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -466,8 +468,14 @@ func TestPAC66_UserKeyAndKeylessProbesUnchanged(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := newPAC66(t, "pac66-userkey-"+name+"@example.com", nil, stored)
+			// Ollama Given (§B6): the test server's origin is approved for
+			// ollama, and the user-key clients use the real network.
+			_ = nlptest.UserDestinations(t, "", "", provider.URL)
+			t.Cleanup(nlp.SetUserTransport(nil))
 			w := p.probe(`{}`)
-			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "hi from "+name) {
+			if name == "anthropic" {
+				p.refused422(w, nlp.ReasonDestinationNotApproved, "llmBaseUrl") // PAC-66-B AC-B2, AC-B6
+			} else if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "hi from "+name) {
 				t.Errorf("probe = %d %s, want 200 with the provider's answer", w.Code, w.Body.String())
 			}
 			p.noRequests("ambient transport")

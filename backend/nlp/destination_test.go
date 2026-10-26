@@ -249,16 +249,22 @@ func TestAmbient_RedirectIsNeverFollowedWithTheCredential(t *testing.T) { // AC-
 	}
 }
 
-func TestUserKeyProviders_AreNotChecked(t *testing.T) { // §6: openai, anthropic, ollama unchanged
+// Part A §6 left openai, anthropic and ollama unchecked. PAC-66-B supersedes
+// it (§B6): AC-B1 (openai at http://10.0.0.1), AC-B2 and AC-B6 (anthropic at
+// http://attacker.example) and AC-B8 (ollama with nothing stored, nothing
+// approved) are now refused.
+func TestUserKeyProviders_AreCheckedSincePAC66B(t *testing.T) {
 	_ = nlptest.Ambient(t, nil)
-	for _, s := range []storage.Settings{
-		{LLMProvider: "openai", LLMAPIKey: "k", LLMBaseURL: "http://10.0.0.1"},
-		{LLMProvider: "anthropic", LLMAPIKey: "k", LLMBaseURL: "http://attacker.example"},
-		{LLMProvider: "ollama"},
+	rec := nlptest.UserDestinations(t, "", "", "")
+	for _, tc := range []struct {
+		s                storage.Settings
+		reason, property string
+	}{
+		{storage.Settings{LLMProvider: "openai", LLMAPIKey: "k", LLMBaseURL: "http://10.0.0.1"}, nlp.ReasonDestinationNotApproved, "llmBaseUrl"},
+		{storage.Settings{LLMProvider: "anthropic", LLMAPIKey: "k", LLMBaseURL: "http://attacker.example"}, nlp.ReasonDestinationNotApproved, "llmBaseUrl"},
+		{storage.Settings{LLMProvider: "ollama"}, nlp.ReasonProviderNotEnabled, ""},
 	} {
-		if err := nlp.CheckDestination(context.Background(), client(t, s)); err != nil {
-			t.Errorf("%s: CheckDestination = %v, want nil", s.LLMProvider, err)
-		}
+		refusal(t, rec, client(t, tc.s), tc.reason, tc.property)
 	}
 }
 

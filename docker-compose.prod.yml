@@ -86,9 +86,14 @@ services:
       NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET:-}
       NOTION_REDIRECT_URI:  ${NOTION_REDIRECT_URI:-}
 
-      # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
-      # Vertex AI, Ollama) are configured per-user in the Settings page and
-      # stored in the database — no server-level env vars needed.
+      # LLM provider choice, models and OpenAI/Anthropic keys are configured
+      # per-user in the Settings page and stored in the database. The
+      # destinations they may reach are NOT: they are approved by the operator
+      # (see .env.example). PAC-66-B: the public OpenAI and Anthropic APIs are
+      # built in; Ollama is not enabled unless an origin is listed.
+      PACEDAY_LLM_APPROVED_HOSTS_OPENAI:    ${PACEDAY_LLM_APPROVED_HOSTS_OPENAI:-}
+      PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC: ${PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC:-}
+      PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA:  ${PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA:-}
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:

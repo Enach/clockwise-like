@@ -269,6 +269,16 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 	if msg := nlp.AWSRegionWriteProblem(s.AWSRegion); msg != "" {
 		add(msg, "awsRegion")
 	}
+	// PAC-66-B: the user-set base URLs, under the same changed-and-non-empty
+	// rule. llmBaseUrl is read by openai, anthropic and ollama, so it must be
+	// approved for at least one of them (D-B5); which one it is sent to is
+	// decided at send time.
+	if msg := nlp.LLMBaseURLWriteProblem(s.LLMBaseURL); msg != "" {
+		add(msg, "llmBaseUrl")
+	}
+	if msg := nlp.OllamaBaseURLWriteProblem(s.OllamaBaseURL); msg != "" {
+		add(msg, "ollamaBaseUrl")
+	}
 	if !validCalendarProviders[s.CalendarProvider] {
 		add("calendarProvider must be one of: google, outlook, webcal", "calendarProvider")
 	}
