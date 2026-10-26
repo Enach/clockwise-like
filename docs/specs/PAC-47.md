@@ -1895,3 +1895,140 @@ compiled or run, because this is a text stage.
    calendar, nor anyone else's. §3.3 already forbade it.
 5. AC-3h now says it is a regression guard that can run only once the §3.6
    stand-ins exist, not a check of today's behaviour.
+
+## Challenge — 2026-10-26 (round 4)
+
+Reviewed by `spec-challenger` against the committed spec at `ece0f18` (Revision 3)
+on `factory/pac-47-spec`. The code was read on `main` at `7de7044` (api) and
+`4ded854` (web), still the tips of both `main` branches. I also read Linear
+PAC-67, which the spec now makes a release prerequisite. I read no author
+reasoning beyond this file. I compiled and ran nothing, because this is a
+text-only stage.
+
+Revision 3 answers both round-3 blocking findings in substance. PAC-67 is now a
+release prerequisite for the Outlook booking-slot behaviour, D-13 states the
+population, and §3.4/D-16 bound the guest-driven reads, with AC-4g/AC-4h failing
+today. The citations I re-opened hold (list below). Two findings block. One is
+older than Revision 3 but becomes consequential only because of this spec. The
+other is an inconsistency that Revision 3 introduced.
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **Every Microsoft sign-in overwrites the user's work-calendar choice with
+   Outlook. The spec keeps that behaviour ("exactly as today", §3.3, §6 and D-14)
+   while making the choice decide what the user sees and what Paceday writes.**
+   - The callback calls `SaveMicrosoftToken` on every completion
+     (`backend/api/handlers_microsoft_auth.go:74`). That runs
+     `UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook'`
+     unconditionally (`backend/auth/microsoft_oauth.go:68`). It is the only code
+     that writes the provider outside the Settings save. Google sign-in does not
+     touch it.
+   - The Settings picker saves `calendar_provider: "webcal"` together with the
+     feed address (`smart-calendar-flow/src/components/WorkCalendarConnection.tsx:77`).
+   - Today the overwrite is nearly harmless, because only the status line and the
+     free/busy query read the provider (§2.7). After this spec the provider decides
+     the week view (§3.1), the status line (§3.2), every write (§3.8, D-9), meeting
+     suggestions (§3.4, D-11) and booking slots (§3.4, D-13).
+   - Concrete case: a user who signs in with Microsoft picks WebCal in Settings
+     and sees their feed. The next time they "Continue with Microsoft"
+     (`AuthDialog.tsx:108,209`), their work calendar silently becomes Outlook
+     again. Their week view, status line and booking slots switch calendars
+     without their asking. This contradicts §3.1, "the calendar the user chose is
+     the calendar the week view shows".
+   - The same happens to a Google-signed-in user who shares an email with their
+     Microsoft account (§2.2) and signs in once with Microsoft from the sign-in
+     page. Their work calendar becomes Outlook, and under D-9 every Paceday write
+     to their Google calendar stops. §3.3 says that sign-in behaves "exactly as
+     today". D-14 protects only the user whose session was live, not the user
+     being signed in.
+   - PAC-67 item 4 asks only that the overwrite be scoped to the caller. It does
+     not ask whether a sign-in should change an existing choice, so no other issue
+     owns this.
+
+   *Resolves when* the spec states what a Microsoft sign-in does to the work
+   calendar of a Paceday user in each of three cases: a new user, an existing user
+   whose choice is the default, and an existing user who chose WebCal or Google.
+   Each case needs an AC that tells the outcomes apart. If the factory keeps the
+   overwrite, D-1/D-9 must record it as a cost, with the population named, so the
+   owner can weigh it.
+
+2. **The interim behaviour for Outlook booking hosts contradicts the rule that
+   opens §3.4 and has no criterion. Revision 3 also claims an AC-4g edit that is
+   not in the body.**
+   - §3.4 opens with: "No availability read made for an Outlook or WebCal user
+     queries Google, even when a Google credential is on file." Its booking bullet
+     then says that until PAC-67, an Outlook host's slots are "computed as today".
+     Today that means a Google read through `calendarClientForUser`
+     (`backend/engine/booking.go:122-125,202-209`), so Google is queried for an
+     Outlook user.
+   - The bullet calls this "the one exception to the first sentence of this item".
+     Read literally, that is the bullet's own first sentence, so the rule that
+     opens §3.4 still says the opposite. A contract or plan author is left with
+     two conflicting instructions.
+   - No AC pins what a guest sees for an Outlook host once this spec merges and
+     before PAC-67 ships, with or without a Google credential. The release-gated
+     cases of AC-4d, AC-4e and AC-4g cannot pass at merge.
+   - The Revision 3 log says "AC-4d, AC-4e and AC-4g note that their Outlook cases
+     are released with PAC-67". AC-4d and AC-4e do. AC-4g (lines 611-619) does
+     not. Its Outlook case requires exactly one Microsoft read, which the interim
+     behaviour never makes.
+
+   *Resolves when* the rule that opens §3.4 names the interim exception, an AC
+   states what an Outlook host's guest sees in the interim (with and without a
+   Google credential), and AC-4g's Outlook case carries the same PAC-67 release
+   note as AC-4d and AC-4e.
+
+### Non-blocking
+
+1. **D-16's read bound does not cover Outlook hosts in the interim.** Before
+   PAC-67, an Outlook host is read "as today": one Google read per day of the
+   60-day loop (`backend/api/handlers_booking.go:171-183`), with no bound across
+   requests. OQ-11 names only Google hosts. Say that OQ-11 also covers Outlook
+   hosts until PAC-67 ships, or that D-16 applies to them from the start.
+2. **Overlap with PAC-67 on the status line.** PAC-67's draft acceptance also
+   requires `auth status` to report `connected: false` for a dead Outlook token,
+   and §3.2/AC-3b require the same thing. Name the issue that owns this
+   criterion, so that it is neither built twice nor skipped by both.
+3. **Release-gated tests and the gate.** "Its test is written with the rest" and
+   AC-7 (every gate `rc=0`) together mean that the Outlook cases of AC-4d, AC-4e
+   and AC-4g must be admitted in one of two ways: as skipped tests that name
+   PAC-67 (README §3 rule 4), or as tests that assert the interim behaviour. Say
+   which, so that the plan stage does not have to choose.
+
+### Criteria I could not falsify
+
+- AC-3h is a regression guard by design, and it is labelled as one. AC-7 is a
+  gate. AC-8d and the §6 items are regression guards.
+- The Outlook cases of AC-4d, AC-4e and AC-4g cannot pass before PAC-67 ships
+  (Blocking 2). Until then, no test can tell a correct interim from a broken one.
+- Every other criterion, including the WebCal case of AC-4g, AC-4h and AC-3i,
+  has a test that fails today and passes afterwards:
+  - AC-4g and AC-4h fail because a host with no Google credential is never read
+    (`booking.go:123`) and because the dateless loop reads once per day
+    (`handlers_booking.go:171-183`).
+  - AC-3i fails because the callback ignores the session and credits the
+    credential by Microsoft email (`handlers_microsoft_auth.go:68,74,79`).
+
+### Citations I checked and found wrong
+
+- Revision 3 says AC-4g carries the PAC-67 release note. It does not
+  (Blocking 2).
+- These citations match `main`:
+  - `handlers_microsoft_auth.go:68,74,79`
+  - `microsoft_oauth.go:52-69,68,74-89`
+  - `booking.go:74-99,122-135`
+  - `handlers_booking.go:171-183,195-198`
+  - `routes.go:26`
+  - the 15-minute free/busy TTL that D-16 relies on (`freebusy_service.go:140,150`)
+
+### Consumers this breaks
+
+- smart-calendar-flow/src/components/auth/AuthDialog.tsx:108,209: each Microsoft
+  sign-in resets a WebCal or Google choice to Outlook. After this spec, that
+  changes the user's week view, writes and booking slots (Blocking 1).
+- smart-calendar-flow/src/components/WorkCalendarConnection.tsx:77: a saved WebCal
+  choice does not survive the user's next Microsoft sign-in (Blocking 1).
+- smart-calendar-flow/src/pages/PublicBooking.tsx: until PAC-67, an Outlook host's
+  slots come from Google, and no AC specifies that behaviour (Blocking 2).
