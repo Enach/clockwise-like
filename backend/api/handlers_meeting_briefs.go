@@ -49,7 +49,7 @@ func (h *meetingBriefHandlers) getBrief(w http.ResponseWriter, r *http.Request) 
 	}
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(briefToResponse(brief))
@@ -86,7 +86,7 @@ func (h *meetingBriefHandlers) refreshBrief(w http.ResponseWriter, r *http.Reque
 	}
 	brief, err := svc.Generate(ctx, userID, event, true)
 	if err != nil {
-		writeServerErrorText(w, r, "generation error", err, http.StatusInternalServerError)
+		writeServerError(w, r, "generation error", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

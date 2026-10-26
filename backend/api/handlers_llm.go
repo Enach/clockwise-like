@@ -45,7 +45,7 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		writeServerErrorText(w, r, "testLLM", err, http.StatusInternalServerError)
+		writeServerError(w, r, "testLLM", err, http.StatusInternalServerError)
 		return
 	}
 	storedKey := s.LLMAPIKey

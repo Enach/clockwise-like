@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/Enach/paceday/backend/engine"
 	"github.com/getsentry/sentry-go"
 )
 
@@ -55,11 +56,26 @@ func writeServerError(w http.ResponseWriter, r *http.Request, op string, err err
 	writeError(w, genericServerMessage(code), code)
 }
 
-// writeServerErrorText is writeServerError for the operations whose contract
-// still documents a text/plain 5xx (http.Error). The content type is kept so
-// the contract stays true; only the leaked detail is removed. Moving these to
-// the JSON envelope is a contract change (API-036), not this helper's job.
-func writeServerErrorText(w http.ResponseWriter, r *http.Request, op string, err error, code int) {
-	logServerError(r, op, err, code)
-	http.Error(w, genericServerMessage(code), code)
+// calendarNotConnectedMessage is the one body of the 401 CalendarNotConnected
+// (PAC-21, API-054): the contract pins it with an enum so clients can branch
+// on it.
+const calendarNotConnectedMessage = "calendar not connected"
+
+// writeCalendarNotConnected answers an operation that needs the caller's
+// calendar when they have none connected. The requireAuth middleware's 401
+// stays text/plain; this one is JSON, so a client can tell them apart.
+func writeCalendarNotConnected(w http.ResponseWriter) {
+	writeError(w, calendarNotConnectedMessage, http.StatusUnauthorized)
+}
+
+// writeCalendarFailure answers a failed calendar-dependent operation: the
+// 401 CalendarNotConnected when the caller has no stored credential, else
+// the generic 500 with the detail in the log and Sentry only. A failure to
+// read the credential store is the 500, not the 401.
+func writeCalendarFailure(w http.ResponseWriter, r *http.Request, op string, err error) {
+	if errors.Is(err, engine.ErrCalendarNotConnected) {
+		writeCalendarNotConnected(w)
+		return
+	}
+	writeServerError(w, r, op, err, http.StatusInternalServerError)
 }

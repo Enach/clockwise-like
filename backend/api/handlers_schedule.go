@@ -26,12 +26,35 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 
 	results := make([]*engine.CompressionResult, 0)
 
+	var weekStart, target time.Time
 	if body.Week != "" {
-		weekStart, err := time.Parse("2006-01-02", body.Week)
+		parsed, err := time.Parse("2006-01-02", body.Week)
 		if err != nil {
 			writeError(w, "invalid week format", http.StatusBadRequest)
 			return
 		}
+		weekStart = parsed
+	} else {
+		target = time.Now()
+		if body.Date != "" {
+			parsed, err := time.Parse("2006-01-02", body.Date)
+			if err != nil {
+				writeError(w, "invalid date format", http.StatusBadRequest)
+				return
+			}
+			target = parsed
+		}
+	}
+
+	// The credential is checked once, before any day is computed, in both
+	// modes: week mode skips days that fail, and must not turn "no calendar"
+	// or an unreadable credential store into 200 [] (PAC-21, API-054).
+	if err := h.eng.CheckCalendar(r.Context()); err != nil {
+		writeCalendarFailure(w, r, "compress", err)
+		return
+	}
+
+	if body.Week != "" {
 		monday := startOfWeek(weekStart)
 		for i := 0; i < 5; i++ {
 			day := monday.AddDate(0, 0, i)
@@ -42,18 +65,9 @@ func (h *scheduleHandlers) compress(w http.ResponseWriter, r *http.Request) {
 			results = append(results, res)
 		}
 	} else {
-		target := time.Now()
-		if body.Date != "" {
-			parsed, err := time.Parse("2006-01-02", body.Date)
-			if err != nil {
-				writeError(w, "invalid date format", http.StatusBadRequest)
-				return
-			}
-			target = parsed
-		}
 		res, err := h.eng.SuggestForDay(r.Context(), target)
 		if err != nil {
-			writeServerErrorText(w, r, "compress", err, http.StatusInternalServerError)
+			writeCalendarFailure(w, r, "compress", err)
 			return
 		}
 		results = append(results, res)
@@ -96,7 +110,7 @@ func (h *scheduleHandlers) applyCompress(w http.ResponseWriter, r *http.Request)
 
 	applied, engineFailed, err := h.eng.Apply(r.Context(), proposals)
 	if err != nil {
-		writeServerErrorText(w, r, "applyCompress", err, http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "applyCompress", err)
 		return
 	}
 	failed = append(failed, engineFailed...)
@@ -147,7 +161,7 @@ func (h *scheduleHandlers) suggestMeeting(w http.ResponseWriter, r *http.Request
 	}
 	suggestions, err := h.smart.Suggest(r.Context(), req)
 	if err != nil {
-		writeServerErrorText(w, r, "suggestMeeting", err, http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "suggestMeeting", err)
 		return
 	}
 
@@ -197,11 +211,13 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 
 // writeCreateMeetingFailure answers a failed SmartScheduler.CreateMeeting. The
 // out-of-hours refusal keeps its documented fixed text (its 500 status is
-// API-036); every other failure is logged and answered generically (PAC-21).
+// API-036), now as the JSON envelope; no calendar connected is the 401
+// CalendarNotConnected; every other failure is logged and answered
+// generically (PAC-21).
 func writeCreateMeetingFailure(w http.ResponseWriter, r *http.Request, op string, err error) {
 	if errors.Is(err, engine.ErrOutOfHoursAllowance) {
-		http.Error(w, "out-of-hours meeting allowance reached", http.StatusInternalServerError)
+		writeError(w, "out-of-hours meeting allowance reached", http.StatusInternalServerError)
 		return
 	}
-	writeServerErrorText(w, r, op, err, http.StatusInternalServerError)
+	writeCalendarFailure(w, r, op, err)
 }
