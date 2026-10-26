@@ -301,7 +301,37 @@ in the audit register is left to PAC-21's owner.
 
 ## 11. What was run
 
-See the commit that records this section's final form; the gate output is pasted
-below verbatim.
+On this branch, at `a3535e9` (the commit that committed the regenerated
+`backend/api/gen`; the bundle is unchanged since, sha256 in the manifest):
 
-GATE_OUTPUT_PLACEHOLDER
+- `python3 scripts/openapi_assemble.py --check` printed
+  `OK: bundle is in sync (98 paths)`. The `x-uncertain` count is still 18.
+- `bash .claude/factory/api-gate.sh factory/new-pac66b-llm-base-url-contract`
+  ran twice. The first run, at `1b38f41`, printed
+  `regenerated: backend/api/gen/paceday.gen.go` (two new
+  `LLMDestinationRefusalProperty` constants and descriptions), which was
+  committed as `a3535e9`. The second run, on `a3535e9`, printed:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 48.3% (floor 43%) [3871 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+**Not run:** the web gate and the e2e gate. The gate runs the api half of
+`make openapi-check` with `WEB=/nonexistent`. The web types are regenerated only
+after this contract merges (factory §1). Until then the web repo's generated
+files are behind this bundle by two `LLMDestinationRefusal.property` values and
+the new descriptions. No e2e was run, because this stage changes no behaviour;
+AC-B17 is the implementation stage's e2e.
