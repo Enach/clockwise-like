@@ -242,6 +242,11 @@ count is unchanged (13).
 
 - `python scripts/openapi_assemble.py` then `--check` on the host:
   `OK: bundle is in sync (98 paths)`.
-- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-26-contract`: output
-  in the Linear comment on PAC-26 and in the contract PR body. The web gate and e2e gate are
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-26-contract` on the
+  first contract commit (`5056078`): `make openapi` regenerated
+  `backend/api/gen/paceday.gen.go` (embedded spec and doc comments), committed with this
+  revision. Every other step printed rc=0: openapi-check (api), backend and mcp lint,
+  backend and mcp test, backend coverage 55.0% (floor 43%), mcp 84.0% (floor 75%).
+- The gate is re-run on the final commit of this branch; its output is in the Linear
+  comment on PAC-26. The web gate and e2e gate are
   not run at this stage (no behaviour has changed yet; web types regenerate after merge).
