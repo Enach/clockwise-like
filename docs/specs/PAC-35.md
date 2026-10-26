@@ -774,3 +774,111 @@ Answers to the round-1 challenge above. Author: spec-author.
   SSO return's state mismatch in Go. The Microsoft callback's state check and
   "the hint never selects an account" remain plan obligations (§6).
 - **9 (bundling)**: no split requested. None made.
+
+## Challenge — 2026-10-26 (round 2)
+
+Reviewed: commit `52e91ac` on `factory/pac-35-spec` (revision 1), against
+clockwise-like `origin/main` `7de7044` and smart-calendar-flow `origin/main`
+`4ded854`. Reviewed by spec-challenger, which did not write this spec. Scope:
+whether revision 1 resolves the round-1 blocking findings, and the new text it
+added (§3 second disconnect bullet, AC-7 origin clause, AC-11 rewrite, AC-15
+extension, AC-17, AC-18, D-5, D-6, D-7).
+
+**Verdict**: accept-with-changes
+
+Round-1 blocking 1 (API-092, API-060) and blocking 2 (false contract text) are
+resolved: both findings are in "Inherited scope" with a position, and AC-15 now
+fails on the exact `microsoftOAuthCallback` and `disconnectCalendar` text I
+re-read at `auth.yaml:160-213` and `:414-428`. Round-1 blocking 3 is resolved
+for the web side, but the server side of its answer (D-6, AC-17) introduces the
+finding below.
+
+### Blocking
+
+1. **D-6 says "nothing of theirs is deleted" for Outlook and webcal users, but
+   disconnect deletes their stored Google credential, and AC-17 does not decide
+   whether it still may.** Disconnect runs
+   `DELETE FROM oauth_tokens WHERE user_id = $1`
+   (`backend/auth/token_store.go:53-59`). That table holds the Google OAuth
+   token; the Microsoft credential is on the settings row
+   (`backend/auth/microsoft_oauth.go:49`, `:75`). The calendar status picks its
+   branch from the settings provider, not from which tokens exist
+   (`backend/api/handlers_auth.go:92-111`). So a user who signed in with Google
+   (the Google callback always stores the token, `handlers_auth.go:68-71`) and
+   then set their calendar to webcal (or later signed in with Microsoft under
+   the same email, which makes Outlook their provider, `auth.yaml:160-168`)
+   reads as a webcal or Outlook user *and* holds a Google token. That token is
+   used elsewhere: Google Meet shows as connected only while it exists
+   (`backend/api/handlers_conferencing.go:199-204`), and booking and the
+   calendar engine load it (`handlers_booking.go:88`, `engine/cal_iface.go:33`).
+   A disconnect request made for this user deletes it today.
+   - D-6 ("their calendar connection is left exactly as it is (nothing of
+     theirs is deleted)") is therefore false unless disconnect's server
+     behaviour changes for these users, and the spec names no such change.
+   - AC-17 ("their stored calendar connection is unchanged") does not
+     distinguish the two outcomes: an implementation that keeps deleting the
+     Google token passes it (the webcal or Outlook connection is untouched), and
+     so does one that stops. Two implementations that differ in whether user
+     data is deleted both pass.
+   - §2.4's account ("a user whose calendar is Outlook or webcal is logged out
+     but their calendar stays connected") omits this deletion.
+
+   *Resolves it*: state in §2.4 that disconnect deletes the user's stored Google
+   credential whatever their calendar provider, and what else depends on it.
+   Then choose, as a Decision (assumed by the factory, pending owner
+   confirmation), whether a disconnect request for a user whose calendar is not
+   Google still deletes that credential, and make AC-17 assert the chosen
+   outcome on the stored Google credential and on the Google Meet connected
+   state. If the choice is "still deleted", D-6's "nothing of theirs is deleted"
+   must be reworded to match.
+
+### Non-blocking
+
+1. **AC-17's web half should name both surfaces.** The app shows a Disconnect
+   action in two places: Settings (`src/components/WorkCalendarConnection.tsx:125-134`)
+   and the Dashboard card (`src/components/ConnectionStatus.tsx:62-71`, mounted at
+   `src/pages/Dashboard.tsx:579`). The Dashboard card reads `provider` nowhere
+   and toasts "Disconnected from Google Calendar" (`ConnectionStatus.tsx:19`)
+   for every user. "When they view their calendar connection in the app" is
+   satisfied by a test of the Settings surface alone, leaving the Dashboard
+   card offering the action AC-17 forbids.
+2. **AC-11 leaves the Google Meet side effect unstated.** For a Google user,
+   disconnect also flips Google Meet to not connected
+   (`handlers_conferencing.go:204`), as it does today. That is no change, but
+   §3 ("disconnecting a Google calendar disconnects the calendar") reads as if
+   only the calendar is affected. One sentence in §6 would fix the reading.
+3. **AC-15 is a review, not a test.** It is falsifiable by the
+   contract-challenger reading the five listed texts, which is what the AC says;
+   noted only so nobody looks for an automated check.
+
+### Criteria I could not falsify
+
+- AC-17 server half, as worded: see blocking 1 (it cannot distinguish
+  deleting the Google credential from keeping it).
+- AC-16: a gate run, not a behavioural criterion (unchanged from round 1).
+- All others (AC-1..15, AC-18) have a test that fails on `7de7044` / `4ded854`
+  and can pass afterwards. AC-1's generation-failure half is now explicitly
+  seam-dependent, which is acceptable.
+
+### Citations I checked and found wrong
+
+- None found in revision 1's new text. Checked:
+  `backend/api/handlers_sso_test.go:138-172` (PAC-45 domain checks),
+  `backend/api/pac20_cookies_test.go:67` (logout cookie entry),
+  `contracts/openapi/paths/auth.yaml:160-213`, `:414-428`, `:750`,
+  `smart-calendar-flow/src/contexts/AuthContext.tsx:56-66` (404, 5xx and
+  network failure all set `sessionStale`, only 401/403 sign out), and
+  `src/lib/api.ts:93` (the strict path returns `undefined` on 204, so AC-12 is
+  reachable). §2.4 is incomplete rather than wrong: see blocking 1.
+
+### Consumers this breaks
+
+- clockwise-like `backend/api/handlers_conferencing.go:199-204`: Google Meet's
+  connected state for a webcal or Outlook user depends on whether disconnect
+  still deletes their Google token. Unbroken today; undefined under AC-17. See
+  blocking 1.
+- smart-calendar-flow `src/components/ConnectionStatus.tsx:15-26`, `:62-71`:
+  must change for AC-17, and is not named. See non-blocking 1.
+- Checked and unaffected: `e2e/tests/auth-session.spec.ts:100-111` asserts the
+  post-logout bounce, not the 200, so AC-12's status change does not break it;
+  `mcp/` has no caller of disconnect, logout, `/api/auth/me` or detection.
