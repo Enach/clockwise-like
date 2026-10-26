@@ -121,6 +121,12 @@ then answered 404 would fail.
   case changes, from 204 to 404. Assumed by the factory, pending owner confirmation.
 - **D-4** PAC-30 resolves API-020 only. API-069 is a follow-up; API-048 was fixed by
   PAC-61. Assumed by the factory, pending owner confirmation.
+- **D-5** A deactivated link is not "no link". `DELETE /api/scheduling-links/{id}` is a
+  soft delete (`active=false`) that keeps the host rows, and neither the invite list nor
+  accept/decline/leave filter on `active`. So an invite on a deleted link is still listed
+  and accept/decline on it return 200 and update the row, as before PAC-30. PAC-30 does
+  not add a 404 for inactive links: no criterion asks for it and no owner has answered
+  (follow-up `inactive-link-invites`). Assumed by the factory, pending owner confirmation.
 
 None of these deletes user data or widens who can see data. D-1 narrows what leave
 reveals.
@@ -132,7 +138,7 @@ Searched: `smart-calendar-flow/src`, `clockwise-like/mcp`, `clockwise-like/e2e/t
 
 | Consumer | Breaks? | What happens |
 |---|---|---|
-| web `src/api/schedulingLinks.ts` `acceptInvite` / `declineInvite` | No | Called with `invite.link_id` from the invite list, which always has a host row: 200 as today. A stale invite now rejects with `ApiHttpError` 404; `withFallback` rethrows it and `src/pages/Links.tsx` shows `toast.error` instead of a false "Invite accepted". That is the fix. |
+| web `src/api/schedulingLinks.ts` `acceptInvite` / `declineInvite` | No | Called with `invite.link_id` from the invite list, which always has a host row: 200 as today. A stale invite whose host row is gone (the owner removed the host, or the caller already left) now rejects with `ApiHttpError` 404; `withFallback` rethrows it and `src/pages/Links.tsx` shows `toast.error` instead of a false "Invite accepted". That is the fix. An invite on a link the owner deleted is **not** covered: the delete is soft, the host row survives, the invite is still listed and accept/decline return 200 ("Invite accepted"), unchanged (D-5). |
 | web `src/api/schedulingLinks.ts` `leaveLink` | No | Only offered for links in the `shared` list (caller is an accepted host). A repeated click or stale list now shows an error toast instead of "You left the link". |
 | web `src/api/generated` | No | Five operations gain a 404 response. Regenerated after merge. |
 | backend `handlers_scheduling_links_test.go` flow test | No | Invites, accepts and leaves as a real host (200, 204), owner leave 400: all unchanged. |

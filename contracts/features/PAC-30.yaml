@@ -56,7 +56,8 @@
     "D-1: 'no host row' and 'no such link' give the same 404 {\"error\":\"not found\"} on accept/decline, so the answer does not reveal whether a link id exists. Assumed by the factory, pending owner confirmation.",
     "D-2: any existing host row matches accept/decline whatever its status (accept twice is 200 twice; a declined host may still accept; an accepted host may decline). Status transitions are not tightened because no criterion asks for it. Assumed by the factory, pending owner confirmation.",
     "D-3: leave keeps its existing check order and its 400 for the owner; only the non-host case changes, to 404. Assumed by the factory, pending owner confirmation.",
-    "D-4: PAC-30 is scoped to API-020. API-069 (duplicate /host-invites/{id}/accept|decline spellings) is a follow-up and is not deprecated here; API-048 was already fixed by PAC-61. Assumed by the factory, pending owner confirmation."
+    "D-4: PAC-30 is scoped to API-020. API-069 (duplicate /host-invites/{id}/accept|decline spellings) is a follow-up and is not deprecated here; API-048 was already fixed by PAC-61. Assumed by the factory, pending owner confirmation.",
+    "D-5: a deactivated link (DELETE /api/scheduling-links/{id} sets active=false and keeps its host rows) is not treated as 'no link': the invite list still shows its pending invites and accept/decline on it return 200 and update the row, as today. PAC-30 does not add a 404 for inactive links because no criterion asks for it and no owner has answered. Assumed by the factory, pending owner confirmation."
   ],
 
   "gates": {
@@ -89,7 +90,7 @@
   ],
 
   "consumersAffected": [
-    { "consumer": "Enach/smart-calendar-flow src/api/schedulingLinks.ts acceptInvite / declineInvite", "breaks": "no", "detail": "Called with invite.link_id from the invite list, which always has a host row, so the 200 path. A stale invite (link deleted, or the owner removed the host) now rejects with ApiHttpError 404; withFallback rethrows it and src/pages/Links.tsx shows toast.error instead of a false 'Invite accepted'. That is the intended fix." },
+    { "consumer": "Enach/smart-calendar-flow src/api/schedulingLinks.ts acceptInvite / declineInvite", "breaks": "no", "detail": "Called with invite.link_id from the invite list, which always has a host row, so the 200 path. A stale invite whose host row is gone (the owner removed the host, or the caller already left) now rejects with ApiHttpError 404; withFallback rethrows it and src/pages/Links.tsx shows toast.error instead of a false 'Invite accepted'. That is the intended fix. NOT covered: an invite on a link the owner deleted. DELETE /api/scheduling-links/{id} is a soft delete (active=false); the host row survives, GET /host-invites still lists the invite, and accept/decline match it and return 200 ('Invite accepted'), unchanged by PAC-30 (D-5, follow-up inactive-link-invites)." },
     { "consumer": "Enach/smart-calendar-flow src/api/schedulingLinks.ts leaveLink", "breaks": "no", "detail": "Called only for links in the 'shared' list (caller is an accepted host). A repeated click or a stale list now shows toast.error instead of 'You left the link'." },
     { "consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "no", "detail": "A 404 response is added to five operations. Regenerate after merge, never by hand." },
     { "consumer": "clockwise-like backend/api/handlers_scheduling_links_test.go scheduling-link flow test", "breaks": "no", "detail": "Accepts and leaves as an invited host (row exists): still 200 and 204; owner leave still 400." },
@@ -100,7 +101,8 @@
   "followUps": {
     "API-069": "Deprecate one of the duplicate accept/decline spellings. The web uses the misleading /host-invites/{id} form, so which spelling survives needs an owner decision. Owner: product owner.",
     "owner-decline": "The owner can decline (or accept) their own host row; declining sets it to declined and drops the owner from the accepted-hosts set read at storage/scheduling_links.go:283. Owner: triage.",
-    "status-transitions": "Whether a declined host may re-accept without a new invite. Owner: product owner."
+    "status-transitions": "Whether a declined host may re-accept without a new invite. Owner: product owner.",
+    "inactive-link-invites": "GET /api/scheduling-links/host-invites (GetPendingInvitesForUser) and accept/decline/leave ignore scheduling_links.active, so an invite on a deleted (deactivated) link is still listed and can be accepted with 200 (D-5). Whether these should hide the invite or answer 404 needs an owner decision. Owner: product owner."
   },
 
   "rollback": "Revert the implementation PR; keep this contract revision immutable. No migration and no stored data change. A backend revert alone restores the silent 200/204; every consumer keeps working because the web already handles both the 200 and an error toast. The web needs only a types regeneration, so the repos deploy in any order after the contract."

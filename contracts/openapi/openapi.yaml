@@ -4262,7 +4262,10 @@ paths:
         `id` from `SchedulingLinkHostRecord`) the answer is 404 and nothing changes (PAC-30, API-020;
         before PAC-30 this was a 200 that changed nothing). Any existing host row matches, whatever its
         current status, so accepting twice is a 200 both times and a declined host may still accept. The
-        owner''s own row is a host row too, so the owner gets 200 (see PAC-30.md follow-ups).'
+        owner''s own row is a host row too, so the owner gets 200 (see PAC-30.md follow-ups). A deactivated
+        link (`active=false`, see `deleteSchedulingLink`) keeps its host rows, so accept/decline on it
+        match and return 200 (PAC-30 D-5); "no link has that id" in the 404 means no row at all, not an
+        inactive one.'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -4305,7 +4308,8 @@ paths:
       summary: Decline a co-host invitation.
       description: 'Same handler as accept, with status `declined`. `{id}` is the scheduling-link id.
         Same 404 rule as accept: zero rows updated is a 404 and nothing changes (PAC-30, API-020). Any
-        existing host row matches, whatever its status.'
+        existing host row matches, whatever its status. A deactivated link (`active=false`, see `deleteSchedulingLink`)
+        keeps its host rows, so accept/decline on it match and return 200 (PAC-30 D-5).'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -4515,7 +4519,8 @@ paths:
         -- this is a second spelling of the same operation, not a different resource. The frontend only
         uses the `/host-invites/...` form. Same 404 rule: a caller with no host row on the link gets 404
         and nothing changes (PAC-30, API-020). The duplicate spelling itself (API-069) is not resolved
-        by PAC-30.'
+        by PAC-30. A deactivated link (`active=false`, see `deleteSchedulingLink`) keeps its host rows,
+        so accept/decline on it match and return 200 (PAC-30 D-5).'
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
@@ -4603,7 +4608,9 @@ paths:
       - scheduling-links
       summary: Decline a co-host invitation, addressed by link id.
       description: Equivalent to POST /api/scheduling-links/host-invites/{id}/decline (same handler, same
-        key, same PAC-30 404 when the caller has no host row on the link).
+        key, same PAC-30 404 when the caller has no host row on the link). A deactivated link (`active=false`,
+        see `deleteSchedulingLink`) keeps its host rows, so accept/decline on it match and return 200
+        (PAC-30 D-5).
       parameters:
       - $ref: '#/components/parameters/SchedulingLinkIdPath'
       responses:
