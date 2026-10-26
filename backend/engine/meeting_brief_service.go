@@ -37,7 +37,10 @@ const (
 
 type MeetingBriefService struct {
 	DB  *sql.DB
-	LLM LLMCompleter // optional; if nil, brief_text is left empty
+	LLM LLMCompleter // optional; if nil, the brief is stored as failed
+	// LLMUnavailable, when LLM is nil, is the failed brief's text: why no
+	// LLM may be used (PAC-66: its destination is not approved).
+	LLMUnavailable string
 }
 
 // Generate fetches Slack + Notion context and writes an LLM brief for a meeting.
@@ -73,6 +76,9 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 	if s.LLM == nil {
 		brief.Status = "failed"
 		brief.BriefText = "LLM not configured"
+		if s.LLMUnavailable != "" {
+			brief.BriefText = s.LLMUnavailable
+		}
 		_ = storage.UpsertMeetingBrief(s.DB, brief)
 		return brief, nil
 	}

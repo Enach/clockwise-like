@@ -175,6 +175,21 @@ const (
 	MissingCredentials IntegrationAvailabilityStatusReason = "missing_credentials"
 )
 
+// Defines values for LLMDestinationRefusalProperty.
+const (
+	AwsProfile    LLMDestinationRefusalProperty = "awsProfile"
+	AwsRegion     LLMDestinationRefusalProperty = "awsRegion"
+	AzureEndpoint LLMDestinationRefusalProperty = "azureEndpoint"
+	GcpLocation   LLMDestinationRefusalProperty = "gcpLocation"
+)
+
+// Defines values for LLMDestinationRefusalReason.
+const (
+	DestinationNotApproved LLMDestinationRefusalReason = "destination_not_approved"
+	DestinationNotSet      LLMDestinationRefusalReason = "destination_not_set"
+	ProviderNotEnabled     LLMDestinationRefusalReason = "provider_not_enabled"
+)
+
 // Defines values for LLMTestRequestLlmProvider.
 const (
 	LLMTestRequestLlmProviderAnthropic   LLMTestRequestLlmProvider = "anthropic"
@@ -1342,6 +1357,24 @@ type InviteSchedulingLinkHostRequest struct {
 	Email openapi_types.Email `json:"email"`
 }
 
+// LLMDestinationRefusal PAC-66. Body of the 422 from POST /api/llm/test: the probe would have sent the deployment's cloud credential to a destination the operator has not approved, so no inference request was sent. A superset of `SchedulingErrorResponse` (`error` is the same member, so a client that reads only `error`, as the web settings page does, renders it unchanged). Never carries a token, a key or any part of the deployment credential (spec AC-11).
+type LLMDestinationRefusal struct {
+	// Error A human-readable sentence saying what was refused and why.
+	Error string `json:"error"`
+
+	// Property The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region.
+	Property *LLMDestinationRefusalProperty `json:"property,omitempty"`
+
+	// Reason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
+	Reason LLMDestinationRefusalReason `json:"reason"`
+}
+
+// LLMDestinationRefusalProperty The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region.
+type LLMDestinationRefusalProperty string
+
+// LLMDestinationRefusalReason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
+type LLMDestinationRefusalReason string
+
 // LLMTestRequest Optional body for POST /api/llm/test. Added by PAC-24 to close API-037.
 // **This schema is a closed list of three properties and that is the whole point of it.** Not one of them can contribute to the URL the server requests, so no submitted value can direct a stored or ambient credential anywhere. The endpoint properties a probe might plausibly want to override - `llmBaseUrl`, `ollamaBaseUrl`, `azureEndpoint`, `azureDeployment`, `azureApiVersion`, `awsRegion`, `awsProfile`, `bedrockModel`, `gcpProject`, `gcpLocation`, `vertexModel` - are DELIBERATELY ABSENT and are a 400 via `additionalProperties: false`. The operation description carries the full argument, including why an all-or-nothing body (endpoint plus credential together) does not close the channel on the three ambient-credential providers.
 // Required. `{}` probes the caller's stored configuration - the pre-PAC-24 behaviour; an absent body is a 400. `{"llmApiKey": "sk-..."}` probes an unsaved key against the caller's stored endpoint, which is the case the settings UI needs because a stored key can no longer be read back to re-submit.
@@ -1354,11 +1387,11 @@ type LLMTestRequest struct {
 	// LlmModel Consulted only by the `openai` and `anthropic` branches (`backend/nlp/llm_factory.go:25,34`), where it is a field of the JSON request body. It never appears in a URL. `bedrockModel`, `azureDeployment` and `vertexModel` - which DO appear in URLs - are not accepted here.
 	LlmModel *string `json:"llmModel,omitempty"`
 
-	// LlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15.
+	// LlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). Nothing submitted here is stored.
 	LlmProvider *LLMTestRequestLlmProvider `json:"llmProvider,omitempty"`
 }
 
-// LLMTestRequestLlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15.
+// LLMTestRequestLlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). Nothing submitted here is stored.
 type LLMTestRequestLlmProvider string
 
 // LLMTestResult Literal map: `{"ok": true, "response": ..., "provider": ...}`.
@@ -2106,12 +2139,18 @@ type Settings struct {
 	// AutoScheduleCron 5-field cron (minute hour dom month dow), parsed with robfig/cron v3 using exactly those five fields. Empty string skips validation. DB default `0 8 * * *`.
 	AutoScheduleCron    string `json:"autoScheduleCron"`
 	AutoScheduleEnabled bool   `json:"autoScheduleEnabled"`
-	AwsProfile          string `json:"awsProfile"`
-	AwsRegion           string `json:"awsRegion"`
-	AzureApiVersion     string `json:"azureApiVersion"`
-	AzureDeployment     string `json:"azureDeployment"`
-	AzureEndpoint       string `json:"azureEndpoint"`
-	BedrockModel        string `json:"bedrockModel"`
+
+	// AwsProfile Named profile in the deployment's AWS shared config. Not checked by PAC-66 (spec OQ-4): it selects which deployment identity signs, but any endpoint it configures is still subject to the Bedrock approved-host check at send time.
+	AwsProfile string `json:"awsProfile"`
+
+	// AwsRegion Bedrock region. Empty means the built-in `us-east-1`, applied as an explicit region that overrides the deployment's AWS region configuration (spec D-7). PAC-66: a write changing it to a non-empty value must be a valid region name (one host label); the Bedrock host the SDK resolves is sent to only if approved in `PACEDAY_LLM_APPROVED_HOSTS_BEDROCK`. Deliberately no `pattern`: this map is shared with `Settings`, and rows stored before PAC-66 are kept as they are (spec D-3), so a pattern would make the response schema false for them.
+	AwsRegion       string `json:"awsRegion"`
+	AzureApiVersion string `json:"azureApiVersion"`
+	AzureDeployment string `json:"azureDeployment"`
+
+	// AzureEndpoint Azure OpenAI resource endpoint, e.g. `https://my-resource.openai.azure.com`. PAC-66: a write changing it to a non-empty value must be an `https` URL whose host is approved in `PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI` (400 otherwise). `""` is always accepted and means "not set", which is refused when a request would be sent. The path is not constrained (see `contracts/features/PAC-66.md` §7). No `format` or `pattern`, for the reason given on `awsRegion`.
+	AzureEndpoint string `json:"azureEndpoint"`
+	BedrockModel  string `json:"bedrockModel"`
 
 	// BufferAfterMinutes Rejected when < 0. DB default 5.
 	BufferAfterMinutes int `json:"bufferAfterMinutes"`
@@ -2149,9 +2188,11 @@ type Settings struct {
 	FocusMaxBlockMinutes int `json:"focusMaxBlockMinutes"`
 
 	// FocusMinBlockMinutes Rejected when < 0. DB default 25.
-	FocusMinBlockMinutes int    `json:"focusMinBlockMinutes"`
-	GcpLocation          string `json:"gcpLocation"`
-	GcpProject           string `json:"gcpProject"`
+	FocusMinBlockMinutes int `json:"focusMinBlockMinutes"`
+
+	// GcpLocation Vertex region, e.g. `europe-west4`. Empty means the built-in `us-central1`. The server builds the host `<gcpLocation>-aiplatform.googleapis.com` from it. PAC-66: a write changing it to a non-empty value must build a host approved in `PACEDAY_LLM_APPROVED_HOSTS_VERTEX` (400 otherwise), so a value that changes the URL's authority (`attacker.example/x`) is refused. The same check is made when a request would be sent, including for `""`. No `pattern`, for the reason given on `awsRegion`.
+	GcpLocation string `json:"gcpLocation"`
+	GcpProject  string `json:"gcpProject"`
 
 	// LlmApiKeySet `true` exactly when the stored key is non-empty. This is the only thing a reader learns about the key, and it is what lets a client distinguish "not configured" from "configured" without disclosing anything (spec AC-12).
 	// `readOnly`, so a client that submits back a document it just read may include it; it is accepted and ignored (spec AC-10). It is NOT the way to clear a key - send `llmApiKey: ""` for that.
@@ -2266,12 +2307,18 @@ type SettingsUpdate struct {
 	// AutoScheduleCron 5-field cron (minute hour dom month dow), parsed with robfig/cron v3 using exactly those five fields. Empty string skips validation. DB default `0 8 * * *`.
 	AutoScheduleCron    *string `json:"autoScheduleCron,omitempty"`
 	AutoScheduleEnabled *bool   `json:"autoScheduleEnabled,omitempty"`
-	AwsProfile          *string `json:"awsProfile,omitempty"`
-	AwsRegion           *string `json:"awsRegion,omitempty"`
-	AzureApiVersion     *string `json:"azureApiVersion,omitempty"`
-	AzureDeployment     *string `json:"azureDeployment,omitempty"`
-	AzureEndpoint       *string `json:"azureEndpoint,omitempty"`
-	BedrockModel        *string `json:"bedrockModel,omitempty"`
+
+	// AwsProfile Named profile in the deployment's AWS shared config. Not checked by PAC-66 (spec OQ-4): it selects which deployment identity signs, but any endpoint it configures is still subject to the Bedrock approved-host check at send time.
+	AwsProfile *string `json:"awsProfile,omitempty"`
+
+	// AwsRegion Bedrock region. Empty means the built-in `us-east-1`, applied as an explicit region that overrides the deployment's AWS region configuration (spec D-7). PAC-66: a write changing it to a non-empty value must be a valid region name (one host label); the Bedrock host the SDK resolves is sent to only if approved in `PACEDAY_LLM_APPROVED_HOSTS_BEDROCK`. Deliberately no `pattern`: this map is shared with `Settings`, and rows stored before PAC-66 are kept as they are (spec D-3), so a pattern would make the response schema false for them.
+	AwsRegion       *string `json:"awsRegion,omitempty"`
+	AzureApiVersion *string `json:"azureApiVersion,omitempty"`
+	AzureDeployment *string `json:"azureDeployment,omitempty"`
+
+	// AzureEndpoint Azure OpenAI resource endpoint, e.g. `https://my-resource.openai.azure.com`. PAC-66: a write changing it to a non-empty value must be an `https` URL whose host is approved in `PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI` (400 otherwise). `""` is always accepted and means "not set", which is refused when a request would be sent. The path is not constrained (see `contracts/features/PAC-66.md` §7). No `format` or `pattern`, for the reason given on `awsRegion`.
+	AzureEndpoint *string `json:"azureEndpoint,omitempty"`
+	BedrockModel  *string `json:"bedrockModel,omitempty"`
 
 	// BufferAfterMinutes Rejected when < 0. DB default 5.
 	BufferAfterMinutes *int `json:"bufferAfterMinutes,omitempty"`
@@ -2309,9 +2356,11 @@ type SettingsUpdate struct {
 	FocusMaxBlockMinutes *int `json:"focusMaxBlockMinutes,omitempty"`
 
 	// FocusMinBlockMinutes Rejected when < 0. DB default 25.
-	FocusMinBlockMinutes *int    `json:"focusMinBlockMinutes,omitempty"`
-	GcpLocation          *string `json:"gcpLocation,omitempty"`
-	GcpProject           *string `json:"gcpProject,omitempty"`
+	FocusMinBlockMinutes *int `json:"focusMinBlockMinutes,omitempty"`
+
+	// GcpLocation Vertex region, e.g. `europe-west4`. Empty means the built-in `us-central1`. The server builds the host `<gcpLocation>-aiplatform.googleapis.com` from it. PAC-66: a write changing it to a non-empty value must build a host approved in `PACEDAY_LLM_APPROVED_HOSTS_VERTEX` (400 otherwise), so a value that changes the URL's authority (`attacker.example/x`) is refused. The same check is made when a request would be sent, including for `""`. No `pattern`, for the reason given on `awsRegion`.
+	GcpLocation *string `json:"gcpLocation,omitempty"`
+	GcpProject  *string `json:"gcpProject,omitempty"`
 
 	// LlmApiKey WRITE-ONLY. Accepted on write; never present in any response from any operation (spec AC-11). Required for openai and anthropic.
 	// Under the merge semantics this needs no special case: omit it and the stored key is unchanged; send `""` and it is cleared; send a value and it is replaced (spec AC-13). There is no way to read it back, by design - someone who loses their key re-enters it. Do not add a reveal affordance later.
@@ -12789,6 +12838,15 @@ type TestLLMConnection400JSONResponse SchedulingErrorResponse
 func (response TestLLMConnection400JSONResponse) VisitTestLLMConnectionResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type TestLLMConnection422JSONResponse LLMDestinationRefusal
+
+func (response TestLLMConnection422JSONResponse) VisitTestLLMConnectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
 
 	return json.NewEncoder(w).Encode(response)
 }
