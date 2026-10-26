@@ -31,7 +31,7 @@ func (h *dailyRecapHandlers) getSettings(w http.ResponseWriter, r *http.Request)
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -85,7 +85,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 
 	if err := storage.SaveRecapSettingsForUser(h.db, userID, s); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -132,7 +132,7 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -152,7 +152,7 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -174,7 +174,7 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 
 	ts, err := engine.SendSlackRecap(ctx, conn.BotToken, s.RecapSendTo, s.RecapChannelID, conn.WorkspaceID, userID, blocks)
 	if err != nil {
-		writeServerErrorText(w, r, "send error", err, http.StatusBadGateway)
+		writeServerError(w, r, "send error", err, http.StatusBadGateway)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

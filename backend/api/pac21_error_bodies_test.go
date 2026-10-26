@@ -1,8 +1,8 @@
 package api
 
-// PAC-21: a 5xx body never carries a raw Go, driver or provider error string.
-// The detail goes to the server log and to Sentry; the client gets a fixed
-// JSON {"error": "..."} envelope.
+// PAC-21: no response body carries a raw Go, driver or provider error string,
+// at any status, and every 5xx is the JSON {"error": "..."} envelope. The
+// detail goes to the server log and to Sentry only.
 
 import (
 	"bytes"
@@ -68,17 +68,17 @@ func TestPAC21ForcedStorageErrorReturnsGenericJSON(t *testing.T) {
 		target  string
 		body    string
 		handler http.HandlerFunc
-		// json: the contract documents the JSON envelope for this 500;
-		// otherwise it documents text/plain, which is kept (see server_errors.go).
-		json bool
+		// want is the fixed message of the JSON envelope. Every 5xx is JSON
+		// since the second half of PAC-21; existing fixed literals are kept.
+		want string
 	}{
-		{"personal list (writeError err.Error)", http.MethodGet, "/api/personal-calendars", "", newPersonalHandlersWithBlocker(db, &fakePersonalBlocker{}).list, true},
-		{"audit (writeError prefix+err)", http.MethodGet, "/api/audit", "", auditHandler(db), true},
-		{"settings get (http.Error err.Error)", http.MethodGet, "/api/settings", "", (&settingsHandlers{db: db}).getSettings, false},
-		{"focus blocks (http.Error err.Error)", http.MethodGet, "/api/focus/blocks", "", (&focusHandlers{db: db}).listBlocks, false},
-		{"teams create (http.Error err.Error)", http.MethodPost, "/api/teams", `{"name":"x"}`, newTeamHandlersWithAvailabilityEngine(db, nil).createTeam, false},
-		{"teams list (http.Error err.Error)", http.MethodGet, "/api/teams", "", newTeamHandlersWithAvailabilityEngine(db, nil).listTeams, false},
-		{"manager profile (http.Error \"db error\", detail was dropped)", http.MethodGet, "/api/manager/profile", "", (&managerHandlers{db: db}).getProfile, false},
+		{"personal list (writeError err.Error)", http.MethodGet, "/api/personal-calendars", "", newPersonalHandlersWithBlocker(db, &fakePersonalBlocker{}).list, "internal error"},
+		{"audit (writeError prefix+err)", http.MethodGet, "/api/audit", "", auditHandler(db), "internal error"},
+		{"settings get (was text/plain)", http.MethodGet, "/api/settings", "", (&settingsHandlers{db: db}).getSettings, "internal error"},
+		{"focus blocks (was text/plain)", http.MethodGet, "/api/focus/blocks", "", (&focusHandlers{db: db}).listBlocks, "internal error"},
+		{"teams create (was text/plain)", http.MethodPost, "/api/teams", `{"name":"x"}`, newTeamHandlersWithAvailabilityEngine(db, nil).createTeam, "internal error"},
+		{"teams list (was text/plain)", http.MethodGet, "/api/teams", "", newTeamHandlersWithAvailabilityEngine(db, nil).listTeams, "internal error"},
+		{"manager profile (existing literal db error, was text/plain)", http.MethodGet, "/api/manager/profile", "", (&managerHandlers{db: db}).getProfile, "db error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -91,25 +91,15 @@ func TestPAC21ForcedStorageErrorReturnsGenericJSON(t *testing.T) {
 			if rec.Code != http.StatusInternalServerError {
 				t.Fatalf("status = %d, want 500; body %q", rec.Code, rec.Body.String())
 			}
-			ct := rec.Header().Get("Content-Type")
-			if tc.json {
-				if !strings.HasPrefix(ct, "application/json") {
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 					t.Fatalf("Content-Type = %q, want application/json", ct)
 				}
 				var body map[string]string
 				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 					t.Fatalf("body is not a JSON object: %q (%v)", rec.Body.String(), err)
 				}
-				if len(body) != 1 || body["error"] != "internal error" {
-					t.Fatalf("body = %v, want exactly {\"error\":\"internal error\"}", body)
-				}
-			} else {
-				if !strings.HasPrefix(ct, "text/plain") {
-					t.Fatalf("Content-Type = %q, want the documented text/plain", ct)
-				}
-				if got := strings.TrimSpace(rec.Body.String()); got != "internal error" && got != "db error" {
-					t.Fatalf("body = %q, want a fixed message", got)
-				}
+			if len(body) != 1 || body["error"] != tc.want {
+				t.Fatalf("body = %v, want exactly {\"error\":%q}", body, tc.want)
 			}
 			if strings.Contains(rec.Body.String(), "closed") || strings.Contains(rec.Body.String(), "sql") {
 				t.Fatalf("body leaks the storage error: %q", rec.Body.String())
@@ -155,21 +145,6 @@ func TestPAC21WriteServerErrorGenericPerStatus(t *testing.T) {
 	}
 }
 
-func TestPAC21WriteServerErrorTextKeepsPlainContentType(t *testing.T) {
-	reported, logs := captureServerErrors(t)
-	rec := httptest.NewRecorder()
-	writeServerErrorText(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil), "getSettings", errors.New("pq: relation \"settings\" does not exist"), http.StatusInternalServerError)
-	if rec.Code != http.StatusInternalServerError || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") {
-		t.Fatalf("status %d, Content-Type %q", rec.Code, rec.Header().Get("Content-Type"))
-	}
-	if strings.TrimSpace(rec.Body.String()) != "internal error" {
-		t.Fatalf("body = %q", rec.Body.String())
-	}
-	if !strings.Contains(logs.String(), `getSettings: pq: relation "settings" does not exist`) || len(*reported) != 1 {
-		t.Fatalf("log = %q, reported = %v", logs.String(), *reported)
-	}
-}
-
 func TestPAC21WriteServerErrorNilErrStillReports(t *testing.T) {
 	reported, _ := captureServerErrors(t)
 	rec := httptest.NewRecorder()
@@ -195,19 +170,45 @@ var http5xx = map[string]bool{
 	"StatusNetworkAuthenticationRequired": true,
 }
 
-// statusKind classifies a status argument: "5xx", "other" (a known non-5xx
-// constant) or "unknown" (computed at run time).
+// http4xx names every net/http 4xx status constant.
+var http4xx = map[string]bool{
+	"StatusBadRequest": true, "StatusUnauthorized": true, "StatusPaymentRequired": true,
+	"StatusForbidden": true, "StatusNotFound": true, "StatusMethodNotAllowed": true,
+	"StatusNotAcceptable": true, "StatusProxyAuthRequired": true, "StatusRequestTimeout": true,
+	"StatusConflict": true, "StatusGone": true, "StatusLengthRequired": true,
+	"StatusPreconditionFailed": true, "StatusRequestEntityTooLarge": true,
+	"StatusRequestURITooLong": true, "StatusUnsupportedMediaType": true,
+	"StatusRequestedRangeNotSatisfiable": true, "StatusExpectationFailed": true,
+	"StatusTeapot": true, "StatusMisdirectedRequest": true, "StatusUnprocessableEntity": true,
+	"StatusLocked": true, "StatusFailedDependency": true, "StatusTooEarly": true,
+	"StatusUpgradeRequired": true, "StatusPreconditionRequired": true,
+	"StatusTooManyRequests": true, "StatusRequestHeaderFieldsTooLarge": true,
+	"StatusUnavailableForLegalReasons": true,
+}
+
+// statusKind classifies a status argument known at compile time — an integer
+// literal or a net/http constant — as "4xx", "5xx" or "other", and anything
+// computed at run time as "unknown".
 func statusKind(e ast.Expr) string {
 	switch v := e.(type) {
 	case *ast.BasicLit:
-		if n, err := strconv.Atoi(v.Value); err == nil && n >= 500 && n <= 599 {
+		n, err := strconv.Atoi(v.Value)
+		switch {
+		case err != nil:
+			return "unknown"
+		case n >= 500 && n <= 599:
 			return "5xx"
+		case n >= 400 && n <= 499:
+			return "4xx"
 		}
 		return "other"
 	case *ast.SelectorExpr:
 		if pkg, ok := v.X.(*ast.Ident); ok && pkg.Name == "http" {
-			if http5xx[v.Sel.Name] {
+			switch {
+			case http5xx[v.Sel.Name]:
 				return "5xx"
+			case http4xx[v.Sel.Name]:
+				return "4xx"
 			}
 			return "other"
 		}
@@ -247,39 +248,132 @@ func carriesError(e ast.Expr) bool {
 	return found
 }
 
-// isGenericMessage matches genericServerMessage(...), the helpers' own body.
-func isGenericMessage(e ast.Expr) bool {
-	call, ok := e.(*ast.CallExpr)
-	if !ok {
-		return false
-	}
-	id, ok := call.Fun.(*ast.Ident)
-	return ok && id.Name == "genericServerMessage"
-}
-
 func isStringLit(e ast.Expr) bool {
 	lit, ok := e.(*ast.BasicLit)
 	return ok && lit.Kind == token.STRING
 }
 
+// scanExemption names one fixed-sentence validator call site the scan allows
+// (AC-1, revision 4): in File, inside the function or method Func, a
+// writeError(w, err.Error(), <a 4xx status>) whose err is the result of a call
+// to Validator — the nearest assignment to that err before the write. The same
+// shape anywhere else, at any other status, or with err from anything else is
+// a violation. Adding an entry requires showing that Validator returns only
+// fixed sentences (TestPAC21ExemptedValidatorsReturnFixedSentences).
+type scanExemption struct {
+	File, Func, Validator string
+}
+
+// pac21Exemptions is the complete table: exactly the ten sites the contract
+// names (NEW-pac21-error-leaks-remaining AC-1 and §5).
+var pac21Exemptions = []scanExemption{
+	{"handlers_habits.go", "create", "validateHabitFields"},
+	{"handlers_habits.go", "update", "validateHabitFields"},
+	{"handlers_manager.go", "confirmDetection", "normalizeManagerEmail"},
+	{"handlers_manager.go", "addMember", "normalizeManagerEmail"},
+	{"handlers_manager.go", "addMember", "validateManagerCadence"},
+	{"handlers_manager.go", "patchMember", "validateManagerCadence"},
+	{"handlers_teams.go", "inviteMember", "normalizeManagerEmail"},
+	{"handlers_teams.go", "createZone", "validateNoMeetingZone"},
+	{"handlers_teams.go", "updateZone", "validateNoMeetingZone"},
+	{"handlers_settings.go", "patchSettings", "validateChangedSettings"},
+}
+
+// errSource returns the name of the function whose call last assigned the
+// identifier name before pos inside fn, or "" when that assignment is not a
+// call (or there is none).
+func errSource(fn *ast.FuncDecl, name string, pos token.Pos) string {
+	var last *ast.AssignStmt
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || as.Pos() >= pos {
+			return true
+		}
+		for _, lhs := range as.Lhs {
+			if id, ok := lhs.(*ast.Ident); ok && id.Name == name {
+				if last == nil || as.Pos() > last.Pos() {
+					last = as
+				}
+			}
+		}
+		return true
+	})
+	if last == nil || len(last.Rhs) != 1 {
+		return ""
+	}
+	call, ok := last.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	switch f := call.Fun.(type) {
+	case *ast.Ident:
+		return f.Name
+	case *ast.SelectorExpr:
+		return f.Sel.Name
+	}
+	return ""
+}
+
+// exempted reports whether call — writeError(w, err.Error(), status) inside
+// fn in file — is one of the named validator sites.
+func exempted(exemptions []scanExemption, file string, fn *ast.FuncDecl, call *ast.CallExpr) bool {
+	if fn == nil || statusKind(call.Args[2]) != "4xx" {
+		return false
+	}
+	errCall, ok := call.Args[1].(*ast.CallExpr)
+	if !ok || len(errCall.Args) != 0 {
+		return false
+	}
+	sel, ok := errCall.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Error" {
+		return false
+	}
+	errIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	source := errSource(fn, errIdent.Name, call.Pos())
+	for _, ex := range exemptions {
+		if ex.File == file && ex.Func == fn.Name.Name && ex.Validator == source {
+			return true
+		}
+	}
+	return false
+}
+
 // scanErrorBodies returns one violation per response write that can put an
-// error's text, or a non-JSON body, into a 5xx response.
-func scanErrorBodies(fset *token.FileSet, file *ast.File) []string {
+// error's text into a body at any status, or that writes a 5xx (or a status
+// computed at run time) as anything but the JSON envelope.
+func scanErrorBodies(fset *token.FileSet, file *ast.File, exemptions []scanExemption) []string {
 	var out []string
-	ast.Inspect(file, func(n ast.Node) bool {
+	for _, decl := range file.Decls {
+		ast.Inspect(decl, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) != 3 {
+			if !ok {
 			return true
 		}
 		pos := fset.Position(call.Pos())
-		where := fmt.Sprintf("%s:%d", filepath.Base(pos.Filename), pos.Line)
+			base := filepath.Base(pos.Filename)
+			where := fmt.Sprintf("%s:%d", base, pos.Line)
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "writeServerErrorText" {
+				out = append(out, where+": writeServerErrorText writes a text/plain 5xx; use writeServerError (JSON)")
+				return true
+			}
+			if len(call.Args) != 3 {
+				return true
+			}
 		msg, status := call.Args[1], call.Args[2]
 		switch fn := call.Fun.(type) {
 		case *ast.SelectorExpr: // http.Error
-			if pkg, ok := fn.X.(*ast.Ident); ok && pkg.Name == "http" && fn.Sel.Name == "Error" {
-				if statusKind(status) != "other" && !isStringLit(msg) && !isGenericMessage(msg) {
-					out = append(out, where+": http.Error on a 5xx (or computed) status with a non-literal message; use writeServerErrorText")
+				pkg, ok := fn.X.(*ast.Ident)
+				if !ok || pkg.Name != "http" || fn.Sel.Name != "Error" {
+					return true
 				}
+				switch kind := statusKind(status); {
+				case kind == "5xx" || kind == "unknown":
+					out = append(out, where+": http.Error on a 5xx (or computed) status writes text/plain; use writeServerError or writeError")
+				case carriesError(msg):
+					out = append(out, where+": http.Error with an error-derived message; write a fixed message")
 			}
 		case *ast.Ident: // writeError
 			if fn.Name != "writeError" {
@@ -290,24 +384,31 @@ func scanErrorBodies(fset *token.FileSet, file *ast.File) []string {
 				if !isStringLit(msg) {
 					out = append(out, where+": writeError on a 5xx with a non-literal message; use writeServerError")
 				}
-			case "unknown":
-				if carriesError(msg) {
-					out = append(out, where+": writeError with a computed status and an error-derived message")
+				default:
+					if carriesError(msg) && !exempted(exemptions, base, fnDecl(decl), call) {
+						out = append(out, where+": writeError with an error-derived message; write a fixed message")
 				}
 			}
 		}
 		return true
 	})
+	}
 	return out
 }
 
-func TestPAC21NoRawErrorsIn5xxBodies(t *testing.T) {
+func fnDecl(d ast.Decl) *ast.FuncDecl {
+	fn, _ := d.(*ast.FuncDecl)
+	return fn
+}
+
+func parseAPISources(t *testing.T) (*token.FileSet, map[string]*ast.File) {
+	t.Helper()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	var violations []string
+	out := map[string]*ast.File{}
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -320,12 +421,110 @@ func TestPAC21NoRawErrorsIn5xxBodies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
-		violations = append(violations, scanErrorBodies(fset, f)...)
+		out[name] = f
+	}
+	return fset, out
+}
+
+// AC-1 and AC-3, source half: no response write in backend/api can echo an
+// error's text at any status, and no 5xx is written as text/plain.
+func TestPAC21NoRawErrorsInResponseBodies(t *testing.T) {
+	fset, files := parseAPISources(t)
+	var violations []string
+	for _, f := range files {
+		violations = append(violations, scanErrorBodies(fset, f, pac21Exemptions)...)
 	}
 	sort.Strings(violations)
 	if len(violations) > 0 {
-		t.Fatalf("%d response write(s) can echo an error into a 5xx body (PAC-21):\n%s",
+		t.Fatalf("%d response write(s) can echo an error into a body, or write a non-JSON 5xx (PAC-21):\n%s",
 			len(violations), strings.Join(violations, "\n"))
+	}
+}
+
+// Every exemption must still match a real write, so the table cannot keep an
+// entry for a site that has gone (and that a later, different write could
+// silently inherit).
+func TestPAC21EveryExemptionMatchesASite(t *testing.T) {
+	_, files := parseAPISources(t)
+	used := map[scanExemption]int{}
+	for name, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok || len(call.Args) != 3 {
+					return true
+				}
+				if id, ok := call.Fun.(*ast.Ident); !ok || id.Name != "writeError" {
+					return true
+				}
+				for _, ex := range pac21Exemptions {
+					if exempted([]scanExemption{ex}, name, fn, call) {
+						used[ex]++
+					}
+				}
+				return true
+			})
+		}
+	}
+	for _, ex := range pac21Exemptions {
+		if used[ex] == 0 {
+			t.Errorf("exemption %+v matches no write in backend/api", ex)
+		}
+	}
+}
+
+// AC-1: the four fmt.Errorf validators the scan exempts return only fixed
+// sentences — every non-nil error they return is fmt.Errorf or errors.New
+// with a single string literal and nothing else.
+func TestPAC21ExemptedValidatorsReturnFixedSentences(t *testing.T) {
+	_, files := parseAPISources(t)
+	want := map[string]bool{"validateHabitFields": false, "normalizeManagerEmail": false, "validateManagerCadence": false, "validateNoMeetingZone": false}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			if _, tracked := want[fn.Name.Name]; !tracked || fn.Recv != nil {
+				continue
+			}
+			want[fn.Name.Name] = true
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if _, ok := n.(*ast.FuncLit); ok {
+					return false
+				}
+				ret, ok := n.(*ast.ReturnStmt)
+				if !ok || len(ret.Results) == 0 {
+					return true
+				}
+				last := ret.Results[len(ret.Results)-1]
+				if id, ok := last.(*ast.Ident); ok && id.Name == "nil" {
+					return true
+				}
+				call, ok := last.(*ast.CallExpr)
+				fixed := false
+				if ok && len(call.Args) == 1 && isStringLit(call.Args[0]) {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+						if pkg, ok := sel.X.(*ast.Ident); ok {
+							fixed = (pkg.Name == "fmt" && sel.Sel.Name == "Errorf") || (pkg.Name == "errors" && sel.Sel.Name == "New")
+						}
+					}
+				}
+				if !fixed {
+					t.Errorf("%s returns an error that is not a single fixed string literal", fn.Name.Name)
+				}
+				return true
+			})
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("validator %s not found in backend/api", name)
+		}
 	}
 }
 
@@ -352,28 +551,49 @@ func f(w http.ResponseWriter, r *http.Request, err error, e *httpError) {
 	http.Error(w, "db error", http.StatusInternalServerError)
 	http.Error(w, genericServerMessage(code), code)
 	writeError(w, genericServerMessage(code), code)
+	http.Error(w, "not connected: "+err.Error(), http.StatusUnauthorized)
+	writeError(w, "event not found: "+err.Error(), 404)
+	writeServerErrorText(w, r, "op", err, http.StatusInternalServerError)
+}
+func exempted(w http.ResponseWriter, raw []byte) {
+	if err := validateHabitFields(raw); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+	}
+	if err := validateHabitFields(raw); err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
+	}
+	_ = validateHabitFields(raw)
+	err := json.Unmarshal(raw, &x)
+	writeError(w, err.Error(), http.StatusBadRequest)
+}
+func notExempted(w http.ResponseWriter, raw []byte) {
+	if err := validateHabitFields(raw); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+	}
 }`
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "fixture.go", src, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := scanErrorBodies(fset, f)
-	wantLines := []int{3, 4, 5, 6, 7, 8, 9, 10}
+	got := scanErrorBodies(fset, f, []scanExemption{{"fixture.go", "exempted", "validateHabitFields"}})
+	// Allowed: 12, 14-17, 20 and 27 (the exempted validator at a 4xx).
+	wantLines := []int{3, 4, 5, 6, 7, 8, 9, 10, 13, 18, 19, 21, 22, 23, 30, 34, 38}
 	if len(got) != len(wantLines) {
 		t.Fatalf("got %d violations, want %d:\n%s", len(got), len(wantLines), strings.Join(got, "\n"))
 	}
 	for i, line := range wantLines {
 		if !strings.HasPrefix(got[i], fmt.Sprintf("fixture.go:%d:", line)) {
-			t.Fatalf("violation %d = %q, want line %d", i, got[i], line)
+			t.Fatalf("violation %d = %q, want line %d\nall:\n%s", i, got[i], line, strings.Join(got, "\n"))
 		}
 	}
 }
 
 // The out-of-hours refusal is a fixed policy message the contract documents as
-// the 500 body of POST /api/schedule/create (API-036 tracks its status code).
-// It is not a raw error and is kept; any other CreateMeeting failure is not.
-func TestPAC21CreateMeetingKeepsPolicyRefusalTextOnly(t *testing.T) {
+// the 500 body of POST /api/schedule/create and /api/nlp/confirm (API-036
+// tracks its status code). It is not a raw error and is kept, now as the JSON
+// envelope; any other CreateMeeting failure is the generic body.
+func TestPAC21CreateMeetingFailureBodies(t *testing.T) {
 	cases := []struct {
 		err  error
 		want string
@@ -381,20 +601,29 @@ func TestPAC21CreateMeetingKeepsPolicyRefusalTextOnly(t *testing.T) {
 		{fmt.Errorf("wrapped: %w", engine.ErrOutOfHoursAllowance), "out-of-hours meeting allowance reached"},
 		{errors.New(`googleapi: Error 403: Request had insufficient authentication scopes., insufficientPermissions`), "internal error"},
 	}
+	check := func(t *testing.T, path string, rec *httptest.ResponseRecorder, want string) {
+		t.Helper()
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("%s: status %d, want 500; body %q", path, rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("%s: Content-Type = %q, want application/json", path, ct)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body) != 1 || body["error"] != want {
+			t.Fatalf("%s: body %q, want exactly {\"error\":%q}", path, rec.Body.String(), want)
+		}
+	}
 	for _, tc := range cases {
 		_, _ = captureServerErrors(t)
 		h := &scheduleHandlers{eng: &mockCompressor{}, smart: &mockScheduler{createErr: tc.err}, db: openTestDB(t)}
 		body := `{"title":"T","start":"2030-01-01T10:00:00Z","end":"2030-01-01T11:00:00Z"}`
 		rec := httptest.NewRecorder()
 		h.createMeeting(rec, httptest.NewRequest(http.MethodPost, "/api/schedule/create", strings.NewReader(body)))
-		if rec.Code != http.StatusInternalServerError || strings.TrimSpace(rec.Body.String()) != tc.want {
-			t.Fatalf("err %v: status %d body %q, want 500 %q", tc.err, rec.Code, rec.Body.String(), tc.want)
-		}
+		check(t, "schedule create", rec, tc.want)
 
 		rec = httptest.NewRecorder()
 		writeCreateMeetingFailure(rec, httptest.NewRequest(http.MethodPost, "/api/nlp/confirm", nil), "confirm", tc.err)
-		if strings.TrimSpace(rec.Body.String()) != tc.want {
-			t.Fatalf("nlp confirm path, err %v: body %q, want %q", tc.err, rec.Body.String(), tc.want)
-		}
+		check(t, "nlp confirm", rec, tc.want)
 	}
 }

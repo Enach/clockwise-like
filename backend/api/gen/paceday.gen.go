@@ -93,6 +93,11 @@ const (
 	CalendarEventAttendeeRsvpTentative CalendarEventAttendeeRsvp = "tentative"
 )
 
+// Defines values for CalendarNotConnectedErrorError.
+const (
+	CalendarNotConnectedErrorErrorCalendarNotConnected CalendarNotConnectedErrorError = "calendar not connected"
+)
+
 // Defines values for ConferenceProviderStatusAutoWith.
 const (
 	ConferenceProviderStatusAutoWithGoogle  ConferenceProviderStatusAutoWith = "google"
@@ -622,9 +627,9 @@ type AuthStatusResponse struct {
 // Google was configured.
 type AuthStatusResponseProvider string
 
-// BookingError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The two exceptions in this domain are the requireAuth 401 and the Zoom OAuth callback, both of which use http.Error and therefore send text/plain.
+// BookingError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type BookingError struct {
-	// Error Human-readable message. Several 500s concatenate the underlying Go error text.
+	// Error Human-readable, server-chosen message. Never the text of a Go, driver or provider error (PAC-21): those go to the server log and Sentry only.
 	Error string `json:"error"`
 }
 
@@ -716,6 +721,14 @@ type CalendarEventConference struct {
 	Provider string `json:"provider"`
 	Url      string `json:"url"`
 }
+
+// CalendarNotConnectedError The JSON error envelope for "this user has no calendar connected". The message is a single fixed value so a client can branch on it.
+type CalendarNotConnectedError struct {
+	Error CalendarNotConnectedErrorError `json:"error"`
+}
+
+// CalendarNotConnectedErrorError defines model for CalendarNotConnectedError.Error.
+type CalendarNotConnectedErrorError string
 
 // CalendarRoom calendar.Room — only two fields exist server-side.
 type CalendarRoom struct {
@@ -976,6 +989,8 @@ type DaySchedule struct {
 
 // ErrorResponse The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
@@ -1602,7 +1617,7 @@ type NLPConfirmRequest struct {
 	// ParseResult nlp.ParseResult. snake_case - the only snake_case RESPONSE body in this domain. Every field except `intent` carries `omitempty`, so absent members are normal.
 	ParseResult NLPParseResult `json:"parse_result"`
 
-	// SelectedSlotIndex Index into `parse_result.suggested_slots`. Only the upper bound is checked; see the operation's x-uncertain note about negatives.
+	// SelectedSlotIndex Index into `parse_result.suggested_slots`. A negative value or one >= the slot count is a 400 `invalid selected_slot_index`.
 	SelectedSlotIndex    int                    `json:"selected_slot_index"`
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
@@ -1988,7 +2003,7 @@ type ScheduleSuggestions struct {
 	Slots []SuggestedSlot `json:"slots"`
 }
 
-// SchedulingErrorResponse The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Handlers that use the Go stdlib `http.Error` instead return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
+// SchedulingErrorResponse The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Every 5xx in this domain uses it, with a fixed server-chosen message (PAC-21). Handlers that use the Go stdlib `http.Error` for a 4xx return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
 type SchedulingErrorResponse struct {
 	Error string `json:"error"`
 }
@@ -2251,7 +2266,7 @@ type Settings struct {
 	// RecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 	RecapSendTo SettingsRecapSendTo `json:"recapSendTo"`
 
-	// TimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+	// TimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: timeFormat has the wrong type`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
 	TimeFormat SettingsTimeFormat `json:"timeFormat"`
 
 	// Timezone IANA name, e.g. `Europe/Paris`. DB default `UTC`. PAC-24 validates it with time.LoadLocation and returns 400 `timezone is not a known IANA location`. Before PAC-24 any string was accepted and every engine silently fell back to UTC, so a typo moved a user's whole schedule with no error anywhere (API-082).
@@ -2291,7 +2306,7 @@ type SettingsLlmProvider string
 // SettingsRecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 type SettingsRecapSendTo string
 
-// SettingsTimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+// SettingsTimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: timeFormat has the wrong type`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
 type SettingsTimeFormat string
 
 // SettingsUpdate PATCH /api/settings body - the only settings write. Nothing is required: a property absent means "leave it as it is", and `{}` is a valid no-op request. A property present is applied exactly as given - `""`, `0` and `false` are values, not absences, except where a property's enum or pattern excludes `""` (`recapSendTime`, `recapSendTo`, `calendarProvider`, `conferencingProvider`, `timeFormat`), where `""` is a 400 like any other value outside the set (spec AC-7 as amended 2026-10-12).
@@ -2424,7 +2439,7 @@ type SettingsUpdate struct {
 	// RecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 	RecapSendTo *SettingsUpdateRecapSendTo `json:"recapSendTo,omitempty"`
 
-	// TimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+	// TimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: timeFormat has the wrong type`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
 	TimeFormat *SettingsUpdateTimeFormat `json:"timeFormat,omitempty"`
 
 	// Timezone IANA name, e.g. `Europe/Paris`. DB default `UTC`. PAC-24 validates it with time.LoadLocation and returns 400 `timezone is not a known IANA location`. Before PAC-24 any string was accepted and every engine silently fell back to UTC, so a typo moved a user's whole schedule with no error anywhere (API-082).
@@ -2464,7 +2479,7 @@ type SettingsUpdateLlmProvider string
 // SettingsUpdateRecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 type SettingsUpdateRecapSendTo string
 
-// SettingsUpdateTimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
+// SettingsUpdateTimeFormat How the signed-in web app shows times of day to this user (PAC-55): `12h` ("2:30 PM", the default, exactly as before PAC-55) or `24h` ("14:30", two-digit hour, no AM/PM). DB default `12h`; a user who never chose reads `12h`. There is no "unset": `""` and any other STRING are a 400 `timeFormat must be 12h or 24h`; a non-string (`24`, `true`, `["24h"]`) fails decoding first and is a 400 `invalid JSON: timeFormat has the wrong type`; `null` is a 400 like every property of this body. Display only: the server formats nothing with it, and the public booking page ignores it (always 12-hour, PAC-55 §5).
 type SettingsUpdateTimeFormat string
 
 // SlackBlock engine.slackBlock is `map[string]interface{}` - an untyped Slack Block Kit object. Nested values are themselves slackBlocks or arrays of them.
@@ -2768,38 +2783,61 @@ type SchedulingLinkIdPath = openapi_types.UUID
 // TeamIdPath defines model for TeamIdPath.
 type TeamIdPath = openapi_types.UUID
 
+// CalendarNotConnected The JSON error envelope for "this user has no calendar connected". The message is a single fixed value so a client can branch on it.
+type CalendarNotConnected = CalendarNotConnectedError
+
 // Forbidden The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type Forbidden = ErrorResponse
 
 // InternalError The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type InternalError = ErrorResponse
 
 // JsonError The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type JsonError = ErrorResponse
 
 // JsonForbidden The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type JsonForbidden = ErrorResponse
 
 // JsonUnauthorized The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type JsonUnauthorized = ErrorResponse
 
 // NotFound The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type NotFound = ErrorResponse
 
-// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The two exceptions in this domain are the requireAuth 401 and the Zoom OAuth callback, both of which use http.Error and therefore send text/plain.
+// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type SchedulingLinkValidationError = BookingError
 
-// SettingsValidationError The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Handlers that use the Go stdlib `http.Error` instead return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
+// ServerError The shared JSON error envelope, written by writeError()
+// (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
+type ServerError = ErrorResponse
+
+// SettingsValidationError The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Every 5xx in this domain uses it, with a fixed server-chosen message (PAC-21). Handlers that use the Go stdlib `http.Error` for a 4xx return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
 type SettingsValidationError = SchedulingErrorResponse
 
 // Unauthorized The shared JSON error envelope, written by writeError()
 // (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
 type Unauthorized = ErrorResponse
 
 // ListAnalyticsMeetingsParams defines parameters for ListAnalyticsMeetings.
@@ -10461,6 +10499,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 type BookingUnauthorizedTextResponse string
 
+type CalendarNotConnectedJSONResponse CalendarNotConnectedError
+type CalendarNotConnectedTextResponse MiddlewareUnauthorized
+
 type ForbiddenJSONResponse ErrorResponse
 
 type InternalErrorJSONResponse ErrorResponse
@@ -10473,9 +10514,9 @@ type JsonUnauthorizedJSONResponse ErrorResponse
 
 type NotFoundJSONResponse ErrorResponse
 
-type PlainTextServerErrorTextResponse string
-
 type SchedulingLinkValidationErrorJSONResponse BookingError
+
+type ServerErrorJSONResponse ErrorResponse
 
 type SettingsValidationErrorJSONResponse SchedulingErrorResponse
 
@@ -10640,13 +10681,23 @@ func (response ListAnalyticsMeetings200JSONResponse) VisitListAnalyticsMeetingsR
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ListAnalyticsMeetings401JSONResponse struct{ UnauthorizedJSONResponse }
+type ListAnalyticsMeetings401JSONResponse CalendarNotConnectedError
 
 func (response ListAnalyticsMeetings401JSONResponse) VisitListAnalyticsMeetingsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type ListAnalyticsMeetings401TextResponse MiddlewareUnauthorized
+
+func (response ListAnalyticsMeetings401TextResponse) VisitListAnalyticsMeetingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type ListAnalyticsMeetings500JSONResponse ErrorResponse
@@ -10779,13 +10830,23 @@ func (response SuggestAttendees200JSONResponse) VisitSuggestAttendeesResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type SuggestAttendees401JSONResponse ErrorResponse
+type SuggestAttendees401JSONResponse CalendarNotConnectedError
 
 func (response SuggestAttendees401JSONResponse) VisitSuggestAttendeesResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type SuggestAttendees401TextResponse MiddlewareUnauthorized
+
+func (response SuggestAttendees401TextResponse) VisitSuggestAttendeesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type SuggestAttendees500JSONResponse ErrorResponse
@@ -10867,14 +10928,13 @@ func (response GoogleOAuthCallback400TextResponse) VisitGoogleOAuthCallbackRespo
 	return err
 }
 
-type GoogleOAuthCallback500TextResponse PlainTextError
+type GoogleOAuthCallback500JSONResponse ErrorResponse
 
-func (response GoogleOAuthCallback500TextResponse) VisitGoogleOAuthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GoogleOAuthCallback500JSONResponse) VisitGoogleOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type SsoOidcCallbackRequestObject struct {
@@ -10921,14 +10981,13 @@ func (response SsoOidcCallback404JSONResponse) VisitSsoOidcCallbackResponse(w ht
 	return json.NewEncoder(w).Encode(response)
 }
 
-type SsoOidcCallback500TextResponse PlainTextError
+type SsoOidcCallback500JSONResponse ErrorResponse
 
-func (response SsoOidcCallback500TextResponse) VisitSsoOidcCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response SsoOidcCallback500JSONResponse) VisitSsoOidcCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DetectAuthProviderRequestObject struct {
@@ -11006,14 +11065,13 @@ func (response DisconnectCalendar401TextResponse) VisitDisconnectCalendarRespons
 	return err
 }
 
-type DisconnectCalendar500TextResponse PlainTextError
+type DisconnectCalendar500JSONResponse ErrorResponse
 
-func (response DisconnectCalendar500TextResponse) VisitDisconnectCalendarResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response DisconnectCalendar500JSONResponse) VisitDisconnectCalendarResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type StartGoogleOAuthRequestObject struct {
@@ -11174,24 +11232,22 @@ func (response MicrosoftOAuthCallback400TextResponse) VisitMicrosoftOAuthCallbac
 	return err
 }
 
-type MicrosoftOAuthCallback500TextResponse PlainTextError
+type MicrosoftOAuthCallback500JSONResponse ErrorResponse
 
-func (response MicrosoftOAuthCallback500TextResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response MicrosoftOAuthCallback500JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
-type MicrosoftOAuthCallback502TextResponse PlainTextError
+type MicrosoftOAuthCallback502JSONResponse ErrorResponse
 
-func (response MicrosoftOAuthCallback502TextResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response MicrosoftOAuthCallback502JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(502)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type MicrosoftOAuthCallback503JSONResponse ErrorResponse
@@ -11366,14 +11422,13 @@ func (response HandleZoomOAuthCallback401TextResponse) VisitHandleZoomOAuthCallb
 	return err
 }
 
-type HandleZoomOAuthCallback500TextResponse string
+type HandleZoomOAuthCallback500JSONResponse BookingError
 
-func (response HandleZoomOAuthCallback500TextResponse) VisitHandleZoomOAuthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response HandleZoomOAuthCallback500JSONResponse) VisitHandleZoomOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetPublicLinkInfoRequestObject struct {
@@ -11573,7 +11628,16 @@ func (response ListCalendarEvents400TextResponse) VisitListCalendarEventsRespons
 	return err
 }
 
-type ListCalendarEvents401TextResponse PlainTextError
+type ListCalendarEvents401JSONResponse CalendarNotConnectedError
+
+func (response ListCalendarEvents401JSONResponse) VisitListCalendarEventsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListCalendarEvents401TextResponse MiddlewareUnauthorized
 
 func (response ListCalendarEvents401TextResponse) VisitListCalendarEventsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
@@ -11583,14 +11647,13 @@ func (response ListCalendarEvents401TextResponse) VisitListCalendarEventsRespons
 	return err
 }
 
-type ListCalendarEvents500TextResponse PlainTextError
+type ListCalendarEvents500JSONResponse ErrorResponse
 
-func (response ListCalendarEvents500TextResponse) VisitListCalendarEventsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ListCalendarEvents500JSONResponse) VisitListCalendarEventsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetCalendarFreeBusyRequestObject struct {
@@ -11620,7 +11683,16 @@ func (response GetCalendarFreeBusy400TextResponse) VisitGetCalendarFreeBusyRespo
 	return err
 }
 
-type GetCalendarFreeBusy401TextResponse PlainTextError
+type GetCalendarFreeBusy401JSONResponse CalendarNotConnectedError
+
+func (response GetCalendarFreeBusy401JSONResponse) VisitGetCalendarFreeBusyResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetCalendarFreeBusy401TextResponse MiddlewareUnauthorized
 
 func (response GetCalendarFreeBusy401TextResponse) VisitGetCalendarFreeBusyResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
@@ -11630,14 +11702,13 @@ func (response GetCalendarFreeBusy401TextResponse) VisitGetCalendarFreeBusyRespo
 	return err
 }
 
-type GetCalendarFreeBusy500TextResponse PlainTextError
+type GetCalendarFreeBusy500JSONResponse ErrorResponse
 
-func (response GetCalendarFreeBusy500TextResponse) VisitGetCalendarFreeBusyResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetCalendarFreeBusy500JSONResponse) VisitGetCalendarFreeBusyResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type CreateConferenceLinkRequestObject struct {
@@ -11770,13 +11841,23 @@ func (response DeleteEvent204Response) VisitDeleteEventResponse(w http.ResponseW
 	return nil
 }
 
-type DeleteEvent401JSONResponse ErrorResponse
+type DeleteEvent401JSONResponse CalendarNotConnectedError
 
 func (response DeleteEvent401JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type DeleteEvent401TextResponse MiddlewareUnauthorized
+
+func (response DeleteEvent401TextResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type DeleteEvent500JSONResponse ErrorResponse
@@ -11815,13 +11896,23 @@ func (response PatchEvent400JSONResponse) VisitPatchEventResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type PatchEvent401JSONResponse ErrorResponse
+type PatchEvent401JSONResponse CalendarNotConnectedError
 
 func (response PatchEvent401JSONResponse) VisitPatchEventResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type PatchEvent401TextResponse MiddlewareUnauthorized
+
+func (response PatchEvent401TextResponse) VisitPatchEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type PatchEvent404JSONResponse ErrorResponse
@@ -11858,13 +11949,23 @@ func (response RemoveEventConference204Response) VisitRemoveEventConferenceRespo
 	return nil
 }
 
-type RemoveEventConference401JSONResponse BookingError
+type RemoveEventConference401JSONResponse CalendarNotConnectedError
 
 func (response RemoveEventConference401JSONResponse) VisitRemoveEventConferenceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveEventConference401TextResponse MiddlewareUnauthorized
+
+func (response RemoveEventConference401TextResponse) VisitRemoveEventConferenceResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type RemoveEventConference404JSONResponse BookingError
@@ -11912,13 +12013,23 @@ func (response AddEventConference400JSONResponse) VisitAddEventConferenceRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type AddEventConference401JSONResponse BookingError
+type AddEventConference401JSONResponse CalendarNotConnectedError
 
 func (response AddEventConference401JSONResponse) VisitAddEventConferenceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type AddEventConference401TextResponse MiddlewareUnauthorized
+
+func (response AddEventConference401TextResponse) VisitAddEventConferenceResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type AddEventConference404JSONResponse BookingError
@@ -11983,14 +12094,32 @@ func (response ClearFocusBlocks400JSONResponse) VisitClearFocusBlocksResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ClearFocusBlocks500TextResponse string
+type ClearFocusBlocks401JSONResponse CalendarNotConnectedError
 
-func (response ClearFocusBlocks500TextResponse) VisitClearFocusBlocksResponse(w http.ResponseWriter) error {
+func (response ClearFocusBlocks401JSONResponse) VisitClearFocusBlocksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ClearFocusBlocks401TextResponse MiddlewareUnauthorized
+
+func (response ClearFocusBlocks401TextResponse) VisitClearFocusBlocksResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type ClearFocusBlocks500JSONResponse SchedulingErrorResponse
+
+func (response ClearFocusBlocks500JSONResponse) VisitClearFocusBlocksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListFocusBlocksRequestObject struct {
@@ -12019,14 +12148,13 @@ func (response ListFocusBlocks400JSONResponse) VisitListFocusBlocksResponse(w ht
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ListFocusBlocks500TextResponse string
+type ListFocusBlocks500JSONResponse SchedulingErrorResponse
 
-func (response ListFocusBlocks500TextResponse) VisitListFocusBlocksResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ListFocusBlocks500JSONResponse) VisitListFocusBlocksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RunFocusRequestObject struct {
@@ -12055,14 +12183,32 @@ func (response RunFocus400JSONResponse) VisitRunFocusResponse(w http.ResponseWri
 	return json.NewEncoder(w).Encode(response)
 }
 
-type RunFocus500TextResponse string
+type RunFocus401JSONResponse CalendarNotConnectedError
 
-func (response RunFocus500TextResponse) VisitRunFocusResponse(w http.ResponseWriter) error {
+func (response RunFocus401JSONResponse) VisitRunFocusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RunFocus401TextResponse MiddlewareUnauthorized
+
+func (response RunFocus401TextResponse) VisitRunFocusResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type RunFocus500JSONResponse SchedulingErrorResponse
+
+func (response RunFocus500JSONResponse) VisitRunFocusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type QueryFreeBusyRequestObject struct {
@@ -12100,14 +12246,13 @@ func (response QueryFreeBusy401JSONResponse) VisitQueryFreeBusyResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
-type QueryFreeBusy500TextResponse PlainTextError
+type QueryFreeBusy500JSONResponse ErrorResponse
 
-func (response QueryFreeBusy500TextResponse) VisitQueryFreeBusyResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response QueryFreeBusy500JSONResponse) VisitQueryFreeBusyResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListHabitsRequestObject struct {
@@ -12577,24 +12722,22 @@ func (response NotionOauthCallback401JSONResponse) VisitNotionOauthCallbackRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type NotionOauthCallback500TextResponse string
+type NotionOauthCallback500JSONResponse ErrorResponse
 
-func (response NotionOauthCallback500TextResponse) VisitNotionOauthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response NotionOauthCallback500JSONResponse) VisitNotionOauthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
-type NotionOauthCallback502TextResponse string
+type NotionOauthCallback502JSONResponse ErrorResponse
 
-func (response NotionOauthCallback502TextResponse) VisitNotionOauthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response NotionOauthCallback502JSONResponse) VisitNotionOauthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(502)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ConnectNotionRequestObject struct {
@@ -12629,14 +12772,13 @@ func (response ConnectNotion401JSONResponse) VisitConnectNotionResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ConnectNotion503TextResponse string
+type ConnectNotion503JSONResponse ErrorResponse
 
-func (response ConnectNotion503TextResponse) VisitConnectNotionResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ConnectNotion503JSONResponse) VisitConnectNotionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(503)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetNotionStatusRequestObject struct {
@@ -12729,24 +12871,22 @@ func (response SlackOauthCallback401JSONResponse) VisitSlackOauthCallbackRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type SlackOauthCallback500TextResponse string
+type SlackOauthCallback500JSONResponse ErrorResponse
 
-func (response SlackOauthCallback500TextResponse) VisitSlackOauthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response SlackOauthCallback500JSONResponse) VisitSlackOauthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
-type SlackOauthCallback502TextResponse string
+type SlackOauthCallback502JSONResponse ErrorResponse
 
-func (response SlackOauthCallback502TextResponse) VisitSlackOauthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response SlackOauthCallback502JSONResponse) VisitSlackOauthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(502)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ConnectSlackRequestObject struct {
@@ -12781,14 +12921,13 @@ func (response ConnectSlack401JSONResponse) VisitConnectSlackResponse(w http.Res
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ConnectSlack503TextResponse string
+type ConnectSlack503JSONResponse ErrorResponse
 
-func (response ConnectSlack503TextResponse) VisitConnectSlackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ConnectSlack503JSONResponse) VisitConnectSlackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(503)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetSlackStatusRequestObject struct {
@@ -12860,16 +12999,6 @@ func (response TestLLMConnection500JSONResponse) VisitTestLLMConnectionResponse(
 	return json.NewEncoder(w).Encode(response)
 }
 
-type TestLLMConnection500TextResponse string
-
-func (response TestLLMConnection500TextResponse) VisitTestLLMConnectionResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
-
-	_, err := w.Write([]byte(response))
-	return err
-}
-
 type TestLLMConnection502JSONResponse SchedulingErrorResponse
 
 func (response TestLLMConnection502JSONResponse) VisitTestLLMConnectionResponse(w http.ResponseWriter) error {
@@ -12914,14 +13043,13 @@ func (response GetManagerAnalytics403JSONResponse) VisitGetManagerAnalyticsRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetManagerAnalytics500TextResponse string
+type GetManagerAnalytics500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetManagerAnalytics500TextResponse) VisitGetManagerAnalyticsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetManagerAnalytics500JSONResponse) VisitGetManagerAnalyticsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type PreviewManagerDetectionRequestObject struct {
@@ -12951,6 +13079,25 @@ func (response PreviewManagerDetection400JSONResponse) VisitPreviewManagerDetect
 	return json.NewEncoder(w).Encode(response)
 }
 
+type PreviewManagerDetection401JSONResponse CalendarNotConnectedError
+
+func (response PreviewManagerDetection401JSONResponse) VisitPreviewManagerDetectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PreviewManagerDetection401TextResponse MiddlewareUnauthorized
+
+func (response PreviewManagerDetection401TextResponse) VisitPreviewManagerDetectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
 type PreviewManagerDetection403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response PreviewManagerDetection403JSONResponse) VisitPreviewManagerDetectionResponse(w http.ResponseWriter) error {
@@ -12960,14 +13107,13 @@ func (response PreviewManagerDetection403JSONResponse) VisitPreviewManagerDetect
 	return json.NewEncoder(w).Encode(response)
 }
 
-type PreviewManagerDetection500TextResponse string
+type PreviewManagerDetection500JSONResponse ErrorResponse
 
-func (response PreviewManagerDetection500TextResponse) VisitPreviewManagerDetectionResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response PreviewManagerDetection500JSONResponse) VisitPreviewManagerDetectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ConfirmManagerDetectionRequestObject struct {
@@ -13015,14 +13161,13 @@ func (response ConfirmManagerDetection422JSONResponse) VisitConfirmManagerDetect
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ConfirmManagerDetection500TextResponse string
+type ConfirmManagerDetection500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response ConfirmManagerDetection500TextResponse) VisitConfirmManagerDetectionResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ConfirmManagerDetection500JSONResponse) VisitConfirmManagerDetectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetManagerCadenceGapsRequestObject struct {
@@ -13060,14 +13205,13 @@ func (response GetManagerCadenceGaps403JSONResponse) VisitGetManagerCadenceGapsR
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetManagerCadenceGaps500TextResponse string
+type GetManagerCadenceGaps500JSONResponse ErrorResponse
 
-func (response GetManagerCadenceGaps500TextResponse) VisitGetManagerCadenceGapsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetManagerCadenceGaps500JSONResponse) VisitGetManagerCadenceGapsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetManagerProfileRequestObject struct {
@@ -13086,14 +13230,13 @@ func (response GetManagerProfile200JSONResponse) VisitGetManagerProfileResponse(
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetManagerProfile500TextResponse string
+type GetManagerProfile500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetManagerProfile500TextResponse) VisitGetManagerProfileResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetManagerProfile500JSONResponse) VisitGetManagerProfileResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type SetManagerProfileRequestObject struct {
@@ -13122,14 +13265,13 @@ func (response SetManagerProfile400JSONResponse) VisitSetManagerProfileResponse(
 	return json.NewEncoder(w).Encode(response)
 }
 
-type SetManagerProfile500TextResponse string
+type SetManagerProfile500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response SetManagerProfile500TextResponse) VisitSetManagerProfileResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response SetManagerProfile500JSONResponse) VisitSetManagerProfileResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetManagerRosterRequestObject struct {
@@ -13167,14 +13309,13 @@ func (response GetManagerRoster403JSONResponse) VisitGetManagerRosterResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetManagerRoster500TextResponse string
+type GetManagerRoster500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetManagerRoster500TextResponse) VisitGetManagerRosterResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetManagerRoster500JSONResponse) VisitGetManagerRosterResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type AddManagerTeamMemberRequestObject struct {
@@ -13222,14 +13363,13 @@ func (response AddManagerTeamMember422JSONResponse) VisitAddManagerTeamMemberRes
 	return json.NewEncoder(w).Encode(response)
 }
 
-type AddManagerTeamMember500TextResponse string
+type AddManagerTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response AddManagerTeamMember500TextResponse) VisitAddManagerTeamMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response AddManagerTeamMember500JSONResponse) VisitAddManagerTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RemoveManagerTeamMemberRequestObject struct {
@@ -13332,14 +13472,13 @@ func (response PatchManagerTeamMember422JSONResponse) VisitPatchManagerTeamMembe
 	return json.NewEncoder(w).Encode(response)
 }
 
-type PatchManagerTeamMember500TextResponse string
+type PatchManagerTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response PatchManagerTeamMember500TextResponse) VisitPatchManagerTeamMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response PatchManagerTeamMember500JSONResponse) VisitPatchManagerTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ScheduleManagerOneOnOneRequestObject struct {
@@ -13398,14 +13537,13 @@ func (response ScheduleManagerOneOnOne422JSONResponse) VisitScheduleManagerOneOn
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ScheduleManagerOneOnOne500TextResponse string
+type ScheduleManagerOneOnOne500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response ScheduleManagerOneOnOne500TextResponse) VisitScheduleManagerOneOnOneResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ScheduleManagerOneOnOne500JSONResponse) VisitScheduleManagerOneOnOneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetMeetingBriefRequestObject struct {
@@ -13444,14 +13582,13 @@ func (response GetMeetingBrief401JSONResponse) VisitGetMeetingBriefResponse(w ht
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetMeetingBrief500TextResponse string
+type GetMeetingBrief500JSONResponse ErrorResponse
 
-func (response GetMeetingBrief500TextResponse) VisitGetMeetingBriefResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetMeetingBrief500JSONResponse) VisitGetMeetingBriefResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RefreshMeetingBriefRequestObject struct {
@@ -13490,14 +13627,13 @@ func (response RefreshMeetingBrief401JSONResponse) VisitRefreshMeetingBriefRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type RefreshMeetingBrief500TextResponse string
+type RefreshMeetingBrief500JSONResponse ErrorResponse
 
-func (response RefreshMeetingBrief500TextResponse) VisitRefreshMeetingBriefResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response RefreshMeetingBrief500JSONResponse) VisitRefreshMeetingBriefResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ConfirmNaturalLanguageRequestObject struct {
@@ -13526,14 +13662,32 @@ func (response ConfirmNaturalLanguage400JSONResponse) VisitConfirmNaturalLanguag
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ConfirmNaturalLanguage500TextResponse string
+type ConfirmNaturalLanguage401JSONResponse CalendarNotConnectedError
 
-func (response ConfirmNaturalLanguage500TextResponse) VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error {
+func (response ConfirmNaturalLanguage401JSONResponse) VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmNaturalLanguage401TextResponse MiddlewareUnauthorized
+
+func (response ConfirmNaturalLanguage401TextResponse) VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type ConfirmNaturalLanguage500JSONResponse SchedulingErrorResponse
+
+func (response ConfirmNaturalLanguage500JSONResponse) VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ParseNaturalLanguageRequestObject struct {
@@ -13562,14 +13716,13 @@ func (response ParseNaturalLanguage400JSONResponse) VisitParseNaturalLanguageRes
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ParseNaturalLanguage500TextResponse string
+type ParseNaturalLanguage500JSONResponse SchedulingErrorResponse
 
-func (response ParseNaturalLanguage500TextResponse) VisitParseNaturalLanguageResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ParseNaturalLanguage500JSONResponse) VisitParseNaturalLanguageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListOrgMembersRequestObject struct {
@@ -13598,14 +13751,13 @@ func (response ListOrgMembers401TextResponse) VisitListOrgMembersResponse(w http
 	return err
 }
 
-type ListOrgMembers500TextResponse MiddlewareUnauthorized
+type ListOrgMembers500JSONResponse ErrorResponse
 
-func (response ListOrgMembers500TextResponse) VisitListOrgMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ListOrgMembers500JSONResponse) VisitListOrgMembersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListPersonalCalendarsRequestObject struct {
@@ -13876,6 +14028,15 @@ func (response SyncPersonalCalendar400JSONResponse) VisitSyncPersonalCalendarRes
 	return json.NewEncoder(w).Encode(response)
 }
 
+type SyncPersonalCalendar401JSONResponse CalendarNotConnectedError
+
+func (response SyncPersonalCalendar401JSONResponse) VisitSyncPersonalCalendarResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type SyncPersonalCalendar401TextResponse MiddlewareUnauthorized
 
 func (response SyncPersonalCalendar401TextResponse) VisitSyncPersonalCalendarResponse(w http.ResponseWriter) error {
@@ -13921,13 +14082,23 @@ func (response ListRooms200JSONResponse) VisitListRoomsResponse(w http.ResponseW
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ListRooms401JSONResponse ErrorResponse
+type ListRooms401JSONResponse CalendarNotConnectedError
 
 func (response ListRooms401JSONResponse) VisitListRoomsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type ListRooms401TextResponse MiddlewareUnauthorized
+
+func (response ListRooms401TextResponse) VisitListRoomsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
 }
 
 type ListRooms500JSONResponse ErrorResponse
@@ -13965,14 +14136,32 @@ func (response PreviewCompression400JSONResponse) VisitPreviewCompressionRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type PreviewCompression500TextResponse string
+type PreviewCompression401JSONResponse CalendarNotConnectedError
 
-func (response PreviewCompression500TextResponse) VisitPreviewCompressionResponse(w http.ResponseWriter) error {
+func (response PreviewCompression401JSONResponse) VisitPreviewCompressionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PreviewCompression401TextResponse MiddlewareUnauthorized
+
+func (response PreviewCompression401TextResponse) VisitPreviewCompressionResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type PreviewCompression500JSONResponse SchedulingErrorResponse
+
+func (response PreviewCompression500JSONResponse) VisitPreviewCompressionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ApplyCompressionRequestObject struct {
@@ -14001,14 +14190,32 @@ func (response ApplyCompression400JSONResponse) VisitApplyCompressionResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ApplyCompression500TextResponse string
+type ApplyCompression401JSONResponse CalendarNotConnectedError
 
-func (response ApplyCompression500TextResponse) VisitApplyCompressionResponse(w http.ResponseWriter) error {
+func (response ApplyCompression401JSONResponse) VisitApplyCompressionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ApplyCompression401TextResponse MiddlewareUnauthorized
+
+func (response ApplyCompression401TextResponse) VisitApplyCompressionResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type ApplyCompression500JSONResponse SchedulingErrorResponse
+
+func (response ApplyCompression500JSONResponse) VisitApplyCompressionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type CreateScheduledMeetingRequestObject struct {
@@ -14037,14 +14244,32 @@ func (response CreateScheduledMeeting400JSONResponse) VisitCreateScheduledMeetin
 	return json.NewEncoder(w).Encode(response)
 }
 
-type CreateScheduledMeeting500TextResponse string
+type CreateScheduledMeeting401JSONResponse CalendarNotConnectedError
 
-func (response CreateScheduledMeeting500TextResponse) VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error {
+func (response CreateScheduledMeeting401JSONResponse) VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateScheduledMeeting401TextResponse MiddlewareUnauthorized
+
+func (response CreateScheduledMeeting401TextResponse) VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type CreateScheduledMeeting500JSONResponse SchedulingErrorResponse
+
+func (response CreateScheduledMeeting500JSONResponse) VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type SuggestMeetingSlotsRequestObject struct {
@@ -14073,14 +14298,32 @@ func (response SuggestMeetingSlots400JSONResponse) VisitSuggestMeetingSlotsRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type SuggestMeetingSlots500TextResponse string
+type SuggestMeetingSlots401JSONResponse CalendarNotConnectedError
 
-func (response SuggestMeetingSlots500TextResponse) VisitSuggestMeetingSlotsResponse(w http.ResponseWriter) error {
+func (response SuggestMeetingSlots401JSONResponse) VisitSuggestMeetingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SuggestMeetingSlots401TextResponse MiddlewareUnauthorized
+
+func (response SuggestMeetingSlots401TextResponse) VisitSuggestMeetingSlotsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(500)
+	w.WriteHeader(401)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type SuggestMeetingSlots500JSONResponse SchedulingErrorResponse
+
+func (response SuggestMeetingSlots500JSONResponse) VisitSuggestMeetingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListSchedulingLinksRequestObject struct {
@@ -14838,14 +15081,13 @@ func (response GetSettings200JSONResponse) VisitGetSettingsResponse(w http.Respo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetSettings500TextResponse string
+type GetSettings500JSONResponse SchedulingErrorResponse
 
-func (response GetSettings500TextResponse) VisitGetSettingsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetSettings500JSONResponse) VisitGetSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type PatchSettingsRequestObject struct {
@@ -14876,14 +15118,13 @@ func (response PatchSettings400JSONResponse) VisitPatchSettingsResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
-type PatchSettings500TextResponse string
+type PatchSettings500JSONResponse SchedulingErrorResponse
 
-func (response PatchSettings500TextResponse) VisitPatchSettingsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response PatchSettings500JSONResponse) VisitPatchSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetDailyRecapSettingsRequestObject struct {
@@ -14902,14 +15143,13 @@ func (response GetDailyRecapSettings200JSONResponse) VisitGetDailyRecapSettingsR
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetDailyRecapSettings500TextResponse string
+type GetDailyRecapSettings500JSONResponse SchedulingErrorResponse
 
-func (response GetDailyRecapSettings500TextResponse) VisitGetDailyRecapSettingsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetDailyRecapSettings500JSONResponse) VisitGetDailyRecapSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type PatchDailyRecapSettingsRequestObject struct {
@@ -14938,14 +15178,13 @@ func (response PatchDailyRecapSettings400TextResponse) VisitPatchDailyRecapSetti
 	return err
 }
 
-type PatchDailyRecapSettings500TextResponse string
+type PatchDailyRecapSettings500JSONResponse SchedulingErrorResponse
 
-func (response PatchDailyRecapSettings500TextResponse) VisitPatchDailyRecapSettingsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response PatchDailyRecapSettings500JSONResponse) VisitPatchDailyRecapSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type PreviewDailyRecapRequestObject struct {
@@ -14964,14 +15203,13 @@ func (response PreviewDailyRecap200JSONResponse) VisitPreviewDailyRecapResponse(
 	return json.NewEncoder(w).Encode(response)
 }
 
-type PreviewDailyRecap500TextResponse string
+type PreviewDailyRecap500JSONResponse SchedulingErrorResponse
 
-func (response PreviewDailyRecap500TextResponse) VisitPreviewDailyRecapResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response PreviewDailyRecap500JSONResponse) VisitPreviewDailyRecapResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type SendDailyRecapTestRequestObject struct {
@@ -15000,24 +15238,22 @@ func (response SendDailyRecapTest400TextResponse) VisitSendDailyRecapTestRespons
 	return err
 }
 
-type SendDailyRecapTest500TextResponse string
+type SendDailyRecapTest500JSONResponse SchedulingErrorResponse
 
-func (response SendDailyRecapTest500TextResponse) VisitSendDailyRecapTestResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response SendDailyRecapTest500JSONResponse) VisitSendDailyRecapTestResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
-type SendDailyRecapTest502TextResponse string
+type SendDailyRecapTest502JSONResponse SchedulingErrorResponse
 
-func (response SendDailyRecapTest502TextResponse) VisitSendDailyRecapTestResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response SendDailyRecapTest502JSONResponse) VisitSendDailyRecapTestResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(502)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListTeamsRequestObject struct {
@@ -15045,14 +15281,13 @@ func (response ListTeams401JSONResponse) VisitListTeamsResponse(w http.ResponseW
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ListTeams500TextResponse string
+type ListTeams500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response ListTeams500TextResponse) VisitListTeamsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ListTeams500JSONResponse) VisitListTeamsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type CreateTeamRequestObject struct {
@@ -15090,14 +15325,13 @@ func (response CreateTeam401JSONResponse) VisitCreateTeamResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type CreateTeam500TextResponse string
+type CreateTeam500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response CreateTeam500TextResponse) VisitCreateTeamResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response CreateTeam500JSONResponse) VisitCreateTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetTeamInviteRequestObject struct {
@@ -15135,14 +15369,13 @@ func (response GetTeamInvite410JSONResponse) VisitGetTeamInviteResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetTeamInvite500TextResponse string
+type GetTeamInvite500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetTeamInvite500TextResponse) VisitGetTeamInviteResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetTeamInvite500JSONResponse) VisitGetTeamInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type AcceptTeamInviteRequestObject struct {
@@ -15197,14 +15430,13 @@ func (response AcceptTeamInvite410JSONResponse) VisitAcceptTeamInviteResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type AcceptTeamInvite500TextResponse string
+type AcceptTeamInvite500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response AcceptTeamInvite500TextResponse) VisitAcceptTeamInviteResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response AcceptTeamInvite500JSONResponse) VisitAcceptTeamInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteTeamRequestObject struct {
@@ -15241,14 +15473,13 @@ func (response DeleteTeam403JSONResponse) VisitDeleteTeamResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type DeleteTeam500TextResponse string
+type DeleteTeam500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response DeleteTeam500TextResponse) VisitDeleteTeamResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response DeleteTeam500JSONResponse) VisitDeleteTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetTeamRequestObject struct {
@@ -15295,14 +15526,13 @@ func (response GetTeam404JSONResponse) VisitGetTeamResponse(w http.ResponseWrite
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetTeam500TextResponse string
+type GetTeam500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetTeam500TextResponse) VisitGetTeamResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetTeam500JSONResponse) VisitGetTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RenameTeamRequestObject struct {
@@ -15341,14 +15571,13 @@ func (response RenameTeam403JSONResponse) VisitRenameTeamResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type RenameTeam500TextResponse string
+type RenameTeam500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response RenameTeam500TextResponse) VisitRenameTeamResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response RenameTeam500JSONResponse) VisitRenameTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetFormalTeamAnalyticsRequestObject struct {
@@ -15387,14 +15616,13 @@ func (response GetFormalTeamAnalytics403JSONResponse) VisitGetFormalTeamAnalytic
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetFormalTeamAnalytics500TextResponse string
+type GetFormalTeamAnalytics500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetFormalTeamAnalytics500TextResponse) VisitGetFormalTeamAnalyticsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetFormalTeamAnalytics500JSONResponse) VisitGetFormalTeamAnalyticsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetTeamAvailabilityRequestObject struct {
@@ -15433,14 +15661,13 @@ func (response GetTeamAvailability403JSONResponse) VisitGetTeamAvailabilityRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetTeamAvailability500TextResponse string
+type GetTeamAvailability500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response GetTeamAvailability500TextResponse) VisitGetTeamAvailabilityResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response GetTeamAvailability500JSONResponse) VisitGetTeamAvailabilityResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type InviteTeamMemberRequestObject struct {
@@ -15488,14 +15715,13 @@ func (response InviteTeamMember422JSONResponse) VisitInviteTeamMemberResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type InviteTeamMember500TextResponse string
+type InviteTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response InviteTeamMember500TextResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response InviteTeamMember500JSONResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RemoveTeamMemberRequestObject struct {
@@ -15533,14 +15759,13 @@ func (response RemoveTeamMember403JSONResponse) VisitRemoveTeamMemberResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type RemoveTeamMember500TextResponse string
+type RemoveTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response RemoveTeamMember500TextResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response RemoveTeamMember500JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListNoMeetingZonesRequestObject struct {
@@ -15578,14 +15803,13 @@ func (response ListNoMeetingZones403JSONResponse) VisitListNoMeetingZonesRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type ListNoMeetingZones500TextResponse string
+type ListNoMeetingZones500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response ListNoMeetingZones500TextResponse) VisitListNoMeetingZonesResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response ListNoMeetingZones500JSONResponse) VisitListNoMeetingZonesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type CreateNoMeetingZoneRequestObject struct {
@@ -15633,14 +15857,13 @@ func (response CreateNoMeetingZone422JSONResponse) VisitCreateNoMeetingZoneRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type CreateNoMeetingZone500TextResponse string
+type CreateNoMeetingZone500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response CreateNoMeetingZone500TextResponse) VisitCreateNoMeetingZoneResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response CreateNoMeetingZone500JSONResponse) VisitCreateNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteNoMeetingZoneRequestObject struct {
@@ -15678,14 +15901,13 @@ func (response DeleteNoMeetingZone403JSONResponse) VisitDeleteNoMeetingZoneRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type DeleteNoMeetingZone500TextResponse string
+type DeleteNoMeetingZone500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response DeleteNoMeetingZone500TextResponse) VisitDeleteNoMeetingZoneResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response DeleteNoMeetingZone500JSONResponse) VisitDeleteNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 type UpdateNoMeetingZoneRequestObject struct {
@@ -15743,14 +15965,13 @@ func (response UpdateNoMeetingZone422JSONResponse) VisitUpdateNoMeetingZoneRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type UpdateNoMeetingZone500TextResponse string
+type UpdateNoMeetingZone500JSONResponse struct{ ServerErrorJSONResponse }
 
-func (response UpdateNoMeetingZone500TextResponse) VisitUpdateNoMeetingZoneResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "text/plain")
+func (response UpdateNoMeetingZone500JSONResponse) VisitUpdateNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
-	_, err := w.Write([]byte(response))
-	return err
+	return json.NewEncoder(w).Encode(response)
 }
 
 // StrictServerInterface represents all server handlers.

@@ -118,13 +118,13 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		redirectURL,
 	)
 	if err != nil {
-		writeServerErrorText(w, r, "OIDC setup", err, http.StatusInternalServerError)
+		writeServerError(w, r, "OIDC setup", err, http.StatusInternalServerError)
 		return
 	}
 
 	userInfo, _, err := client.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		writeServerErrorText(w, r, "OIDC exchange", err, http.StatusInternalServerError)
+		writeServerError(w, r, "OIDC exchange", err, http.StatusInternalServerError)
 		return
 	}
 	if userInfo.Email == "" {
@@ -142,7 +142,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 
 	user, err := storage.UpsertUser(h.ah.db, userInfo.Email, userInfo.Name, "", "sso", userInfo.Sub)
 	if err != nil {
-		writeServerErrorText(w, r, "upsert user", err, http.StatusInternalServerError)
+		writeServerError(w, r, "upsert user", err, http.StatusInternalServerError)
 		return
 	}
 	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, userInfo.Email)

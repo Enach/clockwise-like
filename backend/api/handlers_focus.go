@@ -36,7 +36,7 @@ func (h *focusHandlers) runFocus(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.eng.Run(r.Context(), targetWeek)
 	if err != nil {
-		writeServerErrorText(w, r, "runFocus", err, http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "runFocus", err)
 		return
 	}
 
@@ -58,7 +58,7 @@ func (h *focusHandlers) listBlocks(w http.ResponseWriter, r *http.Request) {
 
 	blocks, err := storage.ListFocusBlocksForUserWeek(h.db, userIDFromCtx(r.Context()), weekStart)
 	if err != nil {
-		writeServerErrorText(w, r, "listBlocks", err, http.StatusInternalServerError)
+		writeServerError(w, r, "listBlocks", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *focusHandlers) clearBlocks(w http.ResponseWriter, r *http.Request) {
 
 	n, err := h.eng.ClearWeek(r.Context(), weekStart)
 	if err != nil {
-		writeServerErrorText(w, r, "clearBlocks", err, http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "clearBlocks", err)
 		return
 	}
 

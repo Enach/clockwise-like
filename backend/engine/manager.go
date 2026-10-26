@@ -188,9 +188,9 @@ func inferCandidateCadence(candidate *oneOnOneCandidate) string {
 // DetectTeam scans a six-week window around now and identifies 1:1
 // recurring meetings to build the manager's team member list.
 func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*DetectResult, error) {
-	token, err := auth.LoadUserToken(e.DB, managerID)
+	token, err := LoadCalendarToken(e.DB, managerID)
 	if err != nil {
-		return nil, fmt.Errorf("load token: %w", err)
+		return nil, err
 	}
 	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
 	client, err := calendar.NewClient(ctx, ts)

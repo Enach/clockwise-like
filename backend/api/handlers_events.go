@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"github.com/Enach/paceday/backend/engine"
 	"net/http"
 	"strings"
 	"time"
@@ -21,11 +21,12 @@ type eventHandlers struct {
 	oauthConfig *oauth2.Config
 }
 
+// calClient opens the caller's Google calendar; see getCalendarClient for the
+// two errors it distinguishes (PAC-21).
 func (h *eventHandlers) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
-	userID := userIDFromCtx(ctx)
-	token, err := auth.LoadUserToken(h.db, userID)
-	if err != nil || token == nil {
-		return nil, fmt.Errorf("not authenticated")
+	token, err := engine.LoadCalendarToken(h.db, userIDFromCtx(ctx))
+	if err != nil {
+		return nil, err
 	}
 	ts := auth.TokenSource(ctx, h.oauthConfig, token)
 	return calendar.NewClient(ctx, ts)
@@ -48,12 +49,12 @@ func (h *eventHandlers) patchEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	client, err := h.calClient(r.Context())
 	if err != nil {
-		writeError(w, err.Error(), http.StatusUnauthorized)
+		writeCalendarFailure(w, r, "patchEvent", err)
 		return
 	}
 	existing, err := client.GetEvent(r.Context(), client.CurrentCalendarID(), eventID)
 	if err != nil {
-		writeError(w, "event not found: "+err.Error(), http.StatusNotFound)
+		writeError(w, "event not found", http.StatusNotFound)
 		return
 	}
 	if body.Title != nil {
@@ -92,7 +93,7 @@ func (h *eventHandlers) deleteEvent(w http.ResponseWriter, r *http.Request) {
 	eventID := chi.URLParam(r, "id")
 	client, err := h.calClient(r.Context())
 	if err != nil {
-		writeError(w, err.Error(), http.StatusUnauthorized)
+		writeCalendarFailure(w, r, "deleteEvent", err)
 		return
 	}
 	if err := client.DeleteEvent(r.Context(), client.CurrentCalendarID(), eventID); err != nil {
@@ -107,7 +108,7 @@ func (h *eventHandlers) listRooms(w http.ResponseWriter, r *http.Request) {
 	q := strings.ToLower(r.URL.Query().Get("q"))
 	client, err := h.calClient(r.Context())
 	if err != nil {
-		writeError(w, err.Error(), http.StatusUnauthorized)
+		writeCalendarFailure(w, r, "listRooms", err)
 		return
 	}
 	rooms, err := client.ListRooms(r.Context(), q)
@@ -127,7 +128,7 @@ func (h *eventHandlers) suggestAttendees(w http.ResponseWriter, r *http.Request)
 	q := strings.ToLower(r.URL.Query().Get("q"))
 	client, err := h.calClient(r.Context())
 	if err != nil {
-		writeError(w, err.Error(), http.StatusUnauthorized)
+		writeCalendarFailure(w, r, "suggestAttendees", err)
 		return
 	}
 	suggestions, err := client.SuggestAttendees(r.Context(), q, 30*24*time.Hour)

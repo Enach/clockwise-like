@@ -14,6 +14,8 @@
 # TWO ERROR SHAPES EXIST. `writeError` (handlers_settings.go:206) emits
 # application/json {"error": "..."}; `http.Error` emits text/plain with a bare
 # message and no JSON envelope. Each response below names which one applies.
+# Every 5xx is the JSON envelope with a fixed message (PAC-21); text/plain remains
+# only on some 4xx responses.
 
 paths:
   /api/manager/profile:
@@ -31,7 +33,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ManagerProfileSummary" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
     post:
       operationId: setManagerProfile
       tags: [manager]
@@ -59,7 +61,7 @@ paths:
         "400":
           $ref: "#/components/responses/JsonError"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/manager/detect:
     post:
@@ -94,15 +96,20 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          $ref: "#/components/responses/CalendarNotConnected"
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          description: >
-            text/plain. Either "detection error: <wrapped engine error>" (calendar/OAuth
-            failure) or "db error" from the per-candidate assignment lookup.
+          description: >-
+            Detection failed for a user who HAS a stored Google credential (a user with none
+            gets the 401 `calendar not connected`): `{"error":"internal error"}`; or the
+            per-candidate assignment lookup failed: `{"error":"db error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
-              schema: { type: string }
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/manager/detect/confirm:
     post:
@@ -147,7 +154,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/manager/team:
     get:
@@ -186,7 +193,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/manager/team/members:
     post:
@@ -233,7 +240,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/manager/team/members/{email}:
     parameters:
@@ -316,7 +323,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/manager/team/members/{email}/schedule:
     parameters:
@@ -361,7 +368,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/manager/gaps:
     get:
@@ -390,10 +397,13 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          description: 'text/plain — "gap detection error: <err>" or "db error".'
+          description: >-
+            Gap detection or a database read failed. `error` is "internal error" or "db
+            error". The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
-              schema: { type: string }
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/manager/analytics:
     get:
@@ -430,7 +440,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams:
     post:
@@ -462,7 +472,7 @@ paths:
         "401":
           $ref: "#/components/responses/JsonUnauthorized"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
     get:
       operationId: listTeams
       tags: [teams]
@@ -481,7 +491,7 @@ paths:
         "401":
           $ref: "#/components/responses/JsonUnauthorized"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/invites/{token}:
     get:
@@ -513,7 +523,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/invites/{token}/accept:
     post:
@@ -547,7 +557,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}:
     parameters:
@@ -584,7 +594,7 @@ paths:
             cannot exist without its team (FK + ON DELETE CASCADE), so a missing team yields
             403 before this branch. Kept because the code path exists.
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
     patch:
       operationId: renameTeam
       tags: [teams]
@@ -608,7 +618,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
       requestBody:
         required: true
         content:
@@ -632,7 +642,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}/members/invite:
     post:
@@ -668,7 +678,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}/members/{userId}:
     delete:
@@ -697,7 +707,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}/no-meeting-zones:
     parameters:
@@ -738,7 +748,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
     get:
       operationId: listNoMeetingZones
       tags: [teams]
@@ -763,7 +773,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}/no-meeting-zones/{zoneId}:
     parameters:
@@ -810,7 +820,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
     delete:
       operationId: deleteNoMeetingZone
       tags: [teams]
@@ -826,7 +836,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}/availability:
     get:
@@ -868,7 +878,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
   /api/teams/{id}/analytics:
     get:
@@ -903,7 +913,7 @@ paths:
         "403":
           $ref: "#/components/responses/JsonForbidden"
         "500":
-          $ref: "#/components/responses/PlainTextServerError"
+          $ref: "#/components/responses/ServerError"
 
 components:
   parameters:
@@ -985,14 +995,17 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
 
-    PlainTextServerError:
+    ServerError:
       description: >
-        text/plain; charset=utf-8. Written by http.Error, NOT by writeError, so there is no
-        JSON envelope. Typical bodies: "db error", or a raw wrapped storage/engine error
-        string on the /api/teams routes.
+        A server-side failure. JSON error envelope (application/json) with a fixed,
+        server-chosen message: "internal error" on the /api/teams routes, "internal error"
+        or "db error" on the /api/manager routes. Never the storage or engine error text,
+        which is written to the server log and Sentry only (PAC-21). Replaces
+        PlainTextServerError, the text/plain response these routes documented before
+        PAC-21 was finished.
       content:
-        text/plain:
-          schema: { type: string }
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   schemas:
     ErrorResponse:

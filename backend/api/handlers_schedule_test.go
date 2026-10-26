@@ -18,6 +18,7 @@ import (
 
 // mockCompressor implements Compressor.
 type mockCompressor struct {
+	checkErr error
 	result    *engine.CompressionResult
 	err       error
 	applied   []string
@@ -25,6 +26,7 @@ type mockCompressor struct {
 	applyErr  error
 }
 
+func (m *mockCompressor) CheckCalendar(context.Context) error { return m.checkErr }
 func (m *mockCompressor) SuggestForDay(_ context.Context, _ time.Time) (*engine.CompressionResult, error) {
 	return m.result, m.err
 }

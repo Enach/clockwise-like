@@ -53,7 +53,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 
 	token, err := auth.ExchangeMicrosoftCode(r.Context(), cfg, r.URL.Query().Get("code"))
 	if err != nil {
-		writeServerErrorText(w, r, "token exchange failed", err, http.StatusInternalServerError)
+		writeServerError(w, r, "token exchange failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -62,17 +62,17 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 	info, err := fetchMicrosoftUserInfo(r.Context(), token)
 	if err != nil || info.Email == "" {
 		logServerError(r, "could not read the Microsoft account", err, http.StatusBadGateway)
-		http.Error(w, "could not read the Microsoft account", http.StatusBadGateway)
+		writeError(w, "could not read the Microsoft account", http.StatusBadGateway)
 		return
 	}
 	user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID)
 	if err != nil {
 		logServerError(r, "save user failed", err, http.StatusInternalServerError)
-		http.Error(w, "save user failed", http.StatusInternalServerError)
+		writeError(w, "save user failed", http.StatusInternalServerError)
 		return
 	}
 	if err := auth.SaveMicrosoftToken(h.db, user.ID, token); err != nil {
-		writeServerErrorText(w, r, "save token failed", err, http.StatusInternalServerError)
+		writeServerError(w, r, "save token failed", err, http.StatusInternalServerError)
 		return
 	}
 	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)

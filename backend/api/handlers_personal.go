@@ -189,7 +189,7 @@ func (h *personalHandlers) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.blocker.Sync(r.Context(), id); err != nil {
-		writeServerError(w, r, "sync", err, http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "sync", err)
 		return
 	}
 	if err := storage.MarkPersonalCalendarSynced(h.db, id, userID); err != nil {

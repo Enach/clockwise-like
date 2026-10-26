@@ -73,7 +73,7 @@ func (h *analyticsHandlers) meetings(w http.ResponseWriter, r *http.Request) {
 
 	list, err := h.eng.WeekMeetings(r.Context(), userID, date)
 	if err != nil {
-		writeServerError(w, r, "internal error", err, http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "weekMeetings", err)
 		return
 	}
 	if list == nil {

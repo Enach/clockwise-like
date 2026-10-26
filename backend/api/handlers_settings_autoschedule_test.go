@@ -70,7 +70,7 @@ func TestValidateSettings_CronSharesTheSchedulersParser(t *testing.T) {
 	for expr, msg := range map[string]string{
 		"@daily":                         "autoScheduleCron must be a 5-part cron expression",
 		"CRON_TZ=Europe/Paris 0 7 * * *": "autoScheduleCron must be a 5-part cron expression",
-		"61 7 * * *":                     "autoScheduleCron is invalid: ",
+		"61 7 * * *":                     "autoScheduleCron is invalid",
 	} {
 		err := validateSettings(completeSettings(storage.Settings{AutoScheduleCron: expr}))
 		if err == nil {

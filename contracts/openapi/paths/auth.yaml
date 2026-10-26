@@ -104,13 +104,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
-          description: |
-            Token exchange, userinfo fetch, user upsert or token save failed.
-            Body is the bare message + ": " + err.Error().
+          description: >-
+            Token exchange, userinfo fetch, user upsert or token save failed. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: '#/components/schemas/PlainTextError'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/microsoft:
     get:
@@ -188,23 +189,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
-          description: >
-            Token exchange, user upsert (`save user failed`) or token save
-            (`save token failed: <err>`) failed (text/plain).
+          description: >-
+            Token exchange or token save failed (`{"error":"internal error"}`), or the user
+            upsert failed (`{"error":"save user failed"}`). The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: '#/components/schemas/PlainTextError'
+                $ref: '#/components/schemas/ErrorResponse'
         '502':
-          description: >
-            The Graph profile could not be read, or carried no email
-            (`could not read the Microsoft account`, text/plain). Added by PAC-24.
+          description: >-
+            The Graph profile could not be read, or carried no email. Body: `{"error":"could
+            not read the Microsoft account"}`. Added by PAC-24. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: '#/components/schemas/PlainTextError'
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: '`MICROSOFT_CLIENT_ID` unset — JSON error, unlike the other failures here.'
+          description: >-
+            `MICROSOFT_CLIENT_ID` is unset. Body: `{"error":"Microsoft OAuth not
+            configured"}`.
           content:
             application/json:
               schema:
@@ -245,7 +250,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: '"detection failed: <err>" — the SSO provider lookup errored.'
+          description: >-
+            The SSO provider lookup failed. Body: `{"error":"internal error"}`. The detail
+            is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -283,7 +290,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: '"OIDC setup: <err>" — issuer discovery failed.'
+          description: >-
+            Issuer discovery failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -342,11 +351,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: '"OIDC setup: <err>", "OIDC exchange: <err>" or "upsert user: <err>".'
+          description: >-
+            OIDC setup, code exchange or user upsert failed. Body: `{"error":"internal
+            error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: '#/components/schemas/PlainTextError'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/status:
     get:
@@ -410,11 +421,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
-          description: Token delete failed — body is the raw err.Error() string.
+          description: >-
+            Token delete failed. Body: `{"error":"internal error"}`. The detail is written
+            to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: '#/components/schemas/PlainTextError'
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/me:
     get:
@@ -530,7 +543,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: '"save failed: <err>".'
+          description: >-
+            Save failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -561,7 +576,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Query failed — body is the raw err.Error() in the JSON error envelope.
+          description: >-
+            Query failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -597,7 +614,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Delete failed — raw err.Error() in the JSON error envelope.
+          description: >-
+            Delete failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -630,6 +649,8 @@ components:
       description: |
         The shared JSON error envelope, written by writeError()
         (backend/api/handlers_settings.go:206). Content-Type: application/json.
+        `error` is a server-chosen message, never the text of a Go, driver or
+        provider error; every 5xx in this document uses this envelope (PAC-21).
       required: [error]
       properties:
         error:

@@ -101,8 +101,9 @@ paths:
                 $ref: '#/components/schemas/BookingError'
         '500':
           description: >-
-            Storage or engine failure. Messages: "internal error";
-            "booking conflict check failed"; "booking failed: <engine error>".
+            Storage or engine failure. `error` is one of "internal error" or "booking
+            conflict check failed". The detail is written to the server log and Sentry only
+            (PAC-21).
           content:
             application/json:
               schema:
@@ -266,14 +267,13 @@ paths:
                 type: string
                 const: "invalid state\n"
         '500':
-          description: Token exchange or token persistence failed.
+          description: >-
+            Token exchange or token persistence failed. Body: `{"error":"internal error"}`.
+            The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                examples:
-                  - "zoom token exchange: <error>\n"
-                  - "save zoom token: <error>\n"
+                $ref: '#/components/schemas/BookingError'
 
   # ---------------------------------------------------------------------------
   # PROTECTED scheduling links (routes.go:153-169, inside requireAuth group)
@@ -319,8 +319,9 @@ paths:
           $ref: '#/components/responses/SchedulingLinkValidationError'
         '500':
           description: >-
-            Messages: "user not found"; "slug generation failed"; "slug check failed";
-            "create failed: <err>"; "owner host failed: <err>".
+            `error` is one of "user not found", "slug generation failed", "slug check
+            failed" or "internal error" (insert or owner-host insert failed). The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -428,7 +429,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"update failed: <err>"}'
+          description: >-
+            Update failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -460,7 +463,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"update failed: <err>"}'
+          description: >-
+            Update failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -561,7 +566,9 @@ paths:
         '422':
           $ref: '#/components/responses/SchedulingLinkValidationError'
         '500':
-          description: '"internal error", "slug check failed", or "update failed: <err>"'
+          description: >-
+            `error` is "internal error" (lookup or update failed) or "slug check failed".
+            The detail is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -599,7 +606,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: '"internal error" or "delete failed: <err>"'
+          description: >-
+            Lookup or delete failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -705,7 +714,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: '"internal error" or "invite failed: <err>"'
+          description: >-
+            Lookup or invite failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -742,7 +753,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"update failed: <err>"}'
+          description: >-
+            Update failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -774,7 +787,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"update failed: <err>"}'
+          description: >-
+            Update failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -808,7 +823,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: '"internal error" or "leave failed: <err>"'
+          description: >-
+            Lookup or leave failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -844,9 +861,18 @@ paths:
                 $ref: '#/components/schemas/ConferenceMeetingDetails'
         '400':
           description: >-
-            "invalid body"; "teams: not connected - visit /api/auth/microsoft to
-            authenticate"; or a provider-construction error such as "zoom: not
-            connected - visit /api/auth/zoom to authenticate".
+            One of these fixed messages (PAC-21: no Go error text is appended). The
+            dash in the three provider sentences is U+2014 EM DASH, exactly as the
+            server writes it today; the new stored-credential sentence uses the same
+            character on purpose, so the three read alike:
+            "invalid body"; "teams: not connected — visit /api/auth/microsoft to
+            authenticate" (also returned when reading the stored Microsoft token
+            fails, not only when there is none: the server does not separate the two
+            on this path; see the PAC-21 contract's doesNotResolve); "zoom: not
+            connected — visit /api/auth/zoom to authenticate"; "zoom: stored
+            credential is invalid — reconnect at /api/auth/zoom" (the stored Zoom
+            token does not decode; before PAC-21 was finished this was
+            "zoom: invalid token: " plus the JSON decoder's error).
           content:
             application/json:
               schema:
@@ -854,7 +880,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: '"settings: <err>" or "create meeting: <err>"'
+          description: >-
+            Settings load or meeting creation failed. Body: `{"error":"internal error"}`.
+            The detail is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -886,7 +914,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"settings: <err>"}'
+          description: >-
+            Settings load failed. Body: `{"error":"internal error"}`. The detail is written
+            to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -907,7 +937,9 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"disconnect zoom: <err>"}'
+          description: >-
+            Clearing the tokens failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -951,24 +983,29 @@ paths:
                 $ref: '#/components/schemas/EventConferenceLink'
         '400':
           description: >-
+            One of these fixed messages (PAC-21: no Go error text is appended):
+            The dash in the three provider sentences is U+2014 EM DASH, exactly as
+            the server writes it.
             "invalid body"; "provider is required"; "url is required for custom
-            conferences"; "event has no time"; or an unsupported-provider message from
-            the factory such as 'unsupported conference provider "whereby"'.
+            conferences"; "event has no time" (the existing literal, kept: the event
+            has no start or end, or, new in PAC-21, Google's value does not parse;
+            before PAC-21 was finished a parse failure returned Go's time.Parse error
+            text); 'unsupported conference provider "<provider>"' (echoes the
+            request's own `provider`); "teams: not connected — visit
+            /api/auth/microsoft to authenticate" (also returned when reading the
+            stored Microsoft token fails); "zoom: not connected — visit
+            /api/auth/zoom to authenticate"; "zoom: stored credential is invalid —
+            reconnect at /api/auth/zoom".
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '401':
-          description: >-
-            The calendar client could not be built (no Google token). Unlike the
-            middleware 401 this one IS the shared JSON envelope with the underlying
-            error text.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BookingError'
+          $ref: '#/components/responses/CalendarNotConnected'
         '404':
-          description: 'Body: {"error":"event not found: <err>"}'
+          description: >-
+            Body: `{"error":"event not found"}` (fixed text; the Google error is not
+            appended, PAC-21). Any GetEvent failure maps to 404.
           content:
             application/json:
               schema:
@@ -980,15 +1017,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: '"create Google Meet: <err>", "settings: <err>", or "update failed: <err>"'
+          description: >-
+            Google Meet creation, settings load, or the event update failed, or the
+            stored credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '502':
           description: >-
-            Upstream provider problem: "Google Meet creation is still pending",
-            "create meeting: <err>", or "conference provider returned no join URL".
+            Upstream provider problem. `error` is one of "Google Meet creation is still
+            pending", "upstream provider error" (the provider's create-meeting call failed)
+            or "conference provider returned no join URL". The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -1005,19 +1048,21 @@ paths:
         '204':
           description: Conference removed (or there was none). Empty body.
         '401':
-          description: 'Calendar client could not be built. JSON envelope with the underlying error text.'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BookingError'
+          $ref: '#/components/responses/CalendarNotConnected'
         '404':
-          description: 'Body: {"error":"event not found: <err>"}'
+          description: >-
+            Body: `{"error":"event not found"}` (fixed text; the Google error is not
+            appended, PAC-21). Any GetEvent failure maps to 404.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: '"remove Google Meet: <err>" or "remove conference: <err>"'
+          description: >-
+            Removing the Google Meet or the conference properties failed, or the stored
+            credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
             application/json:
               schema:
@@ -1069,15 +1114,17 @@ components:
       type: object
       description: >-
         Shared error envelope written by api.writeError (handlers_settings.go:206):
-        Content-Type application/json, body `{"error": "<message>"}`. The two
-        exceptions in this domain are the requireAuth 401 and the Zoom OAuth callback,
-        both of which use http.Error and therefore send text/plain.
+        Content-Type application/json, body `{"error": "<message>"}`. The one
+        exception in this domain is the requireAuth 401 (text/plain). Every 5xx,
+        including the Zoom OAuth callback's, is this envelope (PAC-21).
       required: [error]
       additionalProperties: false
       properties:
         error:
           type: string
-          description: Human-readable message. Several 500s concatenate the underlying Go error text.
+          description: >-
+            Human-readable, server-chosen message. Never the text of a Go, driver or
+            provider error (PAC-21): those go to the server log and Sentry only.
 
     # ---- Public booking ------------------------------------------------------
 

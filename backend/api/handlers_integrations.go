@@ -34,7 +34,7 @@ func (h *integrationsHandlers) slackConnect(w http.ResponseWriter, r *http.Reque
 	clientID := os.Getenv("SLACK_CLIENT_ID")
 	redirectURI := os.Getenv("SLACK_REDIRECT_URI")
 	if clientID == "" {
-		http.Error(w, "Slack not configured", http.StatusServiceUnavailable)
+		writeError(w, "Slack not configured", http.StatusServiceUnavailable)
 		return
 	}
 	state := randomState()
@@ -64,7 +64,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		os.Getenv("SLACK_REDIRECT_URI"),
 	)
 	if err != nil {
-		writeServerErrorText(w, r, "token exchange failed", err, http.StatusBadGateway)
+		writeServerError(w, r, "token exchange failed", err, http.StatusBadGateway)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 	}
 	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/app/settings?tab=integrations&slack=connected", http.StatusFound)
@@ -168,7 +168,7 @@ func (h *integrationsHandlers) notionConnect(w http.ResponseWriter, r *http.Requ
 	clientID := os.Getenv("NOTION_CLIENT_ID")
 	redirectURI := os.Getenv("NOTION_REDIRECT_URI")
 	if clientID == "" {
-		http.Error(w, "Notion not configured", http.StatusServiceUnavailable)
+		writeError(w, "Notion not configured", http.StatusServiceUnavailable)
 		return
 	}
 	state := randomState()
@@ -198,7 +198,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		os.Getenv("NOTION_REDIRECT_URI"),
 	)
 	if err != nil {
-		writeServerErrorText(w, r, "token exchange failed", err, http.StatusBadGateway)
+		writeServerError(w, r, "token exchange failed", err, http.StatusBadGateway)
 		return
 	}
 
@@ -212,7 +212,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 	}
 	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
-		http.Error(w, "db error", http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/app/settings?tab=integrations&notion=connected", http.StatusFound)
