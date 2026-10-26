@@ -369,3 +369,96 @@ for the owner and the plan stage; D-1's substance is unchanged.
   54.9% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0.
 - `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` ->
   `0c1cfaa0b9011d1c9ccf5b08e5919ed579ec918700dd368b2a4aa06c40bf8097`.
+
+---
+
+## Challenge (round 2) — 2026-10-26
+
+Reviewed by `contract-challenger` on the committed state of `factory/pac-30-contract`
+(`260fd62`, contract revision 2). Inputs: the fragment diff against `origin/main`, the
+bundle, this file and the manifest, the handlers (`backend/api/handlers_scheduling_links.go`
+`listHostInvites`, `respondToInvite`, `leaveLink`), the storage functions, `routes.go`, and
+the web consumers. Not read: the author's reasoning beyond this file.
+
+**Verdict**: accept (B-1 is resolved; no new blocking finding; three non-blocking notes)
+
+### Requests wrongly permitted
+
+None. Attacked:
+
+- `POST /api/scheduling-links/host-invites/L/accept` by invitee B after the owner ran
+  `DELETE /api/scheduling-links/L` (L now `active=false`). `RespondToHostInvite` keys on
+  `link_id` and `user_id` only (`storage/scheduling_links.go`, `UPDATE scheduling_link_hosts
+  ... WHERE link_id = $1 AND user_id = $2`), so B's row matches -> 200
+  `{"status":"accepted"}`. The revised descriptions (all four spellings) now say exactly
+  that (D-5), and the 404 text "no link has that id" is qualified as "no row at all, not an
+  inactive one". Contract and handler agree.
+- Same as B (accepted host) on a deactivated link, then `POST /api/scheduling-links/L/accept`
+  again -> the row matches whatever its status; PostgreSQL reports a matched row as affected
+  even when `status` is unchanged, and `responded_at = NOW()` changes anyway, so the 200 of
+  D-2 holds under a `RowsAffected` check.
+- `POST /api/scheduling-links/<random uuid>/decline` -> UPDATE matches nothing -> 404
+  `{"error":"not found"}`, nothing written. As documented.
+
+### Responses the client cannot handle
+
+None. The only new response is `404 BookingError`. Re-checked on web `main` (`3bbbe04`):
+`withFallback` rethrows every non-unreachable error (`src/api/client.ts:510-524`),
+`apiErrorMessage` renders `data.error` (`client.ts:372-377`), and the three mutations in
+`src/pages/Links.tsx:312-346` route it to `toast.error`. Nothing dereferences the 404 body.
+
+### Consumers affected
+
+- smart-calendar-flow `src/api/schedulingLinks.ts:483-497,606-612` via `src/pages/Links.tsx`:
+  error toast instead of a false success on a miss. No break. The revised manifest
+  `consumersAffected[0].detail` now correctly excludes the deleted-link case.
+- clockwise-like `mcp/`, `e2e/` (excluding `node_modules`): grepped for `host-invites`,
+  `/accept`, `/decline`, `/leave` on scheduling-link paths; no caller. No break.
+
+### Contract/implementation divergences
+
+None. Revision 2 changes descriptions only; the shapes, status codes and leave check order
+are as reviewed in round 1 and still match `leaveLink` (400 invalid id, 404 no link, 400
+owner, then DELETE).
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain: []`); unchanged since round 1.
+
+### Non-blocking
+
+- N-5 `leaveSchedulingLink` does not mention D-5, although section 4 says leave also
+  ignores `active`. `leaveLink` looks the link up with `GetSchedulingLinkByID`, which has no
+  `active` filter, so a host leaving a deactivated link gets 204, not the "no link" 404.
+  Suggested text for the leave description: "A deactivated link (`active=false`) is still a
+  link here: a host can leave it (204)." The manifest's D-5 wording names accept/decline
+  only; aligning it with section 4 would remove the ambiguity.
+- N-6 `contracts/openapi/paths/booking.notes.md` still labels its PAC-30 note
+  "contract revision 1" and does not mention D-5. Not part of the bundle; update with the
+  next revision or the implementation PR.
+- N-7 (web, outside this contract) `Links.tsx` `onError` does not call `invalidateAll()`,
+  so after a 404 the stale invite stays in the banner until the next refetch, and a second
+  click gives the same error toast. Not a contract defect; worth one line in the plan.
+- N-1..N-4 from round 1 stand as recorded (no spec file, API-069 needs its own issue, D-1
+  wording, owner can decline their own row).
+
+### Verified clean
+
+- `python scripts/openapi_assemble.py --check` -> `OK: bundle is in sync (98 paths)`, rc=0.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` ->
+  `0c1cfaa0b9011d1c9ccf5b08e5919ed579ec918700dd368b2a4aa06c40bf8097`, equal to the
+  manifest's `contractHash` for revision 2.
+- `api-gate.sh factory/pac-30-contract` on `260fd62` (the final commit before this
+  section): `make openapi rc=0`, `regenerated: none`, `openapi-check(api) rc=0` (bundle in
+  sync, MIGRATION.md covers all 119 operations, `backend/api/gen matches the contract`),
+  backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp test rc=0, backend coverage
+  54.9% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0, exit 0.
+- B-1 fix: all four accept/decline descriptions, manifest `consumersAffected[0]`, section 5
+  and D-5 now agree with `DeleteSchedulingLink` (soft delete), `GetPendingInvitesForUser`
+  (no `active` filter) and `listHostInvites` (looks the link up with
+  `GetSchedulingLinkByID`, also no `active` filter). D-5 is the conservative choice: a
+  deactivated link can be reactivated by the owner (`PATCH ... {active:true}`), and D-5
+  neither deletes user data nor widens who can see data.
+- Routing: `/host-invites/{id}/accept|decline` (routes.go:160-161) and `/{id}/accept|decline`
+  (:167-168) both bind `respondToInvite`, so the four spellings share one 404 rule, as
+  the contract says.
