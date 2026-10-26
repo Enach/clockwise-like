@@ -1,7 +1,7 @@
 # Spec — PAC-35: Sign-in and sign-out flows that fail, mislead or log the user out
 
 - **Linear**: https://linear.app/paceday/issue/PAC-35
-- **Status**: draft
+- **Status**: challenged (revision 1 answers challenge round 1)
 - **Author**: spec-author
 - **Inherited scope**:
   - Audit findings (all in `docs/factory/api-audit.md`, batched there as item
@@ -10,6 +10,18 @@
     callback failure path), **API-061** (calendar disconnect ends the session),
     **API-063** (logout status and body), **API-064** (`login_hint` ignored),
     **API-065** (three names for the user's picture).
+  - **API-092** (`api-audit.md:350`, no Go test coverage), **non-admin share
+    only**: the five paths `/api/auth/detect`, `/api/auth/sso/{domain}`,
+    `/api/auth/callback/oidc/{domain}`, `/api/auth/me`, `/api/auth/logout`. All
+    five are touched here. Resolved here by AC-18. The `/api/admin/sso` share is
+    claimed by PAC-22 (`docs/specs/PAC-22.md:7-8`). The row split is D-7.
+  - **API-060** (`api-audit.md:318`, SAML and empty-issuer SSO rows accepted at
+    create time and failing only at the start route). The SSO start route is
+    touched here (AC-8 adds a hint). **Position: not resolved here; stays with
+    PAC-22**, which claims it (`docs/specs/PAC-22.md:7-8`). The reason README §7
+    rule 1 does not pull it into this spec is recorded as D-5. This spec does
+    not change the start route's SAML or setup-failure answers, and AC-18 pins
+    them in Go.
   - `x-uncertain` markers: one sits on an operation this work touches. The
     current-user response's `provider` property
     (`contracts/openapi/paths/auth.yaml:750`) is marked uncertain ("free text with
@@ -22,8 +34,18 @@
     rewritten, not left: the `login_hint` parameter descriptions
     (`auth.yaml:45`, `:132`, which say it is "silently discarded"), the
     Google-callback `Set-Cookie` note (`auth.yaml` under `googleOAuthCallback`,
-    "if jwtSecret is empty … the user lands logged-out"), and the logout `200`
-    description ("a 204 would be the honest status").
+    "if jwtSecret is empty … the user lands logged-out"), the logout `200`
+    description ("a 204 would be the honest status"), and two more operations
+    (added in revision 1):
+    - `microsoftOAuthCallback` (`auth.yaml:160-213`): the operation description
+      ("a failed fetch is a 502 and nothing is saved"), the `302` description
+      ("Every failure is a non-302 response below"), the whole `502` response
+      (Graph profile unreadable), and the upsert-failure clause of the `500`
+      description ("or the user upsert failed"). AC-4 turns both of those
+      failures into redirects to the failure state.
+    - `disconnectCalendar` (`auth.yaml:414-428`): the summary ("… and clear the
+      session cookie"), the description ("this also logs the user out"), and
+      the `Set-Cookie` header on the `204`. AC-11 makes all three false.
 
 ## 1. Problem
 
@@ -217,9 +239,18 @@ All citations are to `origin/main` of each repo as of 2026-10-26
   line of defence, if the app's sign-in completion page finds no session, it
   shows that same failure state rather than proceeding as if signed in.
   The failure state shows no server error text.
-- **Disconnecting a calendar disconnects the calendar.** After a user
-  disconnects their calendar they are still signed in, on the same page, and the
-  calendar shows as not connected.
+- **Disconnecting a Google calendar disconnects the calendar.** After a user
+  whose calendar is Google disconnects it they are still signed in, on the same
+  page, and the calendar shows as not connected.
+- **Disconnect no longer signs anyone out, and the app stops claiming a
+  disconnect it cannot perform.** For a user whose calendar is Outlook or
+  webcal, disconnect today removes nothing of that calendar (§2.4); fixing that
+  is OQ-5 and out of scope. After this change such a user stays signed in, their
+  calendar connection is unchanged and still shows as connected, and the app
+  does not offer them a disconnect that would do nothing: it tells them that
+  disconnecting this kind of calendar is not available yet. At no point is a
+  "disconnected" confirmation shown over a calendar that still shows as
+  connected (D-6).
 - **Logout answers in a shape both of the app's API clients accept**, with no
   body. Logout still ends the session.
 - **The user's picture has one name end to end.** The picture the server already
@@ -234,6 +265,10 @@ AC-1. Given the server cannot create a session at the end of a Google sign-in
 the user back to the server, then the server does not set a session and does not
 send the user to the sign-in completion page; it sends them to the app's sign-in
 failure state.  [unit]
+*Note (revision 1):* the empty-secret case is inducible as the code stands; a
+token-generation failure with a non-empty secret is not (§2.2). AC-1..3 are
+proven through the empty-secret case, and through a generation failure only if
+the plan provides a seam that can force one. The plan must say which.
 
 AC-2. Given the same failure at the end of a Microsoft sign-in, when the provider
 redirects back, then the outcome is as in AC-1.  [unit]
@@ -258,8 +293,11 @@ there bounced anonymously to the landing page).  [unit] (web)
 AC-7. Given an email domain with an OIDC SSO provider configured, when the user
 enters an email at that domain in the sign-in dialog, then the browser is sent
 to the SSO start destination that the server's detection answer names, and not
-to the password step.  [unit] (web) — and [e2e] up to the point the browser
-leaves for the IdP, if OQ-2 resolves that way.
+to the password step. The destination is resolved against the API's origin,
+not the web app's own origin, so a deployment where the two differ still
+reaches the server's SSO start (the test sets them to different origins).
+[unit] (web) — and [e2e] up to the point the browser leaves for the IdP, if
+OQ-2 resolves that way.
 
 AC-8. Given an email domain with an OIDC SSO provider configured, when the user
 enters `alice@<domain>` and the server sends the browser on to the IdP, then the
@@ -279,7 +317,11 @@ AC-11. Given a signed-in user with a connected Google calendar, when they
 disconnect the calendar from the app, then the disconnect succeeds, the
 calendar status reads as not connected, and an authenticated request made
 immediately afterwards with the same browser session still succeeds (they
-remain signed in and are not sent to the landing page).  [e2e] and [unit]
+remain signed in and are not sent to the landing page). That request must be one
+that does not need a calendar (reading the current user, for example), so a
+"calendar not connected" refusal cannot be mistaken for a signed-out one. The
+e2e journey uses its own seeded user, so removing that user's calendar link
+takes nothing away from another journey.  [e2e] and [unit]
 (the server response to a disconnect does not expire the session).
 
 AC-12. Given a signed-in user, when they log out, then the response has no body,
@@ -300,10 +342,43 @@ AC-15. Given the touched operations, when the contract gate runs, then no
 operation this feature touches carries an unresolved `x-uncertain`
 (specifically the uncertainty on the current user's login-provider value), and no contract text still
 describes the hint as discarded, the session failure as silent, or logout as
-200-with-empty-body.  [contract]
+200-with-empty-body. In addition, the contract fails this criterion while either
+of the following still holds:
+- the Microsoft sign-in return still documents a failed profile read or a failed
+  account save as a non-redirect error response (any error status, or any
+  description saying every failure is a non-redirect response) rather than as a
+  redirect to the failure state;
+- calendar disconnect still says, in its summary, description or response
+  headers, that it clears the session, logs the user out or sets a cookie.
+The check is a contract review against these two lists plus the earlier three,
+done by contract-challenger and recorded in the contract PR.  [contract]
 
 AC-16. Given the final commits in both repos, when `api-gate`, `web-gate` and
 `e2e-gate` run, then each prints `rc=0`.  [gate]
+
+AC-17. Given a signed-in user whose calendar is Outlook, or webcal, and shows as
+connected, when they view their calendar connection in the app, then no
+disconnect action is offered for it and the app says that disconnecting this
+kind of calendar is not available yet; and when a disconnect request is made on
+that user's behalf anyway (bypassing the app), then they remain signed in, their
+calendar status still reads connected with the same provider, their stored
+calendar connection is unchanged, and no "disconnected" confirmation is shown.
+[unit] (server: session kept, status unchanged) and [unit] (web: no action
+offered, honest message, no success message).
+
+AC-18. Given each of the five auth operations named in API-092's non-admin
+share (sign-in method detection, SSO start, SSO sign-in return, current-user
+read, logout), when the backend tests run, then every response status the
+contract documents for those five operations after the contract stage has a
+passing Go assertion on its status and body shape. This includes, at least: the
+SSO detection answer and the non-SSO answer; the SSO start's redirect (with and
+without a valid hint), its unknown-domain answer, its SAML answer and its
+setup-failure answer (these last two pin API-060's current behaviour, D-5); the
+SSO return's failure redirect (AC-3), state mismatch and success; the current
+user's success, signed-out and stale-user answers; logout's success (AC-12) and
+signed-out answers. A status that cannot be induced without a test seam is named
+in the plan together with the seam that induces it; none is left unasserted.
+[unit]
 
 ## 5. Explicitly out of scope
 
@@ -315,8 +390,13 @@ AC-16. Given the final commits in both repos, when `api-gate`, `web-gate` and
   OQ-1.
 - **Disconnect for Outlook and webcal users** does not remove their calendar
   link today (§2.4). Fixing what disconnect *removes* is a separate defect and
-  a separate behaviour change; this spec only stops it from removing the
-  session. To be filed as its own issue (OQ-5).
+  a separate behaviour change, and it deletes stored credentials; this spec only
+  stops disconnect from removing the session and stops the app from claiming a
+  disconnect it does not perform (AC-17, D-6). To be filed as its own issue
+  (OQ-5).
+- **API-060's fix** (refusing SAML and incomplete OIDC rows at create time).
+  That is a change to SSO-provider administration, which PAC-22 owns (D-5).
+- **API-092's SSO-provider administration share** (PAC-22, D-7).
 - **Logout with an expired session** returning 401 (§2.5). The web app already
   clears local state; changing auth on logout is a separate decision.
 - **Rendering the user's picture in new places** (header, account menu). This
@@ -421,10 +501,39 @@ PRODUCT.md and earlier owner decisions.*
 - **D-3 (OQ-4) — SAML.** Detection behaviour for SAML domains is unchanged by
   this work; such users now reach the server's "not yet supported" answer. This
   is no worse than today (they could not sign in either way) and changes no
-  data. Assumed by the factory, pending owner confirmation.
+  data. Stated plainly (revision 1): that answer is a raw JSON error on the API
+  origin with no way back into the app, the same kind of dead end §2.2
+  criticises, and this spec accepts it for SAML domains until API-060 is fixed
+  (D-5). Assumed by the factory, pending owner confirmation.
 - **D-4 — Hint is advisory only.** The login hint is forwarded only when it is a
   syntactically valid email, and it never influences which Paceday account is
   signed in. Assumed by the factory, pending owner confirmation.
+- **D-5 (revision 1) — API-060 stays with PAC-22.** API-060's defect is that
+  SSO-provider administration accepts rows that cannot work; its fix is a
+  validation change on the create operation, which PAC-22 claims and this spec
+  does not touch. This spec touches the SSO start route only to forward a hint,
+  and changes neither its SAML answer nor its setup-failure answer; AC-18 pins
+  both in Go so PAC-22's change to the create side is the only thing that can
+  move them. Fixing API-060 here would mean editing an administration operation
+  outside this spec's problem and racing PAC-22 on the same code. If PAC-22 is
+  abandoned, API-060 returns to triage rather than becoming silently orphaned.
+  Assumed by the factory, pending owner confirmation.
+- **D-6 (revision 1) — Outlook and webcal users after this change.** They stay
+  signed in; their calendar connection is left exactly as it is (nothing of
+  theirs is deleted); the app does not offer them a disconnect and says it is
+  not available yet for that kind of calendar. This is the most conservative
+  outcome: it deletes no data, widens no visibility, and removes the false
+  "Disconnected" message the challenge identified. It does not give those users
+  a way to stop Paceday reading their calendar, which they also do not have
+  today (today they are logged out and the calendar stays connected); that is
+  OQ-5. If the owner judges this unacceptable, OQ-5 moves into scope. Assumed by
+  the factory, pending owner confirmation.
+- **D-7 (revision 1) — API-092 is split.** The non-admin share (five paths) is
+  resolved here by AC-18; the `/api/admin/sso` share stays with PAC-22. The
+  backend implementer of PAC-35 marks the row "Partly fixed (PAC-35)" with the
+  non-admin paths struck when AC-18's tests merge; PAC-22's implementer closes
+  the rest. Owner of the row edit: PAC-35 backend implementer. Assumed by the
+  factory, pending owner confirmation.
 
 ## Challenge — 2026-10-26
 
@@ -601,3 +710,67 @@ this spec.
   which this spec does not change. `backend/api/handlers_auth_test.go:35`
   (`TestAuthDisconnect`) asserts only the 204 status.
   `e2e/tests/auth-session.spec.ts:101` is preserved by AC-12.
+
+## Revision 1 — 2026-10-26
+
+Answers to the round-1 challenge above. Author: spec-author.
+
+### Blocking
+
+1. **API-092 and API-060 missing from inherited scope.** Both are now listed.
+   - API-092: the non-admin share (the five paths) is resolved here by the new
+     AC-18, which requires a passing Go assertion for every status the contract
+     documents on those five operations, naming the ones this spec changes or
+     relies on. Some coverage has appeared since the audit was written: the
+     OIDC callback's domain check (`backend/api/handlers_sso_test.go:138-172`,
+     PAC-45), the detection limiter (`ratelimit_detect_test.go`, PAC-39) and the
+     logout cookie's flags (`pac20_cookies_test.go:67`). None of them asserts
+     the statuses AC-18 lists, so the row is still open for this share. The row
+     split, and who edits the audit row, is D-7.
+   - API-060: position stated as D-5. It stays with PAC-22, because its fix is
+     on the SSO-provider create operation, which this spec does not modify. This
+     spec does not change the start route's 501/500 answers, and AC-18 pins them
+     in Go. D-3 now names the SAML dead end and says it is accepted (this also
+     answers non-blocking 8).
+2. **Contract text left false.** `microsoftOAuthCallback` and
+   `disconnectCalendar` are now named under "Open contract notes" with the exact
+   sentences, response and header that become false. AC-15 is extended so it
+   fails while the Microsoft sign-in return still documents profile or upsert
+   failure as a non-redirect response, or while disconnect still describes
+   clearing the session or carries the cookie header.
+3. **§3 disconnect promise for Outlook and webcal users.** §3 is now limited to
+   Google calendar users. A second §3 bullet and D-6 record the outcome for
+   Outlook and webcal users: they stay signed in, nothing of theirs is deleted,
+   their calendar still shows as connected, no disconnect is offered, and the
+   app says it is not available yet. The new AC-17 pins this on both the server
+   and the web side, so it is a chosen behaviour and not an accident. OQ-5
+   stays out of scope because it deletes stored credentials. D-6 says it moves
+   in if the owner rejects this outcome.
+
+### Non-blocking taken in this revision
+
+- **1 (origin)**: AC-7 now requires the destination to be resolved against the
+  API's origin, tested with the two origins different.
+- **2 (token-generation failure)**: AC-1 carries a note that it is proven
+  through the empty-secret case. A generation failure is proven only if the plan
+  provides a seam, and the plan must say which.
+- **4 (follow-up request)**: AC-11 now requires a request that needs no calendar,
+  and an e2e user of its own.
+- **8 (SAML dead end)**: answered in D-3, see blocking 1.
+
+### Non-blocking not taken, with reason
+
+- **3 (completion page on 404/5xx)**: recorded as a choice, not widened. The
+  auth context treats a stale-user 404, a 5xx and a network failure alike as
+  "temporarily unavailable", not as signed out (`AuthContext.tsx:56-66`). AC-6
+  covers only the signed-out answer. In those other cases the completion page
+  behaves as it does today. The plan may widen this, but this spec does not
+  require it.
+- **5 (Google forces the consent screen)**: noted here. AC-9 passing means the
+  right account is preselected, not that no Google screen appears.
+- **6 (SSO hint at another domain)**: advisory. D-4 and the PAC-45 check keep
+  identity safe. The contract stage decides whether such a hint is forwarded.
+- **7 (promote §6 protections to ACs)**: partly done. AC-18 now asserts the
+  SSO return's state mismatch in Go. The Microsoft callback's state check and
+  "the hint never selects an account" remain plan obligations (§6).
+- **9 (bundling)**: no split requested. None made.
