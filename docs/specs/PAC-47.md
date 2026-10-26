@@ -408,3 +408,231 @@ the frontend never expects a status shape the server no longer sends.
 - **D-6 — a `webcal://` address is read as HTTPS, never plain HTTP.** *Assumed by
   the factory, pending owner confirmation.* It is how calendar apps publish feeds;
   choosing HTTPS keeps an embedded token off the wire in clear.
+
+## Challenge — 2026-10-26
+
+Reviewed by `spec-challenger` against the committed spec at `e100f68`, the code on
+`main` at `7de7044` (api) and `4ded854` (web), and the Linear issue text. No
+author reasoning beyond this file was read. Every citation below was opened and
+read; nothing was compiled or run (this is a text-only stage).
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **"Connecting" or "reconnecting" Outlook signs the user in as whoever owns the
+   Microsoft account; the spec describes it as attaching a credential.** §2.5 says
+   the connect flow "on success, stores the credential and flips the provider to
+   `outlook`". What it actually does is resolve a user from the Microsoft
+   account's email, `storage.UpsertUser(... info.Email ..., "microsoft", ...)`
+   (`backend/api/handlers_microsoft_auth.go:62-68`; `UpsertUser` is
+   `ON CONFLICT (email)`, `backend/storage/users.go:21-31`), save the credential on
+   *that* user (`:74`), and issue a session for that user (`:79`). The route is not
+   behind `requireAuth` (`backend/api/routes.go:35-36`) and never looks at who is
+   signed in. The picker already labels it "Sign in with Microsoft"
+   (`smart-calendar-flow/src/components/WorkCalendarConnection.tsx:16`).
+   Consequences the spec permits:
+   - AC-3d passes when the "reconnect Outlook" button sends a Google-signed-in user
+     (`a@x`) through Microsoft as `b@y`: the user lands in a *different Paceday
+     account*, the original account is still not connected, and every AC still
+     holds.
+   - AC-1b's precondition (one user holding both a Google sign-in credential and an
+     Outlook credential) is reachable only when the two accounts share an email
+     address. The first row of the §2.2 table has the same limit.
+   *Resolves when* §2.5 describes the flow as it is, and §3/AC-3d state what
+   "connect Outlook" does to the signed-in account: it attaches the credential to
+   the user who is signed in, or it is still a sign-in and the spec says so (and
+   that a different email gives a different account). Either way, add an AC that
+   checks which user ends up holding the credential and which session the browser
+   holds afterwards.
+
+2. **Outlook events become visible in the week view, but the week view's write
+   actions still go to Google, and no requirement covers this.** After AC-1, the
+   events on the grid are Outlook events with Graph ids. The dashboard offers
+   drag-to-move (`smart-calendar-flow/src/pages/Dashboard.tsx:269`), edit and
+   delete (`src/components/EventEditForm.tsx:95,122`), reschedule suggestions
+   (`src/components/RescheduleSuggestions.tsx:238`) and add/remove conference
+   (`src/api/client.ts:1409,1423`). On the server, `PATCH`/`DELETE /api/events/{id}`
+   and the conference routes build a **Google** client only
+   (`backend/api/handlers_events.go:24-33`, `routes.go:117-129`). An Outlook user
+   with a Google credential gets "event not found" (`handlers_events.go:55-58`). An
+   Outlook user without one gets the 401 "calendar not connected", while the status
+   endpoint truthfully says connected, which contradicts §3.2 ("the two screens
+   never disagree"). AC-2c makes feed events read-only. Outlook events get nothing,
+   and §5 ("write-side features keep today's behaviour") does not cover them,
+   because today every event the grid shows is a Google event that these actions
+   *can* write.
+   *Resolves when* the spec says what each of those actions does on an Outlook
+   event: refused like a feed event (extend AC-2c to Outlook), or written to
+   Outlook (in scope, with ACs). Either way, add an AC that no write for an
+   Outlook-shown event reaches Google or its stand-in.
+
+3. **Shipping only the read side makes Paceday's own writes invisible to the
+   users this spec serves.** No write-side engine reads the provider setting: the
+   only readers are the status handler, the free/busy service and the unused
+   factory (`grep CalendarProvider`, see §2.1). Focus blocks, habits, compression
+   and personal blockers keep writing to the Google calendar of any user who holds
+   a Google credential (`backend/engine/cal_iface.go:84-95`;
+   `backend/engine/personal_blocker.go:91`). Today an Outlook or WebCal user who
+   signed in with Google sees those blocks, because the week view shows Google.
+   After this spec, the week view shows only Outlook or the feed (AC-1b, AC-2), so
+   the focus time Paceday schedules for them is written to a calendar they are no
+   longer shown. That is a user-visible regression for the population in the first
+   row of §2.2. §5 calls it "today's behaviour", but the user's experience of it
+   changes. "Is it one spec" (§2 rule 7): this half leaves the system incoherent
+   unless the spec says what happens.
+   *Resolves when* the spec states, as a requirement with an AC, one of the
+   following: Paceday stops writing to Google for a user whose chosen calendar is
+   not Google (the conservative option: fewest writes to a calendar the user did
+   not choose); writes stay but remain visible in the week view; or the
+   regression is accepted as an owner decision, recorded under Decisions with the
+   affected population named.
+
+4. **The feed reader is already live, so the SSRF and the address-in-log leak
+   exist in production today.** §2.1 says `calendar.ReadPersonalEvents` "has no
+   caller outside its package", and §2.5 says the unguarded fetch becomes a
+   request-forgery surface "the moment anything calls it" (D-5 rests on the same
+   premise: "making the feed reader live"). Both are false.
+   `backend/engine/personal_blocker.go:72,87` calls it. It runs through
+   `GET /api/personal-calendars/{id}/preview`, `POST .../sync`
+   (`backend/api/routes.go:107-113`, `handlers_personal.go:24`) and the per-user
+   cron sync (`backend/main.go:104`),
+   and `e2e/tests/seam.spec.ts:384-413` exercises it. Its `webcal` branch fetches a
+   user-typed URL with `http.DefaultClient`
+   (`backend/calendar/personal_reader.go:15-17`, `webcal_client.go:60-64`), and the
+   sync failure path logs the wrapped `net/url` error, which carries the full feed
+   address (`personal_blocker.go:61`). §5 puts personal calendars out of scope,
+   but they share this reader, so AC-5/5b/5c either cover them by construction or
+   leave a live hole beside the one being closed. The spec has to say which.
+   *Resolves when* §2.1/§2.5/D-5 are corrected, and the spec states whether the
+   address guard and redaction (AC-5, AC-5b, AC-5c) apply to every server-side
+   feed fetch, personal calendars included. If they do not, the live gap is
+   recorded as a finding with an owner, not left implicit.
+
+5. **The dashboard has a second "connect" button and a second "Syncing in real
+   time", and the spec does not name them.**
+   `smart-calendar-flow/src/components/ConnectionStatus.tsx` is rendered on the
+   dashboard (`Dashboard.tsx:579`). Its Connect button always starts Google
+   (`:12-14`, `api.authConnectUrl()` with no provider), it says "Syncing in real
+   time" whenever `connected` is true (`:59`), and its Disconnect toast says
+   "Disconnected from Google Calendar" (`:19`). AC-3d tests "the week view's
+   connect action" in the singular, so a frontend change that fixes only
+   `Dashboard.tsx:455-457` passes while this button still sends a WebCal user to
+   Google, which is exactly what §3.3 forbids. OQ-5's "the frontend must not say
+   real time for a feed" names neither component.
+   *Resolves when* §2.3 lists `ConnectionStatus.tsx`, and AC-3d plus the OQ-5
+   resolution are stated for every connect action and status line the dashboard
+   and Settings show (Dashboard prompt, `ConnectionStatus`,
+   `WorkCalendarConnection`).
+
+### Non-blocking
+
+1. **AC-4 contradicts §3.4.** §3.4 says the answer is "unknown" *for other
+   attendees* because a feed carries no information about other people. AC-4
+   requires "every attendee", which includes the requesting user, about whom the
+   feed *does* carry information. Pick one and make the other match.
+2. **§3.4 is absolute, but §5 excludes `GET /api/calendar/freebusy` (API-091).**
+   That handler still queries Google for a WebCal user (`routes.go:70`,
+   `ch.freeBusy`). Qualify §3.4 to "the free/busy service behind scheduling
+   features", or bring the operation into scope.
+3. **AC-3 and OQ-2 pull against each other.** OQ-2 leaves open "trust the last
+   read's outcome", which by its own description can show a stale "connected" for
+   one load. AC-3 requires that "at no moment" is connected shown with an empty
+   week. Either narrow OQ-2's options to those that satisfy AC-3, or state the
+   observation point AC-3 is tested at (after the events request settles).
+4. **SSRF requirements in §3.5 with no AC.** AC-5b checks only the stored host.
+   §3.5's "fetches only from addresses on the public internet" also has to hold
+   for a redirect from a public feed to a private or link-local address, and for
+   a host that resolves differently between check and connect. Add ACs for the
+   redirect case and for "the address checked is the address connected to". Also
+   state what happens to a stored plain `http://` feed address: D-6 covers only
+   `webcal://`, and its rationale (token off the wire) applies equally.
+5. **No second-user AC.** Multi-tenancy is the historical weak spot and the
+   spec touches per-user credentials and a reader cache. Add an AC with two users
+   on different providers that verifies neither user's events, feed contents or
+   status reach the other (for example, a cached feed result keyed by something
+   other than the user).
+6. **The issue's "either way" is narrowed.** The issue says `GET /api/auth/status`
+   "must stop reporting a connection it has not verified". The spec leaves Google
+   unverified (D-4, OQ-3). That is recorded as an assumption pending owner
+   confirmation, which is acceptable, but the parent issue should not be closed by
+   this feature while OQ-3 is open.
+7. **Overlap with PAC-50.** PAC-50 §4.1 (`docs/specs/PAC-50.md:81`) plans a
+   test-mode redirection of the Microsoft Graph base for three call sites,
+   including `outlook_client.go:15`. AC-6 requires the same redirection. The spec
+   should say which feature owns it, so that two seams are not built.
+8. **Disconnect becomes more reachable for the wrong provider.** Once Outlook
+   and WebCal users truthfully show "connected", both panels show Disconnect,
+   which still deletes the *Google* credential and signs the user out (API-061;
+   `ConnectionStatus.tsx:19` even says "Google Calendar"). OQ-4 records the
+   question. Consider stating, as a "must not change" or an interim requirement,
+   that this spec does not make it worse.
+
+### Criteria I could not falsify
+
+- AC-7 is a gate, not behaviour. It is satisfied by running the gates and needs
+  no test. That is fine, but it should not count as an acceptance criterion of the
+  feature.
+- AC-3 "at no moment": as written, no single test observation can prove a
+  negative across time (see Non-blocking 3). It becomes falsifiable once the
+  observation point is named.
+- Every other criterion has a test that fails today and passes afterwards. For
+  example: AC-1/1b fail because `listEvents` builds only a Google client
+  (`handlers_calendar.go:137-143`); AC-3c fails for WebCal because status answers
+  `connected: s.WebcalURL != ""` (`handlers_auth.go:108`); AC-4 fails because
+  `webcal` falls into the Google `default:` (`freebusy_service.go:128-137`); AC-2b
+  fails because the scheme is passed to `http.NewRequestWithContext` unchanged
+  (`webcal_client.go:60`); AC-5 fails because the fetch error wraps the URL error
+  (`webcal_client.go:66`).
+
+### Citations I checked and found wrong
+
+- "`calendar.ReadPersonalEvents` ... also has no caller outside its package"
+  (§2.1). Actually called from `backend/engine/personal_blocker.go:72` (Preview)
+  and `:87` (sync), reached from `routes.go:112-113` and the cron sync at
+  `backend/main.go:104`, and exercised by `e2e/tests/seam.spec.ts:384-413`.
+- "A user-supplied address fetched by the server is a request-forgery surface the
+  moment anything calls it" (§2.5), and D-5's "making the feed reader live". The
+  reader is already live for personal WebCal calendars (above), with no guard.
+- "the connect flow ... on success, stores the credential and flips the provider
+  to `outlook`" (§2.5). That is incomplete in a way that changes behaviour: it
+  stores the credential on the user resolved from the Microsoft email and signs
+  the browser in as that user (`backend/api/handlers_microsoft_auth.go:62-81`).
+- All other citations I opened match the code: `handlers_settings.go:32,272-273`;
+  `storage/settings.go:195-197,239-273`; `client_factory.go:14-34,20,78-79`;
+  `handlers_calendar.go:134-144,161-171`; `cal_iface.go:31-44,90`;
+  `server_errors.go:59-75`; `handlers_auth.go:69-73,82-133`;
+  `freebusy_service.go:119-138`; `webcal_client.go:19-22,52-70`;
+  `outlook_client.go:15,63-65,72-76`; `microsoft_oauth.go:49-89,68`;
+  `config/endpoints.go:49-60`; `integration_availability_test.go:31-32`;
+  `api-audit.md:260,267,334,486`; `scheduling.yaml:2081-2089`; `PAC-50.md:81`;
+  `e2e/tests/calendar.spec.ts:27,58,87,165,221`; `Dashboard.tsx:113-114,435-462`;
+  `WorkCalendarConnection.tsx:108-122`.
+  Minor: the Google call-site list in §2.2 cites `cal_iface.go:90`,
+  `analytics.go:216`, `booking.go:208`, `habits.go:255`, which match current code.
+  The issue's older numbers differ, and the spec's are the correct ones.
+
+### Consumers this breaks
+
+- smart-calendar-flow/src/components/ConnectionStatus.tsx:12-14,59 — still starts
+  Google and still says "Syncing in real time" for a feed once status is verified
+  (Blocking 5).
+- smart-calendar-flow/src/pages/Onboarding.tsx:61-62,84-85 — skips the connect
+  step whenever `connected` is true and always advances for `webcal`. Once
+  `connected` means "read successfully", a WebCal user with an unreachable feed
+  passes onboarding and lands on a not-connected dashboard. This is not a crash,
+  but the spec should say whether onboarding keeps its "webcal always advances"
+  shortcut.
+- smart-calendar-flow/src/pages/Dashboard.tsx:269,
+  src/components/EventEditForm.tsx:95,122,
+  src/components/RescheduleSuggestions.tsx:238 — write actions on events that,
+  after AC-1/AC-2, are no longer Google events (Blocking 2; AC-2c covers only
+  feed events).
+- backend/engine/personal_blocker.go:61,72,87 — shares the feed reader. Any
+  guard, redaction or refusal added for AC-5/5b/5c changes personal-calendar
+  behaviour too, unless the spec says otherwise (Blocking 4).
+- backend/api/gen/paceday.gen.go:2185 (and the generated doc comments at
+  `:2296,2353,2469`) — repeat the U-18 description the spec says is untrue. They
+  are regenerated from the contract, so the contract stage's rewrite of
+  `scheduling.yaml:2081-2089` must flow through `make openapi`. Noted so the
+  contract challenger checks for it.
