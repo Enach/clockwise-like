@@ -1004,3 +1004,120 @@ changes are marked *(Revision 2)*.
 - Citation found wrong: the Inherited-scope reference to the brief-refresh
   "failed" sentence is now `habits.yaml:487-488`.
 - AC-11 now also covers the refusals in AC-16 to AC-20.
+
+## Challenge — 2026-10-26 (round 3)
+
+**Verdict**: accept
+
+Reviewed on `factory/pac-66-spec` at 8eb4f20 (committed state only; the branch
+sits on `origin/main` 037656c, so the code read is current main), against the
+Linear issue text, `smart-calendar-flow` at 8bf231f, the contract fragments and
+`docs/factory/api-audit.md`. Revision 2 resolves both round-2 blocking findings.
+AC-18 covers a probe that names the provider for one try, and the citations
+behind it hold: the probe overwrites `s.LLMProvider` from the body after loading
+the saved row (`backend/api/handlers_llm.go:44-56`), and the web client always
+sends `llmProvider` from the unsaved draft (`smart-calendar-flow/src/pages/Settings.tsx:173`,
+`src/api/client.ts:712-716`, sent at `:1297-1301`). AC-19 and the corrected §4
+definition match the code: `us-east-1` is substituted at `llm_bedrock.go:21-23`
+and passed as `config.WithRegion` at `:31-33`, and the SDK puts load options
+first in the config list (`aws-sdk-go-v2/config@v1.32.35/config.go:212`) and
+takes the first region found (`provider.go:113-123`). A fresh grep of non-test
+code for `NewLLMClientFromSettings`, the three ambient constructors and
+`.Complete(` still finds only the three send paths (probe, parse twice, brief
+refresh via `meeting_brief_service.go:81`). `MeetingBriefService` is built only
+in the refresh handler, so no background job sends the credential. Inherited
+scope is complete: the only open audit rows on the touched operations are
+API-039 (claimed) and API-080, both named. API-054 in the probe's contract text
+(`scheduling.yaml:473-474`) is an analytics finding, not one on these
+operations, so "T8 is a theme here" is right.
+
+I found nothing in Revision 2 that wrongly permits or forbids a request, breaks
+a consumer, or contradicts the code. The items below are non-blocking.
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **Path and project steering on an approved host is neither covered nor
+   recorded.** Approval is by host, and the user still controls the rest of the
+   URL. Checked with Go's `net/url` against the exact format strings: Vertex
+   location `us-central1-aiplatform.googleapis.com/v1/projects/OTHER/locations/us-central1/endpoints?#`
+   gives host `us-central1-aiplatform.googleapis.com` (approved if that region
+   is) and path `/v1/projects/OTHER/locations/us-central1/endpoints`. Azure
+   endpoint `https://approved.openai.azure.com/openai/other/path?x=` gives the
+   approved host with path `/openai/other/path`. `gcpProject`, `vertexModel`,
+   `azureDeployment` and `azureApiVersion` are also spliced in unescaped
+   (`llm_vertex.go:39-42`, `llm_azure_openai.go:39-40`). So a user can make the
+   server POST, with the deployment's token, to any operation on an approved host,
+   against any GCP project the identity can reach. The response comes back in
+   the 502 text (`parser.go:144-145`) or in `vertex: unexpected response: <body>`
+   (`llm_vertex.go:66`). The token itself does not leave, so this is not the
+   issue's core problem. But the issue names "region / project" as the steering
+   values, and the spec says nothing about `gcpProject` or paths. Record it the
+   way OQ-4 records profile selection, as a sibling problem with an owner. Also
+   say explicitly that AC-5 and AC-6 accept a value whose effective host is
+   approved whatever its path, so the contract stage does not have to guess.
+2. **AC-18 (c) and (b) can apply to the same state and require different
+   messages.** If nothing is approved for P and the stored host is approved only
+   for another provider, (b) requires "P is not enabled" and (c) requires "not
+   approved". Both give zero requests and a 4xx, so the security outcome is the
+   same. Add "at least one host is approved for P" to (c), as AC-20 already does,
+   or state which message wins.
+3. **AC-5 and PAC-24 AC-17 disagree when the same value is sent again.** AC-5
+   refuses a write that "sets" an unapproved value. Under changed-only validation
+   (`handlers_settings.go:129-136`), a write that sends back an unapproved value
+   already stored, as `e2e/tests/settings.spec.ts:54-55` does with a whole GET
+   document, changes nothing and is accepted. Say that AC-5 applies when the
+   value differs from the stored one. Send-time refusal still covers the stored
+   value (AC-9).
+4. **"Exact host" does not say how port, letter case and a trailing dot are
+   handled.** `https://approved.openai.azure.com:8443` parses to
+   `Host = approved.openai.azure.com:8443`. Whether that matches an entry
+   `approved.openai.azure.com` is open. Each choice is safe, because only the
+   operator's machine answers on that name, but a test needs one answer. Leave it
+   to the contract stage under OQ-2, and name it there.
+5. **AC-12 may fail closed on the most likely operator input.** Operators copy
+   the Azure endpoint from the portal as a URL (`https://name.openai.azure.com/`).
+   Under AC-12 an entry that is "not a host name" approves nothing and is only
+   logged, so an upgraded deployment would stay broken with no user-visible cause
+   beyond AC-4's message. This is safe, so it does not block, but the contract
+   stage should say whether a URL-form entry is accepted (reduced to its host) or
+   refused, and `.env.example` must show the expected form (§7 already requires
+   a note there).
+
+### Criteria I could not falsify
+
+- None. With the sentinel credential, AC-18 (a) and (b) fail today (the probe
+  sends to the stored host after taking the provider from the body), AC-19's
+  first half fails today (the request goes to the `us-east-1` host), and AC-20
+  fails today (an empty endpoint builds a relative URL, `http.DefaultClient.Do`
+  errors, and the probe answers 502 at `handlers_llm.go:80-82`). AC-18's "saved
+  provider unchanged" check and AC-11 are guards, and each would catch a specific
+  wrong implementation.
+
+### Citations I checked and found wrong
+
+- None in Revision 2. Checked and correct: `handlers_llm.go:23-27,44,50-62,73,79,80-82`,
+  `llm_bedrock.go:21-23,31-33,35-37,38-41`, `aws-sdk-go-v2/config@v1.32.35/config.go:212`,
+  `provider.go:113-123`, `llm_vertex.go:20-22,30-37,39-42`,
+  `llm_azure_openai.go:28-37,39-40,50`, `parser.go:125-148,179-182,197-200,227,239-241`,
+  `meeting_brief_service.go:73-91`, `handlers_settings.go:129-136` and
+  `settingsProblems` (no endpoint, region, location or profile check),
+  `scheduling.yaml:332-337,476-488` and its `x-uncertain` markers
+  (schedule-suggest :246, NLP-confirm :376, schemas :928 and :1209),
+  `habits.yaml:463,487-488`, `api-audit.md:185,273,314`,
+  `pac24_scope_test.go:70-124`, the `parser_test.go` test line numbers in §6,
+  and the absence of any test that mentions azure, vertex or bedrock.
+  Web: `Settings.tsx:173,749`, `client.ts:699-716,1155,1294-1302`.
+
+### Consumers this breaks
+
+- None. The web probe throws on a non-2xx and shows the server message, so the
+  4xx renders. Parse and brief refresh keep their shapes for
+  `smart-calendar-flow/src/api/client.ts:1155` and `clockwise-like/mcp/tools.go:195-203`.
+  No MCP tool calls the probe, the settings write or brief refresh. The e2e
+  whole-document PATCH (`e2e/tests/settings.spec.ts:54-55`) keeps passing,
+  because it changes no destination property and an empty value is always
+  accepted (AC-15).
