@@ -276,6 +276,17 @@ not read the body.
   only changes after it); that output is in the Linear comment on PAC-29.
 - web-gate: not run at this stage (the web types regenerate after the contract merges,
   factory §1).
+- Revision 2: `python scripts/openapi_assemble.py` wrote the bundle (98 paths, 119
+  operations, 144 schemas, `x-uncertain: 12`), rc=0; `--check`: `OK: bundle is in sync
+  (98 paths)`, rc=0. `api-gate.sh factory/pac-29-contract` on `a4f5340` (fragments):
+  `make openapi rc=0`, `regenerated: backend/api/gen/paceday.gen.go` (EventPatchRequest
+  fields, DeleteEventParams, the new 400/404 response types), committed unchanged as
+  `321cb77`, every other step rc=0. Re-run on `321cb77`: `make openapi rc=0`,
+  `regenerated: none`, `openapi-check(api) rc=0`, backend lint rc=0, mcp lint rc=0,
+  backend test rc=0, mcp test rc=0, backend coverage 55.4% (floor 43%) rc=0, mcp
+  coverage 84.0% (floor 75%) rc=0. Bundle sha256 (LF, `git show HEAD:...`):
+  `2a622b5788d6b1f9d7bff435a07e5bba9eca678f2b12f512b60311ae88af7dbf` (the manifest's
+  `contractHash`). web-gate still not run at this stage, for the same reason.
 
 ## Challenge — 2026-10-27
 
