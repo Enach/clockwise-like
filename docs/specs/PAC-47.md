@@ -1001,3 +1001,242 @@ answer against the text. All new citations were re-read on `main` at `7de7044`
 
 The challenger's note that AC-7 is a gate rather than a behaviour is accepted.
 AC-7 is relabelled and kept only for traceability to the ticket.
+
+## Challenge — 2026-10-26 (round 2)
+
+Reviewed by `spec-challenger` against the committed spec at `2acafa5` (Revision 1)
+on `factory/pac-47-spec`. The code was read on `main` at `7de7044` (api) and
+`4ded854` (web), which are still the tips of both `main` branches. I also read the
+Linear issue text. I read no author reasoning beyond this file. I opened and read
+every citation below. I compiled and ran nothing, because this is a text-only stage.
+
+Revision 1 answers all five round-1 blocking findings in the text. The round-1
+citations I re-checked still hold. The findings below are new, and most of them
+are in code paths that Revision 1 brought into scope.
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **Three scheduling read paths still answer an Outlook or WebCal user from
+   Google, and no section accounts for them.** §2.4 calls `FreeBusyService` "the
+   free/busy service behind scheduling features". In fact its only caller is
+   `POST /api/freebusy` (`backend/api/handlers_freebusy.go:70`), and the only web
+   caller of that operation is the scheduling-link drawer
+   (`smart-calendar-flow/src/components/links/LinkEditDrawer.tsx:157`,
+   `src/api/client.ts:927`). The scheduling features themselves read availability
+   in other places:
+   - **Meeting suggestions.** `SmartScheduler.Suggest` gets free/busy from
+     `newCalOps` (`backend/engine/smart_schedule.go:56,65-71`), which loads the
+     **Google** credential (`cal_iface.go:84-95`). That path serves
+     `POST /api/schedule/suggest` (`handlers_schedule.go:162`), the dashboard's
+     `ScheduleSuggestModal.tsx:97` and the MCP tools `clockwise_create_event` and
+     `clockwise_suggest_meeting` (`mcp/tools.go:54`). An Outlook or WebCal user who
+     holds a Google credential gets suggestions computed from Google. One without
+     a Google credential gets the 401 "calendar not connected" while the status
+     reports connected, which is the disagreement §3.2 forbids.
+   - **Public booking slots.** `BookingEngine.hostBusy` reads the host's
+     **Google** events (`backend/engine/booking.go:122-135`, via
+     `calendarClientForUser` `:202-209`). It serves the unauthenticated
+     `GET /api/book/{slug}/slots` (`routes.go:26`). For an Outlook or WebCal host,
+     guests are offered slots computed from a calendar the host did not choose. A
+     host with no Google credential has no busy time at all, so guests can book
+     over the host's real Outlook meetings. AC-8c covers only the event that a
+     booking creates.
+   - **`GET /api/calendar/freebusy`.** §5 excludes it as "used by no frontend
+     screen". That is true of the web app, but the MCP tool
+     `clockwise_find_free_slots` calls it (`mcp/tools.go:129-139`). The handler
+     opens only a Google client (`handlers_calendar.go:203-209`). After AC-1, an
+     agent therefore lists the user's Outlook events (`mcp/tools.go:29`) and gets
+     free time from their Google calendar.
+
+   §3.4 says such a user's free/busy "is never answered by querying another
+   provider on their behalf". AC-4 tests only `FreeBusyService`, and §5's list of
+   reads that stay on Google names only analytics, manager views and team
+   availability. Under D-9, smart scheduling is "unavailable" for these users, but
+   §3.8 and AC-8b are written about writes, so whether suggestions stop is left
+   undecided.
+   *Resolves when* §2.4 names the real read paths, and the spec states for each
+   one (meeting suggestions, booking slots for a non-Google host, and
+   `GET /api/calendar/freebusy`) whether it is answered from the chosen calendar,
+   reported unavailable under D-9, or kept on Google as an out-of-scope item. An
+   out-of-scope item must be listed in §5 with the affected population and a
+   Decisions entry. Each path that changes needs an AC proving that no request
+   reaches the Google stand-in for an Outlook or WebCal user.
+
+2. **Feed addresses, with any token they contain, are sent to Sentry, and
+   §3.5/AC-5 do not forbid it.** §3.5 says the address never appears "in an error
+   shown to the user or written to the server log", and AC-5 checks only "the
+   server log line" and "any response body". The personal-calendar preview and
+   sync handlers answer a failed fetch through `writeServerError`
+   (`backend/api/handlers_personal.go:168-171`) and `writeCalendarFailure`
+   (`:191-192` → `server_errors.go:75-80`). Both reach `logServerError`, which
+   calls `reportServerError` → `hub.CaptureException(err)`
+   (`server_errors.go:16-22,41-49`). The wrapped error carries the full URL
+   (`webcal_client.go:66`). So a third-party service receives the feed address
+   today, and the spec allows that to continue, and to extend to the work-calendar
+   reads it creates. §2.5 also does not mention this leak.
+   *Resolves when* §2.5 records the error-tracker leak, §3.5 says the address
+   leaves the process in no error report of any kind (log, error tracker or
+   response), and AC-5 observes the error-tracker report as well. That report is
+   already a test seam: `reportServerError` is a variable "so tests can observe
+   it".
+
+3. **The spec never says what happens when someone signs in with Microsoft from
+   the sign-in page while another user's session is live. Under D-7, that
+   attaches a stranger's calendar to the session holder's account.** §3.3 and §6
+   define two cases: a connect "while signed in" attaches the credential, and a
+   sign-in "with nobody signed in" stays a sign-in. The sign-in dialog opens on
+   `/signin` whatever the session state (`smart-calendar-flow/src/pages/SignIn.tsx`,
+   `Index.tsx:555`). It sends the browser to the same `/api/auth/microsoft` route
+   as the connect actions (`src/components/auth/AuthDialog.tsx:108`;
+   `src/api/client.ts:947-948`). Example: on a shared machine, X signs in with
+   Microsoft while Y's session is still live. An implementation that tells
+   connect from sign-in by "is a session present" satisfies every AC, and it
+   attaches X's Microsoft calendar to Y's account and switches Y's provider to
+   Outlook. Y can then read X's calendar. That widens who can see data, which the
+   factory rules forbid. AC-3f covers only a flow that "user A started" as a
+   connection.
+   *Resolves when* §3.3 states that only a connect action started by the
+   signed-in user attaches a credential, and states what a sign-in started from
+   the sign-in page does when a session is live (today it signs in as the
+   Microsoft account's user and replaces the session). An AC must check that in
+   this case no Microsoft credential is stored on the live-session user and that
+   user's provider is unchanged.
+
+4. **Onboarding is a fourth connect action, and the spec says there are three.**
+   §2.3 ends "there are three connect actions and three status lines in the
+   product today". `Onboarding.tsx:78-87` is another one:
+   `api.authConnectUrl(provider)` sends an Outlook choice to
+   `/api/auth/microsoft`, on a signed-in route, on the user's first session.
+   AC-3d lists three surfaces, and AC-3e connects "from Settings". An
+   implementation can make Settings attach (for example, by marking its request
+   as a connect) and leave onboarding as a sign-in. Every AC still passes, and a
+   new user whose Microsoft email differs from their sign-in email is moved into
+   another Paceday account. That is round-1 Blocking 1 again, on the first
+   screen a new user sees.
+   *Resolves when* §2.3 counts onboarding's connect step. §3.3 and AC-3d must
+   include it, and AC-3e (or a sibling AC) must cover an Outlook connect started
+   from onboarding.
+
+5. **AC-3e is labelled [e2e], but the spec does not require any of the stand-ins
+   it needs.** AC-3e completes a real Microsoft connect: authorize, token
+   exchange, then a profile read. Those addresses are fixed in the code: the
+   authorize and token URLs at `backend/auth/microsoft_oauth.go:14-17` and the
+   profile URL at `backend/api/handlers_microsoft_auth.go:93`. §3.6 and AC-6
+   require redirection only for "Microsoft calendar traffic". OQ-8 hands
+   PAC-50's Graph-base seam to whichever feature reaches the contract stage
+   first, but that seam does not cover the login token endpoint. As written, the
+   contract stage can meet §3.6 in full and still leave AC-3e with no way to
+   run, so the e2e gate cannot pass.
+   *Resolves when* §3.6 and AC-6 also cover the Microsoft sign-in endpoints
+   (authorize, token, profile) under the same test-mode declaration and the same
+   refuse-at-startup rule. The other option is to relabel AC-3e at a level that
+   can run without them and say which part of the journey is then left untested.
+
+### Non-blocking
+
+1. **AC-3f mostly passes today.** A completion in another browser already fails
+   at the `ms_oauth_state` cookie check (`handlers_microsoft_auth.go:41-45`):
+   400, nothing stored. Today's behaviour breaks AC-3f only when the flow starts
+   and finishes in the same browser and the session changes or ends in between.
+   Name that setup so the test fails today. Also add to the no-session case that
+   no Paceday user is created and no session is issued, which §3.3 requires and
+   the AC does not check.
+2. **AC-5f mostly passes today.** `syncOne` already returns before deleting
+   anything when the read fails (`personal_blocker.go:87-90`). Today a blocker
+   is wrongly removed only when a non-2xx answer still parses as iCalendar,
+   because the status is not checked (`webcal_client.go:64-70`). Write that case
+   into AC-5f so it is a test that fails today.
+3. **An Outlook "connected" state will lapse when the access token expires.**
+   Nothing refreshes the token. `LoadMicrosoftToken` returns the stored access
+   token, and the existing Outlook reader wraps it in `StaticTokenSource`
+   (`microsoft_oauth.go:74-89`; `freebusy_service.go:125`). §5 defers refresh to
+   PAC-67 and calls the outcome "honest if not convenient". In practice, every
+   Outlook user is shown not connected about an access-token lifetime after each
+   connect. Say this in D-1 or §5 so the owner weighs it, or name PAC-67 as a
+   prerequisite for releasing the Outlook half.
+4. **The MCP server is a consumer, and the spec never mentions it.** Its tool
+   descriptions say "List Google Calendar events" and "Google Calendar event ID"
+   (`mcp/tools.go:22,85,119`). For an Outlook or WebCal user those descriptions
+   become false, and §3.9 is written as if the web app were the only surface.
+   Update and delete through MCP (`:113,122`) will receive the new read-only
+   refusal. §3.9 or §6 should say what the MCP surface owes.
+5. **Wrong line number.** §2.5 cites `UpsertUser` at
+   `handlers_microsoft_auth.go:67`. It is at `:68`.
+6. **Existing tests that AC-5b will break.** Two test fixtures serve the feed
+   from a loopback `httptest` server without the test-mode declaration
+   (`backend/api/pac21_calendar_not_connected_test.go:58-66`;
+   `backend/engine/pac21_calendar_credential_test.go:122,134-141`). Under AC-5b's
+   production rule, those fetches are refused. The plan has to adapt the fixtures
+   and must not skip them. Naming them here stops that from being found at
+   stage 4.
+
+### Criteria I could not falsify
+
+- AC-3f, as written: the cross-browser reading passes today (Non-blocking 1).
+- AC-5f, as written: every failure except a parsable non-2xx answer passes today
+  (Non-blocking 2).
+- AC-7 is a gate and is labelled as one. It needs no test.
+- AC-8d and the §6 items are regression guards. They are meant to pass both
+  before and after, and that is correct.
+- Every other criterion has a test that fails today and passes afterwards. For
+  example:
+  - AC-1d/1e fail because `handlers_events.go:24-33,55-58` answers "event not
+    found" or 401.
+  - AC-3e fails because the callback upserts by Microsoft email and issues that
+    user's session (`handlers_microsoft_auth.go:68-79`).
+  - AC-5b fails because the fetch uses `http.DefaultClient` (`webcal_client.go:64`).
+  - AC-8 fails because `newCalOps` loads the Google credential whatever the
+    provider (`cal_iface.go:84-95`).
+  - AC-8c fails because `ConfirmBooking` creates the host's event in Google
+    (`booking.go:252-271`).
+
+### Citations I checked and found wrong
+
+- "the free/busy service behind scheduling features" (§2.4, §3.4, AC-4). In the
+  code, `FreeBusyService` is called only by `POST /api/freebusy`
+  (`handlers_freebusy.go:70`), which only the scheduling-link drawer uses.
+  Meeting suggestions and booking slots read Google without it
+  (`smart_schedule.go:65-71`, `booking.go:122-135`).
+- "The standalone free/busy operation no screen uses" (§3.4, §5). That is true of
+  the web app, but `mcp/tools.go:137` calls it.
+- "there are three connect actions" (§2.3). There are four:
+  `Onboarding.tsx:78-87` is the fourth.
+- "the address never appears in an error shown to the user or written to the
+  server log" (§3.5). That rule leaves out the error tracker, which receives the
+  address today (`server_errors.go:41-49`; `handlers_personal.go:170,192`).
+- `handlers_microsoft_auth.go:67` for `UpsertUser`. It is at `:68`.
+- All other new Revision 1 citations I opened match the code:
+  - backend: `handlers_microsoft_auth.go:17-81,62,74,79`; `users.go:21-31`;
+    `routes.go:35-39,107-113,116-129`; `microsoft_oauth.go:52-69`;
+    `personal_reader.go:13-46,15-17`; `personal_blocker.go:61,72,87,92,111,124`;
+    `main.go:95-108`; `handlers_events.go:24-33,55-58`;
+    `handlers_conferencing.go:309,405`; `focus_time.go:186`;
+    `focus_time_cleaner.go:34`; `smart_schedule.go:326`; `habits.go:242`;
+    `compression.go:187`; `auto_decline.go:87,105`; `booking.go:202-209,252-255,269`;
+    `cal_iface.go:84-95`; `handlers_auth.go:69-73,98-111`; `config/endpoints.go:49-60`.
+  - web: `ConnectionStatus.tsx:12-14,19,59`; `Dashboard.tsx:113-114,269,435-462,579`;
+    `EventEditForm.tsx:95,122`; `RescheduleSuggestions.tsx:238`;
+    `client.ts:1409,1423`; `Onboarding.tsx:61-62,84-85`;
+    `WorkCalendarConnection.tsx:16,108-122`.
+  - tests: `e2e/tests/seam.spec.ts:384-413`.
+
+### Consumers this breaks
+
+- mcp/tools.go:22,29,85,113,119,122,137,243: tool descriptions name Google
+  Calendar. `list_events` and `calendar_status` change meaning,
+  `update_event` and `delete_event` receive the new read-only refusal, and
+  `find_free_slots` still reads Google (Blocking 1, Non-blocking 4).
+- smart-calendar-flow/src/components/auth/AuthDialog.tsx:108: shares the
+  Microsoft start route with the connect actions, so the D-7 change affects
+  sign-in unless the spec separates them (Blocking 3).
+- smart-calendar-flow/src/pages/Onboarding.tsx:80: an Outlook connect that the
+  ACs do not name (Blocking 4).
+- smart-calendar-flow/src/components/ScheduleSuggestModal.tsx:97 and
+  smart-calendar-flow/src/pages/PublicBooking.tsx: their results stay computed
+  from Google for Outlook and WebCal users, or become "unavailable", depending
+  on how Blocking 1 is resolved.
+- backend/api/pac21_calendar_not_connected_test.go:58-66 and
+  backend/engine/pac21_calendar_credential_test.go:122,134-141: their loopback
+  feeds are refused under AC-5b (Non-blocking 6).
