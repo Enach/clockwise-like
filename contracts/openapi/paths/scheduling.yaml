@@ -50,14 +50,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            Engine failure. Written with http.Error, so the body is the raw Go
-            error string as text/plain, NOT the JSON error shape.
+          description: >-
+            Engine failure for a user who HAS a stored Google credential (a user with none
+            gets the 401 `calendar not connected`). Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/focus/blocks:
     get:
@@ -101,11 +104,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
         '500':
-          description: DB failure, raw Go error as text/plain (http.Error).
+          description: >-
+            DB failure. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     delete:
       operationId: clearFocusBlocks
       tags: [focus]
@@ -136,12 +141,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: Engine failure, raw Go error as text/plain (http.Error).
+          description: >-
+            Engine failure for a user who HAS a stored Google credential (a user with none
+            gets the 401 `calendar not connected`). Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/compress:
     post:
@@ -157,6 +167,10 @@ paths:
         never returns 500, and returns `[]` if all five days error.
         If `week` is empty, `date` (or today) produces a single-element array and
         an engine error becomes a 500.
+        A caller with no stored Google credential gets the 401 `calendar not connected`
+        in BOTH modes, before any day is computed (PAC-21, API-054). Before PAC-21 was
+        finished single-day mode answered 500 and week mode answered 200 `[]`, which a
+        client cannot tell apart from "nothing to compress".
       requestBody:
         required: false
         content:
@@ -182,13 +196,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            Single-day mode only. Raw Go error as text/plain (http.Error).
+          description: >-
+            Single-day mode only: engine failure for a user who HAS a stored Google
+            credential (a user with none gets the 401 `calendar not connected`). Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/compress/apply:
     post:
@@ -222,12 +241,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: Engine Apply() error, raw Go error as text/plain (http.Error).
+          description: >-
+            Engine Apply() failure for a user who HAS a stored Google credential (a user
+            with none gets the 401 `calendar not connected`). Body: `{"error":"internal
+            error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/suggest:
     post:
@@ -272,14 +296,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            Engine error (freebusy failure, settings load, or the out-of-hours
-            allowance counter). Raw Go error as text/plain (http.Error).
+          description: >-
+            Engine error (freebusy failure or settings load) for a user who HAS a stored
+            Google credential (a user with none gets the 401 `calendar not connected`):
+            `{"error":"internal error"}`; or the weekly out-of-hours allowance is spent:
+            `{"error":"out-of-hours meeting allowance reached"}` (still a 500, not a 4xx:
+            changing that status is not part of this change). The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/create:
     post:
@@ -317,12 +347,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: Calendar/engine error, raw Go error as text/plain (http.Error).
+          description: >-
+            Calendar or engine error for a user who HAS a stored Google credential (a user
+            with none gets the 401 `calendar not connected`): `{"error":"internal error"}`;
+            or the weekly out-of-hours allowance is spent: `{"error":"out-of-hours meeting
+            allowance reached"}`. The detail is written to the server log and Sentry only
+            (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/nlp/parse:
     post:
@@ -355,11 +392,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
         '500':
-          description: Parser error, raw Go error as text/plain (http.Error).
+          description: >-
+            Parse() returned an error. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/nlp/confirm:
     post:
@@ -373,13 +412,13 @@ paths:
         `range_start`, `range_end`, `preferred_times` and `avoid_times` are
         ignored here. On success an audit row `nlp_confirmed` is written and the
         raw Google Calendar event is returned.
-      x-uncertain: >
-        The bounds check is `len(SuggestedSlots) == 0 || SelectedSlotIndex >= len(...)`.
-        A NEGATIVE `selected_slot_index` passes validation and then indexes the
-        slice out of range, which panics. The panic is re-raised by
-        sentryMiddleware and becomes a generic 500 from net/http - it is not a
-        400. A human should confirm whether this is intended before the spec
-        documents a 400 for negative indexes.
+        A NEGATIVE `selected_slot_index` is a 400 `invalid selected_slot_index`, like
+        an index past the end. Before PAC-21 was finished it passed the bounds check,
+        indexed the slice out of range and panicked; the panic was re-raised by
+        sentryMiddleware, so net/http aborted the response with no status and no body
+        at all. That was U-06 / API-024, resolved here: a crash is not a contract to
+        preserve, and the 400 is the response the handler already gives every other
+        out-of-range index.
       requestBody:
         required: true
         content:
@@ -395,20 +434,26 @@ paths:
                 $ref: '#/components/schemas/GoogleCalendarEvent'
         '400':
           description: >
-            `invalid JSON`, or `invalid selected_slot_index` (empty slot list, or
-            index >= len). JSON error shape (writeError).
+            `invalid JSON`, or `invalid selected_slot_index` (empty slot list,
+            index < 0, or index >= len). JSON error shape (writeError).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            CreateMeeting error as text/plain (http.Error), or an empty-body
-            panic-derived 500 for a negative index (see x-uncertain).
+          description: >-
+            CreateMeeting failed for a user who HAS a stored Google credential (a user with
+            none gets the 401 `calendar not connected`): `{"error":"internal error"}`; or
+            the weekly out-of-hours allowance is spent: `{"error":"out-of-hours meeting
+            allowance reached"}`. A negative `selected_slot_index` is a 400, never a 500
+            (resolves U-06 / API-024). The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/llm/test:
     post:
@@ -589,34 +634,30 @@ paths:
                     reason: destination_not_set
                     property: azureEndpoint
         '500':
-          description: >
-            Two different encodings share this code. Settings load failure ->
-            text/plain (http.Error). Client construction failure (e.g.
-            `LLM not configured - set API key in Settings`) -> JSON error shape
-            (writeError). A PAC-66 destination refusal is NEVER a 500; it is the
-            422.
+          description: >-
+            Settings load failure (`{"error":"internal error"}`), or the LLM client could
+            not be constructed (a fixed configuration sentence such as `LLM not configured -
+            set API key in Settings`). One encoding, the JSON error envelope, for both
+            (before PAC-21 was finished the settings-load failure was text/plain). A PAC-66
+            destination refusal is NEVER a 500; it is the 422. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
-            text/plain:
-              schema:
-                type: string
         '502':
-          description: >
-            The provider call failed. JSON error shape (writeError) carrying the
-            upstream error string. A 502 does NOT imply an inference request
-            was sent: the handler maps every provider-call error to 502,
-            including failures before any request leaves the server - Azure or
-            Vertex credential acquisition (`azure: credential: …`,
-            `azure: get token: …`, `vertex: find credentials: …`,
-            `vertex: get token: …`) and Bedrock configuration loading
-            (`bedrock: load config: …`, e.g. a stored `awsProfile` absent from
-            the deployment's shared config). PAC-66: this includes an approved
-            ambient-provider host answering with a redirect, which is not
-            followed with the deployment credential to any other host or to
-            `http` (spec AC-8). The body never carries the deployment
-            credential. It is never used for a destination refusal; see 422.
+          description: >-
+            The provider call failed. Body: `{"error":"upstream provider error"}`. The
+            upstream error string is NOT returned: it is redacted of both keys and written
+            to the server log and Sentry only (PAC-21). A 502 does NOT imply an inference
+            request was sent: the handler maps every provider-call error to 502, including
+            failures before any request leaves the server - Azure or Vertex credential
+            acquisition and Bedrock configuration loading (e.g. a stored `awsProfile` absent
+            from the deployment's shared config). PAC-66: this includes an approved
+            ambient-provider host answering with a redirect, which is not followed with the
+            deployment credential to any other host or to `http` (spec AC-8). The body never
+            carries the deployment credential. It is never used for a destination refusal;
+            see 422.
           content:
             application/json:
               schema:
@@ -652,11 +693,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Settings'
         '500':
-          description: DB failure, raw Go error as text/plain (http.Error).
+          description: >-
+            DB failure. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     patch:
       operationId: patchSettings
       tags: [settings]
@@ -722,11 +765,13 @@ paths:
         '400':
           $ref: '#/components/responses/SettingsValidationError'
         '500':
-          description: Save or re-read failure, text/plain (http.Error).
+          description: >-
+            Load, save or re-read failure. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     # PUT /api/settings is REMOVED by PAC-24. Revision 1 of this contract
     # retained it as a deprecated merge-semantics alias, on the argument that it
     # shielded the pre-PAC-24 frontend during the factory's cross-repo window
@@ -770,11 +815,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/DailyRecapSettings'
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     patch:
       operationId: patchDailyRecapSettings
       tags: [daily-recap]
@@ -814,11 +861,13 @@ paths:
               schema:
                 type: string
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/settings/daily-recap/preview:
     post:
@@ -846,11 +895,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/DailyRecapPreview'
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/settings/daily-recap/test:
     post:
@@ -883,17 +934,21 @@ paths:
               schema:
                 type: string
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
         '502':
-          description: '`send error: <err>` as text/plain (http.Error).'
+          description: >-
+            Sending the test message failed. Body: `{"error":"upstream provider error"}`.
+            The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
 components:
   responses:
@@ -905,7 +960,13 @@ components:
         of SettingsUpdate is nullable (spec AC-8).
 
         Messages that already exist:
-        `invalid JSON: <err>`;
+        `invalid JSON` (the body is not a JSON object or cannot be read; fixed
+        text, PAC-21);
+        `invalid JSON: <property> has the wrong type` (a value of the wrong JSON
+        type; `<property>` is the dotted path of JSON property names from the
+        request, e.g. `timeFormat` or `workingHours.days.monday.start`, never a
+        Go type or struct name; before PAC-21 was finished this was the decoder's
+        own error text, which named Go types);
         `<field> must be in HH:MM format` (workStart/workEnd/lunchStart/lunchEnd);
         `focusMinBlockMinutes must be positive`;
         `focusMaxBlockMinutes must be positive`;
@@ -914,7 +975,8 @@ components:
         `bufferBeforeMinutes must be positive`;
         `bufferAfterMinutes must be positive`;
         `autoScheduleCron must be a 5-part cron expression`;
-        `autoScheduleCron is invalid: <err>`;
+        `autoScheduleCron is invalid` (fixed text; before PAC-21 was finished the
+        cron parser's error was appended);
         `llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex`;
         `workingHours.mode must be all_days or by_day`;
         `workingHours.mode is required when day-specific hours are provided`;
@@ -941,7 +1003,7 @@ components:
         `conferencingProvider must be one of: meet, zoom, teams`.
 
         Message PAC-55 adds: `timeFormat must be 12h or 24h`, for `""` and any
-        other string (a non-string is `invalid JSON: <err>`).
+        other string (a non-string is `invalid JSON: timeFormat has the wrong type`).
 
         Messages revision 2 of this contract adds, each with its reason:
         `recapSendTime must be in HH:MM format` now also covers `""`. The write
@@ -997,9 +1059,10 @@ components:
       type: object
       description: >
         The JSON error shape produced by api.writeError (handlers_settings.go:206).
-        Emitted with `Content-Type: application/json`. Handlers that use the Go
-        stdlib `http.Error` instead return text/plain and do NOT use this shape;
-        each response above says which applies.
+        Emitted with `Content-Type: application/json`. Every 5xx in this domain
+        uses it, with a fixed server-chosen message (PAC-21). Handlers that use the
+        Go stdlib `http.Error` for a 4xx return text/plain and do NOT use this
+        shape; each response above says which applies.
         The 401 from requireAuth is a hybrid: the body text is
         `{"error":"unauthorized"}` but it is written through http.Error, which
         overwrites the Content-Type to `text/plain; charset=utf-8`.
@@ -1486,9 +1549,10 @@ components:
           $ref: '#/components/schemas/NLPParseResult'
         selected_slot_index:
           type: integer
+          minimum: 0
           description: >
-            Index into `parse_result.suggested_slots`. Only the upper bound is
-            checked; see the operation's x-uncertain note about negatives.
+            Index into `parse_result.suggested_slots`. A negative value or one
+            >= the slot count is a 400 `invalid selected_slot_index`.
       required: [parse_result, selected_slot_index]
       additionalProperties: true
 
@@ -2120,7 +2184,7 @@ components:
             never chose reads `12h`. There is no "unset": `""` and any other
             STRING are a 400 `timeFormat must be 12h or 24h`; a non-string
             (`24`, `true`, `["24h"]`) fails decoding first and is a 400
-            `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every
+            `invalid JSON: timeFormat has the wrong type`; `null` is a 400 like every
             property of this body. Display only: the server formats
             nothing with it, and the public booking page ignores it (always
             12-hour, PAC-55 §5).

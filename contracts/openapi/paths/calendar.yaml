@@ -69,21 +69,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/PlainTextError"
         "401":
-          description: >-
-            Either the requireAuth middleware rejected the request
-            (MiddlewareUnauthorized), or the handler could not build a calendar
-            client because no OAuth token is stored for this user — in that case the
-            body is the plain-text string `not connected: <err>`.
-          content:
-            text/plain:
-              schema:
-                $ref: "#/components/schemas/PlainTextError"
+          $ref: "#/components/responses/CalendarNotConnected"
         "500":
-          description: Google Calendar API error, verbatim error text via http.Error.
+          description: >-
+            Google Calendar API error, or the stored credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: "#/components/schemas/PlainTextError"
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/calendar/freebusy:
     get:
@@ -95,11 +90,11 @@ paths:
         is `map[string][]calendar.TimeSlot` and calendar.TimeSlot (backend/calendar/freebusy.go:10)
         has NO json struct tags, so the window keys serialize as Go field names —
         `Start` / `End`, capitalized. This is NOT the same shape as POST /api/freebusy.
-        No frontend code calls this endpoint.
-      x-uncertain: >-
-        This endpoint appears to be dead: nothing in smart-calendar-flow/src references
-        /api/calendar/freebusy. Confirm whether it should be kept, aligned with
-        POST /api/freebusy, or removed.
+        No frontend code calls this endpoint, but it is NOT dead: the MCP server's
+        `clockwise_find_free_slots` tool (mcp/tools.go) calls it and relays the body
+        unchanged. U-03 is therefore resolved as "keep, unchanged" (assumed by the factory
+        for PAC-21, pending owner confirmation): deleting it or aligning its shape with
+        POST /api/freebusy would break that consumer and belongs to its own issue.
       parameters:
         - name: start
           in: query
@@ -141,17 +136,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/PlainTextError"
         "401":
-          description: "`not connected: <err>` (plain text), or MiddlewareUnauthorized."
-          content:
-            text/plain:
-              schema:
-                $ref: "#/components/schemas/PlainTextError"
+          $ref: "#/components/responses/CalendarNotConnected"
         "500":
-          description: Google Calendar API error (plain text).
+          description: >-
+            Google Calendar API error, or the stored credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: "#/components/schemas/PlainTextError"
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/freebusy:
     post:
@@ -182,7 +176,8 @@ paths:
                 $ref: "#/components/schemas/FreeBusyQueryResponse"
         "400":
           description: >-
-            JSON error (writeError). One of: `invalid JSON: <err>`,
+            JSON error (writeError). One of: `invalid JSON` (fixed text: the decoder's
+            error is not appended, PAC-21),
             `emails is required` (empty or missing array), `max 20 emails per request`,
             `start_time must be RFC3339`, `end_time must be RFC3339`.
           content:
@@ -200,13 +195,13 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: >-
-            engine.FreeBusyService.Query failure — in practice only a settings-read
-            failure. Emitted with http.Error, so PLAIN TEXT, unlike every other
-            error path in this handler.
+            engine.FreeBusyService.Query failed - in practice only a settings-read failure.
+            Body: `{"error":"internal error"}`. The detail is written to the server log and
+            Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: "#/components/schemas/PlainTextError"
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/events/{id}:
     parameters:
@@ -256,21 +251,21 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
-          description: "`not authenticated` (no stored OAuth token), or MiddlewareUnauthorized."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/CalendarNotConnected"
         "404":
           description: >-
-            `event not found: <err>`. Any GetEvent failure maps to 404, including
+            Body: `{"error":"event not found"}` (fixed text; the Google error is not
+            appended, PAC-21). Any GetEvent failure maps to 404, including
             transport and permission errors, not only a genuine 404 from Google.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
-          description: "`update failed: <err>`."
+          description: >-
+            The Google update call failed, or the stored credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
             application/json:
               schema:
@@ -287,15 +282,13 @@ paths:
         "204":
           description: Deleted. Empty body, no Content-Type header set.
         "401":
-          description: "`not authenticated`, or MiddlewareUnauthorized."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/CalendarNotConnected"
         "500":
           description: >-
-            `delete failed: <err>`. Deleting an already-deleted or non-existent event
-            surfaces here as 500, never as 404.
+            The Google delete call failed, or the stored credential could not be read.
+            Deleting an already-deleted or non-existent event surfaces here as 500, never as
+            404. Body: `{"error":"internal error"}`. The detail is written to the server log
+            and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -330,13 +323,12 @@ paths:
                 items:
                   $ref: "#/components/schemas/CalendarRoom"
         "401":
-          description: "`not authenticated`, or MiddlewareUnauthorized."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/CalendarNotConnected"
         "500":
-          description: Google CalendarList API error, message passed through verbatim.
+          description: >-
+            Google CalendarList API error, or the stored credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
             application/json:
               schema:
@@ -372,13 +364,12 @@ paths:
                 items:
                   $ref: "#/components/schemas/AttendeeSuggestion"
         "401":
-          description: "`not authenticated`, or MiddlewareUnauthorized."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/CalendarNotConnected"
         "500":
-          description: Google Calendar API error.
+          description: >-
+            Google Calendar API error, or the stored credential could not be read. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
             application/json:
               schema:
@@ -408,7 +399,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/MiddlewareUnauthorized"
         "500":
-          description: Database error, message passed through verbatim.
+          description: >-
+            Database error. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -686,12 +679,13 @@ paths:
                 $ref: "#/components/schemas/MiddlewareUnauthorized"
         "500":
           description: >-
-            Body is the JSON literal `{"error":"internal"}` served as
-            text/plain; charset=utf-8 (http.Error).
+            Database error. Body: `{"error":"internal"}`, served as application/json (until
+            PAC-21 was finished it was this same JSON literal with a text/plain
+            Content-Type). The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                $ref: "#/components/schemas/MiddlewareUnauthorized"
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/audit:
     get:
@@ -1017,15 +1011,50 @@ paths:
               schema:
                 $ref: "#/components/schemas/MiddlewareUnauthorized"
         "500":
-          description: "`audit: <err>` as JSON via writeError."
+          description: >-
+            Query failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
 components:
+  responses:
+    CalendarNotConnected:
+      description: >-
+        Either the requireAuth middleware rejected the request (text/plain,
+        MiddlewareUnauthorized), or the session is valid but the caller has no stored
+        Google Calendar credential, so an operation that must read or write their
+        calendar cannot run. The second case is application/json with the exact body
+        `{"error":"calendar not connected"}`: no provider, Go or storage error text and
+        no user id (PAC-21, API-054). A failure to READ the credential store is not
+        this response; it is the operation's 500. The two cases are told apart by
+        Content-Type, or by the body. The web app's Dashboard already treats a 401 on a
+        calendar read as "connect a calendar", not as an expired session; only a 401 on
+        GET /api/auth/me signs the user out.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/CalendarNotConnectedError"
+        text/plain:
+          schema:
+            $ref: "#/components/schemas/MiddlewareUnauthorized"
+
   schemas:
     # ---------------------------------------------------------------- errors
+
+    CalendarNotConnectedError:
+      type: object
+      description: >-
+        The JSON error envelope for "this user has no calendar connected". The message
+        is a single fixed value so a client can branch on it.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: ["calendar not connected"]
 
     ErrorResponse:
       type: object
@@ -1037,7 +1066,9 @@ components:
       properties:
         error:
           type: string
-          description: Human-readable message; frequently wraps a raw Go error string.
+          description: >-
+            Human-readable, server-chosen message. Never the text of a Go, driver or
+            provider error (PAC-21): those go to the server log and Sentry only.
 
     PlainTextError:
       type: string
