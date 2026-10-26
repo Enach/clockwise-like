@@ -316,3 +316,56 @@ schema this feature does not edit, so factory section 7 rule 1 does not apply.
   "unchanged" read-back rules out write-then-404).
 - `SchedulingLinkInviteResponse` change is description only; `required` and
   `additionalProperties` are unchanged.
+
+---
+
+## Revision 2 — 2026-10-26 (answers challenge round 1)
+
+### B-1: a deleted link does not give 404 — accepted, fixed in the text
+
+The challenger is right. `DELETE /api/scheduling-links/{id}` is a soft delete
+(`UPDATE scheduling_links SET active = false`, `backend/storage/scheduling_links.go`
+`DeleteSchedulingLink`; `booking.yaml` `deleteSchedulingLink` says the same). The host
+rows survive. `GetPendingInvitesForUser` filters on `user_id` and `status = 'pending'`
+only, and `RespondToHostInvite` keys on `link_id` and `user_id` only, so neither looks at
+`active`. An invite on a deleted link is still listed and accept/decline on it update
+the row and return 200. Re-read on this branch before writing this answer.
+
+Changes (text only, no shape change, no behaviour change beyond revision 1):
+
+1. Manifest `consumersAffected[0].detail` and section 5: "link deleted" removed from
+   the 404 case. The 404 case is now "the host row is gone (the owner removed the host,
+   or the caller already left)". Both now say explicitly that an invite on a deleted
+   link is still listed and accept/decline return 200 ("Invite accepted"), unchanged.
+2. `booking.yaml`: the descriptions of `acceptSchedulingLinkHostInvite`,
+   `declineSchedulingLinkHostInvite`, `acceptSchedulingLinkInviteByLink` and
+   `declineSchedulingLinkInviteByLink` each gain: a deactivated link (`active=false`,
+   see `deleteSchedulingLink`) keeps its host rows, so accept/decline on it match and
+   return 200 (PAC-30 D-5). The 404 wording "no link has that id" therefore means no
+   row at all.
+3. **D-5** added to section 4 and to the manifest `decisionsAssumed`, assumed by the
+   factory, pending owner confirmation. Follow-up `inactive-link-invites` added to the
+   manifest: the invite list and accept/decline/leave ignore `active`; whether they
+   should hide the invite or answer 404 needs an owner decision. PAC-30 is not widened
+   to a 404 on inactive links: no acceptance criterion asks for it, and D-5 neither
+   deletes user data nor widens who can see data.
+
+`contractRevision` is now `2` and `contractHash` is the hash of the reassembled bundle.
+
+### Non-blocking findings
+
+N-1..N-4 are noted and not changed in this revision. N-2 (API-069 needs its own Linear
+issue) and N-3 (D-1 wording: "these operations add no new existence oracle") are left
+for the owner and the plan stage; D-1's substance is unchanged.
+
+### What was run for revision 2
+
+- `python scripts/openapi_assemble.py` -> wrote the bundle, 98 paths, 119 operations,
+  `x-uncertain: 13`, rc=0; `--check` -> `OK: bundle is in sync (98 paths)`, rc=0.
+- `api-gate.sh factory/pac-30-contract` on `aecab1e` (the fragment change):
+  `make openapi rc=0`, `regenerated: none`, `openapi-check(api) rc=0` (bundle in sync,
+  MIGRATION.md covers all 119 operations, `backend/api/gen` matches the contract),
+  backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp test rc=0, backend coverage
+  54.9% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` ->
+  `0c1cfaa0b9011d1c9ccf5b08e5919ed579ec918700dd368b2a4aa06c40bf8097`.
