@@ -1172,3 +1172,117 @@ added to OQ-9.
 5. §6 now says the activity-log entry description is widened by the contract
    stage without redefining the seven existing kinds.
 6. §5 now says the frontend stage owes the unconfirmed-revocation message.
+
+## Challenge — 2026-10-26 (round 3)
+
+**Verdict**: accept-with-changes
+
+I reviewed the committed spec at `05c1ae5` (Revision 2) against the Linear issue
+text, the backend and contract at `16f3100` (still `origin/main`), and
+`smart-calendar-flow` at `d9e0786`. Both round-2 blocking findings are resolved:
+
+- §2.8 and the §4 preamble now describe the on-event action correctly. I
+  re-read `handlers_conferencing.go:52-55,251-358` and
+  `handlers_events.go:24-32`: 401 when there is no Google credential (`:267-270`),
+  404 "event not found" when the Google read fails (`:272-275`), Teams or Zoom
+  read only at `:337`, and the write-back through Google at `:352`.
+- AC-24 and AC-25 tie "once" to a single loss episode.
+
+One new defect remains. It comes from an assumption that runs through every
+criterion: that the user whose credential is used is the user acting.
+
+### Blocking
+
+1. **Three existing paths use another user's Google credential. The spec does
+   not say whose credential is renewed, whose surfaces change or whose activity
+   log gets the loss entry on those paths, so it permits writing B's loss into
+   A's activity log.**
+   Every criterion has A acting with A's own credential. AC-8(c) reads
+   "attributed to A", and §3 says "the user's own activity log". The backend
+   also renews Google credentials on behalf of someone else:
+   - **Team availability** (`GET /api/teams/{id}/availability`,
+     `openapi.yaml:4964`). A team member's request loads and renews *every
+     member's* Google credential (`backend/engine/team_availability.go:78-88`,
+     `auth.LoadUserToken(e.DB, m.UserID)`).
+   - **Public booking slots and booking creation** (`GET /api/book/{slug}/slots`,
+     `POST /api/book/{slug}`, both unauthenticated, `routes.go:26-27`). These
+     use each host's Google credential (`backend/engine/booking.go:114-124,202-208,252`).
+     No user is acting at all.
+
+   AC-6 makes the refreshed token persist, and AC-8 makes a refusal produce a
+   status change and an audit entry. Together they turn these reads into writes.
+   An implementation that attributes the loss to the request's user passes every
+   criterion as written. When B's refresh is refused inside A's
+   team-availability request, B's "Google connection lost" entry then lands in
+   A's activity log. A learns B's credential state, which widens who sees data,
+   and B is never told. An implementation that skips the record because no
+   caller exists passes too, leaving B's dead credential invisible: the problem
+   the issue exists to fix. A public visitor's request has no caller to attribute
+   to in the first place. AC-8(d) ("B's surfaces and audit log are unchanged")
+   cannot settle this, because there the credential is B's own.
+
+   *Resolves when* the spec states that renewal write-back, the status change and
+   the connection-lost entry always belong to **the credential's owner**,
+   whoever or whatever triggered the use (another user, an unauthenticated
+   booking visitor, a scheduled job), and that the triggering user's activity log
+   and status are untouched. It should add a criterion that pins this. Example:
+   A requests team availability, B's Google refresh is refused. B's Google Meet
+   row reports not connected, B gets one entry, A's log is unchanged, and the
+   availability response is as today. The spec must also add a line on the
+   public booking path. That line states what the host's surfaces and log show,
+   and that the booking responses do not change. If those responses stay
+   unchanged, list the three operations in inherited scope as unchanged. I
+   checked: none carries an `x-uncertain`. `POST /api/book/{slug}` carries the
+   open findings API-051 and API-073 (`api-audit.md:285,307`), which would be
+   conditional.
+
+### Non-blocking
+
+1. §3 says a refused renewal is visible "every place", but the AC-8 table names
+   only three Google actions. Other Google consumers renew too, and a refusal on
+   them is not required to surface:
+   - scheduled or engine paths (`backend/engine/auto_decline.go:77-87`,
+     `habits.go:250-254`, `analytics.go:212-216`);
+   - manager team detection (`manager.go:191-195`).
+
+   State whether loss recording applies to every consumer of the credential or
+   only to the listed actions. If it is only the listed actions, narrow §3 to
+   match. Blocking 1's resolution may settle this at the same time.
+2. Google reconnect resolves the user by email, exactly as Microsoft's does.
+   The Google callback upserts by `info.Email` and stores the token on that
+   user (`backend/api/handlers_auth.go:63-70`). The preamble defines
+   "reconnect" as "resolves to A" only for Outlook, while AC-12, AC-20 and
+   AC-24 also reconnect Google. Extend the definition, and OQ-10, to Google.
+3. The AC-8 Google availability row says "A's calendar provider is Google".
+   The lookup actually uses the Google credential whenever the provider is not
+   Outlook, WebCal included (`freebusy_service.go:122-138`). A WebCal user with
+   a refused Google credential is covered by no row. One clause would fix this.
+
+### Criteria I could not falsify
+- AC-8 and AC-25 for a credential renewed on another user's behalf (team
+  availability, public booking): "attributed to A" cannot tell attribution to
+  the owner from attribution to the requester (Blocking 1).
+
+Every other criterion has a test that fails today and passes afterwards (the
+round-1 and round-2 lists stand). New in Revision 2:
+- AC-23: no on-event test today asserts a Google loss entry, or that Teams and
+  Zoom go untouched, when Google is refused.
+- AC-24: no connection-lost entry exists today, so neither count holds.
+- AC-25: no connection-lost entry exists today.
+
+### Citations I checked and found wrong
+- None. Revision 2's new citations are correct:
+  - `handlers_conferencing.go:52-55,251-358,267-271,268-270,272-275,337-345,351-355`
+  - `handlers_events.go:24-32`
+  - `handlers_calendar.go:133-144`: actually `134-145` (function begins at
+    `:134`). Immaterial.
+  - `handlers_microsoft_auth.go:62-77`
+  - `users.go:21-25`
+- One claim is incomplete rather than wrong: §2.3 and §6 present the Google
+  credential as read only for its owner's actions. That is not so on the paths
+  in Blocking 1.
+
+### Consumers this breaks
+- None beyond those §2.4 and §6 already name, provided Blocking 1 resolves with
+  "responses unchanged" for team availability and booking. The web consumers of
+  team availability and the public booking page then see no change.
