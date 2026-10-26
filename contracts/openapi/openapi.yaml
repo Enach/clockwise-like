@@ -1008,11 +1008,15 @@ paths:
       tags:
       - auth
       summary: The authenticated user
-      description: 'Since PAC-35 (API-065) the user''s picture has one name end to end:
+      description: 'Since PAC-35 (API-065) the user''s picture has one name in the
 
-        `avatarUrl`, the name the server already sends. Clients read it under
+        current-user read: `avatarUrl`, the name the server already sends.
 
-        that name; the server does not rename it.
+        Clients read it under that name; the server does not rename it.
+
+        Scheduling-link and booking hosts carry the same stored value as
+
+        `avatar_url` (`SchedulingLinkHost`, `PublicHost`), unchanged by PAC-35.
 
         '
       responses:
@@ -6475,11 +6479,17 @@ components:
           type: string
         avatarUrl:
           type: string
-          description: 'The user''s picture URL, and the single name for the picture in every
+          description: 'The user''s picture URL. In the current-user read (`getCurrentUser`)
 
-            client (PAC-35, API-065: the web app read it as `avatar`, or not at
+            this is the only name for it; clients read it as `avatarUrl`, not
 
-            all). May be the empty string. Every sign-in overwrites it: Google
+            `avatar` (PAC-35, API-065: the web app read it as `avatar`, or not at
+
+            all). Scheduling-link and booking hosts carry the same stored value
+
+            as `avatar_url` (`SchedulingLinkHost`, `PublicHost`), unchanged by
+
+            PAC-35. May be the empty string. Every sign-in overwrites it: Google
 
             writes the Google picture, Microsoft and SSO always write "" (so a
 

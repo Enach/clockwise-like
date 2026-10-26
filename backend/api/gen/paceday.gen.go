@@ -938,9 +938,12 @@ type CreateSchedulingLinkRequestUsageType string
 
 // CurrentUserResponse storage.User (backend/storage/users.go) serialized directly.
 type CurrentUserResponse struct {
-	// AvatarUrl The user's picture URL, and the single name for the picture in every
-	// client (PAC-35, API-065: the web app read it as `avatar`, or not at
-	// all). May be the empty string. Every sign-in overwrites it: Google
+	// AvatarUrl The user's picture URL. In the current-user read (`getCurrentUser`)
+	// this is the only name for it; clients read it as `avatarUrl`, not
+	// `avatar` (PAC-35, API-065: the web app read it as `avatar`, or not at
+	// all). Scheduling-link and booking hosts carry the same stored value
+	// as `avatar_url` (`SchedulingLinkHost`, `PublicHost`), unchanged by
+	// PAC-35. May be the empty string. Every sign-in overwrites it: Google
 	// writes the Google picture, Microsoft and SSO always write "" (so a
 	// Microsoft or SSO sign-in clears a picture an earlier Google sign-in
 	// stored). Not omitempty, so the key is always present.
