@@ -10520,7 +10520,9 @@ components:
 
         name, comment, whitespace or other extra text); (4) the local part
 
-        (before `@`) uses only `A-Z a-z 0-9 . _ + -`; (5) the domain (after
+        (before `@`) uses only `A-Z a-z 0-9 . _ + - ''` (the apostrophe allows
+
+        names such as `o''brien`); (5) the domain (after
 
         `@`) is a DNS hostname: two or more dot-separated labels, each matching
 
@@ -10538,7 +10540,9 @@ components:
 
         `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
 
-        `alice@localhost`, `alice@acme`. Example forwarded: `alice@acme.com`.
+        `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+
+        `o''brien@acme.com`.
 
         When `login_hint` is repeated, only the first value is considered
 

@@ -2997,7 +2997,8 @@ type StartGoogleOAuthParams struct {
 	// `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
 	// name and an `Address` equal to the whole value (so no `<...>`, display
 	// name, comment, whitespace or other extra text); (4) the local part
-	// (before `@`) uses only `A-Z a-z 0-9 . _ + -`; (5) the domain (after
+	// (before `@`) uses only `A-Z a-z 0-9 . _ + - '` (the apostrophe allows
+	// names such as `o'brien`); (5) the domain (after
 	// `@`) is a DNS hostname: two or more dot-separated labels, each matching
 	// `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
 	// least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
@@ -3006,7 +3007,8 @@ type StartGoogleOAuthParams struct {
 	// dropped (spec AC-10, "a hint carrying extra URL parameters"):
 	// `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
 	// `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
-	// `alice@localhost`, `alice@acme`. Example forwarded: `alice@acme.com`.
+	// `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+	// `o'brien@acme.com`.
 	// When `login_hint` is repeated, only the first value is considered
 	// (`url.Values.Get`); the others are ignored.
 	// It is never a 400: the schema is a plain string on purpose, because a
@@ -3029,7 +3031,8 @@ type StartMicrosoftOAuthParams struct {
 	// `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
 	// name and an `Address` equal to the whole value (so no `<...>`, display
 	// name, comment, whitespace or other extra text); (4) the local part
-	// (before `@`) uses only `A-Z a-z 0-9 . _ + -`; (5) the domain (after
+	// (before `@`) uses only `A-Z a-z 0-9 . _ + - '` (the apostrophe allows
+	// names such as `o'brien`); (5) the domain (after
 	// `@`) is a DNS hostname: two or more dot-separated labels, each matching
 	// `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
 	// least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
@@ -3038,7 +3041,8 @@ type StartMicrosoftOAuthParams struct {
 	// dropped (spec AC-10, "a hint carrying extra URL parameters"):
 	// `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
 	// `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
-	// `alice@localhost`, `alice@acme`. Example forwarded: `alice@acme.com`.
+	// `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+	// `o'brien@acme.com`.
 	// When `login_hint` is repeated, only the first value is considered
 	// (`url.Values.Get`); the others are ignored.
 	// It is never a 400: the schema is a plain string on purpose, because a
@@ -3067,7 +3071,8 @@ type StartSsoLoginParams struct {
 	// `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
 	// name and an `Address` equal to the whole value (so no `<...>`, display
 	// name, comment, whitespace or other extra text); (4) the local part
-	// (before `@`) uses only `A-Z a-z 0-9 . _ + -`; (5) the domain (after
+	// (before `@`) uses only `A-Z a-z 0-9 . _ + - '` (the apostrophe allows
+	// names such as `o'brien`); (5) the domain (after
 	// `@`) is a DNS hostname: two or more dot-separated labels, each matching
 	// `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
 	// least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
@@ -3076,7 +3081,8 @@ type StartSsoLoginParams struct {
 	// dropped (spec AC-10, "a hint carrying extra URL parameters"):
 	// `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
 	// `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
-	// `alice@localhost`, `alice@acme`. Example forwarded: `alice@acme.com`.
+	// `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+	// `o'brien@acme.com`.
 	// When `login_hint` is repeated, only the first value is considered
 	// (`url.Values.Get`); the others are ignored.
 	// It is never a 400: the schema is a plain string on purpose, because a
