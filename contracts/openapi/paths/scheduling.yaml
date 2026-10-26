@@ -78,9 +78,11 @@ paths:
         Returns the caller's rows from the `focus_blocks` table (`user_id` = the
         authenticated user) where `date >= week AND date < week+7days`, ordered by
         start_time. Other users' blocks are never listed.
-        NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
-        emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`,
-        `Date`, `CreatedAt`) - not snake_case and not camelCase.
+        Keys are snake_case (`id`, `google_event_id`, `start_time`, `end_time`,
+        `date`, `created_at`) from explicit json tags on `storage.FocusBlock`
+        (PAC-26, API-014). Before PAC-26 the struct had no tags and the encoder
+        emitted the Go field names (`ID`, `GoogleEventID`, `StartTime`, ...),
+        which the web app's FocusBlock type could not read.
       parameters:
         - name: week
           in: query
@@ -1120,7 +1122,11 @@ components:
 
     FocusRunResult:
       type: object
-      description: engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+      description: >
+        engine.FocusRunResult (backend/engine/focus_time.go). camelCase wrapper; the
+        blocks inside `createdBlocks` are snake_case (FocusRunBlock, PAC-26). The
+        wrapper casing is unchanged by PAC-26: the web app's snake_case FocusRunResult
+        type is aligned to it by PAC-32 (API-015), which needs no contract change.
       properties:
         weekStart:
           type: string
@@ -1135,9 +1141,12 @@ components:
           type: array
           items:
             type: string
+            format: date
           description: >
-            x-uncertain at field level - the format of each entry is not pinned
-            by a struct tag; it is whatever the engine appends.
+            `YYYY-MM-DD` of each weekday the engine skipped (daily target already
+            met, or the day is disabled in the working window). Both append sites in
+            engine/focus_time.go append the same `day.Format("2006-01-02")` string
+            (U-23, resolved by reading the code for PAC-26).
         totalMinutes:
           type: integer
         errors:
@@ -1150,49 +1159,57 @@ components:
     FocusRunBlock:
       type: object
       description: >
-        engine.FocusBlock. This struct has NO json tags, so the encoder emits
-        exported Go field names verbatim. It is a DIFFERENT shape from
-        FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+        engine.FocusBlock, with explicit snake_case json tags (PAC-26, API-014).
+        The keys it shares with FocusBlockRecord (storage.FocusBlock, returned by
+        GET /api/focus/blocks) are spelled the same: the Go fields `Start`/`End`
+        are tagged `start_time`/`end_time` so that one block shape can be read
+        from both operations. It has no `id` and no `created_at`: the engine
+        reports what it created before any row id is known to the response.
+        Before PAC-26 the struct had no tags and the keys were `GoogleEventID`,
+        `Start`, `End`, `Date`.
       properties:
-        GoogleEventID:
+        google_event_id:
           type: string
-        Start:
-          type: string
-          format: date-time
-        End:
+        start_time:
           type: string
           format: date-time
-        Date:
+        end_time:
+          type: string
+          format: date-time
+        date:
           type: string
           format: date
           description: '`YYYY-MM-DD`.'
-      required: [GoogleEventID, Start, End, Date]
+      required: [google_event_id, start_time, end_time, date]
       additionalProperties: false
 
     FocusBlockRecord:
       type: object
       description: >
-        storage.FocusBlock (backend/storage/models.go). No json tags either, so
-        the wire field names are the Go field names.
+        storage.FocusBlock (backend/storage/models.go), with explicit snake_case
+        json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and
+        the web app's FocusBlock type. Before PAC-26 the struct had no tags and
+        the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`,
+        `CreatedAt`.
       properties:
-        ID:
+        id:
           type: integer
           format: int64
-        GoogleEventID:
+        google_event_id:
           type: string
-        StartTime:
-          type: string
-          format: date-time
-        EndTime:
+        start_time:
           type: string
           format: date-time
-        Date:
+        end_time:
+          type: string
+          format: date-time
+        date:
           type: string
           format: date
-        CreatedAt:
+        created_at:
           type: string
           format: date-time
-      required: [ID, GoogleEventID, StartTime, EndTime, Date, CreatedAt]
+      required: [id, google_event_id, start_time, end_time, date, created_at]
       additionalProperties: false
 
     FocusClearResult:

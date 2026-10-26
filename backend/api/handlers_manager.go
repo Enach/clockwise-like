@@ -20,6 +20,24 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// The reads that answer a write with the row it produced (PAC-26, D-3). They
+// are variables so a test can make the read-back fail after the write has
+// committed; production code never reassigns them.
+var (
+	readManagerMember        = storage.GetManagerTeamMemberByEmail
+	readManagerMemberForTeam = storage.GetManagerTeamMemberByEmailForTeam
+	readTeam                 = storage.GetTeam
+)
+
+// readMemberInScope reads one roster row: the team view when teamID is set,
+// the manager's global row otherwise.
+func readMemberInScope(db *sql.DB, managerID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, error) {
+	if teamID != nil {
+		return readManagerMemberForTeam(db, managerID, *teamID, email)
+	}
+	return readManagerMember(db, managerID, email)
+}
+
 type managerHandlers struct {
 	db        *sql.DB
 	newEngine func() ManagerWorkflow
@@ -311,9 +329,17 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	// Answer with the stored row, through the team view when scoped (PAC-26,
+	// API-031, D-4): the pre-insert struct has a zero id and zero timestamps.
+	stored, err := readMemberInScope(h.db, userID, teamID, email)
+	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(m)
+	_ = json.NewEncoder(w).Encode(stored)
 }
 
 func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
@@ -400,9 +426,12 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	updated, _ := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
-	if teamID != nil {
-		updated, _ = storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, email)
+	// A failed re-read is a 500, never 200 null (PAC-26, API-032, D-3).
+	updated, err := readMemberInScope(h.db, userID, teamID, email)
+	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)

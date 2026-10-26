@@ -74,6 +74,11 @@ Worse, the 201 add body is the **pre-insert in-memory struct**: `ID` is the zero
 back after `Upsert…`. `AnalyticsSharedWithManager`/`UpdatedAt` on the profile POST are
 likewise the values read *before* the upsert.
 
+**Resolved by PAC-26 (contract):** both structs carry explicit snake_case json tags matching
+their columns, and the 201 add body is the row read back after the upsert (a failed read-back
+is a 500). The profile POST's `updated_at` is still the pre-upsert value; PAC-26 does not
+change that.
+
 ### A4. `PATCH` responses can legitimately be the JSON literal `null`
 
 - `patchMember`: `updated, _ := storage.GetManagerTeamMemberByEmail…` — error discarded, then
@@ -83,6 +88,9 @@ likewise the values read *before* the upsert.
 
 `src/api/teams.ts::renameTeam` ignores the body and re-fetches, so it survives; a stricter
 client would not.
+
+**Resolved by PAC-26 (contract):** both re-read errors are checked; a failed re-read is a 500
+and the 200 schema is no longer nullable.
 
 ### A5. `null` where the frontend and zod-style consumers expect `[]`
 

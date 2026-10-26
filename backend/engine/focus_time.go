@@ -14,11 +14,13 @@ import (
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
+// FocusBlock is a block created by a run. Its keys match storage.FocusBlock
+// (PAC-26, D-1): one block shape for both focus operations.
 type FocusBlock struct {
-	GoogleEventID string
-	Start         time.Time
-	End           time.Time
-	Date          string
+	GoogleEventID string    `json:"google_event_id"`
+	Start         time.Time `json:"start_time"`
+	End           time.Time `json:"end_time"`
+	Date          string    `json:"date"`
 }
 
 type FocusRunResult struct {

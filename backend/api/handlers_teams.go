@@ -140,7 +140,12 @@ func (h *teamHandlers) patchTeam(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "patchTeam", err, http.StatusInternalServerError)
 		return
 	}
-	team, _ := storage.GetTeam(h.db, teamID)
+	// A failed re-read is a 500, never 200 null (PAC-26, API-032, D-3).
+	team, err := readTeam(h.db, teamID)
+	if err != nil {
+		writeServerError(w, r, "patchTeam", err, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(team)
 }

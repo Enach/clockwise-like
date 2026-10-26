@@ -119,6 +119,10 @@ nobody "fixes" the backend to send structured details assuming the spec allows i
    This last one is the sharpest: one response body contains both casings for the
    same data.
 
+   **Resolved by PAC-26 (contract):** `calendar.TimeSlot` is tagged `{start, end}` and
+   `calendar.GenericEvent` `{id, title, start, end}`, so all three endpoints above emit
+   lowercase keys and `POST /api/freebusy` has one casing throughout.
+
 2. **Two error body formats, mixed within single handlers.**
    `writeError` emits `{"error":"…"}` as `application/json`. `http.Error` emits plain
    text. `handlers_calendar.go` uses `http.Error` exclusively. `handlers_freebusy.go`

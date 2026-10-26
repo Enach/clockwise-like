@@ -61,6 +61,12 @@ even though `""` is the DB default and is explicitly valid.
 - Frontend `FocusBlock` is `{id, google_event_id, start_time, end_time, date}`.
   **Nothing matches.** Every field the frontend reads off a focus block is `undefined`.
 
+  **Resolved by PAC-26 (contract):** both structs carry explicit snake_case json tags.
+  `storage.FocusBlock` is `{id, google_event_id, start_time, end_time, date, created_at}`
+  and `engine.FocusBlock` is `{google_event_id, start_time, end_time, date}`; the shared
+  keys are spelled the same and match the frontend type. The `FocusRunResult` wrapper
+  casing (item 6) is PAC-32's, frontend side.
+
 ### 6. `FocusRunResult` key case
 Backend `weekStart`/`createdBlocks`/`skippedDays`/`totalMinutes`/`errors`;
 frontend `week_start`/`created_blocks`/`skipped_days`/`total_minutes`/`errors`.

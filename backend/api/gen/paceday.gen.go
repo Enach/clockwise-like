@@ -1089,14 +1089,14 @@ type EventPatchRequest struct {
 	Title *string `json:"title"`
 }
 
-// FocusBlockRecord storage.FocusBlock (backend/storage/models.go). No json tags either, so the wire field names are the Go field names.
+// FocusBlockRecord storage.FocusBlock (backend/storage/models.go), with explicit snake_case json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and the web app's FocusBlock type. Before PAC-26 the struct had no tags and the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`, `CreatedAt`.
 type FocusBlockRecord struct {
-	CreatedAt     time.Time          `json:"CreatedAt"`
-	Date          openapi_types.Date `json:"Date"`
-	EndTime       time.Time          `json:"EndTime"`
-	GoogleEventID string             `json:"GoogleEventID"`
-	ID            int64              `json:"ID"`
-	StartTime     time.Time          `json:"StartTime"`
+	CreatedAt     time.Time          `json:"created_at"`
+	Date          openapi_types.Date `json:"date"`
+	EndTime       time.Time          `json:"end_time"`
+	GoogleEventId string             `json:"google_event_id"`
+	Id            int64              `json:"id"`
+	StartTime     time.Time          `json:"start_time"`
 }
 
 // FocusClearResult Literal `map[string]int{"deleted": n}`.
@@ -1104,13 +1104,13 @@ type FocusClearResult struct {
 	Deleted int `json:"deleted"`
 }
 
-// FocusRunBlock engine.FocusBlock. This struct has NO json tags, so the encoder emits exported Go field names verbatim. It is a DIFFERENT shape from FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+// FocusRunBlock engine.FocusBlock, with explicit snake_case json tags (PAC-26, API-014). The keys it shares with FocusBlockRecord (storage.FocusBlock, returned by GET /api/focus/blocks) are spelled the same: the Go fields `Start`/`End` are tagged `start_time`/`end_time` so that one block shape can be read from both operations. It has no `id` and no `created_at`: the engine reports what it created before any row id is known to the response. Before PAC-26 the struct had no tags and the keys were `GoogleEventID`, `Start`, `End`, `Date`.
 type FocusRunBlock struct {
 	// Date `YYYY-MM-DD`.
-	Date          openapi_types.Date `json:"Date"`
-	End           time.Time          `json:"End"`
-	GoogleEventID string             `json:"GoogleEventID"`
-	Start         time.Time          `json:"Start"`
+	Date          openapi_types.Date `json:"date"`
+	EndTime       time.Time          `json:"end_time"`
+	GoogleEventId string             `json:"google_event_id"`
+	StartTime     time.Time          `json:"start_time"`
 }
 
 // FocusRunRequest Optional. Absent, empty or `null` is treated as `{}`. Any other body that does not decode into this object is a 400 `invalid JSON` (PAC-36, API-035; it was silently treated as `{}` before).
@@ -1120,15 +1120,15 @@ type FocusRunRequest struct {
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
-// FocusRunResult engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+// FocusRunResult engine.FocusRunResult (backend/engine/focus_time.go). camelCase wrapper; the blocks inside `createdBlocks` are snake_case (FocusRunBlock, PAC-26). The wrapper casing is unchanged by PAC-26: the web app's snake_case FocusRunResult type is aligned to it by PAC-32 (API-015), which needs no contract change.
 type FocusRunResult struct {
 	// CreatedBlocks `[]` when the engine created nothing.
 	CreatedBlocks []FocusRunBlock `json:"createdBlocks"`
 	Errors        []string        `json:"errors"`
 
-	// SkippedDays x-uncertain at field level - the format of each entry is not pinned by a struct tag; it is whatever the engine appends.
-	SkippedDays  []string `json:"skippedDays"`
-	TotalMinutes int      `json:"totalMinutes"`
+	// SkippedDays `YYYY-MM-DD` of each weekday the engine skipped (daily target already met, or the day is disabled in the working window). Both append sites in engine/focus_time.go append the same `day.Format("2006-01-02")` string (U-23, resolved by reading the code for PAC-26).
+	SkippedDays  []openapi_types.Date `json:"skippedDays"`
+	TotalMinutes int                  `json:"totalMinutes"`
 
 	// WeekStart RFC3339 (Go time.Time).
 	WeekStart time.Time `json:"weekStart"`
@@ -1171,7 +1171,7 @@ type FreeBusyQueryRequest struct {
 	StartTime time.Time `json:"start_time"`
 }
 
-// FreeBusyQueryResponse The same free/busy data is returned three ways for compatibility: `participants` (canonical), `busy` (map form) and `results` (legacy, and with different key casing). All three are always present.
+// FreeBusyQueryResponse The same free/busy data is returned three ways for compatibility: `participants` (canonical), `busy` (map form) and `results` (legacy). All three are always present. Since PAC-26 (API-028) every busy window in all three uses the same `{"start","end"}` keys; before it, `results[].busy[]` alone was `{"Start","End"}`.
 type FreeBusyQueryResponse struct {
 	// Busy Busy windows keyed by the lowercased email. Same data as `participants[].busy`. Always an object; a participant with no busy time maps to `[]`.
 	Busy    map[string][]FreeBusyWindow `json:"busy"`
@@ -1180,7 +1180,7 @@ type FreeBusyQueryResponse struct {
 	// Participants One entry per requested email, in the order personal-domain/cached entries were resolved.
 	Participants []FreeBusyParticipant `json:"participants"`
 
-	// Results Legacy view. Uses `coverage` instead of `status`, and its busy windows are engine/calendar.TimeSlot values with CAPITALIZED `Start`/`End` keys.
+	// Results Legacy view. Uses `coverage` instead of `status`. Its busy windows are calendar.TimeSlot values, `{"start","end"}` since PAC-26 (API-028).
 	Results []FreeBusyLegacyResult `json:"results"`
 
 	// StartTime Echo of the parsed request start, marshalled from Go time.Time.
@@ -1573,30 +1573,30 @@ type ManagerRosterMember struct {
 	ThisWeek MemberWeekStats `json:"this_week"`
 }
 
-// ManagerTeamMemberGoStruct storage.ManagerTeamMember marshalled with no json tags — Go field names verbatim. Returned by addManagerTeamMember (201) and patchManagerTeamMember (200).
+// ManagerTeamMemberGoStruct storage.ManagerTeamMember with explicit snake_case json tags (PAC-26, API-030); the keys match the manager_team_members columns. Returned by addManagerTeamMember (201) and patchManagerTeamMember (200), both read back from storage after the write. The schema name is kept from before PAC-26, when the struct had no tags and the keys were the Go field names (`ID`, `ManagerUserID`, `MemberEmail`, ...). Note the key is `member_email` here but `email` on ManagerRosterMember: this is the stored row, the roster is a view.
 type ManagerTeamMemberGoStruct struct {
 	// Cadence 1:1 cadence. "none" disables gap detection for that member.
-	Cadence           Cadence `json:"Cadence"`
-	CadenceCustomDays *int    `json:"CadenceCustomDays"`
+	Cadence           Cadence `json:"cadence"`
+	CadenceCustomDays *int    `json:"cadence_custom_days"`
 
-	// CreatedAt Zero value "0001-01-01T00:00:00Z" on the 201 add response.
-	CreatedAt   time.Time `json:"CreatedAt"`
-	DisplayName string    `json:"DisplayName"`
+	// CreatedAt Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
+	CreatedAt   time.Time `json:"created_at"`
+	DisplayName string    `json:"display_name"`
 
-	// ID On the 201 add response this is the zero UUID "00000000-0000-0000-0000-000000000000" because the struct is echoed back without re-reading the row.
-	ID             openapi_types.UUID  `json:"ID"`
-	LastOneOnOneAt *time.Time          `json:"LastOneOnOneAt"`
-	ManagerUserID  openapi_types.UUID  `json:"ManagerUserID"`
-	MemberEmail    openapi_types.Email `json:"MemberEmail"`
+	// Id The stored row id. Since PAC-26 (API-031) never the zero UUID on the 201 add response.
+	Id             openapi_types.UUID  `json:"id"`
+	LastOneOnOneAt *time.Time          `json:"last_one_on_one_at"`
+	ManagerUserId  openapi_types.UUID  `json:"manager_user_id"`
+	MemberEmail    openapi_types.Email `json:"member_email"`
 
-	// MemberUserID Set when the email matches a Paceday user; null for external members.
-	MemberUserID *openapi_types.UUID `json:"MemberUserID"`
+	// MemberUserId Set when the email matches a Paceday user; null for external members.
+	MemberUserId *openapi_types.UUID `json:"member_user_id"`
 
 	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual).
-	Source ManagerMemberSource `json:"Source"`
+	Source ManagerMemberSource `json:"source"`
 
-	// UpdatedAt Zero value "0001-01-01T00:00:00Z" on the 201 add response.
-	UpdatedAt time.Time `json:"UpdatedAt"`
+	// UpdatedAt Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // MeetingBriefResponse api.briefResponse. Note this is NOT the `storage.MeetingBrief` struct (which has
@@ -1862,12 +1862,12 @@ type PersonalCalendarPatchRequest struct {
 	Url     *string `json:"url"`
 }
 
-// PersonalCalendarPreviewEvent calendar.GenericEvent serialized WITHOUT json tags — capitalized Go field names. All four keys are always present.
+// PersonalCalendarPreviewEvent calendar.GenericEvent, with explicit json tags since PAC-26 (API-029). All four keys are always present (no omitempty). Before PAC-26 the struct had no tags and the keys were `ID`, `Title`, `Start`, `End`.
 type PersonalCalendarPreviewEvent struct {
-	End   time.Time `json:"End"`
-	ID    string    `json:"ID"`
-	Start time.Time `json:"Start"`
-	Title string    `json:"Title"`
+	End   time.Time `json:"end"`
+	Id    string    `json:"id"`
+	Start time.Time `json:"start"`
+	Title string    `json:"title"`
 }
 
 // PlainTextError Several handlers (and requireAuth) use Go's http.Error instead of
@@ -1961,10 +1961,10 @@ type PublicSlotsResponse struct {
 	Slots []PublicBookingSlot `json:"slots"`
 }
 
-// RawGoogleBusyWindow calendar.TimeSlot serialized WITHOUT json tags, hence capitalized Go field names. A Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded.
+// RawGoogleBusyWindow calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26 (API-028, API-029). Same keys as FreeBusyWindow; kept as its own schema because it is a different Go type with a different failure mode: a Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26 the struct had no tags and the keys were `Start` / `End`.
 type RawGoogleBusyWindow struct {
-	End   time.Time `json:"End"`
-	Start time.Time `json:"Start"`
+	End   time.Time `json:"end"`
+	Start time.Time `json:"start"`
 }
 
 // RawGoogleFreeBusyMap Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot` keyed by the calendar id Google echoed back (normally the attendee email).
@@ -2799,16 +2799,16 @@ type UpdateSchedulingLinkRequest struct {
 // UpdateSchedulingLinkRequestUsageType defines model for UpdateSchedulingLinkRequest.UsageType.
 type UpdateSchedulingLinkRequestUsageType string
 
-// UserProfileGoStruct storage.UserProfile marshalled with no json tags — Go field names verbatim. Do not rename these keys in the spec; they are literally what the server sends.
+// UserProfileGoStruct storage.UserProfile with explicit snake_case json tags (PAC-26, API-030); the keys match the user_profiles columns. The schema name is kept from before PAC-26, when the struct had no tags and the keys were the Go field names (`UserID`, `IsManager`, `DetectedAt`, `AnalyticsSharedWithManager`, `UpdatedAt`).
 type UserProfileGoStruct struct {
 	// AnalyticsSharedWithManager Member-side consent flag, defaulting to true. No endpoint in this domain sets it.
-	AnalyticsSharedWithManager bool       `json:"AnalyticsSharedWithManager"`
-	DetectedAt                 *time.Time `json:"DetectedAt"`
-	IsManager                  bool       `json:"IsManager"`
+	AnalyticsSharedWithManager bool       `json:"analytics_shared_with_manager"`
+	DetectedAt                 *time.Time `json:"detected_at"`
+	IsManager                  bool       `json:"is_manager"`
 
 	// UpdatedAt The value read BEFORE the upsert, not the newly written now().
-	UpdatedAt time.Time          `json:"UpdatedAt"`
-	UserID    openapi_types.UUID `json:"UserID"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	UserId    openapi_types.UUID `json:"user_id"`
 }
 
 // WorkingHoursSchedule storage.WorkingHoursSchedule. Replaced WHOLE by a PATCH that mentions it; there is no deep merge (spec AC-9).
