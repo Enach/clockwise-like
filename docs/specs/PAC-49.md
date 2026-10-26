@@ -1706,6 +1706,9 @@ what a run does once it starts changes — §7 lists what stays the same.
 2. **Take the comprehensive fix**: auto-schedule becomes a per-user feature end to end — flag, schedule, execution, audit.
 3. Both repos deploy together (docker-compose), so the settings wire-shape change ships in one release with the frontend that reads it. No dual-shape window.
 4. **Added 2026-10-22 (orchestrator, from the issue owner)**: the stored schedule default stays `'0 8 * * *'`; migration 026 adds the last-run column and nothing else. The weekday-morning schedule is a preset the user picks, not a default the database imposes.
+5. **Added 2026-10-26 (stage 4, backend) — assumed by the factory, pending owner confirmation.** The watermark migration is **027**, not 026: PAC-23 shipped as 026 (`backend/storage/migrations/026_audit_log_user_id.up.sql`, #213). Only the number changes.
+6. **Added 2026-10-26 (stage 4, backend) — assumed by the factory, pending owner confirmation.** "The week containing the tick instant" (§4.3 item 5) is read in the **user's own timezone**, consistent with §4.3 item 3 ("the server's zone is never consulted"). The manual run is unchanged and still uses the server's clock.
+7. **Added 2026-10-26 (stage 4, backend) — assumed by the factory, pending owner confirmation; answers OQ-6.** Slots are stepped in wall-clock time. A slot inside the spring-forward gap runs once that day, at the wall time one hour later (02:30 → 03:30 in Europe/Paris on 2026-03-29); a slot inside the repeated autumn hour runs once. The library's own stepping skips the spring day and runs the autumn slot twice; both are pinned by `TestNextSlot_DaylightSaving` and `TestFocusCron_DaylightSavingOneRunPerDay`.
 
 ## 3. Scope
 

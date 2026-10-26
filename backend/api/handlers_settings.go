@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/storage"
-	"github.com/robfig/cron/v3"
 )
 
 var timePattern = regexp.MustCompile(`^\d{2}:\d{2}$`)
@@ -249,7 +249,7 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 	if s.AutoScheduleCron != "" {
 		if len(strings.Fields(s.AutoScheduleCron)) != 5 {
 			add("autoScheduleCron must be a 5-part cron expression", "autoScheduleCron")
-		} else if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(s.AutoScheduleCron); err != nil {
+		} else if _, err := engine.ParseAutoScheduleCron(s.AutoScheduleCron); err != nil {
 			add("autoScheduleCron is invalid: "+err.Error(), "autoScheduleCron")
 		}
 	}
