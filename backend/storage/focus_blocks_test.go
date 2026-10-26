@@ -116,10 +116,3 @@ func TestFocusMinutesForDay(t *testing.T) {
 		t.Errorf("got %d minutes for empty day, want 0", mins2)
 	}
 }
-
-func TestWriteAuditLog(t *testing.T) {
-	db := openTestDB(t)
-	// Should not panic
-	WriteAuditLog(db, "test_action", `{"key":"value"}`)
-	WriteAuditLog(db, "another_action", "")
-}

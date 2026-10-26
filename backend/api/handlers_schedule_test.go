@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 	googlecalendar "google.golang.org/api/calendar/v3"
 )
 
@@ -348,5 +350,45 @@ func TestCreateMeeting_Error(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// auditActionsFor lists the actions recorded against user, newest first (PAC-23).
+func auditActionsFor(t *testing.T, user uuid.UUID) []string {
+	t.Helper()
+	entries, err := storage.ListAuditLog(openTestDB(t), user, storage.AuditMaxLimit)
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	actions := make([]string, 0, len(entries))
+	for _, e := range entries {
+		actions = append(actions, e.Action)
+	}
+	return actions
+}
+
+// PAC-23 AC-5 / AC-14: POST /api/schedule/create is recorded against the caller.
+func TestCreateSchedule_AuditEntrySubjectIsCaller(t *testing.T) {
+	db := openTestDB(t)
+	caller := createTestUser(t, "audit-schedule-create@example.com")
+	other := createTestUser(t, "audit-schedule-create-other@example.com")
+	h := &scheduleHandlers{eng: &mockCompressor{}, smart: &mockScheduler{created: &googlecalendar.Event{Id: "audit-evt"}}, db: db}
+	now := time.Now().UTC()
+	b, _ := json.Marshal(map[string]interface{}{
+		"title": "Audit Sync",
+		"start": now.Add(time.Hour).Format(time.RFC3339),
+		"end":   now.Add(2 * time.Hour).Format(time.RFC3339),
+	})
+	w := httptest.NewRecorder()
+	h.createMeeting(w, withUser(httptest.NewRequest(http.MethodPost, "/api/schedule/create", bytes.NewReader(b)), caller))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	if got := auditActionsFor(t, caller); len(got) != 1 || got[0] != "meeting_created" {
+		t.Errorf("caller's log = %v, want [meeting_created]", got)
+	}
+	if got := auditActionsFor(t, other); len(got) != 0 {
+		t.Errorf("other user's log = %v, want empty", got)
 	}
 }

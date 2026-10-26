@@ -219,7 +219,7 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 		}
 	}
 
-	storage.WriteAuditLog(s.DB, "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
+	storage.WriteAuditLog(s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
 	return result, nil
 }
 

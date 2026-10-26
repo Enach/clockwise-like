@@ -26,6 +26,11 @@
 
 ## 1. Approach
 
+> **Renumbered to 026 at stage 4, 2026-10-26.** `025_settings_time_format` (PAC-55)
+> took 025 on main. The migration files are `026_audit_log_user_id.{up,down}.sql`;
+> read every `025_audit_log_user_id` below, including the §6 rollback command, as
+> `026_audit_log_user_id`. See docs/specs/PAC-23.md "Decisions — 2026-10-26".
+
 > **Renumbered to 025, 2026-10-04.** This plan was written against `024`, but
 > PAC-24's spec, contract, plan and PAC-49's spec all refer to *their* migration
 > as `024` by number, and the highest migration on `main` is `023`. Whichever

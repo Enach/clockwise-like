@@ -707,22 +707,18 @@ paths:
         caller can address another user's entries.
 
 
-        CURRENT SERVER BEHAVIOUR, which PAC-23 is fixing (finding API-005, critical):
-        as of this revision `storage.ListAuditLog` (backend/storage/audit_log.go:19)
-        selects with no user predicate — `SELECT id, action, details, created_at FROM
-        audit_log ORDER BY created_at DESC, id DESC LIMIT $1` — `audit_log` has no
-        `user_id` column (backend/storage/migrations/001_initial.up.sql:44-49; no
-        later migration touches the table, and the highest migration on disk is
-        `024_settings_per_user`), `storage.WriteAuditLog` (backend/storage/focus_blocks.go:74-76)
-        takes no user and inserts none, and `auditHandler`
-        (backend/api/handlers_audit.go:12-23) reads no identity from the request
-        context — every authenticated caller receives every user's rows, including
-        other users' meeting titles and typed prompts. The paragraphs of this
-        description, the `summary` above and the `200` below describe what stage 4
-        implements and what spec AC-1, AC-3, AC-4 and AC-8 test; this paragraph is
-        what they replace. Falsify it with
-        `grep -n "WHERE\|user_id" backend/storage/audit_log.go` (nothing today) and
-        `grep -l audit_log backend/storage/migrations/*` (only `001_initial`).
+        SERVER BEHAVIOUR SINCE PAC-23 (finding API-005, fixed): `auditHandler`
+        (backend/api/handlers_audit.go:13-32) reads the caller from the request
+        context and passes it to `storage.ListAuditLog`, whose query is `SELECT id,
+        action, details, created_at FROM audit_log WHERE user_id = $1 ORDER BY
+        created_at DESC, id DESC LIMIT $2` (backend/storage/audit_log.go:34);
+        migration `026_audit_log_user_id` added the `user_id` column, and
+        `storage.WriteAuditLog` (backend/storage/focus_blocks.go) records the subject
+        at all seven call sites. Before PAC-23 the query had no predicate, the table
+        had no user column, and every authenticated caller received every user's
+        rows. Falsify with `grep -n "WHERE user_id" backend/storage/audit_log.go`
+        and `grep -l audit_log backend/storage/migrations/*` (`001_initial` and
+        `026_audit_log_user_id`).
 
 
         A NOTE ON CITATIONS, because three revisions of this contract have now been
@@ -820,13 +816,14 @@ paths:
         There is no pagination — no `offset`, no cursor, no `before`. Entries older
         than the most recent `limit` (at most 500) cannot be retrieved through this API
         at all, and because this operation is the only reader of the table in the whole
-        codebase (one SELECT, backend/storage/audit_log.go:19; one INSERT,
-        backend/storage/focus_blocks.go:74-76; no view, no join, no second reader) they
+        codebase (one SELECT, in `storage.ListAuditLog`, backend/storage/audit_log.go;
+        one INSERT, in `storage.WriteAuditLog`, backend/storage/focus_blocks.go; no
+        view, no join, no second reader) they
         cannot be retrieved any other way either.
 
 
         WHICH SERVER ANSWERS THIS, because the `limit` description below depends on it:
-        the hand-written `auditHandler` (backend/api/handlers_audit.go:12-23),
+        the hand-written `auditHandler` (backend/api/handlers_audit.go:13-32),
         registered directly on chi at backend/api/routes.go:180 (`grep -n audit
         backend/api/routes.go` finds that one line).
         `backend/api/gen/paceday.gen.go` — generated from this bundle, committed, and
@@ -861,7 +858,7 @@ paths:
 
 
             STEP 1 — WHICH TEXT IS READ. The handler reads
-            `r.URL.Query().Get("limit")` (backend/api/handlers_audit.go:14).
+            `r.URL.Query().Get("limit")` (backend/api/handlers_audit.go:23).
             `URL.Query()` is `url.ParseQuery` with its error discarded, and
             `ParseQuery` DROPS any `key=value` pair it cannot URL-unescape and carries
             on; `Get` then returns the first of the surviving values, or `""` if none
@@ -966,18 +963,16 @@ paths:
             author deciding to wire it at all will.
 
 
-            CURRENT SERVER BEHAVIOUR, which differs and which PAC-23 is fixing
-            (finding API-074): step 1 is already exactly as described — it is the
-            current code — and step 2 is not. `backend/api/handlers_audit.go:14`
-            discards `strconv.Atoi`'s error, so an unreadable or non-integer value
-            arrives as `0`, and `backend/storage/audit_log.go:16-18` is
-            `if limit <= 0 || limit > 500 { limit = 100 }`. So today (a), (b), (c) and
-            (e) all collapse to the single value **100** — including `?limit=10000`,
-            which returns 100, a number below the declared `maximum`. Only (d) is
-            already right: a conforming value passes through untouched, which is why
-            nothing was ever observed to be broken — the one shipped client only ever
-            sends `?limit=50`. The paragraph above is what stage 4 implements and what
-            spec AC-10 and AC-11 test; this paragraph is what it replaces. No third
+            SERVER BEHAVIOUR SINCE PAC-23 (finding API-074, fixed): steps 1 and 2
+            are both the current code. `backend/api/handlers_audit.go:23` discards
+            `strconv.Atoi`'s error, which is exactly right here: an unreadable or
+            non-integer value arrives as `0` and resolves to the default, and an
+            overflowing one arrives saturated at `MaxInt64` and resolves to the
+            maximum. `storage.ListAuditLog` (backend/storage/audit_log.go:28-33) maps
+            `<= 0` to 50 and `> 500` to 500. Before PAC-23 that clamp was
+            `if limit <= 0 || limit > 500 { limit = 100 }`, so (a), (b), (c) and (e)
+            all returned 100 — including `?limit=10000`, below the declared
+            `maximum`. No third
             number is in play: the 50 comes from that client
             (`smart-calendar-flow/src/api/client.ts:419-420`, which also renders it
             into the page subtitle at `src/pages/Audit.tsx:39`). After PAC-23 that
@@ -1003,13 +998,9 @@ paths:
             none, never `null`. The bundle is `openapi: 3.1.0`, where `type: array`
             already excludes `null`, so a `null` body is non-conforming and spec AC-2
             is expressible; what makes it true at runtime is the single line
-            `entries := make([]AuditEntry, 0)` at backend/storage/audit_log.go:25, and
-            docs/factory/PAC-23-plan.md §2 rewrites exactly that function — its
-            "files to change" row for `backend/storage/audit_log.go` says
-            "`ListAuditLog` gains `userID uuid.UUID`, the query gains
-            `WHERE user_id = $1`, the clamp becomes default 50 / cap 500" — and `var
-            entries []AuditEntry` in place of the `make` emits `null` and breaks this
-            guarantee.
+            `entries := make([]AuditEntry, 0)` in `storage.ListAuditLog`
+            (backend/storage/audit_log.go:40), and `var entries []AuditEntry` in
+            place of the `make` would emit `null` and break this guarantee.
             Stated here because the empty case is the release-day case for every user:
             `[]` is also what a user sees for activity recorded before the PAC-23
             migration.
@@ -1638,7 +1629,7 @@ components:
             `audit_log.id`, declared `SERIAL` at
             backend/storage/migrations/001_initial.up.sql:45 — a 32-bit signed
             sequence. `storage.AuditEntry.ID` is a Go `int64`
-            (backend/storage/audit_log.go:9), but that widening is a Go type choice,
+            (backend/storage/audit_log.go:18), but that widening is a Go type choice,
             not a range the table can reach, so `int64` here would over-declare the
             server. `int32` is declared instead because the sole consumer coerces
             with `Number(e.id)` (smart-calendar-flow/src/api/client.ts:448, inside
@@ -1657,8 +1648,8 @@ components:
 
             This is the complete set the server can emit, enumerated from every
             `storage.WriteAuditLog` call site in `backend/` (the action argument is a
-            string literal at all seven, and `storage.WriteAuditLog`,
-            backend/storage/focus_blocks.go:74-76, holds the only INSERT against the
+            string literal at all seven, and `storage.WriteAuditLog`, in
+            backend/storage/focus_blocks.go, holds the only INSERT against the
             table): `focus_created` (`FocusTimeEngine.RunForUser`,
             backend/engine/focus_time.go), `focus_cleared`
             (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go),

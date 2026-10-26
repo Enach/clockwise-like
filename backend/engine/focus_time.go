@@ -105,7 +105,7 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 		"created":       len(result.CreatedBlocks),
 		"total_minutes": result.TotalMinutes,
 	})
-	storage.WriteAuditLog(e.DB, "focus_created", string(detail))
+	storage.WriteAuditLog(e.DB, userID, "focus_created", string(detail))
 
 	return result, nil
 }

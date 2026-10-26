@@ -1,6 +1,10 @@
 package storage
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type OAuthToken struct {
 	ID           int64
@@ -22,6 +26,7 @@ type FocusBlock struct {
 
 type AuditLog struct {
 	ID        int64
+	UserID    uuid.NullUUID // nil for entries recorded before PAC-23
 	Action    string
 	Details   string
 	CreatedAt time.Time

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,6 +72,17 @@ func FocusMinutesForDay(db *sql.DB, userID uuid.UUID, date string) (int, error) 
 	return total, err
 }
 
-func WriteAuditLog(db *sql.DB, action, details string) {
-	_, _ = db.Exec(`INSERT INTO audit_log (action, details, created_at) VALUES ($1, $2, NOW())`, action, details)
+// WriteAuditLog records an activity entry about userID's calendar (PAC-23):
+// userID is the subject, whose log the entry appears in. Recording is best
+// effort and never fails the caller, but it is never silent either: an entry
+// with no subject is refused before it reaches the database, and a failed
+// insert is written to the server log.
+func WriteAuditLog(db *sql.DB, userID uuid.UUID, action, details string) {
+	if userID == uuid.Nil {
+		log.Printf("audit: %s not recorded: no subject", action)
+		return
+	}
+	if _, err := db.Exec(`INSERT INTO audit_log (user_id, action, details, created_at) VALUES ($1, $2, $3, NOW())`, userID, action, details); err != nil {
+		log.Printf("audit: %s for user %s not recorded: %v", action, userID, err)
+	}
 }
