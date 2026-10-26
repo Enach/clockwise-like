@@ -1,11 +1,11 @@
 # Spec — PAC-68: Org membership is granted by email domain alone
 
 - **Linear**: https://linear.app/paceday/issue/PAC-68/org-membership-is-granted-by-email-domain-alone-use-google-hd
-- **Status**: draft
+- **Status**: challenged (round 1 answered in "Revision 1"; awaiting re-challenge)
 - **Author**: spec-author (local session, 2026-10-26)
 - **Split from**: PAC-50 spec v2.1 §3 "Out of scope" (`docs/specs/PAC-50.md:64`), which names this work "verified org membership".
 - **Depends on**: PAC-50 (not yet implemented on `main` at `2e1f392`). PAC-50 introduces the organisation's Microsoft tenant pin and the verified-domain evidence check (`docs/specs/PAC-50.md:126`, `:183`); AC-5 and AC-6 below assume they exist. PAC-45 (merged) for the SSO path, which this spec leaves alone.
-- **Inherited scope**: none. The three sign-in callbacks this spec changes (`GET /api/auth/callback`, `GET /api/auth/microsoft/callback`; the OIDC callback is read but not changed) carry no `x-uncertain` marker (`contracts/openapi/paths/auth.yaml:64-200`; the only markers in that file are at `:713`, `:840`, `:901`, all on other operations). Their open audit rows API-008, API-011, API-012 and API-064 (`docs/factory/api-audit.md:242,245,246,298`) concern cookies, JWT issuance failure, Microsoft profile-fetch failure and `login_hint`; none is about org association. This spec does not modify those behaviours, so per factory §7 rule 1 they are listed for the contract author to confirm, not resolved here. If stage 2 changes the response of either callback (it should not need to), API-011/API-012 become in scope.
+- **Inherited scope**: none. The two sign-in callbacks this spec changes (`GET /api/auth/callback`, `GET /api/auth/microsoft/callback`; the OIDC callback is read but not changed) carry no `x-uncertain` marker (`contracts/openapi/paths/auth.yaml:64-200`; the only markers in that file are at `:713`, `:840`, `:901`, all on other operations). Their open audit rows API-008, API-011, API-012 and API-064 (`docs/factory/api-audit.md:242,245,246,298`) concern cookies, JWT issuance failure, Microsoft profile-fetch failure and `login_hint`; none is about org association. This spec does not modify those behaviours, so per factory §7 rule 1 they are listed for the contract author to confirm, not resolved here. If stage 2 changes the response of either callback (it should not need to), API-011/API-012 become in scope.
 
 ## 1. Problem
 
@@ -25,7 +25,7 @@ Verified against `main` at `2e1f392` (2026-10-26).
 
 **It runs on every sign-in, not only at sign-up**, on all three paths, and its error is discarded each time:
 - Google: `backend/api/handlers_auth.go:76`, after the user upsert at `:63`.
-- Microsoft: `backend/api/handlers_microsoft_auth.go:76`, after the user upsert at `:68`.
+- Microsoft: `backend/api/handlers_microsoft_auth.go:76`, after the user upsert at `:67`.
 - Generic OIDC SSO: `backend/api/handlers_sso.go:191`, after PAC-45's email-to-provider-domain check at `:181-184`.
 
 **No organisation evidence from the IdP is read on either social path.**
@@ -36,10 +36,12 @@ Verified against `main` at `2e1f392` (2026-10-26).
 
 **A user's email cannot change after creation**, because the user row is upserted on `email` (`backend/storage/users.go:21-35`, `ON CONFLICT (email)`), so for any given user the derived org domain is fixed; the unconditional `SET org_id` on each sign-in therefore re-writes the same org, never a different one.
 
+**Accounts are matched by email alone, across providers.** The conflict key is `email` only; on conflict the row's `name`, `avatar_url` and `provider_id` are overwritten but `provider` is not (`users.go:21-31`). Both callbacks pass the provider's email straight into that upsert (`handlers_auth.go:63`, `handlers_microsoft_auth.go:67`) and then attach the new provider token to the returned row (`handlers_auth.go:70`, `handlers_microsoft_auth.go:72`). So whoever signs in with *any* Google or Microsoft account carrying an address already in `users` receives that existing row, its session and its organisation, whichever provider the row was created through. See OQ-1.
+
 **What membership grants today.**
 - `GET /api/org/members` (`backend/api/routes.go:132`, `backend/api/handlers_org.go:16-40`): every member's id, email, name, avatar and provider (`orgs.go:55-77`). A user with no org gets `[]`.
 - SSO admin writes and listing require an org and act on the caller's org (`handlers_sso.go:201-206`, `:269-274`, `:291-298`).
-- Teams carry an org id (`backend/storage/teams.go:103,114`).
+- Teams have an org id column, read at `backend/storage/teams.go:103,114`, but no code path writes it (`CreateTeam` inserts only `name, created_by`, `teams.go:51-57`). Teams are not a consumer of membership today.
 
 **Tests protecting this behaviour: none.** No Go test calls `AssociateUserWithOrg`, `SetUserOrg` or `GetOrgMembers`; `UpsertOrg` appears only as fixture setup in `backend/storage/sso_providers_test.go:116`. `handlers_auth_test.go` covers status, disconnect, start-OAuth and the invalid-state callback only (`docs/factory/api-audit.md:326`, API-092). `domain_test.go` covers `IsGenericDomain` and `DeriveOrgName`. No e2e scenario touches organisations. This absence is itself a finding: §6 lists what the implementer must pin with new tests before changing anything.
 
@@ -53,6 +55,8 @@ Signing in with Google or Microsoft still creates or finds the user and signs th
 - **When the evidence is missing, negative, or cannot be obtained** (the provider call fails or times out), the sign-in succeeds and the user is simply not added. Membership is never granted on a fallback to the email domain.
 - **An unverified sign-in never creates an organisation.** The organisation for `acme.com` comes into existence only on the first verified sign-in for `acme.com`.
 - **Existing memberships are kept.** A sign-in that does not prove membership leaves whatever organisation the user already has unchanged. This spec never removes a user from an organisation (see Decisions D-1).
+- **Limit: membership through an address a member already holds is not closed by this spec.** Because accounts are matched by email alone (§2), an unverified sign-in carrying an address that already belongs to a member (a consumer Google account created on a forwarded or catch-all `henry@acme.com`; a foreign-tenant Microsoft user whose mail is set to `henry@acme.com`; either provider against a row created through the other) lands in that member's existing account, and with it that member's organisation, which D-1 keeps. That is an account-matching problem, not a membership-grant problem: what this spec guarantees is that no sign-in *adds* an organisation without verified evidence. The account-matching defect is OQ-1, whose owner decision is a precondition for stage 4.
+- **Two tenants claiming one domain before any pin.** Microsoft does not allow two tenants to hold the same verified domain at the same time, so the "not yet pinned" branch of the Microsoft rule cannot admit two different tenants concurrently for one domain.
 - The user is not told anything new on sign-in. Not being in an organisation is a normal state (consumer-domain users are in it today), and the existing "no organisation" behaviour of every org-scoped feature applies.
 
 ## 4. Acceptance criteria
@@ -81,15 +85,15 @@ AC-8. Given a personal Microsoft account (consumer tenant) with mail `gina@acme.
 
 **Failure of the evidence lookup**
 
-AC-9. Given the provider's organisation-evidence lookup errors or times out (Google: hosted-domain value unavailable; Microsoft: tenant or verified-domain lookup fails), when an `@acme.com` account signs in, then the sign-in still completes with the same redirect and session as a successful sign-in today, and the user is not joined.  [unit]
+AC-9. Given an organisation-evidence lookup that is **separate from the identity answer** errors or times out (Microsoft: the tenant's verified-domain lookup), when an `@acme.com` account signs in, then the sign-in still completes with the same redirect and session as a successful sign-in today, and the user is not joined. Evidence that arrives on the same answer as the email (Google's hosted-domain value; Microsoft's tenant identifier if taken from the token response) has no separate failure: when absent it is AC-1/AC-8, and when the identity answer itself fails, sign-in fails exactly as it does today (`handlers_auth.go:56-60`, `handlers_microsoft_auth.go:62-66`).  [unit]
 
-**Existing memberships (decision D-1)**
+**Existing memberships (decision D-1)** — AC-11 is a regression guard (passes before and after) and is meaningful only if the plan adds a migration.
 
 AC-10. Given a user `henry@acme.com` who already belongs to the `acme.com` organisation, when he signs in with Google and the answer carries no hosted-domain value (or with Microsoft and the tenant does not verify the domain), then he still belongs to the `acme.com` organisation afterwards and the org-member listing still includes him.  [unit]
 
 AC-11. Given the change is deployed onto a database containing users with an organisation, when the deployment completes and before any of them signs in again, then every user's organisation is the same as before deployment and no organisation row has been removed.  [unit]
 
-**Unchanged paths**
+**Unchanged paths** — regression guards: AC-12 and AC-13 pass today and must still pass; they do not count toward proving the fix.
 
 AC-12. Given a generic OIDC SSO provider configured for `acme.com`, when `ivan@acme.com` signs in through it, then he belongs to the `acme.com` organisation exactly as before this change.  [unit]
 
@@ -97,14 +101,18 @@ AC-13. Given an account on a consumer email domain (e.g. `@gmail.com`) on either
 
 **End to end**
 
-AC-14. Given the full stack with a sign-in stand-in for Google, when a Google account with no hosted-domain value signs in and then opens the page that shows organisation members, then the page shows no other member, and when a second account with a matching hosted-domain value for the same domain signs in, it sees only itself.  [e2e] — the e2e suite cannot drive a real sign-in today (OQ-4); if the plan does not add one, it drops this criterion with that reason and AC-1/AC-4 at unit level are the proof.
+AC-14. Given the full stack with a sign-in stand-in for Google, when a Google account with no hosted-domain value signs in as `x@acme.com` through the running API and then requests the API's organisation-member listing with the session it received, then the listing is empty; and when a second account `y@acme.com` whose hosted-domain value is `acme.com` signs in the same way and requests the listing, the listing contains exactly that second account and not the first.  [e2e] — observed at the API, not through a page: the web app has no page that shows organisation members and this spec adds none (§5). The e2e suite cannot drive a real sign-in today (OQ-4); if the plan does not add a sign-in stand-in, it drops this criterion with that reason and AC-1/AC-4 at unit level are the proof.
+
+**Consent (decision D-5)**
+
+AC-15. Given a Microsoft work account in a tenant that lets its users consent only to the permissions Paceday's Microsoft sign-in requests today, when it signs in, then the sign-in completes as today; the user is joined only if evidence obtainable under those permissions verifies the domain, and otherwise is not joined.  [unit]
 
 ## 5. Explicitly out of scope
 
 - **Re-evaluating or removing existing memberships.** No sweep, no removal on a failed sign-in (D-1). A later issue may add a re-verification sweep; the issue body proposes the same.
 - **Joining the hosted domain's organisation from a secondary domain** (AC-3's `acme.co.uk` user joining `acme.com`). That widens who is in an organisation and has no owner decision; it is a possible follow-up.
 - **Admin roles, invitations, or manual add/remove of members.** No membership UI exists and none is added.
-- **The Microsoft email-identity problem beyond organisations.** See OQ-1: the user account itself is looked up by an email a foreign tenant's admin can set. This spec stops that from granting org membership; it does not change how accounts are matched at sign-in.
+- **Account matching by email, on both social providers and across them.** See OQ-1 and the "Limit" bullet in §3: the user account is looked up by email alone, so an unverified sign-in carrying an address a member already holds lands in that member's account and keeps its organisation. This spec stops a sign-in from *adding* membership without evidence; it does not change how accounts are matched, and so does not close membership reached through an existing member's address.
 - **Generic OIDC SSO membership rules** — unchanged, covered by PAC-45.
 - **Setting or changing the Microsoft tenant pin.** Owned by PAC-50's admin step-up (D-3).
 - **Any change to org-scoped features** (member listing, SSO admin, teams). Their "no organisation" behaviour is reused as-is.
@@ -126,7 +134,7 @@ This spec needs no schema change of its own (the tenant pin is PAC-50's). If the
 
 ## 8. Open questions
 
-- **OQ-1 — Microsoft account matching by attacker-settable email (security finding, larger than this spec).** The Microsoft callback upserts the user by Graph's `mail` (`handlers_microsoft_auth.go:62-68`, `users.go:25`), which any tenant's administrator can set on their own users. An attacker who owns any tenant can therefore sign in *as an existing Paceday user* whose email they copy, regardless of organisations. This spec only closes the membership consequence. **Owner**: Nicolas Hochart (human) — decide whether to file a separate high-priority issue. **Resolve by**: filing it, or recording why not, before PAC-68 reaches stage 4.
+- **OQ-1 — Account matching by email alone, on both social providers and across them (security finding, larger than this spec).** Users are upserted with `email` as the only conflict key and `provider` never overwritten (`users.go:21-31`); both callbacks feed the provider's email into it (`handlers_auth.go:63`, `handlers_microsoft_auth.go:67`) and attach the new token to the row returned (`:70`, `:72`). Three cases follow, each a sign-in *as an existing Paceday user*, with that user's session, calendar credential and organisation: (a) **Google mailbox holder**: a person who receives mail at `henry@acme.com` (catch-all, forwarding alias, former employee) creates a consumer Google account on it and signs in, getting henry's row although Google reports no hosted domain; (b) **Microsoft foreign tenant**: the administrator of any tenant sets a user's `mail` to `henry@acme.com` and signs in through the `/common` endpoint; (c) **cross-provider**: either of the above lands in henry's row even when henry's row was created through the other provider (henry joined via Google Workspace, the attacker arrives via Microsoft, or the reverse). This spec closes only the *grant* of membership by an unverified sign-in; it does not close membership reached through an address already held by a member (§3 "Limit", §5). Narrowing AC-10 is not a remedy, because D-1 forbids removing memberships. **Owner**: Nicolas Hochart (human) — decide whether to file a separate high-priority issue. **Resolve by**: filing it (covering cases a-c), or recording why not, before PAC-68 reaches stage 4.
 - **OQ-2 — Which provider evidence, and does obtaining it change the consent screen?** Google's hosted-domain value is available from the ID token (requires requesting `openid`) and, per Google's userinfo documentation, from the userinfo response already fetched; Microsoft's tenant id needs an ID token (`openid`) or Graph, and the verified-domain list needs Graph's organisation resource, possibly with a broader permission than `User.Read` (same sub-question as PAC-50 OQ-2, `docs/specs/PAC-50.md:273`). A broader Microsoft permission may require tenant-admin consent and could block sign-in for users in tenants that restrict consent. **Owner**: contract-author / plan-author, with a human decision if a new admin-consent permission is needed. **Resolve by**: the plan naming the scopes, and the PAC-50 implementer's answer to its OQ-2.
 - **OQ-3 — PAC-50 ordering.** AC-6 and AC-7 depend on PAC-50's tenant pin existing. If PAC-68 is scheduled first, either AC-6 is deferred or PAC-68 introduces the pin column itself (and PAC-50 then reuses it). **Owner**: orchestrator / human. **Resolve by**: Linear ordering before stage 2; the issue body already states PAC-50 lands first.
 - **OQ-4 — Can e2e reach the sign-in callback at all?** Today it cannot: the e2e suite logs in by minting the session JWT directly and setting the cookie (`e2e/auth.ts:17-25`, which names the untested OAuth callback as a known gap), and the Google stand-in (`e2e/fake.ts:1-7`, `e2e/fake-google/`) serves the calendar API, not sign-in. AC-14 therefore needs either a sign-in stand-in that can vary the hosted-domain and tenant evidence, or to be dropped with this reason, leaving AC-1–AC-13 at unit level as the proof. **Owner**: e2e-author / plan-author. **Resolve by**: the plan.
@@ -140,6 +148,7 @@ This spec needs no schema change of its own (the tenant pin is PAC-50's). If the
 - **D-2 — Only an exact hosted-domain / verified-domain match on the email's own domain joins.** Secondary-domain Workspace users join no organisation rather than the primary domain's (AC-3). Assumed by the factory, pending owner confirmation. (Narrowest membership; joining another domain's org would widen who sees its member list.)
 - **D-3 — Sign-in never writes the Microsoft tenant pin.** Only PAC-50's admin step-up sets it. When no pin exists, a sign-in is checked against the tenant's verified-domain answer each time; when a pin exists, the tenant must equal it, matching PAC-50's `tid_changed` stance (`docs/specs/PAC-50.md:126`, NB5). Assumed by the factory, pending owner confirmation. (Keeps a single, admin-proven writer of the pin.)
 - **D-4 — Missing or failed evidence fails closed for membership, open for sign-in.** The user is signed in without an organisation rather than refused (AC-9). Assumed by the factory, pending owner confirmation. (Refusing sign-in would lock out users for a provider outage; granting membership would reopen the defect; "no organisation" is an existing supported state.)
+- **D-5 — Sign-in does not come to depend on a new consent.** If the verified-domain evidence needs a Microsoft permission beyond what sign-in requests today, sign-in must not start requiring it; a user whose tenant does not grant it signs in and is not joined (AC-15). Added in Revision 1. Assumed by the factory, pending owner confirmation. (Preserves §6's first bullet; locking users out of sign-in is a larger change than this spec's problem justifies; "not joined" is the conservative outcome.)
 
 ## Challenge — 2026-10-26
 
@@ -180,3 +189,32 @@ I checked these and found them correct: `orgs.go:11-52` (upsert on domain, uncon
 ### Consumers this breaks
 
 - None found that would break. In `smart-calendar-flow/src` nothing outside the generated types calls `/api/org/members` or reads a user's `org`. `mcp/` has no org tool, and no e2e scenario touches organisations. The only behaviour that changes for existing callers is the one intended: `GET /api/org/members` (`handlers_org.go:26-28`) returns `[]` for an unverified user who used to be joined, and the SSO admin endpoints return 403 "org membership required" for that user (`handlers_sso.go:203-205`, `:269-271`, `:293-295`). Both are existing "no organisation" states (§3).
+
+## Revision 1 — 2026-10-26
+
+*spec-author, answering the round-1 challenge above (against `22d12b9`). Each finding, what changed, and where.*
+
+### Blocking
+
+1. **Email-keyed sign-in lands an unverified sign-in in a verified member's account.** Accepted. Re-checked: the conflict key is `email` only and `provider` is not in the update list (`users.go:21-31`); the new token is attached to the returned row (`handlers_auth.go:70`, `handlers_microsoft_auth.go:72`).
+   - **OQ-1 rewritten** to cover account matching by email on both social providers and across providers, with three cases written out: (a) Google mailbox holder with a consumer account, (b) Microsoft foreign-tenant `mail`, (c) cross-provider. Owner and stage-4 precondition unchanged.
+   - **§2** gains the paragraph "Accounts are matched by email alone, across providers", with citations.
+   - **§3** gains the bullet "Limit: membership through an address a member already holds is not closed by this spec". It states that this spec guarantees only that no sign-in *adds* an organisation without verified evidence, and points to OQ-1. "Membership is never granted on a fallback to the email domain" is kept and is now true as scoped: it governs the grant, and the Limit bullet names the path it does not govern.
+   - **§5**: "The Microsoft email-identity problem beyond organisations" is replaced by "Account matching by email, on both social providers and across them", stating the same limit.
+   - AC-10 is **not** narrowed (D-1 forbids removing memberships), as the challenger required.
+
+2. **AC-14 relied on a page that does not exist.** Accepted. Re-checked that the only references to the member listing in `smart-calendar-flow/src` are under `src/api/generated/` (`types.ts:1546`, `schemas.types.d.ts:4052,5130`). AC-14 now observes the API's organisation-member listing on the running stack, requested with the session each account received from sign-in, and says why it is not a page. The OQ-4 dependency (no sign-in stand-in today) and the drop-with-reason fallback are kept.
+
+### Non-blocking
+
+1. **AC-9, Google half.** AC-9 now covers only evidence lookups separate from the identity answer (the Microsoft verified-domain lookup). Evidence that arrives on the identity answer is AC-1/AC-8 when absent; a failure of the identity answer itself keeps today's failure behaviour (cited).
+2. **Sign-in must not depend on a new consent.** Added AC-15 and D-5 (assumed by the factory, pending owner confirmation).
+3. **AC-11/12/13 are guards.** Labelled as regression guards in §4; AC-11 is noted as meaningful only with a migration.
+4. **Preamble "three callbacks".** Corrected to two.
+5. **Issue wording "signs up" vs every sign-in.** No spec change; recorded for stage 2: evaluation on every sign-in can only add a verified membership, never remove one (OQ-5, D-1), consistent with the issue's intent.
+6. **Two tenants, no pin.** One sentence added to §3.
+
+### Citations corrected
+
+- Microsoft user upsert: `:68` to `:67` (§2).
+- Teams: §2 now says the org id column is read but never written, so teams are not a membership consumer today.
