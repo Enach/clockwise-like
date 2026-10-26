@@ -1,31 +1,57 @@
 # Spec — PAC-67: Per-user Outlook and Zoom credentials have no refresh or revocation lifecycle
 
 - **Linear**: https://linear.app/paceday/issue/PAC-67
-- **Status**: draft
+- **Status**: challenged (round 1 answered in "Revision 1")
 - **Author**: spec-author
 - **Origin**: PR Enach/clockwise-like#204 (PAC-24) merge condition 3,
   `calendarCredentialLifecycle`; PAC-24 spec §0 and OQ-6
   (`docs/specs/PAC-24.md:55-61`, `:785-795`). Related: PAC-48 (origin), PAC-23
   (audit `user_id`), PAC-47 (work-calendar provider setting ignored).
-- **Inherited scope**:
-  - No `x-uncertain` marker sits on any operation this spec is expected to
-    change: auth status, calendar disconnect, the Microsoft and Zoom sign-in and
-    callback operations, conferencing providers, conference create and Zoom
-    disconnect (`contracts/openapi/openapi.yaml:800-830`, `:934-1230`,
-    `:1545-1630`) carry none. The only nearby marker is on the
-    `ConferenceMeetingDetails` schema (U-12,
-    `contracts/openapi/openapi.yaml:6020-6021`). This spec does not change that
-    schema; if the contract stage edits it for any reason, U-12 comes into scope
-    under factory §7.1.
-  - **API-061** (`docs/factory/api-audit.md:295`, calendar disconnect also logs
-    the user out) is open on the calendar-disconnect operation. It comes into
-    scope **only if** the contract stage changes that operation (for example to
-    carry Outlook disconnect). See OQ-3.
-  - **API-012** (`docs/factory/api-audit.md:246`, Microsoft callback redirects as
-    success after a profile/upsert failure) and **API-011** (`:245`) are open on
-    the Microsoft callback. AC-11 changes what that callback stores; if the
-    contract stage edits that operation, API-012 and API-011 come into scope. See
-    OQ-4.
+- **Inherited scope**: every operation this feature touches or may touch, with
+  the `x-uncertain` markers and open audit findings on it. "Changed" means this
+  spec's criteria require a contract change there; "conditional" means the
+  marker or finding comes into scope **only if** the contract stage edits that
+  operation, under factory §7.1. Line numbers are in
+  `contracts/openapi/openapi.yaml` and `docs/factory/api-audit.md`.
+  - **Auth status** (`GET /api/auth/status`, calendar connection status §2.6).
+    No `x-uncertain`; API-009 is Fixed (PAC-24). Nothing inherited.
+  - **Calendar disconnect** (`DELETE /api/auth/disconnect`, `openapi.yaml:800`). **API-061**
+    (`api-audit.md:295`, disconnect also logs the user out) is open:
+    conditional. See OQ-3.
+  - **Microsoft sign-in and callback** (`GET /api/auth/microsoft`,
+    `GET /api/auth/microsoft/callback`). **API-012** (`:246`) and **API-011**
+    (`:245`) are open on the callback; **API-064** (`:298`, `login_hint`
+    ignored) is open on the sign-in start. All conditional. AC-11 changes what
+    the callback stores; see OQ-4.
+  - **Zoom connect and callback.** No marker, no finding. Nothing inherited.
+  - **Zoom disconnect** (`POST /api/conference/zoom/disconnect`). No marker, no
+    finding. AC-15 likely changes its response; nothing inherited either way.
+  - **Conferencing provider list** (`GET /api/conference/providers`, §2.6).
+    Changed in behaviour by AC-8, AC-12, AC-13 and AC-21. **API-070**
+    (`:304`, 1-4 entries depending on configuration, `custom` always
+    connected): conditional.
+  - **Standalone conference create** (`POST /api/conference/create`,
+    `openapi.yaml:1545`). Reached by AC-3, AC-5 and AC-8. **API-052** (`:286`,
+    no validation) and **API-091** (`:325`, no frontend consumer): conditional.
+  - **Conference on an event** (`POST /api/events/{id}/conference`,
+    `openapi.yaml:1717`). Also creates Teams and Zoom meetings from the stored
+    credential (`backend/api/handlers_conferencing.go:33-48`, `:337-345`), so
+    AC-3, AC-5 and AC-8 reach it. Checked: no `x-uncertain` on it and no audit
+    finding names it. Nothing inherited.
+  - **Activity log** (`GET /api/audit`, `openapi.yaml:371`). **Changed**: AC-8,
+    AC-15 and AC-16 add entry kinds to a closed set (§2.4, AC-22). U-02, API-005
+    and API-074 are all resolved; nothing further inherited.
+  - **Availability lookup** (`POST /api/freebusy`, `openapi.yaml:1951`). Its
+    response does **not** change under this spec (AC-8, D-6). Open findings
+    **API-028** (`:262`), **API-046** (`:280`) and **API-077** (`:311`):
+    conditional.
+  - **Google-backed operations** whose failure response would change if the
+    contract stage chose to change it, notably **`GET /api/calendar/freebusy`**
+    (`openapi.yaml:1483`), which carries **U-03** (`:1493-1494`,
+    `api-audit.md:447`) and **API-091**. This spec requires no change to any
+    Google operation's failure response (D-7), so these are conditional.
+  - **`ConferenceMeetingDetails`** schema carries **U-12**
+    (`openapi.yaml:6020-6021`). Not changed here; conditional.
   - **T8** (provider error text echoed to the client) is a theme, not a finding
     on these operations; the Zoom and Microsoft callbacks echo `err.Error()`
     today (`backend/api/handlers_microsoft_auth.go:56,73`,
@@ -163,16 +189,66 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
 - The audit log has a per-user writer, `WriteAuditLog`
   (`backend/storage/focus_blocks.go:80-90`, PAC-23), used today by scheduling
   features only. No credential event is ever recorded.
+- The activity log's entry kind is a **closed** set of seven values in the
+  contract (`contracts/openapi/paths/calendar.yaml:1669-1672`, enum at
+  `:1716-1723`): "adding an eighth action is a contract change", and PAC-23
+  AC-14 requires the set never to shrink (`docs/specs/PAC-23.md:433`). Web
+  consumers: the generated zod schema validates against exactly these seven
+  (`smart-calendar-flow/src/api/generated/schemas.ts:38`, not yet applied to
+  the audit path); the hand-written normaliser passes unknown strings through
+  (`smart-calendar-flow/src/api/client.ts:478`); the audit page renders the
+  value raw (`smart-calendar-flow/src/pages/Audit.tsx:97`).
 - Outlook availability failures are swallowed (`freebusy_service.go:126`).
   Teams and Zoom failures surface as a generic error on the action
   (`handlers_conferencing.go:152-155`, `:342-345`).
 
 ### 2.5 Test seams
 
-The e2e stack has a stand-in for Google only (`e2e/fake-google/`); Microsoft and
-Zoom hosts are routed to a refusing sink (`e2e/fake.ts:31-35`,
-`e2e/SEAM-REQUIRED.md`). Criteria needing a Microsoft or Zoom exchange are
+The e2e stack has a stand-in for Google only (`e2e/fake-google/`), reached by
+configuration rather than by host name. Every real provider host, Google's
+included, is routed to a refusing sink (`e2e/fake.ts:27-35`,
+`e2e/SEAM-REQUIRED.md`), so there is no Microsoft or Zoom stand-in. Criteria needing a Microsoft or Zoom exchange are
 therefore marked `[unit]` or `[contract]` below, not `[e2e]`.
+
+### 2.6 Status surfaces today
+
+Two surfaces tell a user whether a provider is connected. These are what §3-§4
+mean by "status surfaces".
+
+- **Calendar connection status** (`GET /api/auth/status`,
+  `backend/api/handlers_auth.go:97-132`). Reports **only** the user's current
+  calendar provider: Outlook (connected when a refresh token is stored,
+  `:98-105`), WebCal (`:106-111`) or Google (connected when a token row exists,
+  `:113-131`). It never mentions Zoom, and it says nothing about a Microsoft
+  credential when the calendar provider is not Outlook, nor about a Google
+  credential when it is not Google.
+- **Conferencing provider list** (`GET /api/conference/providers`,
+  `backend/api/handlers_conferencing.go:161-184`). Rows, each present only when
+  the provider is configured on the server: `google_meet` connected whenever a
+  Google token row exists (`:173`); `zoom` connected whenever the stored Zoom
+  string is non-empty (`:176`); `teams` connected **and** enabled whenever a
+  Microsoft credential exists (`:179`); `custom` always connected (`:181`).
+
+Both derive "connected" from the credential being stored. Because D-1 keeps a
+refused credential stored, both would keep reporting connected after a loss
+unless they learn about it.
+
+### 2.7 Availability lookups degrade instead of failing
+
+The availability lookup (`FreeBusyService.Query`,
+`backend/engine/freebusy_service.go:74-155`) uses the **calendar provider's**
+credential only: Outlook's when the provider is Outlook (`:122-128`), Google's
+otherwise (`:129-138`). It queries the *attendees'* free/busy with that
+credential. Any fetch error is discarded (`:126`, `:136`); every attendee that
+was to be queried comes back with coverage `unknown` and no busy periods, and
+the call still succeeds. That result is cached per requesting user, attendee
+and day for 15 minutes (`:96-100`, `:140-152`), so a later lookup inside that
+window is served the `unknown` result without trying the credential.
+
+Two consumers rely on the call succeeding: `POST /api/freebusy`
+(`backend/api/handlers_freebusy.go:72-76`, a 200 with per-attendee coverage) and
+manager team stats (`backend/engine/manager.go:484-499`, which uses a result
+only when there is no error and coverage is `known`).
 
 ## 3. Desired behaviour
 
@@ -189,11 +265,18 @@ From the user's point of view:
   refresh credential on renewal, the new one is kept. Two simultaneous actions by
   the same user do not leave the stored credential unusable.
 - **A dead credential is visible, once.** When renewal is refused by the provider
-  (revoked, expired refresh credential, consent withdrawn), the user's connection
-  status shows that provider as not connected, and the user's own activity log
-  gets one entry saying so — not one per failed request. A temporary failure
+  (revoked, expired refresh credential, consent withdrawn), every place that
+  tells the user whether that provider is connected (§2.6) shows it as not
+  connected — including when it is not the user's calendar provider — and the
+  user's own activity log gets one entry saying so, not one per failed request. A temporary failure
   (network, provider outage) does not mark the connection dead and is not
   recorded as a loss.
+- **Availability lookups keep degrading, not failing.** A lookup that cannot use
+  the credential still answers, with attendees' availability shown as unknown,
+  exactly as today; what changes is that a refused credential is now reported
+  lost. Meeting creation, which cannot degrade, fails with an error telling the
+  user to reconnect. After a successful reconnect, no answer computed while the
+  credential was dead is shown again.
 - **Disconnect actually disconnects.** A user can disconnect Outlook and Zoom
   individually. Afterwards Paceday holds no usable credential for that provider
   for that user, the provider is asked to revoke Paceday's grant where it offers
@@ -214,10 +297,30 @@ past its issued lifetime or the provider rejects it as expired. Provider
 responses come from a test double standing in for the provider's token,
 revocation and API endpoints.
 
+"Status surfaces" are the two of §2.6. For each provider, the surfaces that must
+report it are:
+
+- **Outlook**: the calendar connection status *when the user's calendar provider
+  is Outlook*, and the Teams row of the conferencing provider list *always*.
+- **Zoom**: the Zoom row of the conferencing provider list. (The calendar
+  connection status does not report Zoom and is not required to.)
+- **Google**: the calendar connection status *when the user's calendar provider
+  is Google*, and the Google Meet row of the conferencing provider list
+  *always*.
+
+A row that the server does not show because its provider is not configured is
+not required to appear. "Reports not connected" on the Teams row also means it
+does not report the provider as usable by any other field of that row.
+
+The actions each criterion applies to are named. "Meeting creation" means both
+creating a meeting on an existing event and the standalone create; both read
+the same stored credential (§2.1, §2.2, inherited scope).
+
 **Refresh** (ticket acceptance 1)
 
-AC-1. Given user A has an expired Outlook access token and a valid refresh
-token, when an availability lookup that reads A's Outlook calendar runs for A,
+AC-1. Given user A's calendar provider is Outlook and A has an expired Outlook
+access token and a valid refresh token, when an availability lookup runs for A
+(querying attendees' free/busy with A's credential),
 then the double receives exactly one refresh request carrying A's refresh token,
 the calendar call is made with the new access token, and A's stored credential
 afterwards holds the new access token and expiry. Fails today: no refresh
@@ -228,7 +331,7 @@ action in AC-1 runs for A, then B's stored credential is identical before and
 after, and no request carrying B's tokens reaches the double.  [unit]
 
 AC-3. Given A has an expired Zoom access token and a valid refresh token, when A
-creates a Zoom meeting, then the meeting is created with a refreshed access token
+creates a Zoom meeting (on an event, and separately standalone), then the meeting is created with a refreshed access token
 and A's stored Zoom credential holds the new access token. Fails today: the
 double's 401 is returned.  [unit]
 
@@ -238,7 +341,7 @@ second action after the new access token also expires succeeds using it.  [unit]
 
 AC-5. Given A's Outlook (separately Zoom) access token is expired and the double
 rotates refresh tokens and rejects any refresh token already used, when two
-actions for A run concurrently, then both succeed and A's stored credential
+actions for A run concurrently within one backend process, then both succeed and A's stored credential
 afterwards is usable for a third action.  [unit]
 
 AC-6. Given A's Google access token is expired, when a Google calendar action
@@ -252,27 +355,61 @@ then no refresh request is sent.  [unit]
 **Failure surfacing**
 
 AC-8. Given the double answers A's refresh request with a permanent refusal
-(OAuth `invalid_grant`), when an Outlook, Zoom or Google action runs for A, then
-the action fails with an error telling A to reconnect that provider; A's
-connection status reports that provider not connected; and A's audit log holds
-exactly one entry, attributed to A, naming the provider and that the connection
-was lost. B's status and audit log are unchanged. Fails today: status still
-reports connected and no audit entry is written.  [contract]
+(OAuth `invalid_grant`), when each action in the table runs for A (one test per
+row), then:
+(a) the action's observable result is the one in the table;
+(b) every status surface named for that provider in the §4 preamble reports it
+not connected;
+(c) A's audit log holds exactly one new entry, attributed to A, naming the
+provider and that the connection was lost;
+(d) B's status surfaces and audit log are unchanged.
+Fails today: no row satisfies (b) or (c).  [contract]
+
+| Provider | Action (precondition) | Observable result |
+|---|---|---|
+| Outlook | availability lookup (A's calendar provider is Outlook) | succeeds as today: each attendee that would have been queried has unknown coverage and no busy periods (D-6) |
+| Outlook | Teams meeting creation | fails with an error telling A to reconnect Outlook |
+| Zoom | Zoom meeting creation | fails with an error telling A to reconnect Zoom |
+| Google | availability lookup (A's calendar provider is Google) | succeeds as today, as for Outlook (D-6) |
+| Google | listing A's calendar events (A's calendar provider is Google) | fails with the same status and error shape that operation returns for a failed Google call today (D-7) |
 
 AC-9. Given the state after AC-8, when three more actions for A hit the same dead
 credential, then A's audit log still holds exactly one connection-lost entry for
 that provider.  [unit]
 
 AC-10. Given the double answers A's refresh with a temporary failure (timeout or
-5xx), when an action runs, then the action fails, A's status still reports
-connected, and no connection-lost audit entry is written.  [unit]
+5xx), when each action in the AC-8 table runs for A, then: availability lookups
+succeed with unknown coverage as today; meeting creation fails with an error
+that does **not** tell A to reconnect; listing events fails as it does today;
+every status surface for that provider still reports connected; and no
+connection-lost audit entry is written.  [unit]
 
 AC-11. Given A has a working stored Outlook (separately Zoom) credential, when A
 reconnects and the exchange returns an access token but no refresh token, then
 A's stored refresh token is unchanged and A remains connected.  [unit]
 
-AC-12. Given A's connection was reported lost (AC-8), when A reconnects
-successfully, then A's status reports connected again and actions succeed.  [unit]
+AC-12. Given A's connection to a provider was reported lost (AC-8), when A
+reconnects that provider successfully, then every status surface that AC-8 set
+to not connected reports connected again, and the AC-8 table's actions for that
+provider succeed with the new credential (meeting creation creates a meeting;
+listing events returns events).  [unit]
+
+AC-20. Given an availability lookup for A returned unknown coverage for an
+attendee because A's credential was refused (AC-8), when A reconnects
+successfully and the same lookup (same attendee, same day) runs again **within
+15 minutes**, then the double receives a free/busy request made with the new
+credential and the attendee comes back with known coverage. A degraded result
+computed from a dead credential never outlives a reconnect. Fails today: the
+cached `unknown` result is served without a request (§2.7).  [unit]
+
+AC-21. Given A's calendar provider is Google and A also holds an Outlook
+credential, when A's Outlook refresh is permanently refused during Teams meeting
+creation, then the Teams row reports not connected, the calendar connection
+status still reports Google connected, and one Outlook connection-lost entry is
+written. Separately, given A's calendar provider is Outlook and A also holds a
+Google credential, when A's Google refresh is permanently refused on a Google
+action, then the Google Meet row reports not connected and the calendar
+connection status is unchanged.  [unit]
 
 **Disconnect and revocation** (ticket acceptance 2)
 
@@ -310,6 +447,15 @@ AC-19. Given A's and B's calendar providers are Google, when A completes a
 Microsoft sign-in, then A's calendar provider is Outlook and B's is still Google.
 (Already true per §2.1; pins it.)  [unit]
 
+**Activity-log contract**
+
+AC-22. Given the activity log's documented set of entry kinds, which is closed
+(§2.4), when this feature's contract is applied, then the set holds every kind
+it held before, unchanged, plus kinds for: connection lost, provider
+disconnected, and revocation not confirmed; and a listing that returns entries
+of every new kind alongside existing ones conforms to the contract. Fails
+today: such a listing is non-conforming.  [contract]
+
 ## 5. Explicitly out of scope
 
 - **Personal-calendar credentials** (§0, OQ-8).
@@ -323,6 +469,11 @@ Microsoft sign-in, then A's calendar provider is Outlook and B's is still Google
   renewed when it is needed; a scheduled job acting for a user gets renewal on
   the same terms when it uses the credential, nothing more.
 - **Encrypting stored credentials at rest.** Worth its own issue.
+- **Changing how availability lookups fail.** They keep degrading (D-6). Caching
+  of a degraded result after a *temporary* failure is unchanged; only a reconnect
+  invalidates it (AC-20).
+- **Changing Google operations' failure responses** (D-7).
+- **Renewal coordination across several backend processes** (OQ-9).
 - **Provider error text echoed to the client (T8).**
 - **Frontend copy and placement** of the reconnect prompt and disconnect
   controls; the web repo implements against the contract after stage 2.
@@ -346,6 +497,19 @@ Microsoft sign-in, then A's calendar provider is Outlook and B's is still Google
   `e2e/fake-google/`).
 - Existing status response fields keep their meaning for existing consumers;
   whether fields are added is the contract's call.
+- **The activity log's existing entry kinds keep their meaning.** The seven
+  values (`focus_created`, `focus_cleared`, `meeting_scheduled`,
+  `meeting_moved`, `meeting_created`, `nlp_parsed`, `nlp_confirmed`) are neither
+  removed, renamed nor redefined, and their writers are unchanged; the set only
+  grows (AC-22, PAC-23 AC-14). Protected today by PAC-23's contract test of the
+  enum against the writers.
+- **Availability lookups keep answering.** `POST /api/freebusy` keeps returning
+  its 200 with per-attendee coverage when a credential fails, and manager team
+  stats keep treating unknown coverage as "no data" (§2.7). No test today
+  asserts the degraded 200 on a refused refresh; AC-8 adds one.
+- **The existing Zoom disconnect caller keeps working** whatever the new
+  response carries (`smart-calendar-flow/src/api/client.ts:1463` treats it as
+  no content; `src/components/ConferencingSection.tsx:98` ignores the result).
 
 ## 7. Rollback
 
@@ -383,14 +547,20 @@ they asked for by disconnecting.
   reconnect). Confirm nothing else is expected.
 - **OQ-8 — Personal-calendar split.** Owner: product owner / triage. File the
   follow-up proposed in §0, or tell the factory to fold it in.
+- **OQ-9 — Can more than one backend process act for a user at once?** Owner:
+  plan-author. AC-5 is stated for one process. If the deployment runs several
+  replicas or a separate scheduler process sharing the database, the plan must
+  say whether rotation-safe renewal holds across them, and the spec gains a
+  criterion.
 
 ## Decisions
 
 *None of these has a recorded owner answer. Each is the most conservative option
 consistent with PRODUCT.md ("Privacy is not a setting to trade away",
 `smart-calendar-flow/PRODUCT.md:90`) and earlier owner decisions (PAC-24
-Decisions, `docs/specs/PAC-24.md:986`: credentials belong to one user and are
-never shared).*
+Decisions, `docs/specs/PAC-24.md:986-1002`, where the owner chose that
+`microsoft_tokens` and `zoom_tokens` are **not copied** between users when
+per-user settings rows were created, `:1001-1002`).*
 
 - **D-1 — A refused renewal does not delete the stored credential.** It is
   reported as lost (AC-8) and kept until the user reconnects (which replaces it)
@@ -413,6 +583,28 @@ never shared).*
   revocation does not exist (OQ-1), Paceday does not fall back to revoking all of
   the user's Microsoft sessions; that would act on far more than the user asked.
   *Assumed by the factory, pending owner confirmation.*
+- **D-6 — Availability lookups keep degrading on a dead or failing credential.**
+  They answer with unknown coverage, as today, rather than failing; the loss is
+  surfaced through the status surfaces and the activity log instead. Rationale:
+  two consumers depend on the lookup succeeding (§2.7) and changing that is a
+  contract change to a surface this issue does not ask about. *Assumed by the
+  factory, pending owner confirmation.*
+- **D-7 — Google operations' failure responses do not change.** A refused Google
+  renewal is surfaced through status and the activity log; the failing request
+  returns what it returns today. Rationale: smallest contract surface, and it
+  keeps U-03 and API-091 on `GET /api/calendar/freebusy` out of scope unless the
+  contract stage chooses otherwise. *Assumed by the factory, pending owner
+  confirmation.*
+- **D-8 — Disconnecting Outlook while conferencing is Teams returns conferencing
+  to Meet,** mirroring what Zoom disconnect does today
+  (`backend/storage/conferencing.go:12`). Leaving Teams selected would make every
+  meeting creation fail until the user changed it. No data is deleted. *Assumed
+  by the factory, pending owner confirmation.*
+- **D-9 — Zoom disconnect keeps setting conferencing to Meet unconditionally,**
+  including when the user had chosen Teams (`backend/storage/conferencing.go:12`).
+  Changing it is a separate behaviour change not needed for the lifecycle; it is
+  recorded here so it is a decision rather than an accident. *Assumed by the
+  factory, pending owner confirmation.*
 
 ## Challenge — 2026-10-26
 
@@ -590,3 +782,64 @@ Every other criterion has a test that fails today and would pass afterwards:
   new audit action values (Blocking 3).
 - smart-calendar-flow/src/api/client.ts:1463: Zoom disconnect is typed `void`
   and must keep working if the response gains a body (Non-blocking 1).
+
+## Revision 1 — 2026-10-26
+
+Answers the four blocking findings of the round-1 challenge, and the
+non-blocking ones where cheap. Re-checked against the backend and contract at
+`2eb07a5`.
+
+### Blocking 1 — availability lookups vs "the action fails"
+
+Accepted. §2.7 now records that the lookup degrades to unknown coverage in a
+200, caches that for 15 minutes, and that two consumers rely on it. AC-8 is a
+per-action table: availability lookups (Outlook and Google) **keep degrading**
+and the loss shows only in status and the activity log (D-6); Teams and Zoom
+meeting creation fail with a reconnect error; listing Google events keeps
+today's failure response (D-7). AC-10 states the same actions for a temporary
+failure. On the cache: **a result computed from a dead credential may not
+outlive a reconnect** — new AC-20 tests it inside the 15-minute window. AC-12 now
+names what "actions succeed" means per action. Because the lookup's response is
+unchanged, `POST /api/freebusy` and manager stats keep working (§6).
+
+### Blocking 2 — "connection status" undefined
+
+Accepted. §2.6 describes both status surfaces as they are today. The §4
+preamble names, per provider, which surfaces must report it: Outlook = calendar
+connection status when Outlook is the calendar provider, plus the Teams row
+always; Zoom = the Zoom row; Google = calendar connection status when Google is
+the calendar provider, plus the Google Meet row always. AC-8(b) and AC-12 apply
+to all of them. New AC-21 covers a lost credential that is not the current
+calendar provider, in both directions. The Teams row's `enabled` flag is covered
+by "does not report the provider usable by any other field". §3-§5 refer to the
+surfaces by role and §2.6 maps roles to today's operations, so the
+no-endpoints-in-§3-5 rule holds while the mapping stays explicit.
+
+### Blocking 3 — `GET /api/audit` contract change
+
+Accepted. Inherited scope lists `GET /api/audit` as **changed**. §2.4 records
+the closed enum and its three web consumers. New AC-22 [contract] requires the
+set to grow by the three new kinds without losing or changing any existing one.
+§6 records that the seven existing values keep their meaning and writers.
+U-02, API-005 and API-074 are resolved, as the challenger found.
+
+### Blocking 4 — inherited scope incomplete
+
+Accepted. The inherited-scope section is rewritten as a per-operation list. It
+adds `POST /api/events/{id}/conference` (checked: no marker, no finding),
+API-052 and API-091 on `POST /api/conference/create`, API-070 on
+`GET /api/conference/providers`, and `GET /api/calendar/freebusy` with U-03 and
+API-091. Each carries the API-061 condition. Also found and added:
+**API-064** (`api-audit.md:298`) on `GET /api/auth/microsoft`, and the open
+findings on `POST /api/freebusy` (API-028, API-046, API-077), listed as
+conditional since D-6 leaves its response unchanged.
+
+### Non-blocking
+
+1. §6 now requires the existing Zoom disconnect caller to keep working.
+2. Teams conferencing on Outlook disconnect: D-8 (returns to Meet).
+3. Zoom disconnect resetting a Teams choice: D-9 (kept, recorded as a decision).
+4. AC-5 now says "within one backend process"; the multi-process case is OQ-9.
+5. AC-1 now says the lookup queries attendees' free/busy with A's credential.
+6. The Decisions preamble quotes what PAC-24 actually records.
+7. §2.5 now says Google's hosts are in the sink list too.
