@@ -172,5 +172,11 @@ only ever sends a valid link id for a real host, so its happy path is unchanged.
 
 - `python scripts/openapi_assemble.py` then `--check` on the host:
   `OK: bundle is in sync (98 paths)`, 119 operations, `x-uncertain: 13`.
-- `api-gate.sh factory/pac-30-contract`: output recorded in the Linear comment on
-  PAC-30 for the commit it ran on.
+- `api-gate.sh factory/pac-30-contract` on the first contract commit (`b443519`):
+  `make openapi` regenerated `backend/api/gen/paceday.gen.go` (the embedded spec,
+  one schema comment and five strict-server `...404JSONResponse` types), committed
+  with this revision. Every other step printed rc=0: openapi-check (bundle in sync,
+  MIGRATION.md covers 119 operations, gen matches), backend and mcp lint, backend and
+  mcp test, backend coverage 54.9% against a 43% floor, mcp 84.0% against 75%.
+- The gate is re-run on the final commit of this branch. Its output is in the
+  Linear comment on PAC-30.
