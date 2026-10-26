@@ -1159,7 +1159,7 @@ None.
 - **Linear**: not yet filed. This part is the spec D-4 asks for; the factory
   ticket is `NEW-pac66b-llm-base-url`. D-4 still holds: PAC-66 is not closed
   until PAC-66-B exists in Linear and is linked to PAC-66 (AC-B13).
-- **Status**: draft
+- **Status**: challenged (Revision B1 answers the Part B challenge)
 - **Author**: spec-author
 - **Base**: `main` at c954521 (PAC-66 part A implemented by #214, PAC-21 by #217).
 - **Inherited scope**:
@@ -1297,9 +1297,31 @@ which returns nil for these three providers (`backend/nlp/destination.go:166-176
   (§B6).
 - `TestLLMTest_BodyRulesAndNoKeyEcho` (`backend/api/pac24_scope_test.go:70-124`)
   covers the `openai` probe body rules.
-- No test records where a request from these three branches goes, and no test
-  covers a redirect. No e2e test exercises a base URL
-  (`e2e/tests/llm-destination.spec.ts` covers Azure only).
+- Further tests point these clients at `httptest` servers on
+  `http://127.0.0.1:<port>`, or assert today's unchecked behaviour *(Revision B1)*:
+  `TestNLPService_Parse_ScheduleMeeting` (`parser_test.go:317`),
+  `TestNLPService_Parse_InvalidJSON` (:351) and
+  `TestParse_AuditEntrySubjectIsCallerFromContext` (:395), all three storing the
+  test server as an Ollama `LLMBaseURL`; `TestUserKeyProviders_AreNotChecked`
+  (`backend/nlp/destination_test.go:251-262`), which asserts that the destination
+  check returns nil for `openai` at `http://10.0.0.1`, `anthropic` at
+  `http://attacker.example` and `ollama` with nothing stored;
+  `TestPAC66_UserKeyAndKeylessProbesUnchanged`
+  (`backend/api/pac66_llm_destination_test.go:448-475`), which probes Anthropic
+  and Ollama at the test server and expects 200; and
+  `TestLLMTest_BodyRulesAndNoKeyEcho`, which also stores an `http://127.0.0.1`
+  OpenAI base URL (`pac24_scope_test.go:86`) and asserts a 502 after the provider
+  is contacted (:112-118).
+- These tests assert on what arrives at their test server. None of them runs these
+  clients through part A's recording transport, and none covers a redirect. No
+  e2e test exercises a base URL (`e2e/tests/llm-destination.spec.ts` covers Azure
+  only).
+- Each client builds its request address by appending the provider's operation
+  path to the base URL as a string (`parser.go:44`, `:78`, `:114`). A path, query
+  or fragment in the base URL therefore changes which operation is called on the
+  destination; for example the base `http://ollama:11434/api/pull?x=` sends a POST
+  to Ollama's model-download operation with the user's chosen model in the body
+  (verified by the challenger with Go `net/http` on 2026-10-26).
 
 ## B3. Desired behaviour
 
@@ -1327,6 +1349,15 @@ user never adds one.
   approved for Ollama is never a destination for an OpenAI or Anthropic key, and
   the reverse. Because the Ollama address and the OpenAI/Anthropic base URL share
   one stored value today, this is what keeps a user's key off an Ollama host.
+- **An approved destination is reached only for the provider's chat inference
+  operation** *(Revision B1, D-B8)*. Approval names a scheme, host and port, not a
+  service: the user does not get to pick which operation on that destination the
+  server calls. A base URL that carries anything beyond scheme, host and port
+  (a path other than an empty one or a single slash, a query, a fragment, or user
+  information) is refused on save and at send time, for all three providers. The
+  request the server sends has exactly the path of the provider's chat operation
+  and no query. The user's choice of model stays a body value of that one
+  operation and does not change which operation is called.
 - **The rule is applied on save and again at the moment of sending**, on every
   path (probe, natural-language parse, meeting-brief refresh), and follows the
   provider the request actually uses, including a provider named for one probe
@@ -1351,13 +1382,21 @@ vendor's own public host (D-B2). The **recording transport** and **zero
 requests** are as defined in part A §4, with a **sentinel key** (a known user key
 on file or submitted in the probe) in place of the sentinel credential.
 
-**Effective destination** of a stored configuration, after defaults:
+**Effective destination** of a stored configuration *(Revision B1, as part A's
+"effective host")*: the scheme, host, port and path of the inference request that
+would actually be sent, after every default is applied. The defaults are:
 
-- OpenAI / Anthropic: the scheme, host and port of the base URL; when it is empty,
-  the vendor's public host over secure transport.
-- Ollama: the scheme, host and port of the Ollama base URL; when empty, of the
-  shared base URL; when both are empty, the built-in local default
-  (`http://localhost:11434` today). This spec does not change that fallback order.
+- OpenAI / Anthropic: when the base URL is the empty string, the vendor's public
+  host over secure transport. A non-empty base URL whose host is empty (for
+  example `http:/`) is **not** empty: it has no approvable destination and is
+  refused, never replaced by the public host.
+- Ollama: the Ollama base URL; when it is the empty string, the shared base URL;
+  when both are empty, the built-in local default (`http://localhost:11434`
+  today). This spec does not change that fallback order.
+
+**Refusal does not depend on the key** *(Revision B1)*: when a destination is
+refused and no key is on file or submitted, the outcome is the destination
+refusal, as part A §4 states for the credential.
 
 AC-B1. Given the operator approved no extra host for OpenAI, and a user with
 OpenAI selected whose stored base URL names any other host (for example an
@@ -1402,10 +1441,11 @@ is approved for Ollama (AC-B11 covers what happens then). [unit]
 AC-B7. Given an approved destination for a provider P (each of OpenAI, Anthropic,
 Ollama, and OpenAI's and Anthropic's public hosts) that answers with a redirect
 to a destination not approved for P (another host, a subdomain of the approved
-host, the same host over insecure transport, or an internal address), when a
-user probes, then no request is recorded for the redirect target, the sentinel
-key appears in no recorded request other than the first, and the probe reports
-failure. [unit]
+host, the same host over insecure transport, an internal address, or the same
+approved destination at a path other than the provider's chat operation
+*(Revision B1)*), when a user probes, then no request is recorded for the
+redirect target, the sentinel key appears in no recorded request other than the
+first, and the probe reports failure. [unit]
 *Fails today: `http.DefaultClient` follows the redirect, and for Anthropic re-sends
 the key to any host (§B2.4).*
 
@@ -1476,7 +1516,8 @@ a submitted key, and its error text is a non-empty human-readable sentence.
 [unit]
 
 AC-B17. Given the full compose stack with **no** Ollama destination and no extra
-OpenAI destination approved, and a signed-in user, when the user saves an OpenAI
+OpenAI destination approved, and a signed-in user with an OpenAI key on file
+*(Revision B1)*, when the user saves an OpenAI
 base URL pointing at another service on the stack's network (for example the
 database's host and port), then the response is a 4xx JSON error naming the base
 URL and a following read shows the previous value. When the stored shared base
@@ -1488,6 +1529,30 @@ the documented refusal naming the base URL. [e2e]
 contacted the address.* That exactly one request reaches an approved destination
 is proven at unit level (AC-B5, AC-B9), not on the stack.
 
+AC-B18. *(Revision B1)* Given the operator approved one Ollama destination, and a
+user who submits a settings write setting the Ollama base URL or the shared base
+URL to that destination followed by a path, a query or a fragment (for example
+the approved destination followed by `/api/pull?x=`, by `#`, or by
+`/x/../api/pull`), when the write is processed, then the outcome is as AC-B3
+(4xx naming the property, previous value kept, zero requests). Given instead that
+such a value is already stored (written directly, as before this change), when
+the user probes with Ollama, parses, or regenerates a brief, then zero requests
+are recorded and each path answers as AC-B1 and AC-B12. Given the approved
+destination itself, with nothing after the port or a single trailing slash, the
+probe records exactly one request, whose path is exactly Ollama's chat operation
+path and which has no query. [unit]
+*Fails today: the write is accepted, and the probe sends a POST to Ollama's
+model-download operation with the user's model in the body.*
+
+AC-B19. *(Revision B1)* Given OpenAI's public host, or an operator-approved
+OpenAI destination, and a stored or saved base URL on that destination followed
+by a path, a query or a fragment, when the user saves it or probes, then the
+outcome is as AC-B18 (write refused; zero requests at send time; the reason
+names the base URL). With an empty base URL or the approved destination alone,
+exactly one request is recorded and its path is exactly the chat-completions
+path, with no query. The same holds for Anthropic and its messages path. [unit]
+*Fails today: the stored value is concatenated and sent.*
+
 ## B5. Explicitly out of scope
 
 - **Removing per-user keys altogether.** Whether "bring your own AI key" is a
@@ -1497,9 +1562,13 @@ is proven at unit level (AC-B5, AC-B9), not on the stack.
   that resolves to a private address (by DNS change or rebinding) is the
   operator's configuration to keep correct. The criteria approve by host name, as
   part A does. Recorded as OQ-B3.
-- **Path steering on an approved host and Bedrock profile selection.** Both are
-  part-A follow-ups (inherited scope above). They concern the ambient credential,
-  not this channel. Whoever files PAC-66-B files these beside it.
+- **Path steering on an approved host for the ambient providers, and Bedrock
+  profile selection.** Both are part-A follow-ups (inherited scope above). For
+  OpenAI, Anthropic and Ollama, path steering is **in** scope *(Revision B1)*:
+  §B3, AC-B18, AC-B19 and D-B8 close it on this channel. What stays out is the
+  ambient case (Azure endpoint path, deployment, API version, Vertex project and
+  model) and Bedrock profile selection. Whoever files PAC-66-B files these two
+  beside it.
 - **Any change to the web app.** The settings page already shows the server's
   error sentence. Hiding Ollama, or the base-URL field, when the deployment has
   not enabled it needs the server to say which providers are enabled, which is a
@@ -1517,10 +1586,55 @@ is proven at unit level (AC-B5, AC-B9), not on the stack.
   `TestBuildLLMClient_Anthropic` (:118), `TestBuildLLMClient_DefaultModels` (:143);
   none of them sends a request to the public host, so AC-B5 is the first
   test that does (through the recording transport).
-- **The six `parser_test.go` tests in §B2.6** keep their assertions. They send to
-  `http://127.0.0.1:<port>`, which this part refuses unless approved; the plan
-  must make them approve their test server's destination for the provider under
-  test, not delete or skip them.
+- **Existing tests that point these clients at a test server** *(Revision B1;
+  replaces the earlier bullet, which prescribed a Given D-B3 forbids)*. No test is
+  deleted or skipped. Each one below falls in exactly one of four groups.
+  - **Keep their assertions; Ollama Given.** `TestOllamaClient_Complete_Mock`
+    (`parser_test.go:244`), `TestNLPService_Parse_WithOllama` (:282),
+    `TestNLPService_Parse_ScheduleMeeting` (:317),
+    `TestNLPService_Parse_InvalidJSON` (:351),
+    `TestParse_AuditEntrySubjectIsCallerFromContext` (:395). Given: the operator's
+    configuration for the test approves the test server's destination
+    (`http://127.0.0.1:<port>`) for Ollama. D-B1 permits that, because Ollama
+    carries no key; no exception is needed.
+  - **Keep their assertions; public-host Given.** `TestOpenAIClient_Complete`
+    (:162), `TestAnthropicClient_Complete` (:183). Given: the client's base URL is
+    empty or the vendor's public host (approved by D-B2: secure transport, default
+    port), and the test's outbound transport delivers the request to the
+    in-process test server instead of the network, the same technique as part A's
+    recording transport (§4). The destination the rule sees is the approved public
+    host, so D-B3 is respected and **there is no test-only exception**: nothing in
+    the product approves `http://127.0.0.1` for OpenAI or Anthropic, in a test or
+    elsewhere. The assertions on method, headers, body and parsed answer are
+    unchanged.
+  - **Keep their assertions; whichever Given fits.** `TestPostJSON_Success` (:204),
+    `TestPostJSON_HTTPError` (:230) exercise the raw sending step with no
+    provider and no key. If the plan puts the rule above that step they are
+    untouched; if it puts the rule in that step, they take the Ollama Given above
+    (keyless, approved test-server destination). Either way the assertions stay.
+  - **Superseded by Part B criteria.** Changing these assertions is authorised by
+    the criteria named and is not a skipped or weakened test:
+    - `TestUserKeyProviders_AreNotChecked` (`backend/nlp/destination_test.go:251-262`):
+      superseded by AC-B1 (openai at `http://10.0.0.1` is refused), AC-B2 and AC-B6
+      (anthropic at `http://attacker.example` is refused), and AC-B8 / AC-B10
+      (ollama with nothing stored is refused unless the local default is approved).
+    - `TestPAC66_UserKeyAndKeylessProbesUnchanged`
+      (`backend/api/pac66_llm_destination_test.go:448-475`): the Anthropic case is
+      superseded by AC-B2 and AC-B6 (refused); the Ollama case keeps its 200 under
+      AC-B9's Given (test server approved for Ollama). The test's last assertion,
+      that the ambient transport records nothing, is unchanged.
+    - `TestLLMTest_BodyRulesAndNoKeyEcho` (`backend/api/pac24_scope_test.go:70-124`):
+      the body-rule half (400s) and the no-key-echo half are unchanged. The
+      expectation of a 502 after contacting an `http://127.0.0.1` OpenAI base URL
+      (:86, :112-118) is superseded by AC-B1 (the 4xx refusal, still with no key
+      in the body, AC-B16). The property that half protected, a provider failure
+      gives a 502 whose body echoes no key, stays covered by giving it the
+      public-host Given above with a test server that answers 401.
+- **Part A sentences Part B supersedes** *(Revision B1)*. Part A §3's last bullet
+  ("Users of the user-key providers (OpenAI, Anthropic, Ollama) see no change from
+  this spec") and part A §6's bullet saying OpenAI, Anthropic and Ollama behave
+  exactly as today describe part A alone. Once Part B ships they no longer hold;
+  §B3 and §B4 govern those providers. Part A's criteria are unaffected.
 - **Part A, unchanged**: every AC-1 to AC-20, `e2e/tests/llm-destination.spec.ts`,
   and the probe's documented 422 shape. Part B adds reasons or properties to that
   shape only by extension; it does not change the meaning of an existing reason.
@@ -1541,7 +1655,10 @@ configuration becomes unused.
 **Upgrade note:** on upgrade, a self-hosted deployment whose users use Ollama, or
 an OpenAI-compatible gateway or Anthropic proxy, stops sending to it until the
 operator approves that destination. Users with an empty OpenAI or Anthropic base
-URL are unaffected. Release notes and `.env.example` must say so; `.env.example`
+URL are unaffected. A stored base URL that carries a path, query or fragment
+(for example a gateway prefix) is refused until it is cleared or, if OQ-B6 allows
+it, the operator approves the prefix *(Revision B1)*. Release notes and
+`.env.example` must say so; `.env.example`
 must also stop saying these providers need no server configuration.
 
 ## B8. Open questions
@@ -1567,6 +1684,15 @@ must also stop saying these providers need no server configuration.
   selected provider) would refuse a user who saves the Ollama address while
   OpenAI is selected, which the web app's form allows. Assumed the looser
   write rule with the per-provider send-time rule (D-B5). Owner: contract-author.
+- **OQ-B6 — Operator entry syntax for these providers, and whether it may carry a
+  path prefix.** *(Revision B1; challenge NB-5.)* AC-B9 needs an Ollama entry with
+  scheme and port (`http://host:11434`), which part A's D-10 syntax (bare host or
+  `https://<host>`) does not express, and AC-B15's "malformed" depends on the
+  syntax. An OpenAI-compatible gateway that serves the chat operation under a
+  path prefix cannot be used under D-B8 unless the operator's entry may name that
+  prefix. Assumed: no prefix (D-B8), entry syntax decided by the contract stage
+  and listed in the feature manifest, not silently copied from D-10. Owner:
+  contract-author, then product owner for the prefix.
 
 ## B. Decisions
 
@@ -1603,6 +1729,17 @@ to trade away") and with part A's D-1 to D-13.*
 - **D-B7 — Refusals reuse part A's per-path shapes (D-5)**, with a reason that
   says which case applies. The contract stage decides whether that is a new reason
   value or an existing one; an existing reason's meaning does not change.
+  *Assumed by the factory, pending owner confirmation.*
+- **D-B8 — Approval covers one operation, not the whole destination.** *(Revision
+  B1.)* A request to an approved OpenAI, Anthropic or Ollama destination goes only
+  to that provider's chat inference operation, with no query. A base URL carrying
+  a path (other than empty or a single slash), a query, a fragment or user
+  information is refused on write and at send time; a redirect to another
+  operation on the same destination is not followed (AC-B7, AC-B18, AC-B19).
+  Chosen over keeping path steering out of scope because §B1 item 1 names blind
+  POSTs to the operator's infrastructure as the harm, and on a self-hosted Ollama
+  that harm is exactly a request to a non-chat operation. Cost: a gateway that
+  needs a path prefix stops working until OQ-B6 is answered; stated in §B7.
   *Assumed by the factory, pending owner confirmation.*
 
 ## Challenge (Part B) — 2026-10-26
@@ -1795,3 +1932,67 @@ the only option that keeps the feature, and D-B1 records that.
   Anthropic proxy lose it on upgrade until they approve the destination. This is
   by design and stated in §B7. On the hosted product, every user with Ollama
   stored loses it (D-B1). No stored value is deleted.
+
+## Revision B1 — 2026-10-26
+
+Answers to the Part B challenge above. Part B's sections are changed in place;
+changed text is marked *(Revision B1)*.
+
+### Blocking
+
+1. **Path steering on an approved destination is this channel's problem too.**
+   Accepted, resolved by option (a). The challenger is right that §B5 was wrong:
+   each client appends its operation path to the user's base URL as a string
+   (`parser.go:44`, `:78`, `:114`, now cited in §B2.6), so a user who may reach an
+   approved Ollama destination could also reach its model-download operation with
+   a model of their choosing. Changes: §B3 has a new bullet (an approved
+   destination is reached only for the provider's chat inference operation; a
+   base URL with a path other than empty or `/`, a query, a fragment or user
+   information is refused on save and at send time). New AC-B18 (Ollama: write
+   refused, stored value refused on every path, the approved destination alone
+   sends exactly one request whose path is the chat operation's and has no query)
+   and AC-B19 (the same for OpenAI and Anthropic, including their public hosts).
+   AC-B7 now also covers a redirect to another operation on the same destination.
+   Recorded as D-B8, with its cost (a gateway needing a path prefix stops working)
+   in §B7 and the prefix question as OQ-B6. §B5 is corrected: path steering is in
+   scope for these three providers; only the ambient case and Bedrock profile
+   selection stay as part-A follow-ups. Option (b) was rejected because it would
+   leave open the harm §B1 item 1 names, on exactly the deployments D-B1 keeps
+   Ollama for.
+2. **§B6 prescribed a Given that D-B3 forbids, and missed tests Part B reverses.**
+   Accepted. §B6's test bullet is replaced. Every test the challenger named is
+   listed, with `parser_test.go:317`, `:351` and `:395` confirmed as Ollama tests
+   (each stores the test server as an Ollama `LLMBaseURL`). Four groups:
+   (i) the five Ollama tests keep their assertions by approving the test server's
+   destination for Ollama, which D-B1 allows; (ii) `TestOpenAIClient_Complete` and
+   `TestAnthropicClient_Complete` keep their assertions with the base URL empty or
+   the vendor's public host and a test transport that delivers to the in-process
+   server, the technique part A's recording transport already uses, so the rule
+   sees an approved destination and **no test-only exception exists**;
+   (iii) the two `postJSON` tests keep their assertions under whichever Given fits
+   where the plan places the rule; (iv) `TestUserKeyProviders_AreNotChecked`, the
+   Anthropic case of `TestPAC66_UserKeyAndKeylessProbesUnchanged` and the 502
+   expectation in `TestLLMTest_BodyRulesAndNoKeyEcho` are superseded by the named
+   criteria (AC-B1, AC-B2, AC-B6, AC-B8, AC-B10), which authorises changing those
+   assertions; the 502-with-no-key-echo property is kept under the public-host
+   Given. §B2.6 lists the same tests.
+
+### Non-blocking, also taken
+
+- NB-1: "Effective destination" now uses part A's definition (the request that
+  would actually be sent), and says a non-empty base URL with an empty host is
+  refused, never defaulted to the public host.
+- NB-2: AC-B17 now has an OpenAI key on file. §B4 states that a destination
+  refusal wins over a missing key, as part A §4 does for the credential.
+- NB-5: operator entry syntax is OQ-B6, owned by the contract stage.
+- NB-4: §B6 now names the part A sentences (§3 last bullet, §6 user-key bullet)
+  that Part B supersedes.
+- NB-6: §B2.6's overstatement corrected.
+
+### Non-blocking, not taken in this revision
+
+- NB-3 (recovering a stale shared base URL from the web app): accepted as
+  friction for now; the refusal sentence must still name the property (AC-B1,
+  AC-B11), and the web change waits for OQ-B2.
+- NB-7 (PRODUCT.md location): the file is `smart-calendar-flow/PRODUCT.md`
+  (:34, :90); the quotes stand.
