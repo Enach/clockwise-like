@@ -158,6 +158,18 @@ Create and edit accept `duration_options` or its alias `durations`, and
   at `:221`, again inline at `:293-296`, with the same message and status. The
   inline copy can only differ from the first if the link changed in between,
   and it reads the same in-memory copy, so it never does.
+- Which duration a booking request states. The request may carry
+  `duration_minutes`, `duration`, both or neither; `duration` overrides
+  `duration_minutes` whenever it is present, even when it is 0
+  (`handlers_booking.go:249-255`). When an end is sent, the time from start to
+  end is taken in whole minutes, truncated toward zero (`:262`). The stated
+  duration is rejected as "duration does not match end time" only when it is
+  non-zero and differs from that figure (`:263-266`); otherwise that figure
+  becomes the duration, and an end at or before the start then fails
+  `durationAllowed` as "invalid duration" (`:125-127`, `:277-280`). So for an
+  end at or before the start, a stated duration equal to the (zero or
+  negative) time between them also gets "invalid duration" (challenge round 4
+  probe).
 - The "end must be after start" check at `:285-288` **is reachable** and is
   not part of API-073. When the request sends an end, the duration is the whole
   minutes between start and end (`:262`), so an end at or before start gives a
@@ -203,6 +215,9 @@ link by id only right after the owner creates or edits it
   address an external booker was given for the old one (D-3).
 - Pausing cannot reach a deleted link, and resuming cannot bring one back. There
   is no un-delete in this spec.
+- These guarantees hold for every request that starts after the delete has
+  completed. A booking or an edit already in progress when the delete lands is
+  not covered by this spec (§5, OQ-4).
 - Links that are inactive **before** this change are treated as paused, not
   deleted, because the server cannot tell which they were (D-1). They stay
   visible to their owner exactly as today; an owner who meant to delete one
@@ -212,7 +227,10 @@ link by id only right after the owner creates or edits it
 
 When a create or an edit carries both the canonical spelling and the alias for
 the same setting, the canonical spelling wins and the alias is ignored, on both
-verbs (D-5). Sending one spelling alone behaves as today.
+verbs (D-5). Sending one spelling alone behaves as today. A spelling counts as
+carried when its value is present and not null; an empty list counts as
+carried, so a canonical empty list beside a non-empty alias is rejected for
+having no values, on both verbs, as create already does.
 
 ### 3.3 A use, once spent, stays spent
 
@@ -221,7 +239,8 @@ cancelling it does not give the use back (D-6). A single-use link that has been
 booked once stays used up whatever happens to that booking; a link limited to N
 stays used up after N bookings have been made. The "uses" figure the owner sees
 counts bookings made, including cancelled ones. An owner who wants the link to
-take more bookings changes its limit, as today.
+take more bookings changes its limit, as today. Bookings made before this change
+count under the same rule, including any that were cancelled before it (D-8).
 
 ### 3.4 Only the people who can see a link in their list can fetch it
 
@@ -233,14 +252,25 @@ returning any of the link's details or its hosts (D-7).
 
 The public booking create path rejects exactly the same requests with exactly the
 same answers as today, without the two unreachable items: the repeated
-end-time error and the duplicated exhaustion test. A request that sends an end
-at or before its start and sends no duration (or a duration of 0) keeps getting
-the answer it gets today, "invalid duration". The same request with a non-zero
-duration that differs from the time between start and end keeps getting the
-answer it gets today, "duration does not match end time"; that check runs
-first. A request that sends no end, on a link whose duration is so long
-that the computed end comes out before the start, keeps getting the answer it
-gets today, "end must be after start".
+end-time error and the duplicated exhaustion test.
+
+"The stated duration" of a booking request means the duration under the
+API's primary spelling when the request carries that spelling — even when its
+value is 0 — otherwise the duration under the alternative spelling, otherwise
+none (§2.5 names the two fields). For a request that sends an end at or before
+its start, today and after the change:
+
+- if the stated duration is non-zero and differs from the time between start
+  and end, counted in whole minutes, the answer is "duration does not match end
+  time";
+- in every other case — no stated duration, a stated duration of 0, or a stated
+  duration equal to that zero or negative time — the answer is "invalid
+  duration".
+
+These two cases are a partition: every such request falls in exactly one. A
+request that sends no end, on a link whose duration is so long that the
+computed end comes out before the start, keeps getting the answer it gets
+today, "end must be after start".
 
 ## 4. Acceptance criteria
 
@@ -257,11 +287,11 @@ the deleted link is in neither the owned nor the shared group.  [contract]
 AC-2. Given a deleted link, when its owner or an accepted co-host fetches it by
 id, then the answer is not found.  [contract]
 
-AC-3. Given a deleted link, when its owner edits it — with any body, including
+AC-3. Given a deleted link, when its owner later edits it — with any body, including
 one that sets it active — then the answer is not found, and afterwards the link
 is still deleted (AC-1, AC-2 and AC-4 still hold).  [contract]
 
-AC-4. Given a deleted link, when anyone requests its public info, its slots, or
+AC-4. Given a deleted link, when anyone later requests its public info, its slots, or
 books it, then each answers not found and no booking is created.  [contract]
 
 AC-5. Given a deleted link with a pending co-host invite, when the invitee lists
@@ -274,15 +304,25 @@ AC-6. Given a deleted link, when its owner lists its bookings, invites a co-host
 to it, or deletes it again, then each answers not found and nothing
 changes.  [contract]
 
+AC-6a. Given a deleted link and a signed-in user who is neither its owner nor
+an accepted co-host, when that user fetches it by id, edits it, deletes it,
+lists its bookings or invites a co-host to it, then each answer is identical in
+status and body to the answer the same user gets for an id that has never
+existed — not the refusal a live link gives them (AC-19, today's 403) — and
+nothing changes.  [contract] *(fails today: edit, delete, bookings and invite
+answer 403, fetch answers 200)*
+
 AC-7. Given a deleted link that has a confirmed booking in the future, when a
 host's busy time is computed for that period, then the booked time is still
-busy.  [unit]
+busy.  [unit] *(passes today; pins busy time once a deleted state exists)*
 
 AC-8. Given a deleted link with slug S, when anyone creates or edits another link
 to use slug S, then it is rejected as taken, as for any existing slug.  [contract]
+*(passes today; pins slug reservation once a deleted state exists)*
 
 AC-9. Given a link with bookings and co-hosts, when its owner deletes it, then
 its bookings and host records still exist in storage afterwards.  [unit]
+*(passes today; pins the soft delete, D-2)*
 
 AC-10. Given a signed-in owner on the Links page with a link, when they delete
 it and reload the page, then the link is not shown; and the link's public
@@ -292,11 +332,13 @@ booking page shows the not-found state.  [e2e]
 
 AC-11. Given a link its owner has paused, when the owner lists links or fetches
 it, then it is returned with the paused state; when the owner resumes it, then
-its public page takes bookings again.  [contract]
+its public page takes bookings again.  [contract] *(passes today; pins pause
+and resume once a deleted state exists)*
 
 AC-12. Given a link that was inactive before this change was deployed, when its
 owner lists their links, then it is listed as paused, and the owner can resume
-or delete it.  [contract] (data-migration test)
+or delete it.  [contract] (data-migration test) *(passes today; pins D-1
+across the migration)*
 
 **Alias precedence (API-049)**
 
@@ -309,6 +351,14 @@ AC-14. Given an existing link, when an edit carries both spellings with differen
 values for durations, and both for days, then the link has the canonical
 spelling's durations and days — the same result AC-13 gives for the same
 values.  [contract] *(fails today: the alias wins)*
+
+AC-14a. On both create and edit: given a request whose canonical durations
+spelling is null and whose alias carries a non-empty list, then the alias's
+durations are used; given a request whose canonical durations spelling is an
+empty list and whose alias carries a non-empty list, then the request is
+rejected exactly as create rejects an empty durations list today and, on edit,
+the link is unchanged.  [contract] *(create passes today; edit fails today on
+the empty-list case: the alias wins)*
 
 **Counting uses (API-051)**
 
@@ -324,9 +374,17 @@ more booking.  [contract]
 AC-17. Given a link limited to 2 with one cancelled booking and no other, then
 the owner sees one use and the link takes exactly one more booking.  [contract]
 
+AC-17a. Given a link limited to 1 whose only booking was made and then
+cancelled before this change was deployed, when the change is deployed, then
+the link answers "no longer accepting bookings" and the owner sees one use.
+[contract] (data-migration test if the count becomes stored) *(fails today: the
+link is open and shows zero uses)*
+
 AC-18. Given the e2e stack with a single-use link that has been booked once,
 when that booking's status is set to cancelled directly in the database, then
-the public booking page still shows "link no longer available".  [e2e]
+the public booking page still shows "link no longer available".  [e2e] The
+link must be seeded for this test alone, not the shared exhausted link that
+the existing used-up test depends on.
 
 **Fetch authorization (API-006)**
 
@@ -339,13 +397,22 @@ host details.  [contract]
 **Public booking create (API-073)**
 
 AC-20. Given each rejection the public booking create can make today (invalid
-request body, missing fields, bad start, bad end, end/duration mismatch —
-including a request that sends an end at or before its start together with a
-non-zero duration, answered 400 "duration does not match end time" — invalid
-duration — including a request that sends an end at or before its start with
-no duration or a duration of 0, answered 400 "invalid duration" — end not after
-start, too soon, used up, overlapping slot, unknown slug), when the same request
-is sent after the change, then the status and body are identical.  [contract] — This
+request body, missing fields, bad start, bad end, end/duration mismatch,
+invalid duration, end not after start, too soon, used up, overlapping slot,
+unknown slug), when the same request is sent after the change, then the status
+and body are identical.  [contract] For a request whose end is at or before
+its start, the answer follows the partition in §3.5, and the test covers at
+least these cases, each with today's answer:
+  (a) a stated duration that is non-zero and differs from the time between
+      start and end (end = start − 30 min, stated 30) → 400 "duration does not
+      match end time";
+  (b) no stated duration → 400 "invalid duration";
+  (c) a stated duration of 0 under the primary spelling while the alternative
+      spelling carries 30 → 400 "invalid duration";
+  (d) a stated duration equal to the negative time between start and end
+      (end = start − 30 min, stated −30, under either spelling) → 400 "invalid
+      duration".
+— This
 criterion is the regression net, not a failing test: removing unreachable code
 changes no observable behaviour, so the removal itself is proven by review of
 the diff. That is stated rather than hidden.
@@ -369,7 +436,8 @@ take it out.
 - **A booking-cancel feature.** This spec decides what a cancellation does to the
   count; it does not add a way to cancel. ACs 15–18 create the cancelled state
   directly.
-- **Two simultaneous bookings on a single-use link** (§2.4, last bullet). Real,
+- **Requests in flight around a delete, and two simultaneous bookings on a
+  single-use link** (§2.4, last bullet; OQ-4). Real,
   related, and not in the audit or the issue. Raised as OQ-4 with a proposed
   follow-up rather than folded in, so this spec stays the size the issue asked
   for.
@@ -385,9 +453,12 @@ take it out.
 - **API-053** (`days` alias silently drops unrecognised day names), **API-069**
   (duplicate invite routes), **API-072** (ambiguous 404 on invite), **API-019**
   (bookings list shape) — same operations, different defects, not lifecycle.
-- **Web app changes.** None are required: the Links page already removes a
-  deleted link from its list optimistically and refetches; after this change the
-  refetch agrees. The regenerated types will carry new descriptions only, unless
+- **Web app changes.** None are required: after a delete the Links page
+  refetches the list (`Links.tsx:330-337`), and after this change the refetch no
+  longer contains the link. One user-visible change follows without web work: a
+  stale tab that pauses or edits a link deleted elsewhere now gets not found on
+  the fetch that precedes the edit (`schedulingLinks.ts:544`) and shows the
+  existing error toast (`Links.tsx:355`), where today it brings the link back. The regenerated types will carry new descriptions only, unless
   the contract stage adds a field.
 
 ## 6. What must not change
@@ -419,6 +490,13 @@ take it out.
 - **PAC-30's 404 rules for accept/decline/leave without a host row** —
   `TestSchedulingLinksRespondAndLeaveWithoutHostRowIs404` and siblings
   (`handlers_scheduling_links_test.go:431-581`).
+- **A repeated delete changes from 204 to not found** — intended (AC-6).
+  `TestSchedulingLinksOwnerOnlyBookingsAndDelete` ends with the owner's 204
+  (`handlers_scheduling_links_test.go:261-267`) and still passes; no consumer
+  repeats a delete (the web app confirms first, `Links.tsx:373-375`).
+- **The e2e cleanup hard-deletes link rows** (`e2e/tests/scheduling-links.spec.ts:110`,
+  `:188`). That is test teardown, not a product path, and is no precedent
+  against D-2.
 - **Slug uniqueness across all links** — `TestSlugExists`
   (`storage/scheduling_links_test.go:256`).
 
@@ -456,15 +534,19 @@ introduces and confirm the down migration matches this section.
 - **OQ-3 — Should a paused link's public page say "paused" rather than "not
   found"?** Today it is 404, and this spec keeps that. *Owner:* product owner
   with frontend-implementer. *Resolve:* a separate copy/contract issue if wanted.
-- **OQ-4 — Concurrent bookings on a single-use link** (§2.4). Two simultaneous
-  requests can both pass the exhaustion check. *Owner:* spec-challenger to judge
-  whether it must be in scope; otherwise triage files a follow-up issue.
-  *Resolve:* challenge round.
+- **OQ-4 — Requests in flight.** Two simultaneous requests can both pass the
+  single-use check (§2.4); a booking that loaded the link before a delete can
+  be written after it (challenge round 1, non-blocking 4); an edit that loaded
+  the link before a delete can write it back live (challenge round 2,
+  non-blocking 2). The challenger judged these out of scope (round 1,
+  non-blocking 5) and §3.1 scopes its guarantees to requests started after the
+  delete. *Owner:* triage, to file one follow-up issue covering the three.
 - **OQ-5 — Does the refusal in AC-19 say "forbidden" or "not found"?** U-08 says
   add a 403 (`api-audit.md:476`), matching edit/delete. A not-found answer would
   hide whether the id exists. The spec requires only that no link data is
-  returned; the contract stage chooses and records why. *Owner:*
-  contract-author.
+  returned; the contract stage chooses and records why. Its precondition is
+  settled by D-9: a deleted link answers not found to everyone, whatever is
+  chosen here for a live one. *Owner:* contract-author.
 - **OQ-6 — Should duration options have a maximum?** Today any positive integer
   is accepted, and options of 153,722,868 minutes or more make booking
   arithmetic overflow (§2.5, AC-20a). *Owner:* triage, to file a follow-up issue
@@ -513,6 +595,16 @@ None deletes user data or widens who can see data.
   today is lost; the only callers losing access are users with no role on the
   link, who should not have had it (U-08, API-006). Pending invitees already get
   the link's title and owner from the invite list.
+- **D-8 — Bookings that existed before the change count under D-6**, cancelled
+  ones included. This is §3.3's rule applied to existing data; any other
+  starting value would make the figure depend on when a booking was cancelled.
+  It can close a link that is open today, but only one whose bookings were
+  cancelled by a database edit (§2.4), and closing never widens who can book.
+- **D-9 — A deleted link answers every caller as an id that never existed**,
+  including callers with no role on it (AC-6a). Answering them with the refusal
+  a live link gives would tell a stranger that the id once existed. This
+  settles the precondition of OQ-5: whatever refusal the contract picks for a
+  live link in AC-19, a deleted link answers not found.
 
 ## Challenge — 2026-10-27
 
@@ -1042,3 +1134,52 @@ zz_pac40_r4_probe_test.go:27: end-30, duration 30            -> 400 {"error":"du
 ### Consumers this breaks
 - Nothing new. The lists from rounds 1–3 stand. Revision 3 touched only spec
   text about public booking error answers, and those answers do not change.
+
+## Revision — 2026-10-27 (answers challenge round 4)
+
+Checked against source at `6d751f9`, still the tip of `origin/main`
+(`handlers_booking.go:124-127, 230-300`; `handlers_scheduling_links.go:157-175,
+212-225, 440-455`; `handlers_scheduling_links_test.go:258-268`;
+`e2e/tests/scheduling-links.spec.ts:110, 188`). Nothing was run. I did not
+re-run the challenger's probe; the answers in AC-20 (c) and (d) come from
+reading source and from the round 4 probe output. No comment from the product
+owner on the issue answers an open question, so every decision stays assumed.
+
+1. **Blocking 1, AC-20 contradicted §3.5 for a negative stated duration.**
+   Accepted. `:263` fires only on a non-zero, *differing* duration; a stated
+   duration equal to `actualDuration` (`:262`, whole minutes truncated toward
+   zero) passes it and then fails `durationAllowed` (`:125-127`).
+   *Changed:* §3.5 now states a two-case partition for an end at or before the
+   start; AC-20 refers to it and names four required cases (a)–(d), including
+   the negative-equal case answered "invalid duration".
+2. **Non-blocking 1, which field is "the duration".** Accepted (`:249-255`:
+   `duration` overrides `duration_minutes` even at 0). *Changed:* §2.5 gains a
+   bullet naming the fields and their order; §3.5 defines "the stated duration"
+   without naming fields (sections 3–5 rule); AC-20 case (c) pins a primary
+   duration of 0 beside an alternative of 30.
+3. **Non-blocking 2, items carried forward from rounds 1–3.** All are now
+   addressed, so none is left for the contract stage:
+   - Non-owner on a deleted link (round 1 item 1): new AC-6a and decision D-9;
+     OQ-5 notes that its precondition is settled.
+   - Pins not labelled (round 1 item 2): AC-7, AC-8, AC-9, AC-11 and AC-12 now
+     carry "(passes today; pins …)".
+   - "Carries both" undefined for null and `[]` (round 1 item 3): defined in
+     §3.2 from `handlers_scheduling_links.go:159-163` and `:444-449`; new
+     AC-14a pins both verbs.
+   - In-flight booking and in-flight edit around a delete (round 1 item 4,
+     round 2 item 2): §3.1 scopes its guarantees to requests started after the
+     delete; AC-3 and AC-4 say "later"; OQ-4 now gathers all three races into
+     one triage follow-up, per round 1 item 5.
+   - AC-18's link (round 1 item 6): it must be seeded for that test alone.
+   - Repeated delete 204 → not found (round 1 item 7) and the e2e hard-delete
+     cleanup (round 3 item 3): named in §6.
+   - §5's "optimistically" (round 1 citation) and the stale-tab not-found
+     (round 1 consumers): §5 rewritten.
+   - Starting value of the use count (round 2 item 4): §3.3 states it, D-8
+     records it, AC-17a pins it.
+
+New decisions D-8 and D-9 are assumed by the factory, pending owner
+confirmation. Neither deletes data or widens who can see data: D-8 can only
+close a link, and D-9 only narrows what a stranger learns.
+
+Status stays challenged. The spec goes back to the challenger for round 5.
