@@ -636,3 +636,120 @@ No decision changed. The non-blocking findings are not addressed in this round.
 
 Status moved from draft to challenged. The spec goes back to the challenger for
 round 2.
+
+## Challenge — 2026-10-27 (round 2)
+
+Reviewed the committed spec at `e1f5335` (revision 1) against source on `main`
+at `6d751f9` (still the tip of `origin/main`), the Linear issue text,
+`docs/factory/api-audit.md`, `contracts/openapi/paths/booking.yaml` and the web
+repo at `origin/main`. One probe was run (below); everything else is from
+reading code.
+
+**Verdict**: accept-with-changes
+
+The revision fixed round 1's Blocking 2 correctly. It also applied round 1's
+Blocking 1, but that finding was wrong, and the spec now contains a false
+statement that permits a behaviour change. That is the only blocking item.
+The scope still matches the issue, and the decisions are still conservative.
+
+### Blocking
+1. **"End must be after start" can be reached, so §2.5 (third bullet), §3.5 and
+   AC-20 are contradicted by the code. As written, the spec permits removing a
+   check that real requests reach.** Link validation only requires each
+   duration option to be positive (`handlers_scheduling_links.go:219-223`). The
+   contract sets no maximum (`booking.yaml` duration items: `type: integer`, at
+   most `minimum: 1`), and the column is `INTEGER[]`
+   (`009_scheduling_links.up.sql:6`). When a booking request sends no end, the
+   handler computes `end = start.Add(time.Duration(requestedDuration) *
+   time.Minute)` (`handlers_booking.go:275`). For any option of 153,722,868
+   minutes or more, that multiplication overflows int64 nanoseconds and wraps,
+   so `end` comes out before `start`. `durationAllowed` still passes, because
+   the option is in the list, and the request reaches `:285-288`. Round 1
+   checked only the end-sent path, where `end.Sub(start)` saturates and the
+   "invalid duration" argument holds.
+   *Probe, run 2026-10-27 against a throwaway Postgres 16 with a temporary
+   test file that was then deleted (not committed).* A reusable link with
+   `duration_options: [200000000]`, min notice 0, and `validateSchedulingLink`
+   returns nil for it. `POST /api/book/{slug}` with
+   `{"name":"A","email":"a@example.com","start":<future>}` returned:
+   ```
+   zz_pac40_probe_test.go:29: status=400 body={"error":"end must be after start"}
+   --- PASS: TestPAC40ProbeEndAfterStartReachable (0.02s)
+   ```
+   A standalone Go check gives the same arithmetic: 153722867 min → end in
+   2322, after start; 153722868 min → end in 1737, `After(start)=false`.
+   If the branch is removed as §3.5 now directs, this request stops getting
+   that 400 and continues into the notice, overlap and confirm steps. That
+   breaks §3.5's own rule ("rejects exactly the same requests with exactly the
+   same answers"), and AC-20's claim that an end at or before start gets
+   "invalid duration" is false for this request.
+   *Resolve:* restore "end not after start" as a reachable rejection. Remove
+   the third bullet's unreachability claim from §2.5. In §3.5, name only the
+   two unreachable items the issue names: the repeated end-time error at
+   `:281-284` and the duplicated exhaustion test at `:293-296`. Add to AC-20 a
+   case that reaches the check through an overflowing duration option, with
+   today's status and body. Whether such duration options should be accepted
+   at all is a separate defect (Non-blocking 3), not part of API-073.
+
+### Non-blocking
+1. **Round 1's non-blocking items 1–7 are still open.** The revision says so
+   explicitly, and that is acceptable. Item 1 is the one most likely to matter
+   at contract stage: no AC checks that a *non-owner* gets "not found" rather
+   than 403 on a deleted link's edit, delete, bookings, invite or fetch.
+   Combined with OQ-5, a stranger could tell a deleted id from a live one. The
+   contract author needs that settled before choosing AC-19's status.
+2. **An edit in flight can undo a delete.** Edit is a read-modify-write: the
+   link is loaded by id (`handlers_scheduling_links.go:417`) and every column,
+   including `active`, is written back from that copy
+   (`storage/scheduling_links.go:140-157`). If an owner's edit loads the link
+   just before a delete commits in another tab, its write lands afterwards and
+   can make the link live again. §3.1 says flatly that "resuming cannot bring
+   one back", and AC-3 covers only the sequential case. Either state that the
+   guarantee covers requests started after the delete, as with round 1's
+   item 4, or require that a delete is never undone by a concurrent edit. In
+   both cases, add it to the OQ-4 follow-up.
+3. **Unbounded duration options are a defect not in the audit.** They are the
+   root of Blocking 1. A link can be created whose only duration lasts
+   centuries, and the slot and booking paths then do overflowing arithmetic.
+   This is out of this spec's scope. Triage should file it alongside OQ-4.
+4. **Starting uses for existing links are unspecified.** If uses become a
+   stored figure (§7 allows that), the spec does not say whether existing
+   cancelled bookings count. Under D-6 they would count, and that could close
+   a link that is open today, at deploy time and without the owner acting.
+   Under today's derivation they would not. Cancelled rows can exist today only
+   through database edits (§2.4), so the impact is small. AC-17 pins the
+   behaviour after the change but not the first value. State which rule
+   applies to bookings that existed before the change.
+
+### Criteria I could not falsify
+- None. AC-20's "end at or before start → invalid duration" can be falsified,
+  and the probe above falsifies it (Blocking 1).
+
+### Citations I checked and found wrong
+- §2.5 third bullet and Revision 1 item 1 say "The 'end must be after start'
+  check at `:285-288` cannot fire either". It fires for an overflowing duration
+  option with no end sent (`handlers_booking.go:269-275`, probe output above).
+  The same error appears in round 1's Blocking 1, which this round withdraws.
+- §3.5 says "without the two unreachable checks (the repeated end-time error
+  and 'end must be after start')". Only the first of the two is unreachable.
+
+Checked and correct this round: `handlers_booking.go:65-73, 107-121, 124-136,
+139-141, 211-304` (the `:281-284` re-check is unreachable: every assignment to
+`err` before it returns on error; the `:293-296` re-check reads the same
+in-memory link as `:221`); `handlers_scheduling_links.go:157-175, 212-260,
+444-449`; `storage/scheduling_links.go:87-163, 426-452, 478-483`;
+`009_scheduling_links.up.sql:6, 12, 33`; the issue text in Linear (scope matches
+API-049/050/051/073); no SQL on `scheduling_links`/`bookings` outside
+`storage/scheduling_links.go` and generated code; no scheduling-link caller in
+`mcp/`; §1 now agrees with §2.4.
+
+### Consumers this breaks
+- Round 1's list stands. Checked again: in the web repo, `withFallback`
+  (`smart-calendar-flow/src/api/client.ts:548-561`) rethrows HTTP errors and
+  falls back to mock data only when the API is unreachable. A 404 for a deleted
+  link therefore surfaces as an error and does not show stale mock data.
+- smart-calendar-flow/src/api/schedulingLinks.ts:352-355 (`isLinkExhausted`)
+  recomputes "used up" on the client from `uses_count`. It stays consistent
+  under D-6 because it reads the same figure the server will gate on. Not a
+  break; listed so the contract stage keeps the field's meaning and its name
+  aligned.
