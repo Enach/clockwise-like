@@ -71,18 +71,25 @@ async function verify(): Promise<void> {
       [USERS.primary.id],
       2,
     ],
-    ['scheduling links', 'SELECT 1 FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], 5],
+    ['scheduling links', 'SELECT 1 FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], 6],
     [
       'accepted hosts',
       `SELECT 1 FROM scheduling_link_hosts
         WHERE status = 'accepted' AND link_id = ANY($1::uuid[])`,
-      [[LINKS.uiBooking.id, LINKS.apiBooking.id, LINKS.exhausted.id, LINKS.owned.id, SEAM_LINK.id]],
-      5,
+      [[LINKS.uiBooking.id, LINKS.apiBooking.id, LINKS.exhausted.id, LINKS.owned.id, SEAM_LINK.id, LINKS.cancelledSingleUse.id]],
+      6,
     ],
     [
       'exhausting booking',
       'SELECT 1 FROM bookings WHERE link_id = $1',
       [LINKS.exhausted.id],
+      1,
+    ],
+    // PAC-40 AC-18 starts from one confirmed booking on its own link.
+    [
+      'AC-18 link booked once, not yet cancelled',
+      `SELECT 1 FROM bookings WHERE link_id = $1 AND id = $2 AND status = 'confirmed'`,
+      [LINKS.cancelledSingleUse.id, LINKS.cancelledSingleUse.bookingId],
       1,
     ],
     ['analytics weeks', 'SELECT 1 FROM analytics_weeks WHERE user_id = ANY($1::uuid[])',
