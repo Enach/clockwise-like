@@ -99,9 +99,10 @@ func TestPAC21PatchEventNotFoundIsFixed(t *testing.T) {
 	assertFixed4xx(t, rec, http.StatusNotFound, "event not found")
 }
 
-// AC-6, U-04: the 200 body of PATCH /api/events/{id} is the raw Google event
-// (GoogleCalendarEventRaw), not the CalendarEvent DTO the list returns.
-func TestPatchEvent_SuccessBodyIsRawGoogleEvent(t *testing.T) {
+// AC-6, U-04 (re-asserted by PAC-29, AC-1): the 200 body of PATCH
+// /api/events/{id} is the CalendarEvent DTO the list returns, not the raw
+// Google event (GoogleCalendarEventRaw, deleted from the contract by PAC-29).
+func TestPatchEvent_SuccessBodyIsCalendarEventDTO(t *testing.T) {
 	fakeGoogleEvents(t, false)
 	user := userWithGoogleToken(t, "pac21-patch-200@example.com")
 	h := &eventHandlers{db: openTestDB(t), oauthConfig: &oauth2.Config{}}
@@ -116,16 +117,12 @@ func TestPatchEvent_SuccessBodyIsRawGoogleEvent(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body["summary"] != "New" || body["htmlLink"] == nil {
-		t.Fatalf("body lacks Google's own keys: %v", body)
+	if body["title"] != "New" || body["start"] != "2030-01-07T10:00:00Z" || body["end"] != "2030-01-07T11:00:00Z" || body["id"] != "evt-1" {
+		t.Fatalf("body is not the CalendarEvent DTO: %v", body)
 	}
-	start, _ := body["start"].(map[string]any)
-	if start == nil || start["dateTime"] == nil {
-		t.Fatalf("body lacks start.dateTime: %v", body)
-	}
-	for _, dtoKey := range []string{"title", "start_time"} {
-		if _, ok := body[dtoKey]; ok {
-			t.Fatalf("body carries the CalendarEvent key %q: %v", dtoKey, body)
+	for _, googleKey := range []string{"summary", "htmlLink"} {
+		if _, ok := body[googleKey]; ok {
+			t.Fatalf("body carries Google's key %q: %v", googleKey, body)
 		}
 	}
 }
