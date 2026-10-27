@@ -3,7 +3,8 @@
 - **Spec**: `docs/specs/PAC-67.md`, accepted at challenge round 5 (`fc27821` on
   `factory/pac-67-spec`; not yet on `main` when this contract was written).
 - **Manifest**: `contracts/features/PAC-67.yaml`.
-- **Bundle**: revision 1, sha256 in the manifest.
+- **Bundle**: revision 2 (after the contract challenge; see "Revision 1" at the
+  end), sha256 in the manifest.
 - **Base**: `origin/main` at `6d751f9`.
 
 Most of this feature is behaviour behind unchanged responses: renewal, storing
@@ -162,10 +163,11 @@ are added is the contract's call").
 ## 6. Disconnect: order, entries and failure
 
 **Order: local removal first, then revocation.** The server loads the
-credential, removes it locally (clearing any recorded loss and resetting
-conferencing), and only then sends the revocation with the in-memory token. A
-500 therefore means nothing changed and nothing was sent, so the client can
-retry safely. The reverse order would allow "revoked at Zoom, but still stored
+credential, removes it locally in one atomic change (clearing any recorded loss
+and resetting conferencing), and only then sends the revocation with the
+in-memory token, renewing it in memory first when it has expired (Revision 1,
+finding 4). A 500 can only happen before the removal commits, so it means
+nothing changed and nothing was sent, and the client can retry safely. The reverse order would allow "revoked at Zoom, but still stored
 and still shown connected here", which is a state the user cannot reason about.
 D-2 also requires that the user's instruction is honoured locally whatever the
 provider says.
@@ -175,9 +177,13 @@ provider says.
 | Case | `revocation` | Entries |
 |---|---|---|
 | Zoom, revocation confirmed | `confirmed` | 1 `provider_disconnected` |
-| Zoom, revocation not confirmed | `unconfirmed` | 1 `provider_disconnected` and 1 `revocation_unconfirmed` |
+| Zoom, revocation not confirmed, or not attempted (undecodable credential, failed renewal) | `unconfirmed` | 1 `provider_disconnected` and 1 `revocation_unconfirmed` |
 | Outlook, credential removed | `not_offered` | 1 `provider_disconnected` |
 | Either, nothing stored | `nothing_stored` | none |
+
+Every count is what is written when the insert succeeds. The writes are
+best-effort, like every kind in the log, and happen after the outcome is known,
+so a failed insert never changes the response (Revision 1, finding 2).
 
 AC-16's "one entry recording the disconnect" is the `provider_disconnected`
 entry in every row. AC-15's "records the disconnect and the unconfirmed
@@ -235,7 +241,11 @@ The operations this feature edits, and what that brings into scope:
 
   Anything else is the existing 400 "invalid body", returned before any
   credential is read. The request schema says the same thing, with `required`
-  and `minLength`, so a generated client cannot express the wrong request. No
+  `minLength` and (since revision 2) `pattern: '\S'`, whose whitespace set
+  the server's test is pinned to, so a client that validates against the
+  schema cannot express the wrong title. The `end`-after-`start` rule and the
+  refusal of the zero time cannot be expressed in OpenAPI and are stated in
+  the descriptions. No
   consumer breaks: the web app and the MCP server never call this operation,
   and the one Go test that does sends a valid body. The `end`-after-`start`
   rule goes beyond the finding's literal "missing fields". It was taken because
@@ -278,7 +288,9 @@ The full list is in the manifest. In summary:
 
 ## 10. Gates run at this stage
 
-Run on the final commit of `factory/pac-67-contract`:
+Revision 1's gate results are in "Revision 1" below. The results in this
+section are for revision 1 of the bundle (`3a38fcc`). They were run on that
+commit of `factory/pac-67-contract`:
 
 - `python scripts/openapi_assemble.py` assembled the fragments: 99 paths, 120
   operations, 145 schemas, x-uncertain 11.
@@ -533,3 +545,195 @@ real and removing `format: uri` is correct. The bundle goes from 12 markers to
 - `createConferenceLink` with an explicit `"start":"0001-01-01T00:00:00Z"` is
   schema-valid but will be 400 (indistinguishable from absent). This is
   acceptable, but it could be documented.
+
+## Revision 1 — 2026-10-27
+
+Author: contract-author. This revision answers the challenge above (verdict
+accept-with-changes, against `3a38fcc`). Bundle revision 2, sha256
+`aeef914203c7a1a610451f8503b093e4422816163e3e7df23d715ab2ce7a70f9`
+(manifest `contractHash`). Every blocking and non-blocking item is answered
+below, in the challenge's order. Three of the choices are product decisions. They
+are recorded in the spec as D-15 to D-17 (`factory/pac-67-spec` at `9364871`) and
+in the manifest's `assumedByTheFactory`, each assumed by the factory and pending
+owner confirmation.
+
+### Blocking
+
+**1. A blank title passed the schema. Fixed as proposed, and the server's test
+is pinned to the schema's.** `CreateConferenceRequest.title` now has
+`pattern: '\S'` in addition to `minLength: 1`. Adding the pattern alone would have
+left a smaller form of the same gap. "Non-empty after trimming" in Go
+(`strings.TrimSpace`, `unicode.IsSpace`) is a different set from ECMA-262 `\s`,
+which JSON Schema patterns use. U+0085 is whitespace to Go but not to `\s`, and
+U+FEFF is the reverse. Go's `regexp` `\S` is ASCII only. So a title of "\u0085"
+would pass the schema but be refused by a `TrimSpace` server, and a title of
+"　" would pass a `regexp` server. The `createConferenceLink` description now
+defines the server's test as "contains a character outside the ECMA-262 `\s` set"
+and says that neither Go primitive is that set. CONTRACT-5 tests the edge
+characters. Section 8's claim now reads "a client that validates against the
+schema cannot express the wrong title". The rules the schema cannot express,
+`end` after `start` and the zero time, are stated in the descriptions.
+
+**2. Activity entries the server could not guarantee. Fixed with the
+best-effort option (spec D-16).** `disconnectZoom` step 4, `disconnectMicrosoft`
+step 5 and a new paragraph under CONNECTION ENTRIES on `listAuditEntries` now
+state three things:
+- entries are written after the outcome they record is known;
+- they are best-effort, like every existing kind (`storage.WriteAuditLog`);
+- a failed insert is logged and never changes a response.
+
+The counts ("one", "two", "one per loss") are now what is written when the
+insert succeeds. The 500 of both disconnects is limited to failures before the
+local removal commits. The Outlook removal and the D-8 conferencing reset are
+now one atomic change, so "500 = nothing changed" is true there as well.
+
+Rejected: naming a status for "removed but the entry failed". The only
+candidates are a 5xx, which would make a disconnect that did happen look failed
+and invite a retry of something already done, or a 200 with a flag, which adds a
+field the client could not act on. The 200 body already tells the user the
+outcome. For a loss, the status surfaces show it and do not read the log.
+
+**3. No truthful `revocation` value for an undecodable Zoom credential. Fixed
+as proposed.**
+- `ProviderDisconnectResult.revocation`: `unconfirmed` now reads "a credential
+  was removed and its revocation is not confirmed". That covers a revocation
+  that was attempted and failed, and one that could not be attempted because
+  the stored credential does not decode or its expired access token could not
+  be renewed.
+- `disconnectZoom` step 1 removes the stored value whether or not it decodes.
+  In that case step 3 sends nothing, and step 4 writes `provider_disconnected`
+  plus `revocation_unconfirmed`, so the user is still told (D-2).
+- CONTRACT-8 tests this case.
+
+**4. Renewal before revocation was left to the plan. Now pinned as proposed.**
+`disconnectZoom` step 2 renews the access token before revocation when it is
+empty, expired, or has no stored expiry (a credential stored before PAC-67). It
+uses the refresh token that was just removed, through the same token endpoint a
+meeting creation uses.
+
+The renewed access and refresh tokens are held in memory for that request and
+are never stored. If the renewal fails (permanently or temporarily), or no
+refresh token was stored, then:
+- nothing is sent to the revocation endpoint;
+- the answer is `unconfirmed`;
+- nothing is recorded as a loss, and no `connection_lost` entry is written,
+  because the credential no longer exists.
+
+Step 3 revokes the unexpired or just-renewed token. CONTRACT-7 tests that the
+revocation request carries the renewed token and that nothing is stored.
+
+**5. The Teams row reported a refresh-less Microsoft credential as connected.
+Fixed as proposed, and the same rule is applied to Zoom.**
+`ConferenceProviderStatus.connected` now states each row's predicate:
+- `google_meet`: a Google token row is stored and not lost;
+- `zoom`: the stored credential decodes, holds a refresh token and is not lost;
+- `teams`: the stored Microsoft credential decodes, holds a refresh token and is
+  not lost. This is the `getAuthStatus` Outlook predicate.
+
+`enabled` follows teams' `connected` exactly. On both meeting-creation operations,
+an expired Teams or Zoom access token with no stored refresh token now answers
+the provider's 400 "connection lost" sentence. No renewal request is sent,
+nothing is recorded and no entry is written, because such a credential was never
+reported connected and so there is no loss to start. The
+`microsoftOAuthCallback` text that said "exactly as today" is corrected: the
+Teams row changes here.
+
+This changes behaviour in two cases, and both are stated in the description:
+- a refresh-less Microsoft credential, which had shown `connected: true,
+  enabled: true`;
+- an undecodable Zoom value, which had shown `connected: true`.
+
+Both are spec §3 ("connected means usable"), not a new behaviour. A Zoom
+credential with no stored expiry is treated as expired when it is used, so it is
+renewed, not used blind. CONTRACT-11 tests these cases.
+
+**6. The manifest narrowed AC-10. Fixed.** The manifest's AC-10 line now has
+the spec's "listing events fails as it does today" row.
+
+### Non-blocking
+
+- **OWNER, retrying an unconfirmed revocation.** No retry operation. The factory
+  assumes none (spec D-17): a retry would need the token kept after removal,
+  which means storing a credential the user asked to remove. This is an owner
+  question in the stage output.
+- **OWNER, raw identifiers in the activity log.** Kept as raw identifiers until
+  the frontend stage, which is how `Audit.tsx` shows every kind today. The
+  PAC-67 frontend PR is expected to add the wording (its manifest
+  `allowedPaths` include `src/pages/Audit.tsx`). Recorded in
+  `assumedByTheFactory`, and an owner question in the stage output.
+- **OWNER, nothing stored writes no entry.** Unchanged. Now recorded in the
+  spec as D-15. This is an owner question in the stage output.
+- **Zoom disconnect while a loss is recorded.** Pinned in `disconnectZoom` step
+  2 as the failed-renewal case (`unconfirmed`, `revocation_unconfirmed`, no
+  `connection_lost`) and tested by CONTRACT-7. It is also in the manifest's
+  `followUps.zoomDisconnectWhileLost`.
+- **Undecodable `microsoft_tokens` on `disconnectMicrosoft`.** Pinned in the
+  contract rather than left to the plan. It is removed, answers `not_offered`,
+  writes `provider_disconnected` and is never a 500. The 500 text says so.
+  CONTRACT-9 tests it.
+- **No enum-vs-writers test exists.** Confirmed: I found none either. The
+  `AuditEntry.action` description no longer says one exists. It now says the
+  PAC-67 backend stage adds one, and that test is manifest CONTRACT-6. The
+  enum-closure paragraph's "makes the contract test fail" is corrected to
+  "once the PAC-67 enum test exists". Spec §6 still says "protected today".
+  That sentence is the spec's, so I left it, and CONTRACT-6 is what makes it
+  true.
+- **`MIGRATION.md` and factory §4.** Factory §4 applies. `disconnectMicrosoft`
+  stays `handwritten` in the register for now because no handler exists yet:
+  `generated` would claim a handler that implements the interface. Its notes
+  column now says the backend stage implements it through
+  `StrictServerInterface` and changes the row to `generated` in the same PR.
+  The manifest's `operationsAdded` entry says the same. The modified operations
+  (`disconnectZoom`, `createConferenceLink`, `addEventConference`) fall under
+  the same rule. For `createConferenceLink` the plan must check that the
+  generated body binder's 400 body is still "invalid body" (the
+  `listAuditEntries` row records the same kind of trap).
+- **An explicit zero time.** Documented. The `start` description and the
+  `createConferenceLink` description say that `0001-01-01T00:00:00Z` is refused
+  as absent. CONTRACT-5 tests it.
+- **What the challenger could not run.** Run here, see below.
+
+### Gates run for this revision
+
+The LF-clone commands are those of step 1 of `api-gate.sh` (`golang:1.25-bookworm`,
+`/repo` = the shared clockwise-like repository, branch
+`factory/pac-67-contract`).
+
+- `python scripts/openapi_assemble.py` assembled the fragments: 99 paths, 120
+  operations, 145 schemas, x-uncertain 11.
+- LF clone of `b77e3ea` (fragments, bundle, manifest): `make openapi
+  WEB=/nonexistent` rc=0. It regenerated `backend/api/gen/paceday.gen.go`
+  (comments, plus the new `start` description), which was committed in
+  `4bdad40` with the manifest hash.
+- LF clone of `4bdad40`, first attempt: `make openapi` rc=2 and
+  `openapi-check(api)` rc=2. My container command left out the step that
+  installs `oapi-codegen` and `golangci-lint` (`golangci-lint: command not
+  found`, rc=127). This was a defect in my invocation, not a result. Re-run with
+  the gate's install lines:
+  - `make openapi WEB=/nonexistent` rc=0, "regenerated: none";
+  - `make openapi-check WEB=/nonexistent` rc=0: "OK: bundle is in sync (99
+    paths)", "OK: MIGRATION.md covers all 120 operations (0 generated)", "OK:
+    backend/api/gen matches the contract". The web half reported SKIPPED;
+  - `sha256sum contracts/openapi/openapi.yaml` gave `aeef9142…a70f9`, which
+    matches the manifest;
+  - `go build ./...` (backend) rc=0;
+  - `golangci-lint run` (backend) rc=0.
+- `scripts/test-backend.sh` on the `factory/pac-67-contract` worktree at
+  `4bdad40`, with `PACEDAY_TEST_DB_PORT=15467` so it did not collide with another
+  stream: rc=0, and every backend package was ok. This includes
+  `TestPAC21Every5xxInTheContractIsTheJSONEnvelope`, which reads the bundle. It
+  was re-run alone with `-v`: `--- PASS`.
+- Not run:
+  - The full `api-gate.sh`. It requires the host checkout on this branch, and
+    the host checkout is on `impl/pac-25-owner-guards-backend`, which belongs to
+    another stream; I left it there. The test step above ran on the worktree
+    instead.
+  - mcp lint, mcp tests and coverage: the mcp module is untouched by this
+    revision. Coverage belongs to the implementation PR.
+  - The web gate: the web types are regenerated in the paired web PR against
+    this branch.
+  - The e2e gate: no behaviour has changed yet.
+
+The commit that adds this section changes only `contracts/features/PAC-67.md`
+and the manifest's prose (no hash input). The final-commit result of
+`make openapi-check` is in the Linear comment for this revision.

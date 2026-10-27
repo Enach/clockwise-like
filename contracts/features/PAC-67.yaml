@@ -96,10 +96,10 @@
   },
 
   "assumedByTheFactory": [
-    "A disconnect of a provider the caller holds no credential for answers 200 revocation nothing_stored and writes no activity entry (nothing about the caller's data changed beyond the conferencing reset that Zoom disconnect already did). Pending owner confirmation; to be recorded in the spec's Decisions on its branch.",
+    "A disconnect of a provider the caller holds no credential for answers 200 revocation nothing_stored and writes no activity entry (nothing about the caller's data changed beyond the conferencing reset that Zoom disconnect already did). Pending owner confirmation; recorded in the spec as D-15 (factory/pac-67-spec 9364871).",
     "Zoom `confirmed` means Zoom answered success to the token revocation; whether that also deauthorizes the app for the user is verified by the plan against a Zoom development app. Pending owner confirmation.",
-    "Activity entries for connection losses and disconnects are best-effort, like every existing kind: a failed insert is logged, the response stands, and that loss or disconnect has no entry (contract challenge finding 2; the alternative, a status for 'removed but not recorded', would make a disconnect that did happen look failed). Pending owner confirmation; recorded in the spec as D-16.",
-    "An unconfirmed Zoom revocation offers no later retry: the token is not kept after removal, because keeping it would mean storing a credential the user asked to remove. Pending owner confirmation (contract challenge, non-blocking OWNER question); recorded in the spec as D-17.",
+    "Activity entries for connection losses and disconnects are best-effort, like every existing kind: a failed insert is logged, the response stands, and that loss or disconnect has no entry (contract challenge finding 2; the alternative, a status for 'removed but not recorded', would make a disconnect that did happen look failed). Pending owner confirmation; recorded in the spec as D-16 (factory/pac-67-spec 9364871).",
+    "An unconfirmed Zoom revocation offers no later retry: the token is not kept after removal, because keeping it would mean storing a credential the user asked to remove. Pending owner confirmation (contract challenge, non-blocking OWNER question); recorded in the spec as D-17 (factory/pac-67-spec 9364871).",
     "Until the PAC-67 frontend stage gives them wording, the activity log shows connection_lost, provider_disconnected and revocation_unconfirmed as raw identifiers, as it shows every kind today (Audit.tsx renders action raw). The frontend PR for this feature is expected to add the wording. Pending owner confirmation (contract challenge, non-blocking OWNER question)."
   ],
 
