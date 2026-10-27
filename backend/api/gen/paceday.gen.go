@@ -2697,6 +2697,10 @@ type SsoProviderCreateRequestProviderType string
 // not, and must not be "corrected" towards them.
 type SsoProviderList struct {
 	// Providers Ordered by `created_at`, oldest first. Empty when the org has none.
+	// At most one item today: a configuration is listed when its domain
+	// equals the org's domain exactly, and both `sso_providers.domain`
+	// and `organizations.domain` are unique. The array is kept so that
+	// the type does not change if an org can ever hold more than one.
 	Providers []SsoProvider `json:"providers"`
 }
 
@@ -2709,7 +2713,9 @@ type SsoProviderState string
 
 // SsoProviderStateRequest Body of setSsoProviderState: the state wanted, never a toggle, and
 // nothing else (spec AC-12). Any other property, including any
-// configuration value, is refused with 400 `unknown property: <name>`.
+// configuration value, is refused with 400 `unknown property: <name>`,
+// and `state` given twice is refused with 400 `duplicate property:
+// state`.
 type SsoProviderStateRequest struct {
 	// State Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
 	// `active`: detection answers `sso` for the domain and startSsoLogin
