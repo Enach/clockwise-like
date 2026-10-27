@@ -469,3 +469,132 @@ None deletes user data or widens who can see data.
   today is lost; the only callers losing access are users with no role on the
   link, who should not have had it (U-08, API-006). Pending invitees already get
   the link's title and owner from the invite list.
+
+## Challenge — 2026-10-27
+
+Reviewed the committed spec at `d69a457` against source on `main` at
+`6d751f9`, the Linear issue text, `docs/factory/api-audit.md`,
+`contracts/openapi/paths/booking.yaml` and `contracts/features/PAC-30.md`.
+Nothing was run; every finding below is from reading code.
+
+**Verdict**: accept-with-changes
+
+The scope matches the issue (API-049, -050, -051, -073), the API-006 pull-in is
+justified by touch-it-fix-it on `getSchedulingLink`, and the decisions are
+conservative (no data deleted, no visibility widened: D-7 only narrows who can
+fetch a link, and accepted co-hosts already receive the same host details
+through the list). Nearly every citation in §2 checks out (list below). Two
+statements are contradicted by the code; both are small fixes.
+
+### Blocking
+1. **AC-20 lists a rejection that cannot be produced today, so its regression
+   test cannot be written.** "end not after start" (`handlers_booking.go:285-288`)
+   is unreachable: when `end` is sent, `actualDuration = int(end-start minutes)`
+   and any `end <= start` gives a duration `<= 0`, which `durationAllowed`
+   rejects first with "invalid duration" (`handlers_booking.go:125-127`, checked
+   at `:277`); when `end` is omitted, `end = start + requestedDuration` and
+   `requestedDuration` has already passed `durationAllowed`, so it is positive.
+   This is a third dead branch in the same handler, of the same kind API-073
+   names, and §2.5 / §3.5 do not mention it. *Resolve:* remove "end not after
+   start" from AC-20's list of reachable rejections, and state in §2.5 that
+   `:285-288` is also unreachable, saying whether it is removed under API-073 or
+   left (either is consistent with §3.5, which requires identical answers).
+2. **§1 says the use-count re-opening "already happens to any booking cancelled
+   outside the app"; the code contradicts it.** Nothing in `backend/`, `mcp/` or
+   the web app writes booking status (no `UPDATE bookings`, no write of
+   `'cancelled'`; the only `status <> 'cancelled'` uses are reads at
+   `storage/scheduling_links.go:87,101,113,126,151,392`). Cancelling the calendar
+   event a booking created does not touch the `bookings` row, so the link does
+   not re-open. §2.4 states this correctly ("a cancelled booking exists only if
+   someone edits the database"), so the spec contradicts itself. *Resolve:* drop
+   the clause from §1 so the problem statement matches §2.4; D-6 stands on the
+   issue's own framing and does not need it.
+
+### Non-blocking
+1. **"Not found for anyone" (§3.1) is only tested for the owner.** AC-3 and AC-6
+   cover the owner editing, deleting, listing bookings and inviting on a deleted
+   link. Today a non-owner gets 403 on those paths
+   (`handlers_scheduling_links.go:426`, `:543`, `:571`, `:604`), so an
+   implementation that filters deleted links only after the owner check would
+   still answer 403 to a stranger and so reveal that the id exists. §3.1 forbids
+   this, but no AC would catch it. Add a non-owner case to AC-3/AC-6, and to
+   AC-2/AC-19 for fetch (a non-host fetching a deleted link gets not found, not
+   the AC-19 refusal). This interacts with OQ-5: if the contract picks 403 for
+   AC-19, deleted vs live becomes distinguishable to strangers unless AC-2
+   explicitly wins.
+2. **Criteria that pass today are not labelled.** AC-13 and AC-20 say so; AC-7,
+   AC-8, AC-9, AC-11 and AC-12 also pass on current code (busy time ignores
+   `active`, `SlugExists` ignores `active`, delete only flips a flag, pause and
+   resume already work, inactive links are already listed). They are valid
+   pins, and they only become falsifiable once a deleted marker exists. Label
+   them "(passes today; pins …)" so the plan does not expect them red.
+3. **"Carries both spellings" is undefined for `null` and `[]`.** Create treats
+   `"duration_options": null` as absent and uses the alias; `[]` counts as
+   present and fails validation (`handlers_scheduling_links.go:160`, `:217`).
+   Edit behaves the same way on the `!= nil` test. AC-13/14 only use two
+   non-empty values. State that "present" means a non-null value, so both verbs
+   are pinned on the same rule.
+4. **Delete racing a booking.** A public booking that has already loaded the
+   link by slug (`handlers_booking.go:212`) can insert after the owner's delete
+   commits, which gives a booking on a deleted link. AC-4 says "no booking is
+   created" and does not say whether that covers requests in flight. This
+   is in the same class as OQ-4. Either scope AC-4 to requests started after the
+   delete, or include it in the OQ-4 follow-up.
+5. **OQ-4 judgement (asked of this role):** keep it out of scope. The race
+   predates this spec, the issue does not name it, and D-6 does not widen it
+   (the count read is the same read). Triage should file the follow-up, covering
+   item 4 above as well.
+6. **AC-18 must not use the shared seed's exhausted link.** Cancelling that
+   link's booking in the database would race `public-booking.spec.ts:79-97`,
+   which needs it exhausted. The criterion is written generically, but the plan
+   needs its own seeded link (the seed comment at `seed.sql:219-223` also has
+   to change if counting changes).
+7. **AC-6 "deletes it again → not found" turns DELETE from 204 into 404 on a
+   repeat.** No current consumer repeats it (the web confirms first,
+   `Links.tsx:373-375`). This is intended. It should be named in §6 next to the
+   owner-only test, which today ends with an owner 204
+   (`handlers_scheduling_links_test.go:261-267`).
+
+### Criteria I could not falsify
+- AC-20 "end not after start" sub-case: no request reaches it (Blocking 1).
+
+All other criteria have a test that is red today, or that pins current
+behaviour as the spec says (see Non-blocking 2).
+
+### Citations I checked and found wrong
+- §1 "already happens to any booking cancelled outside the app": no code path
+  sets a booking to `cancelled` (Blocking 2).
+- §5 "the Links page already removes a deleted link from its list
+  optimistically and refetches": it does not do so optimistically. The delete
+  mutation only invalidates and refetches on success
+  (`smart-calendar-flow/src/pages/Links.tsx:330-337`). The only removal is in the
+  offline mock (`src/api/schedulingLinks.ts:601-603`). The conclusion still holds
+  (no web change is needed, because the refetch will agree once the server
+  filters), but the stated mechanism is wrong.
+
+Checked and correct: `storage/scheduling_links.go:87-163, 300-318, 426-452,
+478-483`; `handlers_scheduling_links.go:73-76, 92-95, 157-188, 370-408,
+426, 444-465, 481-483, 527-553, 562, 571, 595, 604, 635-656, 695`;
+`handlers_booking.go:65-73, 107, 116, 145, 154, 212, 221, 281-284, 293-296`;
+`migrations/009_scheduling_links.up.sql:12, 33`; `booking.yaml:520-522, 539,
+615-618, 1473-1474, 1677-1679`; `api-audit.md:476, 549-551`;
+`PAC-30.md:124-129`; `PAC-59.md:6-12, 350-358`; `seed.sql:219-223`;
+`public-booking.spec.ts:79-97`; `PublicBooking.tsx:197`;
+`schedulingLinks.ts:118-131, 514, 544, 574`; the six test names in §6; and that
+`mcp/` has no scheduling-link caller.
+
+### Consumers this breaks
+- clockwise-like/backend/api/handlers_scheduling_links_test.go:213-268
+  (`TestSchedulingLinksOwnerOnlyBookingsAndDelete`): still passes, but anything
+  added after its final owner DELETE that re-reads the link would change from
+  200 to 404. This is intended.
+- clockwise-like/e2e/seed/seed.sql:219-223 and its comment: it relies on the
+  derived count. It keeps working under D-6 only if a non-cancelled seeded
+  booking still counts, which it does. The comment will be stale if the count
+  becomes stored.
+- smart-calendar-flow/src/api/schedulingLinks.ts:544 (`updateLink` GETs the link
+  before PATCHing it): a stale tab that toggles or edits a link deleted
+  elsewhere now gets 404 on that GET instead of 200, and the web shows the
+  error toast (`Links.tsx:355`). This is acceptable and consistent with §3.1, but
+  it is a user-visible change that §5's "no web changes" should acknowledge.
+- No consumer in `mcp/` (verified by grep).
