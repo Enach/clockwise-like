@@ -119,9 +119,9 @@ func (g *pac29Google) sendUpdates(method string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if method == http.MethodDelete {
-		return g.sendUpdates(http.MethodDelete)
+		return g.deleteQuery.Get("sendUpdates")
 	}
-	return g.sendUpdates(http.MethodPut)
+	return g.putQuery.Get("sendUpdates")
 }
 
 func (g *pac29Google) lastPutResponse() []byte {
