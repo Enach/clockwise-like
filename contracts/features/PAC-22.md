@@ -1,19 +1,26 @@
 # Contract — PAC-22: SSO configuration must not disclose identity-provider secrets
 
-- **Spec**: `docs/specs/PAC-22.md`, v3.2 (challenged 2026-10-27, accept-with-changes;
-  every change applied in v3.2, see the spec's "Revision v3.2").
+- **Spec**: `docs/specs/PAC-22.md`, v3.4 (the challenge of v3.3, 2026-10-28,
+  accepted it with changes; v3.4 applies every one, see the spec's "Revision
+  v3.4"). Revisions 1 and 1.1 of this contract were written against v3.2.
 - **Linear**: https://linear.app/paceday/issue/PAC-22
 - **Manifest**: `contracts/features/PAC-22.yaml`
 - **Branch**: `factory/pac-22-contract`, cut from `origin/main` at `6d751f9`, with the
   spec branch `factory/pac-22-spec` (`4a517e2`) fast-forwarded in so that the
   contract and the spec it transcribes travel together.
-- **Status**: contract revision 1.1, draft. Revision 1 (`79d63d9`) was challenged
-  on 2026-10-27 (accept-with-changes, three blocking); revision 1.1 applies every
-  change the challenge lists (see "Revision 1.1" below). Revision 2 is still the
-  rebase onto PAC-50 (§0), and only its gates count for implementation.
+- **Status**: contract revision 1.2, draft, awaiting contract-challenger.
+  Revision 1 (`79d63d9`) was challenged on 2026-10-27 (accept-with-changes, three
+  blocking); revision 1.1 applied that challenge. Revision 1.2 (2026-10-28)
+  transcribes spec v3.4: an omitted client secret is kept on a replace, bound to
+  the issuer and client id, decided at the moment of storing (see "Revision 1.2"
+  below). Revision 2 is still the rebase onto PAC-50 (§0), and only its gates
+  count for implementation.
 - **Author**: contract-author (stage 2). Nothing in this document was executed against
   a running server. Every claim about current behaviour is read from source on
-  `6d751f9`; the gate results at the end are the only things that were run.
+  `6d751f9` (revisions 1, 1.1) and re-checked on `origin/main` `69ffa92`
+  (revision 1.2: `git diff 6d751f9 69ffa92` on `backend/api/handlers_sso.go`,
+  `backend/storage/sso_providers.go` and `backend/domain/domain.go` is empty);
+  the gate results in the manifest are the only things that were run.
 
 ## 0. The base this contract is written on, and why it must be rebased
 
@@ -32,7 +39,8 @@ factory requires for every branch, and it reconciles the two orders like this:
 - **The new operation, `setSsoProviderState`, is specified against PAC-50's gate**,
   because D-6 forbids authorizing it by membership alone, and membership is the
   only rule `main` has. Its exact-domain rule and its `provider_domain_mismatch`
-  400 are PAC-50's. Its description says in bold that it is not implementable
+  refusal are PAC-50's; its status is 403, the owner's decision for PAC-50 on
+  2026-10-27 (spec D-15; revision 1.2, was 400). Its description says in bold that it is not implementable
   before PAC-50 merges.
 - Because `main` has no `SsoWriteForbiddenResponse`, its 403 references
   `ErrorResponse`, the same schema `createSsoProvider`'s 403 references on `main`.
@@ -50,7 +58,10 @@ because both features rewrite `createSsoProvider`, `SsoProviderCreateRequest` an
    400 `unknown property` / `provider_domain_mismatch`, its 403
    `SsoWriteForbiddenResponse`). Insert PAC-22's five validation checks into
    PAC-50's step 2 (body shape), in PAC-22's order, so that they still run before
-   the authorization step. Replace PAC-50's paragraph "`enabled` is always forced
+   the authorization step. PAC-22's check 6 (an omitted client secret, against
+   the stored configuration: revision 1.2) goes after PAC-50's domain check and
+   before its authorization step; the store-time re-check (spec D-14) goes into
+   PAC-50's recorded upsert, inside its transaction. Replace PAC-50's paragraph "`enabled` is always forced
    to true … `provider_type: "saml"` … still accepted" with PAC-22's "Active
    state" and "Configurations stored before PAC-22" paragraphs. The 201 is
    `SsoProvider`.
@@ -80,8 +91,8 @@ as read on 2026-10-27, the rebase follows what merged and says so in revision 2.
 | Operation | Change |
 |---|---|
 | `listSsoProviders` `GET /api/admin/sso` | 200 is `SsoProviderList` `{providers: SsoProvider[]}` instead of a bare array of the storage row. No secret under any name. Suspended configurations are listed with `state: suspended`. |
-| `createSsoProvider` `POST /api/admin/sso` | 201 is `SsoProvider`. Body is a complete OIDC configuration: all six properties required and non-empty, `provider_type` is `oidc` only, the three SAML properties are refused by name. A replace keeps the stored active state; a create starts active. |
-| `setSsoProviderState` `PUT /api/admin/sso/{domain}/state` | **New.** Body `{state: active \| suspended}` and nothing else. 200 `SsoProvider`; 400; 401; 403; 404; 500. |
+| `createSsoProvider` `POST /api/admin/sso` | 201 is `SsoProvider`. Body is an OIDC configuration: `domain`, `provider_name`, `provider_type`, `oidc_issuer`, `oidc_client_id` required and non-empty, `provider_type` is `oidc` only, the three SAML properties are refused by name. `oidc_client_secret` is optional (revision 1.2): supplied it must be non-empty and replaces the stored one; left out of a replace it is kept only when the stored row is `oidc`, holds a non-empty secret and has exactly the submitted issuer and client id, decided again when the write is stored; otherwise 400. A replace keeps the stored active state; a create starts active. |
+| `setSsoProviderState` `PUT /api/admin/sso/{domain}/state` | **New.** Body `{state: active \| suspended}` and nothing else. 200 `SsoProvider`; 400; 401; 403 (including `provider_domain_mismatch`, revision 1.2); 404; 500. |
 | `startSsoLogin` `GET /api/auth/sso/{domain}` | Description only: the 404 also covers a suspended configuration (already true: the lookup filters on `enabled`); the 501 is reachable only for rows stored before PAC-22. The 500 (issuer discovery failed) stays reachable for any row whose discovery fails, including a row written since PAC-22 whose issuer is unreachable or whitespace. |
 | `ssoOidcCallback` `GET /api/auth/callback/oidc/{domain}` | Description only: the 404 also covers a suspended configuration, so a sign-in started before a suspension and finished after it gets the 404 and no session (already true: same lookup, `handlers_sso.go:112-116`). |
 | `detectAuthProvider` `POST /api/auth/detect` | Description only (`SsoDetectResponse.type`): a suspended configuration is ignored (already true, same lookup). |
@@ -178,10 +189,13 @@ outcome that needs the stored row (not found, unchanged, changed) comes after
 
 - 404 `sso provider not found` is PAC-50's message for a removal that finds
   nothing, reused so that the same condition has the same text.
-- 400 `provider_domain_mismatch` is PAC-50's exact-domain refusal. The transition
-  uses the exact rule even though `main`'s create still uses the suffix rule,
-  because AC-21 requires a subdomain to be refused, and a new operation has no
-  suffix-rule behaviour to preserve.
+- 403 `provider_domain_mismatch` is PAC-50's exact-domain refusal, with the
+  status the owner chose for it on 2026-10-27 (spec D-15; revisions 1 and 1.1
+  said 400, copied from PAC-50's branch, which still says 400 at `51aa70a`).
+  The transition uses the exact rule even though `main`'s create still uses the
+  suffix rule, because AC-21 requires a subdomain to be refused, and a new
+  operation has no suffix-rule behaviour to preserve. It stays in step 3, before
+  the authorization, so it spends nothing.
 - An unchanged transition answers 200 with the stored configuration, not 409:
   D-9 explains why "it is off" is the true answer to "turn it off".
 - A body that gives `state` twice is refused, 400 `duplicate property: state`
@@ -279,6 +293,87 @@ hold. They are addresses, not secrets.
 would then list as a configuration of type `saml` with nothing in it, and an
 operator could not tell what to remove.
 
+### 2.9 An omitted client secret is kept, but only where it would be sent (revision 1.2)
+
+Spec v3.4 §3.2 (D-12, D-13) makes the client secret the one value a replace may
+leave out. The contract encodes it like this:
+
+- `oidc_client_secret` leaves `required` and keeps `minLength: 1` with no
+  `nullable`. So a generated client can omit it, but cannot express `""` or
+  `null`; the server still refuses both with `oidc_client_secret must not be
+  empty` (AC-26), because a schema does not stop a hand-written request.
+- **Absence is decided against the stored row, in a new check 6.** Checks 1-5
+  stay request-only. Check 6 runs only when the secret is absent, after the
+  domain match (so it only ever reads the caller's own organisation's row) and
+  before any PAC-50 authorization (so AC-17 holds). It has two messages:
+  `oidc_client_secret is required` (no row, a row that is not `oidc`, or a row
+  whose secret is empty: AC-7, AC-25) and `oidc_client_secret is required when
+  oidc_issuer or oidc_client_id changes` (AC-24). Both name the secret, as the
+  spec asks; the second tells the person why a value they did not touch is
+  suddenly needed.
+- **The comparison is byte-for-byte** (D-13: no case folding, no trailing-slash
+  normalisation), and is stated on the operation so the implementer does not
+  "helpfully" normalise.
+
+What check 6 lets a caller learn is nothing new: whether a configuration exists
+for their own domain and what its issuer and client id are, which any member
+already reads from `listSsoProviders`.
+
+**Rejected: keep revision 1.1's pure replace** (secret required on every write).
+Spec v3.4 D-12 reverses it: a write-only value under a pure replace is erased or
+must be re-entered by every edit (PAC-24 §0's argument for `llmApiKey`).
+
+**Rejected: a sentinel value** (`"oidc_client_secret": "__unchanged__"` or a
+masked echo such as `"****"`). It puts a property named after the secret back
+into a shape a client round-trips, invites clients to send back whatever the
+server gave them, and makes one string value mean "do not store me". Absence is
+the conventional and unambiguous signal, and it is what PAC-24 uses.
+
+**Rejected: a separate operation to rotate the secret** (`PUT
+/api/admin/sso/{domain}/secret`). It would make "change the issuer and the
+secret together" two writes, with a window in which the new issuer holds the old
+secret: exactly the redirect D-13 forbids. Under PAC-50 it would also cost two
+step-ups.
+
+**Rejected: keep the secret whatever else changes.** That is the redirect D-13
+closes (spec §2.2): point the issuer at a server you control, leave the secret
+out, start a sign-in.
+
+**Rejected: `""` clears the secret**, as PAC-24 lets an empty `llmApiKey` clear
+the key. Here an empty secret is a configuration that cannot sign in (D-2), and
+the spec says no write clears it (D-12); `deleteSsoProvider` is the way.
+
+### 2.10 What a replace keeps is decided when it is stored (revision 1.2)
+
+Spec D-14: between a replace's checks and its store another write can land
+(PAC-50 spends its authorization between the two). The contract therefore says
+that what a replace keeps is decided **again, atomically with the store**,
+against the row as it is then:
+
+- an omitted secret is kept only if check 6's conditions still hold; if they do
+  not, the request is refused with the message check 6 would give against that
+  row, and nothing is stored (AC-27). No row is ever created by a replace that
+  found its row removed;
+- the active state is never written by a replace, so a transition stored in the
+  gap survives (AC-28); and `setSsoProviderState` writes only the active state,
+  so a replace stored in its gap keeps its values.
+
+How that atomicity is achieved (a conditional upsert, a row lock in PAC-50's
+transaction) is the plan's business, and the contract does not name it. Whether
+an authorization is spent on a refusal only the store can detect is left open,
+as D-14 leaves it.
+
+**Rejected: decide only at check time** (revision 1.1 had nothing to decide, so
+this is the naive implementation of v3.3). It lets an administrator's issuer and
+secret change be followed by a stale replace that stores its issuer with the
+administrator's secret, and lets a stale replace resume a suspended SSO.
+
+**Rejected: a version or ETag precondition** (`If-Match`). It would make every
+client do a read-modify-write and handle 412, for a race that needs two
+permitted callers writing the same configuration at once; the spec fixes the
+outcome without it, and adding a precondition is behaviour the spec does not ask
+for.
+
 ## 3. What this contract does not change
 
 - **Who may call any existing operation.** `createSsoProvider`'s and
@@ -303,7 +398,9 @@ Searched on 2026-10-27 in both repos (`grep -rn "admin/sso\|SsoProvider"`):
 | `clockwise-like/backend/api/gen` | Regenerated | The handlers do not use the generated types for these operations (all `handwritten`, `MIGRATION.md`); the new operation is to use the generated server interface (factory §4). |
 | `clockwise-like/backend/storage/sso_providers_test.go:59` `TestUpsertSSOProvider_Update` | No | Asserts only `ProviderName == "Okta"` after a replace (`:84`), and sets `Enabled: true` on both writes, so D-3 does not break it. It therefore guards neither property this contract relies on. The plan must name new assertions: (a) a replace of a row stored with `enabled = false` leaves it `false`, and of a row with `enabled = true` leaves it `true`; (b) a replace replaces every other configuration column (`provider_name`, `provider_type`, `oidc_issuer`, `oidc_client_id`, `oidc_client_secret`, `saml_entry_point`, `saml_issuer`, `saml_cert`), including a column cleared to `""` (a SAML value and the secret), and sets `updated_at`. (Revision 1 said this test asserts every column; it does not.) |
 | `clockwise-like/backend/api/handlers_sso_test.go`, `pac35_auth_flows_test.go` | No | Seed rows through storage and drive sign-in; sign-in is unchanged (AC-14). |
-| PAC-50 `TestSSOWrite_OneGrantOneWrite` (unmerged, PR #212) | Yes, deliberately | Pins the thirteen PascalCase keys of the 201. PAC-22's implementation rewrites it to the `SsoProvider` shape (spec §2.8, factory §7 rule 2). |
+| PAC-50 `TestSSOWrite_OneGrantOneWrite` (unmerged, PR #212) | Yes, deliberately | Pins the thirteen PascalCase keys of the 201. PAC-22's implementation rewrites it to the `SsoProvider` shape (spec §2.8, factory §7 rule 2). PAC-50's `pac50_sso_gate_test.go:152` pins `OIDCClientSecret` and `SAMLCert` likewise (spec v3.4 Revision, non-blocking 7). |
+| `smart-calendar-flow` PR #120 (`factory/pac-22-contract-types`) | Stale until regenerated | Its types were generated from revision 1.1, which required `oidc_client_secret`. Revision 1.2 regenerates the same branch with `REGEN=1 web-gate` (manifest `gates.webGate`); the PR is updated in place rather than replaced. |
+| `clockwise-like/backend/storage/sso_providers.go` `UpsertSSOProvider` | Behaviour to change (implementation) | Its `ON CONFLICT` overwrites `enabled` and `oidc_client_secret` from `EXCLUDED` (`:63-73`). The implementation must stop writing `enabled` on conflict and keep the stored secret on an omitted one, under the store-time conditions of §2.10. |
 | `clockwise-like/mcp`, `e2e` | No | Neither references the admin SSO operations. |
 | Outside the repositories | None | Production has zero users (spec D-4). |
 
@@ -630,3 +727,46 @@ only the rebased commit's gates count for implementation (spec D-5).
     rule again would let an organisation act on or see a domain it does not
     exactly own, which is the widening AC-21 and PAC-50 close. Nothing is deleted
     or rewritten.
+
+## Revision 1.2 — 2026-10-28
+
+This revision transcribes spec v3.4 (`4f3c609`, merged into this branch), which
+changed the interface after revision 1.1 was challenged. It is not an answer to a
+contract challenge; it needs one (contract-challenger, next). Re-checked against
+`origin/main` `69ffa92`, merged into this branch with the spec. PAC-50 is still
+unmerged (PR #212 open, `origin/impl/pac-50-sso-write-gate-backend` at `51aa70a`),
+so this is not revision 2 and the rebase in §0 is still owed.
+
+**Changes, each traced to the spec**
+
+1. **Omitted client secret kept on a replace** (spec §3.2, D-12; AC-22, AC-23).
+   `oidc_client_secret` leaves `SsoProviderCreateRequest.required`; supplied, it
+   replaces; `""`/`null` refused with `oidc_client_secret must not be empty`
+   (AC-26). §2.9.
+2. **Kept only where it would be sent** (D-13; AC-24, AC-25). New check 6, after
+   the domain match and before any PAC-50 authorization, with two messages. §2.9.
+3. **Decided at the moment of storing** (D-14; AC-27, AC-28). Stated on
+   `createSsoProvider`; `setSsoProviderState` step 6 says it writes only the
+   state. §2.10.
+4. **`setSsoProviderState`'s domain refusal is 403** (D-15, owner decision for
+   PAC-50, 2026-10-27), moved from the 400 list to the 403 description. §2.5.
+5. **Non-disclosure stated at the byte level** (spec §3.1, AC-1, AC-2 in v3.4):
+   `listSsoProviders` and the `createSsoProvider` 201 say neither secret occurs in
+   the body or headers, raw or JSON-escaped, in any case, and that nothing
+   derived from either is in the shape. `SsoProvider` already had
+   `additionalProperties: false` and no derived property.
+6. **`has_oidc_client_secret`** says it can read true on a pre-PAC-22 `saml` row
+   whose omitted-secret replace is still refused (spec §3.2, AC-25).
+7. **`auth.notes.md`**: the "in plaintext to any authenticated org member" note
+   is now history, and the U-21 and U-22 rows of its uncertainty table are marked
+   resolved. No text in the contract says the secret is returned any more.
+
+**Not changed**: the response shape (`SsoProvider`, `SsoProviderList`), the
+transition's shape and order, the list's audience, `deleteSsoProvider`.
+
+**Open questions** (spec §8): OQ-1 to OQ-4 are closed in the spec (D-1, D-4,
+D-7) as factory assumptions pending owner confirmation; the owner-decisions record
+(checked 2026-10-28) has no PAC-22 answer. OQ-5 to OQ-10 stay open for the owner,
+each non-blocking with a recorded factory assumption; none changes this
+interface unless the owner disagrees (OQ-10 would remove check 6 and make the
+secret required again).
