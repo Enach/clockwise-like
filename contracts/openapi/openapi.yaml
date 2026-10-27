@@ -233,11 +233,17 @@ paths:
 
         `week_start DESC` (newest first). A nil slice is normalised to `[]`.
 
-        Items are the RAW `storage.AnalyticsWeek` struct, which differs from
+        Each item has the same fields as the GET /api/analytics/week response, in the
 
-        /api/analytics/week: `week_start` is a full RFC3339 timestamp here, and there is
+        same formats and on the same scales, minus `breakdown` (PAC-42): `week_start` is
 
-        no `breakdown` field.
+        the calendar date of the week''s Monday (`YYYY-MM-DD`), and `habit_completion_rate`
+
+        and `focus_score` are percentages where 100 means the whole. The `breakdown`
+
+        array exists only on /api/analytics/week (API-055 second half, out of PAC-42''s
+
+        scope).
 
         '
       parameters:
@@ -281,9 +287,17 @@ paths:
 
         upserted synchronously (this call may hit the Google Calendar API).
 
-        The response is a hand-built map, not the raw `storage.AnalyticsWeek` struct, so
+        The response carries the same fields as a GET /api/analytics/trends row, in the
 
-        its `week_start` is a plain date and it carries an extra `breakdown` array.
+        same formats and on the same scales, plus a `breakdown` array (PAC-42):
+
+        `week_start` is the calendar date of the week''s Monday (`YYYY-MM-DD`), equal
+
+        byte for byte to the trend row for the same week, and every proportion in the
+
+        response (`habit_completion_rate`, `focus_score`, each `breakdown[].percentage`)
+
+        is a percentage where 100 means the whole.
 
         '
       parameters:
@@ -309,21 +323,13 @@ paths:
                 $ref: '#/components/schemas/AnalyticsWeekWithBreakdown'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: 'Emitted when the engine returns a nil result with a nil error. Body is
-
-            `{"error":"not found"}`.
-
-            '
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          x-uncertain: 'Believed unreachable in practice: compute() always returns a row from the INSERT
-            ... RETURNING, or an error. Documented because the branch exists.'
         '500':
           description: 'Compute failed. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21).'
+            server log and Sentry only (PAC-21). There is no 404 (PAC-42, audit U-01): the week is either
+            served from a stored row or computed and upserted, and the upsert''s `INSERT ... ON CONFLICT
+            DO UPDATE ... RETURNING` yields a row on both the insert and the conflict path (observed,
+            contracts/features/PAC-42.md section 4). The former `{"error":"not found"}` branch for a nil
+            result is removed; should an implementation keep a guard for it, that guard answers this 500.'
           content:
             application/json:
               schema:
@@ -5716,8 +5722,12 @@ components:
         percentage:
           type: number
           format: double
-          description: '`minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. Note
-            buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.'
+          description: 'A percentage where 100 means the whole of `total_working_minutes` (PAC-42: the
+            same scale as `habit_completion_rate` and `focus_score` in the same response): `minutes /
+            total_working_minutes * 100`, or 0 when total is 0. Not rounded. No maximum is declared because
+            the value is not bounded by 100: the total counts Monday–Friday working windows only, while
+            meeting and personal minutes count every timed event in the seven days at any hour. buffer_minutes
+            is excluded from the breakdown, so the five percentages need not sum to 100.'
         color:
           type: string
     AnalyticsMeeting:
@@ -5757,11 +5767,9 @@ components:
           const: recompute accepted
     AnalyticsWeekRow:
       type: object
-      description: 'Raw `storage.AnalyticsWeek` as returned by GET /api/analytics/trends. Same field
+      description: 'One item of GET /api/analytics/trends. Same fields as AnalyticsWeekWithBreakdown,
 
-        set as AnalyticsWeekWithBreakdown minus `breakdown`, and with `week_start`
-
-        serialised as a full RFC3339 timestamp because the Go field is a `time.Time`.
+        in the same formats and on the same scales, minus `breakdown` (PAC-42).
 
         '
       required:
@@ -5793,9 +5801,11 @@ components:
           format: uuid
         week_start:
           type: string
-          format: date-time
-          description: Midnight UTC of the Monday, e.g. "2026-03-02T00:00:00Z" — NOT the "2026-03-02"
-            shape used by /api/analytics/week.
+          format: date
+          description: 'The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"),
+            with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekWithBreakdown.week_start,
+            so the two are equal strings for the same week (PAC-42, API-055; this was an RFC3339 timestamp
+            before). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).'
         total_working_minutes:
           type: integer
         meeting_minutes:
@@ -5806,6 +5816,7 @@ components:
           type: integer
         buffer_minutes:
           type: integer
+          description: Always 0 for engine-computed weeks (open defect API-057); see AnalyticsWeekWithBreakdown.buffer_minutes.
         personal_minutes:
           type: integer
         free_minutes:
@@ -5817,7 +5828,13 @@ components:
         habit_completion_rate:
           type: number
           format: double
-          description: 0..1 fraction.
+          description: 'A percentage where 100 means every counted habit occurrence was completed (PAC-42,
+            API-058; reported unscaled before PAC-42): `completed / (scheduled + completed) * 100`, 0
+            when there are none, not rounded. Equal to the single-week value for the same stored week.
+            Rows stored before PAC-42 are reported on this scale too: storage keeps the unscaled ratio
+            for every week and the multiplication by 100 is applied on read (spec D-3).'
+          minimum: 0
+          maximum: 100
         largest_focus_block_minutes:
           type: integer
         top_meeting_titles:
@@ -5829,6 +5846,10 @@ components:
             $ref: '#/components/schemas/MeetingTitle'
         focus_score:
           type: integer
+          description: A percentage where 100 means all focus and meeting time was focus; same computation
+            and range as AnalyticsWeekWithBreakdown.focus_score.
+          minimum: 0
+          maximum: 100
         estimated_meeting_cost_minutes:
           type: integer
         computed_at:
@@ -5836,11 +5857,9 @@ components:
           format: date-time
     AnalyticsWeekWithBreakdown:
       type: object
-      description: 'Response of GET /api/analytics/week. Built by `weekWithBreakdown` as a
+      description: 'Response of GET /api/analytics/week. The same fields as AnalyticsWeekRow, in the
 
-        `map[string]any`, so it deliberately differs from AnalyticsWeekRow: `week_start`
-
-        is a plain date string and `breakdown` is added.
+        same formats and on the same scales, plus `breakdown` (PAC-42).
 
         '
       required:
@@ -5874,8 +5893,10 @@ components:
         week_start:
           type: string
           format: date
-          description: The Monday of the week, formatted "2006-01-02". DIFFERENT from the trends endpoint,
-            which emits a full timestamp.
+          description: 'The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"),
+            with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekRow.week_start,
+            so the two are equal strings for the same week (PAC-42, API-055). Never the zero date "0001-01-01"
+            (PAC-42 fixes the read path that produced it).'
         total_working_minutes:
           type: integer
           description: Sum of the configured work windows Mon–Fri. Falls back to 2400 (480×5) when it
@@ -5888,9 +5909,11 @@ components:
           type: integer
         buffer_minutes:
           type: integer
-          description: Never populated by `compute` — the engine leaves it at 0 in every write path.
-          x-uncertain: The column exists and round-trips through storage, but AnalyticsEngine.compute
-            never sets BufferMinutes, so this is always 0 for engine-computed weeks.
+          description: 'Always 0 for engine-computed weeks: AnalyticsEngine.compute never sets it, so
+            every write path stores 0. This is open defect API-057 (docs/factory/api-audit.md), not intended
+            behaviour; computing it is out of PAC-42''s scope (spec D-5, pending owner confirmation, OQ-8).
+            The column round-trips through storage, so a row written by other means would report its stored
+            value.'
         personal_minutes:
           type: integer
           description: Calendar events with zero attendees.
@@ -5904,8 +5927,13 @@ components:
         habit_completion_rate:
           type: number
           format: double
-          description: completed / (scheduled + completed) occurrences in the week, as a 0..1 FRACTION
-            (not a percentage). 0 when there are none.
+          description: 'A percentage where 100 means every counted habit occurrence was completed (PAC-42,
+            API-058: the same scale as `focus_score` and `breakdown[].percentage` in this response): `completed
+            / (scheduled + completed) * 100` over the week''s occurrences. 0 when there are none. Not
+            rounded. Storage keeps the unscaled ratio; the multiplication by 100 is applied when the response
+            is built (spec D-3).'
+          minimum: 0
+          maximum: 100
         largest_focus_block_minutes:
           type: integer
         top_meeting_titles:
@@ -5915,7 +5943,8 @@ components:
             $ref: '#/components/schemas/MeetingTitle'
         focus_score:
           type: integer
-          description: '`focus*100/(focus+meeting)` clamped to ≤100; 50 when both are 0.'
+          description: 'A percentage where 100 means all focus and meeting time was focus: `focus*100/(focus+meeting)`
+            (integer division) clamped to ≤100; 50 when both are 0.'
           minimum: 0
           maximum: 100
         estimated_meeting_cost_minutes:
