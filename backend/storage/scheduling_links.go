@@ -25,7 +25,7 @@ type SchedulingLink struct {
 	MinNoticeMinutes int         `json:"min_notice_minutes"`
 	UsageType        string      `json:"usage_type"`
 	MaxUses          *int        `json:"max_uses,omitempty"`
-	UsesCount        int         `json:"uses_count"`
+	UsesCount        int         `json:"uses_count"` // every booking row, whatever its status (PAC-40, D-6)
 	Active           bool        `json:"active"`
 	CreatedAt        time.Time   `json:"created_at"`
 	Hosts            []*LinkHost `json:"hosts,omitempty"`
@@ -84,7 +84,7 @@ func CreateSchedulingLink(db *sql.DB, l *SchedulingLink) (*SchedulingLink, error
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at
 	`, l.OwnerUserID, l.Slug, l.Title,
 		pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
@@ -98,21 +98,23 @@ func GetSchedulingLinkBySlug(db *sql.DB, slug string) (*SchedulingLink, error) {
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at
-		FROM scheduling_links WHERE slug = $1 AND active = true
+		FROM scheduling_links WHERE slug = $1 AND active = true AND deleted_at IS NULL
 	`, slug)
 	return scanSchedulingLink(row)
 }
 
+// GetSchedulingLinkByID returns the link with id, paused or not. A deleted link
+// is returned as nil, exactly like an id that never existed (PAC-40, D-4).
 func GetSchedulingLinkByID(db *sql.DB, id uuid.UUID) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at
-		FROM scheduling_links WHERE id = $1
+		FROM scheduling_links WHERE id = $1 AND deleted_at IS NULL
 	`, id)
 	return scanSchedulingLink(row)
 }
@@ -123,11 +125,12 @@ func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink,
 			sl.duration_options, sl.days_of_week,
 			sl.window_start_time, sl.window_end_time,
 			sl.buffer_before, sl.buffer_after, sl.min_notice_minutes, sl.usage_type, sl.max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id),
             sl.active, sl.created_at
 		FROM scheduling_links sl
 		LEFT JOIN scheduling_link_hosts slh ON slh.link_id = sl.id
-		WHERE sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted')
+		WHERE sl.deleted_at IS NULL
+		  AND (sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted'))
 		ORDER BY sl.created_at DESC
 	`, userID)
 	if err != nil {
@@ -144,11 +147,11 @@ func UpdateSchedulingLink(db *sql.DB, id uuid.UUID, l *SchedulingLink) (*Schedul
 			window_start_time = $6, window_end_time = $7,
 			buffer_before = $8, buffer_after = $9, min_notice_minutes = $10,
             usage_type = $11, max_uses = $12, active = $13
-		WHERE id = $1
+		WHERE id = $1 AND deleted_at IS NULL
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at
 	`, id, l.Slug, l.Title, pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
 		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter, l.MinNoticeMinutes,
@@ -156,9 +159,13 @@ func UpdateSchedulingLink(db *sql.DB, id uuid.UUID, l *SchedulingLink) (*Schedul
 	return scanSchedulingLink(row)
 }
 
+// DeleteSchedulingLink marks the link deleted (PAC-40). It is a soft delete: the
+// row, its bookings and its host rows are kept (D-2) and the slug stays taken
+// (D-3). active is also cleared so that, should migration 028 be rolled back,
+// the link reads as paused rather than live. Deleting a deleted link is a no-op.
 func DeleteSchedulingLink(db *sql.DB, id uuid.UUID) error {
 	_, err := db.ExecContext(context.Background(),
-		`UPDATE scheduling_links SET active = false WHERE id = $1`, id)
+		`UPDATE scheduling_links SET active = false, deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, id)
 	return err
 }
 
@@ -277,6 +284,22 @@ func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
+// GetLinkHostStatus returns the user's own host status on the link. found is
+// false, with a nil error, when the user has no host row on it; any other
+// failure is returned so a caller can tell "no row" from "could not read".
+func GetLinkHostStatus(db *sql.DB, linkID, userID uuid.UUID) (status string, found bool, err error) {
+	err = db.QueryRowContext(context.Background(), `
+		SELECT status FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
+	`, linkID, userID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return status, true, nil
+}
+
 func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
@@ -299,8 +322,10 @@ func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 
 func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
-		SELECT id, link_id, user_id, status, invited_at, responded_at
-		FROM scheduling_link_hosts WHERE user_id = $1 AND status = 'pending'
+		SELECT h.id, h.link_id, h.user_id, h.status, h.invited_at, h.responded_at
+		FROM scheduling_link_hosts h
+		JOIN scheduling_links l ON l.id = h.link_id
+		WHERE h.user_id = $1 AND h.status = 'pending' AND l.deleted_at IS NULL
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -333,13 +358,14 @@ func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err err
 }
 
 // RespondToHostInvite sets userID's host row on linkID to status. matched is
-// false when the user has no host row on that link (or no such link exists);
-// nothing is written in that case: PAC-30.
+// false when the user has no host row on that link, or no such link exists, or
+// the link is deleted; nothing is written in that case: PAC-30, PAC-40.
 func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) (matched bool, err error) {
 	res, err := db.ExecContext(context.Background(), `
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2
+		  AND EXISTS (SELECT 1 FROM scheduling_links l WHERE l.id = $1 AND l.deleted_at IS NULL)
 	`, linkID, userID, status)
 	if err != nil {
 		return false, err
