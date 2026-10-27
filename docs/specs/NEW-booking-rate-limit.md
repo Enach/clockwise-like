@@ -476,6 +476,18 @@ PAC-39 precedent.
   before the request does any work, so concurrent requests cannot exceed it
   (AC-14, AC-15). Assumed by the factory, pending owner confirmation.
 
+- **D-9. The e2e stack raises the counts, production does not** (Q1, Q6;
+  recorded by the backend implementer, there being no plan document). The
+  backend reads `PACEDAY_PUBLIC_BOOKING_LIMIT` / `PACEDAY_PUBLIC_SLOTS_LIMIT`
+  only when the test-mode declaration `PACEDAY_ALLOW_STANDINS=true` is also
+  set (which no production deployment sets); otherwise they are ignored with a
+  startup warning. Only the counts can change, never the windows, and a value
+  that is not a positive integer is ignored. `e2e/docker-compose.e2e.yml` sets
+  1000 and 10000, so back-to-back kept-stack runs cannot trip the limits
+  (AC-13); the 429 is proven by backend unit tests instead. Backend tests
+  reset both limiters in `setupPublicBookingRoutes` (Q6). Assumed by the
+  factory, pending owner confirmation.
+
 No decision deletes user data or widens who can see data.
 
 ## Challenge — 2026-10-27
