@@ -276,3 +276,78 @@ backend build.
   status or a `provider` key (no producer); a nil room list (`[]`); a credential-store
   failure (`ErrCredentialStore` -> 500 via `server_errors.go:75-81`, matching the 500
   description); the MCP and e2e consumers above.
+
+## Revision — 2026-10-27 (contract revision 2, answers the challenge above)
+
+Contract revision 2 is `2fe4cee` on `factory/pac-41-contract`; the paired web types are
+`df887a4` on `factory/pac-41-contract-types`. The wire is still unchanged: the only
+bundle change is the `listRooms` description.
+
+### Blocking
+
+1. **"An Outlook-connected caller gets the 401" is false.** Accepted; I re-read the code
+   and it holds as the challenge states: `calClient` -> `engine.LoadCalendarToken` ->
+   `auth.LoadUserToken` (`backend/auth/token_store.go:40-50`) reads only `oauth_tokens`;
+   `storage.UpsertUser` is `ON CONFLICT (email)` (`backend/storage/users.go:21-28`), so a
+   later Microsoft sign-in keeps the user id and its Google row;
+   `auth.SaveMicrosoftToken` (`backend/auth/microsoft_oauth.go:63-81`) only sets
+   `settings.microsoft_tokens` and `calendar_provider = 'outlook'`. Fixed, description
+   only:
+   - `calendar.yaml` `listRooms`: the last sentence now reads "The list reads the
+     caller's stored Google credential whatever `calendar_provider` is: a caller with no
+     stored Google credential gets the 401 `calendar not connected` (every Outlook-only
+     caller is one); an Outlook-selected caller who also holds a Google credential (the
+     same email signed in with Google earlier) gets that Google calendar's rooms."
+     Bundle reassembled.
+   - §1 of this file: the `listRooms` row says the same, and its "why" now says the 401
+     is decided by the Google credential, not by the selected provider.
+   - Manifest `operationsChanged.listRooms.change`: the same.
+   - Spec (`docs/specs/PAC-41.md`): the §3 bullet, and the §2.4a sentence that carried
+     the same overstatement, now say "every Outlook-only user" and name the
+     Outlook-plus-Google case, each marked "corrected at contract revision 2". No
+     acceptance criterion changes: AC-16 reacts to the 401 whoever receives it. The
+     historical text in the spec's Challenge and Revision 1 sections is left as
+     written.
+
+### Non-blocking
+
+1. **Stale `handlers_events.go:106`.** Fixed in the API-040 row of
+   `docs/factory/api-audit.md` and in `calendar.notes.md` item 2: both now cite
+   `handlers_events.go:312` (`listRooms`). The same stale line number also appears in
+   the API-040 work-item body in `docs/factory/api-audit-issues.yaml:467`; that file is a
+   record of the proposed issue text and this change does not otherwise touch it, so it
+   is left as written.
+2. **Manifest acceptance tests paraphrased.** Fixed: `acceptanceTests` AC-1 to AC-16 are
+   now the spec's §4 text verbatim (whitespace joined, test level moved to the front),
+   so AC-8 keeps "(not an accepted host on the saved link)" and the named providers,
+   AC-12 keeps "searching for a room or with a room selected", AC-14 keeps "reopens
+   it". A new `acceptanceTestsSource` field says so and that the spec wins on any
+   difference. AC-11 carries one addition, marked as a manifest note. DC-1 is unchanged.
+3. **No PRs open.** Both PRs are opened together with this revision, one per repo.
+4. **Spec not accepted.** Unchanged and still recorded in `mergeConditions`: neither PR
+   may merge before `docs/specs/PAC-41.md` is accepted.
+5. **OWNER C-1** (filter `GET /api/rooms` to ids PATCH accepts). Not decided here; still
+   assumed (no filter, no `pattern`), pending owner confirmation, as §6 records.
+6. **OWNER C-2 and C-3.** Still assumed, pending owner confirmation (§6).
+7. **OWNER D-1 to D-6, OQ-1, OQ-3, OQ-5, OQ-6.** Still assumed, pending owner
+   confirmation (§6, spec Decisions). No follow-up issue for API-047/075/078 exists, so
+   the rows keep the fallback note.
+
+### Gates run on revision 2
+
+- `bash api-gate.sh factory/pac-41-contract` on `2fe4cee` (host checkout on the
+  branch): `make openapi rc=0`, `regenerated: none`, `OK: bundle is in sync (98
+  paths)`, `OK: MIGRATION.md covers all 119 operations (0 generated)`, `OK:
+  backend/api/gen matches the contract`, `openapi-check(api) rc=0`, `backend lint
+  rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`, backend coverage 56.8%
+  (floor 43%) `rc=0`, mcp coverage 84.0% (floor 75%) `rc=0`. The generated Go did not
+  change: the edited text is an operation description, which `oapi-codegen` does not
+  emit for this handwritten operation.
+- `REGEN=1 bash web-gate.sh factory/pac-41-contract-types factory/pac-41-contract`:
+  regenerated `src/api/generated/types.ts` and `schemas.types.d.ts` (one description
+  line each), committed as `df887a4`. Re-run without `REGEN` on `df887a4`: lint,
+  typecheck, design-check, openapi-check, test (297 passed), coverage all PASS, `make
+  verify rc=0`.
+- The e2e gate is not touched by this stage.
+- The api gate is re-run on the commit that adds this section; its result is in the
+  PR body.

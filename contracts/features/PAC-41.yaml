@@ -40,7 +40,7 @@
       "forbiddenPaths": [
         "src/api/generated (no hand edit)"
       ],
-      "pairedBranch": "factory/pac-41-contract-types (cc63793): types.ts and schemas.types.d.ts regenerated from this contract at 9bd9316. Description comments only; no type changes."
+      "pairedBranch": "factory/pac-41-contract-types (df887a4): types.ts and schemas.types.d.ts regenerated from this contract at 2fe4cee (revision 2; first regenerated as cc63793 from 9bd9316). Description comments only; no type changes."
     }
   },
 
