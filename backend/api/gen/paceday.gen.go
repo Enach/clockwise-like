@@ -10577,6 +10577,15 @@ func (response StartSsoAdminStepup403JSONResponse) VisitStartSsoAdminStepupRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type StartSsoAdminStepup500JSONResponse ErrorResponse
+
+func (response StartSsoAdminStepup500JSONResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type StartSsoAdminStepup503JSONResponse ErrorResponse
 
 func (response StartSsoAdminStepup503JSONResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
