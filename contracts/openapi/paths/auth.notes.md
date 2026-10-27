@@ -14,6 +14,14 @@ Frontend cross-checked: `src/api/{types,contract,client}.ts`, `src/lib/api.ts`,
 `src/contexts/AuthContext.tsx`, `src/components/auth/AuthDialog.tsx`,
 `src/api/schedulingLinks.ts`, `src/api/integrationAvailability.test.ts`.
 
+**PAC-35 (contract revision 1, `contracts/features/PAC-35.md`).** The contract
+now specifies the fixes for (a)1-4 and (b)5-7 below, and closes the
+`CurrentUserResponse.provider` row in (c) (U-13). The text below is the original
+extraction and still describes the server until the PAC-35 implementation
+merges. It also documents a response that was missing from the contract:
+`ssoOidcCallback` 403 "email domain does not match SSO provider domain"
+(PAC-45, #172).
+
 ---
 
 ## (a) Backend / frontend contract mismatches

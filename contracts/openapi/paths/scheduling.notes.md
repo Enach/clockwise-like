@@ -61,6 +61,12 @@ even though `""` is the DB default and is explicitly valid.
 - Frontend `FocusBlock` is `{id, google_event_id, start_time, end_time, date}`.
   **Nothing matches.** Every field the frontend reads off a focus block is `undefined`.
 
+  **Resolved by PAC-26 (contract):** both structs carry explicit snake_case json tags.
+  `storage.FocusBlock` is `{id, google_event_id, start_time, end_time, date, created_at}`
+  and `engine.FocusBlock` is `{google_event_id, start_time, end_time, date}`; the shared
+  keys are spelled the same and match the frontend type. The `FocusRunResult` wrapper
+  casing (item 6) is PAC-32's, frontend side.
+
 ### 6. `FocusRunResult` key case
 Backend `weekStart`/`createdBlocks`/`skippedDays`/`totalMinutes`/`errors`;
 frontend `week_start`/`created_blocks`/`skipped_days`/`total_minutes`/`errors`.
@@ -92,6 +98,11 @@ the edited one.
 Backend returns the raw `google.golang.org/api/calendar/v3.Event`
 (`id`, `summary`, `start.dateTime`, `attendees[].email`, …). Frontend expects its own
 `CalendarEvent` (`id`, `title`, `start`, `end`, `attendees: string[]`). Only `id` matches.
+
+**PAC-29 (contract):** both 200 bodies are now specified as `CalendarEvent` (the
+`toCalendarEventDTO` shape of `GET /api/calendar/events`). `GoogleCalendarEvent`,
+`GoogleEventDateTime` and `GoogleEventAttendee` are deleted. Resolves API-017 and U-14
+once the implementation lands.
 
 ### 11. `ParseResult` — closest match in the domain, but still drifts
 Backend `nlp.ParseResult` is snake_case and aligns on `intent`, `title`,
@@ -141,11 +152,16 @@ Only `writeError()` responses (most 400s, plus the LLM 502) are JSON.
    `week` to `""` on a decode error; `POST /api/schedule/compress` discards the decode
    error entirely (`_ = json.NewDecoder(...)`). Both return 200 for garbage input, while
    every sibling endpoint returns 400.
+   **Contract changed by PAC-36:** a present, non-`null` body that does not decode is a
+   400 `invalid JSON` on both; absent, empty and `null` bodies stay `{}`.
 
 5. **Week-mode compression cannot fail.** The Mon–Fri loop `continue`s past any engine
    error, so a fully broken calendar returns HTTP 200 with body `null` (nil slice).
    Single-day mode with the same error returns 500. Same input class, two outcomes.
    (Since PAC-28 the week-mode body is `[]`, not `null`; the 200-vs-500 split remains.)
+   **Contract changed by PAC-36:** any failing day fails the whole week-mode request as
+   single-day mode does (401 or 500, no partial results); a week-mode 200 carries
+   exactly five entries.
 
 6. **Nil slices encode as `null`, not `[]`.** Affects `GET /api/focus/blocks`,
    `POST /api/schedule/compress`, `ScheduleSuggestions.slots`,
@@ -222,8 +238,8 @@ Only `writeError()` responses (most 400s, plus the LLM 502) are JSON.
 | # | Location in scheduling.yaml | Question |
 |---|---|---|
 | 1 | `paths./api/schedule/suggest.post.x-uncertain` | The brief asserts a 15-minute increment rule somewhere in this domain. I found only a 30-minute step in the smart scheduler, and 15-minute stepping exclusively in booking/habits/team-availability. Confirm whether a 15-minute constraint was intended here (and is missing), or whether the brief meant a different domain. |
-| 2 | `paths./api/nlp/confirm.post.x-uncertain` | Negative `selected_slot_index` panics instead of returning 400. Is that a bug to fix (then the spec should document 400) or should the spec document the 500? |
-| 3 | `schemas.GoogleCalendarEvent.x-uncertain` | `/api/schedule/create` and `/api/nlp/confirm` leak the vendored `calendar/v3.Event`. Its exact member set is fixed by the Google client library version, not this repo. I documented only the members the repo sets or the frontend reads, with `additionalProperties: true`. Decide whether the contract should pin a normalised event instead. |
+| 2 | ~~`paths./api/nlp/confirm.post.x-uncertain`~~ (no longer in the fragment: the 400 for a negative index is described in the operation, API-082) | Negative `selected_slot_index` panics instead of returning 400. Is that a bug to fix (then the spec should document 400) or should the spec document the 500? |
+| 3 | ~~`schemas.GoogleCalendarEvent.x-uncertain`~~ (resolved by PAC-29: schema deleted, both operations return `CalendarEvent`) | `/api/schedule/create` and `/api/nlp/confirm` leak the vendored `calendar/v3.Event`. Its exact member set is fixed by the Google client library version, not this repo. I documented only the members the repo sets or the frontend reads, with `additionalProperties: true`. Decide whether the contract should pin a normalised event instead. |
 | 4 | `schemas.SlackBlock.x-uncertain` | `engine.slackBlock` is `map[string]interface{}`. I confirmed `header` and `context` blocks in `BuildMessage`; the rest of the function (meetings / focus / habits / briefs sections) was not enumerated block by block. Someone should capture a live `/preview` response before tightening this. |
 | 5 | `schemas.SettingsFields.recapSendTime.x-uncertain` | Verify against a live Postgres whether `recap_send_time::TEXT` yields `08:00:00` (my reading) or `08:00`. This changes the documented format and affects any `HH:MM` client. |
 | 6 | `schemas.SettingsFields.calendarProvider.x-uncertain` | No server-side validation of the accepted value set. `google` / `outlook` / `webcal` is inferred from the frontend type and the DB default, not from backend code. Confirm the authoritative list. |

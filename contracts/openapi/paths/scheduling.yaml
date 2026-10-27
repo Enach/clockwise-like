@@ -24,12 +24,17 @@ paths:
       tags: [focus]
       summary: Run the focus-time engine for a week
       description: >
-        Creates focus blocks for the target week. The request body is decoded
-        best-effort: if the body is absent or is malformed JSON the handler
-        silently falls back to `week = ""` (i.e. the current week) and returns
-        200 - it does NOT return 400 for malformed JSON. A 400 is only produced
-        when `week` decodes to a non-empty string that fails
-        `time.Parse("2006-01-02", ...)`.
+        Creates focus blocks for the target week. The body is optional: an
+        absent or empty body (zero bytes or only whitespace) and the JSON
+        literal `null` are treated as `{}`, i.e. the current week. Any other
+        body that does not decode into FocusRunRequest is a 400 `invalid JSON`:
+        a syntax error, a non-object top-level value (array, string, number,
+        boolean), or a member of the wrong type such as `{"week":5}`. Before
+        PAC-36 such a body was silently treated as `{}` and answered 200 for the
+        current week (API-035). Only the first JSON value is read; bytes after
+        it are not inspected, as on every sibling endpoint. A non-empty `week`
+        that fails `time.Parse("2006-01-02", ...)` is a 400 `invalid week format,
+        use YYYY-MM-DD`.
       requestBody:
         required: false
         content:
@@ -45,7 +50,9 @@ paths:
                 $ref: '#/components/schemas/FocusRunResult'
         '400':
           description: >
-            `invalid week format, use YYYY-MM-DD` - JSON error shape (writeError).
+            `invalid JSON` (the body is present, is not `null`, and does not
+            decode into FocusRunRequest; PAC-36, API-035) or `invalid week format,
+            use YYYY-MM-DD`. Fixed messages, JSON error shape (writeError).
           content:
             application/json:
               schema:
@@ -71,9 +78,11 @@ paths:
         Returns the caller's rows from the `focus_blocks` table (`user_id` = the
         authenticated user) where `date >= week AND date < week+7days`, ordered by
         start_time. Other users' blocks are never listed.
-        NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
-        emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`,
-        `Date`, `CreatedAt`) - not snake_case and not camelCase.
+        Keys are snake_case (`id`, `google_event_id`, `start_time`, `end_time`,
+        `date`, `created_at`) from explicit json tags on `storage.FocusBlock`
+        (PAC-26, API-014). Before PAC-26 the struct had no tags and the encoder
+        emitted the Go field names (`ID`, `GoogleEventID`, `StartTime`, ...),
+        which the web app's FocusBlock type could not read.
       parameters:
         - name: week
           in: query
@@ -159,19 +168,26 @@ paths:
       tags: [schedule]
       summary: Preview meeting-compression proposals
       description: >
-        Body decode errors are swallowed (`_ = json.NewDecoder(...).Decode(&body)`),
-        so malformed JSON behaves like an empty body and yields 200 for today.
+        Read-only: computes proposals, moves nothing.
+        The body is optional: an absent or empty body (zero bytes or only
+        whitespace) and the JSON literal `null` are treated as `{}`, i.e. today.
+        Any other body that does not decode into CompressionRequest is a 400
+        `invalid JSON` (a syntax error, a non-object top-level value, or a member
+        of the wrong type). Before PAC-36 the decode error was discarded and such
+        a body answered 200 for today (API-035). Only the first JSON value is read.
         If `week` is set it wins over `date`: the handler snaps the parsed date to
-        Monday (startOfWeek) and iterates Mon..Fri, appending one CompressionResult
-        per day and SILENTLY SKIPPING days whose engine call errors, and returns
-        `[]` if all five do. The credential check that runs before any day is
-        computed can still answer 401 or 500 in week mode.
+        Monday (startOfWeek) and computes Mon..Fri in order. A 200 in week mode
+        carries exactly five CompressionResult entries, one per day, Monday
+        first; a non-working day is an entry with no proposals, not a missing
+        entry. If ANY day's computation fails, the whole request fails exactly as
+        single-day mode fails (401 CalendarNotConnected or 500 `internal error`)
+        and no per-day results are returned. Before PAC-36 week mode skipped every
+        failing day and answered 200 with the survivors, `[]` if all five failed,
+        which a client cannot tell apart from "nothing to compress" (API-034).
         If `week` is empty, `date` (or today) produces a single-element array and
-        an engine error becomes a 500.
+        an engine error is the 500.
         A caller with no stored Google credential gets the 401 `calendar not connected`
-        in BOTH modes, before any day is computed (PAC-21, API-054). Before PAC-21 was
-        finished single-day mode answered 500 and week mode answered 200 `[]`, which a
-        client cannot tell apart from "nothing to compress".
+        in BOTH modes, before any day is computed (PAC-21, API-054).
       requestBody:
         required: false
         content:
@@ -181,18 +197,23 @@ paths:
       responses:
         '200':
           description: >
-            Array of per-day results. `[]` when the slice stayed empty
-            (week mode with every day's engine call failing after the credential
-            check passed).
+            Array of per-day results: exactly one entry in single-day mode,
+            exactly five (Mon..Fri, in that order) in week mode. Never `[]`
+            (PAC-36: a week in which a day failed is an error response, not a
+            shorter array).
           content:
             application/json:
               schema:
                 type: array
+                minItems: 1
+                maxItems: 5
                 items:
                   $ref: '#/components/schemas/CompressionResult'
         '400':
           description: >
-            `invalid week format` or `invalid date format` - JSON error shape
+            `invalid JSON` (the body is present, is not `null`, and does not
+            decode into CompressionRequest; PAC-36, API-035), `invalid week
+            format` or `invalid date format`. Fixed messages, JSON error shape
             (writeError).
           content:
             application/json:
@@ -202,11 +223,13 @@ paths:
           $ref: '#/components/responses/CalendarNotConnected'
         '500':
           description: >-
-            Single-day mode: engine failure for a user who HAS a stored Google
-            credential (a user with none gets the 401 `calendar not connected`). Both
-            modes: reading the credential store failed (checked before any day is
-            computed). Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21).
+            Both modes: an engine failure for a user who HAS a stored Google credential
+            (a user with none gets the 401 `calendar not connected`), on the single day
+            or on any one of the five week days (PAC-36, API-034: week mode no longer
+            skips it); or reading the credential store failed (checked before any day is
+            computed). Body: `{"error":"internal error"}`, with no per-day results and no
+            indication of which day failed. The detail is written to the server log and
+            Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -328,9 +351,12 @@ paths:
         creation once the weekly allowance is spent - that refusal surfaces as a
         500 with the text `out-of-hours meeting allowance reached`, not a 4xx.
         On success an audit row `meeting_created` is written.
-        The response body is the raw Google Calendar API
-        `calendar/v3.Event` struct as returned by the calendar client - it is
-        NOT normalised into the app's own event shape.
+        The response body is the created event flattened by toCalendarEventDTO:
+        the CalendarEvent DTO, the same shape as one element of
+        GET /api/calendar/events, never Google's own keys (`summary`,
+        `start.dateTime`, `hangoutLink`). PAC-29 (API-017, U-14): until PAC-29's
+        implementation lands the server still encodes the raw `calendar/v3.Event`
+        here, so this response describes the server after that PR.
       requestBody:
         required: true
         content:
@@ -339,11 +365,14 @@ paths:
               $ref: '#/components/schemas/ScheduleCreateRequest'
       responses:
         '200':
-          description: The created Google Calendar event.
+          description: >-
+            The created event as the CalendarEvent DTO (PAC-29). Room resource
+            attendees are dropped from `attendees` / `attendee_details`, as in the
+            list; `attendees` is omitted when there are none.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleCalendarEvent'
+                $ref: '#/components/schemas/CalendarEvent'
         '400':
           description: >
             `invalid JSON`, or `invalid start or end (use RFC3339)` - JSON error
@@ -416,7 +445,11 @@ paths:
         and `suggested_slots[selected_slot_index]` are used; `duration_minutes`,
         `range_start`, `range_end`, `preferred_times` and `avoid_times` are
         ignored here. On success an audit row `nlp_confirmed` is written and the
-        raw Google Calendar event is returned.
+        created event is returned as the CalendarEvent DTO (toCalendarEventDTO, the
+        same shape as GET /api/calendar/events), never Google's own keys. PAC-29
+        (API-017, U-14): until PAC-29's implementation lands the server still encodes
+        the raw `calendar/v3.Event` here, so this response describes the server
+        after that PR.
         A NEGATIVE `selected_slot_index` is a 400 `invalid selected_slot_index`, like
         an index past the end. Before PAC-21 was finished it passed the bounds check,
         indexed the slice out of range and panicked; the panic was re-raised by
@@ -432,11 +465,14 @@ paths:
               $ref: '#/components/schemas/NLPConfirmRequest'
       responses:
         '200':
-          description: The created Google Calendar event.
+          description: >-
+            The created event as the CalendarEvent DTO (PAC-29). Room resource
+            attendees are dropped from `attendees` / `attendee_details`, as in the
+            list; `attendees` is omitted when there are none.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleCalendarEvent'
+                $ref: '#/components/schemas/CalendarEvent'
         '400':
           description: >
             `invalid JSON`, or `invalid selected_slot_index` (empty slot list,
@@ -1084,7 +1120,9 @@ components:
     FocusRunRequest:
       type: object
       description: >
-        Optional. A malformed body is silently treated as `{}`.
+        Optional. Absent, empty or `null` is treated as `{}`. Any other body that
+        does not decode into this object is a 400 `invalid JSON` (PAC-36,
+        API-035; it was silently treated as `{}` before).
       properties:
         week:
           type: string
@@ -1097,7 +1135,11 @@ components:
 
     FocusRunResult:
       type: object
-      description: engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+      description: >
+        engine.FocusRunResult (backend/engine/focus_time.go). camelCase wrapper; the
+        blocks inside `createdBlocks` are snake_case (FocusRunBlock, PAC-26). The
+        wrapper casing is unchanged by PAC-26: the web app's snake_case FocusRunResult
+        type is aligned to it by PAC-32 (API-015), which needs no contract change.
       properties:
         weekStart:
           type: string
@@ -1112,9 +1154,12 @@ components:
           type: array
           items:
             type: string
+            format: date
           description: >
-            x-uncertain at field level - the format of each entry is not pinned
-            by a struct tag; it is whatever the engine appends.
+            `YYYY-MM-DD` of each weekday the engine skipped (daily target already
+            met, or the day is disabled in the working window). Both append sites in
+            engine/focus_time.go append the same `day.Format("2006-01-02")` string
+            (U-23, resolved by reading the code for PAC-26).
         totalMinutes:
           type: integer
         errors:
@@ -1127,49 +1172,57 @@ components:
     FocusRunBlock:
       type: object
       description: >
-        engine.FocusBlock. This struct has NO json tags, so the encoder emits
-        exported Go field names verbatim. It is a DIFFERENT shape from
-        FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+        engine.FocusBlock, with explicit snake_case json tags (PAC-26, API-014).
+        The keys it shares with FocusBlockRecord (storage.FocusBlock, returned by
+        GET /api/focus/blocks) are spelled the same: the Go fields `Start`/`End`
+        are tagged `start_time`/`end_time` so that one block shape can be read
+        from both operations. It has no `id` and no `created_at`: the engine
+        reports what it created before any row id is known to the response.
+        Before PAC-26 the struct had no tags and the keys were `GoogleEventID`,
+        `Start`, `End`, `Date`.
       properties:
-        GoogleEventID:
+        google_event_id:
           type: string
-        Start:
-          type: string
-          format: date-time
-        End:
+        start_time:
           type: string
           format: date-time
-        Date:
+        end_time:
+          type: string
+          format: date-time
+        date:
           type: string
           format: date
           description: '`YYYY-MM-DD`.'
-      required: [GoogleEventID, Start, End, Date]
+      required: [google_event_id, start_time, end_time, date]
       additionalProperties: false
 
     FocusBlockRecord:
       type: object
       description: >
-        storage.FocusBlock (backend/storage/models.go). No json tags either, so
-        the wire field names are the Go field names.
+        storage.FocusBlock (backend/storage/models.go), with explicit snake_case
+        json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and
+        the web app's FocusBlock type. Before PAC-26 the struct had no tags and
+        the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`,
+        `CreatedAt`.
       properties:
-        ID:
+        id:
           type: integer
           format: int64
-        GoogleEventID:
+        google_event_id:
           type: string
-        StartTime:
-          type: string
-          format: date-time
-        EndTime:
+        start_time:
           type: string
           format: date-time
-        Date:
+        end_time:
+          type: string
+          format: date-time
+        date:
           type: string
           format: date
-        CreatedAt:
+        created_at:
           type: string
           format: date-time
-      required: [ID, GoogleEventID, StartTime, EndTime, Date, CreatedAt]
+      required: [id, google_event_id, start_time, end_time, date, created_at]
       additionalProperties: false
 
     FocusClearResult:
@@ -1187,6 +1240,9 @@ components:
       type: object
       description: >
         Both fields optional; `week` takes precedence over `date` when non-empty.
+        The whole body is optional too: absent, empty or `null` is treated as
+        `{}`. Any other body that does not decode into this object is a 400
+        `invalid JSON` (PAC-36, API-035; the decode error was discarded before).
       properties:
         date:
           type: string
@@ -1386,74 +1442,6 @@ components:
       required: [start, end]
       additionalProperties: true
 
-    GoogleCalendarEvent:
-      type: object
-      description: >
-        The raw `google.golang.org/api/calendar/v3.Event` returned by the
-        calendar client and re-encoded as-is. Only the members this repo sets or
-        reads are listed; the real payload carries the full Google Calendar
-        event resource and omits empty fields (the generated struct uses
-        `omitempty` almost everywhere).
-      x-uncertain: >
-        This schema is deliberately open (`additionalProperties: true`) and
-        partial. The exact member set is fixed by the vendored Google API client
-        version, not by this repo. A human should decide whether the contract
-        pins a normalised subset instead of leaking the vendor struct.
-      properties:
-        id:
-          type: string
-        summary:
-          type: string
-        description:
-          type: string
-        location:
-          type: string
-        status:
-          type: string
-        htmlLink:
-          type: string
-        hangoutLink:
-          type: string
-        start:
-          $ref: '#/components/schemas/GoogleEventDateTime'
-        end:
-          $ref: '#/components/schemas/GoogleEventDateTime'
-        attendees:
-          type: array
-          items:
-            $ref: '#/components/schemas/GoogleEventAttendee'
-      additionalProperties: true
-
-    GoogleEventDateTime:
-      type: object
-      description: calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-      properties:
-        dateTime:
-          type: string
-          format: date-time
-        date:
-          type: string
-          format: date
-        timeZone:
-          type: string
-      additionalProperties: true
-
-    GoogleEventAttendee:
-      type: object
-      description: calendar/v3.EventAttendee. This repo only ever sets `email`.
-      properties:
-        email:
-          type: string
-          format: email
-        displayName:
-          type: string
-        organizer:
-          type: boolean
-        responseStatus:
-          type: string
-        optional:
-          type: boolean
-      additionalProperties: true
 
     # ------------------------------------------------------------------- nlp
 

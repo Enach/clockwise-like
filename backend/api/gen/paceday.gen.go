@@ -70,6 +70,17 @@ const (
 	CadenceWeekly   Cadence = "weekly"
 )
 
+// Defines values for CalendarDisconnectUnsupportedError.
+const (
+	DisconnectingThisKindOfCalendarIsNotAvailableYet CalendarDisconnectUnsupportedError = "disconnecting this kind of calendar is not available yet"
+)
+
+// Defines values for CalendarDisconnectUnsupportedProvider.
+const (
+	CalendarDisconnectUnsupportedProviderOutlook CalendarDisconnectUnsupportedProvider = "outlook"
+	CalendarDisconnectUnsupportedProviderWebcal  CalendarDisconnectUnsupportedProvider = "webcal"
+)
+
 // Defines values for CalendarEventColor.
 const (
 	Hash039BE5 CalendarEventColor = "#039BE5"
@@ -119,6 +130,13 @@ const (
 	CreateSchedulingLinkRequestUsageTypeSingleUse CreateSchedulingLinkRequestUsageType = "single_use"
 )
 
+// Defines values for CurrentUserResponseProvider.
+const (
+	CurrentUserResponseProviderGoogle    CurrentUserResponseProvider = "google"
+	CurrentUserResponseProviderMicrosoft CurrentUserResponseProvider = "microsoft"
+	CurrentUserResponseProviderSso       CurrentUserResponseProvider = "sso"
+)
+
 // Defines values for DailyRecapPatchSendTo.
 const (
 	DailyRecapPatchSendToChannel DailyRecapPatchSendTo = "channel"
@@ -129,6 +147,12 @@ const (
 const (
 	DailyRecapSettingsSendToChannel DailyRecapSettingsSendTo = "channel"
 	DailyRecapSettingsSendToDm      DailyRecapSettingsSendTo = "dm"
+)
+
+// Defines values for EventPatchRequestSendUpdates.
+const (
+	EventPatchRequestSendUpdatesAll  EventPatchRequestSendUpdates = "all"
+	EventPatchRequestSendUpdatesNone EventPatchRequestSendUpdates = "none"
 )
 
 // Defines values for FreeBusyLegacyResultCoverage.
@@ -418,6 +442,12 @@ const (
 	Empty   WorkingHoursScheduleMode = ""
 )
 
+// Defines values for DeleteEventParamsSendUpdates.
+const (
+	DeleteEventParamsSendUpdatesAll  DeleteEventParamsSendUpdates = "all"
+	DeleteEventParamsSendUpdatesNone DeleteEventParamsSendUpdates = "none"
+)
+
 // AddEventConferenceRequest POST /api/events/{id}/conference.
 type AddEventConferenceRequest struct {
 	// Provider Lowercased and trimmed. `custom` and `google_meet` are handled inline; `zoom` and `teams` go through the provider factory; anything else is a 400 from the factory.
@@ -656,7 +686,25 @@ type CadenceGapList struct {
 	Gaps []CadenceGap `json:"gaps"`
 }
 
-// CalendarEvent api.calendarEventDTO — the flattened event shape returned by GET /api/calendar/events.
+// CalendarDisconnectUnsupported Body of `disconnectCalendar`'s 409 (PAC-35, spec D-8): the caller's
+// calendar is not Google, disconnect for that kind of calendar is not
+// implemented, and nothing was deleted. `error` keeps the shared
+// `{error}` member so a client that only shows `data.error` still shows a
+// true sentence.
+type CalendarDisconnectUnsupported struct {
+	Error CalendarDisconnectUnsupportedError `json:"error"`
+
+	// Provider The caller's calendar provider, as `getAuthStatus` reports it.
+	Provider CalendarDisconnectUnsupportedProvider `json:"provider"`
+}
+
+// CalendarDisconnectUnsupportedError defines model for CalendarDisconnectUnsupported.Error.
+type CalendarDisconnectUnsupportedError string
+
+// CalendarDisconnectUnsupportedProvider The caller's calendar provider, as `getAuthStatus` reports it.
+type CalendarDisconnectUnsupportedProvider string
+
+// CalendarEvent api.calendarEventDTO, built by toCalendarEventDTO — the flattened event shape returned by GET /api/calendar/events (one per array element) and, since PAC-29, as the whole 200 body of PATCH /api/events/{id}, POST /api/schedule/create and POST /api/nlp/confirm. One converter, so the four operations cannot disagree about the same event.
 type CalendarEvent struct {
 	// AttendeeDetails Parallel to `attendees`, same ordering and same filtering. Omitted when empty.
 	AttendeeDetails *[]CalendarEventAttendee `json:"attendee_details,omitempty"`
@@ -679,7 +727,7 @@ type CalendarEvent struct {
 	// Id Google Calendar event id. Always present as a key; may be "".
 	Id string `json:"id"`
 
-	// IsPersonalBlock Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO, so it is always omitted from responses from this endpoint.
+	// IsPersonalBlock Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO, so it is always omitted from every response that carries this schema (the events list and, since PAC-29, PATCH /api/events/{id}, POST /api/schedule/create and POST /api/nlp/confirm).
 	IsPersonalBlock *bool `json:"is_personal_block,omitempty"`
 
 	// Location Omitted when empty.
@@ -764,7 +812,7 @@ type CompressionApplyResult struct {
 	Failed []string `json:"failed"`
 }
 
-// CompressionRequest Both fields optional; `week` takes precedence over `date` when non-empty.
+// CompressionRequest Both fields optional; `week` takes precedence over `date` when non-empty. The whole body is optional too: absent, empty or `null` is treated as `{}`. Any other body that does not decode into this object is a 400 `invalid JSON` (PAC-36, API-035; the decode error was discarded before).
 type CompressionRequest struct {
 	// Date `YYYY-MM-DD`. Used only when `week` is empty. Default: today.
 	Date *openapi_types.Date `json:"date,omitempty"`
@@ -902,8 +950,15 @@ type CreateSchedulingLinkRequestUsageType string
 
 // CurrentUserResponse storage.User (backend/storage/users.go) serialized directly.
 type CurrentUserResponse struct {
-	// AvatarUrl May be the empty string (Microsoft and SSO logins always upsert "").
-	// Not omitempty, so the key is always present.
+	// AvatarUrl The user's picture URL. In the current-user read (`getCurrentUser`)
+	// this is the only name for it; clients read it as `avatarUrl`, not
+	// `avatar` (PAC-35, API-065: the web app read it as `avatar`, or not at
+	// all). Scheduling-link and booking hosts carry the same stored value
+	// as `avatar_url` (`SchedulingLinkHost`, `PublicHost`), unchanged by
+	// PAC-35. May be the empty string. Every sign-in overwrites it: Google
+	// writes the Google picture, Microsoft and SSO always write "" (so a
+	// Microsoft or SSO sign-in clears a picture an earlier Google sign-in
+	// stored). Not omitempty, so the key is always present.
 	AvatarUrl string              `json:"avatarUrl"`
 	CreatedAt time.Time           `json:"createdAt"`
 	Email     openapi_types.Email `json:"email"`
@@ -913,10 +968,34 @@ type CurrentUserResponse struct {
 	// Org storage.Org (backend/storage/orgs.go).
 	Org *OrgSummary `json:"org,omitempty"`
 
-	// Provider Login provider recorded at upsert time.
-	// x-uncertain applies — see property-level note.
-	Provider string `json:"provider"`
+	// Provider The provider of the user's FIRST sign-in: set when the row is
+	// inserted and never updated (UpsertUser's ON CONFLICT does not touch
+	// `provider`), so a user who first signed in with Google and later
+	// with Microsoft still reads "google".
+	// Closed by PAC-35 (U-13): `users.provider` has no CHECK constraint
+	// (migration 006, `TEXT NOT NULL DEFAULT 'google'`), but its only
+	// writer is storage.UpsertUser, and every call site in the history
+	// of the repository passes one of these three literals
+	// (handlers_auth.go "google", handlers_microsoft_auth.go "microsoft",
+	// handlers_sso.go "sso"; tests and the e2e seed write "google").
+	// A CHECK constraint is not added (spec PAC-35 section 7: no
+	// migration).
+	Provider CurrentUserResponseProvider `json:"provider"`
 }
+
+// CurrentUserResponseProvider The provider of the user's FIRST sign-in: set when the row is
+// inserted and never updated (UpsertUser's ON CONFLICT does not touch
+// `provider`), so a user who first signed in with Google and later
+// with Microsoft still reads "google".
+// Closed by PAC-35 (U-13): `users.provider` has no CHECK constraint
+// (migration 006, `TEXT NOT NULL DEFAULT 'google'`), but its only
+// writer is storage.UpsertUser, and every call site in the history
+// of the repository passes one of these three literals
+// (handlers_auth.go "google", handlers_microsoft_auth.go "microsoft",
+// handlers_sso.go "sso"; tests and the e2e seed write "google").
+// A CHECK constraint is not added (spec PAC-35 section 7: no
+// migration).
+type CurrentUserResponseProvider string
 
 // DailyRecapPatch api.recapSettingsBody. A property absent means "leave unchanged"; a property present is applied.
 // PAC-24 makes two changes to what this document permits, both to align it with PATCH /api/settings. `null` is no longer accepted anywhere: the Go fields are pointers, so `null` used to be indistinguishable from an omission, which meant a client that meant to clear something and a client with a serialisation bug got the same silent success. And an unknown property is now rejected rather than ignored, which is how a caller learns it has misspelt one of these seven snake_case names.
@@ -1005,31 +1084,43 @@ type EventConferenceLink struct {
 	Url      string `json:"url"`
 }
 
-// EventPatchRequest Body of PATCH /api/events/{id}. Every field is optional; only non-null fields are applied. Unknown keys are silently ignored by encoding/json.
+// EventPatchRequest Body of PATCH /api/events/{id}. Every field is optional; null or absent leaves the corresponding part of the event unchanged. Since PAC-29 the schema declares every key the web client sends (`send_updates`, `room_resource_email`, `attendee_details`, API-018). The server's decoder still ignores undeclared keys; the contract forbids them so a generated client cannot send a key that would be a silent no-op.
 type EventPatchRequest struct {
-	// Attendees FULL REPLACEMENT of the attendee list with email-only entries. Sending `[]` clears all attendees, including room resources.
+	// AttendeeDetails Accepted and ignored by the server. Declared because the web client sends it alongside `attendees` on every edit (API-018). Who attends comes from `attendees`; existing attendees keep their names and RSVPs from Google (see `attendees`); a client never sets another person's RSVP. PAC-29 decision D-7.
+	AttendeeDetails *[]map[string]interface{} `json:"attendee_details"`
+
+	// Attendees Replaces the event's NON-ROOM attendees with this list (emails compared case-insensitively, duplicates collapsed). An email already on the event keeps its existing Google attendee entry (display name, RSVP, organizer, optional); a new email is added as an email-only entry. Room resource attendees already on the event (`resource: true` or `*@resource.calendar.google.com`) are always kept, so writing back the list GET /api/calendar/events returned (which omits rooms) does not drop the room. `[]` removes every non-room attendee. The two room rules differ on purpose: the DTO hides only the `*@resource.calendar.google.com` suffix, so a `resource: true` attendee without that suffix is shown as an ordinary guest, yet PATCH still keeps it if the client leaves it out. The difference can only keep an attendee, never drop one. PAC-29, API-044: before PAC-29 this replaced the whole list with email-only entries, dropping names, RSVPs and the room.
 	Attendees   *[]openapi_types.Email `json:"attendees"`
 	Description *string                `json:"description"`
 
-	// End Same handling as `start`.
-	End      *time.Time `json:"end"`
-	Location *string    `json:"location"`
+	// End Same handling as `start`. For a bare date this is Google's exclusive end date, as in CalendarEvent.end.
+	End      *string `json:"end"`
+	Location *string `json:"location"`
 
-	// Start Decoded as Go time.Time (RFC3339) and re-emitted as UTC RFC3339 in `start.dateTime`. Setting this on an all-day event converts it to a timed event.
-	Start *time.Time `json:"start"`
+	// RoomResourceEmail A Google room resource calendar address (as returned by GET /api/rooms). When non-empty and not already an attendee, the room is added as a resource attendee. Rooms already on the event are kept: this endpoint never removes a room (PAC-29 decision D-6). Null, absent or `""` leaves the rooms unchanged. A non-empty value that is not a `*@resource.calendar.google.com` address is a 400. PAC-29, API-018.
+	RoomResourceEmail *string `json:"room_resource_email"`
+
+	// SendUpdates Passed to Google's update call as `sendUpdates`: `all` emails the guests about the change, `none` does not. Null or absent means `none`, which is what every PATCH did before PAC-29. Any other value is a 400 and nothing is written. PAC-29, API-018.
+	SendUpdates *EventPatchRequestSendUpdates `json:"send_updates"`
+
+	// Start Either an RFC3339 date-time, written as Google `start.dateTime` in UTC (the event becomes or stays timed), or a bare `YYYY-MM-DD` date, written as Google `start.date` (the event becomes or stays all-day). The same dual format as CalendarEvent.start, so a client can write back what it read. PAC-29, API-043: before PAC-29 only a date-time was accepted and an all-day event was always converted to a timed one. After applying the patch, start and end must be of the same kind or the request is a 400.
+	Start *string `json:"start"`
 
 	// Title Maps to Google `summary`. Null or absent leaves it unchanged.
 	Title *string `json:"title"`
 }
 
-// FocusBlockRecord storage.FocusBlock (backend/storage/models.go). No json tags either, so the wire field names are the Go field names.
+// EventPatchRequestSendUpdates Passed to Google's update call as `sendUpdates`: `all` emails the guests about the change, `none` does not. Null or absent means `none`, which is what every PATCH did before PAC-29. Any other value is a 400 and nothing is written. PAC-29, API-018.
+type EventPatchRequestSendUpdates string
+
+// FocusBlockRecord storage.FocusBlock (backend/storage/models.go), with explicit snake_case json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and the web app's FocusBlock type. Before PAC-26 the struct had no tags and the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`, `CreatedAt`.
 type FocusBlockRecord struct {
-	CreatedAt     time.Time          `json:"CreatedAt"`
-	Date          openapi_types.Date `json:"Date"`
-	EndTime       time.Time          `json:"EndTime"`
-	GoogleEventID string             `json:"GoogleEventID"`
-	ID            int64              `json:"ID"`
-	StartTime     time.Time          `json:"StartTime"`
+	CreatedAt     time.Time          `json:"created_at"`
+	Date          openapi_types.Date `json:"date"`
+	EndTime       time.Time          `json:"end_time"`
+	GoogleEventId string             `json:"google_event_id"`
+	Id            int64              `json:"id"`
+	StartTime     time.Time          `json:"start_time"`
 }
 
 // FocusClearResult Literal `map[string]int{"deleted": n}`.
@@ -1037,31 +1128,31 @@ type FocusClearResult struct {
 	Deleted int `json:"deleted"`
 }
 
-// FocusRunBlock engine.FocusBlock. This struct has NO json tags, so the encoder emits exported Go field names verbatim. It is a DIFFERENT shape from FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+// FocusRunBlock engine.FocusBlock, with explicit snake_case json tags (PAC-26, API-014). The keys it shares with FocusBlockRecord (storage.FocusBlock, returned by GET /api/focus/blocks) are spelled the same: the Go fields `Start`/`End` are tagged `start_time`/`end_time` so that one block shape can be read from both operations. It has no `id` and no `created_at`: the engine reports what it created before any row id is known to the response. Before PAC-26 the struct had no tags and the keys were `GoogleEventID`, `Start`, `End`, `Date`.
 type FocusRunBlock struct {
 	// Date `YYYY-MM-DD`.
-	Date          openapi_types.Date `json:"Date"`
-	End           time.Time          `json:"End"`
-	GoogleEventID string             `json:"GoogleEventID"`
-	Start         time.Time          `json:"Start"`
+	Date          openapi_types.Date `json:"date"`
+	EndTime       time.Time          `json:"end_time"`
+	GoogleEventId string             `json:"google_event_id"`
+	StartTime     time.Time          `json:"start_time"`
 }
 
-// FocusRunRequest Optional. A malformed body is silently treated as `{}`.
+// FocusRunRequest Optional. Absent, empty or `null` is treated as `{}`. Any other body that does not decode into this object is a 400 `invalid JSON` (PAC-36, API-035; it was silently treated as `{}` before).
 type FocusRunRequest struct {
 	// Week `YYYY-MM-DD`. Empty or absent -> current week (`time.Now()`). Not snapped to Monday by the handler.
 	Week                 *openapi_types.Date    `json:"week,omitempty"`
 	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
-// FocusRunResult engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+// FocusRunResult engine.FocusRunResult (backend/engine/focus_time.go). camelCase wrapper; the blocks inside `createdBlocks` are snake_case (FocusRunBlock, PAC-26). The wrapper casing is unchanged by PAC-26: the web app's snake_case FocusRunResult type is aligned to it by PAC-32 (API-015), which needs no contract change.
 type FocusRunResult struct {
 	// CreatedBlocks `[]` when the engine created nothing.
 	CreatedBlocks []FocusRunBlock `json:"createdBlocks"`
 	Errors        []string        `json:"errors"`
 
-	// SkippedDays x-uncertain at field level - the format of each entry is not pinned by a struct tag; it is whatever the engine appends.
-	SkippedDays  []string `json:"skippedDays"`
-	TotalMinutes int      `json:"totalMinutes"`
+	// SkippedDays `YYYY-MM-DD` of each weekday the engine skipped (daily target already met, or the day is disabled in the working window). Both append sites in engine/focus_time.go append the same `day.Format("2006-01-02")` string (U-23, resolved by reading the code for PAC-26).
+	SkippedDays  []openapi_types.Date `json:"skippedDays"`
+	TotalMinutes int                  `json:"totalMinutes"`
 
 	// WeekStart RFC3339 (Go time.Time).
 	WeekStart time.Time `json:"weekStart"`
@@ -1104,7 +1195,7 @@ type FreeBusyQueryRequest struct {
 	StartTime time.Time `json:"start_time"`
 }
 
-// FreeBusyQueryResponse The same free/busy data is returned three ways for compatibility: `participants` (canonical), `busy` (map form) and `results` (legacy, and with different key casing). All three are always present.
+// FreeBusyQueryResponse The same free/busy data is returned three ways for compatibility: `participants` (canonical), `busy` (map form) and `results` (legacy). All three are always present. Since PAC-26 (API-028) every busy window in all three uses the same `{"start","end"}` keys; before it, `results[].busy[]` alone was `{"Start","End"}`.
 type FreeBusyQueryResponse struct {
 	// Busy Busy windows keyed by the lowercased email. Same data as `participants[].busy`. Always an object; a participant with no busy time maps to `[]`.
 	Busy    map[string][]FreeBusyWindow `json:"busy"`
@@ -1113,7 +1204,7 @@ type FreeBusyQueryResponse struct {
 	// Participants One entry per requested email, in the order personal-domain/cached entries were resolved.
 	Participants []FreeBusyParticipant `json:"participants"`
 
-	// Results Legacy view. Uses `coverage` instead of `status`, and its busy windows are engine/calendar.TimeSlot values with CAPITALIZED `Start`/`End` keys.
+	// Results Legacy view. Uses `coverage` instead of `status`. Its busy windows are calendar.TimeSlot values, `{"start","end"}` since PAC-26 (API-028).
 	Results []FreeBusyLegacyResult `json:"results"`
 
 	// StartTime Echo of the parsed request start, marshalled from Go time.Time.
@@ -1124,59 +1215,6 @@ type FreeBusyQueryResponse struct {
 type FreeBusyWindow struct {
 	End   time.Time `json:"end"`
 	Start time.Time `json:"start"`
-}
-
-// GoogleCalendarEvent The raw `google.golang.org/api/calendar/v3.Event` returned by the calendar client and re-encoded as-is. Only the members this repo sets or reads are listed; the real payload carries the full Google Calendar event resource and omits empty fields (the generated struct uses `omitempty` almost everywhere).
-type GoogleCalendarEvent struct {
-	Attendees   *[]GoogleEventAttendee `json:"attendees,omitempty"`
-	Description *string                `json:"description,omitempty"`
-
-	// End calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-	End         *GoogleEventDateTime `json:"end,omitempty"`
-	HangoutLink *string              `json:"hangoutLink,omitempty"`
-	HtmlLink    *string              `json:"htmlLink,omitempty"`
-	Id          *string              `json:"id,omitempty"`
-	Location    *string              `json:"location,omitempty"`
-
-	// Start calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-	Start                *GoogleEventDateTime   `json:"start,omitempty"`
-	Status               *string                `json:"status,omitempty"`
-	Summary              *string                `json:"summary,omitempty"`
-	AdditionalProperties map[string]interface{} `json:"-"`
-}
-
-// GoogleCalendarEventRaw The raw google.golang.org/api/calendar/v3.Event returned unmodified by PATCH /api/events/{id}. Its keys are Google's own camelCase API names (`summary`, `start.dateTime`, `htmlLink`, `hangoutLink`, `attendees[].responseStatus`, …), not the CalendarEvent shape. Only the most load-bearing fields are listed; the object carries the full Google event payload.
-type GoogleCalendarEventRaw struct {
-	Attendees   *[]map[string]interface{} `json:"attendees,omitempty"`
-	Description *string                   `json:"description,omitempty"`
-	End         *map[string]interface{}   `json:"end,omitempty"`
-	HangoutLink *string                   `json:"hangoutLink,omitempty"`
-	HtmlLink    *string                   `json:"htmlLink,omitempty"`
-	Id          *string                   `json:"id,omitempty"`
-	Location    *string                   `json:"location,omitempty"`
-
-	// Start Google EventDateTime — has `dateTime`, `date` and/or `timeZone`.
-	Start                *map[string]interface{} `json:"start,omitempty"`
-	Summary              *string                 `json:"summary,omitempty"`
-	AdditionalProperties map[string]interface{}  `json:"-"`
-}
-
-// GoogleEventAttendee calendar/v3.EventAttendee. This repo only ever sets `email`.
-type GoogleEventAttendee struct {
-	DisplayName          *string                `json:"displayName,omitempty"`
-	Email                *openapi_types.Email   `json:"email,omitempty"`
-	Optional             *bool                  `json:"optional,omitempty"`
-	Organizer            *bool                  `json:"organizer,omitempty"`
-	ResponseStatus       *string                `json:"responseStatus,omitempty"`
-	AdditionalProperties map[string]interface{} `json:"-"`
-}
-
-// GoogleEventDateTime calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-type GoogleEventDateTime struct {
-	Date                 *openapi_types.Date    `json:"date,omitempty"`
-	DateTime             *time.Time             `json:"dateTime,omitempty"`
-	TimeZone             *string                `json:"timeZone,omitempty"`
-	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
 // Habit storage.Habit. Every field is emitted — no `omitempty` anywhere on this struct.
@@ -1435,8 +1473,13 @@ type ManagerAnalytics struct {
 
 // ManagerAnalyticsMember defines model for ManagerAnalyticsMember.
 type ManagerAnalyticsMember struct {
-	DisplayName string              `json:"display_name"`
-	Email       openapi_types.Email `json:"email"`
+	// DataAvailable True iff at least one entry of `weeks` has data_available=true (PAC-34). Derived from the buckets of this response, never read or cached separately, so it cannot disagree with them. False means no bucket is measured (degraded FreeBusy, no analytics_weeks rows, consent withheld, or the PAC-60 visibility gate): the member's minutes must be shown as "no data", not as zeroes. True does NOT mean every bucket is measured; each bucket's own data_available still decides how that bucket is drawn.
+	DataAvailable bool                `json:"data_available"`
+	DisplayName   string              `json:"display_name"`
+	Email         openapi_types.Email `json:"email"`
+
+	// IsPacedayUser True iff the member's member_user_id resolved to a Paceday user row; the same value ManagerRosterMember.is_paceday_user carries for this member (PAC-34).
+	IsPacedayUser bool `json:"is_paceday_user"`
 
 	// Weeks Exactly 12 buckets, newest first.
 	Weeks []ManagerAnalyticsWeek `json:"weeks"`
@@ -1506,30 +1549,30 @@ type ManagerRosterMember struct {
 	ThisWeek MemberWeekStats `json:"this_week"`
 }
 
-// ManagerTeamMemberGoStruct storage.ManagerTeamMember marshalled with no json tags — Go field names verbatim. Returned by addManagerTeamMember (201) and patchManagerTeamMember (200).
+// ManagerTeamMemberGoStruct storage.ManagerTeamMember with explicit snake_case json tags (PAC-26, API-030); the keys match the manager_team_members columns. Returned by addManagerTeamMember (201) and patchManagerTeamMember (200), both read back from storage after the write. The schema name is kept from before PAC-26, when the struct had no tags and the keys were the Go field names (`ID`, `ManagerUserID`, `MemberEmail`, ...). Note the key is `member_email` here but `email` on ManagerRosterMember: this is the stored row, the roster is a view.
 type ManagerTeamMemberGoStruct struct {
 	// Cadence 1:1 cadence. "none" disables gap detection for that member.
-	Cadence           Cadence `json:"Cadence"`
-	CadenceCustomDays *int    `json:"CadenceCustomDays"`
+	Cadence           Cadence `json:"cadence"`
+	CadenceCustomDays *int    `json:"cadence_custom_days"`
 
-	// CreatedAt Zero value "0001-01-01T00:00:00Z" on the 201 add response.
-	CreatedAt   time.Time `json:"CreatedAt"`
-	DisplayName string    `json:"DisplayName"`
+	// CreatedAt Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
+	CreatedAt   time.Time `json:"created_at"`
+	DisplayName string    `json:"display_name"`
 
-	// ID On the 201 add response this is the zero UUID "00000000-0000-0000-0000-000000000000" because the struct is echoed back without re-reading the row.
-	ID             openapi_types.UUID  `json:"ID"`
-	LastOneOnOneAt *time.Time          `json:"LastOneOnOneAt"`
-	ManagerUserID  openapi_types.UUID  `json:"ManagerUserID"`
-	MemberEmail    openapi_types.Email `json:"MemberEmail"`
+	// Id The stored row id. Since PAC-26 (API-031) never the zero UUID on the 201 add response.
+	Id             openapi_types.UUID  `json:"id"`
+	LastOneOnOneAt *time.Time          `json:"last_one_on_one_at"`
+	ManagerUserId  openapi_types.UUID  `json:"manager_user_id"`
+	MemberEmail    openapi_types.Email `json:"member_email"`
 
-	// MemberUserID Set when the email matches a Paceday user; null for external members.
-	MemberUserID *openapi_types.UUID `json:"MemberUserID"`
+	// MemberUserId Set when the email matches a Paceday user; null for external members.
+	MemberUserId *openapi_types.UUID `json:"member_user_id"`
 
 	// Source "auto" = created by calendar detection, "manual" = created by an explicit add, "formal" = SYNTHETIC, returned only by getManagerRoster for a formal team_members row that has no manager assignment yet. "formal" is never persisted (the manager_team_members CHECK constraint permits only auto/manual).
-	Source ManagerMemberSource `json:"Source"`
+	Source ManagerMemberSource `json:"source"`
 
-	// UpdatedAt Zero value "0001-01-01T00:00:00Z" on the 201 add response.
-	UpdatedAt time.Time `json:"UpdatedAt"`
+	// UpdatedAt Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // MeetingBriefResponse api.briefResponse. Note this is NOT the `storage.MeetingBrief` struct (which has
@@ -1795,12 +1838,12 @@ type PersonalCalendarPatchRequest struct {
 	Url     *string `json:"url"`
 }
 
-// PersonalCalendarPreviewEvent calendar.GenericEvent serialized WITHOUT json tags — capitalized Go field names. All four keys are always present.
+// PersonalCalendarPreviewEvent calendar.GenericEvent, with explicit json tags since PAC-26 (API-029). All four keys are always present (no omitempty). Before PAC-26 the struct had no tags and the keys were `ID`, `Title`, `Start`, `End`.
 type PersonalCalendarPreviewEvent struct {
-	End   time.Time `json:"End"`
-	ID    string    `json:"ID"`
-	Start time.Time `json:"Start"`
-	Title string    `json:"Title"`
+	End   time.Time `json:"end"`
+	Id    string    `json:"id"`
+	Start time.Time `json:"start"`
+	Title string    `json:"title"`
 }
 
 // PlainTextError Several handlers (and requireAuth) use Go's http.Error instead of
@@ -1894,10 +1937,10 @@ type PublicSlotsResponse struct {
 	Slots []PublicBookingSlot `json:"slots"`
 }
 
-// RawGoogleBusyWindow calendar.TimeSlot serialized WITHOUT json tags, hence capitalized Go field names. A Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded.
+// RawGoogleBusyWindow calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26 (API-028, API-029). Same keys as FreeBusyWindow; kept as its own schema because it is a different Go type with a different failure mode: a Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26 the struct had no tags and the keys were `Start` / `End`.
 type RawGoogleBusyWindow struct {
-	End   time.Time `json:"End"`
-	Start time.Time `json:"Start"`
+	End   time.Time `json:"end"`
+	Start time.Time `json:"start"`
 }
 
 // RawGoogleFreeBusyMap Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot` keyed by the calendar id Google echoed back (normally the attendee email).
@@ -2129,7 +2172,7 @@ type SchedulingLinkHostRecord struct {
 // SchedulingLinkHostRecordStatus defines model for SchedulingLinkHostRecord.Status.
 type SchedulingLinkHostRecordStatus string
 
-// SchedulingLinkInviteResponse Echo of the status that was written. The only body accept/decline ever returns.
+// SchedulingLinkInviteResponse Echo of the status that was written. The only 200 body accept/decline returns.
 type SchedulingLinkInviteResponse struct {
 	Status SchedulingLinkInviteResponseStatus `json:"status"`
 }
@@ -2518,7 +2561,14 @@ type SsoDetectResponse struct {
 	// ProviderName Display name of the SSO provider. Omitted unless type == "sso".
 	ProviderName *string `json:"provider_name,omitempty"`
 
-	// RedirectUrl Relative path `/api/auth/sso/<domain>`. Omitted unless type == "sso".
+	// RedirectUrl Relative path `/api/auth/sso/<domain>` (the email's domain,
+	// lowercased and trimmed, not URL-escaped). Omitted unless
+	// type == "sso". It is a path on the API's origin, not the web app's:
+	// a client resolves it against its API base URL, which may be a
+	// different origin (PAC-35 AC-7). The client appends
+	// `?login_hint=<email>` itself (see `startSsoLogin`); the detection
+	// answer does not carry the email. This is the only field a client
+	// needs to reach SSO; there is no `domain` field (API-010).
 	RedirectUrl *string `json:"redirect_url,omitempty"`
 
 	// Type "generic" for consumer/unparseable domains, "sso" when a provider row
@@ -2637,16 +2687,25 @@ type TeamInvite struct {
 // TeamInviteStatus defines model for TeamInvite.Status.
 type TeamInviteStatus string
 
-// TeamInvitePreview A deliberately narrow projection — NOT a TeamInvite. Built as a map[string]string, so every value is a plain string and a missing team or inviter yields "" rather than null.
+// TeamInvitePreview A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status, invitedBy or createdAt). The three original keys are camelCase and stay so for existing readers; the three keys added by PAC-34 are snake_case, the spelling the PAC-34 acceptance criteria name and the web normalizer reads (see contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and expires_at come from the invite row itself, so they are always present. The team and inviter rows are read separately and a failed read is not an error: teamName and inviterName become "" and inviter_email becomes null.
 type TeamInvitePreview struct {
 	// Email The invitee email the invite was issued to.
 	Email openapi_types.Email `json:"email"`
 
+	// ExpiresAt team_invites.expires_at, RFC 3339 (PAC-34): createdAt + 7 days, computed in Go when the invite was created. A 200 is returned only while the invite is pending and ExpireOldInvites runs first, so a client normally sees a future instant; a client must still treat a past value as expired rather than assume otherwise.
+	ExpiresAt time.Time `json:"expires_at"`
+
 	// InviterName The inviter's DISPLAY NAME, not their email. Empty string when the user row could not be read.
 	InviterName string `json:"inviterName"`
 
+	// InviterEmail The inviter's account email, users.email of team_invites.invited_by (PAC-34). null, never "", when the inviter's user row could not be read. invited_by is NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the invite (404), and null only arises from a failed read.
+	InviterEmail *openapi_types.Email `json:"inviter_email"`
+
 	// TeamName Empty string when the team row could not be read.
 	TeamName string `json:"teamName"`
+
+	// TeamId team_invites.team_id of this invite (PAC-34). Never empty.
+	TeamId openapi_types.UUID `json:"team_id"`
 }
 
 // TeamMember storage.TeamMember, as returned inside TeamDetail.
@@ -2725,16 +2784,16 @@ type UpdateSchedulingLinkRequest struct {
 // UpdateSchedulingLinkRequestUsageType defines model for UpdateSchedulingLinkRequest.UsageType.
 type UpdateSchedulingLinkRequestUsageType string
 
-// UserProfileGoStruct storage.UserProfile marshalled with no json tags — Go field names verbatim. Do not rename these keys in the spec; they are literally what the server sends.
+// UserProfileGoStruct storage.UserProfile with explicit snake_case json tags (PAC-26, API-030); the keys match the user_profiles columns. The schema name is kept from before PAC-26, when the struct had no tags and the keys were the Go field names (`UserID`, `IsManager`, `DetectedAt`, `AnalyticsSharedWithManager`, `UpdatedAt`).
 type UserProfileGoStruct struct {
 	// AnalyticsSharedWithManager Member-side consent flag, defaulting to true. No endpoint in this domain sets it.
-	AnalyticsSharedWithManager bool       `json:"AnalyticsSharedWithManager"`
-	DetectedAt                 *time.Time `json:"DetectedAt"`
-	IsManager                  bool       `json:"IsManager"`
+	AnalyticsSharedWithManager bool       `json:"analytics_shared_with_manager"`
+	DetectedAt                 *time.Time `json:"detected_at"`
+	IsManager                  bool       `json:"is_manager"`
 
 	// UpdatedAt The value read BEFORE the upsert, not the newly written now().
-	UpdatedAt time.Time          `json:"UpdatedAt"`
-	UserID    openapi_types.UUID `json:"UserID"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	UserId    openapi_types.UUID `json:"user_id"`
 }
 
 // WorkingHoursSchedule storage.WorkingHoursSchedule. Replaced WHOLE by a PATCH that mentions it; there is no deep merge (spec AC-9).
@@ -2767,6 +2826,9 @@ type HabitId = openapi_types.UUID
 
 // InviteTokenPath defines model for InviteTokenPath.
 type InviteTokenPath = string
+
+// LoginHint defines model for LoginHint.
+type LoginHint = string
 
 // MemberEmailPath defines model for MemberEmailPath.
 type MemberEmailPath = openapi_types.Email
@@ -2913,22 +2975,110 @@ type SsoOidcCallbackParams struct {
 
 // StartGoogleOAuthParams defines parameters for StartGoogleOAuth.
 type StartGoogleOAuthParams struct {
-	// LoginHint Sent by the frontend (src/components/auth/AuthDialog.tsx) but the Go
-	// handler (authHandlers.startOAuth) reads no query parameters at all,
-	// so it is silently discarded and NOT forwarded to Google.
-	LoginHint *openapi_types.Email `form:"login_hint,omitempty" json:"login_hint,omitempty"`
+	// LoginHint The email the user typed, forwarded to the provider as the OAuth/OIDC
+	// `login_hint` so it can preselect or prefill that account (PAC-35,
+	// API-064). Advisory only (spec PAC-35 D-4): it never selects, creates or
+	// links a Paceday account; the account signed in is the one the provider
+	// authenticates, checked exactly as before.
+	// The LoginHint rule: the value is forwarded only when it is a bare email
+	// address, meaning all of: (1) at most 254 characters; (2) exactly one
+	// `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
+	// name and an `Address` equal to the whole value (so no `<...>`, display
+	// name, comment, whitespace or other extra text); (4) the local part
+	// (before `@`) uses only `A-Z a-z 0-9 . _ + - '` (the apostrophe allows
+	// names such as `o'brien`); (5) the domain (after
+	// `@`) is a DNS hostname: two or more dot-separated labels, each matching
+	// `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
+	// least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
+	// no single-label host (`localhost`). Anything else, including an empty
+	// value, is dropped silently and sign-in starts without a hint. Examples
+	// dropped (spec AC-10, "a hint carrying extra URL parameters"):
+	// `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
+	// `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
+	// `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+	// `o'brien@acme.com`.
+	// When `login_hint` is repeated, only the first value is considered
+	// (`url.Values.Get`); the others are ignored.
+	// It is never a 400: the schema is a plain string on purpose, because a
+	// malformed hint must not stop a sign-in (spec AC-10). The forwarded
+	// value is URL-encoded by the OAuth library, so it cannot add a parameter
+	// to the provider request, and no other query parameter of the start
+	// request is forwarded.
+	LoginHint *LoginHint `form:"login_hint,omitempty" json:"login_hint,omitempty"`
 }
 
 // StartMicrosoftOAuthParams defines parameters for StartMicrosoftOAuth.
 type StartMicrosoftOAuthParams struct {
-	// LoginHint Sent by the frontend; ignored by the handler (same as /api/auth/google).
-	LoginHint *openapi_types.Email `form:"login_hint,omitempty" json:"login_hint,omitempty"`
+	// LoginHint The email the user typed, forwarded to the provider as the OAuth/OIDC
+	// `login_hint` so it can preselect or prefill that account (PAC-35,
+	// API-064). Advisory only (spec PAC-35 D-4): it never selects, creates or
+	// links a Paceday account; the account signed in is the one the provider
+	// authenticates, checked exactly as before.
+	// The LoginHint rule: the value is forwarded only when it is a bare email
+	// address, meaning all of: (1) at most 254 characters; (2) exactly one
+	// `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
+	// name and an `Address` equal to the whole value (so no `<...>`, display
+	// name, comment, whitespace or other extra text); (4) the local part
+	// (before `@`) uses only `A-Z a-z 0-9 . _ + - '` (the apostrophe allows
+	// names such as `o'brien`); (5) the domain (after
+	// `@`) is a DNS hostname: two or more dot-separated labels, each matching
+	// `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
+	// least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
+	// no single-label host (`localhost`). Anything else, including an empty
+	// value, is dropped silently and sign-in starts without a hint. Examples
+	// dropped (spec AC-10, "a hint carrying extra URL parameters"):
+	// `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
+	// `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
+	// `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+	// `o'brien@acme.com`.
+	// When `login_hint` is repeated, only the first value is considered
+	// (`url.Values.Get`); the others are ignored.
+	// It is never a 400: the schema is a plain string on purpose, because a
+	// malformed hint must not stop a sign-in (spec AC-10). The forwarded
+	// value is URL-encoded by the OAuth library, so it cannot add a parameter
+	// to the provider request, and no other query parameter of the start
+	// request is forwarded.
+	LoginHint *LoginHint `form:"login_hint,omitempty" json:"login_hint,omitempty"`
 }
 
 // MicrosoftOAuthCallbackParams defines parameters for MicrosoftOAuthCallback.
 type MicrosoftOAuthCallbackParams struct {
 	State string `form:"state" json:"state"`
 	Code  string `form:"code" json:"code"`
+}
+
+// StartSsoLoginParams defines parameters for StartSsoLogin.
+type StartSsoLoginParams struct {
+	// LoginHint The email the user typed, forwarded to the provider as the OAuth/OIDC
+	// `login_hint` so it can preselect or prefill that account (PAC-35,
+	// API-064). Advisory only (spec PAC-35 D-4): it never selects, creates or
+	// links a Paceday account; the account signed in is the one the provider
+	// authenticates, checked exactly as before.
+	// The LoginHint rule: the value is forwarded only when it is a bare email
+	// address, meaning all of: (1) at most 254 characters; (2) exactly one
+	// `@`; (3) Go's `net/mail.ParseAddress` accepts it with an empty display
+	// name and an `Address` equal to the whole value (so no `<...>`, display
+	// name, comment, whitespace or other extra text); (4) the local part
+	// (before `@`) uses only `A-Z a-z 0-9 . _ + - '` (the apostrophe allows
+	// names such as `o'brien`); (5) the domain (after
+	// `@`) is a DNS hostname: two or more dot-separated labels, each matching
+	// `[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?`, the last one containing at
+	// least one letter, so no IP literal (`[127.0.0.1]` or `127.0.0.1`) and
+	// no single-label host (`localhost`). Anything else, including an empty
+	// value, is dropped silently and sign-in starts without a hint. Examples
+	// dropped (spec AC-10, "a hint carrying extra URL parameters"):
+	// `alice@acme.com&prompt=none`, `alice&prompt=none@acme.com`,
+	// `alice@acme.com?x=y`, `alice@acme.com#frag`, `alice@[127.0.0.1]`,
+	// `alice@localhost`, `alice@acme`. Examples forwarded: `alice@acme.com`,
+	// `o'brien@acme.com`.
+	// When `login_hint` is repeated, only the first value is considered
+	// (`url.Values.Get`); the others are ignored.
+	// It is never a 400: the schema is a plain string on purpose, because a
+	// malformed hint must not stop a sign-in (spec AC-10). The forwarded
+	// value is URL-encoded by the OAuth library, so it cannot add a parameter
+	// to the provider request, and no other query parameter of the start
+	// request is forwarded.
+	LoginHint *LoginHint `form:"login_hint,omitempty" json:"login_hint,omitempty"`
 }
 
 // HandleZoomOAuthCallbackParams defines parameters for HandleZoomOAuthCallback.
@@ -2969,6 +3119,15 @@ type GetCalendarFreeBusyParams struct {
 	// Attendees Comma-separated email addresses, split on "," with no trimming and no validation. An empty or absent value produces an empty email list, which is forwarded to Google as a free/busy query with zero items.
 	Attendees *string `form:"attendees,omitempty" json:"attendees,omitempty"`
 }
+
+// DeleteEventParams defines parameters for DeleteEvent.
+type DeleteEventParams struct {
+	// SendUpdates Whether Google emails the guests about the cancellation. Absent means `none`, which is what every DELETE did before PAC-29. Any other value is a 400 and nothing is deleted.
+	SendUpdates *DeleteEventParamsSendUpdates `form:"send_updates,omitempty" json:"send_updates,omitempty"`
+}
+
+// DeleteEventParamsSendUpdates defines parameters for DeleteEvent.
+type DeleteEventParamsSendUpdates string
 
 // ClearFocusBlocksParams defines parameters for ClearFocusBlocks.
 type ClearFocusBlocksParams struct {
@@ -3618,623 +3777,6 @@ func (a FocusRunRequest) MarshalJSON() ([]byte, error) {
 		object["week"], err = json.Marshal(a.Week)
 		if err != nil {
 			return nil, fmt.Errorf("error marshaling 'week': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleCalendarEvent. Returns the specified
-// element and whether it was found
-func (a GoogleCalendarEvent) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleCalendarEvent
-func (a *GoogleCalendarEvent) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleCalendarEvent to handle AdditionalProperties
-func (a *GoogleCalendarEvent) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["attendees"]; found {
-		err = json.Unmarshal(raw, &a.Attendees)
-		if err != nil {
-			return fmt.Errorf("error reading 'attendees': %w", err)
-		}
-		delete(object, "attendees")
-	}
-
-	if raw, found := object["description"]; found {
-		err = json.Unmarshal(raw, &a.Description)
-		if err != nil {
-			return fmt.Errorf("error reading 'description': %w", err)
-		}
-		delete(object, "description")
-	}
-
-	if raw, found := object["end"]; found {
-		err = json.Unmarshal(raw, &a.End)
-		if err != nil {
-			return fmt.Errorf("error reading 'end': %w", err)
-		}
-		delete(object, "end")
-	}
-
-	if raw, found := object["hangoutLink"]; found {
-		err = json.Unmarshal(raw, &a.HangoutLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'hangoutLink': %w", err)
-		}
-		delete(object, "hangoutLink")
-	}
-
-	if raw, found := object["htmlLink"]; found {
-		err = json.Unmarshal(raw, &a.HtmlLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'htmlLink': %w", err)
-		}
-		delete(object, "htmlLink")
-	}
-
-	if raw, found := object["id"]; found {
-		err = json.Unmarshal(raw, &a.Id)
-		if err != nil {
-			return fmt.Errorf("error reading 'id': %w", err)
-		}
-		delete(object, "id")
-	}
-
-	if raw, found := object["location"]; found {
-		err = json.Unmarshal(raw, &a.Location)
-		if err != nil {
-			return fmt.Errorf("error reading 'location': %w", err)
-		}
-		delete(object, "location")
-	}
-
-	if raw, found := object["start"]; found {
-		err = json.Unmarshal(raw, &a.Start)
-		if err != nil {
-			return fmt.Errorf("error reading 'start': %w", err)
-		}
-		delete(object, "start")
-	}
-
-	if raw, found := object["status"]; found {
-		err = json.Unmarshal(raw, &a.Status)
-		if err != nil {
-			return fmt.Errorf("error reading 'status': %w", err)
-		}
-		delete(object, "status")
-	}
-
-	if raw, found := object["summary"]; found {
-		err = json.Unmarshal(raw, &a.Summary)
-		if err != nil {
-			return fmt.Errorf("error reading 'summary': %w", err)
-		}
-		delete(object, "summary")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleCalendarEvent to handle AdditionalProperties
-func (a GoogleCalendarEvent) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Attendees != nil {
-		object["attendees"], err = json.Marshal(a.Attendees)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'attendees': %w", err)
-		}
-	}
-
-	if a.Description != nil {
-		object["description"], err = json.Marshal(a.Description)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'description': %w", err)
-		}
-	}
-
-	if a.End != nil {
-		object["end"], err = json.Marshal(a.End)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'end': %w", err)
-		}
-	}
-
-	if a.HangoutLink != nil {
-		object["hangoutLink"], err = json.Marshal(a.HangoutLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'hangoutLink': %w", err)
-		}
-	}
-
-	if a.HtmlLink != nil {
-		object["htmlLink"], err = json.Marshal(a.HtmlLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'htmlLink': %w", err)
-		}
-	}
-
-	if a.Id != nil {
-		object["id"], err = json.Marshal(a.Id)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'id': %w", err)
-		}
-	}
-
-	if a.Location != nil {
-		object["location"], err = json.Marshal(a.Location)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'location': %w", err)
-		}
-	}
-
-	if a.Start != nil {
-		object["start"], err = json.Marshal(a.Start)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'start': %w", err)
-		}
-	}
-
-	if a.Status != nil {
-		object["status"], err = json.Marshal(a.Status)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'status': %w", err)
-		}
-	}
-
-	if a.Summary != nil {
-		object["summary"], err = json.Marshal(a.Summary)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'summary': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleCalendarEventRaw. Returns the specified
-// element and whether it was found
-func (a GoogleCalendarEventRaw) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleCalendarEventRaw
-func (a *GoogleCalendarEventRaw) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleCalendarEventRaw to handle AdditionalProperties
-func (a *GoogleCalendarEventRaw) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["attendees"]; found {
-		err = json.Unmarshal(raw, &a.Attendees)
-		if err != nil {
-			return fmt.Errorf("error reading 'attendees': %w", err)
-		}
-		delete(object, "attendees")
-	}
-
-	if raw, found := object["description"]; found {
-		err = json.Unmarshal(raw, &a.Description)
-		if err != nil {
-			return fmt.Errorf("error reading 'description': %w", err)
-		}
-		delete(object, "description")
-	}
-
-	if raw, found := object["end"]; found {
-		err = json.Unmarshal(raw, &a.End)
-		if err != nil {
-			return fmt.Errorf("error reading 'end': %w", err)
-		}
-		delete(object, "end")
-	}
-
-	if raw, found := object["hangoutLink"]; found {
-		err = json.Unmarshal(raw, &a.HangoutLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'hangoutLink': %w", err)
-		}
-		delete(object, "hangoutLink")
-	}
-
-	if raw, found := object["htmlLink"]; found {
-		err = json.Unmarshal(raw, &a.HtmlLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'htmlLink': %w", err)
-		}
-		delete(object, "htmlLink")
-	}
-
-	if raw, found := object["id"]; found {
-		err = json.Unmarshal(raw, &a.Id)
-		if err != nil {
-			return fmt.Errorf("error reading 'id': %w", err)
-		}
-		delete(object, "id")
-	}
-
-	if raw, found := object["location"]; found {
-		err = json.Unmarshal(raw, &a.Location)
-		if err != nil {
-			return fmt.Errorf("error reading 'location': %w", err)
-		}
-		delete(object, "location")
-	}
-
-	if raw, found := object["start"]; found {
-		err = json.Unmarshal(raw, &a.Start)
-		if err != nil {
-			return fmt.Errorf("error reading 'start': %w", err)
-		}
-		delete(object, "start")
-	}
-
-	if raw, found := object["summary"]; found {
-		err = json.Unmarshal(raw, &a.Summary)
-		if err != nil {
-			return fmt.Errorf("error reading 'summary': %w", err)
-		}
-		delete(object, "summary")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleCalendarEventRaw to handle AdditionalProperties
-func (a GoogleCalendarEventRaw) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Attendees != nil {
-		object["attendees"], err = json.Marshal(a.Attendees)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'attendees': %w", err)
-		}
-	}
-
-	if a.Description != nil {
-		object["description"], err = json.Marshal(a.Description)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'description': %w", err)
-		}
-	}
-
-	if a.End != nil {
-		object["end"], err = json.Marshal(a.End)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'end': %w", err)
-		}
-	}
-
-	if a.HangoutLink != nil {
-		object["hangoutLink"], err = json.Marshal(a.HangoutLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'hangoutLink': %w", err)
-		}
-	}
-
-	if a.HtmlLink != nil {
-		object["htmlLink"], err = json.Marshal(a.HtmlLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'htmlLink': %w", err)
-		}
-	}
-
-	if a.Id != nil {
-		object["id"], err = json.Marshal(a.Id)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'id': %w", err)
-		}
-	}
-
-	if a.Location != nil {
-		object["location"], err = json.Marshal(a.Location)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'location': %w", err)
-		}
-	}
-
-	if a.Start != nil {
-		object["start"], err = json.Marshal(a.Start)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'start': %w", err)
-		}
-	}
-
-	if a.Summary != nil {
-		object["summary"], err = json.Marshal(a.Summary)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'summary': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleEventAttendee. Returns the specified
-// element and whether it was found
-func (a GoogleEventAttendee) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleEventAttendee
-func (a *GoogleEventAttendee) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleEventAttendee to handle AdditionalProperties
-func (a *GoogleEventAttendee) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["displayName"]; found {
-		err = json.Unmarshal(raw, &a.DisplayName)
-		if err != nil {
-			return fmt.Errorf("error reading 'displayName': %w", err)
-		}
-		delete(object, "displayName")
-	}
-
-	if raw, found := object["email"]; found {
-		err = json.Unmarshal(raw, &a.Email)
-		if err != nil {
-			return fmt.Errorf("error reading 'email': %w", err)
-		}
-		delete(object, "email")
-	}
-
-	if raw, found := object["optional"]; found {
-		err = json.Unmarshal(raw, &a.Optional)
-		if err != nil {
-			return fmt.Errorf("error reading 'optional': %w", err)
-		}
-		delete(object, "optional")
-	}
-
-	if raw, found := object["organizer"]; found {
-		err = json.Unmarshal(raw, &a.Organizer)
-		if err != nil {
-			return fmt.Errorf("error reading 'organizer': %w", err)
-		}
-		delete(object, "organizer")
-	}
-
-	if raw, found := object["responseStatus"]; found {
-		err = json.Unmarshal(raw, &a.ResponseStatus)
-		if err != nil {
-			return fmt.Errorf("error reading 'responseStatus': %w", err)
-		}
-		delete(object, "responseStatus")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleEventAttendee to handle AdditionalProperties
-func (a GoogleEventAttendee) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.DisplayName != nil {
-		object["displayName"], err = json.Marshal(a.DisplayName)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'displayName': %w", err)
-		}
-	}
-
-	if a.Email != nil {
-		object["email"], err = json.Marshal(a.Email)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'email': %w", err)
-		}
-	}
-
-	if a.Optional != nil {
-		object["optional"], err = json.Marshal(a.Optional)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'optional': %w", err)
-		}
-	}
-
-	if a.Organizer != nil {
-		object["organizer"], err = json.Marshal(a.Organizer)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'organizer': %w", err)
-		}
-	}
-
-	if a.ResponseStatus != nil {
-		object["responseStatus"], err = json.Marshal(a.ResponseStatus)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'responseStatus': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleEventDateTime. Returns the specified
-// element and whether it was found
-func (a GoogleEventDateTime) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleEventDateTime
-func (a *GoogleEventDateTime) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleEventDateTime to handle AdditionalProperties
-func (a *GoogleEventDateTime) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["date"]; found {
-		err = json.Unmarshal(raw, &a.Date)
-		if err != nil {
-			return fmt.Errorf("error reading 'date': %w", err)
-		}
-		delete(object, "date")
-	}
-
-	if raw, found := object["dateTime"]; found {
-		err = json.Unmarshal(raw, &a.DateTime)
-		if err != nil {
-			return fmt.Errorf("error reading 'dateTime': %w", err)
-		}
-		delete(object, "dateTime")
-	}
-
-	if raw, found := object["timeZone"]; found {
-		err = json.Unmarshal(raw, &a.TimeZone)
-		if err != nil {
-			return fmt.Errorf("error reading 'timeZone': %w", err)
-		}
-		delete(object, "timeZone")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleEventDateTime to handle AdditionalProperties
-func (a GoogleEventDateTime) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Date != nil {
-		object["date"], err = json.Marshal(a.Date)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'date': %w", err)
-		}
-	}
-
-	if a.DateTime != nil {
-		object["dateTime"], err = json.Marshal(a.DateTime)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'dateTime': %w", err)
-		}
-	}
-
-	if a.TimeZone != nil {
-		object["timeZone"], err = json.Marshal(a.TimeZone)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'timeZone': %w", err)
 		}
 	}
 
@@ -5298,7 +4840,7 @@ type ServerInterface interface {
 	// Detect which auth provider an email address should use
 	// (POST /api/auth/detect)
 	DetectAuthProvider(w http.ResponseWriter, r *http.Request)
-	// Delete the stored calendar OAuth token and clear the session cookie
+	// Disconnect the caller's Google calendar (the session is kept)
 	// (DELETE /api/auth/disconnect)
 	DisconnectCalendar(w http.ResponseWriter, r *http.Request)
 	// Begin Google OAuth
@@ -5318,7 +4860,7 @@ type ServerInterface interface {
 	MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Request, params MicrosoftOAuthCallbackParams)
 	// Begin OIDC SSO login for a configured domain
 	// (GET /api/auth/sso/{domain})
-	StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string)
+	StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams)
 	// Calendar connection status for the current session
 	// (GET /api/auth/status)
 	GetAuthStatus(w http.ResponseWriter, r *http.Request)
@@ -5354,7 +4896,7 @@ type ServerInterface interface {
 	DisconnectZoom(w http.ResponseWriter, r *http.Request)
 	// Delete a Google Calendar event
 	// (DELETE /api/events/{id})
-	DeleteEvent(w http.ResponseWriter, r *http.Request, id string)
+	DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams)
 	// Partially update a Google Calendar event
 	// (PATCH /api/events/{id})
 	PatchEvent(w http.ResponseWriter, r *http.Request, id string)
@@ -5697,7 +5239,7 @@ func (_ Unimplemented) DetectAuthProvider(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Delete the stored calendar OAuth token and clear the session cookie
+// Disconnect the caller's Google calendar (the session is kept)
 // (DELETE /api/auth/disconnect)
 func (_ Unimplemented) DisconnectCalendar(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -5735,7 +5277,7 @@ func (_ Unimplemented) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Req
 
 // Begin OIDC SSO login for a configured domain
 // (GET /api/auth/sso/{domain})
-func (_ Unimplemented) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string) {
+func (_ Unimplemented) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -5807,7 +5349,7 @@ func (_ Unimplemented) DisconnectZoom(w http.ResponseWriter, r *http.Request) {
 
 // Delete a Google Calendar event
 // (DELETE /api/events/{id})
-func (_ Unimplemented) DeleteEvent(w http.ResponseWriter, r *http.Request, id string) {
+func (_ Unimplemented) DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6926,8 +6468,19 @@ func (siw *ServerInterfaceWrapper) StartSsoLogin(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params StartSsoLoginParams
+
+	// ------------- Optional query parameter "login_hint" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "login_hint", r.URL.Query(), &params.LoginHint)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "login_hint", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.StartSsoLogin(w, r, domain)
+		siw.Handler.StartSsoLogin(w, r, domain, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -7328,8 +6881,19 @@ func (siw *ServerInterfaceWrapper) DeleteEvent(w http.ResponseWriter, r *http.Re
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteEventParams
+
+	// ------------- Optional query parameter "send_updates" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "send_updates", r.URL.Query(), &params.SendUpdates)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "send_updates", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteEvent(w, r, id)
+		siw.Handler.DeleteEvent(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10972,6 +10536,16 @@ func (response SsoOidcCallback400TextResponse) VisitSsoOidcCallbackResponse(w ht
 	return err
 }
 
+type SsoOidcCallback403TextResponse PlainTextError
+
+func (response SsoOidcCallback403TextResponse) VisitSsoOidcCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(403)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
 type SsoOidcCallback404JSONResponse ErrorResponse
 
 func (response SsoOidcCallback404JSONResponse) VisitSsoOidcCallbackResponse(w http.ResponseWriter) error {
@@ -11041,16 +10615,10 @@ type DisconnectCalendarResponseObject interface {
 	VisitDisconnectCalendarResponse(w http.ResponseWriter) error
 }
 
-type DisconnectCalendar204ResponseHeaders struct {
-	SetCookie string
-}
-
 type DisconnectCalendar204Response struct {
-	Headers DisconnectCalendar204ResponseHeaders
 }
 
 func (response DisconnectCalendar204Response) VisitDisconnectCalendarResponse(w http.ResponseWriter) error {
-	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
 	w.WriteHeader(204)
 	return nil
 }
@@ -11063,6 +10631,15 @@ func (response DisconnectCalendar401TextResponse) VisitDisconnectCalendarRespons
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DisconnectCalendar409JSONResponse CalendarDisconnectUnsupported
+
+func (response DisconnectCalendar409JSONResponse) VisitDisconnectCalendarResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DisconnectCalendar500JSONResponse ErrorResponse
@@ -11105,17 +10682,17 @@ type LogoutResponseObject interface {
 	VisitLogoutResponse(w http.ResponseWriter) error
 }
 
-type Logout200ResponseHeaders struct {
+type Logout204ResponseHeaders struct {
 	SetCookie string
 }
 
-type Logout200Response struct {
-	Headers Logout200ResponseHeaders
+type Logout204Response struct {
+	Headers Logout204ResponseHeaders
 }
 
-func (response Logout200Response) VisitLogoutResponse(w http.ResponseWriter) error {
+func (response Logout204Response) VisitLogoutResponse(w http.ResponseWriter) error {
 	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
-	w.WriteHeader(200)
+	w.WriteHeader(204)
 	return nil
 }
 
@@ -11241,15 +10818,6 @@ func (response MicrosoftOAuthCallback500JSONResponse) VisitMicrosoftOAuthCallbac
 	return json.NewEncoder(w).Encode(response)
 }
 
-type MicrosoftOAuthCallback502JSONResponse ErrorResponse
-
-func (response MicrosoftOAuthCallback502JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(502)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
 type MicrosoftOAuthCallback503JSONResponse ErrorResponse
 
 func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
@@ -11261,6 +10829,7 @@ func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbac
 
 type StartSsoLoginRequestObject struct {
 	Domain string `json:"domain"`
+	Params StartSsoLoginParams
 }
 
 type StartSsoLoginResponseObject interface {
@@ -11826,7 +11395,8 @@ func (response DisconnectZoom500JSONResponse) VisitDisconnectZoomResponse(w http
 }
 
 type DeleteEventRequestObject struct {
-	Id string `json:"id"`
+	Id     string `json:"id"`
+	Params DeleteEventParams
 }
 
 type DeleteEventResponseObject interface {
@@ -11839,6 +11409,15 @@ type DeleteEvent204Response struct {
 func (response DeleteEvent204Response) VisitDeleteEventResponse(w http.ResponseWriter) error {
 	w.WriteHeader(204)
 	return nil
+}
+
+type DeleteEvent400JSONResponse ErrorResponse
+
+func (response DeleteEvent400JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteEvent401JSONResponse CalendarNotConnectedError
@@ -11860,6 +11439,15 @@ func (response DeleteEvent401TextResponse) VisitDeleteEventResponse(w http.Respo
 	return err
 }
 
+type DeleteEvent404JSONResponse ErrorResponse
+
+func (response DeleteEvent404JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteEvent500JSONResponse ErrorResponse
 
 func (response DeleteEvent500JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
@@ -11878,7 +11466,7 @@ type PatchEventResponseObject interface {
 	VisitPatchEventResponse(w http.ResponseWriter) error
 }
 
-type PatchEvent200JSONResponse GoogleCalendarEventRaw
+type PatchEvent200JSONResponse CalendarEvent
 
 func (response PatchEvent200JSONResponse) VisitPatchEventResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -13644,7 +13232,7 @@ type ConfirmNaturalLanguageResponseObject interface {
 	VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error
 }
 
-type ConfirmNaturalLanguage200JSONResponse GoogleCalendarEvent
+type ConfirmNaturalLanguage200JSONResponse CalendarEvent
 
 func (response ConfirmNaturalLanguage200JSONResponse) VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -14226,7 +13814,7 @@ type CreateScheduledMeetingResponseObject interface {
 	VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error
 }
 
-type CreateScheduledMeeting200JSONResponse GoogleCalendarEvent
+type CreateScheduledMeeting200JSONResponse CalendarEvent
 
 func (response CreateScheduledMeeting200JSONResponse) VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -14497,6 +14085,15 @@ func (response AcceptSchedulingLinkHostInvite401TextResponse) VisitAcceptSchedul
 	return err
 }
 
+type AcceptSchedulingLinkHostInvite404JSONResponse BookingError
+
+func (response AcceptSchedulingLinkHostInvite404JSONResponse) VisitAcceptSchedulingLinkHostInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type AcceptSchedulingLinkHostInvite500JSONResponse BookingError
 
 func (response AcceptSchedulingLinkHostInvite500JSONResponse) VisitAcceptSchedulingLinkHostInviteResponse(w http.ResponseWriter) error {
@@ -14540,6 +14137,15 @@ func (response DeclineSchedulingLinkHostInvite401TextResponse) VisitDeclineSched
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DeclineSchedulingLinkHostInvite404JSONResponse BookingError
+
+func (response DeclineSchedulingLinkHostInvite404JSONResponse) VisitDeclineSchedulingLinkHostInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeclineSchedulingLinkHostInvite500JSONResponse BookingError
@@ -14822,6 +14428,15 @@ func (response AcceptSchedulingLinkInviteByLink401TextResponse) VisitAcceptSched
 	return err
 }
 
+type AcceptSchedulingLinkInviteByLink404JSONResponse BookingError
+
+func (response AcceptSchedulingLinkInviteByLink404JSONResponse) VisitAcceptSchedulingLinkInviteByLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type AcceptSchedulingLinkInviteByLink500JSONResponse BookingError
 
 func (response AcceptSchedulingLinkInviteByLink500JSONResponse) VisitAcceptSchedulingLinkInviteByLinkResponse(w http.ResponseWriter) error {
@@ -14928,6 +14543,15 @@ func (response DeclineSchedulingLinkInviteByLink401TextResponse) VisitDeclineSch
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type DeclineSchedulingLinkInviteByLink404JSONResponse BookingError
+
+func (response DeclineSchedulingLinkInviteByLink404JSONResponse) VisitDeclineSchedulingLinkInviteByLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeclineSchedulingLinkInviteByLink500JSONResponse BookingError
@@ -16012,7 +15636,7 @@ type StrictServerInterface interface {
 	// Detect which auth provider an email address should use
 	// (POST /api/auth/detect)
 	DetectAuthProvider(ctx context.Context, request DetectAuthProviderRequestObject) (DetectAuthProviderResponseObject, error)
-	// Delete the stored calendar OAuth token and clear the session cookie
+	// Disconnect the caller's Google calendar (the session is kept)
 	// (DELETE /api/auth/disconnect)
 	DisconnectCalendar(ctx context.Context, request DisconnectCalendarRequestObject) (DisconnectCalendarResponseObject, error)
 	// Begin Google OAuth
@@ -16834,10 +16458,11 @@ func (sh *strictHandler) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.R
 }
 
 // StartSsoLogin operation middleware
-func (sh *strictHandler) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string) {
+func (sh *strictHandler) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams) {
 	var request StartSsoLoginRequestObject
 
 	request.Domain = domain
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.StartSsoLogin(ctx, request.(StartSsoLoginRequestObject))
@@ -17151,10 +16776,11 @@ func (sh *strictHandler) DisconnectZoom(w http.ResponseWriter, r *http.Request) 
 }
 
 // DeleteEvent operation middleware
-func (sh *strictHandler) DeleteEvent(w http.ResponseWriter, r *http.Request, id string) {
+func (sh *strictHandler) DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams) {
 	var request DeleteEventRequestObject
 
 	request.Id = id
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.DeleteEvent(ctx, request.(DeleteEventRequestObject))

@@ -11,11 +11,11 @@ import (
 // ── UserProfile ───────────────────────────────────────────────────────────────
 
 type UserProfile struct {
-	UserID                     uuid.UUID
-	IsManager                  bool
-	DetectedAt                 *time.Time
-	AnalyticsSharedWithManager bool
-	UpdatedAt                  time.Time
+	UserID                     uuid.UUID  `json:"user_id"`
+	IsManager                  bool       `json:"is_manager"`
+	DetectedAt                 *time.Time `json:"detected_at"`
+	AnalyticsSharedWithManager bool       `json:"analytics_shared_with_manager"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
 }
 
 func GetOrCreateUserProfile(db *sql.DB, userID uuid.UUID) (*UserProfile, error) {
@@ -55,17 +55,17 @@ func UpsertUserProfile(db *sql.DB, p *UserProfile) error {
 // ── ManagerTeamMember ────────────────────────────────────────────────────────────────
 
 type ManagerTeamMember struct {
-	ID                uuid.UUID
-	ManagerUserID     uuid.UUID
-	MemberEmail       string
-	MemberUserID      *uuid.UUID
-	DisplayName       string
-	Source            string // "auto" | "manual"
-	Cadence           string // "weekly" | "biweekly" | "monthly" | "custom" | "none"
-	CadenceCustomDays *int
-	LastOneOnOneAt    *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                uuid.UUID  `json:"id"`
+	ManagerUserID     uuid.UUID  `json:"manager_user_id"`
+	MemberEmail       string     `json:"member_email"`
+	MemberUserID      *uuid.UUID `json:"member_user_id"`
+	DisplayName       string     `json:"display_name"`
+	Source            string     `json:"source"`  // "auto" | "manual"
+	Cadence           string     `json:"cadence"` // "weekly" | "biweekly" | "monthly" | "custom" | "none"
+	CadenceCustomDays *int       `json:"cadence_custom_days"`
+	LastOneOnOneAt    *time.Time `json:"last_one_on_one_at"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type sqlExecutor interface {

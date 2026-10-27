@@ -20,20 +20,31 @@ type MicrosoftConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+	// Endpoint overrides Microsoft's authorization and token URLs when set;
+	// the zero value means Microsoft's common endpoint. Tests point it at a
+	// local fake provider.
+	Endpoint oauth2.Endpoint
 }
 
 func (c *MicrosoftConfig) oauthConfig() *oauth2.Config {
+	endpoint := microsoftEndpoint
+	if c.Endpoint.AuthURL != "" {
+		endpoint = c.Endpoint
+	}
 	return &oauth2.Config{
 		ClientID:     c.ClientID,
 		ClientSecret: c.ClientSecret,
 		RedirectURL:  c.RedirectURL,
 		Scopes:       []string{"Calendars.ReadWrite", "User.Read", "offline_access"},
-		Endpoint:     microsoftEndpoint,
+		Endpoint:     endpoint,
 	}
 }
 
-func GetMicrosoftAuthURL(cfg *MicrosoftConfig, state string) string {
-	return cfg.oauthConfig().AuthCodeURL(state, oauth2.AccessTypeOffline)
+// GetMicrosoftAuthURL builds Microsoft's consent URL. A non-empty loginHint
+// (already checked with ValidLoginHint) is sent as login_hint (PAC-35).
+func GetMicrosoftAuthURL(cfg *MicrosoftConfig, state, loginHint string) string {
+	opts := append([]oauth2.AuthCodeOption{oauth2.AccessTypeOffline}, loginHintOption(loginHint)...)
+	return cfg.oauthConfig().AuthCodeURL(state, opts...)
 }
 
 func ExchangeMicrosoftCode(ctx context.Context, cfg *MicrosoftConfig, code string) (*oauth2.Token, error) {

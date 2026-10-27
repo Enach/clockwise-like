@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 
 import { exec, query, waitForSchema, closePool } from '../db';
 import { isoDate, mondayOf, DAY_MS } from '../lib/dates';
-import { CONNECTED, LINKS, PERSONAL_CALENDAR, SEAM_LINK, TEAMS, USERS } from './ids';
+import { CONNECTED, DISCONNECTING, LINKS, PERSONAL_CALENDAR, SEAM_LINK, TEAMS, USERS } from './ids';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -51,7 +51,7 @@ export async function seed(): Promise<void> {
  */
 async function verify(): Promise<void> {
   const checks: Array<[string, string, unknown[], number]> = [
-    ['users', 'SELECT 1 FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], 9],
+    ['users', 'SELECT 1 FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], 10],
     ['teams', 'SELECT 1 FROM teams WHERE name LIKE $1', ['E2E %'], 4],
     [
       'team members',
@@ -104,6 +104,14 @@ async function verify(): Promise<void> {
         WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
       [Object.values(CONNECTED).map((u) => u.id)],
       5,
+    ],
+    // PAC-35 AC-11: the disconnect journey's own user starts connected.
+    [
+      'the disconnecting user has one unexpired token',
+      `SELECT 1 FROM oauth_tokens
+        WHERE user_id = $1 AND expiry > NOW() + interval '1 year'`,
+      [DISCONNECTING.id],
+      1,
     ],
     [
       'the seam user has one google personal calendar',

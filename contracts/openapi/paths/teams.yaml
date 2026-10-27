@@ -52,9 +52,10 @@ paths:
       responses:
         "200":
           description: >
-            The persisted storage.UserProfile Go struct. That struct carries NO json
-            tags, so encoding/json emits Go field names in PascalCase. This is
-            inconsistent with the snake_case GET response on the same path.
+            The storage.UserProfile Go struct, with explicit snake_case json tags since
+            PAC-26 (API-030). Before PAC-26 the struct had no tags and the keys were
+            PascalCase. The shape still differs from the GET response on the same
+            path (GET is a summary with team_member_count; POST is the profile row).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/UserProfileGoStruct" }
@@ -216,10 +217,16 @@ paths:
       responses:
         "201":
           description: >
-            The in-memory storage.ManagerTeamMember Go struct. It has NO json tags, so the
-            body is PascalCase and its `ID`/`CreatedAt`/`UpdatedAt` are the Go zero values
-            (all-zero UUID, "0001-01-01T00:00:00Z") because the upsert does not read the
-            row back. Clients must re-fetch the roster instead of using this body.
+            The member row as stored, read back after the upsert commits (PAC-26,
+            API-031), as storage.ManagerTeamMember with explicit snake_case json tags
+            (API-030). Without `team_id` it is the global manager_team_members row; with
+            `team_id` it is that row seen through this team's assignment (display name
+            override, assignment cadence and cadence_custom_days), exactly as
+            patchManagerTeamMember returns it. `id`, `created_at` and `updated_at` are
+            the stored values. Before PAC-26 the body was the pre-insert struct in
+            PascalCase with the zero UUID and "0001-01-01T00:00:00Z" timestamps. If the
+            read-back fails the response is the 500 below, although the upsert has
+            committed; the upsert is idempotent, so a retry is safe.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ManagerTeamMemberGoStruct" }
@@ -296,15 +303,14 @@ paths:
       responses:
         "200":
           description: >
-            The re-read storage.ManagerTeamMember, PascalCase (no json tags). The read
-            error is discarded, so this body can legitimately be the JSON literal `null`
-            when the re-read fails.
+            The re-read storage.ManagerTeamMember, with explicit snake_case json tags
+            since PAC-26 (API-030). Never `null`: since PAC-26 (API-032) a failed
+            re-read is the 500 below instead of a 200 whose body is the JSON literal
+            `null`. The patch has committed when that 500 is sent.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/ManagerTeamMemberGoStruct"
-                  - type: "null"
+                $ref: "#/components/schemas/ManagerTeamMemberGoStruct"
         "400":
           description: JSON error — "team_id must be a valid UUID" or "invalid JSON".
           content:
@@ -419,6 +425,13 @@ paths:
         caller owns at least one team that member belongs to; otherwise every bucket is zeroes
         with data_available=false, whatever the route or `team_id` that put the member on the
         caller's list. External (non-Paceday) members are unaffected (FreeBusy).
+        PAC-34 (API-022): each member also carries is_paceday_user (same derivation as the
+        roster's) and a member-level data_available that is true iff at least one of its 12
+        buckets has data_available=true. A client must render a bucket with
+        data_available=false, and a member with data_available=false, as "no data", never as
+        zero minutes. Neither field widens visibility: is_paceday_user is already on the
+        roster for the same caller and members, and data_available is derived only from the
+        buckets this response already returns.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
         - name: week
@@ -499,10 +512,15 @@ paths:
       tags: [teams]
       summary: Preview a pending team invite by token.
       description: >
-        Despite the "(public)" comment on the handler, this route is registered inside the
-        requireAuth group and therefore requires a valid JWT. Calls ExpireOldInvites first,
-        so an invite past expires_at is reported as 410 "invite is expired" rather than 200.
-        The response deliberately omits team_id, token and expires_at.
+        Registered inside the requireAuth group and therefore requires a valid JWT. The
+        handler comment says "(public)", which is wrong (API-089); PAC-34 corrects the
+        comment, not the routing. Calls ExpireOldInvites first, so an invite past
+        expires_at is reported as 410 "invite is expired" rather than 200.
+        PAC-34 (API-021): the 200 also carries team_id, expires_at and inviter_email, so the
+        invite page can show who invited the caller and when the link expires. The audience
+        is unchanged: any authenticated caller holding the token, as before (the invitee
+        email is checked on accept, not on preview). The token is still not echoed; the
+        caller already has it in the path.
       parameters:
         - $ref: "#/components/parameters/InviteTokenPath"
       responses:
@@ -602,14 +620,13 @@ paths:
       responses:
         "200":
           description: >
-            The re-read team. GetTeam's error is discarded, so the body can be the JSON
-            literal `null` on a read failure even though the rename committed.
+            The re-read team. Never `null`: since PAC-26 (API-032) a failed re-read is
+            the 500 `internal error` below instead of a 200 whose body is the JSON
+            literal `null`. The rename has committed when that 500 is sent.
           content:
             application/json:
               schema:
-                oneOf:
-                  - $ref: "#/components/schemas/Team"
-                  - type: "null"
+                $ref: "#/components/schemas/Team"
         "400":
           description: JSON error "invalid team id" or "name is required".
           content:
@@ -1060,64 +1077,70 @@ components:
     UserProfileGoStruct:
       type: object
       description: >
-        storage.UserProfile marshalled with no json tags — Go field names verbatim. Do not
-        rename these keys in the spec; they are literally what the server sends.
+        storage.UserProfile with explicit snake_case json tags (PAC-26, API-030); the keys
+        match the user_profiles columns. The schema name is kept from before PAC-26, when
+        the struct had no tags and the keys were the Go field names (`UserID`,
+        `IsManager`, `DetectedAt`, `AnalyticsSharedWithManager`, `UpdatedAt`).
       properties:
-        UserID: { type: string, format: uuid }
-        IsManager: { type: boolean }
-        DetectedAt:
+        user_id: { type: string, format: uuid }
+        is_manager: { type: boolean }
+        detected_at:
           type: [string, "null"]
           format: date-time
-        AnalyticsSharedWithManager:
+        analytics_shared_with_manager:
           type: boolean
           description: Member-side consent flag, defaulting to true. No endpoint in this domain sets it.
-        UpdatedAt:
+        updated_at:
           type: string
           format: date-time
           description: The value read BEFORE the upsert, not the newly written now().
-      required: [UserID, IsManager, DetectedAt, AnalyticsSharedWithManager, UpdatedAt]
+      required: [user_id, is_manager, detected_at, analytics_shared_with_manager, updated_at]
       additionalProperties: false
 
     ManagerTeamMemberGoStruct:
       type: object
       description: >
-        storage.ManagerTeamMember marshalled with no json tags — Go field names verbatim.
-        Returned by addManagerTeamMember (201) and patchManagerTeamMember (200).
+        storage.ManagerTeamMember with explicit snake_case json tags (PAC-26, API-030); the
+        keys match the manager_team_members columns. Returned by addManagerTeamMember (201)
+        and patchManagerTeamMember (200), both read back from storage after the write. The
+        schema name is kept from before PAC-26, when the struct had no tags and the keys
+        were the Go field names (`ID`, `ManagerUserID`, `MemberEmail`, ...). Note the key
+        is `member_email` here but `email` on ManagerRosterMember: this is the stored row,
+        the roster is a view.
       properties:
-        ID:
+        id:
           type: string
           format: uuid
           description: >
-            On the 201 add response this is the zero UUID
-            "00000000-0000-0000-0000-000000000000" because the struct is echoed back
-            without re-reading the row.
-        ManagerUserID: { type: string, format: uuid }
-        MemberEmail: { type: string, format: email }
-        MemberUserID:
+            The stored row id. Since PAC-26 (API-031) never the zero UUID on the 201 add
+            response.
+        manager_user_id: { type: string, format: uuid }
+        member_email: { type: string, format: email }
+        member_user_id:
           type: [string, "null"]
           format: uuid
           description: Set when the email matches a Paceday user; null for external members.
-        DisplayName: { type: string }
-        Source: { $ref: "#/components/schemas/ManagerMemberSource" }
-        Cadence: { $ref: "#/components/schemas/Cadence" }
-        CadenceCustomDays:
+        display_name: { type: string }
+        source: { $ref: "#/components/schemas/ManagerMemberSource" }
+        cadence: { $ref: "#/components/schemas/Cadence" }
+        cadence_custom_days:
           type: [integer, "null"]
           minimum: 1
           maximum: 365
-        LastOneOnOneAt:
+        last_one_on_one_at:
           type: [string, "null"]
           format: date-time
-        CreatedAt:
+        created_at:
           type: string
           format: date-time
-          description: Zero value "0001-01-01T00:00:00Z" on the 201 add response.
-        UpdatedAt:
+          description: Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
+        updated_at:
           type: string
           format: date-time
-          description: Zero value "0001-01-01T00:00:00Z" on the 201 add response.
+          description: Stored value; since PAC-26 (API-031) never "0001-01-01T00:00:00Z".
       required:
-        [ID, ManagerUserID, MemberEmail, MemberUserID, DisplayName, Source, Cadence,
-         CadenceCustomDays, LastOneOnOneAt, CreatedAt, UpdatedAt]
+        [id, manager_user_id, member_email, member_user_id, display_name, source, cadence,
+         cadence_custom_days, last_one_on_one_at, created_at, updated_at]
       additionalProperties: false
 
     AddManagerMemberRequest:
@@ -1366,13 +1389,28 @@ components:
       properties:
         email: { type: string, format: email }
         display_name: { type: string }
+        is_paceday_user:
+          type: boolean
+          description: >
+            True iff the member's member_user_id resolved to a Paceday user row; the same
+            value ManagerRosterMember.is_paceday_user carries for this member (PAC-34).
+        data_available:
+          type: boolean
+          description: >
+            True iff at least one entry of `weeks` has data_available=true (PAC-34). Derived
+            from the buckets of this response, never read or cached separately, so it cannot
+            disagree with them. False means no bucket is measured (degraded FreeBusy, no
+            analytics_weeks rows, consent withheld, or the PAC-60 visibility gate): the
+            member's minutes must be shown as "no data", not as zeroes. True does NOT mean
+            every bucket is measured; each bucket's own data_available still decides how
+            that bucket is drawn.
         weeks:
           type: array
           minItems: 12
           maxItems: 12
           description: Exactly 12 buckets, newest first.
           items: { $ref: "#/components/schemas/ManagerAnalyticsWeek" }
-      required: [email, display_name, weeks]
+      required: [email, display_name, is_paceday_user, data_available, weeks]
       additionalProperties: false
 
     ManagerAnalytics:
@@ -1497,9 +1535,14 @@ components:
     TeamInvitePreview:
       type: object
       description: >
-        A deliberately narrow projection — NOT a TeamInvite. Built as a map[string]string,
-        so every value is a plain string and a missing team or inviter yields "" rather
-        than null.
+        A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status,
+        invitedBy or createdAt). The three original keys are camelCase and stay so for
+        existing readers; the three keys added by PAC-34 are snake_case, the spelling the
+        PAC-34 acceptance criteria name and the web normalizer reads (see
+        contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and
+        expires_at come from the invite row itself, so they are always present. The team
+        and inviter rows are read separately and a failed read is not an error: teamName
+        and inviterName become "" and inviter_email becomes null.
       properties:
         teamName:
           type: string
@@ -1513,7 +1556,27 @@ components:
           type: string
           format: email
           description: The invitee email the invite was issued to.
-      required: [teamName, inviterName, email]
+        team_id:
+          type: string
+          format: uuid
+          description: team_invites.team_id of this invite (PAC-34). Never empty.
+        expires_at:
+          type: string
+          format: date-time
+          description: >
+            team_invites.expires_at, RFC 3339 (PAC-34): createdAt + 7 days, computed in Go
+            when the invite was created. A 200 is returned only while the invite is pending
+            and ExpireOldInvites runs first, so a client normally sees a future instant; a
+            client must still treat a past value as expired rather than assume otherwise.
+        inviter_email:
+          type: [string, "null"]
+          format: email
+          description: >
+            The inviter's account email, users.email of team_invites.invited_by (PAC-34).
+            null, never "", when the inviter's user row could not be read. invited_by is
+            NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the invite (404),
+            and null only arises from a failed read.
+      required: [teamName, inviterName, email, team_id, expires_at, inviter_email]
       additionalProperties: false
 
     NoMeetingZoneRequest:

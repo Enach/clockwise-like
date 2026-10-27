@@ -140,7 +140,12 @@ func (h *teamHandlers) patchTeam(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "patchTeam", err, http.StatusInternalServerError)
 		return
 	}
-	team, _ := storage.GetTeam(h.db, teamID)
+	// A failed re-read is a 500, never 200 null (PAC-26, API-032, D-3).
+	team, err := readTeam(h.db, teamID)
+	if err != nil {
+		writeServerError(w, r, "patchTeam", err, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(team)
 }
@@ -212,7 +217,8 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(invite)
 }
 
-// GET /api/teams/invites/:token (public)
+// GET /api/teams/invites/:token (authenticated: mounted behind requireAuth; any
+// signed-in holder of the token may preview the invite, API-089)
 func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	_ = storage.ExpireOldInvites(h.db)
@@ -236,15 +242,36 @@ func (h *teamHandlers) getInvite(w http.ResponseWriter, r *http.Request) {
 		teamName = team.Name
 	}
 	inviterName := ""
+	// inviter_email is null, never "", when the inviter row cannot be read or
+	// holds no email, so the contract's format: email holds (PAC-34 D-4).
+	var inviterEmail *string
 	if inviter != nil {
 		inviterName = inviter.Name
+		if inviter.Email != "" {
+			inviterEmail = &inviter.Email
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"teamName":    teamName,
-		"inviterName": inviterName,
-		"email":       invite.InviteeEmail,
+	_ = json.NewEncoder(w).Encode(teamInvitePreview{
+		TeamName:     teamName,
+		InviterName:  inviterName,
+		Email:        invite.InviteeEmail,
+		TeamID:       invite.TeamID,
+		ExpiresAt:    invite.ExpiresAt,
+		InviterEmail: inviterEmail,
 	})
+}
+
+// teamInvitePreview is the GET /api/teams/invites/{token} body (TeamInvitePreview).
+// The three camelCase keys predate the contract and are kept; the snake_case
+// keys were added by PAC-34 (D-3).
+type teamInvitePreview struct {
+	TeamName     string    `json:"teamName"`
+	InviterName  string    `json:"inviterName"`
+	Email        string    `json:"email"`
+	TeamID       uuid.UUID `json:"team_id"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	InviterEmail *string   `json:"inviter_email"`
 }
 
 // POST /api/teams/invites/:token/accept
