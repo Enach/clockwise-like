@@ -2279,3 +2279,183 @@ and re-read every citation the moved files touch. The web app was read at
   - web: `EventEditForm.tsx:95,122` → `134,160`.
 - Earlier challenge and revision sections keep the line numbers they were
   written against (`7de7044`/`4ded854`). They are a record, not live citations.
+
+## Challenge — 2026-10-27 (round 5)
+
+Reviewed by `spec-challenger` against the committed spec at `b9e29d3` (Revision 4)
+on `factory/pac-47-spec`. The code was read on `main` at `6d751f9` (api) and
+`ad52160` (web), which are still the tips of both `main` branches. I also read
+Linear PAC-67, the accepted PAC-67 spec (`origin/factory/pac-67-spec`, PR #231)
+and its open backend PR (`origin/impl/pac-67-credential-lifecycle-backend`,
+PR #232), because Revision 4 makes claims about what PAC-67 owns. I read no
+author reasoning beyond this file. I compiled and ran nothing, because this is a
+text-only stage.
+
+Revision 4 answers both round-4 blocking findings inside this spec. D-17 and
+AC-3j to AC-3l state what a sign-in does to the work calendar, AC-4i pins the
+interim, and AC-4g carries its release note. Every re-anchored citation I
+re-opened holds (list below). Two findings block. The first is a conflict with
+PAC-67, which is now an accepted spec with an implementation under review. The
+second is an inconsistency that D-17 sharpens.
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **D-17 contradicts PAC-67, which is accepted and being built, and §5 misstates
+   what PAC-67 owns.**
+   - PAC-67's accepted spec keeps the overwrite. D-4 says "The sign-in provider
+     reset (OQ-5) is left as is". AC-19, under the heading "Provider flip
+     (kept)", says: "Given A's and B's calendar providers are Google, when A
+     completes a Microsoft sign-in, then A's calendar provider is Outlook". That
+     is the scenario of this spec's AC-3k, with the opposite outcome.
+   - Open PR #232 implements it.
+     `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller`
+     (`backend/api/pac67_conferencing_test.go:320-359` on
+     `impl/pac-67-credential-lifecycle-backend`) seeds alice with provider
+     Google and a Microsoft credential (`seedOutlook` does not touch the provider,
+     `pac67_world_test.go:99-104`). It then completes a Microsoft callback as
+     alice and asserts `status(alice).provider == "outlook"`. Under D-17 alice is
+     an existing user on the default, and AC-3k requires her to stay Google.
+     Whichever PR merges second goes red, or someone deletes the other spec's
+     test to make it green.
+   - Round 4 said "PAC-67 item 4 asks only that the overwrite be scoped to the
+     caller". That is true of the Linear issue text, but PAC-67's spec went
+     further and pinned the overwrite. Revision 4 did not check the spec.
+   - §5 ("Who owns which criterion") says that PAC-67 "owns only refresh,
+     revocation and the audit entry", and that this spec owns "not connected for
+     a dead Outlook credential". PAC-67's accepted AC-8(b) also requires every
+     status surface to report not connected after a loss. PR #232's commit
+     `911d990` is titled "usable status". Both specs now claim that criterion,
+     and §5's division of ownership is wrong as written. PAC-67 also owns
+     an Outlook disconnect (its AC-13), which affects OQ-4 (non-blocking 1).
+
+   *Resolves when* the spec names PAC-67 D-4/AC-19 and that test, and states
+   how the two are reconciled. One option: D-17 changes PAC-67's AC-19 test as
+   a recorded product change in the PR that builds D-17 (never a skip or a
+   deletion), and §6 lists that test beside the three fixtures already named.
+   The other: D-17 yields to PAC-67 D-4 and records the cost. Either way the
+   reconciliation is recorded in PAC-67's spec, or flagged to it. §5 must
+   restate who owns the "not connected after loss" criterion against PAC-67's
+   AC-8(b) as accepted. The owner question it raises is listed below as OWNER.
+
+2. **AC-3i requires an outcome that §3.3 and D-17 forbid for the same request,
+   or §3.3 hides a second change to sign-in.**
+   - The product starts a Microsoft sign-in and a Microsoft connect with the same
+     request: a top-level `GET /api/auth/microsoft`. See `AuthDialog.tsx:79`
+     ("Continue with Microsoft") and `:102`, and `client.ts:1004-1005`
+     (`authConnectUrl("outlook")`). A link on another site makes exactly that
+     request (`routes.go:35`, no `requireAuth`; the handler reads no session,
+     `handlers_microsoft_auth.go:17-38`).
+   - §3.3 says: "The action that started a flow decides whether it is a connect
+     or a sign-in." It also says: "Only those connect actions attach." A flow
+     started by a link on another site is not a connect action. If it is a
+     sign-in, D-17 says it signs the browser in as the Microsoft account's user
+     and that "the Microsoft credential that the sign-in obtains is still stored
+     on that user".
+   - AC-3i requires that A holds no Microsoft credential *and* that no other
+     Paceday user's credential changes. It does not name the Microsoft account's
+     email:
+     - If the email is A's (the realistic case: the victim's own Microsoft
+       session), a sign-in stores the credential on A, and AC-3i fails.
+     - If it is another existing user's, a sign-in changes that user's
+       credential, and AC-3i fails.
+     - If it belongs to nobody, a sign-in creates a user who holds a credential.
+       AC-3i does not say whether that counts.
+   - AC-3i does not say what happens to the session either.
+   - The only reading under which AC-3i holds is that a flow started outside the
+     product is neither a connect nor a sign-in. That requires the server to
+     tell the product's sign-in page apart from any other GET of the same URL.
+     That is a second change to signing in, and it also applies with nobody
+     signed in. It contradicts D-17 ("This is the one change to signing in") and
+     §6 ("Signing in with Microsoft with nobody signed in still signs in ... as
+     today"), and it affects every way a Microsoft sign-in can be started other
+     than the dialog's buttons.
+
+   *Resolves when* §3.3 states what a Microsoft flow started from outside the
+   product does: it is either a sign-in, or it is credited to nobody and changes
+   no session. AC-3i must then name the Microsoft account's email (A's own, and
+   another existing user's) and assert the session outcome. If such a flow is
+   not a sign-in, D-17's "one change" sentence and §6 must list that second
+   change, and an AC must check that a sign-in from the product's sign-in page
+   with nobody signed in still works.
+
+### Non-blocking
+
+1. **OQ-4 and §5 are stale against PAC-67.** They say that disconnect for an
+   Outlook user is left to "PAC-35's OQ-5 (a follow-up issue)". PAC-67's
+   accepted AC-13 adds an Outlook disconnect that clears the caller's Microsoft
+   credential, and PR #232 builds it. After that disconnect, the user's status
+   must read not connected under §3.2, and the connect actions of AC-3d must
+   lead back to Microsoft. Point OQ-4 at PAC-67, and say that §3.9's
+   "disconnect message" wording also covers PAC-67's new disconnect.
+2. **AC-3e's Given does not make three of its four runs reachable.** "A signed
+   in with Google" means A holds a Google credential. With the work calendar on
+   its default, A is then connected. Onboarding skips its connect step
+   (`Onboarding.tsx:57-70`), and the dashboard's not-connected prompt is not
+   shown. The status card's and the prompt's actions lead to the chosen
+   calendar, which is Google (AC-3d). For the onboarding and both dashboard
+   runs, the Given must say that A's work calendar is already Outlook and not
+   connected. Otherwise the test author has to invent that precondition.
+3. **The release gate names PAC-67 by its release.** PR #232 is open, so
+   "released" will happen soon. Say whether "released" means merged to `main`
+   or deployed (README §2, stage 7). The skip comments and the AC-4i
+   retirement depend on that.
+
+### Questions for the owner (non-blocking)
+
+- OWNER: D-17 (this spec) and PAC-67 D-4 answer the same question in opposite
+  ways: whether a Microsoft sign-in resets an existing user's work calendar to
+  Outlook. Both are "assumed by the factory". The owner should choose one, or
+  confirm D-17's more conservative answer, before either implementation merges.
+- OWNER: should a Microsoft flow started from outside the product (a link on
+  another site, with or without a session) still sign the browser in? See
+  Blocking 2. The factory can pick the conservative option, but it changes
+  sign-in for everyone.
+
+### Criteria I could not falsify
+
+- AC-3i, as written (Blocking 2): for each choice of Microsoft email, either a
+  sign-in implementation fails it while satisfying §3.3/D-17, or the outcome is
+  undefined.
+- AC-3h, AC-3j, AC-4i, AC-8d, AC-7 and the §6 items are labelled as regression
+  guards or gates, and they are correctly labelled.
+- AC-3k and AC-3l fail today, as the spec says: `microsoft_oauth.go:79` sets
+  `calendar_provider = 'outlook'` on every completion. They will also fail
+  against PR #232's own test (Blocking 1).
+- Every other criterion has a test that fails today and passes afterwards. I
+  did not find a new gap in the criteria that Revision 4 left unchanged.
+
+### Citations I checked and found wrong
+
+- §5: "PAC-67 ... owns only refresh, revocation and the audit entry". In fact
+  PAC-67's accepted spec also owns status after a loss (AC-8(b)) and keeps the
+  provider overwrite (D-4, AC-19) (Blocking 1).
+- Round 4's "PAC-67 item 4 asks only that the overwrite be scoped" is true of
+  the Linear issue, but not of PAC-67's spec (Blocking 1).
+- These citations match `main` (`6d751f9` / `ad52160`):
+  - api: `handlers_microsoft_auth.go:17-84,41-46,64,69,74,79,86-90,129`;
+    `microsoft_oauth.go:14-17,23-41,60-81,79`; `handlers_auth.go:110-161`,
+    `:126-133`, `:134-139`, `:140-160`, `:172-195`; `routes.go:35-36`;
+    `handlers_events.go:27-35,252-266`; `handlers_schedule.go:168,170`.
+  - web: `Dashboard.tsx:282,448-455,467-470,592`;
+    `ConnectionStatus.tsx:17-19,24,71`; `WorkCalendarConnection.tsx:22,83,129-136`;
+    `AuthDialog.tsx:79,102`; `Index.tsx:587`; `client.ts:982-984,1004-1005,1469,1483`;
+    `EventEditForm.tsx:134,160`.
+  - The only writer of `calendar_provider` outside the Settings save is
+    `microsoft_oauth.go:79`. D-17's premise holds.
+
+### Consumers this breaks
+
+- clockwise-like (PR #232, `impl/pac-67-credential-lifecycle-backend`)
+  `backend/api/pac67_conferencing_test.go:320-359`: this test asserts that an
+  existing Google user becomes Outlook after a Microsoft sign-in, which D-17
+  forbids (Blocking 1). The PAC-67 spec's AC-19 pins the same outcome.
+- clockwise-like `backend/api/pac24_scope_test.go:132,156` and
+  `backend/api/pac35_auth_flows_test.go:645`: these are already named in §6.
+  PR #232 keeps `pac35_auth_flows_test.go:645` on `SaveMicrosoftToken`, so the
+  §6 adaptation applies there too.
+- smart-calendar-flow `src/components/auth/AuthDialog.tsx:79,102`: if Blocking 2
+  is resolved by making only product-started flows sign in, these starts must
+  change too, because today they are indistinguishable from a link on another
+  site.
