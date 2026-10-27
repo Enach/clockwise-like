@@ -525,7 +525,7 @@ type AnalyticsWeekRow struct {
 	FocusScore  int `json:"focus_score"`
 	FreeMinutes int `json:"free_minutes"`
 
-	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058; was a 0..1 fraction): `completed / (scheduled + completed) * 100`, 0 when there are none, not rounded. Equal to the single-week value for the same stored week. Rows stored before PAC-42 are reported on this scale too: storage keeps the 0..1 fraction for every week and the scale is applied on read (spec D-3).
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058; reported unscaled before PAC-42): `completed / (scheduled + completed) * 100`, 0 when there are none, not rounded. Equal to the single-week value for the same stored week. Rows stored before PAC-42 are reported on this scale too: storage keeps the unscaled ratio for every week and the multiplication by 100 is applied on read (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -563,7 +563,7 @@ type AnalyticsWeekWithBreakdown struct {
 	// FreeMinutes total_working − meeting − focus − habit − personal, floored at 0.
 	FreeMinutes int `json:"free_minutes"`
 
-	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058: the same scale as `focus_score` and `breakdown[].percentage` in this response): `completed / (scheduled + completed) * 100` over the week's occurrences. 0 when there are none. Not rounded. Storage keeps the 0..1 fraction; the scale is applied when the response is built (spec D-3).
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058: the same scale as `focus_score` and `breakdown[].percentage` in this response): `completed / (scheduled + completed) * 100` over the week's occurrences. 0 when there are none. Not rounded. Storage keeps the unscaled ratio; the multiplication by 100 is applied when the response is built (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
