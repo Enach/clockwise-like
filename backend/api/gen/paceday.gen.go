@@ -6635,14 +6635,6 @@ func (siw *ServerInterfaceWrapper) CreatePublicBooking(w http.ResponseWriter, r 
 		return
 	}
 
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreatePublicBooking(w, r, slug)
 	}))
