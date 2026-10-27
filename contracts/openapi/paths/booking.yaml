@@ -79,12 +79,16 @@ paths:
             "invalid end time, use RFC3339" (`end` is not RFC3339); "duration does not
             match end time"; "invalid duration"; "end must be after start". For a
             request whose `end` is at or before its `start`: when the stated duration
-            (`duration` if present, even 0, else `duration_minutes`) is non-zero and
-            differs from end minus start in whole minutes the answer is "duration does
-            not match end time", otherwise "invalid duration". "end must be after
-            start" is reached when no `end` is sent and the link's duration is so large
-            (>= 153,722,868 minutes) that start + duration overflows to before start;
-            the contract sets no maximum on duration options (PAC-40 AC-20a, OQ-6).
+            (`duration` if present and not null, even 0, else `duration_minutes`) is
+            non-zero and differs from end minus start in whole minutes the answer is
+            "duration does not match end time", otherwise "invalid duration". "end must
+            be after start" is reached when no `end` is sent and start + the duration,
+            computed as a wrapping int64 nanosecond product, lands at or before start.
+            That happens for some duration options of 153,722,868 minutes or more (for
+            example 153,722,868-307,445,734) but not all: 307,445,735-461,168,601, for
+            example, wrap to an end after start and are not rejected by this check (the
+            request then goes on to the later checks with that wrapped end). The
+            contract sets no maximum on duration options (PAC-40 AC-20a, OQ-6).
             PAC-40 removes two unreachable re-checks (API-073) without changing any of
             these answers.
           content:
@@ -670,8 +674,11 @@ paths:
         its host rows are kept (D-2) and its slug stays reserved (D-3), but from then on
         the link does not exist through the API: it is absent from
         `listSchedulingLinks` and from the co-host invite list, and every operation that
-        names it by id or slug answers the same 404 as an id or slug that never existed,
-        for every caller (D-4, D-9). There is no un-delete; PATCH `active: true` cannot
+        names it by id, and every public operation that names it by slug
+        (`/api/book/{slug}` and its slots), answers the same 404 as an id or slug that
+        never existed, for every caller (D-4, D-9). Creating or patching another link to
+        its slug is still a 409 "slug already exists" (D-3), so a signed-in user can
+        learn that the slug was once used. There is no un-delete; PATCH `active: true` cannot
         bring it back. Its bookings still make their hosts busy. Deleting a link that
         is already deleted is a 404, not a 204. Pausing (PATCH `active: false`) is a
         different state and keeps the link visible. Links that were inactive before
@@ -1550,11 +1557,15 @@ components:
           type: integer
           minimum: 0
           description: >-
-            Number of bookings ever made on this link, cancelled ones included, so it
-            never goes down when a booking is cancelled (PAC-40 D-6, API-051). Bookings
-            made before PAC-40 count under the same rule (D-8). Exhaustion (410 on the
-            public paths) is judged on this figure. Whether it is stored or derived is
-            not part of the contract.
+            Number of booking rows stored for this link, whatever their status, so
+            cancelled bookings are included and the figure never goes down when a
+            booking is cancelled (PAC-40 D-6, API-051). Bookings made before PAC-40 count
+            under the same rule (D-8). Exhaustion (410 on the public paths) is judged on
+            this figure. No product path removes a booking row (cancel keeps it, delete
+            of a link is a soft delete, D-2), so through the API the figure only grows.
+            A row removed outside the product (e2e teardown, a manual database edit) is
+            no longer counted (PAC-40 C-3). Whether the server stores or computes the
+            figure is not part of the contract, provided it equals this count.
         active:
           type: boolean
           description: >-
@@ -1619,6 +1630,7 @@ components:
             duration.
         duration_options:
           type: array
+          nullable: true
           description: >-
             Canonical spelling. Wins over `durations` whenever it is carried (present
             and not null), even as `[]`, which is then a 422 "at least one duration is
@@ -1629,12 +1641,14 @@ components:
             minimum: 1
         durations:
           type: array
+          nullable: true
           description: Alias for duration_options, used only when duration_options is absent or null.
           items:
             type: integer
             minimum: 1
         days_of_week:
           type: array
+          nullable: true
           description: >-
             Canonical spelling, 0=Sunday..6=Saturday. Wins over `days` whenever it is
             carried (present and not null), even as `[]` (then a 422). Defaults to
@@ -1645,6 +1659,7 @@ components:
             maximum: 6
         days:
           type: array
+          nullable: true
           description: >-
             Alias for days_of_week, used only when days_of_week is absent or null. Accepts
             "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently
@@ -1653,20 +1668,28 @@ components:
             type: string
         window_start_time:
           type: string
-          description: Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00".
+          nullable: true
+          description: >-
+            Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00". An explicit
+            null is the same as absent (the server decodes it to the empty string).
           example: '09:00'
         window_start:
           type: string
+          nullable: true
           description: >-
             Alias, used only when window_start_time is absent, null or the empty string.
             Not covered by PAC-40's precedence rule: PATCH treats an empty canonical
             value differently (PAC-40 D-10, OQ-7).
         window_end_time:
           type: string
-          description: Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00".
+          nullable: true
+          description: >-
+            Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00". An explicit
+            null is the same as absent (the server decodes it to the empty string).
           example: '17:00'
         window_end:
           type: string
+          nullable: true
           description: >-
             Alias, used only when window_end_time is absent, null or the empty string.
             Not covered by PAC-40's precedence rule (D-10, OQ-7).
@@ -1720,6 +1743,7 @@ components:
           description: Normalised. If it normalises to empty the request is a 422 "slug cannot be empty".
         duration_options:
           type: array
+          nullable: true
           description: >-
             Canonical spelling. When carried (present and not null) it wins over
             `durations`, as on create (PAC-40 D-5, API-049); `[]` counts as carried and
@@ -1728,6 +1752,7 @@ components:
             type: integer
         durations:
           type: array
+          nullable: true
           description: >-
             Alias for duration_options, applied only when duration_options is absent or
             null. Ignored when duration_options is carried (PAC-40; before PAC-40 the
@@ -1736,6 +1761,7 @@ components:
             type: integer
         days_of_week:
           type: array
+          nullable: true
           description: >-
             Canonical spelling. When carried (present and not null) it wins over `days`,
             as on create (PAC-40 D-5); `[]` counts as carried and fails 422.
@@ -1745,6 +1771,7 @@ components:
             maximum: 6
         days:
           type: array
+          nullable: true
           description: >-
             Alias for days_of_week, applied only when days_of_week is absent or null.
             Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won
