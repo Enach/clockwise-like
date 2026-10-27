@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **119**
+- operations: **120**
 - generated: **0**
-- handwritten: **119**
+- handwritten: **120**
 
 ## Register
 
@@ -64,6 +64,7 @@ from the contract and any edit is reported as drift.
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
 | microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | |
+| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | handwritten | |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |
 | getHealth                         | GET    | /api/health                                     | auth             | handwritten | |
