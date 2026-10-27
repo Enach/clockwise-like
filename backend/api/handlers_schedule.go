@@ -212,7 +212,7 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 	storage.WriteAuditLog(h.db, userIDFromCtx(r.Context()), "meeting_created", `{"event_id":"`+created.Id+`","title":"`+body.Title+`"}`)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(created)
+	_ = json.NewEncoder(w).Encode(toCalendarEventDTO(created))
 }
 
 // writeCreateMeetingFailure answers a failed SmartScheduler.CreateMeeting. The

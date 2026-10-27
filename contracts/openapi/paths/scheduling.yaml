@@ -351,9 +351,12 @@ paths:
         creation once the weekly allowance is spent - that refusal surfaces as a
         500 with the text `out-of-hours meeting allowance reached`, not a 4xx.
         On success an audit row `meeting_created` is written.
-        The response body is the raw Google Calendar API
-        `calendar/v3.Event` struct as returned by the calendar client - it is
-        NOT normalised into the app's own event shape.
+        The response body is the created event flattened by toCalendarEventDTO:
+        the CalendarEvent DTO, the same shape as one element of
+        GET /api/calendar/events, never Google's own keys (`summary`,
+        `start.dateTime`, `hangoutLink`). PAC-29 (API-017, U-14): until PAC-29's
+        implementation lands the server still encodes the raw `calendar/v3.Event`
+        here, so this response describes the server after that PR.
       requestBody:
         required: true
         content:
@@ -362,11 +365,14 @@ paths:
               $ref: '#/components/schemas/ScheduleCreateRequest'
       responses:
         '200':
-          description: The created Google Calendar event.
+          description: >-
+            The created event as the CalendarEvent DTO (PAC-29). Room resource
+            attendees are dropped from `attendees` / `attendee_details`, as in the
+            list; `attendees` is omitted when there are none.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleCalendarEvent'
+                $ref: '#/components/schemas/CalendarEvent'
         '400':
           description: >
             `invalid JSON`, or `invalid start or end (use RFC3339)` - JSON error
@@ -439,7 +445,11 @@ paths:
         and `suggested_slots[selected_slot_index]` are used; `duration_minutes`,
         `range_start`, `range_end`, `preferred_times` and `avoid_times` are
         ignored here. On success an audit row `nlp_confirmed` is written and the
-        raw Google Calendar event is returned.
+        created event is returned as the CalendarEvent DTO (toCalendarEventDTO, the
+        same shape as GET /api/calendar/events), never Google's own keys. PAC-29
+        (API-017, U-14): until PAC-29's implementation lands the server still encodes
+        the raw `calendar/v3.Event` here, so this response describes the server
+        after that PR.
         A NEGATIVE `selected_slot_index` is a 400 `invalid selected_slot_index`, like
         an index past the end. Before PAC-21 was finished it passed the bounds check,
         indexed the slice out of range and panicked; the panic was re-raised by
@@ -455,11 +465,14 @@ paths:
               $ref: '#/components/schemas/NLPConfirmRequest'
       responses:
         '200':
-          description: The created Google Calendar event.
+          description: >-
+            The created event as the CalendarEvent DTO (PAC-29). Room resource
+            attendees are dropped from `attendees` / `attendee_details`, as in the
+            list; `attendees` is omitted when there are none.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleCalendarEvent'
+                $ref: '#/components/schemas/CalendarEvent'
         '400':
           description: >
             `invalid JSON`, or `invalid selected_slot_index` (empty slot list,
@@ -1429,74 +1442,6 @@ components:
       required: [start, end]
       additionalProperties: true
 
-    GoogleCalendarEvent:
-      type: object
-      description: >
-        The raw `google.golang.org/api/calendar/v3.Event` returned by the
-        calendar client and re-encoded as-is. Only the members this repo sets or
-        reads are listed; the real payload carries the full Google Calendar
-        event resource and omits empty fields (the generated struct uses
-        `omitempty` almost everywhere).
-      x-uncertain: >
-        This schema is deliberately open (`additionalProperties: true`) and
-        partial. The exact member set is fixed by the vendored Google API client
-        version, not by this repo. A human should decide whether the contract
-        pins a normalised subset instead of leaking the vendor struct.
-      properties:
-        id:
-          type: string
-        summary:
-          type: string
-        description:
-          type: string
-        location:
-          type: string
-        status:
-          type: string
-        htmlLink:
-          type: string
-        hangoutLink:
-          type: string
-        start:
-          $ref: '#/components/schemas/GoogleEventDateTime'
-        end:
-          $ref: '#/components/schemas/GoogleEventDateTime'
-        attendees:
-          type: array
-          items:
-            $ref: '#/components/schemas/GoogleEventAttendee'
-      additionalProperties: true
-
-    GoogleEventDateTime:
-      type: object
-      description: calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-      properties:
-        dateTime:
-          type: string
-          format: date-time
-        date:
-          type: string
-          format: date
-        timeZone:
-          type: string
-      additionalProperties: true
-
-    GoogleEventAttendee:
-      type: object
-      description: calendar/v3.EventAttendee. This repo only ever sets `email`.
-      properties:
-        email:
-          type: string
-          format: email
-        displayName:
-          type: string
-        organizer:
-          type: boolean
-        responseStatus:
-          type: string
-        optional:
-          type: boolean
-      additionalProperties: true
 
     # ------------------------------------------------------------------- nlp
 

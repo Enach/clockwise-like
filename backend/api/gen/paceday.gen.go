@@ -149,6 +149,12 @@ const (
 	DailyRecapSettingsSendToDm      DailyRecapSettingsSendTo = "dm"
 )
 
+// Defines values for EventPatchRequestSendUpdates.
+const (
+	EventPatchRequestSendUpdatesAll  EventPatchRequestSendUpdates = "all"
+	EventPatchRequestSendUpdatesNone EventPatchRequestSendUpdates = "none"
+)
+
 // Defines values for FreeBusyLegacyResultCoverage.
 const (
 	FreeBusyLegacyResultCoverageKnown   FreeBusyLegacyResultCoverage = "known"
@@ -436,6 +442,12 @@ const (
 	Empty   WorkingHoursScheduleMode = ""
 )
 
+// Defines values for DeleteEventParamsSendUpdates.
+const (
+	DeleteEventParamsSendUpdatesAll  DeleteEventParamsSendUpdates = "all"
+	DeleteEventParamsSendUpdatesNone DeleteEventParamsSendUpdates = "none"
+)
+
 // AddEventConferenceRequest POST /api/events/{id}/conference.
 type AddEventConferenceRequest struct {
 	// Provider Lowercased and trimmed. `custom` and `google_meet` are handled inline; `zoom` and `teams` go through the provider factory; anything else is a 400 from the factory.
@@ -692,7 +704,7 @@ type CalendarDisconnectUnsupportedError string
 // CalendarDisconnectUnsupportedProvider The caller's calendar provider, as `getAuthStatus` reports it.
 type CalendarDisconnectUnsupportedProvider string
 
-// CalendarEvent api.calendarEventDTO — the flattened event shape returned by GET /api/calendar/events.
+// CalendarEvent api.calendarEventDTO, built by toCalendarEventDTO — the flattened event shape returned by GET /api/calendar/events (one per array element) and, since PAC-29, as the whole 200 body of PATCH /api/events/{id}, POST /api/schedule/create and POST /api/nlp/confirm. One converter, so the four operations cannot disagree about the same event.
 type CalendarEvent struct {
 	// AttendeeDetails Parallel to `attendees`, same ordering and same filtering. Omitted when empty.
 	AttendeeDetails *[]CalendarEventAttendee `json:"attendee_details,omitempty"`
@@ -715,7 +727,7 @@ type CalendarEvent struct {
 	// Id Google Calendar event id. Always present as a key; may be "".
 	Id string `json:"id"`
 
-	// IsPersonalBlock Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO, so it is always omitted from responses from this endpoint.
+	// IsPersonalBlock Declared on the DTO with `omitempty` but NEVER SET by toCalendarEventDTO, so it is always omitted from every response that carries this schema (the events list and, since PAC-29, PATCH /api/events/{id}, POST /api/schedule/create and POST /api/nlp/confirm).
 	IsPersonalBlock *bool `json:"is_personal_block,omitempty"`
 
 	// Location Omitted when empty.
@@ -1072,22 +1084,34 @@ type EventConferenceLink struct {
 	Url      string `json:"url"`
 }
 
-// EventPatchRequest Body of PATCH /api/events/{id}. Every field is optional; only non-null fields are applied. Unknown keys are silently ignored by encoding/json.
+// EventPatchRequest Body of PATCH /api/events/{id}. Every field is optional; null or absent leaves the corresponding part of the event unchanged. Since PAC-29 the schema declares every key the web client sends (`send_updates`, `room_resource_email`, `attendee_details`, API-018). The server's decoder still ignores undeclared keys; the contract forbids them so a generated client cannot send a key that would be a silent no-op.
 type EventPatchRequest struct {
-	// Attendees FULL REPLACEMENT of the attendee list with email-only entries. Sending `[]` clears all attendees, including room resources.
+	// AttendeeDetails Accepted and ignored by the server. Declared because the web client sends it alongside `attendees` on every edit (API-018). Who attends comes from `attendees`; existing attendees keep their names and RSVPs from Google (see `attendees`); a client never sets another person's RSVP. PAC-29 decision D-7.
+	AttendeeDetails *[]map[string]interface{} `json:"attendee_details"`
+
+	// Attendees Replaces the event's NON-ROOM attendees with this list (emails compared case-insensitively, duplicates collapsed). An email already on the event keeps its existing Google attendee entry (display name, RSVP, organizer, optional); a new email is added as an email-only entry. Room resource attendees already on the event (`resource: true` or `*@resource.calendar.google.com`) are always kept, so writing back the list GET /api/calendar/events returned (which omits rooms) does not drop the room. `[]` removes every non-room attendee. The two room rules differ on purpose: the DTO hides only the `*@resource.calendar.google.com` suffix, so a `resource: true` attendee without that suffix is shown as an ordinary guest, yet PATCH still keeps it if the client leaves it out. The difference can only keep an attendee, never drop one. PAC-29, API-044: before PAC-29 this replaced the whole list with email-only entries, dropping names, RSVPs and the room.
 	Attendees   *[]openapi_types.Email `json:"attendees"`
 	Description *string                `json:"description"`
 
-	// End Same handling as `start`.
-	End      *time.Time `json:"end"`
-	Location *string    `json:"location"`
+	// End Same handling as `start`. For a bare date this is Google's exclusive end date, as in CalendarEvent.end.
+	End      *string `json:"end"`
+	Location *string `json:"location"`
 
-	// Start Decoded as Go time.Time (RFC3339) and re-emitted as UTC RFC3339 in `start.dateTime`. Setting this on an all-day event converts it to a timed event.
-	Start *time.Time `json:"start"`
+	// RoomResourceEmail A Google room resource calendar address (as returned by GET /api/rooms). When non-empty and not already an attendee, the room is added as a resource attendee. Rooms already on the event are kept: this endpoint never removes a room (PAC-29 decision D-6). Null, absent or `""` leaves the rooms unchanged. A non-empty value that is not a `*@resource.calendar.google.com` address is a 400. PAC-29, API-018.
+	RoomResourceEmail *string `json:"room_resource_email"`
+
+	// SendUpdates Passed to Google's update call as `sendUpdates`: `all` emails the guests about the change, `none` does not. Null or absent means `none`, which is what every PATCH did before PAC-29. Any other value is a 400 and nothing is written. PAC-29, API-018.
+	SendUpdates *EventPatchRequestSendUpdates `json:"send_updates"`
+
+	// Start Either an RFC3339 date-time, written as Google `start.dateTime` in UTC (the event becomes or stays timed), or a bare `YYYY-MM-DD` date, written as Google `start.date` (the event becomes or stays all-day). The same dual format as CalendarEvent.start, so a client can write back what it read. PAC-29, API-043: before PAC-29 only a date-time was accepted and an all-day event was always converted to a timed one. After applying the patch, start and end must be of the same kind or the request is a 400.
+	Start *string `json:"start"`
 
 	// Title Maps to Google `summary`. Null or absent leaves it unchanged.
 	Title *string `json:"title"`
 }
+
+// EventPatchRequestSendUpdates Passed to Google's update call as `sendUpdates`: `all` emails the guests about the change, `none` does not. Null or absent means `none`, which is what every PATCH did before PAC-29. Any other value is a 400 and nothing is written. PAC-29, API-018.
+type EventPatchRequestSendUpdates string
 
 // FocusBlockRecord storage.FocusBlock (backend/storage/models.go), with explicit snake_case json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and the web app's FocusBlock type. Before PAC-26 the struct had no tags and the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`, `CreatedAt`.
 type FocusBlockRecord struct {
@@ -1191,59 +1215,6 @@ type FreeBusyQueryResponse struct {
 type FreeBusyWindow struct {
 	End   time.Time `json:"end"`
 	Start time.Time `json:"start"`
-}
-
-// GoogleCalendarEvent The raw `google.golang.org/api/calendar/v3.Event` returned by the calendar client and re-encoded as-is. Only the members this repo sets or reads are listed; the real payload carries the full Google Calendar event resource and omits empty fields (the generated struct uses `omitempty` almost everywhere).
-type GoogleCalendarEvent struct {
-	Attendees   *[]GoogleEventAttendee `json:"attendees,omitempty"`
-	Description *string                `json:"description,omitempty"`
-
-	// End calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-	End         *GoogleEventDateTime `json:"end,omitempty"`
-	HangoutLink *string              `json:"hangoutLink,omitempty"`
-	HtmlLink    *string              `json:"htmlLink,omitempty"`
-	Id          *string              `json:"id,omitempty"`
-	Location    *string              `json:"location,omitempty"`
-
-	// Start calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-	Start                *GoogleEventDateTime   `json:"start,omitempty"`
-	Status               *string                `json:"status,omitempty"`
-	Summary              *string                `json:"summary,omitempty"`
-	AdditionalProperties map[string]interface{} `json:"-"`
-}
-
-// GoogleCalendarEventRaw The raw google.golang.org/api/calendar/v3.Event returned unmodified by PATCH /api/events/{id}. Its keys are Google's own camelCase API names (`summary`, `start.dateTime`, `htmlLink`, `hangoutLink`, `attendees[].responseStatus`, …), not the CalendarEvent shape. Only the most load-bearing fields are listed; the object carries the full Google event payload.
-type GoogleCalendarEventRaw struct {
-	Attendees   *[]map[string]interface{} `json:"attendees,omitempty"`
-	Description *string                   `json:"description,omitempty"`
-	End         *map[string]interface{}   `json:"end,omitempty"`
-	HangoutLink *string                   `json:"hangoutLink,omitempty"`
-	HtmlLink    *string                   `json:"htmlLink,omitempty"`
-	Id          *string                   `json:"id,omitempty"`
-	Location    *string                   `json:"location,omitempty"`
-
-	// Start Google EventDateTime — has `dateTime`, `date` and/or `timeZone`.
-	Start                *map[string]interface{} `json:"start,omitempty"`
-	Summary              *string                 `json:"summary,omitempty"`
-	AdditionalProperties map[string]interface{}  `json:"-"`
-}
-
-// GoogleEventAttendee calendar/v3.EventAttendee. This repo only ever sets `email`.
-type GoogleEventAttendee struct {
-	DisplayName          *string                `json:"displayName,omitempty"`
-	Email                *openapi_types.Email   `json:"email,omitempty"`
-	Optional             *bool                  `json:"optional,omitempty"`
-	Organizer            *bool                  `json:"organizer,omitempty"`
-	ResponseStatus       *string                `json:"responseStatus,omitempty"`
-	AdditionalProperties map[string]interface{} `json:"-"`
-}
-
-// GoogleEventDateTime calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-type GoogleEventDateTime struct {
-	Date                 *openapi_types.Date    `json:"date,omitempty"`
-	DateTime             *time.Time             `json:"dateTime,omitempty"`
-	TimeZone             *string                `json:"timeZone,omitempty"`
-	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
 // Habit storage.Habit. Every field is emitted — no `omitempty` anywhere on this struct.
@@ -3135,6 +3106,15 @@ type GetCalendarFreeBusyParams struct {
 	Attendees *string `form:"attendees,omitempty" json:"attendees,omitempty"`
 }
 
+// DeleteEventParams defines parameters for DeleteEvent.
+type DeleteEventParams struct {
+	// SendUpdates Whether Google emails the guests about the cancellation. Absent means `none`, which is what every DELETE did before PAC-29. Any other value is a 400 and nothing is deleted.
+	SendUpdates *DeleteEventParamsSendUpdates `form:"send_updates,omitempty" json:"send_updates,omitempty"`
+}
+
+// DeleteEventParamsSendUpdates defines parameters for DeleteEvent.
+type DeleteEventParamsSendUpdates string
+
 // ClearFocusBlocksParams defines parameters for ClearFocusBlocks.
 type ClearFocusBlocksParams struct {
 	// Week Week anchor date, `YYYY-MM-DD`. Omitted -> `time.Now()`.
@@ -3783,623 +3763,6 @@ func (a FocusRunRequest) MarshalJSON() ([]byte, error) {
 		object["week"], err = json.Marshal(a.Week)
 		if err != nil {
 			return nil, fmt.Errorf("error marshaling 'week': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleCalendarEvent. Returns the specified
-// element and whether it was found
-func (a GoogleCalendarEvent) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleCalendarEvent
-func (a *GoogleCalendarEvent) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleCalendarEvent to handle AdditionalProperties
-func (a *GoogleCalendarEvent) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["attendees"]; found {
-		err = json.Unmarshal(raw, &a.Attendees)
-		if err != nil {
-			return fmt.Errorf("error reading 'attendees': %w", err)
-		}
-		delete(object, "attendees")
-	}
-
-	if raw, found := object["description"]; found {
-		err = json.Unmarshal(raw, &a.Description)
-		if err != nil {
-			return fmt.Errorf("error reading 'description': %w", err)
-		}
-		delete(object, "description")
-	}
-
-	if raw, found := object["end"]; found {
-		err = json.Unmarshal(raw, &a.End)
-		if err != nil {
-			return fmt.Errorf("error reading 'end': %w", err)
-		}
-		delete(object, "end")
-	}
-
-	if raw, found := object["hangoutLink"]; found {
-		err = json.Unmarshal(raw, &a.HangoutLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'hangoutLink': %w", err)
-		}
-		delete(object, "hangoutLink")
-	}
-
-	if raw, found := object["htmlLink"]; found {
-		err = json.Unmarshal(raw, &a.HtmlLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'htmlLink': %w", err)
-		}
-		delete(object, "htmlLink")
-	}
-
-	if raw, found := object["id"]; found {
-		err = json.Unmarshal(raw, &a.Id)
-		if err != nil {
-			return fmt.Errorf("error reading 'id': %w", err)
-		}
-		delete(object, "id")
-	}
-
-	if raw, found := object["location"]; found {
-		err = json.Unmarshal(raw, &a.Location)
-		if err != nil {
-			return fmt.Errorf("error reading 'location': %w", err)
-		}
-		delete(object, "location")
-	}
-
-	if raw, found := object["start"]; found {
-		err = json.Unmarshal(raw, &a.Start)
-		if err != nil {
-			return fmt.Errorf("error reading 'start': %w", err)
-		}
-		delete(object, "start")
-	}
-
-	if raw, found := object["status"]; found {
-		err = json.Unmarshal(raw, &a.Status)
-		if err != nil {
-			return fmt.Errorf("error reading 'status': %w", err)
-		}
-		delete(object, "status")
-	}
-
-	if raw, found := object["summary"]; found {
-		err = json.Unmarshal(raw, &a.Summary)
-		if err != nil {
-			return fmt.Errorf("error reading 'summary': %w", err)
-		}
-		delete(object, "summary")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleCalendarEvent to handle AdditionalProperties
-func (a GoogleCalendarEvent) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Attendees != nil {
-		object["attendees"], err = json.Marshal(a.Attendees)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'attendees': %w", err)
-		}
-	}
-
-	if a.Description != nil {
-		object["description"], err = json.Marshal(a.Description)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'description': %w", err)
-		}
-	}
-
-	if a.End != nil {
-		object["end"], err = json.Marshal(a.End)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'end': %w", err)
-		}
-	}
-
-	if a.HangoutLink != nil {
-		object["hangoutLink"], err = json.Marshal(a.HangoutLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'hangoutLink': %w", err)
-		}
-	}
-
-	if a.HtmlLink != nil {
-		object["htmlLink"], err = json.Marshal(a.HtmlLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'htmlLink': %w", err)
-		}
-	}
-
-	if a.Id != nil {
-		object["id"], err = json.Marshal(a.Id)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'id': %w", err)
-		}
-	}
-
-	if a.Location != nil {
-		object["location"], err = json.Marshal(a.Location)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'location': %w", err)
-		}
-	}
-
-	if a.Start != nil {
-		object["start"], err = json.Marshal(a.Start)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'start': %w", err)
-		}
-	}
-
-	if a.Status != nil {
-		object["status"], err = json.Marshal(a.Status)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'status': %w", err)
-		}
-	}
-
-	if a.Summary != nil {
-		object["summary"], err = json.Marshal(a.Summary)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'summary': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleCalendarEventRaw. Returns the specified
-// element and whether it was found
-func (a GoogleCalendarEventRaw) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleCalendarEventRaw
-func (a *GoogleCalendarEventRaw) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleCalendarEventRaw to handle AdditionalProperties
-func (a *GoogleCalendarEventRaw) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["attendees"]; found {
-		err = json.Unmarshal(raw, &a.Attendees)
-		if err != nil {
-			return fmt.Errorf("error reading 'attendees': %w", err)
-		}
-		delete(object, "attendees")
-	}
-
-	if raw, found := object["description"]; found {
-		err = json.Unmarshal(raw, &a.Description)
-		if err != nil {
-			return fmt.Errorf("error reading 'description': %w", err)
-		}
-		delete(object, "description")
-	}
-
-	if raw, found := object["end"]; found {
-		err = json.Unmarshal(raw, &a.End)
-		if err != nil {
-			return fmt.Errorf("error reading 'end': %w", err)
-		}
-		delete(object, "end")
-	}
-
-	if raw, found := object["hangoutLink"]; found {
-		err = json.Unmarshal(raw, &a.HangoutLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'hangoutLink': %w", err)
-		}
-		delete(object, "hangoutLink")
-	}
-
-	if raw, found := object["htmlLink"]; found {
-		err = json.Unmarshal(raw, &a.HtmlLink)
-		if err != nil {
-			return fmt.Errorf("error reading 'htmlLink': %w", err)
-		}
-		delete(object, "htmlLink")
-	}
-
-	if raw, found := object["id"]; found {
-		err = json.Unmarshal(raw, &a.Id)
-		if err != nil {
-			return fmt.Errorf("error reading 'id': %w", err)
-		}
-		delete(object, "id")
-	}
-
-	if raw, found := object["location"]; found {
-		err = json.Unmarshal(raw, &a.Location)
-		if err != nil {
-			return fmt.Errorf("error reading 'location': %w", err)
-		}
-		delete(object, "location")
-	}
-
-	if raw, found := object["start"]; found {
-		err = json.Unmarshal(raw, &a.Start)
-		if err != nil {
-			return fmt.Errorf("error reading 'start': %w", err)
-		}
-		delete(object, "start")
-	}
-
-	if raw, found := object["summary"]; found {
-		err = json.Unmarshal(raw, &a.Summary)
-		if err != nil {
-			return fmt.Errorf("error reading 'summary': %w", err)
-		}
-		delete(object, "summary")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleCalendarEventRaw to handle AdditionalProperties
-func (a GoogleCalendarEventRaw) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Attendees != nil {
-		object["attendees"], err = json.Marshal(a.Attendees)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'attendees': %w", err)
-		}
-	}
-
-	if a.Description != nil {
-		object["description"], err = json.Marshal(a.Description)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'description': %w", err)
-		}
-	}
-
-	if a.End != nil {
-		object["end"], err = json.Marshal(a.End)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'end': %w", err)
-		}
-	}
-
-	if a.HangoutLink != nil {
-		object["hangoutLink"], err = json.Marshal(a.HangoutLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'hangoutLink': %w", err)
-		}
-	}
-
-	if a.HtmlLink != nil {
-		object["htmlLink"], err = json.Marshal(a.HtmlLink)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'htmlLink': %w", err)
-		}
-	}
-
-	if a.Id != nil {
-		object["id"], err = json.Marshal(a.Id)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'id': %w", err)
-		}
-	}
-
-	if a.Location != nil {
-		object["location"], err = json.Marshal(a.Location)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'location': %w", err)
-		}
-	}
-
-	if a.Start != nil {
-		object["start"], err = json.Marshal(a.Start)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'start': %w", err)
-		}
-	}
-
-	if a.Summary != nil {
-		object["summary"], err = json.Marshal(a.Summary)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'summary': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleEventAttendee. Returns the specified
-// element and whether it was found
-func (a GoogleEventAttendee) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleEventAttendee
-func (a *GoogleEventAttendee) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleEventAttendee to handle AdditionalProperties
-func (a *GoogleEventAttendee) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["displayName"]; found {
-		err = json.Unmarshal(raw, &a.DisplayName)
-		if err != nil {
-			return fmt.Errorf("error reading 'displayName': %w", err)
-		}
-		delete(object, "displayName")
-	}
-
-	if raw, found := object["email"]; found {
-		err = json.Unmarshal(raw, &a.Email)
-		if err != nil {
-			return fmt.Errorf("error reading 'email': %w", err)
-		}
-		delete(object, "email")
-	}
-
-	if raw, found := object["optional"]; found {
-		err = json.Unmarshal(raw, &a.Optional)
-		if err != nil {
-			return fmt.Errorf("error reading 'optional': %w", err)
-		}
-		delete(object, "optional")
-	}
-
-	if raw, found := object["organizer"]; found {
-		err = json.Unmarshal(raw, &a.Organizer)
-		if err != nil {
-			return fmt.Errorf("error reading 'organizer': %w", err)
-		}
-		delete(object, "organizer")
-	}
-
-	if raw, found := object["responseStatus"]; found {
-		err = json.Unmarshal(raw, &a.ResponseStatus)
-		if err != nil {
-			return fmt.Errorf("error reading 'responseStatus': %w", err)
-		}
-		delete(object, "responseStatus")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleEventAttendee to handle AdditionalProperties
-func (a GoogleEventAttendee) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.DisplayName != nil {
-		object["displayName"], err = json.Marshal(a.DisplayName)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'displayName': %w", err)
-		}
-	}
-
-	if a.Email != nil {
-		object["email"], err = json.Marshal(a.Email)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'email': %w", err)
-		}
-	}
-
-	if a.Optional != nil {
-		object["optional"], err = json.Marshal(a.Optional)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'optional': %w", err)
-		}
-	}
-
-	if a.Organizer != nil {
-		object["organizer"], err = json.Marshal(a.Organizer)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'organizer': %w", err)
-		}
-	}
-
-	if a.ResponseStatus != nil {
-		object["responseStatus"], err = json.Marshal(a.ResponseStatus)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'responseStatus': %w", err)
-		}
-	}
-
-	for fieldName, field := range a.AdditionalProperties {
-		object[fieldName], err = json.Marshal(field)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
-		}
-	}
-	return json.Marshal(object)
-}
-
-// Getter for additional properties for GoogleEventDateTime. Returns the specified
-// element and whether it was found
-func (a GoogleEventDateTime) Get(fieldName string) (value interface{}, found bool) {
-	if a.AdditionalProperties != nil {
-		value, found = a.AdditionalProperties[fieldName]
-	}
-	return
-}
-
-// Setter for additional properties for GoogleEventDateTime
-func (a *GoogleEventDateTime) Set(fieldName string, value interface{}) {
-	if a.AdditionalProperties == nil {
-		a.AdditionalProperties = make(map[string]interface{})
-	}
-	a.AdditionalProperties[fieldName] = value
-}
-
-// Override default JSON handling for GoogleEventDateTime to handle AdditionalProperties
-func (a *GoogleEventDateTime) UnmarshalJSON(b []byte) error {
-	object := make(map[string]json.RawMessage)
-	err := json.Unmarshal(b, &object)
-	if err != nil {
-		return err
-	}
-
-	if raw, found := object["date"]; found {
-		err = json.Unmarshal(raw, &a.Date)
-		if err != nil {
-			return fmt.Errorf("error reading 'date': %w", err)
-		}
-		delete(object, "date")
-	}
-
-	if raw, found := object["dateTime"]; found {
-		err = json.Unmarshal(raw, &a.DateTime)
-		if err != nil {
-			return fmt.Errorf("error reading 'dateTime': %w", err)
-		}
-		delete(object, "dateTime")
-	}
-
-	if raw, found := object["timeZone"]; found {
-		err = json.Unmarshal(raw, &a.TimeZone)
-		if err != nil {
-			return fmt.Errorf("error reading 'timeZone': %w", err)
-		}
-		delete(object, "timeZone")
-	}
-
-	if len(object) != 0 {
-		a.AdditionalProperties = make(map[string]interface{})
-		for fieldName, fieldBuf := range object {
-			var fieldVal interface{}
-			err := json.Unmarshal(fieldBuf, &fieldVal)
-			if err != nil {
-				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
-			}
-			a.AdditionalProperties[fieldName] = fieldVal
-		}
-	}
-	return nil
-}
-
-// Override default JSON handling for GoogleEventDateTime to handle AdditionalProperties
-func (a GoogleEventDateTime) MarshalJSON() ([]byte, error) {
-	var err error
-	object := make(map[string]json.RawMessage)
-
-	if a.Date != nil {
-		object["date"], err = json.Marshal(a.Date)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'date': %w", err)
-		}
-	}
-
-	if a.DateTime != nil {
-		object["dateTime"], err = json.Marshal(a.DateTime)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'dateTime': %w", err)
-		}
-	}
-
-	if a.TimeZone != nil {
-		object["timeZone"], err = json.Marshal(a.TimeZone)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling 'timeZone': %w", err)
 		}
 	}
 
@@ -5519,7 +4882,7 @@ type ServerInterface interface {
 	DisconnectZoom(w http.ResponseWriter, r *http.Request)
 	// Delete a Google Calendar event
 	// (DELETE /api/events/{id})
-	DeleteEvent(w http.ResponseWriter, r *http.Request, id string)
+	DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams)
 	// Partially update a Google Calendar event
 	// (PATCH /api/events/{id})
 	PatchEvent(w http.ResponseWriter, r *http.Request, id string)
@@ -5972,7 +5335,7 @@ func (_ Unimplemented) DisconnectZoom(w http.ResponseWriter, r *http.Request) {
 
 // Delete a Google Calendar event
 // (DELETE /api/events/{id})
-func (_ Unimplemented) DeleteEvent(w http.ResponseWriter, r *http.Request, id string) {
+func (_ Unimplemented) DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -7504,8 +6867,19 @@ func (siw *ServerInterfaceWrapper) DeleteEvent(w http.ResponseWriter, r *http.Re
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeleteEventParams
+
+	// ------------- Optional query parameter "send_updates" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "send_updates", r.URL.Query(), &params.SendUpdates)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "send_updates", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteEvent(w, r, id)
+		siw.Handler.DeleteEvent(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -12007,7 +11381,8 @@ func (response DisconnectZoom500JSONResponse) VisitDisconnectZoomResponse(w http
 }
 
 type DeleteEventRequestObject struct {
-	Id string `json:"id"`
+	Id     string `json:"id"`
+	Params DeleteEventParams
 }
 
 type DeleteEventResponseObject interface {
@@ -12020,6 +11395,15 @@ type DeleteEvent204Response struct {
 func (response DeleteEvent204Response) VisitDeleteEventResponse(w http.ResponseWriter) error {
 	w.WriteHeader(204)
 	return nil
+}
+
+type DeleteEvent400JSONResponse ErrorResponse
+
+func (response DeleteEvent400JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteEvent401JSONResponse CalendarNotConnectedError
@@ -12041,6 +11425,15 @@ func (response DeleteEvent401TextResponse) VisitDeleteEventResponse(w http.Respo
 	return err
 }
 
+type DeleteEvent404JSONResponse ErrorResponse
+
+func (response DeleteEvent404JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteEvent500JSONResponse ErrorResponse
 
 func (response DeleteEvent500JSONResponse) VisitDeleteEventResponse(w http.ResponseWriter) error {
@@ -12059,7 +11452,7 @@ type PatchEventResponseObject interface {
 	VisitPatchEventResponse(w http.ResponseWriter) error
 }
 
-type PatchEvent200JSONResponse GoogleCalendarEventRaw
+type PatchEvent200JSONResponse CalendarEvent
 
 func (response PatchEvent200JSONResponse) VisitPatchEventResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -13825,7 +13218,7 @@ type ConfirmNaturalLanguageResponseObject interface {
 	VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error
 }
 
-type ConfirmNaturalLanguage200JSONResponse GoogleCalendarEvent
+type ConfirmNaturalLanguage200JSONResponse CalendarEvent
 
 func (response ConfirmNaturalLanguage200JSONResponse) VisitConfirmNaturalLanguageResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -14407,7 +13800,7 @@ type CreateScheduledMeetingResponseObject interface {
 	VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error
 }
 
-type CreateScheduledMeeting200JSONResponse GoogleCalendarEvent
+type CreateScheduledMeeting200JSONResponse CalendarEvent
 
 func (response CreateScheduledMeeting200JSONResponse) VisitCreateScheduledMeetingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -17369,10 +16762,11 @@ func (sh *strictHandler) DisconnectZoom(w http.ResponseWriter, r *http.Request) 
 }
 
 // DeleteEvent operation middleware
-func (sh *strictHandler) DeleteEvent(w http.ResponseWriter, r *http.Request, id string) {
+func (sh *strictHandler) DeleteEvent(w http.ResponseWriter, r *http.Request, id string, params DeleteEventParams) {
 	var request DeleteEventRequestObject
 
 	request.Id = id
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.DeleteEvent(ctx, request.(DeleteEventRequestObject))

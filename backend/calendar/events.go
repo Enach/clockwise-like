@@ -2,10 +2,13 @@ package calendar
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	googlecalendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 func (c *CalendarClient) ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]*googlecalendar.Event, error) {
@@ -42,6 +45,36 @@ func (c *CalendarClient) DeclineEvent(ctx context.Context, calendarID, eventID s
 
 func (c *CalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	return c.service.Events.Delete(calendarID, eventID).Context(ctx).Do()
+}
+
+// UpdateEventSendUpdates writes the event like UpdateEvent and passes
+// sendUpdates ("all" or "none") to Google, which decides whether the guests
+// are emailed about the change (PAC-29, API-018).
+func (c *CalendarClient) UpdateEventSendUpdates(ctx context.Context, calendarID, eventID string, event *googlecalendar.Event, sendUpdates string) (*googlecalendar.Event, error) {
+	return c.service.Events.Update(calendarID, eventID, event).
+		Context(ctx).
+		SendUpdates(sendUpdates).
+		Do()
+}
+
+// DeleteEventSendUpdates deletes the event like DeleteEvent and passes
+// sendUpdates ("all" or "none") to Google (PAC-29, API-042).
+func (c *CalendarClient) DeleteEventSendUpdates(ctx context.Context, calendarID, eventID, sendUpdates string) error {
+	return c.service.Events.Delete(calendarID, eventID).
+		Context(ctx).
+		SendUpdates(sendUpdates).
+		Do()
+}
+
+// IsEventGone reports whether err is Google saying the event does not exist:
+// a 404, or a 410 for one that was deleted (PAC-29, API-045). Any other
+// failure (transport, permission, quota) is not.
+func IsEventGone(err error) bool {
+	var gerr *googleapi.Error
+	if !errors.As(err, &gerr) {
+		return false
+	}
+	return gerr.Code == http.StatusNotFound || gerr.Code == http.StatusGone
 }
 
 func (c *CalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*googlecalendar.Event, error) {
