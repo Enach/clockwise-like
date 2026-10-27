@@ -1,8 +1,10 @@
-# Contract — PAC-66-B: a user-set base URL goes only to destinations approved for the provider in use
+# Contract — PAC-70 (PAC-66-B): a user-set base URL goes only to destinations approved for the provider in use
 
-- **Linear issue**: PAC-66-B is not yet filed (spec Part B header, AC-B13). The
-  parent is [PAC-66](https://linear.app/paceday/issue/PAC-66); factory ticket
-  `NEW-pac66b-llm-base-url`.
+- **Linear issue**: [PAC-70](https://linear.app/paceday/issue/PAC-70), which is
+  PAC-66-B, related to [PAC-66](https://linear.app/paceday/issue/PAC-66). Filing it
+  meets AC-B13. Revisions 1 and 2 were written under the factory ticket
+  `NEW-pac66b-llm-base-url` before PAC-70 existed. The manifest and this document
+  were renamed from `NEW-pac66b-llm-base-url.{yaml,md}` in revision 2 (§12).
 - **Spec**: `docs/specs/PAC-66.md`, Part B (accepted, challenge round 3, 0 blocking)
 - **Stage**: contract-author, then contract-challenger
 - **Fragment edited**: `contracts/openapi/paths/scheduling.yaml`
