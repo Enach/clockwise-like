@@ -549,7 +549,8 @@ paths:
         generated server wrapper already makes it (contract challenge r2,
         finding 3). In the body, `""` is a value like any other: `llmApiKey: ""`
         probes with no key and `llmProvider: ""` probes with no provider, which
-        reports `LLM not configured`.
+        is the 500 `{"error":"internal error"}` (the configuration sentence is
+        logged only, PAC-21).
 
         Before PAC-24 the handler never read r.Body at all and always probed the
         SINGLETON settings row, so this operation reported on the deployment's
@@ -621,7 +622,7 @@ paths:
         as an oracle, and the server followed redirects, re-sending an
         Anthropic `x-api-key` to any host (spec §B1, §B2.4). PAC-66-B closes
         it (spec PAC-66 Part B; rationale in
-        `contracts/features/NEW-pac66b-llm-base-url.md`):
+        `contracts/features/PAC-70.md`):
 
         * **Approved destinations, per provider, never transferred** (spec
           D-B1, D-B2, D-B3, D-B5). `openai`: `https://api.openai.com`, built in,
@@ -661,7 +662,7 @@ paths:
           one), before anything else about the request. A refusal is the 422
           below and sends nothing, whether or not a key is on file or
           submitted: an `openai` or `anthropic` probe with a refused destination
-          and no key is the 422, not the 500 `LLM not configured` (spec
+          and no key is the 422, not the 500 (spec
           "Refusal does not depend on the key"). A value stored before PAC-66-B
           is refused here too and is never rewritten (spec AC-B14, D-B4).
 
@@ -745,10 +746,13 @@ paths:
                     property: llmBaseUrl
         '500':
           description: >-
-            Settings load failure (`{"error":"internal error"}`), or the LLM client could
-            not be constructed (a fixed configuration sentence such as `LLM not configured -
-            set API key in Settings`). One encoding, the JSON error envelope, for both
-            (before PAC-21 was finished the settings-load failure was text/plain). A PAC-66
+            Settings load failure, or the LLM client could not be constructed (for
+            example no key on file or submitted for a key-carrying provider, or
+            `llmProvider: ""`). Both answer the same fixed body,
+            `{"error":"internal error"}`, in the JSON error envelope (before PAC-21
+            was finished the settings-load failure was text/plain). The cause, such as
+            the sentence `LLM not configured - set API key in Settings`, is never in the
+            body. A PAC-66
             or PAC-66-B destination refusal is NEVER a 500; it is the 422, including on
             `openai` and `anthropic` when no key is on file or submitted. The detail is
             written to the server log and Sentry only (PAC-21).

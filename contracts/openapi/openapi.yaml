@@ -2909,17 +2909,18 @@ paths:
         \ `{}` probes the caller's stored configuration entirely - the pre-PAC-24 behaviour - and an absent\
         \ body is a 400, as the generated server wrapper already makes it (contract challenge r2, finding\
         \ 3). In the body, `\"\"` is a value like any other: `llmApiKey: \"\"` probes with no key and\
-        \ `llmProvider: \"\"` probes with no provider, which reports `LLM not configured`.\nBefore PAC-24\
-        \ the handler never read r.Body at all and always probed the SINGLETON settings row, so this operation\
-        \ reported on the deployment's saved configuration rather than on the caller's (API-002, API-037).\n\
-        No response on any status carries the submitted or the stored `llmApiKey` (PAC-24 spec AC-14).\
-        \ Since PAC-21 the 502 body is the fixed `upstream provider error` and no longer echoes the provider's\
-        \ own text (`backend/api/server_errors.go`); the detail goes to the server log only.\n**PAC-66:\
-        \ the deployment's cloud identity goes only to hosts the OPERATOR approved.** PAC-24 left one\
-        \ indirect channel open: a caller could write `azureEndpoint` or `gcpLocation` into their OWN\
-        \ settings with `PATCH /api/settings` and then probe, and on the three ambient-credential providers\
-        \ (`azure_openai`, `vertex`, `bedrock`) the server sent the DEPLOYMENT'S cloud credential (an\
-        \ Entra ID token, a Google ADC token, an AWS SigV4 signature) to the host those values built (`backend/nlp/llm_azure_openai.go:28-50`,\
+        \ `llmProvider: \"\"` probes with no provider, which is the 500 `{\"error\":\"internal error\"\
+        }` (the configuration sentence is logged only, PAC-21).\nBefore PAC-24 the handler never read\
+        \ r.Body at all and always probed the SINGLETON settings row, so this operation reported on the\
+        \ deployment's saved configuration rather than on the caller's (API-002, API-037).\nNo response\
+        \ on any status carries the submitted or the stored `llmApiKey` (PAC-24 spec AC-14). Since PAC-21\
+        \ the 502 body is the fixed `upstream provider error` and no longer echoes the provider's own\
+        \ text (`backend/api/server_errors.go`); the detail goes to the server log only.\n**PAC-66: the\
+        \ deployment's cloud identity goes only to hosts the OPERATOR approved.** PAC-24 left one indirect\
+        \ channel open: a caller could write `azureEndpoint` or `gcpLocation` into their OWN settings\
+        \ with `PATCH /api/settings` and then probe, and on the three ambient-credential providers (`azure_openai`,\
+        \ `vertex`, `bedrock`) the server sent the DEPLOYMENT'S cloud credential (an Entra ID token, a\
+        \ Google ADC token, an AWS SigV4 signature) to the host those values built (`backend/nlp/llm_azure_openai.go:28-50`,\
         \ `llm_vertex.go:29-53`; a Vertex location such as `attacker.example/x` changes the URL's authority).\
         \ PAC-66 closes it for those three providers:\n* The operator names the approved inference hosts\
         \ per provider in\n  deployment configuration (`PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI`,\n  `PACEDAY_LLM_APPROVED_HOSTS_VERTEX`,\n\
@@ -2949,36 +2950,36 @@ paths:
         \ Before PAC-66-B any scheme, host, port, path or query was used verbatim, so a caller could make\
         \ the server POST to any address it can reach and read the outcome as an oracle, and the server\
         \ followed redirects, re-sending an Anthropic `x-api-key` to any host (spec §B1, §B2.4). PAC-66-B\
-        \ closes it (spec PAC-66 Part B; rationale in `contracts/features/NEW-pac66b-llm-base-url.md`):\n\
-        * **Approved destinations, per provider, never transferred** (spec\n  D-B1, D-B2, D-B3, D-B5).\
-        \ `openai`: `https://api.openai.com`, built in,\n  plus the hosts the operator lists in\n  `PACEDAY_LLM_APPROVED_HOSTS_OPENAI`.\
-        \ `anthropic`:\n  `https://api.anthropic.com`, built in, plus\n  `PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC`.\
-        \ Both only over `https` on the\n  default port. `ollama`: only the origins (scheme, host and\
-        \ port) the\n  operator lists in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA`, where `http`\n  and a\
-        \ non-default port are allowed because Ollama carries no key;\n  nothing listed means Ollama is\
-        \ not enabled on this deployment (fail\n  closed). A destination approved for one provider is\
-        \ never a\n  destination for another, so a user's key never goes to an Ollama\n  origin (spec\
-        \ AC-B11). No request property and no stored setting can\n  add to any of these sets.\n\n* **Effective\
-        \ destination** (spec §B4). `openai` / `anthropic`: the\n  stored `llmBaseUrl`, or the vendor's\
-        \ public host when it is `\"\"`. A\n  non-empty value with no usable host (e.g. `http:/`) is refused,\
-        \ never\n  replaced by the public host. `ollama`: `ollamaBaseUrl`; when that is\n  `\"\"`, `llmBaseUrl`;\
-        \ when both are `\"\"`, `http://localhost:11434`. The\n  fallback order is unchanged (spec D-B9);\
-        \ an account's starting state\n  stores `ollamaBaseUrl` as `http://localhost:11434`, so the shared\n\
-        \  `llmBaseUrl` is not Ollama's destination until `ollamaBaseUrl` is\n  cleared.\n\n* **A base\
-        \ URL names a destination, not an operation** (spec D-B8). It\n  is usable only when it is exactly\
-        \ `<scheme>://<host>[:<port>]` with\n  at most one trailing `/`. Any other path, a `?` or `#`\
-        \ (even empty),\n  userinfo, or surrounding whitespace makes it not approved. The\n  request is\
-        \ sent to exactly the provider's chat operation on that\n  origin (`/v1/chat/completions`, `/v1/messages`,\
-        \ `/api/chat`) with no\n  query.\n\n* **The check is made on every send, against the provider\
-        \ the probe\n  USES** (the body's `llmProvider` when present, otherwise the stored\n  one), before\
-        \ anything else about the request. A refusal is the 422\n  below and sends nothing, whether or\
-        \ not a key is on file or\n  submitted: an `openai` or `anthropic` probe with a refused destination\n\
-        \  and no key is the 422, not the 500 `LLM not configured` (spec\n  \"Refusal does not depend\
-        \ on the key\"). A value stored before PAC-66-B\n  is refused here too and is never rewritten\
-        \ (spec AC-B14, D-B4).\n\n* **A redirect is never followed** on these three providers, whatever\n\
-        \  the status, target, method or query, including a redirect to another\n  approved destination.\
-        \ The request that drew it counts as failed (the\n  502 below), and the user's key appears only\
-        \ in that first request\n  (spec AC-B7, D-B6).\n"
+        \ closes it (spec PAC-66 Part B; rationale in `contracts/features/PAC-70.md`):\n* **Approved destinations,\
+        \ per provider, never transferred** (spec\n  D-B1, D-B2, D-B3, D-B5). `openai`: `https://api.openai.com`,\
+        \ built in,\n  plus the hosts the operator lists in\n  `PACEDAY_LLM_APPROVED_HOSTS_OPENAI`. `anthropic`:\n\
+        \  `https://api.anthropic.com`, built in, plus\n  `PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC`. Both\
+        \ only over `https` on the\n  default port. `ollama`: only the origins (scheme, host and port)\
+        \ the\n  operator lists in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA`, where `http`\n  and a non-default\
+        \ port are allowed because Ollama carries no key;\n  nothing listed means Ollama is not enabled\
+        \ on this deployment (fail\n  closed). A destination approved for one provider is never a\n  destination\
+        \ for another, so a user's key never goes to an Ollama\n  origin (spec AC-B11). No request property\
+        \ and no stored setting can\n  add to any of these sets.\n\n* **Effective destination** (spec\
+        \ §B4). `openai` / `anthropic`: the\n  stored `llmBaseUrl`, or the vendor's public host when it\
+        \ is `\"\"`. A\n  non-empty value with no usable host (e.g. `http:/`) is refused, never\n  replaced\
+        \ by the public host. `ollama`: `ollamaBaseUrl`; when that is\n  `\"\"`, `llmBaseUrl`; when both\
+        \ are `\"\"`, `http://localhost:11434`. The\n  fallback order is unchanged (spec D-B9); an account's\
+        \ starting state\n  stores `ollamaBaseUrl` as `http://localhost:11434`, so the shared\n  `llmBaseUrl`\
+        \ is not Ollama's destination until `ollamaBaseUrl` is\n  cleared.\n\n* **A base URL names a destination,\
+        \ not an operation** (spec D-B8). It\n  is usable only when it is exactly `<scheme>://<host>[:<port>]`\
+        \ with\n  at most one trailing `/`. Any other path, a `?` or `#` (even empty),\n  userinfo, or\
+        \ surrounding whitespace makes it not approved. The\n  request is sent to exactly the provider's\
+        \ chat operation on that\n  origin (`/v1/chat/completions`, `/v1/messages`, `/api/chat`) with\
+        \ no\n  query.\n\n* **The check is made on every send, against the provider the probe\n  USES**\
+        \ (the body's `llmProvider` when present, otherwise the stored\n  one), before anything else about\
+        \ the request. A refusal is the 422\n  below and sends nothing, whether or not a key is on file\
+        \ or\n  submitted: an `openai` or `anthropic` probe with a refused destination\n  and no key is\
+        \ the 422, not the 500 (spec\n  \"Refusal does not depend on the key\"). A value stored before\
+        \ PAC-66-B\n  is refused here too and is never rewritten (spec AC-B14, D-B4).\n\n* **A redirect\
+        \ is never followed** on these three providers, whatever\n  the status, target, method or query,\
+        \ including a redirect to another\n  approved destination. The request that drew it counts as\
+        \ failed (the\n  502 below), and the user's key appears only in that first request\n  (spec AC-B7,\
+        \ D-B6).\n"
       requestBody:
         required: true
         content:
@@ -3051,12 +3052,13 @@ paths:
                     reason: destination_not_approved
                     property: llmBaseUrl
         '500':
-          description: Settings load failure (`{"error":"internal error"}`), or the LLM client could not
-            be constructed (a fixed configuration sentence such as `LLM not configured - set API key in
-            Settings`). One encoding, the JSON error envelope, for both (before PAC-21 was finished the
-            settings-load failure was text/plain). A PAC-66 or PAC-66-B destination refusal is NEVER a
-            500; it is the 422, including on `openai` and `anthropic` when no key is on file or submitted.
-            The detail is written to the server log and Sentry only (PAC-21).
+          description: 'Settings load failure, or the LLM client could not be constructed (for example
+            no key on file or submitted for a key-carrying provider, or `llmProvider: ""`). Both answer
+            the same fixed body, `{"error":"internal error"}`, in the JSON error envelope (before PAC-21
+            was finished the settings-load failure was text/plain). The cause, such as the sentence `LLM
+            not configured - set API key in Settings`, is never in the body. A PAC-66 or PAC-66-B destination
+            refusal is NEVER a 500; it is the 422, including on `openai` and `anthropic` when no key is
+            on file or submitted. The detail is written to the server log and Sentry only (PAC-21).'
           content:
             application/json:
               schema:

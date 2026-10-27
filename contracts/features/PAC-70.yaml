@@ -6,8 +6,8 @@
   "parentIssueUrl": "https://linear.app/paceday/issue/PAC-66",
   "linearIssueNote": "PAC-66-B is filed as PAC-70 (AC-B13 met). PAC-70 is closed by the land stage when Enach/clockwise-like#219 and Enach/smart-calendar-flow#109 have both merged; PR bodies say Fixes PAC-70 / Part of PAC-66, never Fixes PAC-66 (factory §6, spec D-4).",
   "status": "draft",
-  "contractRevision": "2",
-  "contractHash": "1da4b019ca9469dbbc17d01c4b6bdf1b23487cf6ff6d91382427a1eb7ad303fe",
+  "contractRevision": "3",
+  "contractHash": "a1ca5e15720e1c9778e765c8eb94a1d2233e25022b217a582ba06c0c2d36bce5",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it, computed after `python3 scripts/openapi_assemble.py` and verified with `python3 scripts/openapi_assemble.py --check` (exit 0, `OK: bundle is in sync (98 paths)`). Reproduce with: `python3 scripts/openapi_assemble.py && python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`.",
   "contractDoc": "contracts/features/PAC-70.md",
   "specDoc": "docs/specs/PAC-66.md (Part B, accepted at challenge round 3, 0 blocking)",
@@ -49,7 +49,7 @@
   },
 
   "operationsChanged": [
-    { "operationId": "testLLMConnection", "method": "POST", "path": "/api/llm/test", "change": "The 422 LLMDestinationRefusal now also covers openai, anthropic and ollama (provider from the body when present, else stored): an effective destination not approved for that provider sends nothing. The check precedes the key-presence check, so a refused destination with no key is a 422, not the 500 'LLM not configured'. A redirect from an approved openai/anthropic/ollama destination is never followed and is a 502. The PAC-66 paragraph 'The user-key and keyless providers ... are unchanged by PAC-66 ... PAC-66-B' is replaced (spec inherited scope). Two stale sentences from before PAC-21 (502 'carrying the upstream error string', 'provider's own error text is still echoed') are corrected to describe the generic bodies the server already returns." },
+    { "operationId": "testLLMConnection", "method": "POST", "path": "/api/llm/test", "change": "The 422 LLMDestinationRefusal now also covers openai, anthropic and ollama (provider from the body when present, else stored): an effective destination not approved for that provider sends nothing. The check precedes the key-presence check, so a refused destination with no key is a 422, not the 500. The 500 description is corrected to the server's real body: a settings-load failure and a client-construction failure (no key for a key-carrying provider, or llmProvider \"\") both answer the fixed {\"error\":\"internal error\"}; the configuration sentence 'LLM not configured - set API key in Settings' goes to the log and Sentry only (PAC-21, handlers_llm.go:78, server_errors.go:33). A redirect from an approved openai/anthropic/ollama destination is never followed and is a 502. The PAC-66 paragraph 'The user-key and keyless providers ... are unchanged by PAC-66 ... PAC-66-B' is replaced (spec inherited scope). Two stale sentences from before PAC-21 (502 'carrying the upstream error string', 'provider's own error text is still echoed') are corrected to describe the generic bodies the server already returns." },
     { "operationId": "patchSettings", "method": "PATCH", "path": "/api/settings", "change": "400 SettingsValidationError gains three messages for llmBaseUrl and ollamaBaseUrl, raised only when the write changes the property to a non-empty value. llmBaseUrl must be approved for at least one of openai, anthropic, ollama (D-B5); ollamaBaseUrl for ollama. \"\", an unchanged value and a provider-only change are accepted." }
   ],
 
@@ -91,7 +91,7 @@
   },
 
   "gates": {
-    "contractApproval": "contract-challenger accepted revision 1 (0 blocking, PAC-70.md Challenge 2026-10-26); revision 2 is a rebase onto main plus the rename and needs the challenger to confirm only the merged 500/502 descriptions (PAC-70.md §12)",
+    "contractApproval": "contract-challenger accepted revision 1 (0 blocking, PAC-70.md Challenge 2026-10-26); revision 2 is a rebase onto main plus the rename and needs the challenger to confirm only the merged 500/502 descriptions (PAC-70.md §12); the revision 2 challenge (2026-10-27) accepted with 2 blocking changes, which revision 3 applies (PAC-70.md §13: the 500 body is internal error, the rationale pointer is PAC-70.md)",
     "assembler": "python3 scripts/openapi_assemble.py --check",
     "apiGate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-70-contract",
     "webGate": "REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh chore/regen-types-pac-66b <the rebased #219 branch>: smart-calendar-flow#109 regenerated against the rebased Enach/clockwise-like#219 (PAC-70 acceptance).",
@@ -142,17 +142,19 @@
   ],
 
   "consumersAffected": [
-    { "consumer": "Enach/smart-calendar-flow src/api/client.ts llmTest", "breaks": "no", "detail": "Shows data.error for any non-2xx; a 422 sentence replaces today's 502 for a refused base URL or a not-enabled Ollama." },
-    { "consumer": "Enach/smart-calendar-flow settings save (diff-only PATCH, writes llmBaseUrl only, client.ts:594)", "breaks": "no", "detail": "A new 400 message renders like existing ones. Unchanged values are not re-checked, so a stale stored value never blocks an unrelated save. A user typing an Ollama address in the Ollama field gets a 400 unless that origin is approved for ollama (or the value is approved for openai/anthropic)." },
-    { "consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "no", "detail": "Regenerate after merge: LLMDestinationRefusal.property gains two enum values; descriptions change. The zod LLMDestinationRefusal is not parsed at runtime (only SettingsUpdate is imported, client.ts:2)." },
+    { "consumer": "Enach/smart-calendar-flow src/api/client.ts llmTest (:1354-1362 on web main ad52160)", "breaks": "no", "detail": "Shows data.error for any non-2xx; a 422 sentence replaces today's 502 for a refused base URL or a not-enabled Ollama." },
+    { "consumer": "Enach/smart-calendar-flow settings save (diff-only PATCH, writes llmBaseUrl only: mapping client.ts:651, PATCH key set client.ts:745-761 on web main ad52160)", "breaks": "no", "detail": "A new 400 message renders like existing ones. Unchanged values are not re-checked, so a stale stored value never blocks an unrelated save. A user typing an Ollama address in the Ollama field gets a 400 unless that origin is approved for ollama (or the value is approved for openai/anthropic)." },
+    { "consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "no", "detail": "Regenerate after merge: LLMDestinationRefusal.property gains two enum values; descriptions change. The zod LLMDestinationRefusal is not parsed at runtime (client.ts:2 imports only CalendarDisconnectUnsupported and SettingsUpdate from the zod file on web main ad52160)." },
     { "consumer": "e2e/tests/settings.spec.ts:40-60 key journey", "breaks": "no", "detail": "Saves an OpenAI key and never probes; whole-document PATCH sends stored values back, not re-checked." },
     { "consumer": "e2e/tests/llm-destination.spec.ts (part A)", "breaks": "no", "detail": "Azure only; e2e compose approves no Ollama origin and no extra OpenAI/Anthropic host, which is exactly AC-B17's Given." },
     { "consumer": "mcp/tools.go clockwise_parse_command", "breaks": "no", "detail": "Relays the parse 200 unchanged. MCP reads and writes no base URL." },
     { "consumer": "Every account on the stored defaults (provider ollama, ollamaBaseUrl http://localhost:11434) on a deployment that approves no Ollama origin, including the hosted product", "breaks": "yes, by design", "detail": "Parse and brief refresh change from a connection failure to 'ollama is not enabled on this deployment' until the user picks another provider (spec §B1, §B7, D-B1)." },
-    { "consumer": "Self-hosted operators using Ollama, an OpenAI-compatible gateway or an Anthropic proxy", "breaks": "yes, by design", "detail": "Fail closed: nothing is sent until the operator approves the destination; a gateway needing a path prefix stops working (D-B8, OQ-B6). .env.example, docker-compose.yml, docker-compose.prod.yml and release notes must say so (spec §B7)." }
+    { "consumer": "Self-hosted operators using Ollama, an OpenAI-compatible gateway or an Anthropic proxy", "breaks": "yes, by design", "detail": "Fail closed: nothing is sent until the operator approves the destination; a gateway needing a path prefix stops working (D-B8, OQ-B6). .env.example, docker-compose.yml (the PAC-66 approved-host variables at :56-58, with the stale per-user comment at :50-52), docker-compose.prod.yml:89-91 (to be rewritten, not added beside) and release notes must say so (spec §B7)." }
   ],
 
   "followUps": {
+    "ollamaSelfHostedOnly": "Spec OQ-B1 / D-B1: Ollama is kept only on self-hosted deployments with an operator-approved origin. Assumed by the factory, pending owner confirmation. Owner: product owner.",
+    "auditApi093": "The Linear PAC-70 description lists audit finding API-093 as 'added by #219'; docs/factory/api-audit.md on main has no API-093 row and this manifest's resolvesFindings is empty. The plan stage (or #219) must either add the API-093 row and list it in resolvesFindings, or drop it from the issue. Owner: plan-author.",
     "enabledProviders": "Spec OQ-B2: tell the client which providers are enabled so the hosted settings page stops offering 'Ollama (local)'. Contract addition. Owner: product owner, then contract-author. File beside PAC-66-B.",
     "webOllamaField": "Spec OQ-B7 / D-B9: the web Ollama field writes llmBaseUrl, which Ollama does not use while ollamaBaseUrl holds its stored default. Owner: product owner. File beside PAC-66-B.",
     "gatewayPathPrefix": "Spec OQ-B6 second half: may an operator entry carry a path prefix for an OpenAI-compatible gateway? This contract says no (D-B8). Owner: product owner.",

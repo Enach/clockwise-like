@@ -29,7 +29,7 @@ At the HTTP boundary the fix touches two operations and extends one schema:
 
 | Operation | Change |
 |---|---|
-| `testLLMConnection` (`POST /api/llm/test`) | The PAC-66 **422** `LLMDestinationRefusal` now also covers `openai`, `anthropic` and `ollama`. The check is made before the key-presence check, so a refused destination with no key is a 422, not the 500 `LLM not configured`. A redirect from an approved destination is never followed and is a 502. The paragraph "The user-key and keyless providers … are unchanged by PAC-66 … PAC-66-B" is **replaced**, as the spec's inherited scope requires. |
+| `testLLMConnection` (`POST /api/llm/test`) | The PAC-66 **422** `LLMDestinationRefusal` now also covers `openai`, `anthropic` and `ollama`. The check is made before the key-presence check, so a refused destination with no key is a 422, not the 500 (whose body is the fixed `internal error`; revision 3, §13). A redirect from an approved destination is never followed and is a 502. The paragraph "The user-key and keyless providers … are unchanged by PAC-66 … PAC-66-B" is **replaced**, as the spec's inherited scope requires. |
 | `patchSettings` (`PATCH /api/settings`) | Three new 400 messages for `llmBaseUrl` and `ollamaBaseUrl`, raised only when the write changes the property to a non-empty value. The operation description states the rule and what is deliberately not refused. |
 | Schemas | `LLMDestinationRefusal.property` gains `llmBaseUrl` and `ollamaBaseUrl`; the descriptions of its `reason` values are extended (no new value). Descriptions added to `llmBaseUrl` and `ollamaBaseUrl` on the shared settings property map and to `LLMTestRequest.llmProvider` / `llmApiKey`. |
 
@@ -262,14 +262,14 @@ the shared sending step, so the claim is tested rather than assumed.
 
 | Consumer | Breaks? | Detail |
 |---|---|---|
-| `smart-calendar-flow` `llmTest` (`src/api/client.ts:1294-1302`) | no | Shows `data.error` for any non-2xx. A 422 sentence replaces today's 502 or success. |
-| `smart-calendar-flow` settings save (diff-only; writes `llmBaseUrl` only, `client.ts:594`) | no | A new 400 message renders like every other. An unchanged stored value is not re-checked. |
-| `smart-calendar-flow` `src/api/generated` | regenerate | `LLMDestinationRefusal.property` gains two values. Only `SettingsUpdate` from the zod file is used at runtime (`client.ts:2`), so the stale enum breaks nothing before the regen. |
+| `smart-calendar-flow` `llmTest` (`src/api/client.ts:1354-1362` on web main `ad52160`) | no | Shows `data.error` for any non-2xx. A 422 sentence replaces today's 502 or success. |
+| `smart-calendar-flow` settings save (diff-only; writes `llmBaseUrl` only: mapping `client.ts:651`, PATCH key set `client.ts:745-761`) | no | A new 400 message renders like every other. An unchanged stored value is not re-checked. |
+| `smart-calendar-flow` `src/api/generated` | regenerate | `LLMDestinationRefusal.property` gains two values. Only `CalendarDisconnectUnsupported` and `SettingsUpdate` from the zod file are used at runtime (`client.ts:2`), neither of them `LLMDestinationRefusal`, so the stale enum breaks nothing before the regen. |
 | `e2e/tests/settings.spec.ts:40-60` | no | Saves a key, never probes. Its whole-document PATCH sends stored values back, which are not re-checked. |
 | `e2e/tests/llm-destination.spec.ts` | no | Azure only. The e2e compose approves no Ollama origin and no extra OpenAI or Anthropic host, which is AC-B17's Given. |
 | `mcp/` | no | No tool reads or writes a base URL. `clockwise_parse_command` relays the parse 200 unchanged. |
 | Default accounts (provider `ollama`, `ollamaBaseUrl` `http://localhost:11434`) on a deployment approving no Ollama origin | **yes, by design** | Parse and brief refresh change from a connection failure to "ollama is not enabled". Picking another provider, or "None (AI features off)", removes it (spec §B7, round-3 NB-3). |
-| Self-hosted operators using Ollama, a gateway or a proxy | **yes, by design** | Fail closed until the operator sets the variable. `.env.example`, `docker-compose.yml:50-52`, `docker-compose.prod.yml:89-91` and release notes must say so (spec §B7). |
+| Self-hosted operators using Ollama, a gateway or a proxy | **yes, by design** | Fail closed until the operator sets the variable. `.env.example`, `docker-compose.yml:56-58` (the PAC-66 approved-host variables; the stale per-user comment above them at `:50-52` is rewritten too), `docker-compose.prod.yml:89-91` (rewritten, not added beside) and release notes must say so (spec §B7). |
 
 ---
 
@@ -291,7 +291,9 @@ in the audit register is left to PAC-21's owner.
 - **Resolves**: `contracts/features/PAC-66.yaml` `followUps.pac66B`, and the
   remaining half of PAC-24's `followUps.llmProbeEndpointAllowlist`.
 - **`x-uncertain`**: none on `testLLMConnection` or `patchSettings`. None was
-  added. The bundle count is still 18.
+  added. The bundle count is 12 on `origin/main` `6d751f9` and on this branch
+  (it was 18 when revision 1 was cut from `c954521`); this contract changes it
+  by none.
 - **API-039**: not touched; the provider enum is unchanged.
 - **API-080**: not in scope, because the parse operation is not edited (§7).
 - **Not resolved, filed as follow-ups in the manifest**: OQ-B2 (tell the client
@@ -518,6 +520,7 @@ behaviour. It does three things.
    then PAC-21 (#220) rewrote the `testLLMConnection` 500 and 502 descriptions:
    it made the 500 one JSON encoding and dropped its `text/plain` alternative.
    Both descriptions conflicted. The resolution keeps main's wording, which
+   [corrected in revision 3, §13: main's 500 wording did NOT describe the server]
    describes the server as it is after PAC-21, and adds only revision 1's
    PAC-66-B sentences:
    - **500:** a PAC-66-B refusal is never a 500, including on `openai` and
