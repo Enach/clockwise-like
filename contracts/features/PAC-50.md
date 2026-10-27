@@ -874,3 +874,210 @@ web PR is the build stage's, against #212's rebased branch.
 
 Not run: e2e. This branch carries no handler code, so no runtime behaviour
 changes here; the e2e gate belongs to #212 after its rebase.
+
+## Challenge — 2026-10-27 (round 3, contract revision 3)
+
+Reviewed by `contract-challenger` against the committed state of
+`factory/pac-50-contract` at `5eb62e0`. Inputs: spec v2.2 with §9, this file,
+the manifest, `paths/auth.yaml`, `auth.notes.md`, the bundle and `main`'s
+handlers. I did not read the author's reasoning beyond what these artefacts
+say. For question 4, the only code for the four PAC-50 operations is the
+stage-4 branch `impl/pac-50-sso-write-gate-backend` at `d8ec55a` (#212,
+which GitHub reports as `CONFLICTING`). I read it for that purpose; it is not
+under review here. This round attacks the revision-3 delta (the merge of
+main, the PAC-21 500 bodies, the start's 500 and migration 028). It also
+re-attacks the whole contract against `main` as it now stands, because PAC-20
+and PAC-21 have landed since round 2.
+
+**Verdict**: accept-with-changes. There is one blocking finding, and it is a
+one-line description fix. Nothing else in the delta breaks.
+
+### Blocking
+
+1. **The contract still names the wrong migration.**
+   `SsoProviderResponse.Domain` (`paths/auth.yaml:1423`) says "migration 027
+   lower-cases existing rows". That text is carried into the bundle and into
+   the doc comments of the regenerated web types. On `main`,
+   `027_settings_auto_schedule_last_run.up.sql` belongs to PAC-49: it only adds
+   `settings.auto_schedule_last_run` and touches no `sso_providers` row. The
+   manifest (`migration.up`) and spec §9 D-7 both say the backfill is
+   `028_sso_admin_stepup`. Revision 3 exists to make this renumbering, yet the
+   one place where the contract names the migration contradicts its own
+   manifest. A reader of Swagger UI or of the generated `types.ts` would look
+   for the backfill in the wrong file. **Fix**: change the description to
+   "migration 028 (`028_sso_admin_stepup`) lower-cases existing rows", then run
+   `make openapi` and record the new `contractHash`.
+
+### Requests wrongly permitted
+
+None in the contract. What I attacked:
+
+- `POST /api/admin/sso` with
+  `{"domain":" acme.com ","provider_name":"x","provider_type":"oidc"}` for org
+  `acme.com`. The contract requires the domain to be equal, "exact and
+  case-insensitive", so this request should get 400 `provider_domain_mismatch`.
+  The stage-4 `domain.DomainMatchesOrg` applies `TrimSpace` to both sides,
+  accepts the request and stores `acme.com`. `DELETE /api/admin/sso/%20acme.com`
+  gets 204 or 404 for the same reason, where the contract and round 2's
+  "Verified clean" say 400. The contract is the stricter side and is correct.
+  The fault is in stage 4: either drop the trim, or have the contract say
+  "after trimming surrounding whitespace". It is listed under divergences
+  below, not as a contract defect.
+
+### Responses the client cannot handle
+
+None. Revision 3 changes no 2xx or 4xx response shape. The added `500`s use
+the shared `ErrorResponse`, which `apiErrorMessage`
+(`smart-calendar-flow/src/api/client.ts:385-401`) renders through `data.error`.
+For a 500 it shows the literal text "internal error". Every PAC-21 operation
+behaves the same way, so this is not PAC-50's to change.
+
+### Consumers affected (re-searched on this commit)
+
+- smart-calendar-flow `main` (`ad52160`): `grep -rln "admin/sso\|stepup" src`
+  finds only `src/api/generated/types.ts` and
+  `src/api/generated/schemas.types.d.ts`. There is no hand-written caller.
+- `clockwise-like/mcp` and `clockwise-like/e2e`: no match on this branch.
+- Web `client.ts` still renders a 403 that has no `error` as a generic
+  message (`:393-394`). Every `SsoWriteForbiddenResponse` variant carries
+  `error`, so the prompt is not swallowed.
+
+### Contract/implementation divergences (non-blocking, inputs to #212's rebase)
+
+1. **More PAC-21 leaks exist than the manifest lists.** `mergeConditions`
+   names `grant check failed`, `state generation failed` and
+   `step-up could not be recorded`. At `d8ec55a` the branch also returns raw
+   driver text on three 500s:
+   - `writeError(w, "save failed: "+err.Error(), 500)` on create;
+   - `writeError(w, err.Error(), 500)` on delete;
+   - `err.Error()` on `listSsoProviders`.
+
+   `main` already answers all three with `writeServerError` (`handlers_sso.go`
+   on `main`). If the rebase keeps the branch side of the conflict, PAC-21
+   regresses on create, delete and list. The universal condition ("every
+   PAC-50 500") covers create and delete, but the manifest should name every
+   case so the rebase cannot miss one. It should name `listSsoProviders`
+   explicitly, because that is not a PAC-50 operation.
+2. **The state cookie does not follow PAC-20.** The contract's "`Secure` in
+   production (a deployment property)" agrees with `main`'s rule:
+   `config.DecideSecureCookies` keeps Secure unless
+   `PACEDAY_INSECURE_COOKIES=true`, and `setCookie` in `backend/api/cookies.go`
+   applies it. The stage-4 code calls `http.SetCookie` directly and sets Secure
+   only when `APP_URL` is `https`. That bypasses the helper, which
+   `TestPAC20_NoCookieBypassesSetCookieHelper`
+   (`backend/api/pac20_cookies_test.go:134`) forbids. It is also a different
+   rule from the one the contract describes.
+3. **The callback's clearing `Set-Cookie` is documented wrongly.**
+   `paths/auth.yaml:1038` documents `Max-Age=-1` with no `Secure`. Go's
+   `net/http` serialises `MaxAge: -1` as `Max-Age=0`, and under PAC-20 the
+   deletion carries `Secure` whenever cookies are Secure. The logout cookie
+   (`:615`) uses the same `-1` convention, so this is house style rather than
+   a new error, but a contract test that asserts the literal would fail.
+   Suggested text: "`Max-Age=0` (Go `MaxAge: -1`), plus `Secure` under the
+   same deployment rule as the start".
+4. **The callback's 401 has two forms.** When the session's user row is gone,
+   stage 4 answers `writeError(w, "unauthorized", 401)`, which is JSON. The
+   contract's 401 is `text/plain`, from requireAuth only. Either add the JSON
+   401 to the contract or make stage 4 use the plain-text form.
+5. **Carried from rounds 1 and 2, unchanged and re-checked:**
+   - `APP_URL` is still in no compose file (grep). Stage 4 treats an empty
+     `APP_URL` as "provider not configured", so on the shipped prod compose
+     every start would answer 503. D-2's description only says "no OAuth
+     client". Either the plan adds `APP_URL` or the contract says so.
+   - The generated wrapper answers a missing `provider` with a plain-text
+     `RequiredParamError` (`backend/api/gen/paceday.gen.go:6200`), and `main`
+     installs no `ErrorHandlerFunc`.
+   - `DELETE /api/admin/sso/stepup` falls to `deleteSsoProvider`.
+   - A break-glass caller who holds a live grant consumes it first, because
+     `authorizeWrite` consumes before it checks the list.
+
+### Uncertainties not actually resolved
+
+None new. U-21 and U-22 stand as round 2 left them. The plan should still pin
+the 201 body's thirteen keys with a committed test.
+
+### Other non-blocking
+
+1. Spec §4.3 says "the existing session cookie sets no `Secure` at all". Since
+   PAC-20 that is false on `main`: `issueJWT` goes through `setCookie`. The
+   spec body is frozen and D-7 does not cover this, so §9 should record it the
+   next time the spec is touched.
+2. **OWNER:** D-1 to D-5, D-7 and the 400-vs-403 Note are still *assumed by the
+   factory, pending owner confirmation*. The Note is the most likely to be
+   reversed: the Linear acceptance text says 403 for `sub.example.com`, while
+   the contract says 400 `provider_domain_mismatch`. Either way, nothing is
+   written.
+
+### Verified clean
+
+- **Migration 028.** On this branch (the same set as `main`),
+  `ls backend/storage/migrations` ends at
+  `027_settings_auto_schedule_last_run`. Migration 026 alters only
+  `audit_log`, and 027 alters only `settings`. The stage-4 SQL (named `026_` at
+  `d8ec55a`, to be renamed) creates `sso_stepup_grants` and `sso_events` and
+  alters `sso_providers` and `organizations`. The sets do not overlap, so
+  up → down → up on top of 027 has nothing to collide with. The down
+  migration restores `sso_providers_domain_key` and `idx_sso_providers_domain`.
+- **PAC-21 500 bodies.** On create, delete, start and callback, the 500 is
+  `ErrorResponse` with `{"error":"internal error"}`, which equals
+  `genericServerMessage(500)` (`backend/api/server_errors.go`). The statement
+  that the 500 also covers the grant lookup matches stage 4's
+  `ConsumeSSOStepupGrant` error branch. Create's 500 says the grant stays
+  consumed, and the 400s say it is not consumed. Stage 4 keeps that order:
+  `decodeSSOProviderBody` and the domain check both run before
+  `authorizeWrite`.
+- **Start 500.** Stage 4 answers 500 only when `rand.Read` fails, and it does
+  so before `setStateCookie`, so "no state cookie is set" holds.
+- **Start 403 message.** Stage 4 answers `org membership required` both when
+  the caller has no org and when the org row is gone. The contract names only
+  that text, which settles round 2's item 2.
+- **Undeclared create property, case variants.** In stage 4, both
+  `{"Domain":"acme.com",...}` and `{"domain":"acme.com","org_id":"x",...}` get
+  400 `unknown property: <name>`. Its key check is an exact map lookup, not
+  Go's case-insensitive struct match, so `additionalProperties: false` is
+  enforced as the schema reads.
+- **Callback reason order.** Contract steps 0 to 4 match stage 4 for both
+  providers:
+  - Google: hd → email/email_verified → admin.
+  - Microsoft: tid/verified → tid_changed → email → wids/roles.
+
+  The eight reasons in the `Location` pattern are the eight constants in
+  stage 4.
+- **Session cookie on the callback.** `auth_token` is still `SameSite=Lax` on
+  `main` (`handlers_auth.go:207-214`). The top-level navigation back from the
+  IdP therefore carries it, as the callback description says.
+- **Bundle integrity.** `git show HEAD:contracts/openapi/openapi.yaml |
+  sha256sum` printed
+  `aa76ab724618241ad1a3db176bc618d35bcea52607de233e58e74ce08c35ee8f`, which
+  equals the manifest's `contractHash`.
+
+### Gates run by the challenger
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `5eb62e0`. The working tree was clean before and after, and nothing was
+regenerated:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (100 paths)
+OK: MIGRATION.md covers all 121 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 56.8% (floor 43%) [3723 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+rc=0
+```
+
+Not run:
+
+- **The web gate.** `REGEN=1` writes into the shared host web checkout, and a
+  check-only run against web `main` fails `openapi-check` by construction. The
+  revision-3 `REGEN=1` run (rc=0) was the author's, not mine.
+- **e2e.** There is no handler code on this branch.
