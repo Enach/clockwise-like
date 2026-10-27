@@ -1,12 +1,16 @@
 # Spec — PAC-22: SSO configuration must not disclose identity-provider secrets
 
 - **Linear**: https://linear.app/paceday/issue/PAC-22/stop-returning-oidcclientsecret-and-samlcert-from-apiadminsso
-- **Status**: challenged (v3.2, 2026-10-27). v1 and v2 were rejected (see History). v3
-  was never challenged. v3.1 is v3 checked again against `origin/main` at
-  `6d751f9`, with the open questions answered as factory assumptions (see
-  **Decisions**). The challenge of v3.1 (History) accepted it with changes. v3.2
-  applies every one of those changes, and "Revision v3.2" answers each of them
-  in turn. What changed between v3 and v3.1 is listed under "Revision v3.1".
+- **Status**: draft (v3.3, 2026-10-28), ready for spec-challenger. v1 and v2 were
+  rejected (see History). v3 was never challenged. v3.1 is v3 checked again
+  against `origin/main` at `6d751f9`, with the open questions answered as factory
+  assumptions (see **Decisions**). The challenge of v3.1 (History) accepted it
+  with changes, and v3.2 applied every one of them. **v3.3 is not "accepted"
+  yet**: it changes behaviour the v3.1 challenge accepted (an omitted client
+  secret is now kept on a replace, §3.2, D-12, D-13) and adds AC-22 to AC-26, so
+  it needs its own spec-challenger round before it can be marked accepted. The
+  delta to challenge is listed under "Revision v3.3". OQ-1 to OQ-4 are closed
+  (D-1, D-4, D-7). What changed between v3 and v3.1 is under "Revision v3.1".
 - **Author**: spec-author
 - **Inherited scope** (factory §7 rule 1):
   - **Resolved here**: API-001 (disclosure half; the write half is PAC-50's),
@@ -14,8 +18,8 @@
     403; the three writes are covered by PAC-50, the five sign-in paths by
     PAC-35).
   - **`x-uncertain`**: on `main`, U-21 is on the create request
-    (`contracts/openapi/paths/auth.yaml:1080`) and U-22 is on the response
-    (`auth.yaml:1141`). PAC-50's branch removes **both** markers by observation
+    (`contracts/openapi/paths/auth.yaml:1261`) and U-22 is on the response
+    (`auth.yaml:1322`). PAC-50's branch removes **both** markers by observation
     (§2.8). Once PAC-50 lands (D-5), no marker is left on these operations for
     this spec to resolve. What remains is API-060. This spec also has to rewrite
     the create request's description, which PAC-50 words as "Nothing else is
@@ -39,7 +43,7 @@
 
 | Spec | Covers | State on 2026-10-27 |
 |---|---|---|
-| **PAC-22** (this one) | Identity-provider secrets stop crossing the API boundary. The response becomes a described shape. A configuration that cannot work is refused when it is offered. SSO can be suspended and resumed. | spec draft v3.1 |
+| **PAC-22** (this one) | Identity-provider secrets stop crossing the API boundary. The response becomes a described shape. A configuration that cannot work is refused when it is offered. SSO can be suspended and resumed. | spec draft v3.3 |
 | **PAC-50** | Who may write an SSO configuration and for which domain. Removal of nothing is reported as such. Changes are recorded. | contract on `factory/pac-50-contract`; implementation PR #212 open, not merged |
 
 The line is drawn at *decisions about privilege*. Everything in this spec is a
@@ -86,7 +90,12 @@ the organisation:
 
 ## 2. Current behaviour
 
-Every claim was read from source on `origin/main` at `6d751f9` for this revision.
+Every claim was read from source on `origin/main` at `6d751f9` for v3.1, and
+re-checked for v3.3 on `origin/main` at `69ffa92`. Between the two, nothing
+changed in the SSO handlers, the SSO storage, sign-in detection, the domain
+rule or the sign-in tests (`git diff --stat 6d751f9 69ffa92` on those paths is
+empty). The contract fragment, the route table, the audit register and the audit
+log call sites did change, and their citations below are the `69ffa92` ones.
 None was carried over from v3. Some line numbers differ from v3 because PAC-21,
 PAC-35 and PAC-45 have since landed. Nothing was executed for this spec; the
 behaviour described is what the code says. Where a claim is an inference, it is
@@ -106,10 +115,11 @@ columns are selected into the struct on every read: the column list is at
 
 The struct has no tags, so `encoding/json` emits the Go field names and the keys
 are PascalCase. The contract documents the full PascalCase shape, including
-`OIDCClientSecret` (`contracts/openapi/paths/auth.yaml:1122`) and `SAMLCert`
-(`:1132`). It says it does so because that is what the code does, not because it
-is intended (`:1126`). The list response is a bare array at the top level
-(`handlers_sso.go:250`, `auth.yaml:700`).
+`OIDCClientSecret` (`contracts/openapi/paths/auth.yaml:1303`) and `SAMLCert`
+(`:1313`). Its note on the client secret says it is "Returned in plaintext to any
+org member by both POST and GET", and that this is documented because it is what
+the code does, not because it is intended (`:1306-1308`). The list response is a bare array at the top level
+(`handlers_sso.go:250`, `auth.yaml:840`).
 
 The columns are plain `TEXT` with no encryption at rest
 (`backend/storage/migrations/008_sso_providers.up.sql:9,12`).
@@ -121,11 +131,13 @@ channels were checked:
   both unconditionally (`backend/sentry.go:64-78`).
 - **The request logger** prints only method, path and duration
   (`backend/api/middleware.go:91`).
-- **The audit log** has seven `WriteAuditLog` call sites, and none is on an SSO
-  path (`api/handlers_nlp.go:69`, `api/handlers_schedule.go:212`,
-  `engine/compression.go:192`, `engine/focus_time.go:110`,
-  `engine/focus_time_cleaner.go:47`, `engine/smart_schedule.go:331`,
-  `nlp/parser.go:235`).
+- **The audit log** has eleven `WriteAuditLog` call sites on `69ffa92`, and none
+  is on an SSO path (`api/handlers_credentials.go:110`, `:132`, `:134`,
+  `api/handlers_nlp.go:69`, `api/handlers_schedule.go:212`,
+  `auth/credential_lifecycle.go:71`, `engine/compression.go:192`,
+  `engine/focus_time.go:110`, `engine/focus_time_cleaner.go:47`,
+  `engine/smart_schedule.go:331`, `nlp/parser.go:241`). The four new ones are
+  PAC-67's and record only a provider name and a revocation outcome.
 - **Error responses** no longer echo errors raw. Since PAC-21, an OIDC setup
   failure answers a generic message and sends the detail only to the log and
   Sentry (`handlers_sso.go:69-72`, `backend/api/server_errors.go:41-57`). Any
@@ -134,12 +146,20 @@ channels were checked:
 ### 2.2 There is no update operation; the single write replaces
 
 There are exactly three admin routes: create, list, and delete by domain
-(`backend/api/routes.go:172-175`). **There is no update operation.** The single
+(`backend/api/routes.go:173-176`). **There is no update operation.** The single
 write is an upsert keyed on domain. On conflict it overwrites every column from
 `EXCLUDED`: provider name, type, enabled, issuer, client id, client secret and all
-three SAML values (`sso_providers.go:63-73`). It is a replace, not a merge, and
-`backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`)
-asserts that.
+three SAML values (`sso_providers.go:63-73`). It is a replace, not a merge. `backend/storage/sso_providers_test.go:59`
+(`TestUpsertSSOProvider_Update`) was cited by v3.2 as asserting that; the
+contract stage found it asserts only the provider name (§6).
+
+**Where the stored secret goes at sign-in.** Both the start route and the callback
+build the sign-in client from the stored issuer, client id and client secret
+(`handlers_sso.go:64-68`, `:121-125`). The client discovers the identity
+provider's endpoints from the stored issuer (`backend/auth/oidc.go:41`) and
+hands the secret to the token endpoint that discovery names
+(`oidc.go:50-55`). So whoever chooses the issuer chooses where the stored client
+secret is sent at the next sign-in. This matters for D-13.
 
 ### 2.3 An unusable configuration is accepted
 
@@ -157,7 +177,7 @@ The failure comes later and does not help:
   it with 501 "SAML not yet supported" (`:56-59`). SAML can be configured but does
   not work, by design.
 
-This is API-060, and it is what U-21 (`auth.yaml:1080`) asks to decide. PAC-35
+This is API-060, and it is what U-21 (`auth.yaml:1261`) asks to decide. PAC-35
 pinned the start route's 501 and 500 answers in Go
 (`backend/api/pac35_auth_flows_test.go:396`) and left fixing them to this spec
 (`docs/specs/PAC-35.md`, D-5).
@@ -282,8 +302,13 @@ The actors:
 
 Any member can see that SSO is configured for their organisation, which identity
 provider it points at, and whether it is currently active. Nobody can read back
-the client secret or the signing certificate, from any response of any operation.
-The secrets are write-only: they can be supplied and replaced, never retrieved.
+the client secret or the signing certificate, from any response of any operation,
+whether it succeeds or is refused, under any name, in any letter case and in any
+encoding a client would decode. The secrets are write-only: they can be supplied
+and replaced, never retrieved. The secrets are represented in a response at most
+by a yes/no "on file" indicator, the same treatment PAC-24 gives a user's
+language-model key, and the owner's 2026-10-27 decision ("Keys stay write-only
+(PAC-24)") confirms for keys.
 
 A reader can still tell whether a secret is on file, for each of the two
 secrets: the client secret and the signing certificate. "Configured, no secret
@@ -300,16 +325,40 @@ reader must still be able to see what they hold.
 The trade-off is deliberate: someone who forgets a client secret cannot retrieve
 it and must re-enter it.
 
-### 3.2 Supplying a configuration means supplying all of it
+### 3.2 A write replaces the configuration, except a client secret it leaves out
 
-The configuration write stays a replace (§2.2). **This spec does not turn it into
-a merge.** If a configuration write leaves out one of the configuration's values,
-that value is stored as absent. The stored value is not kept. So changing any
-part of the configuration means supplying all of it, secrets included. Renaming
-a provider means re-entering its secret. That cost is accepted. A merge would
-quietly change the stored-data meaning of an operation that already exists, and
-would bring back the question of what "required" means for a value that is
-already stored.
+The configuration write stays a replace for every value a reader can see (§2.2):
+the provider's name and kind, the issuer and the client identifier are all
+supplied on every write (§3.4) and stored as supplied.
+
+**The client secret is the one exception (D-12).** Because nobody can read it
+back, a client that edits a configuration cannot send the stored secret back
+with it. Under a pure replace, every such edit would either force the person to
+re-enter a secret they may no longer have, or erase it. PAC-24 met the same
+problem for the language-model key and made an omitted key mean "keep what is
+stored"; this spec does the same for the client secret:
+
+- **A write that leaves the client secret out keeps the stored one**, unchanged.
+- **A write that supplies a client secret replaces the stored one** with it.
+- **A write cannot clear the client secret.** A supplied secret must be
+  non-empty (D-2). An empty or explicitly null secret is refused and changes
+  nothing. Removing the whole configuration is the way to remove its secret.
+
+**Keeping a secret is bound to where it is sent (D-13).** The stored secret is
+kept only when the write leaves the issuer and the client identifier exactly as
+stored. A write that changes either of them must supply the secret, or it is
+refused, naming the secret, and nothing changes. Otherwise anyone permitted to
+write could point the configuration at an issuer they control, leave the secret
+out, and receive the organisation's secret at the next sign-in (§2.2): a
+write-only secret that can be redirected to its writer is not write-only.
+
+**A secret can only be kept if there is one to keep.** If no non-empty client
+secret is on file (a configuration stored before this change with an empty
+secret, or a configuration of the unsupported kind), a write that leaves it out
+is refused, naming the secret, as a new configuration without one is.
+
+A write that creates a configuration has nothing to keep, so it must supply the
+secret (§3.4).
 
 ### 3.3 Whether SSO is active is not part of the configuration
 
@@ -362,7 +411,9 @@ If someone setting up SSO leaves out something their kind of identity provider
 needs to complete a sign-in, they are told at once, and told what is missing.
 They do not find out later when a colleague cannot log in. Because the
 configuration write replaces (§3.2), "required" means required on every
-configuration write. Values already stored do not count.
+configuration write, and values already stored do not count, with one exception:
+the client secret may be left out of a write that replaces a configuration under
+the conditions of §3.2 (D-12, D-13).
 
 A kind of identity provider that the product cannot complete a sign-in with is
 refused when it is offered. It is not stored only to be rejected at sign-in (D-1).
@@ -412,9 +463,12 @@ organisation members and audit listings among them). A later stage must not
 None of these tests exist (§2.6). Each criterion says whether it fails today or
 guards behaviour that already holds:
 
-- **Fail against `main` today**: AC-1 to AC-10, AC-12, AC-15, AC-16 and AC-18 to
-  AC-21. (AC-4 fails today only because the property it reads does not exist
-  yet.)
+- **Fail against `main` today**: AC-1 to AC-10, AC-12, AC-15, AC-16, AC-18 to
+  AC-22 and AC-24 to AC-26. (AC-4 fails today only because the property it reads
+  does not exist yet. AC-22 fails today because an omitted secret is stored
+  empty.)
+- **AC-23**: guards today's replace of a supplied secret; it is new only in that
+  sign-in is asserted to use the new secret.
 - **AC-11**: one half guards existing behaviour, the other cannot be arranged
   today.
 - **AC-14**: a regression guard that already exists and must stay green.
@@ -437,7 +491,15 @@ secret and a non-empty signing certificate, and given a member of that
 organisation who is not a permitted caller, when that member retrieves the
 organisation's SSO configuration, then no value anywhere in the response equals
 either stored value, and no property of the response carries either one under any
-name. The same holds when the caller is a permitted caller.  `[contract]`
+name. The same holds when the caller is a permitted caller.
+
+The test asserts this by searching the raw bytes of the response body, not by
+reading properties: for each of the two stored values, neither the value itself
+nor its JSON-escaped form occurs anywhere in the body, in any letter case. The
+stored values are chosen so that this search is meaningful: each is long, unique
+to the test, and the certificate contains a line break (so its escaped form
+differs from its raw form). The same search is applied to the headers.
+`[contract]`
 
 AC-2. Given a permitted caller, when they submit a complete configuration of the
 supported kind with a non-empty client secret, and the request succeeds, then the
@@ -446,7 +508,10 @@ supplied secret. Given a permitted caller who submits the same configuration and
 also supplies a signing certificate, then the request is refused (AC-18) and the
 response, whatever its status, contains neither supplied secret. Given a member
 who is not a permitted caller, when they make either submission, then the
-response, whatever its status, contains neither supplied secret.  `[contract]`
+response, whatever its status, contains neither supplied secret. Every assertion
+in this criterion is the raw byte search of AC-1, applied to the supplied
+values and, where a configuration was already stored, to the stored ones.
+`[contract]`
 
 AC-3. Given a stored configuration whose client secret is non-empty, when it is
 retrieved, then a named property of the response, documented as meaning "a client
@@ -479,6 +544,14 @@ AC-6. Given an organisation with no SSO configuration, then one, then more than
 one, when its configurations are retrieved each time, then the top level of the
 response is a named container and not a bare sequence, and the response validates
 against the described shape in all three cases.  `[contract]`
+*Contract-stage note (2026-10-27, contract revision 1.1):* an organisation can
+hold at most one listed configuration today (both domains are unique and the list
+joins them exactly, `008_sso_providers.up.sql:3`, `007_organizations.up.sql:4`,
+`backend/storage/sso_providers.go:89`), so "more than one" cannot be arranged
+through the API. The contract manifest tests none and one through the API, and
+the "more than one" case by validating a constructed container of two items
+against the described shape. The criterion's intent (the shape holds for any
+count) is unchanged.
 
 **Validation at entry**
 
@@ -488,8 +561,10 @@ leaves out any one of the values that kind needs to complete a sign-in (D-2), th
 the request is rejected with a client error naming the missing value, and
 afterwards no configuration exists for that domain. The test is run once for each
 required value. Given a stored, working configuration for the domain, when the
-same incomplete submission is made, then it is rejected the same way and the
-stored configuration is unchanged.  `[contract]`
+same incomplete submission is made, leaving out any one required value other than
+the client secret, then it is rejected the same way and the stored configuration
+is unchanged. (Leaving the client secret out of a write that replaces a
+configuration is AC-22, AC-24 and AC-25.)  `[contract]`
 
 AC-8. Given any state, when a permitted caller submits a configuration for the
 kind of identity provider the product cannot complete a sign-in with, then the
@@ -508,6 +583,47 @@ exists for that domain. The test is run once for each such value. Given a stored
 working configuration for the domain, when the same submission is made, then it
 is rejected the same way and the stored configuration is unchanged (D-8).
 `[contract]`
+
+**A client secret left out of a replace (D-12, D-13)**
+
+AC-22. Given a stored, active configuration of the supported kind with a non-empty
+client secret, pointing at a working identity provider that accepts only that
+secret, when a permitted caller replaces the configuration supplying a new
+display name and the same issuer and client identifier, and leaves the client
+secret out, then the write succeeds, its response carries no secret (AC-2's byte
+search), the "client secret on file" indicator is still true, the display name
+is the new one, and afterwards a sign-in through that provider completes and
+issues a session. The identity provider refusing any other secret is what proves
+the stored secret was kept and used.  `[unit]`
+
+AC-23. Given the same stored configuration and an identity provider that accepts
+only a second, different secret, when a permitted caller replaces the
+configuration supplying that second secret, then the write succeeds and a
+following sign-in completes and issues a session. Given instead that the write
+supplies the second secret while the identity provider still accepts only the
+first, then the following sign-in does not issue a session. A supplied secret
+replaces the stored one; it is never ignored.  `[unit]`
+
+AC-24. Given a stored configuration with a non-empty client secret, when a
+permitted caller replaces it changing the issuer and leaving the client secret
+out, then the request is rejected with a client error naming the client secret,
+the stored configuration (issuer and secret included) is unchanged, and the
+caller's write authorization is unspent. The test is run a second time changing
+the client identifier instead of the issuer. When the same write supplies a
+client secret, it succeeds.  `[contract]`
+
+AC-25. Given a configuration stored before this change with an empty client
+secret, arranged through storage, when a permitted caller replaces it leaving the
+client secret out, then the request is rejected with a client error naming the
+client secret, and the stored configuration is unchanged. The same holds for a
+stored configuration of the unsupported kind.  `[contract]`
+
+AC-26. Given a stored configuration with a non-empty client secret, when a
+permitted caller replaces it supplying the client secret as an empty value, and
+again supplying it as an explicit null, then each request is rejected with a
+client error naming the client secret, the "client secret on file" indicator is
+still true, and the stored secret is unchanged (a following sign-in through a
+provider that accepts only the stored secret completes).  `[contract]`
 
 **Active state**
 
@@ -594,7 +710,9 @@ AC-17. Given a permitted caller holding exactly one unspent write authorization
 under PAC-50's rule, when they submit a configuration that AC-7 or AC-8 refuses,
 and then submit a corrected configuration without obtaining a new authorization,
 then the first submission is refused as AC-7 or AC-8 says, and the second
-succeeds.  `[unit]`
+succeeds. The same holds when the first submission is refused as AC-24, AC-25 or
+AC-26 says: those refusals need the stored configuration, and they are decided
+before the authorization is spent (D-13).  `[unit]`
 
 **Preserved sign-in behaviour**
 
@@ -612,7 +730,8 @@ must keep signing in after this change.)*
   and the start route's "not configured" answer never contact one. It does need a
   permitted caller in the e2e stack, arranged through whatever PAC-50 provides
   there.
-- **AC-10, AC-14 and AC-16** are handler-level tests against a real database. The
+- **AC-10, AC-14, AC-16, AC-22 and AC-23** are handler-level tests against a
+  real database. The
   in-process fake identity provider that the sign-in tests already use
   (`handlers_sso_test.go:30-93`) stands in for the provider. A full e2e sign-in
   would need an identity provider that the e2e stack does not run on `main`, and
@@ -663,11 +782,20 @@ must keep signing in after this change.)*
   `sso_provider_written`, with the transition named in the details' operation
   field (D-10). If a migration appears anywhere in this work, scope has grown and
   should be challenged rather than accepted. PAC-50's own migration is PAC-50's.
-- **The configuration write stays a replace for every configuration value**
-  (§3.2). `backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`)
-  protects that today. The one deliberate change is that the active state is no
-  longer a value of the configuration write (§3.3). If the storage test asserts
-  otherwise, it changes for that one property only, and the plan says so.
+- **The configuration write stays a replace for every value a reader can see**
+  (§3.2). The two deliberate changes are that the active state is no longer a
+  value of the configuration write (§3.3), and that a client secret left out of a
+  replace is kept rather than stored empty (§3.2, D-12). *Corrected at the
+  contract stage (2026-10-27):* `backend/storage/sso_providers_test.go:59`
+  (`TestUpsertSSOProvider_Update`) does not protect this today: it asserts only the
+  provider name after a replace and writes the active state as true both times.
+  The plan names new assertions: every other configuration value is replaced, the
+  active state survives a replace, and an omitted client secret survives a
+  replace.
+- **Sign-in keeps using the stored client secret.** A configuration whose secret
+  was kept by a write that left it out must sign in exactly as before that write
+  (AC-22). The existing guards (§2.6) seed rows through storage and cannot see a
+  secret lost by the write path, so AC-22 is the regression test for this.
 - **Sign-in routing reads the same rows** (`backend/auth/sso_detect.go:37`). It
   is unaffected except where AC-9 deliberately changes it. It is protected at the
   status level by `pac35_auth_flows_test.go:803`.
@@ -689,7 +817,7 @@ A revert brings the leak back, in full, for every organisation. So a revert is n
 a neutral act: treat it as reopening a critical finding, not as a rollback. If a
 defect is found after release, prefer fixing forward.
 
-Two things do not roll back cleanly:
+Three things do not roll back cleanly:
 
 1. **Secrets entered after release cannot be read back through the API.** They
    are in the database, so nothing is lost. Anyone who relied on reading them back
@@ -702,15 +830,27 @@ Two things do not roll back cleanly:
    revert would silently resume it. Before reverting, resume anything that should
    be active, and remove anything that must stay off.
 
+3. **After a revert, a write that leaves the client secret out erases it.** The
+   pre-release write is a pure replace (§2.2), so a client built against this
+   change, which leaves the secret out when it is not being changed, would store
+   it empty, and sign-in for that organisation would then fail. Before reverting,
+   stop any client that writes SSO configuration without the secret; after a
+   revert, every write must carry the secret again.
+
 The other changes a consumer could notice all revert with the code, because no
 stored state depends on them: the removed secret properties, the key casing, the
 response container, and the refusal of configurations that used to be accepted.
 
 ## 8. Open questions
 
-v3's four open questions are answered under **Decisions**: OQ-1 as D-1, OQ-2 as
-D-4, OQ-3 as D-7, OQ-4 as D-4. All are factory assumptions pending owner
-confirmation. One new question remains, and it does not block the contract:
+**OQ-1 to OQ-4 are closed.** v3's four open questions are answered under
+**Decisions**: OQ-1 (refuse SAML at submission) as D-1, OQ-2 (out-of-tree
+consumers) as D-4, OQ-3 (split the audit row) as D-7, OQ-4 (rotation notice) as
+D-4. No owner answer exists for any of them in the factory's owner-decisions
+record (checked 2026-10-28), so each is the most conservative option and is
+recorded as assumed by the factory, pending owner confirmation. The questions
+below remain open for the owner. None blocks the contract, because each has a
+recorded factory assumption:
 
 **OQ-5: Is two writes to fix-and-resume acceptable?** *Owner: human (product),
 non-blocking.* D-3 means fixing a suspended configuration and resuming it takes
@@ -740,6 +880,25 @@ only by asking the operator. The factory kept D-6, because the other option lets
 any member switch off the organisation's login, which widens who can act. The
 owner should know the limit exists.
 
+**OQ-8: Is "operator only" acceptable for a subdomain configuration stored under
+`main`'s suffix rule?** *Owner: human (product), non-blocking.* Raised by the
+contract challenge (2026-10-27). Before PAC-50, `createSsoProvider` accepts a
+subdomain of the org's domain (`domain/domain.go:45-49`), so a member of
+`acme.com` can store a configuration for `sub.acme.com`. Once PAC-50's exact rule
+lands, such a row stays active for sign-in (detection looks up the email's own
+domain), is not listed (the list joins exactly), and cannot be suspended (AC-21)
+or deleted (PAC-50) through the API. Only the operator can turn it off. Production
+has zero users, so none exists there (D-4); other deployments may have some. The
+factory's answer is D-11.
+
+**OQ-9: Should a changed issuer or client identifier require the secret again?**
+*Owner: human (product), non-blocking.* D-13 says yes: the stored secret is kept
+only while the issuer and client identifier are unchanged. The cost is that
+someone correcting a mistyped issuer must re-enter the secret. The alternative
+(keep the secret whatever else changes) lets a permitted caller redirect the
+organisation's secret to an issuer they control (§2.2), so the factory did not
+take it.
+
 ## Decisions
 
 These answer v3's open questions and the gaps found while re-checking it against
@@ -766,7 +925,9 @@ pending owner confirmation** (2026-10-27).
 - **D-2: for the kind of provider that works, the values it needs are the issuer,
   the client identifier and the client secret.** All three are used to complete a
   sign-in today (`handlers_sso.go:64-68`, `:121-125`). Each is required, non-empty,
-  on every configuration write (§3.2). The contract names them. Requiring the
+  on every configuration write, except that the client secret may be left out of
+  a write that replaces a configuration under D-12 and D-13; when it is supplied,
+  it must be non-empty (§3.2). The contract names them. Requiring the
   secret is the conservative reading: a configuration without one is the
   "configured but no secret" state AC-3 exposes, and it cannot complete the
   server-side code exchange. It also means a public client (PKCE, no secret)
@@ -824,7 +985,7 @@ pending owner confirmation** (2026-10-27).
     restriction is recorded as out of scope (§5).
   - **The implementer also** marks API-060 and API-066 Fixed (PAC-22), marks
     API-092 Fixed once the list's 200 and 403 are asserted, and re-cuts audit
-    batch B1 (`api-audit.md:526-530`) along the PAC-22/PAC-50 line.
+    batch B1 (`api-audit.md:528-531`) along the PAC-22/PAC-50 line.
   - Assumed by the factory, pending owner confirmation.
 - **D-8: a submission of the supported kind that carries any value of the
   unsupported kind is refused, not stored and not discarded** (AC-18).
@@ -873,6 +1034,108 @@ pending owner confirmation** (2026-10-27).
   as scope growth. If the plan finds the existing kind cannot carry it, that is a
   finding for the spec, not a migration to add quietly. Assumed by the factory,
   pending owner confirmation.
+- **D-11 (answers OQ-8): a subdomain configuration stored under `main`'s suffix
+  rule is the operator's to remove; the API is not widened to reach it.**
+  - **Why.** Reaching it through the API would mean giving setSsoProviderState,
+    the list or PAC-50's delete a suffix rule again, which lets one organisation
+    act on, or see, configurations for domains it does not exactly own. That is
+    the widening AC-21 and PAC-50 close.
+  - **What it costs.** In a deployment that holds such a row, an organisation's
+    admins cannot suspend it themselves; they ask the operator, as OQ-7 already
+    accepts for some organisations. Nothing is deleted or rewritten by PAC-22.
+  - **The release.** Production has zero users (D-4). The release note tells
+    other deployments' operators to look for configurations whose domain is not
+    exactly an organisation's domain.
+  - Assumed by the factory, pending owner confirmation.
+- **D-12: a client secret left out of a write that replaces a configuration is
+  kept; a supplied one replaces it; it can never be cleared by a write** (§3.2,
+  AC-22, AC-23, AC-26).
+  - **Why.** This reverses v3.2 §3.2, which kept a pure replace. A write-only
+    value under a pure replace is erased by every edit that does not re-enter it;
+    PAC-24 §0 made exactly this argument for the language-model key and chose
+    "omitted means kept". The owner's 2026-10-27 decision says keys stay
+    write-only as in PAC-24, and the PAC-22 ticket's acceptance asks for the same
+    behaviour as PAC-24. Keeping is also the option that never loses a stored
+    secret.
+  - **Why it cannot clear.** PAC-24 lets an empty value clear a setting. Here an
+    empty secret is a configuration that cannot sign in (D-2), so it is refused;
+    removing the configuration is the way to remove its secret. This deletes
+    nothing that the person did not ask to delete.
+  - **What it does not change.** Every other value is still replaced as supplied,
+    and all of them are still required (D-2). The signing certificate cannot be
+    supplied at all (D-8), so it has no "kept" case.
+  - Assumed by the factory, pending owner confirmation.
+- **D-13 (answers OQ-9): a secret is kept only while it would be sent to the same
+  place.** A write that changes the issuer or the client identifier must supply
+  the secret (AC-24). A write that leaves it out when no non-empty secret is on
+  file is refused (AC-25).
+  - **Why.** At sign-in the stored secret goes to the token endpoint discovered
+    from the stored issuer (§2.2). Without this rule, "write-only" would be
+    defeated by one write: point the issuer elsewhere, leave the secret out,
+    start a sign-in. The client identifier is included because a secret belongs
+    to one client registration.
+  - **The comparison** is exact, on the values as stored. A change that only
+    alters letter case or a trailing slash still counts as a change: the factory
+    does not guess which spellings an identity provider treats as the same.
+  - **The authorization.** These refusals need the stored configuration, unlike
+    the other validation refusals. They are still decided before PAC-50's
+    authorization is spent (AC-17), because §3.4 promises that a refused
+    configuration costs the caller nothing, and nothing is written. This differs
+    from D-9 on purpose: a transition's "not found" is its outcome, while these
+    are refusals of an unacceptable configuration.
+  - Assumed by the factory, pending owner confirmation.
+
+## Revision v3.3 — 2026-10-28
+
+Spec-author, on `factory/pac-22-spec` with `origin/main` at `69ffa92` merged in.
+This revision is not an answer to a challenge. It brings v3.2 in line with the
+PAC-22 ticket's acceptance and with what the contract stage recorded, and it
+needs a spec-challenger round on the items below before the status can become
+"accepted".
+
+**Behaviour changed (challenge these)**
+
+1. **An omitted client secret is kept on a replace** (§3.2, D-12). v3.2 kept a
+   pure replace, under which a write-only secret is erased or must be re-entered
+   on every edit. The ticket's acceptance asks for PAC-24's behaviour (a write
+   that omits the secret keeps the stored one; a write that supplies it replaces
+   it), and the owner's 2026-10-27 LLM decision says keys stay write-only as in
+   PAC-24.
+2. **A kept secret is bound to the issuer and client identifier** (D-13, OQ-9).
+   New: without it, D-12 would let a permitted caller redirect the stored secret
+   to an issuer they control (§2.2, `oidc.go:41`, `:50-55`).
+3. **New criteria**: AC-22 (omitted secret kept, and sign-in still works with
+   it: the regression test the ticket asks for), AC-23 (a supplied secret
+   replaces), AC-24 (changed issuer or client identifier without a secret is
+   refused, authorization unspent), AC-25 (nothing to keep), AC-26 (empty or
+   null secret refused, nothing cleared). AC-7 and AC-17 are adjusted to match.
+4. **AC-1 and AC-2 now prescribe a raw byte search** of the response body (and
+   headers), for the raw and the JSON-escaped form of each value, in any case,
+   as the ticket's acceptance requires. §3.1 says the secrets are represented at
+   most by a yes/no indicator.
+
+**Brought in from the contract branch** (`factory/pac-22-contract` at `4b1d455`,
+which had edited this spec there): the AC-6 contract-stage note, the §6
+correction about `TestUpsertSSOProvider_Update`, OQ-8 and D-11. They are now on
+the spec branch so the two branches do not disagree.
+
+**Refreshed against `69ffa92`**: the contract citations (U-21 at
+`auth.yaml:1261`, U-22 at `:1322`, the secret properties at `:1303` and `:1313`,
+the plaintext note at `:1306-1308`, the bare array at `:840`), the route table
+(`routes.go:173-176`), the audit log call sites (eleven, none on SSO), and audit
+batch B1 (`api-audit.md:528-531`). The SSO handlers, storage, detection, domain
+rule and sign-in tests are unchanged since `6d751f9`. PAC-50's PR #212 is still
+open (`origin/impl/pac-50-sso-write-gate-backend` still at `51aa70a`), so D-5
+still holds.
+
+**For the contract stage.** Contract revision 1.1 (`4b1d455`) was written to
+v3.2 and requires the client secret on every write. It must be revised for D-12
+and D-13, and its paired web PR (smart-calendar-flow#120, types regenerated from
+revision 1.1) is therefore stale: the contract stage closes or replaces it when
+it regenerates the types for the revised contract.
+
+**Open questions**: OQ-1 to OQ-4 closed (unchanged answers). OQ-5 to OQ-8
+unchanged. OQ-9 new. All non-blocking, each with a recorded factory assumption.
 
 ## Revision v3.2 — 2026-10-27
 
