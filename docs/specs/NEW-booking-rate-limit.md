@@ -318,3 +318,158 @@ PAC-39 precedent.
   pending owner confirmation.
 
 No decision deletes user data or widens who can see data.
+
+## Challenge — 2026-10-27
+
+Reviewed by spec-challenger at commit `d388e32`, committed state only. This
+ticket has no Linear issue. A search of team PAC for "booking" on 2026-10-27
+found none about rate limiting. This challenge is therefore not posted to
+Linear, and §1 is compared against itself because there is no intake text.
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **No criterion stops a concurrent burst from going over the limit.** Every
+   limit criterion (AC-1, AC-5, AC-6, AC-7) is sequential: "has made 20
+   requests ... when it makes a 21st". The attack in §1 is a script that
+   floods a host "in a few seconds", and a script sends its requests in
+   parallel. A limiter that reads the count, does the work and only then
+   increments passes AC-1..AC-8 as written. Yet it still admits a parallel
+   burst of any size from one client in a fresh window. The spec therefore
+   permits the very pattern it exists to refuse. **Resolve by** adding a
+   criterion of this form: Given a client with no requests in the current
+   window, when it sends K > 20 booking requests concurrently, then at most 20
+   are processed past the limit, and every other one is answered 429 with no
+   booking written. Add the same for the slot-listing limit at 120.
+
+### Non-blocking
+
+1. **A booking is never checked against the host's availability, so §1
+   understates the flood.** `createBooking` checks only two things: the
+   minimum notice (`backend/api/handlers_booking.go:289-292`) and overlap with
+   this link's own bookings (`:297-303`, via `storage.HasOverlappingBooking`
+   at `backend/storage/scheduling_links.go:388-394`). `ConfirmBooking` has a
+   "Re-verify availability" comment (`backend/engine/booking.go:222`) but
+   then only fetches the hosts and inserts the row. A flood is therefore not
+   confined to "every free slot of the next 60 days". Any start after the
+   notice window is accepted, including times outside the link's window and
+   during the host's busy time. This spec is right not to fix that, since it
+   is not about limiting. It is, however, an unrecorded defect in the handler
+   this work touches. It should be entered in `docs/factory/api-audit.md` and
+   ticketed. §1 and §2 should also say it exists, so nobody reads the limits
+   as confining the damage to free slots.
+2. **Flood mail reaches third parties the attacker chooses, not only the
+   booker.** Each host's calendar event lists the booker's email as an
+   attendee (`backend/engine/booking.go:256-260`), and that address also gets
+   the confirmation mail (`:275-276`). §1 names hosts, co-hosts and genuine
+   bookers as affected. It leaves out the arbitrary recipients who are sent
+   invitations from a Paceday host's calendar. This makes the case for the
+   limit stronger, and §1 should name them.
+3. **AC-12 rewrites the B7 row but leaves two other false claims in place.**
+   `docs/security.md:46` claims a "booker-email confirmation flow", but
+   bookings are confirmed immediately (`handlers_booking.go:304-311`).
+   `docs/security.md:58` claims "Server-side validation of booking time vs
+   availability", which item 1 shows does not exist. If AC-12's review only
+   removes "per-slug", the row it edits is still contradicted by the code.
+   Consider widening AC-12 to: "the B7 row and line 46 make no claim the code
+   contradicts".
+4. **AC-8's "no later than one window after the previous sweep" reads like a
+   timer.** The precedent sweeps only when a request arrives
+   (`backend/api/ratelimit_detect.go:43-52`), so with no traffic no sweep
+   runs. The criterion can still be tested, because it is conditioned on
+   "when the next sweep runs". Writing "on the first request after one window
+   has passed since the last sweep" would remove the ambiguity for the plan.
+5. **Q4 leaves out what the repo already ships.** `docker-compose.prod.yml:47`
+   defaults `TRUSTED_PROXIES` to `172.16.0.0/12,192.168.0.0/16,10.0.0.0/8`, so
+   the production compose already trusts the bundled nginx. The real question
+   for the release stage is whether nginx sees the true client address. Nginx
+   sets `X-Real-IP $remote_addr` (`nginx/nginx.conf:8`), which covers only one
+   hop. The bundled config also has no TLS server, although the prod compose
+   publishes port 443. If anything terminates TLS or proxies in front of
+   nginx, every booker becomes one client whatever `TRUSTED_PROXIES` says. Q4
+   should be restated in those terms.
+6. **The spec does not say how IPv6 clients are grouped.** A "client" is a
+   full address. If the edge preserves IPv6 source addresses, one person can
+   rotate addresses within their /64 and is in effect unlimited. If it does
+   not, all IPv6 bookers may share one budget: the bundled nginx listens on
+   `80` only, so IPv6 traffic may arrive translated to a single address. I
+   did not verify how the deployed host behaves. §5 lists cross-replica and
+   distributed floods as accepted gaps. This one belongs there too, unless §3
+   states the grouping instead.
+7. **The e2e margin is tighter than §2 says in one case.** I count about 10
+   booking POSTs per run, not 15: `public-booking.spec.ts` lines 137, 171,
+   192, 202 and 310 plus the UI journeys, `scheduling-links.spec.ts:88`,
+   `seam.spec.ts:287` and `time-format.spec.ts:114`. However, with
+   `E2E_KEEP_STACK=1` (`e2e/global-teardown.ts`) the backend process survives
+   into the next run. Two runs inside 10 minutes then make about 20 POSTs
+   from one client. Q1 already hands the e2e fit to the plan, and it should
+   cover the kept-stack case.
+8. **A page on another origin cannot read `Retry-After`.** The header is not
+   on the CORS safe list, and the CORS middleware sets no
+   `Access-Control-Expose-Headers` (`backend/api/middleware.go:61-85`).
+   Nothing in this spec needs the web to read it, since AC-10 only says "a
+   few minutes", so nothing breaks. If the web is ever meant to show the real
+   wait, the spec would need to require that the header be exposed.
+9. OWNER: is slowing one client from seconds to hours the outcome you want?
+   At 20 per 10 minutes, one IPv4 client can still write 120 bookings an hour
+   (D-1). That fills a typical host's bookable 60 days in an afternoon, and a
+   handful of addresses can do it in minutes. §5 deliberately rejects a
+   per-host cap (D-3) because one attacker could then lock out every genuine
+   booker. §3 states the limit accurately. §1, however, frames the problem as
+   "the host's calendar is useless", and the chosen limits make that slower,
+   not impossible.
+10. OWNER: please confirm three decisions. D-1 sets the limit values. D-3
+    counts per client across all links rather than per host. D-4 counts
+    failed and unknown-link requests, so a genuine booker who gets a few 409s
+    uses up part of their budget.
+11. OWNER: Q3, whether the link-info read should also be limited.
+
+### Criteria I could not falsify
+
+- None. Each of AC-1..AC-11 describes a test that fails today. No booking
+  route answers 429 yet. For any status it does not list, the web page shows
+  the raw server string and fires the "Booking failed" toast
+  (`smart-calendar-flow/src/pages/PublicBooking.tsx:181-183` on
+  `origin/main`). AC-12 can be checked today by reading
+  `docs/security.md:46`. AC-13 is a regression guard that turns red only if
+  the limits are sized wrongly, which is its stated purpose.
+
+### Citations I checked and found wrong
+
+- None was wrong. I checked:
+  - `routes.go:17-19, :23-27`.
+  - `handlers_booking.go:105-122, :143-208, :172-185, :195, :210-312, :289-292,
+    :297-303, :304`.
+  - `ratelimit_detect.go:12-18, :36, :43-52, :54-63, :66-67, :94-114`.
+  - `handlers_sso.go:24-25` and `handlers_settings.go:388-392`.
+  - `ratelimit_detect_test.go:150` and `pac35_auth_flows_test.go:852`.
+  - `api-audit.md:309, :331` and API-062.
+  - The `x-uncertain` markers in `paths/booking.yaml`, at lines 520 and 1840.
+    Neither is on a public booking operation.
+  - That no 429 is documented under the three public operations.
+  - `docs/security.md:46, :52, :58, :85, :89`.
+  - `e2e/docker-compose.e2e.yml:12-15`, which sets no `TRUSTED_PROXIES`, and
+    `e2e/playwright.config.ts:32`.
+  - The web citations `PublicBooking.tsx:102, :131, :139-142, :160, :165-183`
+    and `App.tsx:24`, on `origin/main`.
+
+  The only imprecision is the "roughly 15" count of e2e POSTs (non-blocking
+  item 7).
+
+### Consumers this breaks
+
+- `smart-calendar-flow/src/pages/PublicBooking.tsx:181-183`: a 429 would show
+  "rate limit exceeded" and fire the "Booking failed" toast. AC-10 and AC-11
+  cover this.
+- `clockwise-like/e2e/tests/*`, which all reach the backend as one client
+  behind nginx: covered by AC-13, with the kept-stack caveat in non-blocking
+  item 7.
+- Neither repo has any other consumer of the three public routes. The MCP
+  server does not call them, and the only web caller is `PublicBooking.tsx`,
+  through `src/api/schedulingLinks.ts`.
+- The backend tests that call the booking handlers
+  (`backend/api/handlers_booking_test.go`, 12 references) stay under the
+  booking limit. They do, however, share one `httptest` peer address for the
+  whole package run. The plan must reset the limiter between tests, as
+  `resetDetectLimiter` does (`backend/api/ratelimit_detect_test.go:18-30`).
