@@ -323,3 +323,155 @@ with PRODUCT.md and the earlier owner decisions in docs/specs/\*.md, and each is
   busy rooms; demo coverage loses "on Paceday" and the provider. PRODUCT.md calls
   demo mode "the only built-in way to show the product", so it shows the product
   that exists.
+
+## Challenge — 2026-10-27
+
+*spec-challenger, reviewing the committed spec at `7615006` against api `6d751f9`,
+web `ad52160` and the PAC-41 Linear issue text. I did not see the author's
+reasoning beyond this file.*
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **Re-picking or clearing a room now silently keeps the old room booked, and the
+   spec neither states nor tests it.** Today no room is ever booked, so this cannot
+   happen. Once this spec ships, rooms do get booked. A loaded live event never carries
+   its room (§5; `calendar.yaml:32-34,238-240`), and PATCH never removes a room
+   (`handlers_events.go:100-142`; `calendar.yaml:1376-1379`, PAC-29 D-6). So:
+   (a) the user saves with room A, reopens the event, picks room B and saves, and the
+   event now holds **A and B**; (b) the user reopens the event, switches to "Free
+   text" or presses "Clear room" (`LocationPicker.tsx:60-80`) and saves, and room A
+   stays held while the location text no longer names it. Either way the UI tells the
+   user one thing and the room calendar shows another. That is the trust failure §1
+   describes, in the other direction: rooms are held that the user believes they
+   released. It is also a silent change, which PRODUCT.md principle 3 rules out.
+   *Resolves when* the spec states the observable outcome for (a) and (b) and pins it
+   with an acceptance criterion. One way is to bring room replacement and removal into
+   scope. The other is to record, as a Decision pending the owner, that the earlier
+   room stays booked, with a criterion that requires the user to be told so before
+   saving. "What must not change" alone is not enough. This is a requirement, not a
+   choice of mechanism.
+
+2. **§2.5 and §6 say the room list's answer is protected by tests that do not cover
+   it.** §6 says the room list keeps "same fields … protected by
+   `pac26_wire_keys_test.go`, `pac21_calendar_not_connected_test.go`,
+   `pac21_error_bodies_test.go`". In fact:
+   - `pac26_wire_keys_test.go` covers the free/busy keys and the wire-struct tag check.
+     `calendar.Room` is not in that check's list (`:72-80`), and no test reads
+     `GET /api/rooms`' 200 body.
+   - `pac21_error_bodies_test.go` never names `/api/rooms` or `listRooms`. Only its
+     repo-wide static guard (`TestPAC21NoRawErrorsInResponseBodies`, `:431`) touches
+     that handler, and only indirectly.
+   - Only the 401 is exercised directly (`pac21_calendar_not_connected_test.go:87`).
+
+   After this spec, booking depends entirely on `id` being the bookable address under
+   the JSON key `id`. A rename or retag of that field would silently stop every booking
+   while every listed test stays green. *Resolves when* §2.5 and §6 say that no test
+   pins the room list's `{id, name}` body (as §6 already does for free text) and the
+   spec requires one, or else cite a test that really does pin it.
+
+3. **AC-8 allows the "synced" chip to keep naming a provider.** The chip's tooltip
+   reads "We can read this person's calendar via Google Calendar" whenever the
+   provider is not `outlook` (`CoverageBadge.tsx:83-86`). Once `provider` is removed,
+   it says "Google Calendar" for everyone. That includes Outlook-connected callers,
+   whose `known` status comes from Microsoft (`engine/freebusy_service.go:119-127`).
+   §3 says the chip "carries no provider mark", and D-2 drops the provider because the
+   server does not report it. Yet a test written to AC-8 ("shows no provider mark")
+   passes while the tooltip still claims a provider. *Resolves when* AC-8, or a new
+   criterion, requires that the "Availability synced" chip names no calendar provider
+   anywhere, including its tooltip and accessible text.
+
+4. **The inherited-scope list leaves out an open finding on an operation it names.**
+   The header lists every finding on the room-list and free/busy-query operations
+   (resolved, already fixed, or split out), but it omits **API-077**
+   (`api-audit.md:335`, Reported, `POST /api/freebusy`: no `end_time > start_time`
+   check). PAC-47 lists that finding as inherited on the same operation
+   (`factory/pac-47-spec`, `PAC-47.md:31`). Under README §7 rule 1, the contract stage
+   will have to decide whether this work "modifies" that operation, and the spec gives
+   it nothing to decide with. *Resolves when* API-077 is named in the header as one of
+   resolved, not inherited because the operation's contract is unchanged (with that
+   stated), or split, with the same reasoning D-4 gives. OQ-2 should then cover it the
+   way it covers API-046.
+
+### Non-blocking
+
+1. AC-3 covers list rows only. The selected-room card renders the same empty detail
+   line (`LocationPicker.tsx:131-135`), and §3 says there is "no empty placeholder".
+   AC-3 should cover the selected card too.
+2. §3 says "Demo rooms have a name and an address". AC-10 asks only for "an
+   identifier and a name", and today's demo ids are `r1`…`r7` (`client.ts:137-143`).
+   Since `id` *is* the address (D-1), AC-10 should require each demo room's
+   identifier to be a room address the live PATCH would accept
+   (`^[^@\s]+@resource\.calendar\.google\.com$`). Otherwise demo mode books rooms by
+   an id the real product would reject.
+3. Error and unavailable states are not addressed. When the room list fails (401 for
+   a user with no Google credential, which includes an Outlook-connected user, because
+   the handler uses the Google client: `handlers_events.go:312-317`; or 500), the
+   picker swallows the rejection. Search uses `try/finally` with no catch (`:48-53`),
+   and the lookup uses `.then` with no catch (`:35`). The picker goes on showing
+   "No rooms matched." or "Start typing to search rooms." (`:165`), which is a claim
+   it did not check, the thing D-3 objects to. The spec should say what the user sees
+   when the room list cannot be read.
+4. D-3 attributes "must not claim what it did not check" to PRODUCT.md principle 3.
+   Principle 3 (`PRODUCT.md:89`) is about automation changes being visible and
+   confirmable, never silent. The conclusion still holds, but the citation is a
+   stretch. Blocking 1 is the stronger use of principle 3.
+5. AC-11 cannot pass until the owner files the follow-up issue (OQ-3). The spec
+   should say what AC-11 requires if OQ-3 is still unanswered when the contract
+   stage starts, for example that the rows stay Reported and carry a note "split from
+   PAC-41".
+6. OWNER: the issue lists API-047, API-075 and API-078 as part of PAC-41's scope. D-4
+   splits them out. The split is well argued (other operations, plus the `OrgMember`
+   `x-uncertain` at `openapi.yaml:8448`), but narrowing the issue's own scope is the
+   owner's call. Confirm D-4 and file the follow-up (OQ-3).
+7. OWNER: OQ-1. Does the product want room details (building, floor, capacity) or
+   room availability? Either one is a new feature that reads more Google directory
+   data.
+8. OWNER: D-2. Should "On Paceday" be decided from free/busy at all? D-2's privacy
+   argument (it would reveal whether an arbitrary address has a Paceday account) is
+   the conservative reading, and I agree it should stand until the owner says
+   otherwise.
+
+### Criteria I could not falsify
+
+- None. Every AC from AC-1 to AC-10 has a test that fails on `ad52160` and passes
+  after the change. AC-9 is a stated pin, not a change, and is fine as such. AC-1 is
+  falsifiable only once OQ-4 is settled. The stand-in stores the event body it is
+  given (`e2e/fake-google/events.go:45-57`), but nothing yet asserts that it keeps
+  `resource: true`. AC-11 depends on OQ-3 (non-blocking 5).
+
+### Citations I checked and found wrong
+
+- §2.5 / §6: "the room list's failure bodies are covered (…
+  `pac21_error_bodies_test.go`)" and "same fields … protected by
+  `pac26_wire_keys_test.go`". In fact neither test exercises `/api/rooms`. The 200
+  body has no test, and the 500 body is covered only by the repo-wide static guard
+  (Blocking 2).
+- D-3: PRODUCT.md principle 3 does not say "must not claim what it did not check"
+  (`PRODUCT.md:89`; non-blocking 4).
+- Everything else checked out: `rooms_attendees.go:11-14,25-40`;
+  `handlers_events.go:48,134-140,189-191,311-328`;
+  `handlers_freebusy.go:23-27,83-87`; `freebusy_service.go:34,93,143-151`;
+  `calendar.yaml:368-405,1522-1543,1577-1590`; generated
+  `types.ts:2727-2732,3104-3117` (no non-generated web use of `CalendarRoom`);
+  web `types.ts:159-167,247-263`; `client.ts:136-144,845-866,873-884,1416-1446`;
+  `LocationPicker.tsx:35-36,74,132-134,154,172-193,180-182`;
+  `EventEditForm.tsx:141`; `coverageCache.ts:103-119,137-164`; `teams.ts:11`;
+  `LinkEditDrawer.tsx:184-188,193-194`; `CoverageBadge.tsx:10-27,72-80`;
+  `seam.spec.ts:348-352,163-176`; `calendar.spec.ts:195-217`;
+  `calendarlist.go:11-12`; `fixture.go:46`. api `main` and web `main` have not moved
+  since `6d751f9` and `ad52160`.
+
+### Consumers this breaks
+
+- None, as long as the server stays unchanged as specified. Consumers I checked:
+  - `clockwise-like/mcp/tools.go:207-215` (`clockwise_search_rooms`) passes only `q`
+    and relays the body.
+  - In the web: `contract.ts:64,106`, `client.ts:982-986,1416`, `coverageCache.ts`,
+    `teams.ts:662` and `LinkEditDrawer.tsx:177`.
+  - `contract.test.ts:92-106` already uses `status: "known"` with no provider.
+  - `EventEditForm.test.tsx:25` mocks `LocationPicker` away, so it is unaffected.
+
+  The narrowed `searchRooms` signature (AC-5) and the narrowed coverage types (AC-7)
+  have no other callers on `ad52160`.
