@@ -205,3 +205,169 @@ manifest's `acceptanceTests`):
   Linear comment on PAC-34.
 - `contractHash` is `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` on this
   branch.
+
+---
+
+## Challenge — 2026-10-27
+
+**Verdict**: accept
+
+Reviewed on `factory/pac-34-contract` at `55bc40f`, committed state only. Read against
+`backend/api/handlers_teams.go::getInvite`, `backend/api/handlers_manager.go::getAnalytics`
+and `getTeam`, `backend/engine/manager.go::GetMemberWeek`, `backend/storage/teams.go`,
+`backend/storage/manager.go`, migrations 006, 013 and 016, `mcp/`, `e2e/tests`, and
+`smart-calendar-flow` `main` at `0116820`. There is no blocking finding. Both changes add
+keys only. Every new key comes from a NOT NULL column or from a value the handler already
+computes. No consumer parses either response strictly, and neither field widens who sees
+data. The notes N-1 to N-7 below are non-blocking. N-2 and N-4 suggest wording or a test
+pin, which the author may take or leave.
+
+### Requests wrongly permitted
+
+None. Both operations are GETs, and this contract does not change their parameters.
+Attacked, unchanged:
+
+- `GET /api/teams/invites/does-not-exist` → `getInvite` returns 404
+  `{"error":"invite not found"}` (`sql.ErrNoRows`). The contract says 404. Matches.
+- `GET /api/teams/invites/<accepted token>` → 410 `{"error":"invite is accepted"}`.
+  The contract says 410 `invite is <status>`. Matches.
+- `GET /api/manager/analytics?team_id=not-a-uuid` → 400 `team_id must be a valid UUID`.
+  `?team_id=<a team the caller is not on>` → 403 `forbidden` (`managerTeamScope`).
+  Unchanged, still matches.
+
+### Responses the client cannot handle
+
+None blocking. These payloads were built from the handler and the schema:
+
+1. `getTeamInvite` 200 with the failed-read fallback:
+   `{"teamName":"","inviterName":"","email":"a@b.com","team_id":"5f0c…","expires_at":"2026-11-03T10:00:00.123456Z","inviter_email":null}`.
+   Today's consumer, `normalizeInvite` at `src/api/teams.ts:196`, passes `null` through
+   to `TeamInvite.inviter_email`. That field is typed `string | undefined`
+   (`teams.ts:177`; `BackendInvite` at `teams.ts:191`). Nothing breaks today, because
+   `src/pages/TeamInvite.tsx:71` renders only `invited_email`. **N-5** (frontend stage):
+   the web types must allow `null`. AC-2 already pins the null case.
+2. `getManagerAnalytics` 200 member
+   `{"email":"x@y.com","display_name":"x","is_paceday_user":true,"data_available":false,"weeks":[12 × {…,"data_available":false}]}`.
+   `normalizeAnalytics` (`src/api/manager.ts:599`) keeps the `false` it receives, since
+   `?? true` applies only when the key is missing. It still drops the per-week flag
+   (`manager.ts:600-605`). That is the API-022 defect AC-4 targets, not a new break.
+3. Week order: the contract says `weeks` is newest first, and in the handler `i=0` is
+   `weekStart`. In `AnalyticsTab.tsx`, `ThisWeek` and `Trends` treat `weeks[length-1]`
+   as the latest week, which would be wrong for this operation. But their data comes from
+   `teamsApi.remote.teamAnalytics`, not from this operation. This operation's only
+   consumer is `MembersPanel` (`AnalyticsTab.tsx:378`), which sorts by `week_start`
+   before drawing (`AnalyticsTab.tsx:396`). Clean.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/generated/schemas.ts:224` and `:422`:
+  `ManagerAnalyticsMember` and `TeamInvitePreview` are `z.strictObject`, so the current
+  (not yet regenerated) schemas would reject the new keys. This does no harm: the only
+  imports of `generated/schemas` are `src/api/client.ts:2`, `eventDto.test.ts:3`,
+  `focusWireTypes.test.ts:8` and `components/auth/AuthDialog.tsx:20`, and none of them
+  uses these two schemas. Regenerate after merge, as the manifest says.
+- `smart-calendar-flow/src/api/teamInvites.test.ts:28` still asserts the hand-written
+  `{teamId, teamName, invitedEmail}` fixture. It keeps passing, and AC-2 replaces it.
+  Matches the manifest.
+- `clockwise-like/mcp/` and `clockwise-like/e2e/tests`: a grep for `teams/invites` and
+  `manager/analytics` finds no caller. `e2e/tests/manager-team.spec.ts` checks
+  `analytics_weeks` figures through the roster, not through this operation. Matches the
+  manifest.
+- `clockwise-like/backend/api/gen/paceday.gen.go`: two structs gain fields, and both
+  handlers are hand-written. Matches.
+
+### Contract/implementation divergences
+
+The contract hides none. The one known gap is recorded in `teams.notes.md`: the handlers
+emit the five new keys only once the implementation PRs merge. That is the normal window
+between stage 2 and stage 4. Notes on precision:
+
+- **N-2** The description of `ManagerAnalyticsMember.is_paceday_user` says it is "the
+  same value `ManagerRosterMember.is_paceday_user` carries for this member". That holds
+  for any member both endpoints return. Both read `manager_team_members.member_user_id`
+  for the same `(manager, email)` row, or build the member from the formal team in
+  `listManagerMembers`. However, `team_id` is optional on analytics (API-088) and
+  required on the roster, so an analytics call without `team_id` can list rows that no
+  roster call returns. Suggested wording: "for the same `team_id`".
+- **N-3** `member_user_id` is resolved only when the row is added: `addMember` runs
+  `SELECT id FROM users WHERE email=$1`. Nothing fills it in when the person signs up
+  later; a grep finds no `UPDATE … member_user_id`. A Paceday user who was added before
+  signing up therefore gets `is_paceday_user: false` and is measured through FreeBusy. The
+  wording "resolved to a Paceday user row" is accurate. The web should not present such a
+  member as "not on Paceday". Recorded for the frontend stage.
+- **N-6** The description of member `data_available` lists reasons for `false`:
+  FreeBusy, no `analytics_weeks` rows, consent, PAC-60. There is one more.
+  `GetMemberWeek` scans `COALESCE(analytics_shared_with_manager, true)` from
+  `user_profiles`. When there is no profile row the scan fails and `shared` stays
+  `false`, so the member is unmeasured even though the column default is `true`
+  (migration 016). The definition "true iff any bucket is measured" still holds, so the
+  contract is right and the list is only examples. The behaviour may be a server defect
+  outside PAC-34's scope.
+
+### Uncertainties not actually resolved
+
+This contract claims none, and none is open on the touched operations. The only
+`x-uncertain` in `teams.yaml` near them is at line 610, on `getTeam`.
+`resolvesUncertain: []` is correct.
+
+### Process
+
+- **N-1** There is no `docs/specs/PAC-34.md`, so the stage 1 gate never ran. The author
+  says so in §0 and records D-1 to D-5 as assumed. PAC-36 had no spec either and was
+  accepted. The owner should confirm D-1 to D-5, especially D-2 (inviter email shown to
+  any token holder). The PAC-34 issue title asks for that field by name, so it is an
+  owner request, not a factory choice to widen who sees data.
+- **N-4** "`inviter_email` is null, never `""`": `users.email` is `NOT NULL UNIQUE`
+  (migration 006) with no check against an empty string, so one user row could hold
+  `""`. Suggest that AC-1 pin that an empty email is sent as `null`, so the
+  `format: email` promise holds.
+- **N-7** API-089 is resolved by a code-comment change in the implementation. The
+  contract description already says the route requires a JWT, so there is nothing else to
+  check here.
+
+### Verified clean
+
+- `team_id` and `expires_at` are always present: both columns of `team_invites` are
+  `NOT NULL` (`013_teams.up.sql:19,25`), and `scanInvite` reads both
+  (`storage/teams.go:204`). `expires_at` is set in Go to creation time plus 7 days
+  (`storage/teams.go:176`), as the description says.
+- `inviter_email: null` arises only from a failed read: `invited_by` is
+  `NOT NULL REFERENCES users(id) ON DELETE CASCADE` (`013_teams.up.sql:21`), so deleting
+  the inviter deletes the invite and the preview becomes a 404.
+- A past `expires_at` in a 200: `getInvite` ignores the error from `ExpireOldInvites`
+  (`_ =`), so if that cleanup fails, a lapsed invite can still return 200. The
+  description already tells clients to treat a past value as expired. Covered.
+- Who can see the invite: unchanged. The route is behind requireAuth, any token holder
+  can preview, and the invitee email is checked only on accept (`acceptInvite`). Echoing
+  the full `TeamInvite`, which would expose `invitedBy` and the invite id, was rejected.
+  That rejection is correct.
+- Who can see analytics: `is_paceday_user` tells the caller nothing new.
+  `POST /api/manager/team/members` already returns that row's `member_user_id` in its 201
+  (`storage.ManagerTeamMember`, `readMemberInScope`), to the same caller, for any email it
+  adds. `data_available` is `any(weeks[].data_available)` over buckets the response
+  already contains. The PAC-60 gate (`engine/manager.go:437-441`) runs before the cache
+  is read and returns zero buckets with `data_available=false`. So a Paceday member on no
+  team the caller owns comes back as `{is_paceday_user:true, data_available:false}`,
+  as AC-3 states.
+- Both schemas keep `additionalProperties: false`. Every new key is listed in both
+  `properties` and `required`, so a generated type cannot make it optional.
+- A `[string, "null"]` type with a `format` is already used in the bundle (12 times),
+  and the generator already turns it into `.nullable()` (for example
+  `CadenceGap.last_one_on_one_at`, `schemas.ts:47`).
+- The web always passes `team_id` to analytics (`analytics` in `manager.ts` uses
+  `managerQuery(teamId)`), so the call without `team_id` described in N-2 never comes
+  from the web.
+- Acceptance criteria: the three supplied criteria map onto AC-1 to AC-6 and none is
+  narrowed. AC-3 adds the PAC-60 case and the `any()` invariant, so it tests more, not
+  less.
+- Gate, run by the challenger on `55bc40f`:
+  `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-34-contract`
+  exited 0: `make openapi rc=0`; `OK: bundle is in sync (98 paths)`;
+  `OK: MIGRATION.md covers all 119 operations (0 generated)`;
+  `OK: backend/api/gen matches the contract`; `openapi-check(api) rc=0`; backend lint,
+  mcp lint, backend test, mcp test rc=0; backend coverage 56.2% (floor 43%) rc=0; mcp
+  84.0% (floor 75%) rc=0. The gate regenerated nothing; the worktree was clean
+  afterwards. Web-gate and e2e-gate were not run, because this stage changes neither the
+  web nor any behaviour.
+- `contractHash`: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` gives
+  `5b928eb6…a3954a`, which matches the manifest.
