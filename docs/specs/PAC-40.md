@@ -1003,7 +1003,7 @@ round 3, and they remain conservative.
 ### Non-blocking
 1. **"Sends no duration (or a duration of 0)" does not say which field.**
    `duration` overrides `duration_minutes` whenever it is present, even when it
-   is 0 (`handlers_booking.go:244-250`). A request with `duration_minutes: 30`,
+   is 0 (`handlers_booking.go:249-255`). A request with `duration_minutes: 30`,
    `duration: 0` and an end at or before start does send a non-zero duration,
    yet it is answered "invalid duration", not "duration does not match end
    time". This is from reading source, not the probe. When fixing Blocking 1,
@@ -1024,7 +1024,7 @@ round 3, and they remain conservative.
   answered 400 'duration does not match end time'". This holds only when the
   duration differs from end minus start (Blocking 1).
 
-Checked and correct this round: `handlers_booking.go:125-127, 234-237, 244-250,
+Checked and correct this round: `handlers_booking.go:125-127, 234-237, 249-255,
 259, 262-266, 275-288` (revision 3's citations `:234-237`, `:263-266`,
 `:277-280` are accurate); §3.5 as revised; and that revision 3 changed nothing
 outside §3.5, AC-20 and its own section (`git diff 120e5f0 1b05a05`).
