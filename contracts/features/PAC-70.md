@@ -501,3 +501,83 @@ keys on `origin/main` and 18 here; none is on `testLLMConnection` or
   - Not run: the web gate and the e2e gate. The web regen follows the merge
     (factory §1), and this stage changes no behaviour. This stage posted no
     Linear comment.
+
+## 12. Revision 2 — 2026-10-27 (PAC-70: rebase onto main, rename)
+
+PAC-66-B is now filed as [PAC-70](https://linear.app/paceday/issue/PAC-70),
+related to PAC-66, with a description that links spec Part B. That meets AC-B13,
+the only criterion that blocked the implementation PRs. This revision changes no
+behaviour. It does three things.
+
+1. **Rename.** `NEW-pac66b-llm-base-url.{yaml,md}` become `PAC-70.{yaml,md}`, so
+   the manifest is named after a real Linear issue as every other manifest is.
+   `featureId` is `PAC-70`, `alsoKnownAs` keeps `PAC-66-B` so that the spec's
+   criterion IDs (AC-B1 to AC-B19) still resolve, and `linearIssueUrl` points at
+   PAC-70 with PAC-66 as `parentIssueUrl`.
+2. **Rebase onto main 6d751f9.** Revision 1 was cut from c954521 (#218). Since
+   then PAC-21 (#220) rewrote the `testLLMConnection` 500 and 502 descriptions:
+   it made the 500 one JSON encoding and dropped its `text/plain` alternative.
+   Both descriptions conflicted. The resolution keeps main's wording, which
+   describes the server as it is after PAC-21, and adds only revision 1's
+   PAC-66-B sentences:
+   - **500:** a PAC-66-B refusal is never a 500, including on `openai` and
+     `anthropic` when no key is on file or submitted.
+   - **502:** a redirect from an approved `openai`, `anthropic` or `ollama`
+     destination is not followed, and the key is in the first request only
+     (AC-B7).
+
+   Revision 1 also dropped the `text/plain` content on the 500. Main had already
+   dropped it, so that change merged with no conflict. No other operation
+   conflicted. The spec Part B commits (rounds 1 to 3) were cherry-picked
+   unchanged, because main's `docs/specs/PAC-66.md` had not changed since #214.
+3. **Bundle hash.** `contractHash` is re-measured on this branch:
+   `1da4b019ca9469dbbc17d01c4b6bdf1b23487cf6ff6d91382427a1eb7ad303fe`.
+   `backend/api/gen` needed no change beyond revision 1's, because the edits
+   are all in descriptions and the `LLMDestinationRefusal.property` enum.
+
+**Rejected: keeping the `NEW-pac66b-llm-base-url` names and pointing them at
+PAC-70.** That would leave the only manifest in `contracts/features/` that is
+not named after its issue. The `contract-challenger` and `plan-author` lookups
+start from `PAC-NN`, so the next agent would not find it. Revision 1 is not
+lost: its history is in the cherry-picked commits.
+
+**Rejected: re-opening the design under PAC-70**, for example by taking OQ-B2
+(advertising enabled providers) into this contract now. PAC-70's acceptance is
+landing what the challenger already accepted. OQ-B2, OQ-B6 and OQ-B7 stay as
+`followUps`, which the PAC-70 description also carries.
+
+**For the implementation PRs.** Enach/clockwise-like#219 must be rebased onto
+this branch's contract. Its references to `NEW-pac66b-llm-base-url.{md,yaml}`
+become `PAC-70.{md,yaml}`. Its coverage floor must be kept at or above main's
+(`BACKEND_COVERAGE_MIN`, which is 43 on main; #219 ratcheted it to 49).
+Enach/smart-calendar-flow#109 is regenerated with `REGEN=1 web-gate.sh` against
+the rebased #219. Both PR bodies say `Part of PAC-66`, never `Fixes PAC-66`,
+until both have merged.
+
+### What was run (revision 2, on `factory/pac-70-contract`)
+
+- `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98 paths)`, exit 0.
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-70-contract`,
+  on the rename commit. It regenerated `contracts/openapi/openapi.yaml`, which was
+  committed next. A second run on the commit that adds this section printed
+  `regenerated: none` and the same rc=0 lines and coverage figures.
+
+```
+make openapi rc=0
+regenerated: contracts/openapi/openapi.yaml
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 56.8% (floor 43%) [3646 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+The web and e2e gates were not run at this stage. They belong to the rebased
+implementation PRs (manifest `gates.webGate`, `gates.e2eGate`).
