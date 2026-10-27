@@ -19,14 +19,12 @@ import (
 
 // wantInternalError asserts the PAC-21 body on a 500: exactly
 // {"error":"internal error"}, JSON, no detail.
-func wantInternalError(t *testing.T, what string, rec interface {
-	Result() *http.Response
-}, code int, body string) {
+func wantInternalError(t *testing.T, what string, rec interface{ Header() http.Header }, code int, body string) {
 	t.Helper()
 	if code != http.StatusInternalServerError {
 		t.Fatalf("%s: status = %d %s, want 500", what, code, body)
 	}
-	if ct := rec.Result().Header.Get("Content-Type"); ct != "application/json" {
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Errorf("%s: Content-Type = %q, want application/json", what, ct)
 	}
 	if strings.TrimSpace(body) != `{"error":"internal error"}` {
