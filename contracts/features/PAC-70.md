@@ -581,3 +581,151 @@ mcp coverage rc=0
 
 The web and e2e gates were not run at this stage. They belong to the rebased
 implementation PRs (manifest `gates.webGate`, `gates.e2eGate`).
+
+## Challenge — 2026-10-27
+
+**Verdict**: accept-with-changes (revision 2, 2 blocking)
+
+Reviewed the committed state of `factory/pac-70-contract` at `5ab8fcf`
+(fragment `contracts/openapi/paths/scheduling.yaml`, bundle, `PAC-70.yaml`, this
+document) against spec PAC-66 Part B, the handlers on this branch
+(`backend/api/handlers_llm.go`, `backend/api/server_errors.go`,
+`backend/api/handlers_settings.go`), `smart-calendar-flow` `origin/main`
+(`ad52160`), `mcp/` and `e2e/`. §12 asks this round to confirm the merged 500
+and 502 descriptions. The 502 holds. The 500 does not, and neither does one
+pointer the rename missed.
+
+### Requests wrongly permitted
+
+None new. Round 1's ten attack payloads (2026-10-26) were re-checked against
+the revision 2 fragment. Between revision 1 (`511df39`) and `5ab8fcf` the
+fragment is byte-identical, and the manifest changed only in identity, gates
+and the AC-B13 note. `LLMTestRequest` still has `additionalProperties: false`,
+and the handler still decodes with `DisallowUnknownFields`
+(`handlers_llm.go:39-40`), so
+`POST /api/llm/test {"llmProvider":"openai","llmBaseUrl":"http://10.0.0.1"}`
+is still a 400. No request property can name a destination.
+
+### Responses the client cannot handle
+
+None. The web probe (`smart-calendar-flow/src/api/client.ts:1349-1359`) still
+types only the 200 and shows `data.error` for any non-2xx. The only
+`generated/schemas` imports used at runtime are `CalendarDisconnectUnsupported`
+and `SettingsUpdate` (`client.ts:2`). The `SettingsUpdate` imports drive the
+PATCH key list (`client.ts:745-747`). No code under `src/` outside `generated/`
+names `LLMDestinationRefusal`, `provider_not_enabled` or `destination_not_*`.
+The two new `property` enum values therefore break nothing before the regen.
+
+### Consumers affected
+
+- `mcp/`: no tool reads or writes `llmBaseUrl` or `ollamaBaseUrl`, and none calls
+  `/api/llm/test` (grep, no hits). Unaffected.
+- `e2e/`: only `llm-destination.spec.ts:47` probes, and it is Azure-only.
+  `e2e/docker-compose.e2e.yml:120` sets only the Azure variable, which matches
+  AC-B17's Given. No e2e test on main writes a base URL.
+- Web: as in round 1. The settings save is diff-only and the server does not
+  re-check an unchanged value.
+
+### Contract/implementation divergences
+
+1. **BLOCKING. The 500 body is described as a configuration sentence, but the
+   server sends `internal error`.** §12 says it kept main's 500 wording because
+   it "describes the server as it is after PAC-21". It does not. Try
+   `POST /api/llm/test {"llmProvider":"openai","llmApiKey":""}` with stored
+   `llmBaseUrl` `""` (the public host, approved under PAC-66-B), or
+   `{"llmProvider":""}` (`""` is in `validLLMProviders`,
+   `handlers_settings.go:29`). `nlp.NewLLMClientFromSettings` fails, and
+   `handlers_llm.go:78` answers through `writeServerError`. Its body is
+   `genericServerMessage(500)`, which is `{"error":"internal error"}`
+   (`server_errors.go:33`). The sentence `LLM not configured — set API key in
+   Settings` goes only to the log and Sentry. The contract says otherwise in three
+   places, and this revision edited two of them:
+   - `scheduling.yaml:748-749` (500): "the LLM client could not be constructed
+     (a fixed configuration sentence such as `LLM not configured - set API key
+     in Settings`)".
+   - `scheduling.yaml:664` (the new PAC-66-B bullet): "is the 422, not the 500
+     `LLM not configured`". The manifest's `operationsChanged[0]` and §2 of this
+     document repeat it.
+   - `scheduling.yaml:552`: "`llmProvider: ""` probes with no provider, which
+     reports `LLM not configured`".
+
+   §9 of this document already states the correct behaviour ("the 500 for a
+   client-construction failure is the fixed `internal error`"). The contract
+   therefore contradicts both the server and its own rationale. A client author
+   reading the 500 would show a "set your API key" hint that never arrives.
+   **Fix:** the 500 description says both causes answer `{"error":"internal
+   error"}` and that the configuration sentence is logged only. Line 664 becomes
+   "not the 500" or "not the 500 `internal error`". Line 552 says the empty
+   provider is a 500 `internal error`. `operationsChanged[0]` is aligned to
+   match. No schema shape changes.
+
+2. **BLOCKING. The contract points at a rationale file that no longer exists.**
+   `scheduling.yaml:624`, and through it the bundle (`openapi.yaml:2952`) and
+   every generated description, says "rationale in
+   `contracts/features/NEW-pac66b-llm-base-url.md`". Revision 2 renamed that file
+   to `PAC-70.md`, and the old path is not on the branch. Factory §8 requires the
+   artefact to stand alone, and this is its one pointer to the reasoning.
+   **Fix:** change the path to `contracts/features/PAC-70.md` and re-assemble.
+
+The 502 merge is accurate. A redirect is caught as a provider failure, answered
+through `writeProviderFailure` and then `writeServerError` with 502, which gives
+`upstream provider error`. "never used for a destination refusal" also holds,
+because `writeProviderFailure` turns a `DestinationRefusal` into the 422.
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain: []`). `grep -c 'x-uncertain:'` counts 12 lines
+on `origin/main` and 12 on `5ab8fcf`. Neither operation carries a marker. (§10
+still says 18, the count when revision 1 was cut. See the non-blocking items.)
+
+### Non-blocking
+
+1. OWNER: OQ-B1. D-B1 keeps Ollama only on self-hosted deployments with an
+   approved origin. It is recorded as assumed by the factory and still needs
+   owner confirmation.
+2. OWNER: OQ-B2. Should the client be told which providers are enabled? The
+   hosted settings page keeps offering "Ollama (local)", which can only fail.
+3. OWNER: OQ-B6, second half. May an operator entry carry a path prefix for an
+   OpenAI-compatible gateway? D-B8 says no.
+4. OWNER: OQ-B7. The web Ollama field writes `llmBaseUrl`, which Ollama does not
+   read while `ollamaBaseUrl` holds its stored default.
+5. Some line references are stale on current web main. `client.ts:594` (the
+   diff-only save) and `client.ts:1294-1302` (`llmTest`) are now around `:745-747`
+   and `:1349-1359`. "only `SettingsUpdate` is imported" is now
+   `CalendarDisconnectUnsupported` and `SettingsUpdate`. The conclusion is
+   unchanged. Round 1 NB-2 (`docker-compose.yml:50-52`, really `:56-58`) is
+   still unfixed in §8 and the manifest.
+6. §10 says "The bundle count is still 18". It is 12 on main and on this
+   branch, still unchanged by this contract.
+7. The Linear PAC-70 description still points at
+   `contracts/features/NEW-pac66b-llm-base-url.{md,yaml}` and lists audit
+   finding API-093 as "added by #219". The manifest's `resolvesFindings` is
+   empty. The plan or implementation should reconcile API-093 with this
+   manifest.
+
+### Verified clean
+
+- The fragment between revision 1 and revision 2 is identical (`git diff 511df39
+  5ab8fcf -- contracts/openapi/paths/scheduling.yaml` is empty). Round 1's attack
+  list therefore still applies unchanged.
+- The `acceptanceTests` AC-B1 to AC-B19 are unchanged from revision 1 apart from
+  the AC-B13 note. Round 1 compared them against spec §B4 and found no narrowing.
+- AC-B13: read from Linear on 2026-10-27, PAC-70 exists in team PAC, is
+  `relatedTo` PAC-66, and its description links `docs/specs/PAC-66.md` Part B.
+- The 502 and 422 descriptions agree with `writeProviderFailure` and
+  `genericServerMessage`.
+- Commands run on `5ab8fcf`:
+  - `python scripts/openapi_assemble.py --check` printed
+    `OK: bundle is in sync (98 paths)`, rc=0.
+  - `sha256sum contracts/openapi/openapi.yaml` printed
+    `1da4b019ca9469dbbc17d01c4b6bdf1b23487cf6ff6d91382427a1eb7ad303fe`, which
+    equals `contractHash`.
+  - `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-70-contract`
+    printed `make openapi rc=0`, `regenerated: none`,
+    `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`,
+    `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`,
+    `backend coverage rc=0` (56.8%, floor 43%) and `mcp coverage rc=0`
+    (84.0%, floor 75%). Exit 0.
+  - Not run: the web gate and the e2e gate. This stage changes no behaviour,
+    and they belong to the rebased #219 and smart-calendar-flow#109
+    (`gates.webGate`, `gates.e2eGate`).
