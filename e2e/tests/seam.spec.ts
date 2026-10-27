@@ -99,14 +99,19 @@ test.describe('AC-11 — the shipped binary does not follow a redirection', () =
       ).toBeVisible();
       await assertNotDemo(page);
 
-      // The API says why, in the backend's own words.
+      // The API reports a failure. Since PAC-21 it does not relay the
+      // transport error ("redirect refused") to the client; the evidence that
+      // the redirect was refused is the stand-in's 302 and the empty sink below.
       const day = weekDay(0, 0);
       const res = await apiAs(SEAM).get('/api/calendar/events', {
         start: `${isoDate(day)}T00:00:00Z`,
         end: `${isoDate(weekDay(1, 0))}T00:00:00Z`,
       });
       expect(res.status()).toBe(500);
-      expect(await res.text()).toContain('redirect refused');
+      expect(res.headers()['content-type']).toMatch(/^application\/json/);
+      const body = await res.text();
+      expect(JSON.parse(body)).toEqual({ error: 'internal error' });
+      expect(body).not.toContain('redirect');
     } finally {
       await fake.disarmRedirect(LABEL);
     }

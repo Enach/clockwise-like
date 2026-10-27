@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -35,7 +36,7 @@ func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	http.Redirect(w, r, auth.GetAuthURL(h.oauthConfig, state), http.StatusFound)
+	http.Redirect(w, r, auth.GetAuthURL(h.oauthConfig, state, loginHintFrom(r)), http.StatusFound)
 }
 
 func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
@@ -48,35 +49,62 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.ExchangeCode(r.Context(), h.oauthConfig, r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "token exchange failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Fetch user profile from Google
 	info, err := fetchGoogleUserInfo(r.Context(), token, h.oauthConfig)
 	if err != nil {
-		http.Error(w, "userinfo failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "userinfo failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Upsert user row
 	user, err := storage.UpsertUser(h.db, info.Email, info.Name, info.Picture, "google", info.ID)
 	if err != nil {
-		http.Error(w, "upsert user failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "upsert user failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Store OAuth token associated with user
 	if err := auth.UpsertUserToken(h.db, user.ID, token); err != nil {
-		http.Error(w, "save token failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "save token failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Auto-associate with org based on email domain
 	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
 
-	h.issueJWT(w, user)
+	if err := h.issueJWT(w, user); err != nil {
+		h.signInFailed(w, r, "issue session", err)
+		return
+	}
 	http.Redirect(w, r, h.frontendURL+"/auth/callback", http.StatusFound)
+}
+
+// signInFailurePath is the web app's sign-in failure state (PAC-35, API-011):
+// a fixed literal that carries no cause, provider or detail.
+const signInFailurePath = "/?error=auth_failed"
+
+// errNoSigningSecret is why a session cannot be issued without a secret.
+var errNoSigningSecret = errors.New("session signing secret is empty")
+
+// signInFailed ends a sign-in callback on the app's failure state. The cause
+// goes to the server log and Sentry only. The auth_token cookie is neither set
+// nor expired, so a session the browser already holds is kept.
+func (h *authHandlers) signInFailed(w http.ResponseWriter, r *http.Request, op string, err error) {
+	logServerError(r, op, err, http.StatusFound)
+	http.Redirect(w, r, h.frontendURL+signInFailurePath, http.StatusFound)
+}
+
+// loginHintFrom returns the request's login_hint when it passes the LoginHint
+// rule, else "" (dropped, never a 400). Only the first value counts.
+func loginHintFrom(r *http.Request) string {
+	if v := r.URL.Query().Get("login_hint"); auth.ValidLoginHint(v) {
+		return v
+	}
+	return ""
 }
 
 func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
@@ -132,24 +160,49 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// calendarDisconnectUnsupportedMessage is the fixed error of the 409
+// CalendarDisconnectUnsupported (PAC-35, spec D-8).
+const calendarDisconnectUnsupportedMessage = "disconnecting this kind of calendar is not available yet"
+
+type calendarDisconnectUnsupported struct {
+	Error    string `json:"error"`
+	Provider string `json:"provider"`
+}
+
+// disconnect removes the caller's Google calendar credential. It never touches
+// the session (PAC-35, API-061). It classifies the caller exactly as status
+// does: outlook and webcal are answered 409 and nothing is deleted (D-8);
+// anything else is Google. A settings read failure deletes nothing (D-9).
 func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	if err := auth.DeleteUserToken(h.db, userID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "disconnect: read settings", err, http.StatusInternalServerError)
 		return
 	}
-	// Clear auth cookie
-	setCookie(w, &http.Cookie{Name: "auth_token", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	switch s.CalendarProvider {
+	case "outlook", "webcal":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(calendarDisconnectUnsupported{Error: calendarDisconnectUnsupportedMessage, Provider: s.CalendarProvider})
+		return
+	}
+	if err := auth.DeleteUserToken(h.db, userID); err != nil {
+		writeServerError(w, r, "disconnect", err, http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) {
+// issueJWT sets the auth_token session cookie for user. It returns an error,
+// and sets nothing, when the session cannot be issued (PAC-35, API-011).
+func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) error {
 	if h.jwtSecret == "" {
-		return
+		return errNoSigningSecret
 	}
-	jwtToken, err := auth.GenerateToken(user.ID, user.Email, h.jwtSecret)
+	jwtToken, err := generateSessionToken(user.ID, user.Email, h.jwtSecret)
 	if err != nil {
-		return
+		return err
 	}
 	setCookie(w, &http.Cookie{
 		Name:     "auth_token",
@@ -159,7 +212,14 @@ func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
+	return nil
 }
+
+// Test seams: the session-token generator and the Google profile URL.
+var (
+	generateSessionToken = auth.GenerateToken
+	googleUserInfoURL    = "https://www.googleapis.com/oauth2/v2/userinfo"
+)
 
 type googleUserInfo struct {
 	ID      string `json:"id"`
@@ -176,7 +236,7 @@ func fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token, cfg *oauth2.C
 	}
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(t))
 	client.Timeout = 5 * time.Second
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleUserInfoURL, nil)
 	if err != nil {
 		return nil, err
 	}

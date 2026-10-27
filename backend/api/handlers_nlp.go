@@ -27,7 +27,7 @@ func (h *nlpHandlers) parse(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.Parse(r.Context(), body.Text)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "parse", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -46,7 +46,9 @@ func (h *nlpHandlers) confirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pr := body.ParseResult
-	if len(pr.SuggestedSlots) == 0 || body.SelectedSlotIndex >= len(pr.SuggestedSlots) {
+	// A negative index is refused like any other out-of-range one (U-06,
+	// API-024): it used to panic, and net/http aborted the connection.
+	if len(pr.SuggestedSlots) == 0 || body.SelectedSlotIndex < 0 || body.SelectedSlotIndex >= len(pr.SuggestedSlots) {
 		writeError(w, "invalid selected_slot_index", http.StatusBadRequest)
 		return
 	}
@@ -60,12 +62,12 @@ func (h *nlpHandlers) confirm(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.smart.CreateMeeting(r.Context(), req, slot)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeCreateMeetingFailure(w, r, "confirm", err)
 		return
 	}
 
 	storage.WriteAuditLog(h.db, userIDFromCtx(r.Context()), "nlp_confirmed", `{"event_id":"`+created.Id+`"}`)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(created)
+	_ = json.NewEncoder(w).Encode(toCalendarEventDTO(created))
 }

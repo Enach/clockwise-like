@@ -8,8 +8,8 @@ import (
 )
 
 type TimeSlot struct {
-	Start time.Time
-	End   time.Time
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
 }
 
 func (c *CalendarClient) GetFreeBusy(ctx context.Context, emails []string, timeMin, timeMax time.Time) (map[string][]TimeSlot, error) {

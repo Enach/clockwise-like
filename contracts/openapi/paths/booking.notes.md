@@ -151,6 +151,14 @@ id instead of a link id, returns `200 {"status":"accepted"}` having changed noth
 There is no 404 and no 403 on these endpoints at all. Same pattern in
 `leaveSchedulingLink` (`DELETE ... WHERE`, no row check → 204 for a non-host).
 
+**PAC-30 (contract revision 1)**: the contract now requires `RowsAffected` checks.
+Zero rows updated on accept/decline (all four spellings) is `404 {"error":"not
+found"}`; zero rows deleted on leave is the same 404. Nothing is written in either
+case. A missing link and a missing host row give the same 404 on accept/decline, so
+the answer does not reveal whether a link exists. The duplicate spellings (API-069)
+and the owner being able to decline their own host row are not changed by PAC-30;
+see `contracts/features/PAC-30.md`.
+
 ### `GET /api/scheduling-links/{id}` has no authorization
 
 Every sibling (PATCH, DELETE, `/bookings`, `/hosts`) enforces `link.OwnerUserID != userID

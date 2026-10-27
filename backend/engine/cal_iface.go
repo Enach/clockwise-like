@@ -3,14 +3,45 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
-	googlecalendar "google.golang.org/api/calendar/v3"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
+	googlecalendar "google.golang.org/api/calendar/v3"
 )
+
+// ErrCalendarNotConnected means the user has no stored Google Calendar
+// credential, so an operation that must read or write their calendar cannot
+// run. The HTTP layer answers it with the 401 CalendarNotConnected (PAC-21,
+// API-054). Its text is fixed and names no user.
+var ErrCalendarNotConnected = errors.New("calendar not connected")
+
+// ErrCredentialStore wraps a failure to READ the stored credential. It is a
+// server failure (the operation's 500), never "not connected": reporting a
+// database outage as "connect your calendar" would send the user through
+// OAuth for nothing.
+var ErrCredentialStore = errors.New("read stored calendar credential")
+
+// LoadCalendarToken loads the user's stored Google credential, telling a
+// missing one (ErrCalendarNotConnected) apart from a store that could not be
+// read (ErrCredentialStore, wrapping the cause for the server log).
+func LoadCalendarToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+	token, err := auth.LoadUserToken(db, userID)
+	if errors.Is(err, auth.ErrNoUser) {
+		return nil, ErrCalendarNotConnected
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCredentialStore, err)
+	}
+	if token == nil {
+		return nil, ErrCalendarNotConnected
+	}
+	return token, nil
+}
 
 type calendarOps interface {
 	calendarID() string
@@ -51,10 +82,9 @@ func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax ti
 }
 
 func newCalOps(ctx context.Context, db *sql.DB, oauthConfig *oauth2.Config) (calendarOps, error) {
-	userID := auth.UserIDFromContext(ctx)
-	token, err := auth.LoadUserToken(db, userID)
-	if err != nil || token == nil {
-		return nil, fmt.Errorf("not authenticated")
+	token, err := LoadCalendarToken(db, auth.UserIDFromContext(ctx))
+	if err != nil {
+		return nil, err
 	}
 	ts := auth.TokenSource(ctx, oauthConfig, token)
 	client, err := calendar.NewClient(ctx, ts)

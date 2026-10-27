@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -41,6 +41,16 @@ func (e *CompressionEngine) calClient(ctx context.Context) (calendarOps, error) 
 		return e.calOps, nil
 	}
 	return newCalOps(ctx, e.DB, e.OAuthConfig)
+}
+
+// CheckCalendar fails exactly when SuggestForDay and Apply would fail to open
+// the caller's calendar: ErrCalendarNotConnected when there is no stored
+// credential, ErrCredentialStore when it cannot be read. The preview runs it
+// once, before any day is computed, so week mode cannot turn either into an
+// empty success (PAC-21).
+func (e *CompressionEngine) CheckCalendar(ctx context.Context) error {
+	_, err := e.calClient(ctx)
+	return err
 }
 
 func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (*CompressionResult, error) {

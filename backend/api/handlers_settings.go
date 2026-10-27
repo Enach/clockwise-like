@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/storage"
-	"github.com/robfig/cron/v3"
 )
 
 var timePattern = regexp.MustCompile(`^\d{2}:\d{2}$`)
@@ -44,7 +44,7 @@ type settingsHandlers struct {
 func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "getSettings", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -74,7 +74,7 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 	userID := userIDFromCtx(r.Context())
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 	var fields map[string]json.RawMessage
@@ -100,12 +100,12 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	stored, err := json.Marshal(s)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	// Decoding onto the stored record is the merge; maps would be merged into,
@@ -116,8 +116,8 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 	if _, ok := fields["lunchBreaks"]; ok {
 		s.LunchBreaks = storage.LunchBreakSchedule{}
 	}
-	if err := json.Unmarshal(raw, s); err != nil {
-		writeError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+	if json.Unmarshal(raw, s) != nil {
+		writeError(w, settingsDecodeProblem(fields), http.StatusBadRequest)
 		return
 	}
 	if key, ok := fields["llmApiKey"]; ok {
@@ -129,7 +129,7 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 
 	changed, err := changedSettingsProperties(stored, s)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	if err := validateChangedSettings(s, changed); err != nil {
@@ -137,12 +137,12 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	updated, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -249,8 +249,8 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 	if s.AutoScheduleCron != "" {
 		if len(strings.Fields(s.AutoScheduleCron)) != 5 {
 			add("autoScheduleCron must be a 5-part cron expression", "autoScheduleCron")
-		} else if _, err := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow).Parse(s.AutoScheduleCron); err != nil {
-			add("autoScheduleCron is invalid: "+err.Error(), "autoScheduleCron")
+		} else if _, err := engine.ParseAutoScheduleCron(s.AutoScheduleCron); err != nil {
+			add("autoScheduleCron is invalid", "autoScheduleCron")
 		}
 	}
 

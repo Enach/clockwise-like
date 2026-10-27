@@ -16,12 +16,12 @@ type OAuthToken struct {
 }
 
 type FocusBlock struct {
-	ID            int64
-	GoogleEventID string
-	StartTime     time.Time
-	EndTime       time.Time
-	Date          string
-	CreatedAt     time.Time
+	ID            int64     `json:"id"`
+	GoogleEventID string    `json:"google_event_id"`
+	StartTime     time.Time `json:"start_time"`
+	EndTime       time.Time `json:"end_time"`
+	Date          string    `json:"date"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type AuditLog struct {

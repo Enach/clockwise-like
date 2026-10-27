@@ -91,6 +91,19 @@ export const CONNECTED = {
   },
 } as const;
 
+/**
+ * PAC-35 AC-11: a Google-calendar user who disconnects their calendar in the
+ * app. Owned by tests/calendar-disconnect.spec.ts alone: the journey deletes
+ * this user's stored credential, so no other journey may depend on it.
+ */
+export const DISCONNECTING = {
+  id: 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1',
+  email: 'e2e.disconnect@paceday.test',
+  name: 'E2E Disconnect User',
+  token: 'e2e-disconnect-work',
+  label: 'disconnect-work',
+} as const;
+
 /** The seam user's personal calendar (AC-25): a google personal_calendars row. */
 export const PERSONAL_CALENDAR = {
   id: 4301,
@@ -106,7 +119,7 @@ export const PERSONAL_CALENDAR = {
  * rejected user's token is deliberately absent.
  */
 export const ACCEPTED_CREDENTIALS = [
-  ...[CONNECTED.calendar, CONNECTED.focus, CONNECTED.manager, CONNECTED.seam].map((u) => ({
+  ...[CONNECTED.calendar, CONNECTED.focus, CONNECTED.manager, CONNECTED.seam, DISCONNECTING].map((u) => ({
     token: u.token,
     label: u.label,
     calendar: u.email,

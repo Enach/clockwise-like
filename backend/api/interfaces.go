@@ -19,6 +19,9 @@ type FocusEngine interface {
 }
 
 type Compressor interface {
+	// CheckCalendar reports whether the caller's calendar can be opened:
+	// engine.ErrCalendarNotConnected or an engine.ErrCredentialStore error.
+	CheckCalendar(ctx context.Context) error
 	SuggestForDay(ctx context.Context, date time.Time) (*engine.CompressionResult, error)
 	Apply(ctx context.Context, proposals []engine.MoveProposal) (applied []string, failed []string, err error)
 }

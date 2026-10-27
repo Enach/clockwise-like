@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -36,6 +37,11 @@ type SuggestedSlot struct {
 type ScheduleSuggestions struct {
 	Slots []SuggestedSlot `json:"slots"`
 }
+
+// ErrOutOfHoursAllowance is CreateMeeting's policy refusal once the weekly
+// out-of-hours allowance is spent. Its text is the documented 500 body of
+// POST /api/schedule/create, so handlers match it with errors.Is (PAC-21).
+var ErrOutOfHoursAllowance = errors.New("out-of-hours meeting allowance reached")
 
 type SmartScheduler struct {
 	DB          *sql.DB
@@ -299,7 +305,7 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 			return nil, fmt.Errorf("count out-of-hours meetings: %w", err)
 		}
 		if !allowed {
-			return nil, fmt.Errorf("out-of-hours meeting allowance reached")
+			return nil, ErrOutOfHoursAllowance
 		}
 	}
 

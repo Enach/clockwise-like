@@ -23,7 +23,7 @@ func auditHandler(db *sql.DB) http.HandlerFunc {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		entries, err := storage.ListAuditLog(db, userID, limit)
 		if err != nil {
-			writeError(w, "audit: "+err.Error(), http.StatusInternalServerError)
+			writeServerError(w, r, "audit", err, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

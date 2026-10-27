@@ -3,6 +3,8 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -16,12 +18,28 @@ type focusHandlers struct {
 	db  *sql.DB
 }
 
+// decodeOptionalBody decodes an optional JSON request body into v. An absent,
+// empty or whitespace-only body is no options and leaves v untouched, and so
+// does the literal null. Anything else that does not decode is an error, which
+// the caller answers with 400 "invalid JSON" (PAC-36, API-035): it used to be
+// silently treated as {}, and the caller got a 200 for a request it never made.
+func decodeOptionalBody(r *http.Request, v any) error {
+	if r.Body == nil {
+		return nil
+	}
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
 func (h *focusHandlers) runFocus(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Week string `json:"week"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		body.Week = ""
+	if err := decodeOptionalBody(r, &body); err != nil {
+		writeError(w, "invalid JSON", http.StatusBadRequest)
+		return
 	}
 
 	targetWeek := time.Now()
@@ -36,7 +54,7 @@ func (h *focusHandlers) runFocus(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.eng.Run(r.Context(), targetWeek)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "runFocus", err)
 		return
 	}
 
@@ -58,7 +76,7 @@ func (h *focusHandlers) listBlocks(w http.ResponseWriter, r *http.Request) {
 
 	blocks, err := storage.ListFocusBlocksForUserWeek(h.db, userIDFromCtx(r.Context()), weekStart)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "listBlocks", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -80,7 +98,7 @@ func (h *focusHandlers) clearBlocks(w http.ResponseWriter, r *http.Request) {
 
 	n, err := h.eng.ClearWeek(r.Context(), weekStart)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "clearBlocks", err)
 		return
 	}
 

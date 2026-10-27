@@ -14,6 +14,14 @@ Frontend cross-checked: `src/api/{types,contract,client}.ts`, `src/lib/api.ts`,
 `src/contexts/AuthContext.tsx`, `src/components/auth/AuthDialog.tsx`,
 `src/api/schedulingLinks.ts`, `src/api/integrationAvailability.test.ts`.
 
+**PAC-35 (contract revision 1, `contracts/features/PAC-35.md`).** The contract
+now specifies the fixes for (a)1-4 and (b)5-7 below, and closes the
+`CurrentUserResponse.provider` row in (c) (U-13). The text below is the original
+extraction and still describes the server until the PAC-35 implementation
+merges. It also documents a response that was missing from the contract:
+`ssoOidcCallback` 403 "email domain does not match SSO provider domain"
+(PAC-45, #172).
+
 ---
 
 ## (a) Backend / frontend contract mismatches
@@ -86,9 +94,11 @@ Frontend cross-checked: `src/api/{types,contract,client}.ts`, `src/lib/api.ts`,
    header. Same pattern in `handlers_me.go` for its own 401 and 404. Any client
    that dispatches on Content-Type will not parse these.
 
-4. **Cookie beats bearer.** `requireAuth` reads the `auth_token` cookie *first*
-   and only falls back to `Authorization: Bearer`. A stale cookie therefore
-   shadows a valid bearer token. The frontend only ever uses the cookie
+4. **Cookie beat bearer (fixed by PAC-39 / #215, API-008).** Before #215
+   `requireAuth` read the `auth_token` cookie *first*, so a stale cookie
+   shadowed a valid bearer token. It now prefers `Authorization: Bearer`: a
+   bearer token, when present, is the only credential considered, and an
+   invalid one is a 401 with no fallback to the cookie. The frontend only ever uses the cookie
    (`credentials: "include"`, no Authorization header anywhere).
 
 5. **`issueJWT` fails silently.** If `jwtSecret == ""` or token generation
@@ -121,10 +131,12 @@ Frontend cross-checked: `src/api/{types,contract,client}.ts`, `src/lib/api.ts`,
     provider row** (no rows-affected check), so delete is not observably
     idempotent-vs-missing.
 
-12. **Detect rate limiter is per-process, in-memory and unbounded.**
-    `detectLimiter` is a `map[string]*ipBucket` that is never swept, and it keys
-    on a client-supplied `X-Real-IP` / `X-Forwarded-For` when present. Documented
-    as 429 in the spec; behind multiple replicas the effective limit is
+12. **Detect rate limiter is per-process and in-memory** (API-062, partly
+    fixed by PAC-39 / #215). Before #215 `detectLimiter` was never swept and
+    keyed on a client-supplied `X-Real-IP` / `X-Forwarded-For`. It now keys on
+    the socket peer (`RemoteAddr` without its port), reads `X-Real-IP` only from
+    a `TRUSTED_PROXIES` peer, never reads `X-Forwarded-For`, and sweeps expired
+    buckets. Still open: behind multiple replicas the effective limit is
     20/min × replicas.
 
 13. **No Go test coverage for `/api/auth/detect`, `/api/auth/sso/{domain}`,
@@ -150,11 +162,11 @@ Frontend cross-checked: `src/api/{types,contract,client}.ts`, `src/lib/api.ts`,
 Additional points a human should settle that are **not** marked `x-uncertain`
 because the code is unambiguous, but where the code may not be the intent:
 
-- Whether the global `security` for the assembled document should be
-  `bearerAuth` alone. The spec fragment defines both `bearerAuth` and
-  `cookieAuth`; protected operations carry no `security:` key and so inherit
-  whatever the root document declares. Given the middleware checks the cookie
-  first and the frontend only ever sends a cookie, the root document should
-  most likely declare `security: [{bearerAuth: []}, {cookieAuth: []}]`.
+- ~~Whether the global `security` for the assembled document should be
+  `bearerAuth` alone.~~ Closed: the root document has declared
+  `security: [{bearerAuth: []}, {cookieAuth: []}]` since #173, and protected
+  operations (no `security:` key) inherit it. OpenAPI alternatives say "either
+  is accepted", not in which order, so the Bearer-over-cookie precedence
+  (PAC-39, #215) is stated in the `bearerAuth` / `cookieAuth` descriptions.
 - `503` on the Microsoft routes is JSON while the neighbouring `400`/`500` on
   the same handler are text/plain. Pick one before clients start branching.
