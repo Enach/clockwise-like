@@ -3,7 +3,7 @@
  *
  * POST /api/focus/run -> engine.FocusTimeEngine.RunForUser -> newCalOps()
  * (engine/cal_iface.go), which loads the user's oauth token and returns
- * "not authenticated" when there is none; with one, processDay() lists each
+ * ErrCalendarNotConnected when there is none; with one, processDay() lists each
  * weekday's events and creates the focus blocks AS calendar events — the
  * focus_blocks table stores their event ids. There is no focus block without
  * a calendar.
@@ -15,9 +15,13 @@
  * With one (PAC-43, CONNECTED.focus): the calendar is the stand-in
  * (e2e/fake-google), reached through GOOGLE_CALENDAR_API_BASE_URL with the
  * real client and the real credential. AC-18 and AC-19 assert the three
- * places a block lives — the product's store, the provider, the screen — and
- * deliberately not the run's response body, whose field names are API-014 /
- * API-015's (camelCase and untagged structs the frontend cannot read).
+ * places a block lives — the product's store, the provider, the screen.
+ *
+ * PAC-32 runs the engine the way a user does, from the dashboard's quick
+ * action, and reads the run's response body as the web app does: the
+ * camelCase FocusRunResult wrapper around snake_case blocks (PAC-26 tagged
+ * the blocks; API-015 was the web app reading snake_case wrapper keys the
+ * server never sent, which threw after a successful run).
  */
 
 import { test, expect, type ApiClient, type Db } from '../fixtures';
@@ -33,6 +37,7 @@ const FOCUS_LABEL = 'Focus Time';
 // specs (7–18 days ahead), of seam.spec.ts (weeks 5 and 6) and of each other.
 const AC18_WEEK = 4;
 const AC19_WEEK = 8;
+const PAC32_WEEK = 10;
 
 test.describe('focus time — what is reachable without a calendar provider', () => {
   test('listing blocks for a week returns an empty set, not an error', async ({ authedApi }) => {
@@ -64,16 +69,34 @@ test.describe('focus time — what is reachable without a calendar provider', ()
 
     // The point of this assertion is the NEGATIVE: the endpoint must not
     // return 200 with an empty CreatedBlocks array, because a caller cannot
-    // tell that apart from "there was no room this week". A 500 carrying
-    // "not authenticated" is the current, honest behaviour.
-    expect(res.status()).toBe(500);
-    expect(await res.text()).toContain('not authenticated');
+    // tell that apart from "there was no room this week". Since PAC-21
+    // (API-054) it is the documented 401 CalendarNotConnected: JSON, one
+    // fixed message, no provider or Go error text, no user id. The
+    // middleware's own 401 is text/plain, so the two are told apart.
+    expect(res.status()).toBe(401);
+    expect(res.headers()['content-type']).toMatch(/^application\/json/);
+    expect(await res.json()).toEqual({ error: 'calendar not connected' });
 
     // And nothing must have been written.
     const blocks = await authedApi.get('/api/focus/blocks', {
       week: isoDate(mondayOf(new Date())),
     });
     expect(await blocks.json()).toEqual([]);
+  });
+
+  test('the analytics meeting list answers 401 calendar not connected, not a 500 (API-054)', async ({
+    authedApi,
+  }) => {
+    // Before PAC-21 this was a 500 whose body named the user id
+    // ("internal error: no token for user <uuid>"), then a bare 500.
+    const res = await authedApi.get('/api/analytics/meetings', {
+      date: isoDate(mondayOf(new Date())),
+    });
+    expect(res.status()).toBe(401);
+    expect(res.headers()['content-type']).toMatch(/^application\/json/);
+    const body = await res.text();
+    expect(JSON.parse(body)).toEqual({ error: 'calendar not connected' });
+    expect(body).not.toMatch(/token|user [0-9a-f-]{36}/i);
   });
 
 });
@@ -192,6 +215,91 @@ test.describe('focus time — with a connected calendar (PAC-43, through the sta
       );
       expect(deletes.map((r) => r.event_id).sort()).toEqual(created.map((c) => c.google_event_id).sort());
       expect(deletes.every((r) => r.status === 204)).toBe(true);
+    } finally {
+      await clearFocusWeek(apiAs(USER), db, week);
+    }
+  });
+
+  test('PAC-32: running focus from the dashboard reports the created blocks and shows them at their times', async ({
+    apiAs,
+    pageAs,
+    db,
+    assertNotDemo,
+  }) => {
+    const monday = weekDay(PAC32_WEEK);
+    const week = isoDate(monday);
+    await seedTwoMeetings(USER.email, PAC32_WEEK, 'PAC-32');
+    const settings = await apiAs(USER).get('/api/settings');
+    expect(settings.status()).toBe(200);
+    const clock = ((await settings.json()) as { timeFormat?: string }).timeFormat === '24h' ? '24h' : '12h';
+
+    try {
+      const page = await pageAs(USER);
+      await page.goto('/app');
+      const nav = page.getByRole('group', { name: 'Calendar navigation' });
+      await expect(nav).toBeVisible();
+      for (let i = 0; i < PAC32_WEEK; i++) {
+        await nav.getByRole('button', { name: 'Next' }).click();
+      }
+      await expect(page.locator(`.fc-timegrid-col[data-date="${week}"]`)).toBeVisible();
+
+      const ran = page.waitForResponse(
+        (r) => new URL(r.url()).pathname === '/api/focus/run' && r.request().method() === 'POST',
+      );
+      await page.getByRole('button', { name: /run focus engine/i }).click();
+      const response = await ran;
+      expect(response.status(), await response.text()).toBe(200);
+      expect(response.request().postDataJSON()).toEqual({ week });
+
+      // The run's body, under the keys the web app's generated type reads.
+      const result = (await response.json()) as {
+        weekStart: string;
+        createdBlocks: Array<{ google_event_id: string; start_time: string; end_time: string; date: string }>;
+        skippedDays: string[];
+        totalMinutes: number;
+        errors: string[];
+      };
+      expect(result.errors).toEqual([]);
+      const rows = await focusRows(db, week);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(
+        result.createdBlocks
+          .map((b) => ({ id: b.google_event_id, start: instant(b.start_time), end: instant(b.end_time) }))
+          .sort((a, b) => a.start.localeCompare(b.start)),
+      ).toEqual(rows.map((r) => ({ id: r.google_event_id, start: r.start, end: r.end })));
+      expect(result.totalMinutes).toBe(
+        rows.reduce((n, r) => n + (Date.parse(r.end) - Date.parse(r.start)) / 60_000, 0),
+      );
+
+      // The user is told what was created, not shown an error after a run that worked.
+      const n = rows.length;
+      await expect(page.getByText(`Created ${n} focus block${n === 1 ? '' : 's'}`, { exact: true })).toBeVisible();
+
+      // And the blocks appear without a reload, in their day's column, at their
+      // start times. A block of 30 minutes or less renders no time label.
+      const label = (iso: string) =>
+        new Date(iso)
+          .toLocaleTimeString('en-US', clock === '24h'
+            ? { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' }
+            : { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })
+          .replace(/\s+/g, ' ');
+      const days = [...new Set(rows.map((r) => r.start.slice(0, 10)))];
+      for (const day of days) {
+        const inDay = rows.filter((r) => r.start.slice(0, 10) === day);
+        const focusEvents = page
+          .locator(`.fc-timegrid-col[data-date="${day}"] .fc-event`)
+          .filter({ has: page.getByText(new RegExp(`^\\W*${FOCUS_LABEL}$`)) });
+        await expect(focusEvents).toHaveCount(inDay.length);
+        const want = inDay
+          .filter((r) => Date.parse(r.end) - Date.parse(r.start) > 30 * 60_000)
+          .map((r) => label(r.start))
+          .sort();
+        const shown = (await focusEvents.locator('.pd-event-time').allInnerTexts())
+          .map((s) => s.trim().replace(/\s+/g, ' '))
+          .sort();
+        expect(shown, `focus block times on ${day}`).toEqual(want);
+      }
+      await assertNotDemo(page);
     } finally {
       await clearFocusWeek(apiAs(USER), db, week);
     }

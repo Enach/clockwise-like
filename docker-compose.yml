@@ -27,6 +27,10 @@ services:
       - SESSION_SECRET=${SESSION_SECRET:-changeme}
       - JWT_SECRET=${JWT_SECRET:-}
       - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-}
+      # IPs/CIDRs whose X-Real-IP the backend trusts (PAC-39). Empty = none.
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      # PAC-20: empty = every cookie is Secure. true only for plain-HTTP dev.
+      - PACEDAY_INSECURE_COOKIES=${PACEDAY_INSECURE_COOKIES:-}
       # Microsoft OAuth
       - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
       - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}
@@ -45,7 +49,13 @@ services:
       - NOTION_REDIRECT_URI=${NOTION_REDIRECT_URI:-}
       # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
       # Vertex AI, Ollama) are configured per-user in the Settings page and
-      # stored in the database — no server-level env vars needed.
+      # stored in the database.
+      # PAC-66: Azure OpenAI, Vertex AI and Bedrock send THIS deployment's cloud
+      # identity, so they work only toward inference hosts approved here (see
+      # .env.example). Unset means the provider is not enabled.
+      - PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI=${PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI:-}
+      - PACEDAY_LLM_APPROVED_HOSTS_VERTEX=${PACEDAY_LLM_APPROVED_HOSTS_VERTEX:-}
+      - PACEDAY_LLM_APPROVED_HOSTS_BEDROCK=${PACEDAY_LLM_APPROVED_HOSTS_BEDROCK:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -34,11 +34,11 @@ func (h *integrationsHandlers) slackConnect(w http.ResponseWriter, r *http.Reque
 	clientID := os.Getenv("SLACK_CLIENT_ID")
 	redirectURI := os.Getenv("SLACK_REDIRECT_URI")
 	if clientID == "" {
-		http.Error(w, "Slack not configured", http.StatusServiceUnavailable)
+		writeError(w, "Slack not configured", http.StatusServiceUnavailable)
 		return
 	}
 	state := randomState()
-	http.SetCookie(w, &http.Cookie{Name: "slack_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true})
+	setCookie(w, &http.Cookie{Name: "slack_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 
 	q := url.Values{}
 	q.Set("client_id", clientID)
@@ -64,7 +64,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		os.Getenv("SLACK_REDIRECT_URI"),
 	)
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		writeServerError(w, r, "token exchange failed", err, http.StatusBadGateway)
 		return
 	}
 
@@ -79,7 +79,8 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		ConnectedAt:   time.Now().UTC(),
 	}
 	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/app/settings?tab=integrations&slack=connected", http.StatusFound)
@@ -167,11 +168,11 @@ func (h *integrationsHandlers) notionConnect(w http.ResponseWriter, r *http.Requ
 	clientID := os.Getenv("NOTION_CLIENT_ID")
 	redirectURI := os.Getenv("NOTION_REDIRECT_URI")
 	if clientID == "" {
-		http.Error(w, "Notion not configured", http.StatusServiceUnavailable)
+		writeError(w, "Notion not configured", http.StatusServiceUnavailable)
 		return
 	}
 	state := randomState()
-	http.SetCookie(w, &http.Cookie{Name: "notion_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true})
+	setCookie(w, &http.Cookie{Name: "notion_oauth_state", Value: state, Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 
 	q := url.Values{}
 	q.Set("client_id", clientID)
@@ -197,7 +198,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		os.Getenv("NOTION_REDIRECT_URI"),
 	)
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		writeServerError(w, r, "token exchange failed", err, http.StatusBadGateway)
 		return
 	}
 
@@ -210,7 +211,8 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		ConnectedAt:   time.Now().UTC(),
 	}
 	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/app/settings?tab=integrations&notion=connected", http.StatusFound)

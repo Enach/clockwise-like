@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -281,6 +282,17 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 // (microsoft_tokens, zoom_tokens) are not written here: they have their own
 // writers.
 func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+	return SaveSettingsForUserAt(db, userID, s, time.Now())
+}
+
+// SaveSettingsForUserAt is SaveSettingsForUser with the save instant given.
+//
+// It never writes a watermark the caller supplies (PAC-49 §4.1): the
+// auto-schedule watermark is set to now when this save turns auto-schedule on,
+// or changes the schedule or the timezone while it stays on, and is otherwise
+// left exactly as stored. The comparison is against the stored row inside the
+// upsert, so a save built from a stale read cannot rewind it.
+func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.Time) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveSettingsForUser: userID is required")
 	}
@@ -305,11 +317,14 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 			out_of_hours_meetings_per_week, auto_decline_outside_working_hours,
 			working_hours, lunch_breaks,
 			time_format,
+			auto_schedule_last_run,
 			updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
 			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
-			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,NOW()
+			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,
+			CASE WHEN $19::boolean THEN $52::timestamptz END,
+			NOW()
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
 			work_start=EXCLUDED.work_start, work_end=EXCLUDED.work_end,
@@ -352,6 +367,14 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 			working_hours=EXCLUDED.working_hours,
 			lunch_breaks=EXCLUDED.lunch_breaks,
 			time_format=EXCLUDED.time_format,
+			auto_schedule_last_run = CASE
+				WHEN EXCLUDED.auto_schedule_enabled AND (
+					NOT settings.auto_schedule_enabled
+					OR settings.auto_schedule_cron IS DISTINCT FROM EXCLUDED.auto_schedule_cron
+					OR settings.timezone IS DISTINCT FROM EXCLUDED.timezone)
+				THEN $52::timestamptz
+				ELSE settings.auto_schedule_last_run
+			END,
 			updated_at=NOW()`,
 		userID,
 		s.WorkStart, s.WorkEnd, s.Timezone,
@@ -372,6 +395,7 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 		s.OutOfHoursMeetingsPerWeek, s.AutoDeclineOutsideWorkingHours,
 		s.WorkingHours, s.LunchBreaks,
 		timeFormatOrDefault(s.TimeFormat),
+		now,
 	)
 	return err
 }
@@ -415,34 +439,87 @@ func recapSendToOrDefault(v string) string {
 	return v
 }
 
-// UserScheduleConfig is the projection used by FocusCron to enumerate users
-// whose auto-schedule cron should be registered.
-type UserScheduleConfig struct {
+// AutoScheduleCandidate is one user the focus scheduler considers on a tick
+// (PAC-49 §4.2): a user whose own settings have auto-schedule on, with what
+// the scheduler needs to decide whether this tick is their time.
+type AutoScheduleCandidate struct {
 	UserID   uuid.UUID
 	CronExpr string
+	Timezone string
+	// LastRun is the watermark (auto_schedule_last_run): the user's next run
+	// is their first slot after it. nil only after a direct database edit.
+	LastRun *time.Time
 }
 
-// ListUsersWithAutoSchedule returns one entry per user with auto_schedule_enabled
-// and a non-empty auto_schedule_cron.
-func ListUsersWithAutoSchedule(db *sql.DB) ([]UserScheduleConfig, error) {
-	rows, err := db.Query(`SELECT user_id, auto_schedule_cron
+// ListAutoScheduleCandidates returns exactly the users whose own settings row
+// has auto_schedule_enabled, in a stable order (the row's creation order).
+// Values are returned as stored; the scheduler validates them.
+func ListAutoScheduleCandidates(db *sql.DB) ([]AutoScheduleCandidate, error) {
+	rows, err := db.Query(`SELECT user_id, auto_schedule_cron, timezone, auto_schedule_last_run
 		FROM settings
 		WHERE auto_schedule_enabled = TRUE
-		  AND auto_schedule_cron IS NOT NULL
-		  AND auto_schedule_cron <> ''`)
+		ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []UserScheduleConfig
+	out := make([]AutoScheduleCandidate, 0)
 	for rows.Next() {
-		var c UserScheduleConfig
-		if err := rows.Scan(&c.UserID, &c.CronExpr); err != nil {
+		var c AutoScheduleCandidate
+		var last sql.NullTime
+		if err := rows.Scan(&c.UserID, &c.CronExpr, &c.Timezone, &last); err != nil {
 			return nil, err
+		}
+		if last.Valid {
+			t := last.Time
+			c.LastRun = &t
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// GetAutoScheduleLastRun returns userID's watermark, or nil when it is null or
+// the user has no settings row.
+func GetAutoScheduleLastRun(db *sql.DB, userID uuid.UUID) (*time.Time, error) {
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("GetAutoScheduleLastRun: userID is required")
+	}
+	var last sql.NullTime
+	err := db.QueryRow(`SELECT auto_schedule_last_run FROM settings WHERE user_id = $1`, userID).Scan(&last)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !last.Valid) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t := last.Time
+	return &t, nil
+}
+
+// AdvanceAutoScheduleWatermark moves userID's watermark to "to", but only if
+// auto-schedule is still on and the watermark is still the one the caller
+// observed (nil meaning null). It reports whether it did. The scheduler calls
+// it before every run, so a save that disabled the feature or reset the
+// watermark between the listing and the run wins, and no slot runs twice.
+func AdvanceAutoScheduleWatermark(db *sql.DB, userID uuid.UUID, observed *time.Time, to time.Time) (bool, error) {
+	if userID == uuid.Nil {
+		return false, fmt.Errorf("AdvanceAutoScheduleWatermark: userID is required")
+	}
+	var obs sql.NullTime
+	if observed != nil {
+		obs = sql.NullTime{Time: *observed, Valid: true}
+	}
+	res, err := db.Exec(`UPDATE settings SET auto_schedule_last_run = $3
+		WHERE user_id = $1
+		  AND auto_schedule_enabled = TRUE
+		  AND auto_schedule_last_run IS NOT DISTINCT FROM $2::timestamptz`,
+		userID, obs, to)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // ListUsersWithAutoDecline returns users whose automatic outside-hours decline is enabled.

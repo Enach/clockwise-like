@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"github.com/Enach/paceday/backend/auth"
-	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,8 +38,9 @@ func TestAuthDisconnect(t *testing.T) {
 		db:          db,
 	}
 
-	// disconnect now scopes the token delete to the authenticated user.
-	userID := uuid.New()
+	// disconnect now scopes the token delete to the authenticated user, and
+	// reads that user's settings first (PAC-35), so the user must exist.
+	userID := createTestUser(t, "auth-disconnect@example.com")
 	req := httptest.NewRequest(http.MethodDelete, "/api/auth/disconnect", nil)
 	ctx := context.WithValue(req.Context(), auth.UserIDKey, userID)
 	req = req.WithContext(ctx)

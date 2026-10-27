@@ -11,10 +11,10 @@ var ErrReadOnly = errors.New("calendar: provider is read-only")
 
 // GenericEvent is the common event representation across all calendar providers.
 type GenericEvent struct {
-	ID    string
-	Title string
-	Start time.Time
-	End   time.Time
+	ID    string    `json:"id"`
+	Title string    `json:"title"`
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
 }
 
 // Provider is the unified calendar client interface used for multi-provider support.

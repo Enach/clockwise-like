@@ -836,3 +836,40 @@ is the **worst available pilot**, not a neutral one — §2.9 establishes it has
 HTTP boundary at all. Piloting an unproven generated-server path on the one operation that
 cannot detect its own regression inverts the rule's purpose. The author was right to
 escalate rather than decide, and right not to bundle.
+
+## Decisions — 2026-10-26
+
+*Made at stage 4 (backend-implementer). None of these had a recorded owner answer;
+each is the most conservative option consistent with PRODUCT.md and the earlier
+owner decisions in docs/specs/\*.md, and each is **assumed by the factory, pending
+owner confirmation**.*
+
+- **OQ-1 — nobody reads a log that is not their own.** Per-user only; no
+  organisation or manager view. Assumed by the factory, pending owner confirmation.
+  (Narrowest visibility; there is no administrator concept to gate a wider one on.)
+- **OQ-2 — one subject column, no actor column.** Assumed by the factory, pending
+  owner confirmation. Every writer that records anything has actor = subject today
+  (§2.4 and challenge blocking finding 1: booking is the one divergent path and it
+  records nothing).
+- **OQ-5 — `listAuditEntries` stays `handwritten`.** The hand-written `auditHandler`
+  keeps serving the operation; the generated wrapper is not mounted. Assumed by the
+  factory, pending owner confirmation — the explicit exception to factory §4 that
+  the plan (§2 "Generated code") asked for, on the challenger's reasoning that the
+  first mount of generated routing should not be piloted inside a critical fix.
+- **Plan §7 item 1 — `user_id` is `REFERENCES users(id) ON DELETE CASCADE`.**
+  Assumed by the factory, pending owner confirmation. Deleting a user deletes their
+  activity feed with the rest of their data, which is what PRODUCT.md promises
+  ("Data is deleted within 30 days of cancelling") and how every other per-user
+  table is attached (`006_auth.up.sql`). `ON DELETE SET NULL` was rejected: it would
+  keep a deleted user's typed prompts indefinitely, against that promise, and give
+  "no subject" a second meaning, making AC-9 unfalsifiable. `RESTRICT` was rejected:
+  it would make the deletion PRODUCT.md promises fail. No code path deletes users
+  today.
+- **Migration number — 026, not 025.** `025_settings_time_format` (PAC-55) took 025
+  on main after the plan was written. 026 is the next free number on main. Open PR
+  Enach/clockwise-like#212 (PAC-50) also adds a `026_…` migration; whichever merges
+  second must renumber, and golang-migrate refuses duplicate versions loudly rather
+  than skipping one. PAC-49's and PAC-50's specs name 026/027 for themselves and
+  must move up by one.
+- **OQ-3 — not decided here.** How users are told their log appears to empty out is
+  a web/release decision; the backend change makes it certain on release day.

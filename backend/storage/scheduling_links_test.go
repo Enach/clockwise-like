@@ -157,7 +157,7 @@ func TestAddAndGetLinkHosts(t *testing.T) {
 		t.Errorf("pending invites = %d, want 1", len(pending))
 	}
 
-	if err = RespondToHostInvite(db, link.ID, coHostID, "accepted"); err != nil {
+	if _, err = RespondToHostInvite(db, link.ID, coHostID, "accepted"); err != nil {
 		t.Fatalf("RespondToHostInvite: %v", err)
 	}
 
@@ -284,5 +284,51 @@ func TestSlugExists(t *testing.T) {
 	}
 	if notExists {
 		t.Error("expected slug to not exist")
+	}
+}
+
+// PAC-30 (API-020): RespondToHostInvite and RemoveLinkHost report whether a
+// host row matched, so the handlers can answer 404 instead of a silent 200/204.
+func TestRespondAndRemoveLinkHostReportMatch(t *testing.T) {
+	db := openTestDB(t)
+	ownerID := insertTestUser(t, db, "pac30-storage-owner@test.com", "Owner")
+	hostID := insertTestUser(t, db, "pac30-storage-host@test.com", "Host")
+	strangerID := insertTestUser(t, db, "pac30-storage-stranger@test.com", "Stranger")
+	link, err := CreateSchedulingLink(db, &SchedulingLink{
+		OwnerUserID:     ownerID,
+		Slug:            "pac30-storage",
+		Title:           "PAC-30",
+		DurationOptions: []int{30},
+		DaysOfWeek:      []int{1, 2, 3, 4, 5},
+		WindowStart:     "09:00",
+		WindowEnd:       "17:00",
+	})
+	if err != nil || link == nil {
+		t.Fatalf("CreateSchedulingLink: %v", err)
+	}
+	if _, err = AddLinkHost(db, link.ID, hostID, "pending"); err != nil {
+		t.Fatalf("AddLinkHost: %v", err)
+	}
+
+	matched, err := RespondToHostInvite(db, link.ID, strangerID, "accepted")
+	if err != nil || matched {
+		t.Errorf("RespondToHostInvite(stranger) = %v, %v; want false, nil", matched, err)
+	}
+	matched, err = RespondToHostInvite(db, link.ID, hostID, "accepted")
+	if err != nil || !matched {
+		t.Errorf("RespondToHostInvite(host) = %v, %v; want true, nil", matched, err)
+	}
+
+	removed, err := RemoveLinkHost(db, link.ID, strangerID)
+	if err != nil || removed {
+		t.Errorf("RemoveLinkHost(stranger) = %v, %v; want false, nil", removed, err)
+	}
+	removed, err = RemoveLinkHost(db, link.ID, hostID)
+	if err != nil || !removed {
+		t.Errorf("RemoveLinkHost(host) = %v, %v; want true, nil", removed, err)
+	}
+	removed, err = RemoveLinkHost(db, link.ID, hostID)
+	if err != nil || removed {
+		t.Errorf("RemoveLinkHost(host again) = %v, %v; want false, nil", removed, err)
 	}
 }

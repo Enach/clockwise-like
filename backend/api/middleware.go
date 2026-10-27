@@ -39,14 +39,15 @@ func userIDFromCtx(ctx context.Context) uuid.UUID {
 func requireAuth(jwtSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// PAC-39 / API-008: an explicit Authorization: Bearer header wins over
+			// the auth_token cookie, so a stale cookie cannot shadow a valid token.
+			// A present-but-invalid bearer token is rejected, never retried with
+			// the cookie: the client named the identity it wants.
 			var tokenStr string
-			if cookie, err := r.Cookie("auth_token"); err == nil {
+			if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+				tokenStr = strings.TrimPrefix(h, "Bearer ")
+			} else if cookie, err := r.Cookie("auth_token"); err == nil {
 				tokenStr = cookie.Value
-			}
-			if tokenStr == "" {
-				if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-					tokenStr = strings.TrimPrefix(h, "Bearer ")
-				}
 			}
 			if tokenStr == "" {
 				w.Header().Set("Content-Type", "application/json")

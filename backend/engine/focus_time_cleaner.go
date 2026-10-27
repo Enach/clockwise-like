@@ -44,7 +44,7 @@ func (e *FocusTimeEngine) ClearWeek(ctx context.Context, targetWeek time.Time) (
 		"cleared":    len(blocks),
 		"errors":     errs,
 	})
-	storage.WriteAuditLog(e.DB, "focus_cleared", string(detail))
+	storage.WriteAuditLog(e.DB, userID, "focus_cleared", string(detail))
 
 	if len(errs) > 0 {
 		return len(blocks), fmt.Errorf("partial errors clearing week: %v", errs)

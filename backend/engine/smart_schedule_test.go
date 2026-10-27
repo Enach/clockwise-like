@@ -234,3 +234,25 @@ func smartScheduleUser(t *testing.T, db *sql.DB, email string) (context.Context,
 	}
 	return context.WithValue(context.Background(), auth.UserIDKey, u.ID), u.ID
 }
+
+// PAC-23 AC-5 / AC-14: scheduling a meeting is recorded against the caller in ctx.
+func TestCreateMeeting_AuditEntrySubjectIsCallerFromContext(t *testing.T) {
+	db := openTestDB(t)
+	sched := &SmartScheduler{DB: db, calOps: &mockCalOps{calID: "primary"}}
+	ctx, caller := smartScheduleUser(t, db, "audit-create-meeting@example.com")
+	_, other := smartScheduleUser(t, db, "audit-create-meeting-other@example.com")
+	settings, err := storage.GetOrCreateSettingsByUser(db, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sched.CreateMeeting(ctx, ScheduleRequest{Title: "Audit Sync"}, futureEnabledWorkSlot(t, settings)); err != nil {
+		t.Fatalf("CreateMeeting: %v", err)
+	}
+	if got := auditActions(t, db, caller); len(got) != 1 || got[0] != "meeting_scheduled" {
+		t.Errorf("caller's log = %v, want [meeting_scheduled]", got)
+	}
+	if got := auditActions(t, db, other); len(got) != 0 {
+		t.Errorf("other user's log = %v, want empty", got)
+	}
+}

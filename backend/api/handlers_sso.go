@@ -9,8 +9,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/domain"
@@ -18,51 +16,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// --- Rate limiter (sliding 1-minute window per IP) -------------------------
-
-type ipBucket struct {
-	count     int
-	windowEnd time.Time
-}
-
-var (
-	detectLimiterMu sync.Mutex
-	detectLimiter   = make(map[string]*ipBucket)
-)
-
-const detectRateLimit = 20
-
-func allowDetect(ip string) bool {
-	detectLimiterMu.Lock()
-	defer detectLimiterMu.Unlock()
-
-	now := time.Now()
-	b, ok := detectLimiter[ip]
-	if !ok || now.After(b.windowEnd) {
-		detectLimiter[ip] = &ipBucket{count: 1, windowEnd: now.Add(time.Minute)}
-		return true
-	}
-	if b.count >= detectRateLimit {
-		return false
-	}
-	b.count++
-	return true
-}
-
-func realIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
-	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.SplitN(fwd, ",", 2)[0]
-	}
-	return r.RemoteAddr
-}
-
 // --- POST /api/auth/detect (public) ----------------------------------------
 
 func (h *ssoHandlers) detect(w http.ResponseWriter, r *http.Request) {
-	if !allowDetect(realIP(r)) {
+	if !allowDetect(clientIP(r, trustedProxies)) {
 		writeError(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
@@ -77,7 +34,7 @@ func (h *ssoHandlers) detect(w http.ResponseWriter, r *http.Request) {
 
 	result, err := auth.DetectAuthProvider(r.Context(), h.ah.db, body.Email)
 	if err != nil {
-		writeError(w, "detection failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "detection failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -108,7 +65,7 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 		redirectURL,
 	)
 	if err != nil {
-		writeError(w, "OIDC setup: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "OIDC setup", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -116,7 +73,7 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "sso_state",
 		Value:    state + "|" + d,
 		Path:     "/",
@@ -124,7 +81,13 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, client.AuthURL(state), http.StatusFound)
+	// A hint is forwarded only when it belongs to this domain, so one
+	// organisation's IdP is never sent an outside address (PAC-35, D-10).
+	hint := loginHintFrom(r)
+	if hint != "" && !domain.EmailBelongsToDomain(hint, d) {
+		hint = ""
+	}
+	http.Redirect(w, r, client.AuthURL(state, hint), http.StatusFound)
 }
 
 // --- GET /api/auth/callback/oidc/{domain} (public) --------------------------
@@ -142,7 +105,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "sso_state", MaxAge: -1, Path: "/"})
+	setCookie(w, &http.Cookie{Name: "sso_state", MaxAge: -1, Path: "/"})
 
 	provider, err := storage.GetSSOProviderByDomain(h.ah.db, d)
 	if err != nil || provider == nil {
@@ -159,13 +122,13 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		redirectURL,
 	)
 	if err != nil {
-		http.Error(w, "OIDC setup: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "OIDC setup", err, http.StatusInternalServerError)
 		return
 	}
 
 	userInfo, _, err := client.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "OIDC exchange: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "OIDC exchange", err, http.StatusInternalServerError)
 		return
 	}
 	if userInfo.Email == "" {
@@ -183,12 +146,15 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 
 	user, err := storage.UpsertUser(h.ah.db, userInfo.Email, userInfo.Name, "", "sso", userInfo.Sub)
 	if err != nil {
-		http.Error(w, "upsert user: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "upsert user", err, http.StatusInternalServerError)
 		return
 	}
 	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, userInfo.Email)
 
-	h.ah.issueJWT(w, user)
+	if err := h.ah.issueJWT(w, user); err != nil {
+		h.ah.signInFailed(w, r, "issue session", err)
+		return
+	}
 	http.Redirect(w, r, h.ah.frontendURL+"/auth/callback?provider=sso", http.StatusFound)
 }
 
@@ -232,7 +198,7 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 		SAMLCert:         body.SAMLCert,
 	}, caller.user.ID, caller.org.ID, via)
 	if err != nil {
-		writeError(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "save failed", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -307,7 +273,7 @@ func (h *ssoHandlers) listSSOProviders(w http.ResponseWriter, r *http.Request) {
 
 	providers, err := storage.ListSSOProvidersByOrg(h.ah.db, *user.OrgID)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "listSSOProviders", err, http.StatusInternalServerError)
 		return
 	}
 	if providers == nil {
@@ -339,7 +305,7 @@ func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) 
 
 	found, err := h.store.deleteProvider(r.Context(), d, caller.user.ID, caller.org.ID, via)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "deleteSSOProvider", err, http.StatusInternalServerError)
 		return
 	}
 	if !found {

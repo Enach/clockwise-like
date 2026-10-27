@@ -30,7 +30,8 @@ func (h *orgHandlers) members(w http.ResponseWriter, r *http.Request) {
 
 	members, err := storage.GetOrgMembers(h.db, *user.OrgID)
 	if err != nil {
-		http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+		logServerError(r, "org members", err, http.StatusInternalServerError)
+		writeError(w, "internal", http.StatusInternalServerError)
 		return
 	}
 	if members == nil {

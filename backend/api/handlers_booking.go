@@ -303,7 +303,7 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	}
 	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, start, end, body.Notes)
 	if err != nil {
-		writeError(w, "booking failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "booking failed", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

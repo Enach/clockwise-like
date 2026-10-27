@@ -355,3 +355,30 @@ func compressionCtx(t *testing.T, db *sql.DB) context.Context {
 	ctx, _ := smartScheduleUser(t, db, "compression-"+uuid.NewString()+"@example.com")
 	return ctx
 }
+
+// PAC-23 AC-5 / AC-14: each applied move is recorded against the caller in ctx.
+func TestApply_AuditEntrySubjectIsCallerFromContext(t *testing.T) {
+	db := openTestDB(t)
+	ctx, caller := smartScheduleUser(t, db, "audit-apply@example.com")
+	_, other := smartScheduleUser(t, db, "audit-apply-other@example.com")
+	now := time.Now().UTC()
+	events := []*googlecalendar.Event{
+		{Id: "evt-a1", Start: &googlecalendar.EventDateTime{DateTime: now.Add(time.Hour).Format(time.RFC3339)}, End: &googlecalendar.EventDateTime{DateTime: now.Add(2 * time.Hour).Format(time.RFC3339)}},
+		{Id: "evt-a2", Start: &googlecalendar.EventDateTime{DateTime: now.Add(5 * time.Hour).Format(time.RFC3339)}, End: &googlecalendar.EventDateTime{DateTime: now.Add(6 * time.Hour).Format(time.RFC3339)}},
+	}
+	eng := &CompressionEngine{DB: db, calOps: &mockCalOps{calID: "primary", events: events}}
+
+	applied, failed, err := eng.Apply(ctx, []MoveProposal{
+		{EventID: "evt-a1", ProposedStart: now.Add(3 * time.Hour), ProposedEnd: now.Add(4 * time.Hour)},
+		{EventID: "evt-a2", ProposedStart: now.Add(7 * time.Hour), ProposedEnd: now.Add(8 * time.Hour)},
+	})
+	if err != nil || len(applied) != 2 {
+		t.Fatalf("Apply: applied %v failed %v err %v", applied, failed, err)
+	}
+	if got := auditActions(t, db, caller); len(got) != 2 || got[0] != "meeting_moved" || got[1] != "meeting_moved" {
+		t.Errorf("caller's log = %v, want two meeting_moved", got)
+	}
+	if got := auditActions(t, db, other); len(got) != 0 {
+		t.Errorf("other user's log = %v, want empty", got)
+	}
+}

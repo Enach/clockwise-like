@@ -1,6 +1,10 @@
 package storage
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type OAuthToken struct {
 	ID           int64
@@ -12,16 +16,17 @@ type OAuthToken struct {
 }
 
 type FocusBlock struct {
-	ID            int64
-	GoogleEventID string
-	StartTime     time.Time
-	EndTime       time.Time
-	Date          string
-	CreatedAt     time.Time
+	ID            int64     `json:"id"`
+	GoogleEventID string    `json:"google_event_id"`
+	StartTime     time.Time `json:"start_time"`
+	EndTime       time.Time `json:"end_time"`
+	Date          string    `json:"date"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type AuditLog struct {
 	ID        int64
+	UserID    uuid.NullUUID // nil for entries recorded before PAC-23
 	Action    string
 	Details   string
 	CreatedAt time.Time

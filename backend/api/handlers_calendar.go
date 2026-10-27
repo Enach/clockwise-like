@@ -3,7 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"github.com/Enach/paceday/backend/engine"
 	"net/http"
 	"strings"
 	"time"
@@ -131,14 +131,13 @@ func toCalendarEventDTO(e *googlecalendar.Event) calendarEventDTO {
 	return dto
 }
 
+// getCalendarClient opens the caller's Google calendar. It returns
+// engine.ErrCalendarNotConnected when they have no stored credential and an
+// engine.ErrCredentialStore error when the store cannot be read (PAC-21).
 func (h *calendarHandlers) getCalendarClient(r *http.Request) (*calendar.CalendarClient, error) {
-	userID := userIDFromCtx(r.Context())
-	token, err := auth.LoadUserToken(h.db, userID)
+	token, err := engine.LoadCalendarToken(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		return nil, err
-	}
-	if token == nil {
-		return nil, fmt.Errorf("not authenticated")
 	}
 	ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
 	return calendar.NewClient(r.Context(), ts)
@@ -161,13 +160,13 @@ func (h *calendarHandlers) listEvents(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.getCalendarClient(r)
 	if err != nil {
-		http.Error(w, "not connected: "+err.Error(), http.StatusUnauthorized)
+		writeCalendarFailure(w, r, "listEvents", err)
 		return
 	}
 
 	events, err := client.ListEvents(r.Context(), client.CalendarID, timeMin, timeMax)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "listEvents", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -203,13 +202,13 @@ func (h *calendarHandlers) freeBusy(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.getCalendarClient(r)
 	if err != nil {
-		http.Error(w, "not connected: "+err.Error(), http.StatusUnauthorized)
+		writeCalendarFailure(w, r, "freeBusy", err)
 		return
 	}
 
 	result, err := client.GetFreeBusy(r.Context(), emails, timeMin, timeMax)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "freeBusy", err, http.StatusInternalServerError)
 		return
 	}
 
