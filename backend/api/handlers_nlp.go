@@ -69,5 +69,5 @@ func (h *nlpHandlers) confirm(w http.ResponseWriter, r *http.Request) {
 	storage.WriteAuditLog(h.db, userIDFromCtx(r.Context()), "nlp_confirmed", `{"event_id":"`+created.Id+`"}`)
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(created)
+	_ = json.NewEncoder(w).Encode(toCalendarEventDTO(created))
 }
