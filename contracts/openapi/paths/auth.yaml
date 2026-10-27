@@ -81,6 +81,16 @@ paths:
         the session cookie was actually set. If the session cannot be issued
         (empty signing secret, or token generation fails) the user is sent to
         the sign-in failure state instead; see the `302` response.
+
+        Since PAC-67 a successful Google sign-in is also the Google RECONNECT
+        (spec PAC-67 AC-12, AC-24): storing the new token ends any recorded
+        loss of the Google connection for the user it resolves to, so
+        `getAuthStatus` (Google calendar provider) and the `google_meet` row of
+        `listConferenceProviders` report connected again, and a later loss of
+        the new credential is a new loss with its own `connection_lost`
+        activity entry. The user is still resolved by the Google account's
+        email, exactly as before (spec PAC-67 OQ-10: sign-in matching is not
+        changed). No response of this operation changes.
       security: []
       parameters:
         - name: state
@@ -188,6 +198,22 @@ paths:
         error page on the API origin: the Graph profile could not be read (or
         carried no email), the user could not be saved, or the session could
         not be issued. See the `302` response.
+
+        Since PAC-67 this sign-in is also the Outlook RECONNECT, and what it
+        stores changes in two ways; no response, status or Location changes.
+        (1) When the code exchange returns an access token but NO refresh
+        token, the user's stored refresh token is kept, never overwritten with
+        an empty one, so a working connection is never erased by a reconnect
+        (spec PAC-67 AC-11). With no refresh token stored before either, the
+        result is a credential with no refresh token, reported not connected
+        exactly as today. (2) Storing the credential ends any recorded loss of
+        the Outlook connection for the user it resolves to (AC-12, AC-24), so
+        `getAuthStatus` (Outlook calendar provider) and the `teams` row of
+        `listConferenceProviders` report connected again. The credential is
+        still attached to the user matched by the Microsoft account's email,
+        and every sign-in still sets that user's calendar provider to
+        `outlook`, including a sign-in after `disconnectMicrosoft` (spec
+        PAC-67 D-4, OQ-5, OQ-10: unchanged on purpose).
       security: []
       parameters:
         - name: state
@@ -250,6 +276,81 @@ paths:
           description: >-
             `MICROSOFT_CLIENT_ID` is unset. Body: `{"error":"Microsoft OAuth not
             configured"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/microsoft/disconnect:
+    post:
+      operationId: disconnectMicrosoft
+      tags: [auth]
+      summary: Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+      description: |
+        New in PAC-67 (spec AC-13, AC-16, AC-17, D-3, D-5, D-8). Protected by
+        requireAuth. Takes no request body (any body is ignored). Acts on the
+        CALLER only; no other user's credential, settings or activity log is
+        read or written.
+
+        Effects, in this order:
+        1. The caller's stored Microsoft credential (access token, refresh
+           token, expiry) is removed, and any recorded loss of it is cleared:
+           a later Microsoft sign-in starts a fresh connection.
+        2. When the caller's conferencing provider is `teams` it becomes
+           `meet` (spec D-8); any other conferencing provider is unchanged.
+        3. The caller's calendar provider is NOT changed (spec D-3): a caller
+           on `outlook` stays on `outlook` and `getAuthStatus` reports
+           `{connected: false, provider: "outlook"}` until they sign in with
+           Microsoft again or choose another provider in settings.
+        4. Nothing is sent to Microsoft. Microsoft offers no revocation of one
+           application's grant for one user that Paceday can call with the
+           user's own delegated token: deleting the delegated permission
+           grant (`DELETE /oauth2PermissionGrants/{id}`) needs
+           `DelegatedPermissionGrant.ReadWrite.All` and an administrator role
+           for work or school accounts and is not supported for personal
+           accounts, and the only per-user server call left
+           (`revokeSignInSessions`) signs the user out of every application,
+           which spec D-5 forbids (OQ-1, resolved in
+           contracts/features/PAC-67.md §3). The answer therefore always
+           carries `revocation: not_offered` when a credential was removed,
+           and the client tells the user the grant can be removed from their
+           Microsoft account (AC-17).
+        5. One `provider_disconnected` activity entry is written for the
+           caller, details `{"provider":"outlook","revocation":"not_offered"}`.
+           No `revocation_unconfirmed` entry is written: nothing was
+           attempted, so nothing failed (round-5 challenge NB-2).
+
+        A caller with no stored Microsoft credential gets 200 with
+        `revocation: nothing_stored`: step 2 still applies, nothing else
+        changes, and no activity entry is written.
+
+        After a 200 the `teams` row of `listConferenceProviders` reports
+        `connected: false` with `enabled` omitted.
+
+        Unlike `disconnectCalendar`, there is no 409: the operation applies to
+        every caller whatever their calendar provider, and it does not touch
+        the Google credential or the webcal link.
+      responses:
+        '200':
+          description: |
+            The Microsoft credential is gone (or there was none). The session
+            is kept: no Set-Cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderDisconnectResult'
+        '401':
+          description: No/invalid JWT (text/plain body carrying JSON text).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            The caller's settings could not be read or written. NOTHING was changed:
+            the credential is still stored, the conferencing provider is unchanged and
+            no activity entry is written. Body: `{"error":"internal error"}`. The detail
+            is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -468,6 +569,25 @@ paths:
         On an internal failure it does NOT error — it 200s with
         {connected:false, provider:"google", email:""}.
 
+        Since PAC-67 `connected` means USABLE, not merely stored (spec PAC-67
+        §3, AC-8, AC-12, AC-13, AC-21). A credential whose renewal the provider
+        permanently refused (OAuth `invalid_grant` or equivalent) is kept
+        (spec D-1) but is recorded as lost, and while that loss is recorded
+        this operation reports `connected: false` for it. A temporary failure
+        (network, timeout, provider 5xx) is never recorded as a loss and never
+        turns this to false (AC-10). Per branch:
+        - `outlook`: true when the caller holds a stored Microsoft credential
+          with a refresh token AND no loss of it is recorded; false after
+          `disconnectMicrosoft` (the credential is gone) and after a loss.
+        - `google` (blank or any unrecognised provider): true when the caller
+          holds a stored Google token row AND no loss of it is recorded.
+        - `webcal`: unchanged.
+        Only the caller's own credentials are consulted. A loss recorded while
+        the credential was being used for someone else (a teammate's team
+        availability request, a public booking page, a scheduled job) is the
+        OWNER's: it changes the owner's answer here, never the requester's
+        (spec D-12). The response shape is unchanged; no field is added.
+
         PAC-24 resolves API-009. Before it, this branched on the SINGLETON
         settings row's calendar_provider and returned that row's
         `calendar_email`, and `auth.LoadMicrosoftToken` took no user id at all
@@ -518,7 +638,11 @@ paths:
         - `outlook` or `webcal`: deletes NOTHING (the stored Google token, if
           the caller holds one, the Microsoft credential and the webcal link
           are all kept) and answers 409 `CalendarDisconnectUnsupported`.
-          Disconnect for these calendars is not implemented (spec PAC-35 OQ-5).
+          Disconnect for these calendars is not implemented HERE (spec PAC-35
+          OQ-5). Since PAC-67 the Microsoft credential has its own operation,
+          `disconnectMicrosoft` (`POST /api/auth/microsoft/disconnect`); this
+          operation's 409 for `outlook` and `webcal` is unchanged by it (spec
+          PAC-67 OQ-3).
         - The settings row cannot be read (or created): deletes nothing and
           answers 500.
           The provider is never guessed as Google on this path, so a read
@@ -867,6 +991,10 @@ components:
       properties:
         connected:
           type: boolean
+          description: |
+            Whether the caller's calendar connection for `provider` is usable
+            (PAC-67): stored, and not recorded as lost after a permanent
+            refusal of its renewal. See `getAuthStatus`.
         provider:
           type: string
           enum: [google, outlook, webcal]
@@ -904,6 +1032,40 @@ components:
           type: string
           enum: [outlook, webcal]
           description: The caller's calendar provider, as `getAuthStatus` reports it.
+      additionalProperties: false
+
+    ProviderDisconnectResult:
+      type: object
+      description: |
+        Body of the 200 of `disconnectMicrosoft` and `disconnectZoom` (PAC-67,
+        spec AC-13 to AC-17, D-2). Says which provider was disconnected and
+        what became of the grant at the provider. The local credential is gone
+        whatever `revocation` says: a revocation that could not be confirmed
+        never blocks local removal (spec D-2). Carries no token material.
+      required: [provider, revocation]
+      properties:
+        provider:
+          type: string
+          enum: [outlook, zoom]
+          description: '`outlook` from `disconnectMicrosoft`, `zoom` from `disconnectZoom`.'
+        revocation:
+          type: string
+          enum: [confirmed, unconfirmed, not_offered, nothing_stored]
+          description: |
+            - `confirmed`: the provider answered success to the revocation
+              request (Zoom only).
+            - `unconfirmed`: a revocation was attempted and the provider
+              refused it, answered an error, or could not be reached (Zoom
+              only). The client must tell the user that revocation at the
+              provider could not be confirmed (spec AC-15, D-2) and must not
+              show a plain success.
+            - `not_offered`: the provider offers no revocation of this one
+              grant that Paceday may call, so none was attempted (Outlook
+              always, spec AC-17, D-5). The client tells the user the grant
+              can be removed from their account at the provider.
+            - `nothing_stored`: the caller held no credential for this
+              provider; nothing was removed or sent, and no activity entry
+              was written.
       additionalProperties: false
 
     CurrentUserResponse:

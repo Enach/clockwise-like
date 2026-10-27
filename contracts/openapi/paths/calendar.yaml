@@ -833,16 +833,21 @@ paths:
 
 
         This log is a **per-user activity feed**, not a security audit trail: it has
-        no authentication or configuration events, no client address, and no actor
-        distinct from the subject, and it is readable only by its subject. See
+        no authentication events, no client address, and no actor field, and it is
+        readable only by its subject. Since PAC-67 it records the subject's own
+        provider connections being lost or disconnected (CONNECTION ENTRIES below),
+        so the subject can see why a connection reads not connected; that does not
+        make it an audit trail. See
         docs/specs/PAC-23.md §3.5 — do not build anything on it that needs a third
         party to be able to review it.
 
 
-        The subject of an entry is whose calendar it happened to, which is not
-        necessarily who caused it. Every entry this operation can return today has
-        actor = subject, and that is true for a narrow reason worth stating: the one
-        path where they differ writes no entry at all. `POST /api/book/{slug}` is
+        The subject of an entry is whose calendar (or, since PAC-67, whose provider
+        connection) it happened to, which is not necessarily who caused it. Every
+        entry written by the seven PAC-23 writers has actor = subject, and that is
+        true for a narrow reason worth stating: the one path where they differ
+        writes no such entry at all. PAC-67 adds the first entries whose actor can
+        differ from the subject; see CONNECTION ENTRIES below. `POST /api/book/{slug}` is
         registered outside the `requireAuth` group (backend/api/routes.go:27 —
         `:26` is the `GET .../slots` route, not this one) and
         reaches `calClient.CreateEvent` inside `BookingEngine.ConfirmBooking`
@@ -878,6 +883,34 @@ paths:
         unavoidable the entry needs the redacted projection spec §3.5 describes, not
         this operation. Spec AC-3 forbids only the mirror image, another user's text
         reaching a non-subject.
+
+
+        CONNECTION ENTRIES (PAC-67, spec PAC-67 AC-8, AC-9, AC-15, AC-16, AC-22 to
+        AC-29, D-12, D-13). Three kinds record the lifecycle of the subject's own
+        Outlook, Zoom and Google credentials: `connection_lost`,
+        `provider_disconnected` and `revocation_unconfirmed` (see `action`). Their
+        subject is always the credential's OWNER. A `connection_lost` entry is
+        written whenever a renewal of the owner's credential is permanently refused,
+        on ANY path that renews it (spec D-13), including paths where the actor is
+        not the owner: a teammate's `GET /api/teams/{id}/availability` reading the
+        owner's Google calendar, an unauthenticated visitor on
+        `GET /api/book/{slug}/slots` or `POST /api/book/{slug}`, and scheduled jobs
+        acting for the owner. The entry goes to the owner's log only; the
+        requester's log is never written, and nothing in these entries identifies
+        the requester or visitor. They obey the rule in the previous paragraph by
+        construction: `details` holds only server-chosen enum values (the provider
+        and, for a disconnect, the revocation outcome), never text supplied by
+        the actor, and never token material. There is exactly one
+        `connection_lost` entry per LOSS: a loss starts at the first permanent
+        refusal of a credential that was usable and ends when the owner reconnects
+        or disconnects that provider, so further refusals within one loss, and
+        concurrent refusals within one backend process, add no entry, while a
+        loss of a later, reconnected credential adds a new one (spec AC-9, AC-24,
+        AC-25; across several backend processes is spec OQ-9). A temporary failure
+        (timeout, network, provider 5xx) never writes one. Disconnects write
+        `provider_disconnected`, plus `revocation_unconfirmed` when a revocation
+        was attempted and not confirmed; the per-case counts are on
+        `disconnectMicrosoft` and `disconnectZoom`.
 
 
         There is no pagination — no `offset`, no cursor, no `before`. Entries older
@@ -1756,7 +1789,9 @@ components:
       type: object
       description: >-
         storage.AuditEntry. One recorded action, always about the calling user's own
-        calendar — the subject is the scoping predicate and is deliberately NOT echoed
+        calendar or, since PAC-67, one of the calling user's own provider connections
+        (Outlook, Zoom, Google; the three connection kinds of `action`) — the subject
+        is the scoping predicate and is deliberately NOT echoed
         back as a field, because it is the same value on every entry of every response
         (see contracts/features/PAC-23.md §2, rejected alternative A).
       required: [id, action, details, created_at]
@@ -1804,6 +1839,16 @@ components:
             falsifying command is
             `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`,
             which returns the definition and exactly these seven call sites.
+            PAC-67 adds three kinds, none of which redefines the seven above: they
+            are written by the credential lifecycle, not by a scheduling feature,
+            and their writers are named by the PAC-67 plan:
+            `connection_lost` (the provider permanently refused renewing the
+            subject's credential; one per loss, see the operation description),
+            `provider_disconnected` (the subject disconnected Outlook or Zoom), and
+            `revocation_unconfirmed` (a revocation sent to the provider on that
+            disconnect was not confirmed; Zoom only). After PAC-67 the falsifying
+            command above must return these writers as well, and the contract test
+            of this enum against the writers covers all ten.
 
 
             The enum is closed on purpose. `audit_log.action` is an unconstrained
@@ -1860,6 +1905,9 @@ components:
             - meeting_created
             - nlp_parsed
             - nlp_confirmed
+            - connection_lost
+            - provider_disconnected
+            - revocation_unconfirmed
         details:
           type: string
           description: >-
@@ -1876,7 +1924,14 @@ components:
             backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in
             backend/engine/focus_time_cleaner.go); `nlp_parsed` uses
             `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`,
-            backend/nlp/parser.go). NOT GUARANTEED: `meeting_scheduled`,
+            backend/nlp/parser.go); and the three PAC-67 connection kinds, which
+            marshal a struct with `encoding/json` and hold only server-chosen values:
+            `connection_lost` is `{"provider":"outlook"|"zoom"|"google"}`,
+            `provider_disconnected` is `{"provider":"outlook"|"zoom","revocation":
+            "confirmed"|"unconfirmed"|"not_offered"}` (the `revocation` vocabulary of
+            `ProviderDisconnectResult`), and `revocation_unconfirmed` is
+            `{"provider":"zoom"}`. No token material and no actor-supplied text ever
+            appears in them. NOT GUARANTEED: `meeting_scheduled`,
             `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by
             concatenating values into a JSON literal with no escaping
             (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go,
