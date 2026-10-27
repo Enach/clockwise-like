@@ -1,16 +1,17 @@
 # Spec — PAC-22: SSO configuration must not disclose identity-provider secrets
 
 - **Linear**: https://linear.app/paceday/issue/PAC-22/stop-returning-oidcclientsecret-and-samlcert-from-apiadminsso
-- **Status**: draft (v3.3, 2026-10-28), ready for spec-challenger. v1 and v2 were
-  rejected (see History). v3 was never challenged. v3.1 is v3 checked again
-  against `origin/main` at `6d751f9`, with the open questions answered as factory
-  assumptions (see **Decisions**). The challenge of v3.1 (History) accepted it
-  with changes, and v3.2 applied every one of them. **v3.3 is not "accepted"
-  yet**: it changes behaviour the v3.1 challenge accepted (an omitted client
-  secret is now kept on a replace, §3.2, D-12, D-13) and adds AC-22 to AC-26, so
-  it needs its own spec-challenger round before it can be marked accepted. The
-  delta to challenge is listed under "Revision v3.3". OQ-1 to OQ-4 are closed
-  (D-1, D-4, D-7). What changed between v3 and v3.1 is under "Revision v3.1".
+- **Status**: challenged (v3.4, 2026-10-28). v1 and v2 were rejected (see
+  History). v3 was never challenged. v3.1 is v3 checked again against
+  `origin/main` at `6d751f9`, with the open questions answered as factory
+  assumptions (see **Decisions**). The challenge of v3.1 accepted it with
+  changes, and v3.2 applied them. v3.3 kept an omitted client secret on a
+  replace (§3.2, D-12, D-13) and added AC-22 to AC-26. The challenge of v3.3
+  (History, "Challenge — 2026-10-28") accepted it with changes. **v3.4 applies
+  every one of those changes**, and "Revision v3.4" answers each in turn. v3.4
+  adds AC-27 and AC-28 (interleaved writes) and D-14 and D-15. OQ-1 to OQ-4 are
+  closed (D-1, D-4, D-7). What changed between v3 and v3.1 is under "Revision
+  v3.1".
 - **Author**: spec-author
 - **Inherited scope** (factory §7 rule 1):
   - **Resolved here**: API-001 (disclosure half; the write half is PAC-50's),
@@ -43,7 +44,7 @@
 
 | Spec | Covers | State on 2026-10-27 |
 |---|---|---|
-| **PAC-22** (this one) | Identity-provider secrets stop crossing the API boundary. The response becomes a described shape. A configuration that cannot work is refused when it is offered. SSO can be suspended and resumed. | spec draft v3.3 |
+| **PAC-22** (this one) | Identity-provider secrets stop crossing the API boundary. The response becomes a described shape. A configuration that cannot work is refused when it is offered. SSO can be suspended and resumed. | spec v3.4, challenged |
 | **PAC-50** | Who may write an SSO configuration and for which domain. Removal of nothing is reported as such. Changes are recorded. | contract on `factory/pac-50-contract`; implementation PR #212 open, not merged |
 
 The line is drawn at *decisions about privilege*. Everything in this spec is a
@@ -257,7 +258,11 @@ It may change before PAC-50 merges, and the contract stage must re-read it.
 - Create and delete are gated, as §2.5 describes. A refused write answers 403
   with a machine-readable code.
 - Every 400 is decided before the write authorization is consumed. One
-  authorization pays for one write.
+  authorization pays for one write. In the create handler on that branch, the
+  request checks come first, then `authorizeWrite` (`handlers_sso.go:183`), then
+  the store (`:188`). So a check that reads the stored configuration before the
+  authorization is spent, and the store that follows it, are two separate steps.
+  Another write can land between them. This matters for D-14.
 - Removal of a domain with no configuration answers 404 (API-067 is marked
   "Fixed (PAC-50)").
 - Domains are stored lower-cased.
@@ -310,6 +315,13 @@ by a yes/no "on file" indicator, the same treatment PAC-24 gives a user's
 language-model key, and the owner's 2026-10-27 decision ("Keys stay write-only
 (PAC-24)") confirms for keys.
 
+**The described response shape carries no property derived from a secret other
+than the two indicators.** No digest, fingerprint, length, prefix, suffix, mask,
+encoding or encryption of either secret appears in it, under any name. This is
+what makes "in any encoding" checkable: the raw byte search of AC-1 and AC-2
+finds the secret itself, and the described shape (AC-1, AC-3, AC-6) rules out
+everything derived from it.
+
 A reader can still tell whether a secret is on file, for each of the two
 secrets: the client secret and the signing certificate. "Configured, no secret
 entered" and "configured with a secret" are different states, and the person
@@ -352,13 +364,33 @@ write could point the configuration at an issuer they control, leave the secret
 out, and receive the organisation's secret at the next sign-in (§2.2): a
 write-only secret that can be redirected to its writer is not write-only.
 
-**A secret can only be kept if there is one to keep.** If no non-empty client
-secret is on file (a configuration stored before this change with an empty
-secret, or a configuration of the unsupported kind), a write that leaves it out
-is refused, naming the secret, as a new configuration without one is.
+**A secret can only be kept from a configuration of the supported kind that has
+one.** A write that leaves the client secret out is refused, naming the secret,
+as a new configuration without one is, when the stored configuration has no
+non-empty client secret (one stored before this change with an empty secret), or
+when it is of the unsupported kind. A row of the unsupported kind can hold a
+non-empty client secret, because the write path today stores the client secret
+whatever the provider kind (`handlers_sso.go:209-220`). Such a secret is never
+kept: it was never usable for a sign-in, and keeping it would carry it into a
+configuration nobody supplied it for. The "client secret on file" indicator of
+AC-3 still describes the stored value on such a row, so it can read true there
+while a write that leaves the secret out is refused (AC-25).
 
 A write that creates a configuration has nothing to keep, so it must supply the
 secret (§3.4).
+
+**What a replace keeps is decided against the configuration as it is when the
+replace is stored (D-14).** Another write can land between the moment a replace
+is checked and the moment it is stored. Whether the secret may be kept, and
+which secret is kept, is decided against the stored configuration at the moment
+of storing, not at the moment of checking. Interleaved writes never produce a
+stored configuration that neither writer asked for: in particular, never an
+issuer or client identifier from one write with a secret kept from a
+configuration that had a different issuer or client identifier. If, at the
+moment of storing, the replace changes the issuer or client identifier without
+supplying the secret, or there is no secret to keep, or there is no
+configuration any more, the replace is refused exactly as AC-24 or AC-25 says
+and nothing it carried is stored (AC-27).
 
 ### 3.3 Whether SSO is active is not part of the configuration
 
@@ -374,9 +406,12 @@ The two writes divide cleanly:
 
 - **The configuration write** replaces the configuration and never touches
   whether SSO is active (D-3). A new configuration starts active, as today. A
-  replaced configuration keeps the active state it had. Nobody switches SSO off by
-  accident, and nobody switches back on, by entering credentials, an SSO that a
-  colleague deliberately suspended.
+  replaced configuration keeps the active state it has **at the moment the
+  replace is stored**, not the state it had when the replace was checked or
+  begun (D-14). A suspension or resumption that lands while a replace is in
+  flight is never undone by it (AC-28). Nobody switches SSO off by accident, and
+  nobody switches back on, by entering credentials, an SSO that a colleague
+  deliberately suspended.
 - **The transition** changes the active state and nothing else. Suspending and
   resuming never need a secret.
 
@@ -464,7 +499,10 @@ None of these tests exist (§2.6). Each criterion says whether it fails today or
 guards behaviour that already holds:
 
 - **Fail against `main` today**: AC-1 to AC-10, AC-12, AC-15, AC-16, AC-18 to
-  AC-22 and AC-24 to AC-26. (AC-4 fails today only because the property it reads
+  AC-22 and AC-24 to AC-28. (AC-27 fails today whenever the write that leaves
+  the secret out is stored last, because it is accepted and stores an empty
+  secret over the other write's. AC-28 fails today because no suspension exists
+  and every replace stores "active".) (AC-4 fails today only because the property it reads
   does not exist yet. AC-22 fails today because an omitted secret is stored
   empty.)
 - **AC-23**: guards today's replace of a supplied secret; it is new only in that
@@ -499,6 +537,11 @@ nor its JSON-escaped form occurs anywhere in the body, in any letter case. The
 stored values are chosen so that this search is meaningful: each is long, unique
 to the test, and the certificate contains a line break (so its escaped form
 differs from its raw form). The same search is applied to the headers.
+
+In addition, the described shape of the response is examined: apart from the two
+indicators of AC-3, it has no property documented as, or derived from, either
+secret (a digest, fingerprint, length, prefix, suffix, mask, encoding or
+encryption of it), under any name (§3.1).
 `[contract]`
 
 AC-2. Given a permitted caller, when they submit a complete configuration of the
@@ -616,7 +659,10 @@ AC-25. Given a configuration stored before this change with an empty client
 secret, arranged through storage, when a permitted caller replaces it leaving the
 client secret out, then the request is rejected with a client error naming the
 client secret, and the stored configuration is unchanged. The same holds for a
-stored configuration of the unsupported kind.  `[contract]`
+stored configuration of the unsupported kind, arranged through storage with a
+non-empty client secret: the write is refused and the configuration is unchanged,
+although AC-3's "client secret on file" indicator reads true for that row
+(§3.2).  `[contract]`
 
 AC-26. Given a stored configuration with a non-empty client secret, when a
 permitted caller replaces it supplying the client secret as an empty value, and
@@ -624,6 +670,50 @@ again supplying it as an explicit null, then each request is rejected with a
 client error naming the client secret, the "client secret on file" indicator is
 still true, and the stored secret is unchanged (a following sign-in through a
 provider that accepts only the stored secret completes).  `[contract]`
+
+**Interleaved writes (D-14)**
+
+How a test arranges an interleaving is the plan's business. These criteria fix
+the outcome. "Between the check and the store" means: the other write is stored
+after the first write has passed every check this spec and PAC-50 make before
+the authorization is spent, and before the first write is stored.
+
+AC-27. Given a stored, active configuration of the supported kind with issuer
+I1, client identifier C and a non-empty client secret S1, and two permitted
+callers A and B:
+
+- when A replaces it supplying I1 and C and leaving the client secret out, and
+  B's replace supplying issuer I2, client identifier C and client secret S2 is
+  stored between A's check and A's store, then A's write is refused with a
+  client error naming the client secret (AC-24, decided against the
+  configuration as it is when A's write would be stored), and afterwards the
+  stored configuration has issuer I2 and secret S2;
+- when the two writes run one after the other instead, then A then B ends with
+  issuer I2 and secret S2, and B then A refuses A as AC-24 says and ends with
+  issuer I2 and secret S2;
+- when, instead of B's replace, the configuration is removed between A's check
+  and A's store, then A's write is refused with a client error naming the client
+  secret (AC-25: nothing to keep), and afterwards no configuration exists for
+  the domain.
+
+In no case is a configuration stored with issuer I1 and secret S2, or with an
+empty secret. The stored issuer and secret are asserted on what is stored, and
+the final state is also confirmed by a sign-in through an identity provider at
+I2 that accepts only S2. This criterion does not assert whether A's write
+authorization is spent when A is refused at the moment of storing (D-14).
+`[unit]`
+
+AC-28. Given an active configuration, when a permitted caller replaces it
+changing only its display name, and a suspension by another permitted caller is
+stored between the replace's check and its store, then afterwards the
+configuration is suspended and carries the new display name. When the two run
+one after the other, in either order, the outcome is the same: suspended, with
+the new display name. The mirror case holds for a suspended configuration whose
+resumption is stored between a replace's check and its store: afterwards it is
+active and carries the new display name. The test is run once with the client
+secret left out of the replace and once with it supplied. In no case does the
+configuration end in an active state that neither the creation nor the last
+stored transition set.  `[unit]`
 
 **Active state**
 
@@ -690,6 +780,11 @@ the domain of another organisation B, and a subdomain of A's own domain, with th
 subdomain configuration arranged through storage. The mirror case holds for
 resume: a suspended configuration of either target stays suspended. In each case
 no record of a transition exists afterwards.  `[contract]`
+*(The refusal's status code is PAC-50's, as PAC-50 is merged. The owner decided
+on 2026-10-27 that a subdomain or foreign domain on an SSO write is refused
+with 403, replacing the 400 `provider_domain_mismatch` in PAC-50's spec §4.2
+step 4 and on its branch at `51aa70a`. The contract stage takes the code from
+PAC-50 as merged, not from that branch (D-15).)*
 
 AC-16. Given an active configuration, when a permitted caller suspends it and then
 resumes it, then for each of the two transitions a record exists, in the place
@@ -712,7 +807,9 @@ and then submit a corrected configuration without obtaining a new authorization,
 then the first submission is refused as AC-7 or AC-8 says, and the second
 succeeds. The same holds when the first submission is refused as AC-24, AC-25 or
 AC-26 says: those refusals need the stored configuration, and they are decided
-before the authorization is spent (D-13).  `[unit]`
+before the authorization is spent (D-13). This criterion covers a stored
+configuration that does not change between the two steps; a refusal that only
+the moment of storing can detect is AC-27's (D-14).  `[unit]`
 
 **Preserved sign-in behaviour**
 
@@ -730,8 +827,8 @@ must keep signing in after this change.)*
   and the start route's "not configured" answer never contact one. It does need a
   permitted caller in the e2e stack, arranged through whatever PAC-50 provides
   there.
-- **AC-10, AC-14, AC-16, AC-22 and AC-23** are handler-level tests against a
-  real database. The
+- **AC-10, AC-14, AC-16, AC-22, AC-23, AC-27 and AC-28** are handler-level
+  tests against a real database. The
   in-process fake identity provider that the sign-in tests already use
   (`handlers_sso_test.go:30-93`) stands in for the provider. A full e2e sign-in
   would need an identity provider that the e2e stack does not run on `main`, and
@@ -897,7 +994,17 @@ only while the issuer and client identifier are unchanged. The cost is that
 someone correcting a mistyped issuer must re-enter the secret. The alternative
 (keep the secret whatever else changes) lets a permitted caller redirect the
 organisation's secret to an issuer they control (§2.2), so the factory did not
-take it.
+take it. The v3.3 challenge asks the owner to confirm this usability cost.
+
+**OQ-10: Do "omitted means kept" and "a write never clears" apply to the SSO
+client secret?** *Owner: human (product), non-blocking.* Raised by the v3.3
+challenge. The owner's 2026-10-27 decision "Keys stay write-only (PAC-24)" was
+given for language-model keys. D-12 extends it to the SSO client secret, and
+adds a rule PAC-24 does not have: a write can never clear the secret (PAC-24
+lets an empty value clear), only removing the configuration can. The factory
+took both because they are the options that never lose a stored secret (D-12).
+If the owner wants a pure replace instead, D-12, D-13, D-14's secret half and
+AC-22, AC-24, AC-25 and AC-27 go, and every write must carry the secret again.
 
 ## Decisions
 
@@ -942,6 +1049,8 @@ pending owner confirmation** (2026-10-27).
     deliberately turned off. A new configuration starts active, as today, so
     nobody turns SSO off by accident either.
   - **The cost** is OQ-5.
+  - **When the state is read.** The state a replace keeps is the one stored at
+    the moment the replace is stored (D-14, AC-28).
   - Assumed by the factory, pending owner confirmation.
 - **D-4 (answers OQ-2 and OQ-4): no out-of-tree consumer is assumed, and no
   customer rotation notice is owed by this change.**
@@ -1051,12 +1160,20 @@ pending owner confirmation** (2026-10-27).
   kept; a supplied one replaces it; it can never be cleared by a write** (§3.2,
   AC-22, AC-23, AC-26).
   - **Why.** This reverses v3.2 §3.2, which kept a pure replace. A write-only
-    value under a pure replace is erased by every edit that does not re-enter it;
-    PAC-24 §0 made exactly this argument for the language-model key and chose
-    "omitted means kept". The owner's 2026-10-27 decision says keys stay
-    write-only as in PAC-24, and the PAC-22 ticket's acceptance asks for the same
-    behaviour as PAC-24. Keeping is also the option that never loses a stored
-    secret.
+    value under a pure replace is erased by every edit that does not re-enter
+    it. PAC-24 §0 made exactly this argument for the language-model key
+    ("Write-only requires merge", `docs/specs/PAC-24.md:35-40`) and chose
+    "omitted means kept". Keeping is also the more conservative option: it is
+    the one that never loses a stored secret. The owner's 2026-10-27 decision
+    "Keys stay write-only (PAC-24)" was given for language-model keys; applying
+    it to the SSO client secret is the factory's extension, not the owner's
+    (OQ-10).
+  - **Source.** Nothing in the Linear issue PAC-22 asks for this. Its body
+    (read 2026-10-28) asks for a tagged response type without the secrets, an
+    admin check, validation of the values an OIDC provider needs, a "not found"
+    on removing nothing and a settable active state. v3.3 said "the PAC-22
+    ticket's acceptance" asked for it; that was wrong and is withdrawn (Revision
+    v3.4).
   - **Why it cannot clear.** PAC-24 lets an empty value clear a setting. Here an
     empty secret is a configuration that cannot sign in (D-2), so it is refused;
     removing the configuration is the way to remove its secret. This deletes
@@ -1074,9 +1191,10 @@ pending owner confirmation** (2026-10-27).
     defeated by one write: point the issuer elsewhere, leave the secret out,
     start a sign-in. The client identifier is included because a secret belongs
     to one client registration.
-  - **The comparison** is exact, on the values as stored. A change that only
-    alters letter case or a trailing slash still counts as a change: the factory
-    does not guess which spellings an identity provider treats as the same.
+  - **The comparison** is exact, on the values as stored at the moment the
+    write is stored (D-14). A change that only alters letter case or a trailing
+    slash still counts as a change: the factory does not guess which spellings
+    an identity provider treats as the same.
   - **The authorization.** These refusals need the stored configuration, unlike
     the other validation refusals. They are still decided before PAC-50's
     authorization is spent (AC-17), because §3.4 promises that a refused
@@ -1084,34 +1202,150 @@ pending owner confirmation** (2026-10-27).
     from D-9 on purpose: a transition's "not found" is its outcome, while these
     are refusals of an unacceptable configuration.
   - Assumed by the factory, pending owner confirmation.
+- **D-14: what a replace keeps is decided against the configuration as it is
+  when the replace is stored** (§3.2, §3.3, AC-27, AC-28).
+  - **Why.** The v3.3 challenge showed that checking against the stored
+    configuration before the authorization is spent, and storing afterwards,
+    leaves a gap (§2.8). A permitted caller who leaves the secret out could have
+    an administrator's new issuer-and-secret write land in that gap, and their
+    own write would then store their issuer with the administrator's secret.
+    That is exactly the redirect D-13 closes. A suspension landing in the same
+    gap would be silently undone, which is what D-3 exists to prevent.
+  - **The rule.** Interleaved writes never produce a stored combination that
+    neither writer asked for. A replace that, at the moment of storing, changes
+    the issuer or client identifier without supplying the secret, or has no
+    secret to keep, or finds no configuration, is refused as AC-24 or AC-25 says
+    and stores nothing. A replace keeps the active state stored at that moment.
+  - **Both outcomes the challenge allowed coincide.** Applying the racing
+    replace against the newer state and refusing it as AC-24 says are the same
+    outcome here, because against the newer state it changes the issuer without
+    a secret. The spec names that outcome (AC-27).
+  - **The authorization in the race case.** The pre-authorization check still
+    runs, so AC-17 holds whenever nothing changes in between. A refusal that
+    only the moment of storing can detect may come after PAC-50's authorization
+    was spent. The spec does not require it to be left unspent there, and AC-27
+    does not assert it either way. Spending it widens nothing, the case needs
+    two permitted callers writing the same configuration at once, and requiring
+    otherwise would dictate how PAC-50's authorization and the store are
+    combined, which is the plan's business.
+  - Assumed by the factory, pending owner confirmation.
+- **D-15: AC-21's refusal takes PAC-50's status code as merged** (owner,
+  2026-10-27). The owner decided that a subdomain or foreign domain on an SSO
+  write is refused with 403 (RFC 9110 §15.5.4), not 400. This replaces PAC-50's
+  spec §4.2 step 4 and AC-16b, and the 400 `provider_domain_mismatch` on
+  PAC-50's branch at `51aa70a`. AC-21 says "exactly as a configuration write to
+  it is refused", so a transition to a target outside the caller's organisation
+  answers 403 once PAC-50 implements the owner's decision. The contract stage
+  takes the code from PAC-50 as merged. If PAC-50 merges still answering 400,
+  that is PAC-50's defect against the owner's decision, and PAC-22 still follows
+  PAC-50 rather than diverging from it.
+
+## Revision v3.4 — 2026-10-28
+
+This revision answers the challenge of v3.3 (History, "Challenge — 2026-10-28",
+commit `852a898`). The challenge accepted v3.3 with changes. Every change it
+listed is applied below, in the challenge's order. Re-checked against
+`origin/main` at `69ffa92` (unchanged since v3.3) and PAC-50's branch
+`origin/impl/pac-50-sso-write-gate-backend` at `51aa70a` (PR #212, still open).
+No owner answer exists for any PAC-22 question in the factory's owner-decisions
+record (checked 2026-10-28); the one owner answer that touches this spec is
+PAC-50's 403, recorded as D-15.
+
+**Blocking**
+
+1. **Interleaved writes.** Checked: on PAC-50's branch the create handler runs
+   its checks, then `authorizeWrite` (`handlers_sso.go:183`), then the store
+   (`:188`), so the race the challenge describes is real (§2.8). §3.2 and §3.3
+   now require that what a replace keeps, the client secret and the active
+   state, is decided against the configuration as it is when the replace is
+   stored, and that interleaved writes never store a combination neither writer
+   asked for. D-14 records the rule and its one open edge (the authorization in
+   the race case is not asserted). D-3 and D-13 say when they read the stored
+   state. Two criteria name the outcome, one per race:
+   - **AC-27**: a replace that leaves the secret out, racing a replace that
+     changes the issuer and the secret, is refused as AC-24 says, and the
+     result is the other write's issuer with its secret. The removal race is
+     covered too (refused as AC-25, nothing recreated).
+   - **AC-28**: a replace racing a suspend ends suspended with the replace's
+     values; the mirror holds for resume.
+
+   AC-17 now says it covers the case where nothing changes between check and
+   store.
+2. **False attribution.** Checked: the Linear issue PAC-22 (read 2026-10-28)
+   has no acceptance section, and its body asks for none of D-12, the sign-in
+   regression test or the byte search. The attribution is removed from D-12,
+   and the Revision v3.3 paragraph and its items 1, 3 and 4 are corrected in
+   place with a note saying so. D-12 now rests on PAC-24 §0
+   (`docs/specs/PAC-24.md:35-40`, within the challenge's `:35-50`) and on being
+   the option that never loses a stored secret, and stays assumed by the
+   factory, pending owner confirmation (OQ-10).
+
+**Non-blocking**
+
+1. **The unsupported kind can hold a client secret.** Checked: the write path
+   stores the client secret whatever the kind (`handlers_sso.go:209-220`). §3.2
+   now says a secret is kept only from a configuration of the supported kind,
+   and that AC-3's indicator still describes the stored value on a row of the
+   unsupported kind. AC-25 states that case explicitly.
+2. **§3.1 promised more than AC-1 tested.** §3.1 now says the described shape
+   carries no property derived from a secret other than the two indicators, and
+   AC-1 examines the described shape for that, beside the byte search.
+3. **AC-21's status code.** AC-21 notes, and D-15 records, that the code comes
+   from PAC-50 as merged, which the owner decided is 403 (2026-10-27), not the
+   400 in PAC-50's spec §4.2 step 4 and on its branch at `51aa70a`.
+4. **The Linear issue body is still out of date.** This stage comments on
+   issues and does not rewrite their bodies. A comment on PAC-22 links v3.4,
+   lists what is stale in the body ("Spec (v3)", the admin check and the
+   RowsAffected fix now PAC-50's, "Resolves U-21 and U-22" now done on PAC-50's
+   branch) and asks the issue owner to update it.
+5. **OWNER: D-12 for SSO.** Recorded as OQ-10, non-blocking, with the factory's
+   assumption and what changes if the owner disagrees.
+6. **OWNER: OQ-9 / D-13.** OQ-9 now notes that the challenge asks the owner to
+   confirm the usability cost. D-13 is unchanged.
+7. **Consumers that need changes**, restated for the contract stage:
+   - contract revision 1.1 on `factory/pac-22-contract` (`4b1d455`) requires the
+     secret on every write and must be revised for D-12, D-13 and D-14;
+   - smart-calendar-flow PR #120 (open, types regenerated from revision 1.1) is
+     out of date and must be regenerated from the revised contract or replaced;
+   - PAC-50's `backend/api/pac50_sso_gate_test.go:152` (on its branch) pins
+     `OIDCClientSecret` and `SAMLCert` and changes with this spec (§2.8);
+   - there is no hand-written consumer in the web app (`origin/main` `aa5c52e`,
+     per the challenge), `mcp/` or `e2e/`.
+
+**Open questions**: OQ-1 to OQ-4 closed. OQ-5 to OQ-9 unchanged (OQ-9 notes the
+owner confirmation the challenge asks for). OQ-10 new. All non-blocking, each
+with a recorded factory assumption.
 
 ## Revision v3.3 — 2026-10-28
 
 Spec-author, on `factory/pac-22-spec` with `origin/main` at `69ffa92` merged in.
-This revision is not an answer to a challenge. It brings v3.2 in line with the
-PAC-22 ticket's acceptance and with what the contract stage recorded, and it
-needs a spec-challenger round on the items below before the status can become
-"accepted".
+This revision is not an answer to a challenge. It brings v3.2 in line with
+PAC-24's precedent and with what the contract stage recorded, and it needs a
+spec-challenger round on the items below before the status can become
+"accepted". *(Corrected in v3.4: this paragraph and items 1, 3 and 4 below
+originally attributed these changes to "the PAC-22 ticket's acceptance". The
+Linear issue has no acceptance section and asks for none of them; the
+attribution is withdrawn. See Revision v3.4, blocking item 2.)*
 
 **Behaviour changed (challenge these)**
 
 1. **An omitted client secret is kept on a replace** (§3.2, D-12). v3.2 kept a
    pure replace, under which a write-only secret is erased or must be re-entered
-   on every edit. The ticket's acceptance asks for PAC-24's behaviour (a write
-   that omits the secret keeps the stored one; a write that supplies it replaces
-   it), and the owner's 2026-10-27 LLM decision says keys stay write-only as in
-   PAC-24.
+   on every edit. PAC-24 §0 chose "omitted means kept" for the same reason (a
+   write that omits the secret keeps the stored one; a write that supplies it
+   replaces it). The owner's 2026-10-27 LLM decision says keys stay write-only
+   as in PAC-24; extending it to SSO is the factory's assumption (OQ-10).
 2. **A kept secret is bound to the issuer and client identifier** (D-13, OQ-9).
    New: without it, D-12 would let a permitted caller redirect the stored secret
    to an issuer they control (§2.2, `oidc.go:41`, `:50-55`).
 3. **New criteria**: AC-22 (omitted secret kept, and sign-in still works with
-   it: the regression test the ticket asks for), AC-23 (a supplied secret
+   it: the regression test for D-12), AC-23 (a supplied secret
    replaces), AC-24 (changed issuer or client identifier without a secret is
    refused, authorization unspent), AC-25 (nothing to keep), AC-26 (empty or
    null secret refused, nothing cleared). AC-7 and AC-17 are adjusted to match.
 4. **AC-1 and AC-2 now prescribe a raw byte search** of the response body (and
    headers), for the raw and the JSON-escaped form of each value, in any case,
-   as the ticket's acceptance requires. §3.1 says the secrets are represented at
+   so that the test checks §3.1 rather than property names. §3.1 says the secrets are represented at
    most by a yes/no indicator.
 
 **Brought in from the contract branch** (`factory/pac-22-contract` at `4b1d455`,
