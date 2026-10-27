@@ -337,7 +337,21 @@ not read the body.
   backend test rc=0, mcp test rc=0, backend coverage 55.4% (floor 43%) rc=0, mcp
   coverage 84.0% (floor 75%) rc=0. Bundle sha256 (LF, `git show HEAD:...`):
   `2a622b5788d6b1f9d7bff435a07e5bba9eca678f2b12f512b60311ae88af7dbf` (the manifest's
-  `contractHash`). web-gate still not run at this stage, for the same reason.
+  `contractHash` of revision 2). web-gate still not run at this stage, for the same reason.
+- Revision 3: `python scripts/openapi_assemble.py` wrote the bundle (98 paths,
+  `x-uncertain: 12`), rc=0. `api-gate.sh factory/pac-29-contract` on `9ed5b54`
+  (fragment descriptions, manifest, this file): `make openapi rc=0`,
+  `regenerated: backend/api/gen/paceday.gen.go` (embedded spec only), committed
+  unchanged as `5652bb8`, every other step rc=0. Re-run on `5652bb8`: `make openapi
+  rc=0`, `regenerated: none`, `OK: bundle is in sync (98 paths)`, `OK: MIGRATION.md
+  covers all 119 operations (0 generated)`, `OK: backend/api/gen matches the contract`,
+  `openapi-check(api) rc=0`, backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp
+  test rc=0, backend coverage 55.4% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%)
+  rc=0. `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98
+  paths)`, rc=0. Bundle sha256 (LF, `git show HEAD:contracts/openapi/openapi.yaml |
+  sha256sum`): `ee3b2f5e28516e0d447b40cc7ff0a0d3e5e0b1943c9a509c5478cc361fd5665c` (the
+  manifest's `contractHash`). Later commits change only `contracts/features/`. web-gate
+  is not run at this stage (factory §1).
 
 ## Challenge — 2026-10-27
 

@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-29",
   "status": "draft",
   "contractRevision": "3",
-  "contractHash": "2a622b5788d6b1f9d7bff435a07e5bba9eca678f2b12f512b60311ae88af7dbf",
+  "contractHash": "ee3b2f5e28516e0d447b40cc7ff0a0d3e5e0b1943c9a509c5478cc361fd5665c",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-29-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py and verified by `make openapi-check` in the api gate. Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-29.md",
   "specDoc": "none. PAC-29 has no docs/specs file; the three acceptance criteria supplied with the contract stage, the PAC-29 issue body and audit finding API-017 (batch C4) stand in for it. See PAC-29.md section 0: a challenger should treat the missing spec as a finding.",
