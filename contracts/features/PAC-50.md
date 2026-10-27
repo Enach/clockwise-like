@@ -5,7 +5,7 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 3, 2026-10-27 (1 and 2 on 2026-10-25; see the Revision sections at the end)
+- **Revision**: 4, 2026-10-27 (1 and 2 on 2026-10-25, 3 earlier on 2026-10-27; see the Revision sections at the end)
 
 ## 1. The change
 
@@ -1081,3 +1081,105 @@ Not run:
   check-only run against web `main` fails `openapi-check` by construction. The
   revision-3 `REGEN=1` run (rc=0) was the author's, not mine.
 - **e2e.** There is no handler code on this branch.
+
+## Revision 4 — 2026-10-27 (response to the round-3 challenge)
+
+Written by `contract-author` in a local session. Contract revision 4; the
+bundle hashes to
+`4664eda8dd1626db768c076dc968772873614ac29dbd6fa0d0031e20523db5cd`, recorded
+in the manifest. Every change is a description, except three added response
+content types (start `400` text/plain, callback `401` application/json) that
+document what the code already answers. No request shape changes and no
+status code is added or removed.
+
+### B1 (round 3) — accepted, fixed as proposed
+
+`SsoProviderResponse.Domain` now reads "migration 028 (`028_sso_admin_stepup`)
+lower-cases existing rows", which agrees with the manifest's `migration.up` and
+spec §9 D-7. The bundle was reassembled from the fragments, and the new
+`contractHash` is in the manifest (`contractRevision` 4, `revisions[3]`).
+
+### Non-blocking findings
+
+1. **More PAC-21 leaks than the manifest named — accepted.** `mergeConditions`
+   now names every case the rebase must resolve to `main`'s `writeServerError`:
+   create (`save failed: `+err.Error()), delete (err.Error()),
+   `listSsoProviders` (err.Error(), named explicitly because it is not a PAC-50
+   operation), the grant lookup, the start and the callback. It also requires a
+   test asserting the fixed body on each. The contract's `500` descriptions
+   already say `{"error":"internal error"}` on all six, so the contract itself
+   is unchanged here.
+2. **`TrimSpace` in the stage-4 domain comparison — the contract keeps the
+   stricter rule; stage 4 drops the trim.** Spec §4.7 says "exact", and the
+   contract already reads that way. Accepting `" acme.com "` would only widen
+   what passes the gate, so I kept the stricter reading. The create gate
+   (step 3), the `domain` property and the delete description now say
+   explicitly that nothing is trimmed. They give `" acme.com "` and
+   `/%20acme.com` as 400 `provider_domain_mismatch`. `mergeConditions`
+   requires stage 4 to drop the trim on these paths. Round 2's "verified
+   clean" for `/%20acme.com` held against the contract, not against #212's
+   code. The round-3 challenge is right that the code did not match, and this
+   revision says so instead of editing round 2's record. Recorded as spec §9
+   D-9 (an interface detail, not a product decision).
+3. **State cookie bypasses PAC-20's `setCookie` — accepted.** The start's
+   `Set-Cookie` now names the PAC-20 rule (`Secure` unless
+   `PACEDAY_INSECURE_COOKIES=true`, `config.DecideSecureCookies`) in place of
+   "in production". `mergeConditions` requires the cookie to be set and
+   cleared through `backend/api/cookies.go`'s helper, with no direct
+   `http.SetCookie` and no `Secure` derived from `APP_URL`, so
+   `TestPAC20_NoCookieBypassesSetCookieHelper` stays green.
+4. **Clearing cookie literal — accepted.** The callback's `Set-Cookie` is now
+   `Max-Age=0` (Go `MaxAge: -1`), plus `Secure` under the same rule as the
+   start. Logout's `Max-Age=-1` (`auth.yaml` `logout`) has the same
+   inaccuracy, but logout is not a PAC-50 operation. Changing it here would be
+   an adjacent edit the spec does not ask for, so I left it as a follow-up
+   rather than fixing it quietly.
+5. **Callback JSON 401 — documented.** When the JWT is valid but the user row
+   is gone, the callback answers `{"error":"unauthorized"}` as JSON. That is
+   `main`'s existing convention for the same case (`handlers_me.go`,
+   `handlers_org.go`, `middleware.go`), so the contract describes it rather
+   than asking stage 4 to diverge from the house form. The callback is reached
+   by top-level navigation, never by `fetch`, so no client parses either body.
+   Spec §9 D-9.
+6. **Carried items from rounds 1 and 2 — each answered:**
+   - *`APP_URL` in no compose file.* The start's `503` now says it is also
+     the answer for every provider when `APP_URL` is unset. `mergeConditions`
+     makes setting it wherever AC-23 runs, and listing it in the release
+     notes, a build-stage condition. It is not a secret. Compose files are not
+     this stage's to edit.
+   - *Plain-text `RequiredParamError`.* The start's `400` now documents both
+     forms. A missing or empty `provider` is text/plain
+     `Query argument provider is required, but not found`, from the generated
+     wrapper's default handler (`paceday.gen.go`; `main` installs no
+     `ErrorHandlerFunc`). An unknown value is the JSON message. Installing a
+     JSON error handler would change every generated operation, which is not
+     PAC-50's to decide.
+   - *`DELETE /api/admin/sso/stepup` falls to `deleteSsoProvider`.* This is
+     documented on the delete. It is the same gate with `{domain}` =
+     `stepup`, so an org member gets 400 `provider_domain_mismatch` and no
+     grant is consumed. No separate response is needed.
+   - *A break-glass caller holding a live grant consumes it first.* This is
+     documented in step 4 of the create gate, which the delete inherits, and
+     in the manifest. Spec §4.2 lists the grant first (5a) and break-glass
+     second (5b), so this order matches the spec rather than departing from
+     it.
+7. **Spec §4.3's stale `Secure` remark — recorded** as spec §9 D-8. The spec
+   body is unchanged.
+8. **OWNER: D-1 to D-5 and D-7** remain *assumed by the factory, pending owner
+   confirmation*. They are listed as owner questions in this stage's report.
+9. **OWNER: 400 vs 403 for `sub.example.com`.** Unchanged: the contract
+   follows the spec (400 `provider_domain_mismatch`) and the §9 Note stays
+   labelled as assumed. This stage report asks the owner which code is wanted.
+
+### Alternatives rejected
+
+- **Making the contract say "after trimming surrounding whitespace".** It
+  would make the contract match #212 sooner, but it loosens §4.7's "exact" to
+  fit code that is not merged. The contract leads stage 4, not the reverse.
+- **Asking stage 4 to answer a text/plain 401 on the callback.** That would
+  make PAC-50 the one handler that answers a missing user row differently
+  from `main`'s other handlers, for a body no client reads.
+- **Installing a JSON `ErrorHandlerFunc` for the generated wrapper.** It
+  touches every generated operation and is a cross-cutting change. It needs
+  its own issue.
+- **Fixing logout's `Max-Age=-1` here.** It is outside PAC-50's operations.

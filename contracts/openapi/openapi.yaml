@@ -43,26 +43,27 @@ paths:
         \   `unknown property: <name>`, never silently dropped. (Before PAC-50\n   the decoder ignored\
         \ undeclared properties although the schema said\n   `additionalProperties: false`.)\n3. Domain:\
         \ `domain` must equal the caller's org domain, exact and\n   case-insensitive. Otherwise 400 `provider_domain_mismatch`.\
-        \ A\n   subdomain does NOT match: with org `example.com`, `sub.example.com`\n   is a 400. (Before\
-        \ PAC-50 this was the suffix rule\n   domain.DomainMatchesOrg, which accepted any subdomain, and\
-        \ a\n   mismatch was a 403; ex-PAC-46.)\n4. Authorization, one of:\n   a. a live admin step-up\
-        \ grant for (caller, caller's org), obtained\n      through GET /api/admin/sso/stepup less than\
-        \ 10 minutes earlier.\n      The request carries nothing that names it: the server selects\n \
-        \     the caller's newest live grant and consumes it in the same\n      statement, so one grant\
-        \ authorizes exactly one write, and two\n      concurrent writes on one grant yield one success\
-        \ and one 403.\n      Every 400 above happens before this step and leaves the grant\n      live;\
-        \ a failure after it (the 500 below) leaves it consumed.\n   b. break-glass: the caller's session\
-        \ email is listed in the\n      deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the\n\
-        \      session JWT was issued less than 10 minutes ago. Listed with an\n      older session gives\
-        \ 403 `sso_write_requires_fresh_login`.\n   Neither gives 403 `sso_write_requires_admin_stepup`\
-        \ with\n   `stepup_url`. A 403 rather than a 401: the session is valid, the\n   privilege is not\
-        \ there. Every 403 leaves the provider table\n   unchanged.\n5. Write: the domain is stored lower-cased,\
-        \ so `ACME.com` updates the\n   existing `acme.com` row rather than adding a second one. Each\n\
-        \   successful write is recorded server-side for operators (spec §4.6);\n   no operation exposes\
-        \ that record.\n\n`enabled` is always forced to true; there is no way to disable a\nprovider through\
-        \ this API (API-066, not changed by PAC-50).\n`provider_type: \"saml\"` and an `oidc` row with\
-        \ an empty issuer or\nclient id are still accepted and only fail at sign-in (API-060, not\nchanged\
-        \ by PAC-50).\n"
+        \ A\n   subdomain does NOT match: with org `example.com`, `sub.example.com`\n   is a 400. Nothing\
+        \ is trimmed: `\" acme.com \"` is a 400 too. (Before PAC-50 this was the suffix rule\n   domain.DomainMatchesOrg,\
+        \ which accepted any subdomain, and a\n   mismatch was a 403; ex-PAC-46.)\n4. Authorization, one\
+        \ of:\n   a. a live admin step-up grant for (caller, caller's org), obtained\n      through GET\
+        \ /api/admin/sso/stepup less than 10 minutes earlier.\n      The request carries nothing that\
+        \ names it: the server selects\n      the caller's newest live grant and consumes it in the same\n\
+        \      statement, so one grant authorizes exactly one write, and two\n      concurrent writes\
+        \ on one grant yield one success and one 403.\n      Every 400 above happens before this step\
+        \ and leaves the grant\n      live; a failure after it (the 500 below) leaves it consumed.\n \
+        \  b. break-glass: the caller's session email is listed in the\n      deployment's `PACEDAY_ADMIN_EMAILS`\
+        \ (exact, lower-cased) AND the\n      session JWT was issued less than 10 minutes ago. Listed\
+        \ with an\n      older session gives 403 `sso_write_requires_fresh_login`.\n   (a) is tried first:\
+        \ a break-glass caller who also holds a live\n   grant consumes that grant on the write.\n   Neither\
+        \ gives 403 `sso_write_requires_admin_stepup` with\n   `stepup_url`. A 403 rather than a 401:\
+        \ the session is valid, the\n   privilege is not there. Every 403 leaves the provider table\n\
+        \   unchanged.\n5. Write: the domain is stored lower-cased, so `ACME.com` updates the\n   existing\
+        \ `acme.com` row rather than adding a second one. Each\n   successful write is recorded server-side\
+        \ for operators (spec §4.6);\n   no operation exposes that record.\n\n`enabled` is always forced\
+        \ to true; there is no way to disable a\nprovider through this API (API-066, not changed by PAC-50).\n\
+        `provider_type: \"saml\"` and an `oidc` row with an empty issuer or\nclient id are still accepted\
+        \ and only fail at sign-in (API-060, not\nchanged by PAC-50).\n"
       requestBody:
         required: true
         content:
@@ -237,11 +238,14 @@ paths:
                 type: string
               description: '`sso_stepup_state=<opaque>; Path=/api/admin/sso/stepup;
 
-                Max-Age=600; HttpOnly; SameSite=Lax`, plus `Secure` in
+                Max-Age=600; HttpOnly; SameSite=Lax`, plus `Secure` unless the
 
-                production (a deployment property, not observed per request;
+                deployment sets `PACEDAY_INSECURE_COOKIES=true` (the PAC-20
 
-                spec §4.3). The value binds the caller''s user id, org id, the
+                rule every cookie follows, `config.DecideSecureCookies`; a
+
+                deployment property, not observed per request; spec §4.3). The value binds the caller''s
+                user id, org id, the
 
                 chosen provider and a nonce, and cannot be forged, nor replayed
 
@@ -249,15 +253,17 @@ paths:
 
                 '
         '400':
-          description: '`provider must be ''google'' or ''microsoft''`: `provider` is missing
-
-            or not in the enum. No state cookie is set.
-
-            '
+          description: "No state cookie is set. Two forms:\n- `provider` missing or empty: text/plain\n\
+            \  `Query argument provider is required, but not found`, from the\n  generated request wrapper's\
+            \ default error handler (the server\n  installs no JSON error handler for generated operations).\n\
+            - `provider` present but not in the enum: JSON\n  `provider must be 'google' or 'microsoft'`.\n"
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: No/invalid JWT (from requireAuth, text/plain). No state cookie is set.
           content:
@@ -281,7 +287,13 @@ paths:
         '503':
           description: '`<provider> step-up not configured`: the deployment has no OAuth
 
-            client for the chosen provider. No state cookie is set. Same
+            client for the chosen provider, or has no `APP_URL` (the
+
+            callback''s redirect_uri cannot be built without it, so with
+
+            `APP_URL` unset every provider answers this 503). No state cookie
+
+            is set. Same
 
             precedent as startMicrosoftOAuth''s 503. (Assumed by the factory at
 
@@ -385,14 +397,28 @@ paths:
             Set-Cookie:
               schema:
                 type: string
-              description: '`sso_stepup_state=; Path=/api/admin/sso/stepup; Max-Age=-1; HttpOnly; SameSite=Lax`:
-                the state is single-use.'
+              description: '`sso_stepup_state=; Path=/api/admin/sso/stepup; Max-Age=0;
+
+                HttpOnly; SameSite=Lax` (Go `MaxAge: -1`, which net/http
+
+                serialises as `Max-Age=0`), plus `Secure` under the same
+
+                deployment rule as the start''s cookie (PAC-20). The state is
+
+                single-use.
+
+                '
         '401':
-          description: No/invalid JWT (from requireAuth, text/plain). No grant, no record.
+          description: "No grant, no record, no redirect. Two forms:\n- no/invalid JWT: text/plain, from\
+            \ requireAuth;\n- a valid JWT whose user row no longer exists: JSON\n  `{\"error\":\"unauthorized\"\
+            }`, the convention `main`'s handlers\n  already use for that case (handlers_me.go, handlers_org.go).\n"
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: 'Issuing the grant, pinning the tenant or writing the record failed
 
@@ -419,9 +445,11 @@ paths:
 
         membership (403 `org membership required` / `org not found`), then the
 
-        `{domain}` segment, lower-cased, must equal the caller''s org domain
+        `{domain}` segment, lower-cased and not trimmed, must equal the
 
-        exactly (400 `provider_domain_mismatch`; a subdomain does not match),
+        caller''s org domain exactly (400 `provider_domain_mismatch`; a
+
+        subdomain does not match, nor does `%20acme.com`),
 
         then authorization (a live step-up grant, consumed, or break-glass with
 
@@ -443,6 +471,15 @@ paths:
         before PAC-50 it answered 204 having deleted nothing). The grant is
 
         consumed before the delete runs, so a 404 has used it.
+
+
+        `DELETE /api/admin/sso/stepup` is this operation with `{domain}` =
+
+        `stepup` (the step-up paths define only GET): it gets the same gate,
+
+        so an org member gets 400 `provider_domain_mismatch` and nothing is
+
+        consumed.
 
         '
       parameters:
@@ -10277,9 +10314,11 @@ components:
           minLength: 1
           description: 'Must equal the caller''s org domain, exact and case-insensitive,
 
-            else 400 `provider_domain_mismatch`; a subdomain does not match.
+            else 400 `provider_domain_mismatch`; a subdomain does not match,
 
-            Stored lower-cased.
+            and surrounding whitespace is not trimmed (`" acme.com "` is a
+
+            400). Stored lower-cased.
 
             '
         provider_name:
@@ -10349,8 +10388,8 @@ components:
           format: uuid
         Domain:
           type: string
-          description: Lower-case for every row written since PAC-50; migration 027 lower-cases existing
-            rows.
+          description: Lower-case for every row written since PAC-50; migration 028 (`028_sso_admin_stepup`)
+            lower-cases existing rows.
         ProviderName:
           type: string
         ProviderType:

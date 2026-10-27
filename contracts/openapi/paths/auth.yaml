@@ -663,7 +663,7 @@ paths:
         3. Domain: `domain` must equal the caller's org domain, exact and
            case-insensitive. Otherwise 400 `provider_domain_mismatch`. A
            subdomain does NOT match: with org `example.com`, `sub.example.com`
-           is a 400. (Before PAC-50 this was the suffix rule
+           is a 400. Nothing is trimmed: `" acme.com "` is a 400 too. (Before PAC-50 this was the suffix rule
            domain.DomainMatchesOrg, which accepted any subdomain, and a
            mismatch was a 403; ex-PAC-46.)
         4. Authorization, one of:
@@ -679,6 +679,8 @@ paths:
               deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the
               session JWT was issued less than 10 minutes ago. Listed with an
               older session gives 403 `sso_write_requires_fresh_login`.
+           (a) is tried first: a break-glass caller who also holds a live
+           grant consumes that grant on the write.
            Neither gives 403 `sso_write_requires_admin_stepup` with
            `stepup_url`. A 403 rather than a 401: the session is valid, the
            privilege is not there. Every 403 leaves the provider table
@@ -789,8 +791,9 @@ paths:
       description: |
         Same gate as createSsoProvider, in the same order (spec §4.2):
         membership (403 `org membership required` / `org not found`), then the
-        `{domain}` segment, lower-cased, must equal the caller's org domain
-        exactly (400 `provider_domain_mismatch`; a subdomain does not match),
+        `{domain}` segment, lower-cased and not trimmed, must equal the
+        caller's org domain exactly (400 `provider_domain_mismatch`; a
+        subdomain does not match, nor does `%20acme.com`),
         then authorization (a live step-up grant, consumed, or break-glass with
         a fresh session; otherwise 403 `sso_write_requires_admin_stepup` with
         `stepup_url`, or `sso_write_requires_fresh_login`).
@@ -802,6 +805,11 @@ paths:
         delete that removes no row is a 404 and is not recorded (API-067 fixed;
         before PAC-50 it answered 204 having deleted nothing). The grant is
         consumed before the delete runs, so a 404 has used it.
+
+        `DELETE /api/admin/sso/stepup` is this operation with `{domain}` =
+        `stepup` (the step-up paths define only GET): it gets the same gate,
+        so an org member gets 400 `provider_domain_mismatch` and nothing is
+        consumed.
       parameters:
         - name: domain
           in: path
@@ -904,19 +912,28 @@ paths:
               schema: { type: string }
               description: |
                 `sso_stepup_state=<opaque>; Path=/api/admin/sso/stepup;
-                Max-Age=600; HttpOnly; SameSite=Lax`, plus `Secure` in
-                production (a deployment property, not observed per request;
-                spec §4.3). The value binds the caller's user id, org id, the
+                Max-Age=600; HttpOnly; SameSite=Lax`, plus `Secure` unless the
+                deployment sets `PACEDAY_INSECURE_COOKIES=true` (the PAC-20
+                rule every cookie follows, `config.DecideSecureCookies`; a
+                deployment property, not observed per request; spec §4.3). The value binds the caller's user id, org id, the
                 chosen provider and a nonce, and cannot be forged, nor replayed
                 by or for another user.
         '400':
           description: |
-            `provider must be 'google' or 'microsoft'`: `provider` is missing
-            or not in the enum. No state cookie is set.
+            No state cookie is set. Two forms:
+            - `provider` missing or empty: text/plain
+              `Query argument provider is required, but not found`, from the
+              generated request wrapper's default error handler (the server
+              installs no JSON error handler for generated operations).
+            - `provider` present but not in the enum: JSON
+              `provider must be 'google' or 'microsoft'`.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
         '401':
           description: No/invalid JWT (from requireAuth, text/plain). No state cookie is set.
           content:
@@ -936,7 +953,10 @@ paths:
         '503':
           description: |
             `<provider> step-up not configured`: the deployment has no OAuth
-            client for the chosen provider. No state cookie is set. Same
+            client for the chosen provider, or has no `APP_URL` (the
+            callback's redirect_uri cannot be built without it, so with
+            `APP_URL` unset every provider answers this 503). No state cookie
+            is set. Same
             precedent as startMicrosoftOAuth's 503. (Assumed by the factory at
             stage 2, pending owner confirmation; spec "Decisions", D-2.)
           content:
@@ -1035,13 +1055,26 @@ paths:
                 literal path (contrast API-084).
             Set-Cookie:
               schema: { type: string }
-              description: '`sso_stepup_state=; Path=/api/admin/sso/stepup; Max-Age=-1; HttpOnly; SameSite=Lax`: the state is single-use.'
+              description: |
+                `sso_stepup_state=; Path=/api/admin/sso/stepup; Max-Age=0;
+                HttpOnly; SameSite=Lax` (Go `MaxAge: -1`, which net/http
+                serialises as `Max-Age=0`), plus `Secure` under the same
+                deployment rule as the start's cookie (PAC-20). The state is
+                single-use.
         '401':
-          description: No/invalid JWT (from requireAuth, text/plain). No grant, no record.
+          description: |
+            No grant, no record, no redirect. Two forms:
+            - no/invalid JWT: text/plain, from requireAuth;
+            - a valid JWT whose user row no longer exists: JSON
+              `{"error":"unauthorized"}`, the convention `main`'s handlers
+              already use for that case (handlers_me.go, handlers_org.go).
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Issuing the grant, pinning the tenant or writing the record failed
@@ -1363,8 +1396,9 @@ components:
           minLength: 1
           description: |
             Must equal the caller's org domain, exact and case-insensitive,
-            else 400 `provider_domain_mismatch`; a subdomain does not match.
-            Stored lower-cased.
+            else 400 `provider_domain_mismatch`; a subdomain does not match,
+            and surrounding whitespace is not trimmed (`" acme.com "` is a
+            400). Stored lower-cased.
         provider_name:
           type: string
           minLength: 1
@@ -1420,7 +1454,7 @@ components:
           format: uuid
         Domain:
           type: string
-          description: Lower-case for every row written since PAC-50; migration 027 lower-cases existing rows.
+          description: Lower-case for every row written since PAC-50; migration 028 (`028_sso_admin_stepup`) lower-cases existing rows.
         ProviderName:
           type: string
         ProviderType:
