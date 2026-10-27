@@ -46,6 +46,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Use(requireAuth(jwtSecret))
 			r.Get("/status", ah.status)
 			r.Delete("/disconnect", ah.disconnect)
+			r.Post("/microsoft/disconnect", ah.disconnectMicrosoft)
 		})
 	})
 	// Provider availability only exposes non-sensitive configuration status and is public

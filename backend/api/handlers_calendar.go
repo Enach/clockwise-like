@@ -135,11 +135,12 @@ func toCalendarEventDTO(e *googlecalendar.Event) calendarEventDTO {
 // engine.ErrCalendarNotConnected when they have no stored credential and an
 // engine.ErrCredentialStore error when the store cannot be read (PAC-21).
 func (h *calendarHandlers) getCalendarClient(r *http.Request) (*calendar.CalendarClient, error) {
-	token, err := engine.LoadCalendarToken(h.db, userIDFromCtx(r.Context()))
+	userID := userIDFromCtx(r.Context())
+	token, err := engine.LoadCalendarToken(h.db, userID)
 	if err != nil {
 		return nil, err
 	}
-	ts := auth.TokenSource(r.Context(), h.oauthConfig, token)
+	ts := auth.UserTokenSource(r.Context(), h.db, h.oauthConfig, userID, token)
 	return calendar.NewClient(r.Context(), ts)
 }
 

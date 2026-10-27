@@ -45,13 +45,16 @@ const (
 
 // Defines values for AuditEntryAction.
 const (
-	FocusCleared     AuditEntryAction = "focus_cleared"
-	FocusCreated     AuditEntryAction = "focus_created"
-	MeetingCreated   AuditEntryAction = "meeting_created"
-	MeetingMoved     AuditEntryAction = "meeting_moved"
-	MeetingScheduled AuditEntryAction = "meeting_scheduled"
-	NlpConfirmed     AuditEntryAction = "nlp_confirmed"
-	NlpParsed        AuditEntryAction = "nlp_parsed"
+	ConnectionLost        AuditEntryAction = "connection_lost"
+	FocusCleared          AuditEntryAction = "focus_cleared"
+	FocusCreated          AuditEntryAction = "focus_created"
+	MeetingCreated        AuditEntryAction = "meeting_created"
+	MeetingMoved          AuditEntryAction = "meeting_moved"
+	MeetingScheduled      AuditEntryAction = "meeting_scheduled"
+	NlpConfirmed          AuditEntryAction = "nlp_confirmed"
+	NlpParsed             AuditEntryAction = "nlp_parsed"
+	ProviderDisconnected  AuditEntryAction = "provider_disconnected"
+	RevocationUnconfirmed AuditEntryAction = "revocation_unconfirmed"
 )
 
 // Defines values for AuthStatusResponseProvider.
@@ -112,6 +115,13 @@ const (
 // Defines values for CalendarNotConnectedErrorError.
 const (
 	CalendarNotConnectedErrorErrorCalendarNotConnected CalendarNotConnectedErrorError = "calendar not connected"
+)
+
+// Defines values for ConferenceMeetingDetailsProvider.
+const (
+	ConferenceMeetingDetailsProviderMeet  ConferenceMeetingDetailsProvider = "meet"
+	ConferenceMeetingDetailsProviderTeams ConferenceMeetingDetailsProvider = "teams"
+	ConferenceMeetingDetailsProviderZoom  ConferenceMeetingDetailsProvider = "zoom"
 )
 
 // Defines values for ConferenceProviderStatusAutoWith.
@@ -262,6 +272,20 @@ const (
 	MeetingBriefResponseStatusReady   MeetingBriefResponseStatus = "ready"
 )
 
+// Defines values for ProviderDisconnectResultProvider.
+const (
+	ProviderDisconnectResultProviderOutlook ProviderDisconnectResultProvider = "outlook"
+	ProviderDisconnectResultProviderZoom    ProviderDisconnectResultProvider = "zoom"
+)
+
+// Defines values for ProviderDisconnectResultRevocation.
+const (
+	Confirmed     ProviderDisconnectResultRevocation = "confirmed"
+	NotOffered    ProviderDisconnectResultRevocation = "not_offered"
+	NothingStored ProviderDisconnectResultRevocation = "nothing_stored"
+	Unconfirmed   ProviderDisconnectResultRevocation = "unconfirmed"
+)
+
 // Defines values for PublicLinkInfoUsageType.
 const (
 	PublicLinkInfoUsageTypeRecurring PublicLinkInfoUsageType = "recurring"
@@ -365,9 +389,9 @@ const (
 
 // Defines values for SettingsUpdateConferencingProvider.
 const (
-	Meet  SettingsUpdateConferencingProvider = "meet"
-	Teams SettingsUpdateConferencingProvider = "teams"
-	Zoom  SettingsUpdateConferencingProvider = "zoom"
+	SettingsUpdateConferencingProviderMeet  SettingsUpdateConferencingProvider = "meet"
+	SettingsUpdateConferencingProviderTeams SettingsUpdateConferencingProvider = "teams"
+	SettingsUpdateConferencingProviderZoom  SettingsUpdateConferencingProvider = "zoom"
 )
 
 // Defines values for SettingsUpdateLlmProvider.
@@ -403,10 +427,10 @@ const (
 
 // Defines values for SsoDetectResponseType.
 const (
-	Generic   SsoDetectResponseType = "generic"
-	Google    SsoDetectResponseType = "google"
-	Microsoft SsoDetectResponseType = "microsoft"
-	Sso       SsoDetectResponseType = "sso"
+	SsoDetectResponseTypeGeneric   SsoDetectResponseType = "generic"
+	SsoDetectResponseTypeGoogle    SsoDetectResponseType = "google"
+	SsoDetectResponseTypeMicrosoft SsoDetectResponseType = "microsoft"
+	SsoDetectResponseTypeSso       SsoDetectResponseType = "sso"
 )
 
 // Defines values for SsoProviderCreateRequestProviderType.
@@ -597,13 +621,13 @@ type AttendeeSuggestion struct {
 	Name  string              `json:"name"`
 }
 
-// AuditEntry storage.AuditEntry. One recorded action, always about the calling user's own calendar — the subject is the scoping predicate and is deliberately NOT echoed back as a field, because it is the same value on every entry of every response (see contracts/features/PAC-23.md §2, rejected alternative A).
+// AuditEntry storage.AuditEntry. One recorded action, always about the calling user's own calendar or, since PAC-67, one of the calling user's own provider connections (Outlook, Zoom, Google; the three connection kinds of `action`) — the subject is the scoping predicate and is deliberately NOT echoed back as a field, because it is the same value on every entry of every response (see contracts/features/PAC-23.md §2, rejected alternative A).
 type AuditEntry struct {
 	// Action What was recorded. Underscore-separated, lower-case; there is no dotted key convention on this endpoint and never was.
 	//
-	// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites.
+	// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above must return these writers as well. No test checks this enum against the writers today (none exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend stage ADDS one covering all ten (manifest CONTRACT-6).
 	//
-	// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and a writer added without one makes the contract test fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
+	// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and once the PAC-67 enum test exists a writer added without one makes it fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
 	//
 	// Because the body of the 200 is an array of this schema, a value outside this enum makes the WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added without a contract change, or one restored backup, and a validating consumer rejects six good rows along with the odd one. That is the intended alarm in a test and the wrong behaviour in a UI, so the expected handling is stated rather than left to each consumer: **render the row, substituting a placeholder such as `unknown` for the unrecognised value, rather than discarding the response.**
 	//
@@ -615,7 +639,7 @@ type AuditEntry struct {
 
 	// Details Scanned from the DB into a Go `string`, so on the wire this is ALWAYS a JSON string — even when the text inside it happens to be JSON. A generator should emit `string`, and that is correct and complete for the transport.
 	//
-	// Whether the text inside parses as JSON depends on which `action` produced it, so the useful statement is per-writer rather than a blanket warning. ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a map with `encoding/json` (`FocusTimeEngine.RunForUser` in backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in backend/engine/focus_time_cleaner.go); `nlp_parsed` uses `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`, backend/nlp/parser.go). NOT GUARANTEED: `meeting_scheduled`, `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by concatenating values into a JSON literal with no escaping (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go, `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go, `CompressionEngine.Apply` in backend/engine/compression.go, `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites are cited by enclosing function, not line, for the reason given in the operation description; `grep -rn 'WriteAuditLog(' --include='*.go' backend/` shows all seven argument expressions on one line each.
+	// Whether the text inside parses as JSON depends on which `action` produced it, so the useful statement is per-writer rather than a blanket warning. ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a map with `encoding/json` (`FocusTimeEngine.RunForUser` in backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in backend/engine/focus_time_cleaner.go); `nlp_parsed` uses `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`, backend/nlp/parser.go); and the three PAC-67 connection kinds, which marshal a struct with `encoding/json` and hold only server-chosen values: `connection_lost` is `{"provider":"outlook"|"zoom"|"google"}`, `provider_disconnected` is `{"provider":"outlook"|"zoom","revocation": "confirmed"|"unconfirmed"|"not_offered"}` (the `revocation` vocabulary of `ProviderDisconnectResult`), and `revocation_unconfirmed` is `{"provider":"zoom"}`. No token material and no actor-supplied text ever appears in them. NOT GUARANTEED: `meeting_scheduled`, `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by concatenating values into a JSON literal with no escaping (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go, `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go, `CompressionEngine.Apply` in backend/engine/compression.go, `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites are cited by enclosing function, not line, for the reason given in the operation description; `grep -rn 'WriteAuditLog(' --include='*.go' backend/` shows all seven argument expressions on one line each.
 	//
 	// The interpolated value differs by site and so does the severity. In `SmartScheduler.CreateMeeting` and `scheduleHandlers.createMeeting` it is a meeting title from the request body, so a title containing `"`, `\` or a newline yields malformed JSON. In `CompressionEngine.Apply` there is no title: the values are a client-supplied `event_id`, copied unvalidated from the request body (`scheduleHandlers.applyCompress`, backend/api/handlers_schedule.go:80-93 — the timestamps are parsed, the id is not touched), and an RFC3339 timestamp — so a caller can write JSON STRUCTURE, not merely a stray quote, into its own row. In `nlpHandlers.confirm` the value is a Google-issued event id, which in practice contains no JSON metacharacter; the construction is the same defect, the input simply is not attacker-controlled.
 	//
@@ -628,9 +652,9 @@ type AuditEntry struct {
 
 // AuditEntryAction What was recorded. Underscore-separated, lower-case; there is no dotted key convention on this endpoint and never was.
 //
-// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites.
+// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above must return these writers as well. No test checks this enum against the writers today (none exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend stage ADDS one covering all ten (manifest CONTRACT-6).
 //
-// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and a writer added without one makes the contract test fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
+// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and once the PAC-67 enum test exists a writer added without one makes it fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
 //
 // Because the body of the 200 is an array of this schema, a value outside this enum makes the WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added without a contract change, or one restored backup, and a validating consumer rejects six good rows along with the odd one. That is the intended alarm in a test and the wrong behaviour in a UI, so the expected handling is stated rather than left to each consumer: **render the row, substituting a placeholder such as `unknown` for the unrecognised value, rather than discarding the response.**
 //
@@ -642,6 +666,9 @@ type AuditEntryAction string
 // AuthStatusResponse Assembled from map[string]interface{} literals in authHandlers.status —
 // all three keys are always emitted (no omitempty).
 type AuthStatusResponse struct {
+	// Connected Whether the caller's calendar connection for `provider` is usable
+	// (PAC-67): stored, and not recorded as lost after a permanent
+	// refusal of its renewal. See `getAuthStatus`.
 	Connected bool `json:"connected"`
 
 	// Email For outlook/webcal this is the caller's own settings.calendar_email
@@ -848,30 +875,34 @@ type CompressionResult struct {
 
 // ConferenceMeetingDetails backend/conference/provider.go Details. camelCase json tags, unlike every other response in this domain.
 type ConferenceMeetingDetails struct {
+	// JoinUrl Always present (no omitempty). The join URL for zoom and teams. For meet it is the EMPTY STRING: `MeetProvider` creates nothing (a Meet link is minted by Google Calendar on event creation), so the standalone create with a `meet` conferencing provider answers `{"provider":"meet","joinUrl":""}`. Because of that the earlier `format: uri` was not true of every response and is removed (U-12, factory section 7.2).
 	JoinUrl string `json:"joinUrl"`
 
-	// MeetingId Omitted when empty.
+	// MeetingId Omitted when empty (always omitted for meet).
 	MeetingId *string `json:"meetingId,omitempty"`
 
 	// Password Omitted when empty.
 	Password *string `json:"password,omitempty"`
 
-	// Provider Provider-supplied label.
-	Provider string `json:"provider"`
+	// Provider A literal set by the concrete provider (U-12, resolved by PAC-67 from backend/conference: `MeetProvider.CreateMeeting` writes "meet", `ZoomProvider.CreateMeeting` "zoom", `TeamsProvider.CreateMeeting` "teams"; `grep -n 'Provider:' backend/conference/*.go` shows the three). Note "meet", not "google_meet": this is not the `ConferenceProviderStatus.provider` vocabulary.
+	Provider ConferenceMeetingDetailsProvider `json:"provider"`
 }
+
+// ConferenceMeetingDetailsProvider A literal set by the concrete provider (U-12, resolved by PAC-67 from backend/conference: `MeetProvider.CreateMeeting` writes "meet", `ZoomProvider.CreateMeeting` "zoom", `TeamsProvider.CreateMeeting` "teams"; `grep -n 'Provider:' backend/conference/*.go` shows the three). Note "meet", not "google_meet": this is not the `ConferenceProviderStatus.provider` vocabulary.
+type ConferenceMeetingDetailsProvider string
 
 // ConferenceProviderStatus backend/api/handlers_conferencing.go conferenceProviderStatus.
 type ConferenceProviderStatus struct {
 	// AutoWith "google" for google_meet, "outlook" for teams. Omitted for zoom and custom.
 	AutoWith *ConferenceProviderStatusAutoWith `json:"auto_with,omitempty"`
 
-	// Connected Always present. `custom` is hardcoded to true.
+	// Connected Always present. `custom` is hardcoded to true. Since PAC-67 the other rows mean USABLE (see `listConferenceProviders`), with these predicates over the caller's own credentials: `google_meet`, a Google token row is stored AND no loss of it is recorded; `zoom`, a stored Zoom credential decodes AND holds a refresh token AND no loss of it is recorded; `teams`, a stored Microsoft credential decodes AND holds a refresh token AND no loss of it is recorded, the same predicate as `getAuthStatus` for an Outlook calendar provider. Before PAC-67 `zoom` was true for any non-blank stored value (including one that does not decode) and `teams` for any stored Microsoft credential, with or without a refresh token, which could report a credential that can never be renewed as connected (contract challenge finding 5).
 	Connected bool `json:"connected"`
 
 	// Email Set only for google_meet (the configured calendar email); omitted when empty.
 	Email *string `json:"email,omitempty"`
 
-	// Enabled json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only ever appears as `true`, and only for teams. Absence must be read as false.
+	// Enabled json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only ever appears as `true`, and only for teams. Absence must be read as false. Since PAC-67 it follows teams' `connected` exactly (same predicate): a lost, disconnected or never-renewable (no refresh token) Microsoft credential omits it, so no field of the row reports Teams usable (spec PAC-67 section 4 preamble).
 	Enabled  *bool                            `json:"enabled,omitempty"`
 	Provider ConferenceProviderStatusProvider `json:"provider"`
 }
@@ -882,13 +913,16 @@ type ConferenceProviderStatusAutoWith string
 // ConferenceProviderStatusProvider defines model for ConferenceProviderStatus.Provider.
 type ConferenceProviderStatusProvider string
 
-// CreateConferenceRequest POST /api/conference/create. No handler-side validation; every field silently defaults to the Go zero value when absent.
+// CreateConferenceRequest POST /api/conference/create. Since PAC-67 (API-052) all three fields are required and validated before any provider is called; a body that fails is the 400 "invalid body". Before PAC-67 every field silently defaulted to the Go zero value when absent and was forwarded to the provider.
 type CreateConferenceRequest struct {
-	End *time.Time `json:"end,omitempty"`
+	// End Must be strictly after `start`.
+	End time.Time `json:"end"`
 
-	// Start Decoded into time.Time. Absent means the zero time, which is forwarded to the provider.
-	Start *time.Time `json:"start,omitempty"`
-	Title *string    `json:"title,omitempty"`
+	// Start `0001-01-01T00:00:00Z` (Go's zero time) is refused with the 400 "invalid body", like an absent `start`: the server cannot tell the two apart.
+	Start time.Time `json:"start"`
+
+	// Title Must contain at least one character that is not whitespace in the ECMA-262 `\s` sense. `pattern` states exactly the test the server applies (see `createConferenceLink`), so a blank title such as "   " cannot be expressed by a client that validates against this schema.
+	Title string `json:"title"`
 }
 
 // CreatePublicBookingRequest Anonymous request body of POST /api/book/{slug}. `name`, `email` and `start` are required by the handler; `end`, `duration` and `duration_minutes` are three overlapping ways to express the length.
@@ -1875,6 +1909,58 @@ type PrefillUrlResponse struct {
 	PrefillUrl string `json:"prefill_url"`
 }
 
+// ProviderDisconnectResult Body of the 200 of `disconnectMicrosoft` and `disconnectZoom` (PAC-67,
+// spec AC-13 to AC-17, D-2). Says which provider was disconnected and
+// what became of the grant at the provider. The local credential is gone
+// whatever `revocation` says: a revocation that could not be confirmed
+// never blocks local removal (spec D-2). Carries no token material.
+type ProviderDisconnectResult struct {
+	// Provider `outlook` from `disconnectMicrosoft`, `zoom` from `disconnectZoom`.
+	Provider ProviderDisconnectResultProvider `json:"provider"`
+
+	// Revocation - `confirmed`: the provider answered success to the revocation
+	//   request (Zoom only).
+	// - `unconfirmed`: a credential was removed and its revocation is
+	//   not confirmed (Zoom only): either a revocation was attempted and
+	//   the provider refused it, answered an error, or could not be
+	//   reached; or no revocation could be attempted, because the stored
+	//   credential does not decode or its expired access token could not
+	//   be renewed (see `disconnectZoom`). The client must tell the user
+	//   that revocation at the provider could not be confirmed (spec
+	//   AC-15, D-2) and must not show a plain success.
+	// - `not_offered`: the provider offers no revocation of this one
+	//   grant that Paceday may call, so none was attempted (Outlook
+	//   always, spec AC-17, D-5). The client tells the user the grant
+	//   can be removed from their account at the provider.
+	// - `nothing_stored`: the caller held no credential for this
+	//   provider; nothing was removed or sent, and no activity entry
+	//   was written.
+	Revocation ProviderDisconnectResultRevocation `json:"revocation"`
+}
+
+// ProviderDisconnectResultProvider `outlook` from `disconnectMicrosoft`, `zoom` from `disconnectZoom`.
+type ProviderDisconnectResultProvider string
+
+// ProviderDisconnectResultRevocation - `confirmed`: the provider answered success to the revocation
+//
+//		request (Zoom only).
+//	  - `unconfirmed`: a credential was removed and its revocation is
+//	    not confirmed (Zoom only): either a revocation was attempted and
+//	    the provider refused it, answered an error, or could not be
+//	    reached; or no revocation could be attempted, because the stored
+//	    credential does not decode or its expired access token could not
+//	    be renewed (see `disconnectZoom`). The client must tell the user
+//	    that revocation at the provider could not be confirmed (spec
+//	    AC-15, D-2) and must not show a plain success.
+//	  - `not_offered`: the provider offers no revocation of this one
+//	    grant that Paceday may call, so none was attempted (Outlook
+//	    always, spec AC-17, D-5). The client tells the user the grant
+//	    can be removed from their account at the provider.
+//	  - `nothing_stored`: the caller held no credential for this
+//	    provider; nothing was removed or sent, and no activity entry
+//	    was written.
+type ProviderDisconnectResultRevocation string
+
 // PublicBookingConfirmation backend/api/handlers_booking.go bookingConfirmationDTO, returned by POST /api/book/{slug} with 201.
 type PublicBookingConfirmation struct {
 	BookerEmail string `json:"booker_email"`
@@ -1917,7 +2003,7 @@ type PublicHost struct {
 	Name *string `json:"name,omitempty"`
 }
 
-// PublicLinkCoverage How many accepted hosts had a loadable calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those with a usable OAuth token. Always present, even as {0,0}.
+// PublicLinkCoverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the slots are computed without that host's calendar; a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 type PublicLinkCoverage struct {
 	Checked int `json:"checked"`
 	Total   int `json:"total"`
@@ -1925,7 +2011,7 @@ type PublicLinkCoverage struct {
 
 // PublicLinkInfo backend/api/handlers_booking.go publicLinkDTO.
 type PublicLinkInfo struct {
-	// Coverage How many accepted hosts had a loadable calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those with a usable OAuth token. Always present, even as {0,0}.
+	// Coverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the slots are computed without that host's calendar; a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 	Coverage PublicLinkCoverage `json:"coverage"`
 
 	// Durations Allowed meeting lengths in minutes, straight from the link's duration_options column.
@@ -4880,6 +4966,9 @@ type ServerInterface interface {
 	// Microsoft OAuth callback
 	// (GET /api/auth/microsoft/callback)
 	MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Request, params MicrosoftOAuthCallbackParams)
+	// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+	// (POST /api/auth/microsoft/disconnect)
+	DisconnectMicrosoft(w http.ResponseWriter, r *http.Request)
 	// Begin OIDC SSO login for a configured domain
 	// (GET /api/auth/sso/{domain})
 	StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams)
@@ -4913,7 +5002,7 @@ type ServerInterface interface {
 	// Conferencing providers this server can offer, and their connection state.
 	// (GET /api/conference/providers)
 	ListConferenceProviders(w http.ResponseWriter, r *http.Request)
-	// Clear the stored Zoom tokens.
+	// Disconnect the caller's Zoom credential and ask Zoom to revoke it.
 	// (POST /api/conference/zoom/disconnect)
 	DisconnectZoom(w http.ResponseWriter, r *http.Request)
 	// Delete a Google Calendar event
@@ -5297,6 +5386,12 @@ func (_ Unimplemented) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+// (POST /api/auth/microsoft/disconnect)
+func (_ Unimplemented) DisconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Begin OIDC SSO login for a configured domain
 // (GET /api/auth/sso/{domain})
 func (_ Unimplemented) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams) {
@@ -5363,7 +5458,7 @@ func (_ Unimplemented) ListConferenceProviders(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Clear the stored Zoom tokens.
+// Disconnect the caller's Zoom credential and ask Zoom to revoke it.
 // (POST /api/conference/zoom/disconnect)
 func (_ Unimplemented) DisconnectZoom(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -6467,6 +6562,28 @@ func (siw *ServerInterfaceWrapper) MicrosoftOAuthCallback(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.MicrosoftOAuthCallback(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DisconnectMicrosoft operation middleware
+func (siw *ServerInterfaceWrapper) DisconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DisconnectMicrosoft(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9777,6 +9894,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/auth/microsoft/callback", wrapper.MicrosoftOAuthCallback)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/auth/microsoft/disconnect", wrapper.DisconnectMicrosoft)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/auth/sso/{domain}", wrapper.StartSsoLogin)
 	})
 	r.Group(func(r chi.Router) {
@@ -10858,6 +10978,41 @@ func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbac
 	return json.NewEncoder(w).Encode(response)
 }
 
+type DisconnectMicrosoftRequestObject struct {
+}
+
+type DisconnectMicrosoftResponseObject interface {
+	VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error
+}
+
+type DisconnectMicrosoft200JSONResponse ProviderDisconnectResult
+
+func (response DisconnectMicrosoft200JSONResponse) VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type DisconnectMicrosoft401TextResponse PlainTextError
+
+func (response DisconnectMicrosoft401TextResponse) VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type DisconnectMicrosoft500JSONResponse ErrorResponse
+
+func (response DisconnectMicrosoft500JSONResponse) VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type StartSsoLoginRequestObject struct {
 	Domain string `json:"domain"`
 	Params StartSsoLoginParams
@@ -11422,12 +11577,13 @@ type DisconnectZoomResponseObject interface {
 	VisitDisconnectZoomResponse(w http.ResponseWriter) error
 }
 
-type DisconnectZoom204Response struct {
-}
+type DisconnectZoom200JSONResponse ProviderDisconnectResult
 
-func (response DisconnectZoom204Response) VisitDisconnectZoomResponse(w http.ResponseWriter) error {
-	w.WriteHeader(204)
-	return nil
+func (response DisconnectZoom200JSONResponse) VisitDisconnectZoomResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DisconnectZoom401TextResponse string
@@ -15709,6 +15865,9 @@ type StrictServerInterface interface {
 	// Microsoft OAuth callback
 	// (GET /api/auth/microsoft/callback)
 	MicrosoftOAuthCallback(ctx context.Context, request MicrosoftOAuthCallbackRequestObject) (MicrosoftOAuthCallbackResponseObject, error)
+	// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+	// (POST /api/auth/microsoft/disconnect)
+	DisconnectMicrosoft(ctx context.Context, request DisconnectMicrosoftRequestObject) (DisconnectMicrosoftResponseObject, error)
 	// Begin OIDC SSO login for a configured domain
 	// (GET /api/auth/sso/{domain})
 	StartSsoLogin(ctx context.Context, request StartSsoLoginRequestObject) (StartSsoLoginResponseObject, error)
@@ -15742,7 +15901,7 @@ type StrictServerInterface interface {
 	// Conferencing providers this server can offer, and their connection state.
 	// (GET /api/conference/providers)
 	ListConferenceProviders(ctx context.Context, request ListConferenceProvidersRequestObject) (ListConferenceProvidersResponseObject, error)
-	// Clear the stored Zoom tokens.
+	// Disconnect the caller's Zoom credential and ask Zoom to revoke it.
 	// (POST /api/conference/zoom/disconnect)
 	DisconnectZoom(ctx context.Context, request DisconnectZoomRequestObject) (DisconnectZoomResponseObject, error)
 	// Delete a Google Calendar event
@@ -16505,6 +16664,30 @@ func (sh *strictHandler) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(MicrosoftOAuthCallbackResponseObject); ok {
 		if err := validResponse.VisitMicrosoftOAuthCallbackResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DisconnectMicrosoft operation middleware
+func (sh *strictHandler) DisconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+	var request DisconnectMicrosoftRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DisconnectMicrosoft(ctx, request.(DisconnectMicrosoftRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DisconnectMicrosoft")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DisconnectMicrosoftResponseObject); ok {
+		if err := validResponse.VisitDisconnectMicrosoftResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
