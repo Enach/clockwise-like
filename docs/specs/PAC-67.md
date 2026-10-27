@@ -1826,3 +1826,138 @@ changes a criterion's intent.
   and §2.9's citations are re-numbered at `6d751f9`. The §2 preamble says
   which subsections were re-checked. Citations in §2.1, §2.4 and §2.7 whose
   code did not change were not all re-numbered, and the preamble says so.
+
+## Challenge — 2026-10-27 (round 5)
+
+**Verdict**: accept
+
+Reviewed the committed spec at `35a070f` (Revision 4) against the Linear issue
+text, the backend and contract at `6d751f9` (still `origin/main`), and
+`smart-calendar-flow` at `origin/main` `ad52160`. The round-4 blocking finding
+is resolved: §2.9 now describes public link info, D-14 fixes its coverage as
+unchanged with the cost stated, inherited scope and §6 list it with its
+consumer, §6 requires the `PublicLinkCoverage` description to say what is
+counted, and AC-28 pins the link-info response before and after a loss. Both
+round-4 non-blocking findings are answered: §2.9's list is now examples under
+D-13, and AC-26, AC-28 and AC-29 each have a temporary-failure case.
+
+I tried to break the spec on these points and did not:
+- **Who can see the new entries.** The activity log is read only as the
+  caller's own rows (`backend/storage/audit_log.go:34`, `WHERE user_id = $1`).
+  No other reader of `audit_log` exists, so an entry written to B is not shown
+  to A.
+- **Other places that show a teammate's credential state.** The PAC-34 fields
+  `is_paceday_user` and `data_available` (`backend/api/handlers_manager.go:544-582`)
+  come from stored weekly stats, not from a credential. The only
+  credential-derived answer about another user is link-info coverage, which
+  D-14 covers.
+- **Owner-only use of Outlook and Zoom.** Every `LoadMicrosoftToken` call takes
+  the caller's or requester's id (`handlers_auth.go:127`,
+  `handlers_conferencing.go:49,165,200`, `freebusy_service.go:123`). Zoom is
+  read only from the caller's settings (`conference/factory.go:23-27`).
+- **The issue's acceptance.** The issue's four items and four draft acceptance
+  bullets each map to criteria: AC-2 and AC-26 to AC-29 (B unaffected), AC-13
+  (A's Outlook credential removed, B's intact), AC-8, AC-9 and AC-24
+  (one entry, not connected for A only), AC-6, AC-18 and §2.3 (Google), and
+  AC-19 (provider flip).
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **The §2 preamble says §2.1 and §2.2 were corrected at `6d751f9`. Several of
+   their citations were not, and the same stale numbers recur in §2.4.** The
+   behaviour described is right in every case; only the line numbers are wrong.
+   See "Citations I checked and found wrong". Either re-number them or move
+   §2.1 and §2.2 into the preamble's "not all re-numbered" sentence.
+2. **The number of audit entries a disconnect writes is ambiguous.** AC-16 says
+   a disconnect leaves "one entry ... recording the disconnect". AC-15 says the
+   log "records the disconnect and the unconfirmed revocation", and AC-22 makes
+   those two separate kinds. For a Zoom disconnect whose revocation fails, AC-16
+   can be read as "exactly one new entry" and AC-15 as "two". An implementation
+   writing either passes one criterion and fails the other. AC-17's "none"
+   branch (Microsoft has no single-grant revocation) does not say whether a
+   revocation-not-confirmed entry is written. State the count of new entries,
+   and their kinds, for:
+   - a confirmed Zoom revocation;
+   - an unconfirmed Zoom revocation;
+   - an Outlook disconnect under each OQ-1 outcome.
+3. **AC-28's "exactly one ... however many slot and booking requests" has no
+   process qualifier.** AC-25 and AC-26 limit "exactly one" to "within one
+   backend process" and leave the multi-process case to OQ-9. AC-28 does not,
+   so it reads as requiring cross-process dedup for unauthenticated traffic,
+   which §5 places out of scope. Add the same qualifier.
+4. **AC-13's "A's status reports Outlook not connected" depends on A's calendar
+   provider.** If A's calendar provider is not Outlook, the calendar connection
+   status never reports Outlook (§2.6). The §4 preamble mapping settles this, so
+   the test is still determinate. Writing "per the §4 preamble" in AC-13, or
+   stating A's calendar provider, would stop a test author asserting on a field
+   that does not exist.
+5. OWNER: Microsoft is a sign-in flow (§2.1). A user who disconnects Outlook
+   (AC-13) and later signs in with Microsoft gets their Outlook credential
+   stored again and their calendar provider reset to Outlook, with no separate
+   consent step (D-4). Does a Microsoft sign-in after a disconnect count as
+   reconnecting, or should a disconnect hold until the user reconnects
+   explicitly?
+6. OWNER: D-14 keeps "All participants checked" on the public booking page while
+   the slots ignore a host whose credential is lost. The factory chose not to
+   tell visitors. Confirm that, or choose a host-controlled alternative in a
+   follow-up.
+
+### Criteria I could not falsify
+
+- None. Every criterion has a test that fails today and passes afterwards,
+  except the pins the spec labels as such: AC-18 and AC-19 already hold, and
+  AC-7 guards against eager refresh. AC-28's new link-info clause fails against
+  an implementation that stops counting a lost host. It passes today, by D-14's
+  design.
+
+### Citations I checked and found wrong
+
+All of these are at `6d751f9`. Only the line numbers are wrong; the behaviour
+the spec describes is correct in each case.
+
+- §2.1, "`WHERE user_id = $1` (`backend/auth/microsoft_oauth.go:68`)": the
+  update is at `:79`. `LoadMicrosoftToken` starts at `:85`, not `:74`, and
+  the record type is at `:54-58`.
+- §2.1, "Teams meeting creation: `handlers_conferencing.go:40-44` and
+  `:139-144`": these are at `:48-53` (`ProviderForRequest`) and `:165`.
+- §2.1, "Conferencing providers reports Teams connected ...
+  (`handlers_conferencing.go:169,178-179`)": this is at `:200` and `:210`
+  (§2.6 has the right numbers).
+- §2.1, "Status reports Outlook connected ... (`handlers_auth.go:98-105`)" and
+  "(`handlers_auth.go:100`)": these are at `:126-133` and `:128` (§2.6 has the
+  right numbers).
+- §2.2, "dropped (`backend/api/handlers_conferencing.go:112`)" and "saves
+  against the caller (`handlers_conferencing.go:112`)": `SaveZoomTokens` is
+  called at `:138`.
+- §2.3 and §2.4 cite the Google callback writer as `handlers_auth.go:70`: it is
+  at `:71`, which is immaterial.
+- §2.4 and §6, web: `smart-calendar-flow/src/api/client.ts:478` (normaliser) is
+  at `:498-516`, with the pass-through at `:511`. Empty or non-string values
+  become `"unknown"`. `src/api/client.ts:1463` (Zoom disconnect typed `void`)
+  is at `:1521-1523`.
+
+Checked and correct: every inherited-scope line in `openapi.yaml` (`:367`,
+`:864`, `:1051`, `:1100`, `:1285`, `:1344`, `:1376`, `:1432`, `:1532`, `:1651`,
+`:1713`, `:1759`, `:1789`, `:1943`, `:2194`, `:5330`, `:5909`, `:6412`, `:6433`,
+`:8706`); `contracts/openapi/paths/booking.yaml:1215-1220`; §2.6
+(`handlers_auth.go:110-161`, `handlers_conferencing.go:199-212`); §2.8
+(`handlers_conferencing.go:293-401`, the 401 through `writeCalendarFailure` at
+`server_errors.go:75-81`, and the 404 "event not found" without error text);
+`handlers_events.go:27-34`; §2.9 (`team_availability.go:78-100`;
+`booking.go:93`, `:202-208` and `:269`; `handlers_booking.go:75-93` and
+`:87-90`; `routes.go:23-27`); `storage/conferencing.go:11-14`; web
+`PublicBooking.tsx:378-380`, `schedulingLinks.ts:62` and `:661`,
+`ConferencingSection.tsx:98-99`, `generated/schemas.ts:38` and
+`Audit.tsx:97`.
+
+### Consumers this breaks
+
+- None beyond those §2.4 and §6 already name. The audit page renders a new
+  kind raw (`Audit.tsx:97`). The generated zod `AuditEntry` (`schemas.ts:38`)
+  must be regenerated with the contract change (AC-22). The Zoom disconnect
+  caller (`client.ts:1521-1523`, `ConferencingSection.tsx:98-99`) keeps
+  working and owes the unconfirmed-revocation message (§5).
