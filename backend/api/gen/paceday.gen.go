@@ -908,16 +908,16 @@ type CreateSchedulingLinkRequest struct {
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
 	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently dropped, which can turn a non-empty list into a 422 "at least one day".
-	Days *[]string `json:"days,omitempty"`
+	Days *[]string `json:"days"`
 
 	// DaysOfWeek Canonical spelling, 0=Sunday..6=Saturday. Wins over `days` whenever it is carried (present and not null), even as `[]` (then a 422). Defaults to [1,2,3,4,5] when both are absent or null.
-	DaysOfWeek *[]int `json:"days_of_week,omitempty"`
+	DaysOfWeek *[]int `json:"days_of_week"`
 
 	// DurationOptions Canonical spelling. Wins over `durations` whenever it is carried (present and not null), even as `[]`, which is then a 422 "at least one duration is required" whatever `durations` says. Defaults to [30] when both are absent or null.
-	DurationOptions *[]int `json:"duration_options,omitempty"`
+	DurationOptions *[]int `json:"duration_options"`
 
 	// Durations Alias for duration_options, used only when duration_options is absent or null.
-	Durations *[]int `json:"durations,omitempty"`
+	Durations *[]int `json:"durations"`
 
 	// MaxUses Required and must be positive when usage_type is `recurring`. Ignored (forced to null) otherwise.
 	MaxUses          *int `json:"max_uses"`
@@ -933,16 +933,16 @@ type CreateSchedulingLinkRequest struct {
 	UsageType *CreateSchedulingLinkRequestUsageType `json:"usage_type,omitempty"`
 
 	// WindowEnd Alias, used only when window_end_time is absent, null or the empty string. Not covered by PAC-40's precedence rule (D-10, OQ-7).
-	WindowEnd *string `json:"window_end,omitempty"`
+	WindowEnd *string `json:"window_end"`
 
-	// WindowEndTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00".
-	WindowEndTime *string `json:"window_end_time,omitempty"`
+	// WindowEndTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00". An explicit null is the same as absent (the server decodes it to the empty string).
+	WindowEndTime *string `json:"window_end_time"`
 
 	// WindowStart Alias, used only when window_start_time is absent, null or the empty string. Not covered by PAC-40's precedence rule: PATCH treats an empty canonical value differently (PAC-40 D-10, OQ-7).
-	WindowStart *string `json:"window_start,omitempty"`
+	WindowStart *string `json:"window_start"`
 
-	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00".
-	WindowStartTime *string `json:"window_start_time,omitempty"`
+	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00". An explicit null is the same as absent (the server decodes it to the empty string).
+	WindowStartTime *string `json:"window_start_time"`
 }
 
 // CreateSchedulingLinkRequestUsageType Lowercased and trimmed before validation; an empty string becomes `reusable`.
@@ -2085,7 +2085,7 @@ type SchedulingLink struct {
 	Title     string                  `json:"title"`
 	UsageType SchedulingLinkUsageType `json:"usage_type"`
 
-	// UsesCount Number of bookings ever made on this link, cancelled ones included, so it never goes down when a booking is cancelled (PAC-40 D-6, API-051). Bookings made before PAC-40 count under the same rule (D-8). Exhaustion (410 on the public paths) is judged on this figure. Whether it is stored or derived is not part of the contract.
+	// UsesCount Number of booking rows stored for this link, whatever their status, so cancelled bookings are included and the figure never goes down when a booking is cancelled (PAC-40 D-6, API-051). Bookings made before PAC-40 count under the same rule (D-8). Exhaustion (410 on the public paths) is judged on this figure. No product path removes a booking row (cancel keeps it, delete of a link is a soft delete, D-2), so through the API the figure only grows. A row removed outside the product (e2e teardown, a manual database edit) is no longer counted (PAC-40 C-3). Whether the server stores or computes the figure is not part of the contract, provided it equals this count.
 	UsesCount int    `json:"uses_count"`
 	WindowEnd string `json:"window_end"`
 
@@ -2757,16 +2757,16 @@ type UpdateSchedulingLinkRequest struct {
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
 	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH).
-	Days *[]string `json:"days,omitempty"`
+	Days *[]string `json:"days"`
 
 	// DaysOfWeek Canonical spelling. When carried (present and not null) it wins over `days`, as on create (PAC-40 D-5); `[]` counts as carried and fails 422.
-	DaysOfWeek *[]int `json:"days_of_week,omitempty"`
+	DaysOfWeek *[]int `json:"days_of_week"`
 
 	// DurationOptions Canonical spelling. When carried (present and not null) it wins over `durations`, as on create (PAC-40 D-5, API-049); `[]` counts as carried and fails 422 "at least one duration is required", leaving the link unchanged.
-	DurationOptions *[]int `json:"duration_options,omitempty"`
+	DurationOptions *[]int `json:"duration_options"`
 
 	// Durations Alias for duration_options, applied only when duration_options is absent or null. Ignored when duration_options is carried (PAC-40; before PAC-40 the alias won on PATCH).
-	Durations *[]int `json:"durations,omitempty"`
+	Durations *[]int `json:"durations"`
 
 	// MaxUses An explicit null is indistinguishable from an absent key (both leave the stored value), so max_uses cannot be cleared by PATCH except by switching usage_type away from `recurring`.
 	MaxUses          *int `json:"max_uses"`

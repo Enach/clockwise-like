@@ -2,8 +2,8 @@
   "featureId": "PAC-40",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-40/fix-the-scheduling-link-lifecycle-defects-soft-delete-visible-in-two",
   "status": "draft",
-  "contractRevision": "1",
-  "contractHash": "86fc227fb69a00f70b4f63eb7dc6e2dea9b15344de2a37e96acd8e0578ccb3a7",
+  "contractRevision": "2",
+  "contractHash": "69f1796980153373265d955ce70d5a7d5ab1e91566bfe02367699967d096db55",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-40-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py. Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-40.md",
   "specDoc": "docs/specs/PAC-40.md on branch factory/pac-40-spec at f621674 (revision 5). NOT yet accepted or merged: its status line reads 'challenged' and challenge round 6 has not run. This contract is a draft against revision 5 (see PAC-40.md section 0).",
@@ -65,18 +65,18 @@
   ],
 
   "schemasChanged": [
-    "SchedulingLink.uses_count: meaning changed to 'bookings ever made, cancelled included' (API-051, D-6, D-8); minimum: 0 added. Type and name unchanged.",
+    "SchedulingLink.uses_count: meaning changed to 'the booking rows stored for the link, whatever their status' (cancelled included; API-051, D-6, D-8, C-3); minimum: 0 added. Type and name unchanged.",
     "SchedulingLink.active: description added (false = paused; a deleted link is never returned).",
     "SchedulingLinkListResponse.shared: description notes deleted links are excluded.",
-    "CreateSchedulingLinkRequest: descriptions of duration_options, durations, days_of_week, days, window_start, window_end. Shape unchanged.",
-    "UpdateSchedulingLinkRequest: descriptions of duration_options, durations, days_of_week, days, window_start, window_end, active. Shape unchanged.",
+    "CreateSchedulingLinkRequest: descriptions of duration_options, durations, days_of_week, days, window_start_time, window_start, window_end_time, window_end. Revision 2: nullable: true added to those eight fields, because the server accepts null for each (slices decode it to nil, strings to the empty string) and AC-14a sends duration_options: null. Every request valid before is still valid.",
+    "UpdateSchedulingLinkRequest: descriptions of duration_options, durations, days_of_week, days, window_start, window_end, active. Revision 2: nullable: true added to duration_options, durations, days_of_week and days (the window fields were already nullable), so the null case of AC-14a can be sent. Every request valid before is still valid.",
     "SchedulingLinkBookingRecord.status: description (cancelled rows still count in uses_count)."
   ],
 
   "decisionsAssumed": [
     "C-1 (spec OQ-5, owner: contract-author): a live or paused link fetched by a caller who is neither the owner nor an accepted co-host answers 403 {\"error\":\"forbidden\"}, not 404. Assumed by the factory, pending owner confirmation. Rationale and rejected alternative in PAC-40.md section 3.",
     "C-2: no new response field marks a deleted link, because no response ever contains one; `active` keeps its name and type and means paused. Assumed by the factory, pending owner confirmation.",
-    "C-3: whether uses_count is stored or derived is left to the plan; the contract fixes only its meaning. Assumed by the factory, pending owner confirmation.",
+    "C-3: uses_count is the number of booking rows stored for the link, whatever their status; a row removed outside the product (e2e teardown, a manual database edit, the cascade from a hard-deleted link) is no longer counted. Whether it is stored or computed is left to the plan, provided it equals that count. Assumed by the factory, pending owner confirmation (revision 2; rejected alternative in PAC-40.md section 5).",
     "C-4: for a deleted link every by-id operation checks 'deleted' at the same point it checks 'no such link', i.e. before the owner check and before reading the body, so a malformed body on a deleted link is 404, not 400. Assumed by the factory, pending owner confirmation.",
     "Spec decisions D-1 to D-10 are inherited unchanged, all assumed by the factory, pending owner confirmation."
   ],
@@ -85,7 +85,7 @@
     "contractApproval": "contract-challenger review on this branch, then a GitHub PR",
     "assembler": "python3 scripts/openapi_assemble.py --check",
     "apiGate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-40-contract",
-    "webGate": "REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh <web-branch> factory/pac-40-contract, in the build stage that ships this contract (descriptions change in the generated types; no shape changes).",
+    "webGate": "bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh factory/pac-40-contract factory/pac-40-contract. The paired web branch factory/pac-40-contract on Enach/smart-calendar-flow carries the regenerated src/api/generated files (the GET 403 response, the nullable request arrays and window fields, descriptions).",
     "e2eGate": "Build stage: AC-10 and AC-18 are e2e.",
     "defaultBranch": "main",
     "ci": "local",
@@ -144,7 +144,7 @@
     { "consumer": "Enach/smart-calendar-flow src/api/schedulingLinks.ts backendLinkBody", "breaks": "no", "detail": "Sends canonical spellings only, so the PATCH precedence change does not affect it." },
     { "consumer": "Enach/smart-calendar-flow src/api/schedulingLinks.ts isLinkExhausted (:352-355)", "breaks": "no", "detail": "Reads uses_count with the same rule the server gates on; stays consistent." },
     { "consumer": "Enach/smart-calendar-flow src/api/schedulingLinks.ts acceptInvite / declineInvite / leaveLink", "breaks": "no", "detail": "Invites to deleted links are no longer listed, so the web does not offer them; a stale one gets 404 and the existing error toast." },
-    { "consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "no", "detail": "Descriptions change and getSchedulingLink gains a 403 response. Regenerate with REGEN=1 web-gate; never edit." },
+    { "consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "no", "detail": "Descriptions change, getSchedulingLink gains a 403 response, and the request arrays (and create window fields) accept null. Regenerated on the paired web branch factory/pac-40-contract; never edited by hand." },
     { "consumer": "clockwise-like backend/api/handlers_scheduling_links_test.go TestSchedulingLinksOwnerOnlyBookingsAndDelete", "breaks": "no", "detail": "Ends with the owner's 204 on a live link; still 204. Anything re-reading after it would now see 404 (intended)." },
     { "consumer": "clockwise-like backend/api/handlers_scheduling_links_test.go TestSchedulingLinksPatchUsesFrontendAliases", "breaks": "no", "detail": "Sends aliases alone; still applied." },
     { "consumer": "clockwise-like e2e/seed/seed.sql:219-223 and e2e/tests/public-booking.spec.ts:79-97", "breaks": "no", "detail": "The exhausted link is seeded with a non-cancelled booking, which still counts. Its comment goes stale if the count becomes stored. AC-18 needs its own link." },

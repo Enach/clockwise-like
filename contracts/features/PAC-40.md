@@ -24,13 +24,17 @@ Do not merge this contract before the spec is accepted.
 |---|---|---|
 | Deleted vs paused | "Setting `active:false` is the same soft-deactivation that DELETE performs"; a deleted link is listed, fetchable, editable and invitable | Two states. Paused = `active:false`, visible as today. Deleted is invisible: every by-id or by-slug path answers the never-existed 404 to every caller, and lists and invite lists omit it |
 | `getSchedulingLink` | No authorization, `x-uncertain` | Owner and accepted co-hosts get 200. Deleted link: 404 for everyone. Anyone else: 403 `{"error":"forbidden"}` |
-| PATCH aliases | Alias wins (`durations` over `duration_options`, `days` over `days_of_week`) | The canonical spelling wins whenever it is carried (present and not null; `[]` counts), the same as create |
-| `uses_count` | "Count of non-cancelled bookings" | Bookings ever made, cancelled ones included. The 410 is judged on this figure |
-| `createPublicBooking` 400 | Six messages; "end must be after start" missing | Seven messages, plus the partition for end ≤ start and the overflow path |
+| PATCH aliases | Alias wins (`durations` over `duration_options`, `days` over `days_of_week`) | The canonical spelling wins whenever it is carried (present and not null; `[]` counts), the same as create. The four array fields are `nullable` on both request schemas, so the `null` case of AC-14a can be sent |
+| `uses_count` | "Count of non-cancelled bookings" | The booking rows stored for the link, whatever their status (cancelled included). The 410 is judged on this figure |
+| `createPublicBooking` 400 | Six messages; "end must be after start" missing | Seven messages, plus the partition for end ≤ start and the overflow path, which catches some large duration options but not all |
 
-Every response shape is unchanged. The only structural addition is a `403` on
-`getSchedulingLink` and `minimum: 0` on `uses_count`. Everything else is a
-description, so the regenerated web types gain one response and some comments.
+Every response shape is unchanged. The structural additions are a `403` on
+`getSchedulingLink`, `minimum: 0` on `uses_count`, and (revision 2)
+`nullable: true` on `duration_options`, `durations`, `days_of_week` and `days`
+in both request schemas and on the four window fields of the create schema.
+The server already accepts `null` for all of these. Every other change is a
+description, so the regenerated web types gain one response, wider request
+types and some comments.
 
 ## 2. Ordering of checks for a deleted link (C-4)
 
@@ -94,11 +98,25 @@ field would always be null.
 
 ## 5. Decision C-3: `uses_count` meaning, not mechanism
 
-The contract fixes what the number means: bookings ever made, cancelled ones
-included, starting from existing data (D-6, D-8). It also fixes that the 410
-is judged on that number. It does not fix whether the number is stored or
-computed from all rows, because that is the plan's choice (spec §7 allows
-either).
+The contract fixes what the number means: the number of booking rows stored
+for the link, whatever their status, so cancelled ones are included, starting
+from existing data (D-6, D-8). It also fixes that the 410 is judged on that
+number. It does not fix whether the server stores the number or computes it,
+because that is the plan's choice (spec §7 allows either), but a stored
+number must equal the row count.
+
+Revision 2 settles the one case where "stored" and "derived" disagree: a
+booking row that is hard-deleted. No product path does that (cancel keeps the
+row, and link delete is a soft delete, D-2). Only e2e teardown
+(`e2e/fixtures.ts:132`, `e2e/seed/seed.sql:28`) and the `ON DELETE CASCADE`
+from a hard-deleted link remove rows. The rule chosen is the row count: a row
+removed outside the product is no longer counted. *Assumed by the factory,
+pending owner confirmation.*
+
+**Rejected: "never goes down, even when a row is removed".** It would force a
+stored counter that the e2e seed, which deletes and re-inserts bookings on
+every run, would also have to reset. It protects nothing a product user can
+do, because no product path removes a row.
 
 **Rejected: a separate `bookings_made` field next to an unchanged
 `uses_count`.** The web computes "used up" from `uses_count`
@@ -367,3 +385,88 @@ keyword fixes; no shape needs redesigning.
 - OWNER: OQ-1. The owner can no longer reach a deleted link's bookings through the
   API.
 - OWNER: OQ-2. Deleted links and their bookers' data are kept indefinitely.
+
+## Revision — 2026-10-27 (answers contract challenge round 1)
+
+Contract revision 2. The fragment change is commit `f6b322d`. The regenerated
+bundle, `backend/api/gen` and this revision follow it on `factory/pac-40-contract`.
+The paired web branch is `factory/pac-40-contract` on `Enach/smart-calendar-flow`.
+Spec input is unchanged: `factory/pac-40-spec` at `f621674` (revision 5, still
+"challenged").
+
+### Blocking
+
+1. **The `null` request of AC-14a is now expressible.** `nullable: true` is added
+   to `duration_options`, `durations`, `days_of_week` and `days` on both
+   `CreateSchedulingLinkRequest` and `UpdateSchedulingLinkRequest`. On create, the
+   four window fields (`window_start_time`, `window_start`, `window_end_time`,
+   `window_end`) are also made nullable, rather than dropping "null" from their
+   descriptions. The reason is that this describes what the server does: they are
+   plain Go strings in `schedulingLinkInput` (`handlers_scheduling_links.go:77-80`),
+   so `null` decodes to `""` and is treated as absent. `window_start_time` and
+   `window_end_time` say so in their descriptions. No request that was valid
+   before becomes invalid. `oapi-codegen` drops `omitempty` from these eight
+   fields, the same as the PATCH schema's existing nullable fields. The web zod
+   schemas now accept `null` for them (paired web branch).
+2. **The overflow text is corrected.** The `createPublicBooking` 400 now says
+   "end must be after start" is reached when start + the duration, computed as a
+   wrapping int64 nanosecond product, lands at or before start. That happens for
+   some options of 153,722,868 minutes or more (for example 153,722,868-307,445,734)
+   but not all: 307,445,735-461,168,601, for example, wrap to an end after start,
+   are not rejected by this check, and go on to the later checks. I re-ran the
+   probe myself, using `start.Add(time.Duration(n) * time.Minute)` from
+   2026-11-02T10:00Z with Go on the host:
+   ```
+   153722867 min -> end=2319-02-12T09:47:00Z after=true
+   153722868 min -> end=1734-07-24T10:13:26Z after=false
+   200000000 min -> end=1822-07-20T07:45:26Z after=false
+   307445734 min -> end=2026-11-02T09:59:26Z after=false
+   307445735 min -> end=2026-11-02T10:00:26Z after=true
+   400000000 min -> end=2202-10-25T05:05:26Z after=true
+   461168601 min -> end=2319-02-12T09:46:26Z after=true
+   461168602 min -> end=1734-07-24T10:12:52Z after=false
+   ```
+   AC-20a (200,000,000) is unchanged. Spec §2.5 has the same over-general
+   sentence. It is the spec stage's file, so this stage has not edited it. The
+   correction is owed in spec round 6 and is flagged on the Linear issue.
+
+### Non-blocking
+
+1. **Gate 4, web side.** The paired web branch `factory/pac-40-contract` is cut
+   from web `origin/main` and carries the files regenerated from this bundle.
+   web-gate was run against it with `factory/pac-40-contract` as the api branch.
+   The results are in the build notes of the commit that adds this section and
+   in the Linear comment.
+2. **The full `api-gate.sh` was run.** For this stage the host checkout was moved
+   to `factory/pac-40-contract`, with the contract worktree detached. The gate was
+   run on the final commit, and then the host was put back on the branch it was
+   on. The results are in the Linear comment and the commit notes.
+3. **The deleteSchedulingLink 404 sentence is now scoped.** It now reads: every
+   operation that names the link by id, and every public operation that names it
+   by slug (`/api/book/{slug}` and its slots), answers the never-existed 404. It
+   also says that creating or patching another link to its slug is still a 409
+   (D-3), so a signed-in user can learn the slug was once used.
+4. **"present and not null".** The `createPublicBooking` 400 now defines the stated
+   duration as "`duration` if present and not null, even 0, else
+   `duration_minutes`" (`handlers_booking.go:231`, `:249-255`).
+5. **`uses_count` rule chosen** (C-3, section 5). It is the booking rows stored
+   for the link, whatever their status. A row removed outside the product is no
+   longer counted. Stored or computed is left to the plan, provided it equals
+   that count. *Assumed by the factory, pending owner confirmation.* "Never goes
+   down even when a row is removed" was rejected. It would force a counter that
+   the e2e seed (`e2e/seed/seed.sql:28`) would also have to reset, and it would
+   protect nothing, because no product path removes a booking row.
+6. **Spec round 6.** Still not run. This contract stays `draft` and must follow
+   any AC change from round 6, including the §2.5 correction above. Do not merge
+   it before the spec is accepted (section 0).
+
+### Owner questions carried (not blocking, unchanged)
+
+- OWNER: C-1. A stranger holding a live link's UUID gets 403 rather than 404, so
+  learns the link exists. This is consistent with PATCH/DELETE and audit U-08. It
+  is assumed by the factory, pending owner confirmation.
+- OWNER: OQ-1. The owner can no longer reach the bookings of a deleted link
+  through the API.
+- OWNER: OQ-2. Deleted links and their bookers' names and emails are kept
+  indefinitely.
+- OWNER (new in revision 2): C-3. The `uses_count` rule for hard-deleted rows, above.
