@@ -65,6 +65,15 @@ func main() {
 	}
 	api.SetSecureCookies(secureCookies)
 
+	// Public booking rate limits (NEW-booking-rate-limit). Never fatal; the
+	// counts can be raised only in test mode (the e2e stack), never lowered
+	// or changed in production.
+	bookLimit, slotsLimit, limitNotices := config.DecideBookingRateLimits(os.Getenv)
+	for _, n := range limitNotices {
+		log.Printf("WARNING: %s", n)
+	}
+	api.SetPublicBookingLimits(bookLimit, slotsLimit)
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("DATABASE_URL environment variable is required")
