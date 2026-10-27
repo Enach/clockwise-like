@@ -102,8 +102,9 @@ func currentApproved() config.LLMApprovedHosts {
 }
 
 // DestinationRefusal is a send-time refusal: the request would carry the
-// deployment's cloud credential to a destination the operator did not approve
-// for Provider, so nothing was sent. Message is a sentence for the user and
+// deployment's cloud credential (PAC-66), the caller's own key or a keyless
+// Ollama request (PAC-66-B) to a destination not approved for Provider, so
+// nothing was sent. Message is a sentence for the user and
 // never carries a credential.
 type DestinationRefusal struct {
 	Provider string
@@ -164,10 +165,11 @@ func approvedRawURL(provider, raw string) bool {
 // *DestinationRefusal when c would carry the deployment credential to a
 // destination the operator did not approve, another error when the
 // destination cannot be worked out for a reason that is not a refusal (a
-// Bedrock configuration that does not load), and nil otherwise. Clients that
-// carry the caller's own key or none (openai, anthropic, ollama) are not
-// checked (spec §0, PAC-66-B). It sends nothing and acquires no credential, so
-// a refusal is reported even where no credential could be obtained.
+// Bedrock configuration that does not load), and nil otherwise. Since
+// PAC-66-B the clients that carry the caller's own key or none (openai,
+// anthropic, ollama) are checked too (user_destination.go). It sends nothing
+// and acquires no credential, so a refusal is reported even where no
+// credential could be obtained.
 func CheckDestination(ctx context.Context, c LLMClient) error {
 	if dc, ok := c.(interface{ CheckDestination(context.Context) error }); ok {
 		return dc.CheckDestination(ctx)
