@@ -229,7 +229,6 @@ func newSSOEnv(t *testing.T, breakGlass ...string) *ssoEnv {
 	e.h = newSSOHandlers(ah, ssoOptions{
 		Clock:      e.clock,
 		BreakGlass: strings.Join(breakGlass, ","),
-		AppURL:     pac50AppURL,
 		Google:     auth.NewGoogleStepup(e.google.clientID, "google-secret", pac50AppURL+stepupCallbackPath, e.google.endpoints()),
 		Microsoft:  auth.NewMicrosoftStepup(e.ms.clientID, "ms-secret", pac50AppURL+stepupCallbackPath, e.ms.endpoints()),
 	})

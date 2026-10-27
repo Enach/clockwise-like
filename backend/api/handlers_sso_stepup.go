@@ -62,6 +62,8 @@ type ssoStore interface {
 	upsertProvider(ctx context.Context, p *storage.SSOProvider, actor, org uuid.UUID, via string) (*storage.SSOProvider, error)
 	deleteProvider(ctx context.Context, domain string, actor, org uuid.UUID, via string) (bool, error)
 	recordStepup(ctx context.Context, o storage.SSOStepupOutcome) (*storage.SSOStepupGrant, error)
+	consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error)
+	listProviders(ctx context.Context, org uuid.UUID) ([]*storage.SSOProvider, error)
 }
 
 type dbSSOStore struct{ ah *authHandlers }
@@ -78,13 +80,22 @@ func (s dbSSOStore) recordStepup(ctx context.Context, o storage.SSOStepupOutcome
 	return storage.RecordSSOStepupOutcome(ctx, s.ah.db, o)
 }
 
+func (s dbSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error) {
+	_, ok, err := storage.ConsumeSSOStepupGrant(ctx, s.ah.db, user, org, now)
+	return ok, err
+}
+
+func (s dbSSOStore) listProviders(_ context.Context, org uuid.UUID) ([]*storage.SSOProvider, error) {
+	return storage.ListSSOProvidersByOrg(s.ah.db, org)
+}
+
+// stepupRandRead is the state nonce's entropy source; a test replaces it to
+// reach the start's 500.
+var stepupRandRead = rand.Read
+
 type stepupConfig struct {
 	google, microsoft *auth.StepupProvider
-	// secureCookie marks the state cookie Secure. It is a deployment
-	// property, not observed per request: the Go process never sees TLS
-	// behind nginx (spec §4.3). It is on when APP_URL is https.
-	secureCookie bool
-	stateKey     []byte
+	stateKey          []byte
 }
 
 func (c stepupConfig) provider(name string) *auth.StepupProvider {
@@ -108,8 +119,7 @@ type ssoHandlers struct {
 // ssoOptions is everything newSSOHandlers needs that is not a handler.
 type ssoOptions struct {
 	Clock      engine.Clock
-	BreakGlass string // raw PACEDAY_ADMIN_EMAILS: comma-separated
-	AppURL     string
+	BreakGlass string               // raw PACEDAY_ADMIN_EMAILS: comma-separated
 	Google     *auth.StepupProvider // nil: not configured (start answers 503)
 	Microsoft  *auth.StepupProvider
 }
@@ -131,8 +141,7 @@ func newSSOHandlers(ah *authHandlers, o ssoOptions) *ssoHandlers {
 		ah: ah, clock: o.Clock, breakGlass: bg,
 		stepup: stepupConfig{
 			google: o.Google, microsoft: o.Microsoft,
-			secureCookie: strings.HasPrefix(strings.ToLower(o.AppURL), "https://"),
-			stateKey:     key[:],
+			stateKey: key[:],
 		},
 	}
 	h.store = dbSSOStore{ah: ah}
@@ -160,7 +169,9 @@ func ssoOptionsFromEnv() ssoOptions {
 		eps = *p
 	}
 	appURL := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_URL")), "/")
-	o := ssoOptions{BreakGlass: os.Getenv(EnvAdminEmails), AppURL: appURL}
+	// With APP_URL unset no provider is configured, so every start is D-2's
+	// 503 (spec §9 D-9): the callback's redirect_uri cannot be built.
+	o := ssoOptions{BreakGlass: os.Getenv(EnvAdminEmails)}
 	if appURL != "" {
 		redirect := appURL + stepupCallbackPath
 		if id, sec := os.Getenv("GOOGLE_CLIENT_ID"), os.Getenv("GOOGLE_CLIENT_SECRET"); id != "" && sec != "" {
@@ -212,15 +223,15 @@ func (h *ssoHandlers) callerOrg(w http.ResponseWriter, r *http.Request) (*ssoCal
 // was authorized ("stepup" or "breakglass").
 func (h *ssoHandlers) authorizeWrite(w http.ResponseWriter, r *http.Request, c *ssoCaller) (string, bool) {
 	now := h.clock.Now()
-	_, ok, err := storage.ConsumeSSOStepupGrant(r.Context(), h.ah.db, c.user.ID, c.org.ID, now)
+	ok, err := h.store.consumeGrant(r.Context(), c.user.ID, c.org.ID, now)
 	if err != nil {
-		writeError(w, "grant check failed", http.StatusInternalServerError)
+		writeServerError(w, r, "sso grant check", err, http.StatusInternalServerError)
 		return "", false
 	}
 	if ok {
 		return "stepup", true
 	}
-	if h.breakGlass[strings.ToLower(strings.TrimSpace(sessionEmail(r.Context())))] {
+	if h.breakGlass[strings.ToLower(sessionEmail(r.Context()))] {
 		iat := sessionIssuedAt(r.Context())
 		age := now.Sub(iat)
 		// A token stamped in the future (beyond a minute of skew) is not fresh.
@@ -293,14 +304,16 @@ func (h *ssoHandlers) readState(r *http.Request, user *storage.User) (*stepupSta
 	return &s, ok
 }
 
+// setStateCookie sets or clears the state cookie through the PAC-20 helper,
+// so Secure is the deployment's decision (config.DecideSecureCookies; spec
+// §9 D-8). A negative maxAge clears it (Max-Age=0 on the wire).
 func (h *ssoHandlers) setStateCookie(w http.ResponseWriter, value string, maxAge int) {
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     stepupCookie,
 		Value:    value,
 		Path:     stepupStartPath,
 		MaxAge:   maxAge,
 		HttpOnly: true,
-		Secure:   h.stepup.secureCookie,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -309,6 +322,13 @@ func (h *ssoHandlers) setStateCookie(w http.ResponseWriter, value string, maxAge
 
 func (h *ssoHandlers) startStepup(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("provider")
+	if name == "" {
+		// The contract's text/plain 400 for a missing or empty provider: the
+		// body the generated request wrapper's default handler writes for a
+		// RequiredParamError (spec §9 D-9). A fixed message, no error text.
+		http.Error(w, "Query argument provider is required, but not found", http.StatusBadRequest)
+		return
+	}
 	if name != auth.StepupGoogle && name != auth.StepupMicrosoft {
 		writeError(w, "provider must be 'google' or 'microsoft'", http.StatusBadRequest)
 		return
@@ -327,12 +347,17 @@ func (h *ssoHandlers) startStepup(w http.ResponseWriter, r *http.Request) {
 	p := h.stepup.provider(name)
 	if p == nil {
 		// Spec Decisions, D-2.
-		writeError(w, name+" step-up not configured", http.StatusServiceUnavailable)
+		// Literal messages: PAC-21 forbids a computed message on a 5xx.
+		if name == auth.StepupGoogle {
+			writeError(w, "google step-up not configured", http.StatusServiceUnavailable)
+		} else {
+			writeError(w, "microsoft step-up not configured", http.StatusServiceUnavailable)
+		}
 		return
 	}
 	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
-		writeError(w, "state generation failed", http.StatusInternalServerError)
+	if _, err := stepupRandRead(b); err != nil {
+		writeServerError(w, r, "sso step-up state", err, http.StatusInternalServerError)
 		return
 	}
 	nonce := hex.EncodeToString(b)
@@ -463,8 +488,7 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 		_, err = h.store.recordStepup(r.Context(), o)
 	}
 	if err != nil {
-		log.Printf("sso step-up: record outcome for user %s: %v", user.ID, err)
-		writeError(w, "step-up could not be recorded", http.StatusInternalServerError)
+		writeServerError(w, r, "sso step-up record", err, http.StatusInternalServerError)
 		return
 	}
 	target := h.ah.frontendURL + "/settings?stepup=granted"

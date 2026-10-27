@@ -1,11 +1,12 @@
--- 026_sso_admin_stepup.up.sql — PAC-50 (spec docs/specs/PAC-50.md §4.8): SSO
+-- 028_sso_admin_stepup.up.sql — PAC-50 (spec docs/specs/PAC-50.md §4.8): SSO
 -- writes are authorized by a short-lived admin step-up grant, every SSO write
 -- and step-up outcome is recorded for operators, provider domains are unique
 -- case-insensitively, and an org can be pinned to one Microsoft tenant.
 --
--- Numbered 026, the next free version on main when this was written: the spec
--- reserved 025/026 for PAC-23/PAC-49, but PAC-55 has since taken 025 and
--- neither of those has landed (see the spec's Decisions, D-7).
+-- Numbered 028, the next free version on main (spec §9 D-7): PAC-55 took 025,
+-- PAC-23 026_audit_log_user_id and PAC-49 027_settings_auto_schedule_last_run,
+-- so this is applied after both on every environment (§4.9). It touches none
+-- of the tables 026/027 alter (audit_log, settings).
 
 -- 1. Grants: one row per granted step-up, good for one write within
 --    expires_at. Consumed by a single UPDATE ... RETURNING (§4.2 step 5a).

@@ -186,7 +186,7 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 	}
 
 	p, err := h.store.upsertProvider(r.Context(), &storage.SSOProvider{
-		Domain:           strings.ToLower(strings.TrimSpace(body.Domain)),
+		Domain:           strings.ToLower(body.Domain),
 		ProviderName:     body.ProviderName,
 		ProviderType:     body.ProviderType,
 		Enabled:          true,
@@ -271,7 +271,7 @@ func (h *ssoHandlers) listSSOProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providers, err := storage.ListSSOProvidersByOrg(h.ah.db, *user.OrgID)
+	providers, err := h.store.listProviders(r.Context(), *user.OrgID)
 	if err != nil {
 		writeServerError(w, r, "listSSOProviders", err, http.StatusInternalServerError)
 		return
@@ -291,8 +291,9 @@ func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// The segment is a target, never an authorization: lower-cased, and it
-	// must be the caller's own org domain exactly.
-	d := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "domain")))
+	// must be the caller's own org domain exactly, as sent (no trimming:
+	// spec §9 D-9).
+	d := strings.ToLower(chi.URLParam(r, "domain"))
 	if !domain.DomainMatchesOrg(d, caller.org.Domain) {
 		writeError(w, "provider_domain_mismatch", http.StatusBadRequest)
 		return
