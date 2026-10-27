@@ -434,13 +434,15 @@ Spec input is unchanged: `factory/pac-40-spec` at `f621674` (revision 5, still
 
 1. **Gate 4, web side.** The paired web branch `factory/pac-40-contract` is cut
    from web `origin/main` and carries the files regenerated from this bundle.
-   web-gate was run against it with `factory/pac-40-contract` as the api branch.
-   The results are in the build notes of the commit that adds this section and
-   in the Linear comment.
+   web-gate (`make verify`, which includes `make openapi-check`) is run on that
+   branch with `factory/pac-40-contract` as the api branch. Its output is
+   reported in the Linear comment for this revision, not here, so that this
+   file does not change after the gates run on the final commit.
 2. **The full `api-gate.sh` was run.** For this stage the host checkout was moved
-   to `factory/pac-40-contract`, with the contract worktree detached. The gate was
-   run on the final commit, and then the host was put back on the branch it was
-   on. The results are in the Linear comment and the commit notes.
+   to `factory/pac-40-contract`, with the contract worktree detached. The gate is
+   run on the final commit of this revision, and then the host is put back on the
+   branch it was on. Its output is reported in the Linear comment for this
+   revision.
 3. **The deleteSchedulingLink 404 sentence is now scoped.** It now reads: every
    operation that names the link by id, and every public operation that names it
    by slug (`/api/book/{slug}` and its slots), answers the never-existed 404. It
