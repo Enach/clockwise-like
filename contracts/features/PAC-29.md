@@ -758,7 +758,7 @@ D-8, and descriptions in `calendar.yaml` (non-blocking items below).
 The challenge is right on all three counts, checked against `smart-calendar-flow` `main`
 at `90def70`:
 
-1. `Dashboard.tsx` `handleEventChange` (`:253-283`) sends `event.start.toISOString()` /
+1. `Dashboard.tsx` `handleEventChange` (`:253-284`) sends `event.start.toISOString()` /
    `event.end.toISOString()` for every drop and resize. `fcEvents` passes the DTO's bare
    date through, so FullCalendar renders an all-day event in `dayGridMonth`, and it is
    draggable. The request that results is valid under revision 2 and converts the event.
