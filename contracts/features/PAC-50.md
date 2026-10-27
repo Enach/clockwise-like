@@ -5,7 +5,7 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 1, 2026-10-25
+- **Revision**: 3, 2026-10-27 (1 and 2 on 2026-10-25; see the Revision sections at the end)
 
 ## 1. The change
 
@@ -82,7 +82,8 @@ a ten-minute grant.
 
 **The Linear acceptance text relayed to this stage says 403** for the
 subdomain case. The contract follows the accepted spec. The difference is
-recorded in spec §9 (Note) for the owner. Either way the request is refused
+recorded in spec §9 (Note) for the owner, labelled *assumed by the factory,
+pending owner confirmation* since revision 3. Either way the request is refused
 and no row changes.
 
 ### No grant id in any request
@@ -187,7 +188,7 @@ proven by the spec's `[unit]` ACs:
 - the state cookie's binding to user, org, provider and nonce (AC-13b, AC-21a);
 - the SSO event table (AC-12). It is not exposed by any operation, by spec
   §4.6. The contract mentions it only to say no operation exposes it;
-- migration 027 and the `lower(domain)` uniqueness (AC-20);
+- migration 028 (027 before revision 3; spec §9 D-7) and the `lower(domain)` uniqueness (AC-20);
 - "no settings or token row changes" (AC-17).
 
 ## 3. What this resolves, and what it does not
@@ -755,3 +756,71 @@ mcp coverage rc=0
 Not run: the web gate, because the web types regenerate after the merge
 (factory §1) and a check-only run against web `main` fails `openapi-check`
 by construction; and e2e, because no runtime behaviour changes at stage 2.
+
+## Revision 3 — 2026-10-27 (finish ticket: rebase onto main, migration 028)
+
+Written by `contract-author` in a local session for the PAC-50 finish ticket
+(rebase #212, renumber its migration, ship the paired web types). Contract
+revision 3; the bundle hashes to
+`aa76ab724618241ad1a3db176bc618d35bcea52607de233e58e74ce08c35ee8f`
+(`git show HEAD:contracts/openapi/openapi.yaml | sha256sum`), recorded in the
+manifest. The shape of every request and response the generated types carry is
+unchanged from revision 2 except one added `500` on `startSsoAdminStepup`.
+
+### What changed
+
+1. **Main merged in, not rebased.** This branch was 15 commits behind `main`
+   (PAC-21, PAC-23, PAC-29, PAC-34, PAC-49, PAC-55, PAC-66 among them). It is
+   published, so `main` was merged into it rather than the branch being
+   rewritten. The only textual conflicts were the two `500` descriptions in
+   `paths/auth.yaml`; the bundle, `MIGRATION.md` and `backend/api/gen` were
+   regenerated from the fragments, not hand-merged.
+2. **PAC-21 bodies on every PAC-50 `500`.** `main` now answers every 5xx
+   from these handlers with a fixed body (`writeServerError`,
+   `backend/api/server_errors.go`; the detail goes to the log and Sentry).
+   `createSsoProvider` and `deleteSsoProvider` keep `main`'s
+   `{"error":"internal error"}` text, plus PAC-50's sentence that a consumed
+   grant stays consumed, and now say the `500` also covers the grant lookup
+   (the stage-4 code answers 500 there). `ssoAdminStepupCallback`'s D-4 `500`
+   names the same body.
+3. **`startSsoAdminStepup` gains a `500`.** The stage-4 code (#212 at
+   `d8ec55a`) answers 500 when the state value cannot be generated, and the
+   contract did not list it. The contract describes what is (factory §7), so
+   it is added, with the PAC-21 body and "no state cookie is set".
+4. **Migration 028 (spec §9 D-7).** `main` already has 025 (PAC-55), 026
+   (`026_audit_log_user_id`, PAC-23, #213) and 027
+   (`027_settings_auto_schedule_last_run`, PAC-49, #218). PAC-50's migration is
+   `028_sso_admin_stepup`. This restores spec §4.9's intent (PAC-50 after
+   PAC-23 and PAC-49) with the numbers that actually landed. AC-20a now also
+   requires up → down → up on top of 027. Neither 026 nor 027 touches a table
+   028 alters.
+5. **The 400 `provider_domain_mismatch` Note** in spec §9 is labelled
+   *assumed by the factory, pending owner confirmation* (the same label review
+   finding N1 asked for on #212).
+
+### Alternatives rejected
+
+- **Rebasing this branch onto `main`.** Cleaner history, but it rewrites
+  published commits that #212 also carries (`e865c60..e19f3c8`). The factory
+  forbids rewriting published history; #212's own rebase is the build stage's,
+  on its own branch.
+- **Keeping 026 and renumbering PAC-23's migration.** PAC-23's 026 is merged
+  and applied wherever `main` is deployed; golang-migrate would never apply a
+  second 026, and renaming an applied migration breaks every database that ran
+  it.
+- **Leaving the stage-4 strings (`grant check failed`, `state generation
+  failed`, `step-up could not be recorded`) in the contract.** They leak
+  nothing, but `main`'s PAC-21 rule is one fixed body per status, and two
+  conventions on the same fragment would make a client branch on 500 text.
+  The contract follows `main`; #212 must switch to `writeServerError` when it
+  rebases (manifest `mergeConditions`).
+- **Switching the domain mismatch to 403** to match the Linear text. The
+  accepted spec says 400 and the owner has not answered; changing it here
+  would be a behaviour change the spec does not ask for.
+
+### Consumers affected (re-searched 2026-10-27)
+
+`grep -rln "admin/sso"` over `clockwise-like/mcp`, `clockwise-like/e2e` (on
+`main`) and `smart-calendar-flow/src`: the web hits are the three generated
+files only; `mcp` none; `e2e` none on `main` (#212 adds `sso-stepup.spec.ts`).
+Unchanged from revision 1.
