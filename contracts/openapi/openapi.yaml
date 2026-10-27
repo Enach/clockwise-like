@@ -4451,15 +4451,24 @@ paths:
       operationId: getSchedulingLink
       tags:
       - scheduling-links
-      summary: Fetch one scheduling link by id.
-      description: 'No ownership or membership check: any authenticated user who knows the UUID receives
-        the full link including every host''s email, name and avatar. `is_owner` is computed against the
-        caller and `my_status` is only emitted when the caller is one of the hosts.'
-      x-uncertain: Missing authorization looks unintentional next to PATCH/DELETE/bookings which all enforce
-        owner-only; treating it as deliberate would be a guess.
+      summary: Fetch one scheduling link by id (owner or accepted co-host).
+      description: 'Readable only by the link''s owner and by co-hosts whose host row on the link is `accepted`
+        (PAC-25, API-006). That is the same set of callers who receive the link from `GET /api/scheduling-links`,
+        so this read discloses nothing the list does not. Every other authenticated caller (no host row,
+        a `pending` or `declined` invitation, a co-host who left or was removed) receives the same `404
+        {"error":"not found"}` as for an id that matches no link, with no part of the link in the body,
+        so the answer does not reveal whether a link exists. A refused read is never `403` (PAC-25 D-1;
+        contrast the owner-only siblings PATCH, DELETE, `/bookings` and `/hosts`, which still answer `403`
+        and are out of scope). Check order: `400` malformed id, then the link lookup (`500` on a storage
+        error), then `404` for no link or a caller who may not read it, then `200`. An allowed reader
+        receives the full record including every host row (accepted, pending and declined) with each host''s
+        email, name and avatar; `is_owner` is computed against the caller and `my_status` is the caller''s
+        own host status. An accepted co-host therefore still sees pending and declined invitees'' emails,
+        as through the list (PAC-25 D-2).'
       responses:
         '200':
-          description: The link, with hosts.
+          description: 'The link, with hosts. Returned only to the owner (`is_owner: true`) or an accepted
+            co-host (`is_owner: false`, `my_status: accepted`).'
           content:
             application/json:
               schema:
@@ -4473,13 +4482,18 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '404':
-          description: 'Body: {"error":"not found"}. Also returned for soft-deleted (active=false) links
-            only if the row was hard-removed; GetSchedulingLinkByID ignores `active`, so a soft-deleted
-            link still returns 200.'
+          description: 'Body exactly `{"error":"not found"}`. Returned when no link has that id, AND when
+            the link exists but the caller is neither its owner nor an accepted co-host (never invited,
+            invitation pending or declined, left or removed). The two cases are indistinguishable by status
+            and body (PAC-25 D-1). A soft-deleted link (`active=false`) is NOT a 404 for its owner or
+            accepted co-hosts: GetSchedulingLinkByID ignores `active`, so they still receive 200 (API-050,
+            not resolved by PAC-25).'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+              example:
+                error: not found
         '500':
           description: 'Body: {"error":"internal error"}'
           content:
@@ -5424,10 +5438,18 @@ paths:
       operationId: removeTeamMember
       tags:
       - teams
-      summary: Remove a member by user id. Owner, or the member themselves.
-      description: 'Self-removal skips the ownership check entirely, so a team owner can remove themselves
-        and leave the team ownerless. There is no last-owner guard here — the owner-protection rule lives
-        only on DELETE /api/manager/team/members/{email}.
+      summary: Remove a member by user id. Owner, or the member themselves; never the last owner.
+      description: 'An owner of the team may remove anyone; any caller may remove themselves. A removal
+        that would leave the team with zero owners is refused with 422 and changes nothing (PAC-25, API-023).
+        Check order, fixed so that a non-owner cannot learn who the owner is from the answer: 400 malformed
+        ids; then, when the caller is not the target, 403 unless the caller is an owner; then 422 if the
+        target is an owner and no other owner of the team would remain; then the removal, 204. The guard
+        counts owners ("would leave zero owners", PAC-25 D-4), it does not refuse every owner: in a team
+        with two owners either may leave, and the second to try is refused. No interleaving of concurrent
+        removals may leave the team with zero owners (PAC-25 D-6). A sole owner who is also the only member
+        is refused too; deleting the team (DELETE /api/teams/{id}) stays the way to be rid of it (PAC-25
+        D-5). The manager-domain DELETE /api/manager/team/members/{email} keeps its own, role-based rule
+        (it refuses removing any owner) with the same 422 wording (PAC-25 D-3).
 
         '
       parameters:
@@ -5450,6 +5472,20 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           $ref: '#/components/responses/JsonForbidden'
+        '422':
+          description: 'JSON error "the team owner cannot be removed" (the manager-domain wording). The
+            target is an owner of the team and removing them would leave the team with no owner. Evaluated
+            after the 403 check, so a caller who is not an owner never receives it (naming someone else
+            is 403; naming themselves, they are not an owner). Nothing is written: the membership and
+            its role are unchanged.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: the team owner cannot be removed
         '500':
           $ref: '#/components/responses/ServerError'
   /api/teams/{id}/no-meeting-zones:

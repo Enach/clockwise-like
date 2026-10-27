@@ -473,7 +473,7 @@ cross-references at lines 2989, 5999 and 7077 are not separate markers.
 | U-05 | 2889 | `/api/meetings/{event_id}/brief` → `get` → `400` | `400 "event_id required"` believed unreachable — chi never matches an empty segment. | **Write a test** asserting the router's behaviour for `/api/meetings//brief`; delete the branch if confirmed. Applies to the refresh route too. |
 | U-06 | 2958 | `/api/nlp/confirm` → `post` | A negative `selected_slot_index` panics rather than returning 400. Should the spec document 400 (and the code be fixed) or the 500? | **Fix the code**, then document 400. Resolved as API-024; the panic is not a contract to preserve. **Resolved by PAC-21:** fixed and documented as 400. |
 | U-07 | 3506 | `/api/schedule/suggest` → `post` | The task brief asserts a 15-minute increment rule; the smart scheduler steps 30 minutes, and the only 15-minute stepping is in `engine/booking.go`, `engine/habits.go`, `engine/team_availability.go`. | **Ask the brief's author.** Either the rule belongs to a different domain (likely) or it is a missing feature in scheduling. Do not encode it in the spec until answered. **Resolved by PAC-21:** no 15-minute rule; candidate starts step 30 minutes from `range_start`, pinned by `TestSmartScheduler_Suggest_StepsThirtyMinutes`. Assumed by the factory, pending owner confirmation. |
-| U-08 | 3738 | `/api/scheduling-links/{id}` → `get` | Missing ownership check — bug or deliberate public-by-UUID? | **Decide (it is a bug).** Resolved as API-006. Add the owner check and a `403` to the spec. |
+| U-08 | 3738 | `/api/scheduling-links/{id}` → `get` | Missing ownership check — bug or deliberate public-by-UUID? | **Decide (it is a bug).** Resolved as API-006. *Resolved differently by the PAC-25 contract* (pending owner confirmation, PAC-25 OQ-6/OQ-7): readers are the owner **and accepted co-hosts**, and every refused read answers `404 {"error":"not found"}`, **not `403`**, so the answer does not reveal whether a link exists. Marker removed from `booking.yaml`. |
 | U-09 | 4429 | `/api/teams/{id}` → `get` → `404` | Believed unreachable: `requireMember` runs first and a `team_members` row cannot outlive its team (FK + `ON DELETE CASCADE`). | **Read the migration** to confirm the FK cascade, then delete the branch and the documented 404. |
 | U-10 | 5055 | `AnalyticsWeekWithBreakdown.buffer_minutes` | Always `0`; `AnalyticsEngine.compute` never sets `BufferMinutes`. | **Decide:** wire up `ComputeBufferBlocks` (it already exists and the habits engine uses it) or drop the field. See API-057. |
 | U-11 | 5301 | `CalendarEvent.is_personal_block` | Dead field — missing tagging logic, or should it be removed? | **Decide.** Grep `PersonalBlocker` for the intended tagging call site; if absent, remove the field from the DTO. See API-076. |
@@ -548,7 +548,9 @@ the same release.
 
 **B4. Scheduling-link ownership + last-owner guard** (API-006, U-08, API-023).
 Two small independent authorization fixes; grouped because they are the same
-review conversation. Contract change (new 403/422 responses).
+review conversation. Contract change (new 403/422 responses). *As contracted
+by PAC-25: a refused link read is the existing `404`, not a new `403`; the new
+response is the `422` on `removeTeamMember` only.*
 
 ### Batch C — one root cause each, land in any order
 

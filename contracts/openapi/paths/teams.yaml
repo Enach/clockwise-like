@@ -701,11 +701,22 @@ paths:
     delete:
       operationId: removeTeamMember
       tags: [teams]
-      summary: Remove a member by user id. Owner, or the member themselves.
+      summary: Remove a member by user id. Owner, or the member themselves; never the last owner.
       description: >
-        Self-removal skips the ownership check entirely, so a team owner can remove
-        themselves and leave the team ownerless. There is no last-owner guard here — the
-        owner-protection rule lives only on DELETE /api/manager/team/members/{email}.
+        An owner of the team may remove anyone; any caller may remove themselves. A
+        removal that would leave the team with zero owners is refused with 422 and
+        changes nothing (PAC-25, API-023). Check order, fixed so that a non-owner cannot
+        learn who the owner is from the answer: 400 malformed ids; then, when the caller
+        is not the target, 403 unless the caller is an owner; then 422 if the target is
+        an owner and no other owner of the team would remain; then the removal, 204. The
+        guard counts owners ("would leave zero owners", PAC-25 D-4), it does not refuse
+        every owner: in a team with two owners either may leave, and the second to try
+        is refused. No interleaving of concurrent removals may leave the team with zero
+        owners (PAC-25 D-6). A sole owner who is also the only member is refused too;
+        deleting the team (DELETE /api/teams/{id}) stays the way to be rid of it (PAC-25
+        D-5). The manager-domain DELETE /api/manager/team/members/{email} keeps its own,
+        role-based rule (it refuses removing any owner) with the same 422 wording (PAC-25
+        D-3).
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
         - name: userId
@@ -723,6 +734,17 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "403":
           $ref: "#/components/responses/JsonForbidden"
+        "422":
+          description: >
+            JSON error "the team owner cannot be removed" (the manager-domain wording).
+            The target is an owner of the team and removing them would leave the team
+            with no owner. Evaluated after the 403 check, so a caller who is not an owner
+            never receives it (naming someone else is 403; naming themselves, they are
+            not an owner). Nothing is written: the membership and its role are unchanged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example: { error: "the team owner cannot be removed" }
         "500":
           $ref: "#/components/responses/ServerError"
 

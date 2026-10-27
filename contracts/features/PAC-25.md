@@ -1,0 +1,153 @@
+# Contract — PAC-25: a scheduling link's detail is readable only by its hosts, and a team cannot lose its last owner
+
+- **Linear issue**: [PAC-25](https://linear.app/paceday/issue/PAC-25/add-the-missing-owner-check-to-get-apischeduling-linksid-and-a-last)
+- **Spec**: `docs/specs/PAC-25.md`, revision 1 (carried on this branch from
+  `factory/pac-25-spec` at `da6905f`; see §0)
+- **Stage**: contract-author, then contract-challenger
+- **Fragments edited**: `contracts/openapi/paths/booking.yaml` (`getSchedulingLink`),
+  `contracts/openapi/paths/teams.yaml` (`removeTeamMember`), and their companions
+  `booking.notes.md` (x-uncertain list, item 1) and `teams.notes.md` (A14)
+- **Audit**: `docs/factory/api-audit.md` U-08 row and batch B4 note rewritten to the
+  resolution this contract ships (the spec's "Inherited scope" requires it)
+- **Bundle**: regenerated with `python scripts/openapi_assemble.py`
+- **Manifest**: `contracts/features/PAC-25.yaml`
+
+---
+
+## 0. State of the spec
+
+The spec was challenged on 2026-10-27 (verdict accept-with-changes, two blocking
+findings) and revision 1 answers every finding. It has not been re-challenged. I
+treat it as accepted because the challenge verdict was "accept" with changes and
+each change is visibly made in revision 1; a challenger who disagrees should say so
+here. The spec is not yet on `main`, so this branch is `main` plus the three spec
+commits (a fast-forward from `factory/pac-25-spec`), and the contract commits on top.
+
+## 1. What changes at the HTTP boundary
+
+| Operation | Before | After |
+|---|---|---|
+| `getSchedulingLink` `GET /api/scheduling-links/{id}` | Any authenticated caller holding the id gets `200` with the full host roster (emails, names, avatars of accepted, pending and declined hosts). Marked `x-uncertain` (U-08). | Only the owner and accepted co-hosts get `200`, body unchanged. Everyone else gets the existing `404 {"error":"not found"}`, identical to an unknown id. No `403`. Marker removed. |
+| `removeTeamMember` `DELETE /api/teams/{id}/members/{userId}` | The owner can remove themself; the team is left with no owner. `204`. | **`422 {"error":"the team owner cannot be removed"}`** when the removal would leave zero owners; nothing is written. All other answers unchanged. |
+
+No operation is added or removed, no request shape changes, no schema changes. The
+only new declared response is the `422` on `removeTeamMember`.
+
+## 2. Why the interface is shaped this way
+
+**The refused read reuses the existing 404, not a new 403 (spec D-1).** The issue and
+U-08 asked for a `403`. A `403` tells a stranger that the id they hold names a real
+link; `404` refuses exactly the same people and discloses strictly less. PAC-30 made
+accept/decline/leave answer the same not-found for the same resource family for the
+same reason. Contract consequence: `getSchedulingLink` keeps the same set of declared
+responses (200, 400, 401, 404, 500); only who reaches which changes. The generated
+types for this operation change only in descriptions, so the web needs no new branch.
+
+**Readers are the owner and accepted co-hosts (spec D-2).** An accepted co-host
+already receives this exact record, roster included, from `GET /api/scheduling-links`
+(`storage/scheduling_links.go:130`). Refusing them the detail would protect nothing
+and make two reads disagree about who may see a link. The contract says so in the
+operation description, and also says the uncomfortable consequence out loud: an
+accepted co-host keeps seeing pending and declined invitees' emails.
+
+**The 200 description names who receives it.** It says `is_owner: true` for the
+owner, `is_owner: false` with `my_status: accepted` for a co-host. A client can
+therefore never receive a 200 with `my_status` absent and `is_owner: false`; before
+PAC-25 that was what a stranger saw.
+
+**The check order is part of the contract.** For `getSchedulingLink`: 400, lookup
+(500), 404, 200. The reader check has to come after the lookup, so a storage error
+still answers 500 rather than a misleading 404. For `removeTeamMember`: 400, then
+403 when caller is not target and not an owner, then 422, then 204. The 403 must come
+first (spec AC-17): if the 422 came first, a member could name each teammate in turn
+and learn who the owner is from which one answers 422.
+
+**The guard counts owners, not roles (spec D-4).** "Would leave zero owners" refuses
+the sole owner and allows one of two co-owners to leave. Today the product creates at
+most one owner per team, so the two rules are equivalent in practice; the counting rule
+is the narrower refusal when that changes. The description states that concurrent
+removals must not leave zero owners (D-6) so the plan cannot meet it with a
+check-then-delete race.
+
+**The 422 reuses the manager route's wording (spec D-3), not its rule.** One message
+for "you cannot remove the owner" across both removal paths. The manager route keeps
+its role-based refusal; the description of `removeTeamMember` names the divergence.
+
+**The 422 uses the shared `ErrorResponse` with an `example`, not a new schema (C-1).**
+Every other error in `teams.yaml` is `ErrorResponse` with the message in the
+description. A dedicated schema with `error: enum: [...]` would make the message
+machine-checkable, but it would be the first such schema in the fragment, it would
+generate a distinct web type for one string, and the factory has no consumer that
+narrows on error text. The `example` puts the exact body in the bundle where AC-15(b)
+can assert it.
+
+## 3. Alternatives rejected
+
+- **`403` for a refused link read** (the issue's wording and U-08's recorded
+  resolution). Confirms that the id exists. Rejected (D-1); open to the owner as spec
+  OQ-6. If the owner chooses it, the contract adds a `403` to `getSchedulingLink` and
+  AC-1..AC-3, AC-6 and AC-15(a) change.
+- **Owner-only read** (the issue title). Refuses accepted co-hosts a record they get
+  from the list anyway. Rejected (D-2); open as spec OQ-7.
+- **`409 Conflict` for the last-owner refusal.** 409 describes a conflict with the
+  current state that the client can resolve and retry (another owner appears). The
+  product has no path to a second owner, so there is nothing to resolve; and the
+  manager route already answers 422 for the same refusal, so 409 would give one rule
+  two status codes. Rejected.
+- **Deleting the team when its sole member-owner leaves.** Data-destroying; the user
+  must choose it explicitly through `DELETE /api/teams/{id}`. Rejected (D-5).
+- **Making the four owner-only link siblings answer 404 in the same change.**
+  Consistent, but changes four documented answers the issue does not mention.
+  Deferred (spec OQ-2).
+- **Changing the manager route to the counting rule.** Out of scope; the manager
+  rule is pinned by AC-18 instead (D-3).
+
+## 4. Decisions (assumed by the factory, pending owner confirmation)
+
+D-1 to D-6 are the spec's, unchanged, and are listed in the manifest. The contract adds
+one:
+
+- **C-1** The `422` body reuses `ErrorResponse` with an `example`, not a new
+  enum-constrained schema (§2). Assumed by the factory, pending owner confirmation.
+
+None deletes user data or widens who can see data. D-1 and D-2 together narrow who can
+read a link's roster.
+
+## 5. Consumers, and what happens to them
+
+Searched: `smart-calendar-flow/src` at `origin/main` `ad52160`, `clockwise-like/mcp`,
+`clockwise-like/e2e/tests`, `clockwise-like/backend`.
+
+| Consumer | Breaks? | What happens |
+|---|---|---|
+| web `src/api/schedulingLinks.ts:514,544,574` | No | All three single-link reads are owner flows (after create; read-before-PATCH in update; after update). Edit and toggle are gated on `is_owner` (`src/pages/Links.tsx:144,155`). A co-host who somehow reached update would get 200 on the read and 403 on the PATCH, as today. |
+| web `src/api/teams.ts:388`, `src/components/team/ProtectedHoursTab.tsx:709` | No | The remove control is never shown on the owner's own row, so the web never sends the refused request. A 422 would show the existing error toast (`:668`). |
+| web `src/api/generated` | No | `removeTeamMember` gains a `422`; descriptions change on both operations. Regenerated by the paired web PR (REGEN=1 web gate), never by hand. |
+| `e2e/tests/scheduling-links.spec.ts`, `e2e/tests/team-invite-analytics.spec.ts` | No | Neither reads a link by id as another user nor calls member removal. |
+| `mcp/` | No | Calls neither operation. |
+
+## 6. Acceptance criteria at the HTTP boundary
+
+AC-1..AC-19 are transcribed in the manifest. At this boundary: AC-1..AC-3 and AC-6 are
+the `404` description of `getSchedulingLink`; AC-4/AC-5 its `200`; AC-7, AC-8, AC-13,
+AC-14 and AC-19 the `422` of `removeTeamMember`; AC-9..AC-12 and AC-17 its unchanged
+`204`/`403` and the check order; AC-15 is checkable in the bundle (no `x-uncertain` and
+no `403` on `getSchedulingLink`; a `422` with the example body on `removeTeamMember`).
+AC-18 concerns `DELETE /api/manager/team/members/{email}`, which this contract does not
+edit. AC-19 (concurrency) cannot be expressed in OpenAPI; it is stated in prose and
+belongs to an integration test.
+
+## 7. `x-uncertain` and audit findings
+
+- **U-08** resolved: it was a bug. Resolved differently from its recorded resolution
+  (owner + accepted co-hosts, refusal `404`); the audit row and batch B4 are rewritten
+  on this branch. The bundle's `x-uncertain` count drops from 12 to 11.
+- **API-006** and **API-023**: contracted here; their audit status moves to Fixed in the
+  implementation PR, when the server behaves as contracted.
+- **API-050** (soft-deleted link still readable) stays open; the `404` description
+  states it.
+- Neither operation carried another `x-uncertain` or open finding.
+
+## 8. What was run
+
+Recorded in the commit that adds this file's gate section and in the Linear comment.
