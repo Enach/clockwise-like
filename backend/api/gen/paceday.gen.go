@@ -1473,8 +1473,13 @@ type ManagerAnalytics struct {
 
 // ManagerAnalyticsMember defines model for ManagerAnalyticsMember.
 type ManagerAnalyticsMember struct {
-	DisplayName string              `json:"display_name"`
-	Email       openapi_types.Email `json:"email"`
+	// DataAvailable True iff at least one entry of `weeks` has data_available=true (PAC-34). Derived from the buckets of this response, never read or cached separately, so it cannot disagree with them. False means no bucket is measured (degraded FreeBusy, no analytics_weeks rows, consent withheld, or the PAC-60 visibility gate): the member's minutes must be shown as "no data", not as zeroes. True does NOT mean every bucket is measured; each bucket's own data_available still decides how that bucket is drawn.
+	DataAvailable bool                `json:"data_available"`
+	DisplayName   string              `json:"display_name"`
+	Email         openapi_types.Email `json:"email"`
+
+	// IsPacedayUser True iff the member's member_user_id resolved to a Paceday user row; the same value ManagerRosterMember.is_paceday_user carries for this member (PAC-34).
+	IsPacedayUser bool `json:"is_paceday_user"`
 
 	// Weeks Exactly 12 buckets, newest first.
 	Weeks []ManagerAnalyticsWeek `json:"weeks"`
@@ -2682,16 +2687,25 @@ type TeamInvite struct {
 // TeamInviteStatus defines model for TeamInvite.Status.
 type TeamInviteStatus string
 
-// TeamInvitePreview A deliberately narrow projection — NOT a TeamInvite. Built as a map[string]string, so every value is a plain string and a missing team or inviter yields "" rather than null.
+// TeamInvitePreview A narrow projection of a pending invite, NOT a TeamInvite (no id, token, status, invitedBy or createdAt). The three original keys are camelCase and stay so for existing readers; the three keys added by PAC-34 are snake_case, the spelling the PAC-34 acceptance criteria name and the web normalizer reads (see contracts/features/PAC-34.md section 3 for the rejected alternatives). team_id and expires_at come from the invite row itself, so they are always present. The team and inviter rows are read separately and a failed read is not an error: teamName and inviterName become "" and inviter_email becomes null.
 type TeamInvitePreview struct {
 	// Email The invitee email the invite was issued to.
 	Email openapi_types.Email `json:"email"`
 
+	// ExpiresAt team_invites.expires_at, RFC 3339 (PAC-34): createdAt + 7 days, computed in Go when the invite was created. A 200 is returned only while the invite is pending and ExpireOldInvites runs first, so a client normally sees a future instant; a client must still treat a past value as expired rather than assume otherwise.
+	ExpiresAt time.Time `json:"expires_at"`
+
 	// InviterName The inviter's DISPLAY NAME, not their email. Empty string when the user row could not be read.
 	InviterName string `json:"inviterName"`
 
+	// InviterEmail The inviter's account email, users.email of team_invites.invited_by (PAC-34). null, never "", when the inviter's user row could not be read. invited_by is NOT NULL with ON DELETE CASCADE, so a deleted inviter removes the invite (404), and null only arises from a failed read.
+	InviterEmail *openapi_types.Email `json:"inviter_email"`
+
 	// TeamName Empty string when the team row could not be read.
 	TeamName string `json:"teamName"`
+
+	// TeamId team_invites.team_id of this invite (PAC-34). Never empty.
+	TeamId openapi_types.UUID `json:"team_id"`
 }
 
 // TeamMember storage.TeamMember, as returned inside TeamDetail.

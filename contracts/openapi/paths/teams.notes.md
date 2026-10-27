@@ -55,6 +55,12 @@ routes that zod does not cover. Two *latent* strictness hazards, however:
 - `src/api/teamInvites.test.ts` asserts against a hand-written `{teamId, teamName, email}`
   fixture that the backend never produces, so the test passes while the integration is broken.
 
+**Contract since PAC-34** (API-021): `TeamInvitePreview` adds required `team_id` (uuid),
+`expires_at` (date-time) and `inviter_email` (email, `null` when the inviter row cannot be
+read). The three original camelCase keys stay. `token` is still not echoed. The backend
+and `teamInvites.test.ts` are fixed in the PAC-34 implementation PRs; until they merge the
+handler still emits the three keys above. See `contracts/features/PAC-34.md`.
+
 ### A3. `POST /api/manager/profile` and `POST /api/manager/team/members` emit PascalCase
 
 `storage.UserProfile` and `storage.ManagerTeamMember` have **no json tags** (see
@@ -139,6 +145,14 @@ and the 404 on `patchMember` is indistinguishable from any other bodyless failur
 - `one_on_ones` is always `[]`.
 - `display_name` is sent and never read.
 
+**Contract since PAC-34** (API-022): `ManagerAnalyticsMember` adds required
+`is_paceday_user` (as on the roster) and `data_available` (true iff any of the 12 buckets
+is measured). The per-bucket `data_available` was already required and stays the
+authority for each bucket; the web must stop defaulting to `true` and must keep the
+per-bucket flag. `one_on_ones` is not added: no acceptance criterion asks for it (follow-up
+in `contracts/features/PAC-34.yaml`). Until the implementation PRs merge the handler still
+emits `{email, display_name, weeks}`.
+
 ### A8. `GET /api/manager/profile` sends `team_member_count`, which nothing reads
 
 The frontend types the response as `{is_manager?, detected_at?}` and derives
@@ -176,6 +190,8 @@ registered inside the `requireAuth` group in `routes.go:224`. An unauthenticated
 preview returns `401`. The frontend comment in `teams.ts` correctly assumes authentication
 ("Invite consumption is authenticated"), so the code comment is the thing that is wrong —
 but any doc generated from that comment will be wrong too.
+
+**PAC-34** (API-089) corrects the handler comment; the routing does not change.
 
 ### A13. `team_id` requirement is asymmetric across the manager routes
 
