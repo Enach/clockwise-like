@@ -277,6 +277,22 @@ func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
+// GetLinkHostStatus returns the user's own host status on the link. found is
+// false, with a nil error, when the user has no host row on it; any other
+// failure is returned so a caller can tell "no row" from "could not read".
+func GetLinkHostStatus(db *sql.DB, linkID, userID uuid.UUID) (status string, found bool, err error) {
+	err = db.QueryRowContext(context.Background(), `
+		SELECT status FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
+	`, linkID, userID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return status, true, nil
+}
+
 func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
