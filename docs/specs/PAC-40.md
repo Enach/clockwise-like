@@ -866,7 +866,7 @@ deletes data, and none widens who can see data.
      answers it: bookings that existed before the change count. The spec should
      say that explicitly, and the plan should not pick another rule.
 2. **AC-20's list of rejections leaves out "invalid request body"**
-   (`handlers_booking.go:236-239`, malformed JSON → 400). The list is presented
+   (`handlers_booking.go:234-237`, malformed JSON → 400). The list is presented
    as "each rejection the public booking create can make today". Add it, or say
    the list is not exhaustive.
 3. **e2e cleanup hard-deletes links.** `e2e/tests/scheduling-links.spec.ts:110`
