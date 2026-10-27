@@ -130,5 +130,21 @@
     "OQ-8": "Accept the section 7.1 deviation for API-057 (D-5). Owner: product owner."
   },
 
+  "planRequirements": [
+    "Stale-cache recompute (contract challenge non-blocking 1; pins the ON CONFLICT DO UPDATE half of audit U-01, which AC-2 and AC-3 do not reach): Given a stored analytics week for 2025-01-06 whose computed_at is more than 24 hours old, When the user requests GET /api/analytics/week?date=2025-01-08, Then the response is 200 with week_start \"2025-01-06\", habit_completion_rate on 0..100 (the recomputed value), and the same analytics row id as the stored row (the upsert updated it, no second row). The plan must name this test; it is not a new acceptance criterion and does not change spec behaviour.",
+    "Floating point (contract challenge non-blocking 4): the reported rate is ratio * 100, which is not exact for non-dyadic ratios (4/7 then x100 is 57.14285714285714, 400/7 is 57.142857142857146; 0.57 * 100 is 56.99999999999999). Tests assert exact values only for exact ratios (3/4 -> 75, 1/2 -> 50, 0, 1 -> 100) and otherwise compare with a tolerance. Equality between the two reads (AC-7) is exact because both apply the same expression to the same stored value."
+  ],
+
+  "mergeConditions": [
+    "Do not merge until docs/specs/PAC-42.md is accepted (spec challenge round 2 has not run on 93491a2). If round 2 changes any acceptance criterion, this contract is revised and challenged again (contract challenge non-blocking 3).",
+    "Until the backend implementation lands, the running server violates this contract on both reads: GET /api/analytics/trends returns week_start \"0001-01-01T00:00:00Z\" (not format: date, and the zero date) and habit_completion_rate 0.75 where the contract promises 75; GET /api/analytics/week returns week_start \"0001-01-01\" and the 0..1 rate. The contract PR body states this, and the backend PR is landed promptly after the contract (contract challenge non-blocking 2)."
+  ],
+
+  "knownServerLeniencyOutOfScope": [
+    "GET /api/analytics/week?date=2025-13-45: the contract forbids it (format: date); the server answers 200 for the current week (parseDateParam falls back silently, handlers_analytics.go:100-110). Predates PAC-42; not an audit finding or x-uncertain, so factory section 7.1 does not pull it in. Needs its own issue.",
+    "GET /api/analytics/trends?weeks=0 or ?weeks=100: the contract forbids both (minimum 1, maximum 52); the server answers 200 with up to 8 rows (handlers_analytics.go:52-55). Predates PAC-42; same status as above.",
+    "e2e/seed/seed.sql:206 seeds analytics_weeks rows with focus_score at its default 50 next to 615/240 minutes, contradicting the documented formula. Harmless today (only manager analytics reads those rows); must be fixed before any e2e test reads them through the trend or single-week read."
+  ],
+
   "rollback": "Revert the implementation PR; keep this contract revision immutable. Nothing stored changes (spec D-3): the rate stays a 0..1 fraction in storage for every week and week_start is already stored correctly, so a revert restores today's behaviour for every row with no data step and nothing deleted. The web change is a types regeneration that no web code reads, so the two reverts can happen in either order."
 }

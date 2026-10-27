@@ -404,3 +404,81 @@ generated zod on the paired branch carries `z.iso.date()` and `.min(0).max(100)`
 - OWNER: D-5 / OQ-8. Defer API-057 under factory §7.1, keeping `buffer_minutes` as
   "always 0" instead of U-10's wire-up-or-drop.
 - OWNER: OQ-3. Which time zone defines "this week".
+
+## Revision 1 — 2026-10-27 (answers contract challenge round 1)
+
+Author: `contract-author`. The challenge was read as written; its author was not
+consulted. The bundle is unchanged by this revision (no fragment edit, so
+`contractHash` stays `c06388ba…548873`); the changes are to the fragment's notes
+file, the manifest and this document.
+
+### Blocking
+
+1. **Stale `habits.notes.md`.** Done. Each of the four items now carries a
+   "**Resolved by PAC-42:**" line in the PAC-28 style, and the original text stays
+   above it as the history of what was extracted:
+   - item 6 (two `week_start` wire formats): `format: date` (`YYYY-MM-DD`) on both
+     `AnalyticsWeekWithBreakdown` and `AnalyticsWeekRow`, equal strings for the same
+     week, never the zero date; still two schemas (§6).
+   - item 15 (rate as a 0..1 fraction): a percentage on 0..100, unrounded, with
+     `minimum: 0` / `maximum: 100`, on both reads; storage keeps the ratio and the
+     ×100 is on read only (D-3, §3).
+   - `x-uncertain` list item 1 (the single-week 404): removed with its marker; a kept
+     guard answers the documented 500, never 404; pointer to §4.
+   - `x-uncertain` list item 3 (`buffer_minutes`): the inline marker is removed and
+     both schemas state "always 0 for engine-computed weeks"; API-057 stays open
+     (D-5, OQ-8), so mismatch item 14 is left as is.
+
+   Items 7, 8 and 14 are untouched because they remain true (deferred to PAC-42-B or
+   to API-057), as the challenge noted.
+
+### Non-blocking
+
+1. **The `ON CONFLICT DO UPDATE` half of U-01 has no test.** Accepted. The manifest's
+   new `planRequirements` names the test the plan must write: a stored week for
+   2025-01-06 whose `computed_at` is more than 24 hours old, then
+   `GET /api/analytics/week?date=2025-01-08` answers 200 with `week_start`
+   `"2025-01-06"`, the recomputed rate on 0..100 and the same row `id` (the upsert
+   updated the row; there is no second row). It is recorded as a plan requirement, not
+   a new acceptance criterion: it adds no behaviour to the spec, only coverage of a
+   path the spec's AC-2 and AC-9 already govern. The 24-hour rule is
+   `engine/analytics.go:41`, and the upsert is `storage/analytics.go:55`.
+2. **Merge order.** Accepted. The manifest's new `mergeConditions` states that until
+   the backend PR lands, the server violates this contract on both reads (trend
+   `week_start` `"0001-01-01T00:00:00Z"` and rate 0.75; single-week `"0001-01-01"` and
+   the 0..1 rate). The contract PR body will say the same, and the backend PR is to land
+   promptly after it.
+3. **The spec is not accepted.** Accepted and unchanged: the spec branch is still at
+   `93491a2` (checked 2026-10-27), round 2 has not run, and this contract stays a
+   `draft`. `mergeConditions` now also records that a round-2 change to any acceptance
+   criterion sends this contract back for revision and a fresh challenge.
+4. **Floating-point error in the rescaled rate.** Accepted. `planRequirements` tells the
+   plan to assert exact values only for exact ratios (0, 1/2, 3/4, 1) and to compare
+   other values with a tolerance. I confirmed the challenger's numbers in IEEE-754
+   double arithmetic: `(4/7)*100 = 57.14285714285714`, `400/7 = 57.142857142857146`,
+   `0.57*100 = 56.99999999999999`, while `0.75*100 = 75` and `0.5*100 = 50` exactly.
+   AC-7's equality between the two reads stays exact because both apply the same
+   expression to the same stored value. The AC-6/AC-7/AC-14 fixtures (3 of 4) and AC-8
+   (0.5) already use exact ratios.
+5. **Requests the contract forbids but the server accepts** (`?date=2025-13-45`,
+   `?weeks=0`, `?weeks=100`). Recorded, not fixed: both predate PAC-42, neither is an
+   audit finding nor an `x-uncertain`, so factory §7.1 does not pull them in, and
+   changing them would change behaviour the spec does not ask for. They are listed in
+   the manifest's new `knownServerLeniencyOutOfScope` as needing their own issue.
+6. **e2e seed `focus_score` of 50 next to 615/240 minutes.** Recorded in the same list:
+   harmless while only manager analytics reads those rows, to be fixed before any e2e
+   test reads them through either analytics read. Not changed here (`e2e/` is outside
+   this contract's scope and no PAC-42 test reads the seed).
+7. **Gates the challenger did not run.** Noted. What this revision ran is listed below.
+
+### OWNER questions
+
+Unchanged and still pending owner confirmation, as recorded in the manifest's
+`decisionsAssumed` and `followUps`: D-1/OQ-1 (bare `YYYY-MM-DD` on both reads),
+D-2/OQ-2 with C-4 (every proportion unrounded on 0..100; `habit_completion_rate` keeps
+its name and changes scale), D-3/OQ-7 (storage keeps the ratio; rescale on read
+only), D-4/OQ-6/OQ-5 (API-055's second half, API-056, API-083 and `scheduled_date` to
+PAC-42-B, which does not exist yet), D-5/OQ-8 (API-057 deferred, `buffer_minutes`
+"always 0" rather than U-10's wire-up-or-drop), and OQ-3 (which time zone defines
+"this week"). The factory chose the conservative option for each; none deletes data
+or widens who sees it.
