@@ -1183,3 +1183,101 @@ confirmation. Neither deletes data or widens who can see data: D-8 can only
 close a link, and D-9 only narrows what a stranger learns.
 
 Status stays challenged. The spec goes back to the challenger for round 5.
+
+## Challenge — 2026-10-27 (round 5)
+
+I reviewed the committed spec at `040419f` (revision 4) against source on
+`main` at `6d751f9`, which is still the tip of `origin/main`, the web repo at
+`origin/main` `ad52160`, and the Linear issue text. I ran one probe: a
+temporary test file, since deleted, against a throwaway Postgres 16 container,
+since removed. Nothing was committed apart from this section.
+
+**Verdict**: accept-with-changes
+
+Revision 4 closes round 4's blocking item. §3.5's partition and AC-20 (a)–(d)
+now agree with each other and with the code (`handlers_booking.go:249-288`).
+The carried-forward items are also addressed: AC-6a/D-9, the pin labels,
+AC-14a, AC-17a/D-8, and the §5/§6 notes. I checked each against source.
+Revision 4 introduced one new defect. §3.2 states a general "carried" rule for
+every aliased setting, and §2.3 claims the window aliases are already
+consistent between verbs. The code contradicts that claim for an empty
+canonical window. That is the only blocking item. The decisions are still
+conservative: none deletes data, and none widens who can see data.
+
+### Blocking
+1. **§2.3 says "the window start/end aliases do *not* have this defect: both
+   verbs prefer the canonical spelling". This is false when the canonical
+   window is an empty string. §3.2's new definition of "carried" then also
+   covers the window settings and requires create to change, with no AC.**
+   Create treats an empty canonical window as absent and falls through to the
+   alias (`handlers_scheduling_links.go:176-188`, `if start == ""`). Edit
+   treats any non-null canonical value as carried, so an empty one wins
+   (`:456-465`, `patch.WindowStart != nil`), and validation then rejects it.
+   The same body therefore means different things on the two verbs. That is
+   the issue's own problem statement, applied to a setting the spec says is
+   already fine. Probe output:
+   ```
+   create window canonical "" + alias 10:00/16:00 -> 201 {... "window_start":"10:00:00","window_end":"16:00:00" ...}
+   edit   window canonical "" + alias 10:00/16:00 -> 422 {"error":"window times must use HH:MM"}
+   ```
+   §3.2 now says that "when a create or an edit carries both the canonical
+   spelling and the alias for the same setting, the canonical spelling wins",
+   and that "a spelling counts as carried when its value is present and not
+   null". Read as written, this covers the window settings. It makes the empty
+   canonical window win on create too, so the 201 above would have to change.
+   It also forbids the create behaviour that §2.3 describes as correct. No AC
+   pins either outcome, so the plan would have to guess.
+   *Resolve:* correct §2.3's third bullet so that it states the empty-string
+   divergence. Then do one of two things in §3.2: limit the "carried" rule to
+   durations and days (the settings API-049 and the issue name), and record the
+   window divergence as out of scope in §5; or state which answer both verbs
+   give for an empty canonical window beside a non-empty alias, and add an AC
+   that pins it on both verbs. Either is consistent with the issue. The second
+   changes a create that succeeds today, which D-5's reasoning argues against
+   unless it is recorded as a decision.
+
+### Non-blocking
+1. **A pending invitee can still leave a deleted link, and that deletes their
+   host row.** The same probe deleted a link that had a pending invitee. Then
+   `POST /{id}/leave` returned 204 for the invitee and 400
+   `{"error":"owner cannot leave link"}` for the owner. §3.1 ("every one of
+   those paths answers … not found") already forbids both, but AC-5 covers
+   leave only for an *accepted* co-host, and no AC covers the owner. Extend
+   AC-5 to cover a pending invitee and the owner. Today the invitee's leave
+   also changes stored data, which "nothing changes" in AC-6/AC-6a is meant
+   to prevent.
+2. **"The API's primary spelling" (§3.5) is defined only by inference.** §2.5
+   says `duration` overrides `duration_minutes`, and the contract calls
+   `duration` the one that "takes precedence" (`booking.yaml:1328`). However,
+   the response field is `duration_minutes` (`:1343`, `:1362`), so a reader
+   could take that one as primary. That reading reverses AC-20 (c). One clause
+   saying "the primary spelling is the one that takes precedence when both are
+   sent" removes the ambiguity without naming fields.
+
+### Criteria I could not falsify
+- None. AC-14a's edit case fails today: the alias overrides the empty canonical
+  list at `:444-449`. The create case passes today: the probe returned 422
+  `{"error":"at least one duration is required"}` for `duration_options: []`
+  beside `durations: [30]`. AC-17a fails today. AC-6a fails today: the
+  non-owner paths return 403 at `:426, :543, :571, :604`, and fetch returns 200
+  at `:391-408`. AC-20 (a)–(d) match round 3 and round 4 probe output and the
+  code at `handlers_booking.go:249-288`.
+
+### Citations I checked and found wrong
+- §2.3, third bullet: "The window start/end aliases do *not* have this defect:
+  both verbs prefer the canonical spelling". For an empty canonical value,
+  create prefers the alias and edit prefers the canonical (Blocking 1, probe).
+
+Checked and correct this round: `handlers_booking.go:124-127, 234-237, 249-255,
+262, 263-266, 275-288`; `handlers_scheduling_links.go:157-175, 219-223,
+391-408, 417-426, 444-455, 527-553, 562-571, 595-604, 635-656, 695`
+(`json` decodes `[]` as a non-nil empty slice and `null` as nil, so §3.2's
+null/`[]` rule holds for durations and days on both verbs). Web:
+`schedulingLinks.ts:118-131` (canonical spellings only, including windows) and
+`:544`; `Links.tsx:349-355`. The issue text: its alias paragraph names only
+durations and days.
+
+### Consumers this breaks
+- Nothing new. The lists from rounds 1–4 still stand. The web app sends
+  non-empty canonical windows only (`schedulingLinks.ts:125`), so neither
+  resolution of Blocking 1 changes it. `mcp/` has no scheduling-link caller.
