@@ -376,3 +376,131 @@ none deletes user data or widens who can see data.*
   implementation.** The behaviour is fully traced (always 0, §2.4), so the contract
   states it as fact and links API-057, per factory §7.2 ("the contract describes what
   is"). *Assumed by the factory, pending owner confirmation.*
+
+## Challenge — 2026-10-27
+
+**Verdict**: accept-with-changes
+
+Reviewed on `factory/pac-42-spec` at `80f2f84`, against the Linear issue text, the
+code and contract at that commit, and `smart-calendar-flow` `origin/main`
+(`ad52160`). The challenger did not consult the author.
+
+**What I ran.** The §2.3 zero-date defect was reproduced, not just read. I used a
+throwaway storage test (deleted, not committed) on a disposable
+`postgres:16-alpine` container. It upserted week 2025-01-06 with rate 0.5. The
+upsert `RETURNING`, the single-week lookup and the trend list each returned
+`week_start = "0001-01-01T00:00:00Z"`, rate `0.5`. The mechanism matches the
+source: pgx v5.10.0 `pgtype.Date.Value()` returns a `time.Time`, and
+`database/sql` `convertAssign` writes a `time.Time` into a `*string` as
+`RFC3339Nano`. The date-only parse then fails silently.
+
+### Blocking
+
+1. **§7 Rollback is not true for every implementation the spec allows.** §7 says
+   that under D-3 "stored data is not rewritten, so there is nothing to undo in
+   the database". But D-3 only forbids rewriting rows that *already exist*, and it
+   leaves the method to the plan ("how is the plan's choice"). A plan could store
+   rows written *after* the change on the 0..100 scale and still satisfy D-3 and
+   AC-8, for example by marking which rows are old. If the backend PR is then
+   reverted, the pre-change code reads those rows as fractions. A week stored
+   while the change was live at 75 would be reported as `habit_completion_rate:
+   75`, which the old contract defines as 7500%. That rollback corrupts what the
+   reads report, and the spec says the opposite. **Resolve by** stating the
+   rollback requirement on rows written while the change was live. Either:
+   - after a backend revert, every row, including those written after the change,
+     reports the pre-change 0..1 value; or
+   - the rollback procedure must say how rows written on the new scale are
+     restored, and the lossy-down-migration rule in §7 applies to them as well.
+
+   Add an acceptance criterion or a "What must not change" item that a test can
+   hold the plan to.
+
+### Non-blocking
+
+1. **Scope against factory §7.1 (API-057).** API-057 is an open audit finding on
+   *both* operations this spec touches (`api-audit.md:315`, "`GET
+   /api/analytics/week`, `/trends`"). §7.1 says a feature touching such an
+   operation "must resolve it". The spec resolves only the `x-uncertain` marker
+   (D-5) and moves the defect to its own issue. That may be the right call, but
+   it is a deviation from §7.1. It should be recorded as one and owner-confirmed
+   (see OWNER items), not presented as inherited scope that has been resolved.
+2. **The audit's U-10 row is not cited.** The buffer-minutes marker is register
+   row U-10 (`api-audit.md:478`), whose prescribed action is "**Decide:** wire up
+   `ComputeBufferBlocks` … or drop the field". D-5 picks a third option: keep the
+   field and state it as always 0. There is precedent for this (U-03 was
+   resolved as "keep, unchanged" under a factory assumption). The inherited-scope
+   list should name U-10 and say that D-5 departs from its prescribed action.
+3. **§3 has an uncovered requirement.** "The contract states the scale on every
+   such value" has no acceptance criterion. AC-5 covers only the week start.
+   Today `AnalyticsWeekRow.focus_score` (`habits.yaml:1271`) has no stated range
+   at all. `habit_completion_rate` on both schemas would also need its new range
+   stated. Add a [contract] criterion that every proportion on both response
+   schemas declares the 0..100 scale.
+4. **§2.5 misses a shared-storage consumer.** Team analytics reads through the
+   same storage lookup: `backend/engine/team_availability.go:176`
+   (`storage.GetAnalyticsWeek`, which uses `MeetingMinutes`, `FocusMinutes` and
+   `FocusScore`). Fixing the scanner, and any rescale placed in the storage
+   layer, runs on that path too. It reads neither the week start nor the rate, so
+   I found nothing that breaks. §6 says manager and team analytics are
+   "untouched", so it should name this shared path as one that must keep its
+   behaviour. `backend/engine/manager.go:468-473` reads `analytics_weeks` with
+   its own SQL and is not affected.
+5. **The generated web files are listed incompletely.** §2.5 names `types.ts` and
+   `schemas.ts`. `src/api/generated/schemas.types.d.ts` also contains both
+   schemas and will change on regeneration.
+6. **AC-6 and AC-11 partly pass today.** In AC-6, the breakdown and focus-score
+   clause holds already. AC-11 is a regression guard and says so. Both are fine
+   as conjuncts or guards, but only AC-6's rate clause is the part that turns
+   from failing to passing.
+7. **The issue and the spec disagree on scope.** The Linear issue body includes
+   API-056, API-083, the trend `breakdown` and `HabitOccurrence.scheduled_date`.
+   The spec explains the split as a narrowing by "the factory run that assigned
+   this ticket", which is context outside the artefact. D-4 is the record that
+   counts, and it stays owner-pending. Until PAC-42-B exists, the issue body
+   overstates what this spec delivers.
+
+### Criteria I could not falsify
+
+- AC-12: a gate result, not a test. It cannot fail today in a way that
+  distinguishes the change, because the gates already pass on `main`. It is
+  acceptable as a delivery condition, but it is not an acceptance criterion in
+  the §2 Stage 1 sense.
+
+### Citations I checked and found wrong
+
+- "focus score … (`backend/engine/analytics.go:177-183`)" (§2.2, §6). Actually
+  `:182-188`. Lines 177-180 compute free minutes.
+- "builds the stored struct with no buffer field (`backend/engine/analytics.go:185-202`)"
+  (§2.4). Actually `:190-206`.
+- "the storage layer's two scanners (`:122-143` and `:151-170`)" (§2.3). The row
+  scanner is `:153-170`; `:145-151` is `normaliseMeetingTitles`.
+
+All other citations I checked match the code. These include `handlers_analytics.go`
+`:31`, `:38-41`, `:49-66`, `:99-110`, `:121-134`, `:137` and `:147`;
+`storage/analytics.go` `:23`, `:33`, `:82`, `:93`, `:133-135`, `:139` and `:166`;
+`db.go:18`; `011_analytics.up.sql` `:4` and `:14`; `habits.yaml` `:307-308`,
+`:337`, `:355-357`, `:1114`, `:1151`, `:1164`, `:1178`, `:1240` and `:1262`;
+`paceday.gen.go` `:541` and `:582`; `handlers_manager.go` `:540` and `:569`;
+`MIGRATION.md:53-54`; `api-audit.md` `:313-316` and `:469`; and
+`analytics_test.go:12-39`. The claim that no web, MCP or e2e code calls either
+read also held: I grepped web `src/` (excluding `generated/`), `mcp/` and `e2e/`.
+
+### Consumers this breaks
+
+- None found. Nothing outside `src/api/generated/` in the web repo, `mcp/` or
+  `e2e/` reads either operation, the two schemas, or `habit_completion_rate`.
+  `gen.AnalyticsWeekRow` and `gen.AnalyticsWeekWithBreakdown` are not referenced
+  by handwritten Go. The changes reach `team_availability.go:176` through the
+  shared storage path (non-blocking 4), but they do not break it.
+
+### OWNER questions (not blocking)
+
+- OWNER: D-1, the week start as a bare `YYYY-MM-DD` on both reads.
+- OWNER: D-2, every proportion on 0..100 and unrounded.
+- OWNER: D-3, no rewrite of stored rows.
+- OWNER: D-4, splitting API-056, API-083, the trend breakdown and
+  `scheduled_date` out of an issue whose body asks for them.
+- OWNER: D-5 and API-057. Is it acceptable under factory §7.1 to defer an open
+  finding on a touched operation and resolve only its marker? The alternatives
+  are to wire up the buffer computation or to drop the field (U-10).
+- OWNER: OQ-3, which time zone defines "this week".
