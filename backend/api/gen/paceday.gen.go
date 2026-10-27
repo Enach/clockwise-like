@@ -61,6 +61,11 @@ const (
 	AuthStatusResponseProviderWebcal  AuthStatusResponseProvider = "webcal"
 )
 
+// Defines values for BookingRateLimitErrorError.
+const (
+	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
+)
+
 // Defines values for Cadence.
 const (
 	CadenceBiweekly Cadence = "biweekly"
@@ -485,7 +490,7 @@ type AnalyticsBreakdownEntry struct {
 	Color    string                          `json:"color"`
 	Minutes  int                             `json:"minutes"`
 
-	// Percentage `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. Note buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.
+	// Percentage A percentage where 100 means the whole of `total_working_minutes` (PAC-42: the same scale as `habit_completion_rate` and `focus_score` in the same response): `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. No maximum is declared because the value is not bounded by 100: the total counts Monday–Friday working windows only, while meeting and personal minutes count every timed event in the seven days at any hour. buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.
 	Percentage float64 `json:"percentage"`
 }
 
@@ -513,19 +518,21 @@ type AnalyticsRecomputeAck struct {
 // AnalyticsRecomputeAckStatus defines model for AnalyticsRecomputeAck.Status.
 type AnalyticsRecomputeAckStatus string
 
-// AnalyticsWeekRow Raw `storage.AnalyticsWeek` as returned by GET /api/analytics/trends. Same field
-// set as AnalyticsWeekWithBreakdown minus `breakdown`, and with `week_start`
-// serialised as a full RFC3339 timestamp because the Go field is a `time.Time`.
+// AnalyticsWeekRow One item of GET /api/analytics/trends. Same fields as AnalyticsWeekWithBreakdown,
+// in the same formats and on the same scales, minus `breakdown` (PAC-42).
 type AnalyticsWeekRow struct {
+	// BufferMinutes Always 0 for engine-computed weeks (open defect API-057); see AnalyticsWeekWithBreakdown.buffer_minutes.
 	BufferMinutes               int       `json:"buffer_minutes"`
 	ComputedAt                  time.Time `json:"computed_at"`
 	EstimatedMeetingCostMinutes int       `json:"estimated_meeting_cost_minutes"`
 	FocusBlockCount             int       `json:"focus_block_count"`
 	FocusMinutes                int       `json:"focus_minutes"`
-	FocusScore                  int       `json:"focus_score"`
-	FreeMinutes                 int       `json:"free_minutes"`
 
-	// HabitCompletionRate 0..1 fraction.
+	// FocusScore A percentage where 100 means all focus and meeting time was focus; same computation and range as AnalyticsWeekWithBreakdown.focus_score.
+	FocusScore  int `json:"focus_score"`
+	FreeMinutes int `json:"free_minutes"`
+
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058; reported unscaled before PAC-42): `completed / (scheduled + completed) * 100`, 0 when there are none, not rounded. Equal to the single-week value for the same stored week. Rows stored before PAC-42 are reported on this scale too: storage keeps the unscaled ratio for every week and the multiplication by 100 is applied on read (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -539,17 +546,16 @@ type AnalyticsWeekRow struct {
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
-	// WeekStart Midnight UTC of the Monday, e.g. "2026-03-02T00:00:00Z" — NOT the "2026-03-02" shape used by /api/analytics/week.
-	WeekStart time.Time `json:"week_start"`
+	// WeekStart The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"), with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekWithBreakdown.week_start, so the two are equal strings for the same week (PAC-42, API-055; this was an RFC3339 timestamp before). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
+	WeekStart openapi_types.Date `json:"week_start"`
 }
 
-// AnalyticsWeekWithBreakdown Response of GET /api/analytics/week. Built by `weekWithBreakdown` as a
-// `map[string]any`, so it deliberately differs from AnalyticsWeekRow: `week_start`
-// is a plain date string and `breakdown` is added.
+// AnalyticsWeekWithBreakdown Response of GET /api/analytics/week. The same fields as AnalyticsWeekRow, in the
+// same formats and on the same scales, plus `breakdown` (PAC-42).
 type AnalyticsWeekWithBreakdown struct {
 	Breakdown []AnalyticsBreakdownEntry `json:"breakdown"`
 
-	// BufferMinutes Never populated by `compute` — the engine leaves it at 0 in every write path.
+	// BufferMinutes Always 0 for engine-computed weeks: AnalyticsEngine.compute never sets it, so every write path stores 0. This is open defect API-057 (docs/factory/api-audit.md), not intended behaviour; computing it is out of PAC-42's scope (spec D-5, pending owner confirmation, OQ-8). The column round-trips through storage, so a row written by other means would report its stored value.
 	BufferMinutes int       `json:"buffer_minutes"`
 	ComputedAt    time.Time `json:"computed_at"`
 
@@ -558,13 +564,13 @@ type AnalyticsWeekWithBreakdown struct {
 	FocusBlockCount             int `json:"focus_block_count"`
 	FocusMinutes                int `json:"focus_minutes"`
 
-	// FocusScore `focus*100/(focus+meeting)` clamped to ≤100; 50 when both are 0.
+	// FocusScore A percentage where 100 means all focus and meeting time was focus: `focus*100/(focus+meeting)` (integer division) clamped to ≤100; 50 when both are 0.
 	FocusScore int `json:"focus_score"`
 
 	// FreeMinutes total_working − meeting − focus − habit − personal, floored at 0.
 	FreeMinutes int `json:"free_minutes"`
 
-	// HabitCompletionRate completed / (scheduled + completed) occurrences in the week, as a 0..1 FRACTION (not a percentage). 0 when there are none.
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058: the same scale as `focus_score` and `breakdown[].percentage` in this response): `completed / (scheduled + completed) * 100` over the week's occurrences. 0 when there are none. Not rounded. Storage keeps the unscaled ratio; the multiplication by 100 is applied when the response is built (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -580,7 +586,7 @@ type AnalyticsWeekWithBreakdown struct {
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
-	// WeekStart The Monday of the week, formatted "2006-01-02". DIFFERENT from the trends endpoint, which emits a full timestamp.
+	// WeekStart The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"), with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekRow.week_start, so the two are equal strings for the same week (PAC-42, API-055). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
 	WeekStart openapi_types.Date `json:"week_start"`
 }
 
@@ -659,11 +665,19 @@ type AuthStatusResponse struct {
 // Google was configured.
 type AuthStatusResponseProvider string
 
-// BookingError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// BookingError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type BookingError struct {
 	// Error Human-readable, server-chosen message. Never the text of a Go, driver or provider error (PAC-21): those go to the server log and Sentry only.
 	Error string `json:"error"`
 }
+
+// BookingRateLimitError The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingRateLimitError struct {
+	Error BookingRateLimitErrorError `json:"error"`
+}
+
+// BookingRateLimitErrorError defines model for BookingRateLimitError.Error.
+type BookingRateLimitErrorError string
 
 // Cadence 1:1 cadence. "none" disables gap detection for that member.
 type Cadence string
@@ -2847,6 +2861,12 @@ type SchedulingLinkIdPath = openapi_types.UUID
 // TeamIdPath defines model for TeamIdPath.
 type TeamIdPath = openapi_types.UUID
 
+// BookingCreateRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingCreateRateLimited = BookingRateLimitError
+
+// BookingSlotsRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingSlotsRateLimited = BookingRateLimitError
+
 // CalendarNotConnected The JSON error envelope for "this user has no calendar connected". The message is a single fixed value so a client can branch on it.
 type CalendarNotConnected = CalendarNotConnectedError
 
@@ -2886,7 +2906,7 @@ type JsonUnauthorized = ErrorResponse
 // provider error; every 5xx in this document uses this envelope (PAC-21).
 type NotFound = ErrorResponse
 
-// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type SchedulingLinkValidationError = BookingError
 
 // ServerError The shared JSON error envelope, written by writeError()
@@ -10063,6 +10083,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	return r
 }
 
+type BookingCreateRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingCreateRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingCreateRateLimitedResponseHeaders
+}
+
+type BookingSlotsRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingSlotsRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingSlotsRateLimitedResponseHeaders
+}
+
 type BookingUnauthorizedTextResponse string
 
 type CalendarNotConnectedJSONResponse CalendarNotConnectedError
@@ -10357,15 +10395,6 @@ type GetAnalyticsWeek401JSONResponse struct{ UnauthorizedJSONResponse }
 func (response GetAnalyticsWeek401JSONResponse) VisitGetAnalyticsWeekResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
-type GetAnalyticsWeek404JSONResponse ErrorResponse
-
-func (response GetAnalyticsWeek404JSONResponse) VisitGetAnalyticsWeekResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -11109,6 +11138,18 @@ func (response CreatePublicBooking422JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreatePublicBooking429JSONResponse struct {
+	BookingCreateRateLimitedJSONResponse
+}
+
+func (response CreatePublicBooking429JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreatePublicBooking500JSONResponse BookingError
 
 func (response CreatePublicBooking500JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
@@ -11161,6 +11202,18 @@ func (response GetPublicBookingSlots410JSONResponse) VisitGetPublicBookingSlotsR
 	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPublicBookingSlots429JSONResponse struct {
+	BookingSlotsRateLimitedJSONResponse
+}
+
+func (response GetPublicBookingSlots429JSONResponse) VisitGetPublicBookingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetPublicBookingSlots500JSONResponse BookingError
