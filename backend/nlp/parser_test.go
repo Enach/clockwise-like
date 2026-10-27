@@ -170,7 +170,8 @@ func TestOpenAIClient_Complete(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &OpenAIClient{APIKey: "sk-test", Model: "gpt-4o-mini", BaseURL: srv.URL}
+	forwardUserRequestsTo(t, srv) // PAC-66-B §B6 public-host Given
+	client := &OpenAIClient{APIKey: "sk-test", Model: "gpt-4o-mini"}
 	result, err := client.Complete(context.Background(), "system", "user message")
 	if err != nil {
 		t.Fatalf("OpenAIClient.Complete: %v", err)
@@ -191,7 +192,8 @@ func TestAnthropicClient_Complete(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &AnthropicClient{APIKey: "ant-test", Model: "claude-haiku-4-5-20251001", BaseURL: srv.URL}
+	forwardUserRequestsTo(t, srv) // PAC-66-B §B6 public-host Given
+	client := &AnthropicClient{APIKey: "ant-test", Model: "claude-haiku-4-5-20251001"}
 	result, err := client.Complete(context.Background(), "system", "user message")
 	if err != nil {
 		t.Fatalf("AnthropicClient.Complete: %v", err)
@@ -252,6 +254,7 @@ func TestOllamaClient_Complete_Mock(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	client := &OllamaClient{BaseURL: srv.URL, Model: "llama3.2"}
 	result, err := client.Complete(context.Background(), "system prompt", "block focus time tomorrow")
 	if err != nil {
@@ -290,6 +293,7 @@ func TestNLPService_Parse_WithOllama(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
 	s := &storage.Settings{
 		LLMProvider: "ollama",
@@ -325,6 +329,7 @@ func TestNLPService_Parse_ScheduleMeeting(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
 	s := &storage.Settings{
 		LLMProvider: "ollama",
@@ -357,6 +362,7 @@ func TestNLPService_Parse_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
 	s := &storage.Settings{
 		LLMProvider: "ollama",
@@ -401,6 +407,7 @@ func TestParse_AuditEntrySubjectIsCallerFromContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
 	ctx := settingsUser(t, db, &storage.Settings{LLMProvider: "ollama", LLMBaseURL: srv.URL, Timezone: "UTC", WorkStart: "09:00", WorkEnd: "18:00"})
 	otherCtx := settingsUser(t, db, &storage.Settings{LLMProvider: ""})

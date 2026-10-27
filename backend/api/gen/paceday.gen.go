@@ -61,6 +61,11 @@ const (
 	AuthStatusResponseProviderWebcal  AuthStatusResponseProvider = "webcal"
 )
 
+// Defines values for BookingRateLimitErrorError.
+const (
+	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
+)
+
 // Defines values for Cadence.
 const (
 	CadenceBiweekly Cadence = "biweekly"
@@ -210,6 +215,8 @@ const (
 	AwsRegion     LLMDestinationRefusalProperty = "awsRegion"
 	AzureEndpoint LLMDestinationRefusalProperty = "azureEndpoint"
 	GcpLocation   LLMDestinationRefusalProperty = "gcpLocation"
+	LlmBaseUrl    LLMDestinationRefusalProperty = "llmBaseUrl"
+	OllamaBaseUrl LLMDestinationRefusalProperty = "ollamaBaseUrl"
 )
 
 // Defines values for LLMDestinationRefusalReason.
@@ -483,7 +490,7 @@ type AnalyticsBreakdownEntry struct {
 	Color    string                          `json:"color"`
 	Minutes  int                             `json:"minutes"`
 
-	// Percentage `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. Note buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.
+	// Percentage A percentage where 100 means the whole of `total_working_minutes` (PAC-42: the same scale as `habit_completion_rate` and `focus_score` in the same response): `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. No maximum is declared because the value is not bounded by 100: the total counts Monday–Friday working windows only, while meeting and personal minutes count every timed event in the seven days at any hour. buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.
 	Percentage float64 `json:"percentage"`
 }
 
@@ -511,19 +518,21 @@ type AnalyticsRecomputeAck struct {
 // AnalyticsRecomputeAckStatus defines model for AnalyticsRecomputeAck.Status.
 type AnalyticsRecomputeAckStatus string
 
-// AnalyticsWeekRow Raw `storage.AnalyticsWeek` as returned by GET /api/analytics/trends. Same field
-// set as AnalyticsWeekWithBreakdown minus `breakdown`, and with `week_start`
-// serialised as a full RFC3339 timestamp because the Go field is a `time.Time`.
+// AnalyticsWeekRow One item of GET /api/analytics/trends. Same fields as AnalyticsWeekWithBreakdown,
+// in the same formats and on the same scales, minus `breakdown` (PAC-42).
 type AnalyticsWeekRow struct {
+	// BufferMinutes Always 0 for engine-computed weeks (open defect API-057); see AnalyticsWeekWithBreakdown.buffer_minutes.
 	BufferMinutes               int       `json:"buffer_minutes"`
 	ComputedAt                  time.Time `json:"computed_at"`
 	EstimatedMeetingCostMinutes int       `json:"estimated_meeting_cost_minutes"`
 	FocusBlockCount             int       `json:"focus_block_count"`
 	FocusMinutes                int       `json:"focus_minutes"`
-	FocusScore                  int       `json:"focus_score"`
-	FreeMinutes                 int       `json:"free_minutes"`
 
-	// HabitCompletionRate 0..1 fraction.
+	// FocusScore A percentage where 100 means all focus and meeting time was focus; same computation and range as AnalyticsWeekWithBreakdown.focus_score.
+	FocusScore  int `json:"focus_score"`
+	FreeMinutes int `json:"free_minutes"`
+
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058; reported unscaled before PAC-42): `completed / (scheduled + completed) * 100`, 0 when there are none, not rounded. Equal to the single-week value for the same stored week. Rows stored before PAC-42 are reported on this scale too: storage keeps the unscaled ratio for every week and the multiplication by 100 is applied on read (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -537,17 +546,16 @@ type AnalyticsWeekRow struct {
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
-	// WeekStart Midnight UTC of the Monday, e.g. "2026-03-02T00:00:00Z" — NOT the "2026-03-02" shape used by /api/analytics/week.
-	WeekStart time.Time `json:"week_start"`
+	// WeekStart The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"), with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekWithBreakdown.week_start, so the two are equal strings for the same week (PAC-42, API-055; this was an RFC3339 timestamp before). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
+	WeekStart openapi_types.Date `json:"week_start"`
 }
 
-// AnalyticsWeekWithBreakdown Response of GET /api/analytics/week. Built by `weekWithBreakdown` as a
-// `map[string]any`, so it deliberately differs from AnalyticsWeekRow: `week_start`
-// is a plain date string and `breakdown` is added.
+// AnalyticsWeekWithBreakdown Response of GET /api/analytics/week. The same fields as AnalyticsWeekRow, in the
+// same formats and on the same scales, plus `breakdown` (PAC-42).
 type AnalyticsWeekWithBreakdown struct {
 	Breakdown []AnalyticsBreakdownEntry `json:"breakdown"`
 
-	// BufferMinutes Never populated by `compute` — the engine leaves it at 0 in every write path.
+	// BufferMinutes Always 0 for engine-computed weeks: AnalyticsEngine.compute never sets it, so every write path stores 0. This is open defect API-057 (docs/factory/api-audit.md), not intended behaviour; computing it is out of PAC-42's scope (spec D-5, pending owner confirmation, OQ-8). The column round-trips through storage, so a row written by other means would report its stored value.
 	BufferMinutes int       `json:"buffer_minutes"`
 	ComputedAt    time.Time `json:"computed_at"`
 
@@ -556,13 +564,13 @@ type AnalyticsWeekWithBreakdown struct {
 	FocusBlockCount             int `json:"focus_block_count"`
 	FocusMinutes                int `json:"focus_minutes"`
 
-	// FocusScore `focus*100/(focus+meeting)` clamped to ≤100; 50 when both are 0.
+	// FocusScore A percentage where 100 means all focus and meeting time was focus: `focus*100/(focus+meeting)` (integer division) clamped to ≤100; 50 when both are 0.
 	FocusScore int `json:"focus_score"`
 
 	// FreeMinutes total_working − meeting − focus − habit − personal, floored at 0.
 	FreeMinutes int `json:"free_minutes"`
 
-	// HabitCompletionRate completed / (scheduled + completed) occurrences in the week, as a 0..1 FRACTION (not a percentage). 0 when there are none.
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058: the same scale as `focus_score` and `breakdown[].percentage` in this response): `completed / (scheduled + completed) * 100` over the week's occurrences. 0 when there are none. Not rounded. Storage keeps the unscaled ratio; the multiplication by 100 is applied when the response is built (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -578,7 +586,7 @@ type AnalyticsWeekWithBreakdown struct {
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
-	// WeekStart The Monday of the week, formatted "2006-01-02". DIFFERENT from the trends endpoint, which emits a full timestamp.
+	// WeekStart The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"), with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekRow.week_start, so the two are equal strings for the same week (PAC-42, API-055). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
 	WeekStart openapi_types.Date `json:"week_start"`
 }
 
@@ -657,11 +665,19 @@ type AuthStatusResponse struct {
 // Google was configured.
 type AuthStatusResponseProvider string
 
-// BookingError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// BookingError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type BookingError struct {
 	// Error Human-readable, server-chosen message. Never the text of a Go, driver or provider error (PAC-21): those go to the server log and Sentry only.
 	Error string `json:"error"`
 }
+
+// BookingRateLimitError The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingRateLimitError struct {
+	Error BookingRateLimitErrorError `json:"error"`
+}
+
+// BookingRateLimitErrorError defines model for BookingRateLimitError.Error.
+type BookingRateLimitErrorError string
 
 // Cadence 1:1 cadence. "none" disables gap detection for that member.
 type Cadence string
@@ -1410,22 +1426,22 @@ type InviteSchedulingLinkHostRequest struct {
 	Email openapi_types.Email `json:"email"`
 }
 
-// LLMDestinationRefusal PAC-66. Body of the 422 from POST /api/llm/test: the probe would have sent the deployment's cloud credential to a destination the operator has not approved, so no inference request was sent. A superset of `SchedulingErrorResponse` (`error` is the same member, so a client that reads only `error`, as the web settings page does, renders it unchanged). Never carries a token, a key or any part of the deployment credential (spec AC-11).
+// LLMDestinationRefusal PAC-66 and PAC-66-B. Body of the 422 from POST /api/llm/test: the probe would have sent the deployment's cloud credential, the caller's own key, or a keyless Ollama request to a destination not approved for that provider, so no inference request was sent. A superset of `SchedulingErrorResponse` (`error` is the same member, so a client that reads only `error`, as the web settings page does, renders it unchanged). Never carries a token, a key or any part of the deployment credential (spec AC-11).
 type LLMDestinationRefusal struct {
 	// Error A human-readable sentence saying what was refused and why.
 	Error string `json:"error"`
 
-	// Property The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region.
+	// Property The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region. PAC-66-B: `llmBaseUrl` on `openai` and `anthropic`, and on `ollama` when the effective destination came from it (`ollamaBaseUrl` empty); `ollamaBaseUrl` on `ollama` otherwise, including when both are empty and the built-in `http://localhost:11434` was refused, since that is the setting the user would save an approved origin in.
 	Property *LLMDestinationRefusalProperty `json:"property,omitempty"`
 
-	// Reason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
+	// Reason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. PAC-66-B: `ollama` with no origin in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (spec AC-B8). Never given for `openai` or `anthropic`, whose public hosts are always approved. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). PAC-66-B: the effective destination of `openai`, `anthropic` or `ollama` is not approved for that provider. This includes a base URL carrying a path, a query, a fragment, userinfo or whitespace; an `http` scheme or a non-default port on `openai` / `anthropic`; a scheme, host or port differing from an approved Ollama origin; a destination approved only for a different provider; and Ollama's built-in default `http://localhost:11434` when it is not approved (spec AC-B1, AC-B2, AC-B6, AC-B9, AC-B10, AC-B11, AC-B18, AC-B19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
 	Reason LLMDestinationRefusalReason `json:"reason"`
 }
 
-// LLMDestinationRefusalProperty The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region.
+// LLMDestinationRefusalProperty The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region. PAC-66-B: `llmBaseUrl` on `openai` and `anthropic`, and on `ollama` when the effective destination came from it (`ollamaBaseUrl` empty); `ollamaBaseUrl` on `ollama` otherwise, including when both are empty and the built-in `http://localhost:11434` was refused, since that is the setting the user would save an approved origin in.
 type LLMDestinationRefusalProperty string
 
-// LLMDestinationRefusalReason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
+// LLMDestinationRefusalReason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. PAC-66-B: `ollama` with no origin in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (spec AC-B8). Never given for `openai` or `anthropic`, whose public hosts are always approved. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). PAC-66-B: the effective destination of `openai`, `anthropic` or `ollama` is not approved for that provider. This includes a base URL carrying a path, a query, a fragment, userinfo or whitespace; an `http` scheme or a non-default port on `openai` / `anthropic`; a scheme, host or port differing from an approved Ollama origin; a destination approved only for a different provider; and Ollama's built-in default `http://localhost:11434` when it is not approved (spec AC-B1, AC-B2, AC-B6, AC-B9, AC-B10, AC-B11, AC-B18, AC-B19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
 type LLMDestinationRefusalReason string
 
 // LLMTestRequest Optional body for POST /api/llm/test. Added by PAC-24 to close API-037.
@@ -1434,17 +1450,17 @@ type LLMDestinationRefusalReason string
 // This is deliberately NOT `SettingsUpdate`. Sharing that schema would re-admit every endpoint property by inheritance, which is precisely the defect this shape exists to prevent, and would make a probe read like a write. The three property names match the corresponding SettingsUpdate ones so a client can build this from the document it already holds.
 // `llmApiKey` here is `writeOnly` for the same reason it is on SettingsUpdate: it is accepted and is never echoed, including in the 400 and 502 bodies (spec AC-14). Nothing submitted here is persisted.
 type LLMTestRequest struct {
-	// LlmApiKey An unsaved key to probe. Used only as the `Authorization` header value sent to the caller's stored endpoint (`backend/nlp/parser.go:43`). Ignored by the four branches that take no key. Never persisted and never echoed (spec AC-14).
+	// LlmApiKey An unsaved key to probe. Used only as the `Authorization` header value (`openai`) or the `x-api-key` header value (`anthropic`) (`backend/nlp/parser.go:45,80`), sent only to a destination approved for that provider (PAC-66-B). Ignored by the four branches that take no key. Never persisted and never echoed (spec AC-14).
 	LlmApiKey *string `json:"llmApiKey,omitempty"`
 
 	// LlmModel Consulted only by the `openai` and `anthropic` branches (`backend/nlp/llm_factory.go:25,34`), where it is a field of the JSON request body. It never appears in a URL. `bedrockModel`, `azureDeployment` and `vertexModel` - which DO appear in URLs - are not accepted here.
 	LlmModel *string `json:"llmModel,omitempty"`
 
-	// LlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). Nothing submitted here is stored.
+	// LlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on `ollama` it is the stored `ollamaBaseUrl`, then `llmBaseUrl`, then `http://localhost:11434`; on the other three it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). PAC-66-B: the same holds on `openai`, `anthropic` and `ollama`, so naming `openai` for one probe while the stored `llmBaseUrl` is approved only for Ollama is a 422 and sends no key (spec AC-B11). Nothing submitted here is stored.
 	LlmProvider *LLMTestRequestLlmProvider `json:"llmProvider,omitempty"`
 }
 
-// LLMTestRequestLlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). Nothing submitted here is stored.
+// LLMTestRequestLlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on `ollama` it is the stored `ollamaBaseUrl`, then `llmBaseUrl`, then `http://localhost:11434`; on the other three it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). PAC-66-B: the same holds on `openai`, `anthropic` and `ollama`, so naming `openai` for one probe while the stored `llmBaseUrl` is approved only for Ollama is a 422 and sends no key (spec AC-B11). Nothing submitted here is stored.
 type LLMTestRequestLlmProvider string
 
 // LLMTestResult Literal map: `{"ok": true, "response": ..., "provider": ...}`.
@@ -2256,7 +2272,7 @@ type Settings struct {
 	// `readOnly`, so a client that submits back a document it just read may include it; it is accepted and ignored (spec AC-10). It is NOT the way to clear a key - send `llmApiKey: ""` for that.
 	LlmApiKeySet *bool `json:"llmApiKeySet,omitempty"`
 
-	// LlmBaseUrl Also the legacy fallback for the ollama base URL.
+	// LlmBaseUrl Base URL of the `openai` or `anthropic` destination; `""` means the vendor's public host (`https://api.openai.com`, `https://api.anthropic.com`). Also Ollama's fallback when `ollamaBaseUrl` is `""`. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and approved for at least one of `openai`, `anthropic`, `ollama` (400 otherwise); a request is sent to it only for a provider it is approved for (see `testLLMConnection`). The web app writes this property from its Ollama field. No `pattern`, for the reason given on `awsRegion`.
 	LlmBaseUrl string `json:"llmBaseUrl"`
 
 	// LlmModel Provider default applied at call time when empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic).
@@ -2275,7 +2291,7 @@ type Settings struct {
 	// LunchStart `HH:MM` or `""`. DB default `12:00`. Legacy global; overridden per-day by lunchBreaks. `""` here is the strongest case of the four: it is not merely tolerated but LOAD-BEARING. `LunchWindow` returns `enabled: false` precisely when `lunchStart` or `lunchEnd` is empty (`backend/storage/settings.go:141-142`), so `""` is how "this user has no protected lunch" is represented. Forbidding it in the schema would make an existing, meaningful state unrepresentable.
 	LunchStart string `json:"lunchStart"`
 
-	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`.
+	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`. Stored as `http://localhost:11434` on a new account (migration 002), so it is Ollama's destination until cleared. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and an origin approved in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (400 otherwise); the same check is made whenever an Ollama request would be sent. No `pattern`, for the reason given on `awsRegion`.
 	OllamaBaseUrl string `json:"ollamaBaseUrl"`
 
 	// OllamaModel Falls back to llmModel, then `llama3.2`.
@@ -2429,7 +2445,7 @@ type SettingsUpdate struct {
 	// `readOnly`, so a client that submits back a document it just read may include it; it is accepted and ignored (spec AC-10). It is NOT the way to clear a key - send `llmApiKey: ""` for that.
 	LlmApiKeySet *bool `json:"llmApiKeySet,omitempty"`
 
-	// LlmBaseUrl Also the legacy fallback for the ollama base URL.
+	// LlmBaseUrl Base URL of the `openai` or `anthropic` destination; `""` means the vendor's public host (`https://api.openai.com`, `https://api.anthropic.com`). Also Ollama's fallback when `ollamaBaseUrl` is `""`. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and approved for at least one of `openai`, `anthropic`, `ollama` (400 otherwise); a request is sent to it only for a provider it is approved for (see `testLLMConnection`). The web app writes this property from its Ollama field. No `pattern`, for the reason given on `awsRegion`.
 	LlmBaseUrl *string `json:"llmBaseUrl,omitempty"`
 
 	// LlmModel Provider default applied at call time when empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic).
@@ -2448,7 +2464,7 @@ type SettingsUpdate struct {
 	// LunchStart `HH:MM` or `""`. DB default `12:00`. Legacy global; overridden per-day by lunchBreaks. `""` here is the strongest case of the four: it is not merely tolerated but LOAD-BEARING. `LunchWindow` returns `enabled: false` precisely when `lunchStart` or `lunchEnd` is empty (`backend/storage/settings.go:141-142`), so `""` is how "this user has no protected lunch" is represented. Forbidding it in the schema would make an existing, meaningful state unrepresentable.
 	LunchStart *string `json:"lunchStart,omitempty"`
 
-	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`.
+	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`. Stored as `http://localhost:11434` on a new account (migration 002), so it is Ollama's destination until cleared. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and an origin approved in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (400 otherwise); the same check is made whenever an Ollama request would be sent. No `pattern`, for the reason given on `awsRegion`.
 	OllamaBaseUrl *string `json:"ollamaBaseUrl,omitempty"`
 
 	// OllamaModel Falls back to llmModel, then `llama3.2`.
@@ -2845,6 +2861,12 @@ type SchedulingLinkIdPath = openapi_types.UUID
 // TeamIdPath defines model for TeamIdPath.
 type TeamIdPath = openapi_types.UUID
 
+// BookingCreateRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingCreateRateLimited = BookingRateLimitError
+
+// BookingSlotsRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingSlotsRateLimited = BookingRateLimitError
+
 // CalendarNotConnected The JSON error envelope for "this user has no calendar connected". The message is a single fixed value so a client can branch on it.
 type CalendarNotConnected = CalendarNotConnectedError
 
@@ -2884,7 +2906,7 @@ type JsonUnauthorized = ErrorResponse
 // provider error; every 5xx in this document uses this envelope (PAC-21).
 type NotFound = ErrorResponse
 
-// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type SchedulingLinkValidationError = BookingError
 
 // ServerError The shared JSON error envelope, written by writeError()
@@ -10061,6 +10083,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	return r
 }
 
+type BookingCreateRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingCreateRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingCreateRateLimitedResponseHeaders
+}
+
+type BookingSlotsRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingSlotsRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingSlotsRateLimitedResponseHeaders
+}
+
 type BookingUnauthorizedTextResponse string
 
 type CalendarNotConnectedJSONResponse CalendarNotConnectedError
@@ -10355,15 +10395,6 @@ type GetAnalyticsWeek401JSONResponse struct{ UnauthorizedJSONResponse }
 func (response GetAnalyticsWeek401JSONResponse) VisitGetAnalyticsWeekResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
-type GetAnalyticsWeek404JSONResponse ErrorResponse
-
-func (response GetAnalyticsWeek404JSONResponse) VisitGetAnalyticsWeekResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -11107,6 +11138,18 @@ func (response CreatePublicBooking422JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreatePublicBooking429JSONResponse struct {
+	BookingCreateRateLimitedJSONResponse
+}
+
+func (response CreatePublicBooking429JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreatePublicBooking500JSONResponse BookingError
 
 func (response CreatePublicBooking500JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
@@ -11159,6 +11202,18 @@ func (response GetPublicBookingSlots410JSONResponse) VisitGetPublicBookingSlotsR
 	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPublicBookingSlots429JSONResponse struct {
+	BookingSlotsRateLimitedJSONResponse
+}
+
+func (response GetPublicBookingSlots429JSONResponse) VisitGetPublicBookingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetPublicBookingSlots500JSONResponse BookingError

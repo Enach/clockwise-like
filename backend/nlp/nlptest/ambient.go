@@ -35,7 +35,7 @@ var Sentinels = []string{AzureToken, VertexToken, AWSAccessKey, AWSSecretKey}
 // providers at once (spec shared Given "Successful answer").
 const SuccessBody = `{"choices":[{"message":{"content":"hello"}}],` +
 	`"candidates":[{"content":{"parts":[{"text":"hello"}]}}],` +
-	`"content":[{"text":"hello"}]}`
+	`"content":[{"text":"hello"}],"message":{"content":"hello"}}`
 
 // Request is one recorded outbound request.
 type Request struct {
@@ -43,6 +43,8 @@ type Request struct {
 	Scheme string
 	Host   string
 	Path   string
+	// Query is the raw query (PAC-66-B AC-B18, AC-B19).
+	Query  string
 	Header http.Header
 }
 
@@ -63,7 +65,7 @@ func (r *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.mu.Lock()
 	r.reqs = append(r.reqs, Request{
 		Method: req.Method, Scheme: req.URL.Scheme, Host: req.URL.Host,
-		Path: req.URL.Path, Header: req.Header.Clone(),
+		Path: req.URL.Path, Query: req.URL.RawQuery, Header: req.Header.Clone(),
 	})
 	answer := r.Answer
 	r.mu.Unlock()
