@@ -73,15 +73,19 @@ func (h *meetingBriefHandlers) refreshBrief(w http.ResponseWriter, r *http.Reque
 
 	svc := &engine.MeetingBriefService{DB: h.db}
 	if settings, err := storage.GetOrCreateSettingsByUser(h.db, userID); err == nil {
+		// PAC-66 / PAC-66-B: a refused destination gives the existing failed
+		// brief, with the reason as its text (spec AC-14, AC-B12), and sends
+		// nothing. A user-key provider with no key is refused here too when
+		// its destination is not approved (spec §B4).
+		var refusal *nlp.DestinationRefusal
 		if llm, err := nlp.NewLLMClientFromSettings(settings); err == nil {
-			// PAC-66: a refused destination gives the existing failed brief,
-			// with the reason as its text (spec AC-14), and sends nothing.
-			var refusal *nlp.DestinationRefusal
 			if errors.As(nlp.CheckDestination(ctx, llm), &refusal) {
 				svc.LLMUnavailable = refusal.Message
 			} else {
 				svc.LLM = llm
 			}
+		} else if errors.As(err, &refusal) {
+			svc.LLMUnavailable = refusal.Message
 		}
 	}
 	brief, err := svc.Generate(ctx, userID, event, true)

@@ -8,16 +8,27 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
-const zoomAPIBase = "https://api.zoom.us/v2"
+// ZoomAPIBase is the Zoom REST API root. A variable so tests can point it at a
+// stand-in; production never changes it.
+var ZoomAPIBase = "https://api.zoom.us/v2"
 
-// ZoomProvider creates Zoom meetings via the Zoom REST API v2.
+// ZoomProvider creates Zoom meetings via the Zoom REST API v2. Tokens, when
+// set, supplies the access token (PAC-67: the caller's renewing Zoom
+// credential); otherwise AccessToken is used as is.
 type ZoomProvider struct {
 	AccessToken string
+	Tokens      oauth2.TokenSource
 }
 
 func (z *ZoomProvider) CreateMeeting(ctx context.Context, title string, start, end time.Time) (*Details, error) {
+	accessToken, err := bearer(z.Tokens, z.AccessToken)
+	if err != nil {
+		return nil, err
+	}
 	payload := map[string]interface{}{
 		"topic":      title,
 		"type":       2, // scheduled meeting
@@ -29,11 +40,11 @@ func (z *ZoomProvider) CreateMeeting(ctx context.Context, title string, start, e
 	}
 	data, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, zoomAPIBase+"/users/me/meetings", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ZoomAPIBase+"/users/me/meetings", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+z.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)

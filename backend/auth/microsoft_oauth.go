@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
@@ -60,6 +62,10 @@ type microsoftTokenRecord struct {
 // SaveMicrosoftToken stores userID's Outlook credential on their own settings
 // row and makes Outlook their calendar provider (PAC-24: it was one shared
 // credential for every user).
+//
+// It is the Outlook (re)connect (PAC-67): a token without a refresh token
+// keeps the stored one (AC-11), and storing ends any recorded loss of the
+// Outlook connection (AC-12, AC-24).
 func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveMicrosoftToken: userID is required")
@@ -69,6 +75,11 @@ func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error
 		RefreshToken: token.RefreshToken,
 		Expiry:       token.Expiry.UTC(),
 	}
+	if rec.RefreshToken == "" {
+		if old, err := LoadMicrosoftToken(db, userID); err == nil && old != nil {
+			rec.RefreshToken = old.RefreshToken
+		}
+	}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
@@ -76,8 +87,24 @@ func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error
 	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return err
 	}
-	_, err = db.Exec(`UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook' WHERE user_id = $1`, userID, string(data))
-	return err
+	if _, err := db.Exec(`UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook' WHERE user_id = $1`, userID, string(data)); err != nil {
+		return err
+	}
+	return storage.ClearCredentialLoss(db, userID, storage.CredentialOutlook)
+}
+
+// MicrosoftConfigFromEnv is the Microsoft OAuth configuration of this server,
+// or nil when Microsoft sign-in is not configured.
+func MicrosoftConfigFromEnv() *MicrosoftConfig {
+	clientID := os.Getenv("MICROSOFT_CLIENT_ID")
+	if clientID == "" {
+		return nil
+	}
+	return &MicrosoftConfig{
+		ClientID:     clientID,
+		ClientSecret: os.Getenv("MICROSOFT_CLIENT_SECRET"),
+		RedirectURL:  os.Getenv("MICROSOFT_REDIRECT_URL"),
+	}
 }
 
 // LoadMicrosoftToken returns userID's Outlook credential, or nil when they

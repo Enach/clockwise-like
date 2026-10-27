@@ -121,10 +121,10 @@ func ListAnalyticsTrends(db *sql.DB, userID uuid.UUID, limit int) ([]*AnalyticsW
 
 func scanAnalyticsWeek(row *sql.Row) (*AnalyticsWeek, error) {
 	var a AnalyticsWeek
-	var weekStartStr string
+	var weekStart time.Time
 	var titlesJSON []byte
 	err := row.Scan(
-		&a.ID, &a.UserID, &weekStartStr, &a.TotalWorkingMinutes,
+		&a.ID, &a.UserID, &weekStart, &a.TotalWorkingMinutes,
 		&a.MeetingMinutes, &a.FocusMinutes, &a.HabitMinutes, &a.BufferMinutes,
 		&a.PersonalMinutes, &a.FreeMinutes, &a.MeetingCount, &a.FocusBlockCount,
 		&a.HabitCompletionRate, &a.LargestFocusBlockMinutes, &titlesJSON,
@@ -136,10 +136,19 @@ func scanAnalyticsWeek(row *sql.Row) (*AnalyticsWeek, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.WeekStart, _ = time.Parse("2006-01-02", weekStartStr)
+	a.WeekStart = calendarDate(weekStart)
 	_ = json.Unmarshal(titlesJSON, &a.TopMeetingTitles)
 	normaliseMeetingTitles(&a)
 	return &a, nil
+}
+
+// calendarDate turns the DATE column, which the pgx stdlib driver delivers as a
+// time.Time, into midnight UTC of that calendar day. It used to be scanned into a
+// string, which database/sql fills with RFC3339 text; parsing that as a bare date
+// failed silently and every week read back as the zero date (PAC-42, spec 2.3).
+func calendarDate(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
 // normaliseMeetingTitles turns a nil top_meeting_titles (a JSONB `null`, or a
@@ -152,10 +161,10 @@ func normaliseMeetingTitles(a *AnalyticsWeek) {
 
 func scanAnalyticsWeekRow(rows *sql.Rows) (*AnalyticsWeek, error) {
 	var a AnalyticsWeek
-	var weekStartStr string
+	var weekStart time.Time
 	var titlesJSON []byte
 	if err := rows.Scan(
-		&a.ID, &a.UserID, &weekStartStr, &a.TotalWorkingMinutes,
+		&a.ID, &a.UserID, &weekStart, &a.TotalWorkingMinutes,
 		&a.MeetingMinutes, &a.FocusMinutes, &a.HabitMinutes, &a.BufferMinutes,
 		&a.PersonalMinutes, &a.FreeMinutes, &a.MeetingCount, &a.FocusBlockCount,
 		&a.HabitCompletionRate, &a.LargestFocusBlockMinutes, &titlesJSON,
@@ -163,7 +172,7 @@ func scanAnalyticsWeekRow(rows *sql.Rows) (*AnalyticsWeek, error) {
 	); err != nil {
 		return nil, err
 	}
-	a.WeekStart, _ = time.Parse("2006-01-02", weekStartStr)
+	a.WeekStart = calendarDate(weekStart)
 	_ = json.Unmarshal(titlesJSON, &a.TopMeetingTitles)
 	normaliseMeetingTitles(&a)
 	return &a, nil
