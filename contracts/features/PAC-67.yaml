@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-67",
   "status": "draft",
   "contractRevision": "2",
-  "contractHash": "886a3e2d6ced91de7fe8d57e7964c1e8ee03f8004ef85fe0ec785b1f3dfa557c",
+  "contractHash": "aeef914203c7a1a610451f8503b093e4422816163e3e7df23d715ab2ce7a70f9",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-67-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py and confirmed unchanged by `make openapi` in an LF clone of the branch (golang:1.25-bookworm, the api-gate's step 1), then verified by `make openapi-check WEB=/nonexistent` (OK: bundle is in sync (99 paths)). Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-67.md",
   "specDoc": "docs/specs/PAC-67.md",

@@ -617,9 +617,9 @@ type AttendeeSuggestion struct {
 type AuditEntry struct {
 	// Action What was recorded. Underscore-separated, lower-case; there is no dotted key convention on this endpoint and never was.
 	//
-	// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed; Zoom only). After PAC-67 the falsifying command above must return these writers as well, and the contract test of this enum against the writers covers all ten.
+	// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above must return these writers as well. No test checks this enum against the writers today (none exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend stage ADDS one covering all ten (manifest CONTRACT-6).
 	//
-	// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and a writer added without one makes the contract test fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
+	// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and once the PAC-67 enum test exists a writer added without one makes it fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
 	//
 	// Because the body of the 200 is an array of this schema, a value outside this enum makes the WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added without a contract change, or one restored backup, and a validating consumer rejects six good rows along with the odd one. That is the intended alarm in a test and the wrong behaviour in a UI, so the expected handling is stated rather than left to each consumer: **render the row, substituting a placeholder such as `unknown` for the unrecognised value, rather than discarding the response.**
 	//
@@ -644,9 +644,9 @@ type AuditEntry struct {
 
 // AuditEntryAction What was recorded. Underscore-separated, lower-case; there is no dotted key convention on this endpoint and never was.
 //
-// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed; Zoom only). After PAC-67 the falsifying command above must return these writers as well, and the contract test of this enum against the writers covers all ten.
+// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above must return these writers as well. No test checks this enum against the writers today (none exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend stage ADDS one covering all ten (manifest CONTRACT-6).
 //
-// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and a writer added without one makes the contract test fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
+// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and once the PAC-67 enum test exists a writer added without one makes it fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
 //
 // Because the body of the 200 is an array of this schema, a value outside this enum makes the WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added without a contract change, or one restored backup, and a validating consumer rejects six good rows along with the odd one. That is the intended alarm in a test and the wrong behaviour in a UI, so the expected handling is stated rather than left to each consumer: **render the row, substituting a placeholder such as `unknown` for the unrecognised value, rather than discarding the response.**
 //
@@ -880,13 +880,13 @@ type ConferenceProviderStatus struct {
 	// AutoWith "google" for google_meet, "outlook" for teams. Omitted for zoom and custom.
 	AutoWith *ConferenceProviderStatusAutoWith `json:"auto_with,omitempty"`
 
-	// Connected Always present. `custom` is hardcoded to true. For google_meet, zoom and teams, true only when the caller's credential for that provider is stored AND not recorded as lost after a permanently refused renewal (PAC-67; see `listConferenceProviders`).
+	// Connected Always present. `custom` is hardcoded to true. Since PAC-67 the other rows mean USABLE (see `listConferenceProviders`), with these predicates over the caller's own credentials: `google_meet`, a Google token row is stored AND no loss of it is recorded; `zoom`, a stored Zoom credential decodes AND holds a refresh token AND no loss of it is recorded; `teams`, a stored Microsoft credential decodes AND holds a refresh token AND no loss of it is recorded, the same predicate as `getAuthStatus` for an Outlook calendar provider. Before PAC-67 `zoom` was true for any non-blank stored value (including one that does not decode) and `teams` for any stored Microsoft credential, with or without a refresh token, which could report a credential that can never be renewed as connected (contract challenge finding 5).
 	Connected bool `json:"connected"`
 
 	// Email Set only for google_meet (the configured calendar email); omitted when empty.
 	Email *string `json:"email,omitempty"`
 
-	// Enabled json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only ever appears as `true`, and only for teams. Absence must be read as false. Since PAC-67 it follows teams' `connected`: a lost or disconnected Outlook credential omits it, so no field of the row reports Teams usable (spec PAC-67 section 4 preamble).
+	// Enabled json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only ever appears as `true`, and only for teams. Absence must be read as false. Since PAC-67 it follows teams' `connected` exactly (same predicate): a lost, disconnected or never-renewable (no refresh token) Microsoft credential omits it, so no field of the row reports Teams usable (spec PAC-67 section 4 preamble).
 	Enabled  *bool                            `json:"enabled,omitempty"`
 	Provider ConferenceProviderStatusProvider `json:"provider"`
 }
@@ -900,10 +900,12 @@ type ConferenceProviderStatusProvider string
 // CreateConferenceRequest POST /api/conference/create. Since PAC-67 (API-052) all three fields are required and validated before any provider is called; a body that fails is the 400 "invalid body". Before PAC-67 every field silently defaulted to the Go zero value when absent and was forwarded to the provider.
 type CreateConferenceRequest struct {
 	// End Must be strictly after `start`.
-	End   time.Time `json:"end"`
+	End time.Time `json:"end"`
+
+	// Start `0001-01-01T00:00:00Z` (Go's zero time) is refused with the 400 "invalid body", like an absent `start`: the server cannot tell the two apart.
 	Start time.Time `json:"start"`
 
-	// Title Must be non-empty after trimming whitespace.
+	// Title Must contain at least one character that is not whitespace in the ECMA-262 `\s` sense. `pattern` states exactly the test the server applies (see `createConferenceLink`), so a blank title such as "   " cannot be expressed by a client that validates against this schema.
 	Title string `json:"title"`
 }
 
@@ -1902,11 +1904,14 @@ type ProviderDisconnectResult struct {
 
 	// Revocation - `confirmed`: the provider answered success to the revocation
 	//   request (Zoom only).
-	// - `unconfirmed`: a revocation was attempted and the provider
-	//   refused it, answered an error, or could not be reached (Zoom
-	//   only). The client must tell the user that revocation at the
-	//   provider could not be confirmed (spec AC-15, D-2) and must not
-	//   show a plain success.
+	// - `unconfirmed`: a credential was removed and its revocation is
+	//   not confirmed (Zoom only): either a revocation was attempted and
+	//   the provider refused it, answered an error, or could not be
+	//   reached; or no revocation could be attempted, because the stored
+	//   credential does not decode or its expired access token could not
+	//   be renewed (see `disconnectZoom`). The client must tell the user
+	//   that revocation at the provider could not be confirmed (spec
+	//   AC-15, D-2) and must not show a plain success.
 	// - `not_offered`: the provider offers no revocation of this one
 	//   grant that Paceday may call, so none was attempted (Outlook
 	//   always, spec AC-17, D-5). The client tells the user the grant
@@ -1923,11 +1928,14 @@ type ProviderDisconnectResultProvider string
 // ProviderDisconnectResultRevocation - `confirmed`: the provider answered success to the revocation
 //
 //		request (Zoom only).
-//	  - `unconfirmed`: a revocation was attempted and the provider
-//	    refused it, answered an error, or could not be reached (Zoom
-//	    only). The client must tell the user that revocation at the
-//	    provider could not be confirmed (spec AC-15, D-2) and must not
-//	    show a plain success.
+//	  - `unconfirmed`: a credential was removed and its revocation is
+//	    not confirmed (Zoom only): either a revocation was attempted and
+//	    the provider refused it, answered an error, or could not be
+//	    reached; or no revocation could be attempted, because the stored
+//	    credential does not decode or its expired access token could not
+//	    be renewed (see `disconnectZoom`). The client must tell the user
+//	    that revocation at the provider could not be confirmed (spec
+//	    AC-15, D-2) and must not show a plain success.
 //	  - `not_offered`: the provider offers no revocation of this one
 //	    grant that Paceday may call, so none was attempted (Outlook
 //	    always, spec AC-17, D-5). The client tells the user the grant
