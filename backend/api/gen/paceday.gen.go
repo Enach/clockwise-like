@@ -2621,8 +2621,9 @@ type SsoDetectResponseType string
 // changed by PAC-50).
 type SsoProviderCreateRequest struct {
 	// Domain Must equal the caller's org domain, exact and case-insensitive,
-	// else 400 `provider_domain_mismatch`; a subdomain does not match.
-	// Stored lower-cased.
+	// else 400 `provider_domain_mismatch`; a subdomain does not match,
+	// and surrounding whitespace is not trimmed (`" acme.com "` is a
+	// 400). Stored lower-cased.
 	Domain           string  `json:"domain"`
 	OidcClientId     *string `json:"oidc_client_id,omitempty"`
 	OidcClientSecret *string `json:"oidc_client_secret,omitempty"`
@@ -2654,7 +2655,7 @@ type SsoProviderCreateRequestProviderType string
 type SsoProviderResponse struct {
 	CreatedAt time.Time `json:"CreatedAt"`
 
-	// Domain Lower-case for every row written since PAC-50; migration 027 lower-cases existing rows.
+	// Domain Lower-case for every row written since PAC-50; migration 028 (`028_sso_admin_stepup`) lower-cases existing rows.
 	Domain string `json:"Domain"`
 
 	// Enabled Always true when written through this API (API-066).
@@ -10558,6 +10559,16 @@ func (response StartSsoAdminStepup400JSONResponse) VisitStartSsoAdminStepupRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type StartSsoAdminStepup400TextResponse PlainTextError
+
+func (response StartSsoAdminStepup400TextResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(400)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
 type StartSsoAdminStepup401TextResponse PlainTextError
 
 func (response StartSsoAdminStepup401TextResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
@@ -10617,6 +10628,15 @@ func (response SsoAdminStepupCallback302Response) VisitSsoAdminStepupCallbackRes
 	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
 	w.WriteHeader(302)
 	return nil
+}
+
+type SsoAdminStepupCallback401JSONResponse ErrorResponse
+
+func (response SsoAdminStepupCallback401JSONResponse) VisitSsoAdminStepupCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type SsoAdminStepupCallback401TextResponse PlainTextError
