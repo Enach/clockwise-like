@@ -31,11 +31,20 @@ almost certainly reading `id` where it means `email`, and `building`/`floor`/
 `capacity`/`available` only ever exist in `MOCK_ROOMS`. Any UI that renders a live
 (non-mock) room list is rendering `undefined` for those.
 
+**PAC-41 (contract):** the server is the reference. `CalendarRoom` stays `{id, name}`
+(spec D-1) and now says `id` is the value to send as `room_resource_email`; the web
+consumes the generated type and drops the hand-written one. Resolves API-041 once the
+backend test (AC-15) and the web change land. See `contracts/features/PAC-41.md`.
+
 ### 2. `GET /api/rooms` — `start`/`end` query params are sent and ignored
 `client.ts:1198` calls `requestApi<Room[]>("GET", "/rooms", undefined, { q, start, end })`
 and `contract.ts` declares `searchRooms(q, start?, end?)`. The handler
 (`handlers_events.go:106`) reads only `q`. So the availability filtering the signature
 implies is mock-only; against the real backend `available` is never computed.
+
+**PAC-41 (contract):** the `listRooms` description now states that `q` is the only
+parameter read and that there is no time-window or availability filter. No parameter
+is added. Resolves API-040 once the web sends `q` only.
 
 ### 3. `PATCH /api/events/{id}` — three body fields are silently dropped
 Frontend sends `{...patch, send_updates}` where `patch` may contain
@@ -87,6 +96,10 @@ query parameters at all.
 - Frontend `FreeBusyResponse` does not declare the `results` key the backend always
   sends. Harmless for TS structural typing, but it means the legacy key is
   undocumented on the consumer side.
+
+**PAC-41 (contract):** `FreeBusyParticipant` now states it has no provider key and no
+Paceday-user status (spec D-2). The operation is otherwise unchanged. Resolves API-046
+(the first two bullets) once the web drops both.
 
 ### 7. `GET /api/calendar/freebusy` has no consumer and a different shape
 Nothing in `smart-calendar-flow/src` references `/api/calendar/freebusy` — the
