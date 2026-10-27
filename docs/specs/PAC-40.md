@@ -966,3 +966,79 @@ stay open for the next stage.
    (`handlers_booking.go:234-237`). Added to AC-20's list.
 
 Status stays challenged. The spec goes back to the challenger for round 4.
+
+## Challenge — 2026-10-27 (round 4)
+
+I reviewed the committed spec at `1b05a05` (revision 3) against source on
+`main` at `6d751f9`, which is still the tip of `origin/main`. I ran one probe:
+a temporary test file, since deleted, against a throwaway Postgres 16
+container, since removed. Nothing was committed apart from this section.
+
+**Verdict**: accept-with-changes
+
+Revision 3 fixed §3.5 correctly. AC-20 was rewritten in the same revision but
+does not say what §3.5 says, and one of its sub-cases is contradicted by the
+code. That is the only blocking item. The scope and decisions are unchanged from
+round 3, and they remain conservative.
+
+### Blocking
+1. **AC-20 says that an end at or before start "together with a non-zero
+   duration" is answered "duration does not match end time". That is false
+   when the duration equals end minus start, which makes it negative.** The
+   mismatch check (`handlers_booking.go:263-266`) fires only when the requested
+   duration *differs* from `actualDuration`. A request with an end of start−30
+   min and `duration: -30` (or `duration_minutes: -30`) passes that check. It
+   then fails `durationAllowed` (`:125-127`, `:277-280`) and gets
+   "invalid duration" (probe below). Revision 3 item 1 notes this case "from
+   reading source only", and §3.5 handles it correctly ("a non-zero duration
+   that differs from the time between start and end"). AC-20 drops "that
+   differs", so an AC-20 case written from its text fails on current code. That
+   is the failure mode of rounds 1–3.
+   *Resolve:* in AC-20, change "together with a non-zero duration" to match
+   §3.5 ("a non-zero duration that differs from the time between start and
+   end"). State that an end at or before start whose duration equals end minus
+   start is answered 400 "invalid duration", or say that AC-20's sub-cases are
+   examples and not a partition.
+
+### Non-blocking
+1. **"Sends no duration (or a duration of 0)" does not say which field.**
+   `duration` overrides `duration_minutes` whenever it is present, even when it
+   is 0 (`handlers_booking.go:244-250`). A request with `duration_minutes: 30`,
+   `duration: 0` and an end at or before start does send a non-zero duration,
+   yet it is answered "invalid duration", not "duration does not match end
+   time". This is from reading source, not the probe. When fixing Blocking 1,
+   define "the duration" as `duration` if present, else `duration_minutes`, in
+   §3.5 and AC-20.
+2. **Open items carried forward.** These are unchanged from round 3's
+   non-blocking item 1: a non-owner on a deleted link gets not-found (no AC),
+   and the starting value if uses become stored. Round 1 items 3, 4, 6 and 7
+   and round 2 item 2 also remain open. None blocks the contract stage, but
+   the first one must be settled before OQ-5 is.
+
+### Criteria I could not falsify
+- None. AC-20's mismatch sub-case can be falsified, and the probe falsifies it
+  (Blocking 1).
+
+### Citations I checked and found wrong
+- AC-20, "an end at or before its start together with a non-zero duration,
+  answered 400 'duration does not match end time'". This holds only when the
+  duration differs from end minus start (Blocking 1).
+
+Checked and correct this round: `handlers_booking.go:125-127, 234-237, 244-250,
+259, 262-266, 275-288` (revision 3's citations `:234-237`, `:263-266`,
+`:277-280` are accurate); §3.5 as revised; and that revision 3 changed nothing
+outside §3.5, AC-20 and its own section (`git diff 120e5f0 1b05a05`).
+
+**Probe (Blocking 1).** The link was `createPublicBookingLink` with options
+[30, 60], reusable, and min notice 0. The start was `futureBookingStart()`, and
+the end was start−30 min:
+```
+zz_pac40_r4_probe_test.go:27: end-30, duration -30           -> 400 {"error":"invalid duration"}
+zz_pac40_r4_probe_test.go:27: end-30, duration_minutes -30   -> 400 {"error":"invalid duration"}
+zz_pac40_r4_probe_test.go:27: end-30, duration 30            -> 400 {"error":"duration does not match end time"}
+--- PASS: TestPAC40R4Probe (0.02s)
+```
+
+### Consumers this breaks
+- Nothing new. The lists from rounds 1–3 stand. Revision 3 touched only spec
+  text about public booking error answers, and those answers do not change.
