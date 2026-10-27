@@ -163,3 +163,157 @@ belongs to an integration test.
 - **Not run at this stage**: the web gate and the e2e gate. The paired web type
   regeneration (`REGEN=1 web-gate.sh`) is opened by the build stage against this
   branch; no server behaviour has changed yet, so there is nothing for e2e to show.
+
+---
+
+## Challenge — 2026-10-27
+
+Challenger: `contract-challenger`, against `factory/pac-25-contract` at `f056f58`
+(committed state only). Read: this file, the manifest, the fragment diff against
+`main`, spec revision 1, the handlers and storage named below, the web consumers at
+`smart-calendar-flow` `origin/main` `ad52160`, `mcp/` and `e2e/tests`.
+
+**Verdict**: accept-with-changes (one blocking finding, a description change only;
+no schema change)
+
+### What was run
+
+- `make openapi-check WEB=/nonexistent` in `golang:1.25-bookworm`, on a clean clone
+  checked out at `f056f58`: `OK: bundle is in sync (98 paths)`, `OK: MIGRATION.md
+  covers all 119 operations (0 generated)`, `OK: backend/api/gen matches the
+  contract`, `SKIPPED: web generated types (no repo at /nonexistent)`,
+  `openapi-check(api) rc=0`. The web half was not run (see non-blocking 1).
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` =
+  `af80e829…bf32a`, equal to the manifest's `contractHash`.
+- Nothing else. No backend test, lint, web gate or e2e gate was run by this review.
+
+### Requests wrongly permitted
+
+None found. Attempts are under "Verified clean".
+
+### Responses the client cannot handle
+
+None found. Owner flows in the web (`src/api/schedulingLinks.ts:514,544,574`) still
+get `200`; the only new declared response, the `422` on `removeTeamMember`, is never
+sent by any web screen (`ProtectedHoursTab.tsx:709` hides the control on the owner's
+own row) and would reach the existing toast at `:668`.
+
+### Contract/implementation divergences
+
+1. **(blocking) `getSchedulingLink`: the check order stops at the link lookup, and
+   the `200` promise is contradicted by the roster read the handler already does.**
+   The description's order is "`400`, then the link lookup (`500` on a storage
+   error), then `404` for no link or a caller who may not read it, then `200`", and
+   the `200` says an accepted co-host receives `is_owner: false, my_status:
+   accepted` (§2 here: "a client can therefore never receive a 200 with `my_status`
+   absent and `is_owner: false`"). Deciding "may read" needs a second read (the
+   caller's host row) that the contract gives no storage-error answer for, and the
+   roster read the `200` is built from swallows its error:
+   `backend/api/handlers_scheduling_links.go:287` `hosts, _ :=
+   storage.GetLinkHosts(db, link.ID)`, then `:300-302` substitutes `[]`.
+   Constructed case: accepted co-host B sends `GET /api/scheduling-links/{L}`; the
+   `scheduling_links` row reads fine and the `scheduling_link_hosts` read fails.
+   Through today's `writeLink` the answer is
+   `200 {"id":"L",…,"is_owner":false,"hosts":[]}` with no `my_status`, which this
+   contract says cannot happen. And because the order names no answer for a failed
+   host-status read, an implementation may legally map it to `404` (an outage
+   reported to a legitimate host as "not found", indistinguishable from a refusal by
+   design) or to the permissive branch (`200` to a stranger: fail-open on the very
+   check this feature adds). The contract must pick.
+   **Fix (description only)**: in `getSchedulingLink`, make the order "`400`, then
+   the link lookup, then the caller's host-status lookup (each `500`
+   `{"error":"internal error"}` on a storage error — never `404`, never `200`), then
+   `404`, then `200`", and state in the `200` that a failure to read the roster
+   answers `500` rather than `200` with `hosts: []`. If the author instead keeps
+   today's swallow, the `200` description and §2 must stop promising `my_status:
+   accepted` to co-hosts and say that `hosts` may be `[]` on a storage error; the
+   first option is the one consistent with the reader rule.
+
+### Consumers affected
+
+All checked; none breaks. Each manifest line reference was opened and matches:
+
+- web `src/api/schedulingLinks.ts:514` (after create), `:544` (read-before-PATCH),
+  `:574` (after update): owner-only paths; `src/pages/Links.tsx:144,155` gate
+  toggle/edit on `is_owner`.
+- web `src/api/teams.ts:380-390` and `src/components/team/ProtectedHoursTab.tsx:709`
+  (`isOwner && m.email !== me`): never sends the owner's own removal.
+- web `src/api/generated/types.ts` on `origin/main` lists `403` and `500` for
+  `removeTeamMember` and no `422`: stale until the paired regeneration
+  (non-blocking 1).
+- `mcp/`: no reference to `scheduling-links` or `/members/` (grep).
+- `e2e/tests`: the only by-id link path is the owner's `/bookings` read in
+  `scheduling-links.spec.ts`; nothing calls member removal.
+
+### Uncertainties not actually resolved
+
+1. **U-08** is removed on a factory decision (D-1, D-2), pending owner confirmation
+   (OQ-6, OQ-7), not on new evidence about the server. That is acceptable only
+   because AC-1..AC-6 pin the chosen behaviour once implemented; until the backend
+   PR lands those tests, the marker's removal rests on the decision alone. The audit
+   row says so ("pending owner confirmation"), which is the honest state.
+
+### Non-blocking
+
+1. **The paired web regeneration does not exist yet.** No `pac-25` branch on
+   `smart-calendar-flow` (`git branch -r`), and web `main`'s `types.ts` has no `422`
+   on `removeTeamMember`, so factory §2 gate 4 ("generated code is in sync in both
+   repos") is half-checked, as §8 here says. The factory rule is that a contract
+   change ships with its web regeneration in the same build; it must exist and
+   `REGEN=1 web-gate.sh` must be green before review, not only before land.
+2. **AC-15(b) is narrowed to an `example`.** The spec says the `422` *body is*
+   `{"error":"the team owner cannot be removed"}`; the bundle carries that string
+   only as a non-normative `example` on `ErrorResponse` (C-1), and neither generated
+   type constrains it (`RemoveTeamMember422JSONResponse ErrorResponse`). Fine if the
+   contract test asserts the example and the Go handler test asserts the body
+   (AC-7), which the manifest's AC-15 wording allows; flagged so the plan names that
+   test.
+3. **Spec revision 1 has not been re-challenged** (§0 says so). Not a contract
+   defect; the spec stage's gate, not this one.
+4. `toSchedulingLinkDTO` (`:291-293`) leaves a host's `email`/`name` empty when
+   `GetUserByID` fails, while `SchedulingLinkHost.email` is `required`. Pre-existing,
+   not touched by this contract; mentioned so the blocking fix's author sees it next
+   to the roster read.
+5. OWNER: D-1 — confirm that a refused link read answers `404` rather than the `403`
+   the issue and U-08 asked for (spec OQ-6).
+6. OWNER: D-2 — confirm accepted co-hosts may read the detail, including pending and
+   declined invitees' emails (spec OQ-7).
+7. OWNER: D-5 — confirm a sole owner alone in a team is refused rather than having
+   the team deleted for them (spec OQ-8).
+8. OWNER: C-1 — confirm the `422` reuses `ErrorResponse` with an example rather than
+   an enum-constrained message schema.
+
+### Verified clean
+
+- **`GET /api/scheduling-links/{L}` as a pending invitee, a decliner, a stranger, a
+  co-host who left** (`POST …/leave` deletes the row, `storage/scheduling_links.go:324`):
+  the contract answers `404 {"error":"not found"}` for all, identical to an unknown
+  id, whose body today is exactly that (`handlers_scheduling_links.go:403`). No case
+  leaks title, slug or roster.
+- **D-2 "same set as the list"**: `ListSchedulingLinksByUser`
+  (`storage/scheduling_links.go:130`) is `owner_user_id = caller OR (host row
+  accepted)` with no `active` filter, so the detail reader set equals the list set
+  including soft-deleted links; the `404` text's API-050 note is accurate.
+- **Owner reads**: `createLink` inserts the owner as an `accepted` host
+  (`handlers_scheduling_links.go:353`) and `RemoveLinkHostsExcept` never deletes the
+  owner's row, so the owner's `200` is unchanged (AC-5).
+- **`DELETE /api/teams/{T}/members/{O}` by member M** (AC-17): `403` comes from
+  `handlers_teams.go:331-335` before any owner count, so a member cannot probe who
+  owns the team; the contract's order matches.
+- **Self-removal as a non-owner, removal of a non-member, an owner removing another
+  owner of a two-owner team**: `204` in each, consistent with the "would leave zero
+  owners" wording.
+- **Concurrent O1→O2 and O2→O1 removals**: with D-6's serialisation the second
+  answers `403` (caller no longer an owner) or `422`; never zero owners. The
+  contract does not over-specify which.
+- **Other paths to zero owners**: the only `DELETE FROM team_members` is
+  `storage/teams.go:130`; the manager route refuses any owner
+  (`handlers_manager.go:358-361`) and its scope requires the caller be an owner
+  (`:613-616`), so AC-18 is reachable and D-3's description is accurate. No
+  `UPDATE team_members` or user deletion exists. Creation (OQ-4) is declared out.
+- **D-5 escape route** exists: `DELETE /api/teams/{id}` is owner-only
+  (`handlers_teams.go:154-170`).
+- **Manifest vs spec**: AC-1..AC-19 transcribed one to one; no criterion dropped or
+  narrowed except AC-15(b) above.
+- **Audit**: API-006 and API-023 are the only findings on the two operations;
+  API-050 (on DELETE) and API-056 (habits) are correctly listed as not resolved.
