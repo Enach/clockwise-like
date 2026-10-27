@@ -544,9 +544,11 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		DataAvailable  bool   `json:"data_available"`
 	}
 	type memberAnalytics struct {
-		Email string     `json:"email"`
-		Name  string     `json:"display_name"`
-		Weeks []weekData `json:"weeks"`
+		Email         string     `json:"email"`
+		Name          string     `json:"display_name"`
+		IsPacedayUser bool       `json:"is_paceday_user"`
+		DataAvailable bool       `json:"data_available"`
+		Weeks         []weekData `json:"weeks"`
 	}
 	_ = months
 
@@ -554,13 +556,15 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	var result []memberAnalytics
 	numWeeks := months * 4
 	for _, m := range members {
-		var weeks []weekData
+		weeks := make([]weekData, 0, numWeeks)
+		anyMeasured := false
 		for i := 0; i < numWeeks; i++ {
 			ws := weekStart.Add(time.Duration(-i*7) * 24 * time.Hour)
 			stats, _ := eng.GetMemberWeek(r.Context(), userID, m, ws)
 			if stats == nil {
 				stats = &engine.MemberWeekStats{}
 			}
+			anyMeasured = anyMeasured || stats.DataAvailable
 			weeks = append(weeks, weekData{
 				WeekStart:      ws.Format("2006-01-02"),
 				FocusMinutes:   stats.FocusMinutes,
@@ -569,7 +573,15 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 				DataAvailable:  stats.DataAvailable,
 			})
 		}
-		result = append(result, memberAnalytics{Email: m.MemberEmail, Name: m.DisplayName, Weeks: weeks})
+		// is_paceday_user matches the roster's derivation; data_available is
+		// any(weeks[].data_available), so it cannot disagree with the buckets (PAC-34 D-1).
+		result = append(result, memberAnalytics{
+			Email:         m.MemberEmail,
+			Name:          m.DisplayName,
+			IsPacedayUser: m.MemberUserID != nil,
+			DataAvailable: anyMeasured,
+			Weeks:         weeks,
+		})
 	}
 	if result == nil {
 		result = []memberAnalytics{}
