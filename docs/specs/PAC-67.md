@@ -1033,6 +1033,35 @@ per-user settings rows were created, `:1001-1002`).*
   to say what is counted (§6, factory §7.2), so the contract stops claiming
   "usable". *Assumed by the factory, pending owner confirmation.*
 
+*D-15 to D-17 were added by the contract stage (`contracts/features/PAC-67.md`,
+"Revision 1"), which had to settle them to answer its challenge. They change no
+acceptance criterion while the activity log can be written.*
+
+- **D-15 — Disconnecting a provider the user holds no credential for writes no
+  activity entry.** The answer says `nothing_stored`. Zoom disconnect still
+  resets conferencing to Meet (D-9), and Outlook disconnect still applies D-8.
+  Rationale: an entry for a no-op would record an event that did not happen to
+  the user's data. *Assumed by the factory, pending owner confirmation.*
+- **D-16 — Connection and disconnect entries are best-effort, like every
+  existing kind.** Each entry is written after the outcome it records is known.
+  If the insert fails, it is written to the server log and the response stands:
+  a disconnect still answers success, because the credential is already gone,
+  and a loss is still recorded and still shown on the status surfaces. That loss
+  or disconnect then has no entry. AC-8(c), AC-9, AC-15, AC-16 and AC-24 to
+  AC-29 count the entries written when the insert succeeds. Options considered:
+  (a) answer an error when the entry cannot be written after removal, which
+  would make a disconnect that did happen look failed and invite a retry of
+  something already done; (b) best-effort, chosen. Rationale: it matches how
+  the log already behaves (`storage.WriteAuditLog`), the response tells the
+  user the outcome either way, and no data is deleted. *Assumed by the factory,
+  pending owner confirmation.*
+- **D-17 — An unconfirmed Zoom revocation is not retried later.** The token is
+  not kept after local removal, so no later retry is possible. Keeping it to
+  allow a retry would mean storing a credential the user asked Paceday to
+  remove, which is against D-2 and the user's instruction. The user is told
+  that revocation could not be confirmed (AC-15) and can remove the app from
+  their Zoom account. *Assumed by the factory, pending owner confirmation.*
+
 ## Challenge — 2026-10-26
 
 **Verdict**: accept-with-changes
