@@ -2088,3 +2088,175 @@ the exception: it is an existing guard (`handlers_sso_test.go:172`).
   with this spec, as §2.8 already says.
 - **No other consumer.** There is no hand-written consumer in MCP, e2e or the
   web app: `mcp/` and `e2e/` contain no SSO reference.
+
+## Challenge — 2026-10-28 (applies to **v3.3**, commit `39e6c48`)
+
+**Verdict**: accept-with-changes
+
+This round covers the v3.3 delta (D-12, D-13, AC-22 to AC-26, and the raw byte
+search in AC-1 and AC-2). It also re-checks §2 on `origin/main` at `69ffa92`,
+which has not moved since the spec was written.
+
+D-12 and D-13 are the right shape. "Omitted means kept" follows PAC-24 §0's
+argument. Binding the kept secret to the issuer and client identifier closes the
+redirect that D-12 would otherwise open (`oidc.go:41`, `:50-55`, checked).
+
+Every new criterion fails on `main` today. An omitted or null secret decodes to
+`""` and is stored empty (`handlers_sso.go:174-185`, `:216`;
+`sso_providers.go:69`).
+
+There are two blocking findings: a missing concurrency requirement and a
+misattributed source. Neither needs an owner answer. Nothing was executed for
+this review. Every claim comes from reading the source and the Linear issue.
+
+### Blocking
+
+1. **"Kept" is specified against the stored state, but not against a write that
+   lands in between. That re-opens D-13's redirect and D-3's kill switch.**
+   - **D-13.** The secret is kept when the submitted issuer and client
+     identifier equal the stored ones. D-13 and AC-17 require that check to
+     happen *before* PAC-50's authorization is spent, which means before the
+     write. On PAC-50's branch the store write follows `authorizeWrite` (create
+     handler in `handlers_sso.go` on `origin/impl/pac-50-sso-write-gate-backend`).
+     So the comparison and the store are two separate steps. This sequence
+     defeats the rule:
+     1. The stored issuer is `evil`, with the writer's own secret.
+     2. Writer A sends issuer `evil` with the secret left out. The check passes.
+     3. Admin B replaces the configuration with issuer `good` and the
+        organisation's real secret.
+     4. A's write is then stored: issuer `evil`, with the secret kept from B.
+
+     At the next sign-in the organisation's secret goes to `evil`. §3.2 says
+     exactly this "is not write-only", and the spec's own threat model is a
+     *permitted* caller.
+   - **D-3.** The active state has the same gap. "A replaced configuration keeps
+     the active state it had" does not say *when* "had" is read. Take the
+     emergency case of §3.5: someone suspends SSO while a colleague is editing
+     it. If the suspend lands between the replace's read and its store, the
+     replace silently undoes it. That is the outcome D-3 exists to prevent.
+   - **Resolves it.** State in §3.2 and §3.3 that what a replace keeps (the
+     client secret and the active state) is decided against the configuration
+     as it stands when the replace is stored. Interleaved writes must never
+     produce a stored combination that neither writer asked for:
+     - an issuer or client identifier from one write, with a secret kept from a
+       different issuer;
+     - an active state that no transition set.
+
+     Add a criterion for each race: a replace that leaves the secret out racing
+     a replace that changes the issuer and the secret, and a replace racing a
+     suspend. Name the outcome. Either the racing replace is refused as AC-24
+     says, or it is applied against the newer state, but it never stores the
+     mixed combination. How a test arranges the interleaving is the plan's
+     business. The spec must require the outcome.
+
+2. **The spec attributes requirements to "the PAC-22 ticket's acceptance", and
+   the ticket has no acceptance section.**
+   - **Where.** D-12 says "the PAC-22 ticket's acceptance asks for the same
+     behaviour as PAC-24". Revision v3.3 items 1, 3 and 4 say "the ticket's
+     acceptance asks for PAC-24's behaviour", "the regression test the ticket
+     asks for" and "as the ticket's acceptance requires".
+   - **What the ticket says.** I read Linear issue PAC-22 on 2026-10-28. Its
+     body asks for five things: a tagged DTO that omits both secrets, an admin
+     check, `dependentRequired` validation, a RowsAffected check and a settable
+     `enabled`. It does not mention PAC-24, keeping an omitted secret, a sign-in
+     regression test or a byte search. None of its 18 comments mentions them
+     either, apart from the spec-author's own v3.3 announcement.
+   - **Why it blocks.** Stage 6 reviews against the spec and the issue. A
+     reviewer told that the ticket requires D-12 will not question it. The
+     factory rule is that a spec stands alone, with no verbal gloss. D-12 and
+     the byte search can be justified on their own (PAC-24 §0 at
+     `PAC-24.md:35-50`, and §3.1 here), so no behaviour needs to change.
+   - **Resolves it.** Either remove the attribution to the ticket or quote the
+     exact text it refers to. Rest D-12 on PAC-24's precedent and on being the
+     option that never loses a stored secret. Keep D-12 marked as assumed by the
+     factory (see the OWNER item below).
+
+### Non-blocking
+
+1. **§3.2 says a configuration of the unsupported kind has no secret on file.
+   The code does not store it that way.** `createSSOProvider` stores
+   `oidc_client_secret` whatever the provider type (`handlers_sso.go:209-220`).
+   So a stored SAML row can hold a non-empty client secret. For such a row,
+   AC-3 would report "a client secret is on file" as true, while AC-25 refuses
+   to keep it. AC-25 settles the behaviour, so only the wording needs to change:
+   - a secret is kept only from a stored configuration of the supported kind;
+   - on a row of the unsupported kind, AC-3's indicator still describes the
+     stored value.
+2. **§3.1 promises more than AC-1 tests.** §3.1 forbids the secrets "in any
+   encoding a client would decode" and allows "at most" a yes/no indicator.
+   AC-1 and AC-2 search only the raw and JSON-escaped forms. A digest,
+   fingerprint or base64 of the secret would pass the byte search and still
+   break §3.1. State that the described response shape (AC-3, AC-6) has no
+   property derived from a secret other than the two indicators. The contract
+   check then covers what the byte search cannot.
+3. **AC-21's refusal inherits PAC-50's status code, and that code is about to
+   change.** PAC-50's spec on `main` (§4.2 step 4) and its branch answer a
+   domain mismatch with 400 `provider_domain_mismatch`. The owner decided on 403
+   on 2026-10-27 (owner decisions: "PAC-50, subdomain or foreign domain on an
+   SSO write: 403"). AC-21's wording is already correct ("exactly as a
+   configuration write to it is refused"). The contract stage must take the
+   status code from PAC-50 as merged, not from PAC-50's branch at `51aa70a`.
+4. **The Linear issue body is still out of date.** It still says "Spec …
+   (v3)", still lists the admin check and the RowsAffected fix, and still says
+   "Resolves x-uncertain U-21 and U-22". The v3.1 challenge raised this and the
+   body has not changed since. It is also the text that blocking finding 2
+   misreads.
+5. **OWNER:** D-12 takes the owner's 2026-10-27 decision "Keys stay write-only
+   (PAC-24)", which was given for language-model keys, and applies it to the SSO
+   client secret. It also adds a rule that PAC-24 does not have: a write can
+   never clear the secret, and only removing the configuration does. Please
+   confirm that both "an omitted secret is kept" and "no clearing by a write"
+   are wanted for SSO secrets.
+6. **OWNER:** OQ-9 / D-13. After correcting a mistyped issuer, the user must
+   re-enter the secret. That is a usability cost the owner should confirm. The
+   factory's choice is the conservative one.
+
+### Criteria I could not falsify
+
+- None in v3.3. For AC-1 to AC-12 and AC-15 to AC-26 I could describe a test
+  that fails on `main` today:
+  - AC-22: the omitted secret is stored empty, so sign-in fails.
+  - AC-24 and AC-25: both writes are accepted today.
+  - AC-26: `""` and `null` both decode to `""` and are stored.
+
+  AC-14 is an existing guard (`handlers_sso_test.go:172`). AC-23's first half
+  guards today's replace, as the spec says.
+- The interleaving requirement in blocking finding 1 has no criterion yet. That
+  is the finding.
+
+### Citations I checked and found wrong
+
+- **"The PAC-22 ticket's acceptance"** (D-12 and Revision v3.3): no such text
+  exists in the issue or its comments (blocking finding 2).
+- **§3.2, "a configuration of the unsupported kind" has no secret on file**:
+  the create handler stores the client secret whatever the type
+  (`handlers_sso.go:209-220`; non-blocking item 1).
+- **Checked and correct on `69ffa92`**:
+  - `sso_providers.go:12-26,20,23,28-31,33-45,51,63-73,66,82-92`
+  - `handlers_sso.go:51,56-59,64-72,112,121-125,167-172,189-196,204,209-220,213,228,233-238,250,257-262,269`
+  - `routes.go:173-176`, `008_sso_providers.up.sql:6-12`, `oidc.go:41,50-55`
+  - `auth.yaml:840,1261,1303,1306-1308,1313,1322`
+  - the eleven `WriteAuditLog` sites, none of them on SSO
+  - `handlers_sso_test.go:30,172`, `pac35_auth_flows_test.go:286,396,803`,
+    `sso_providers_test.go:59`
+  - `MIGRATION.md:55-57`, `api-audit.md:268,269,350,528-531`
+  - `PAC-24.md` §0 and AC-13: there, an explicit empty key clears the stored
+    key, as D-12 says.
+  - PAC-50's PR #212 is open at `51aa70a`. Its `TestSSOWrite_OneGrantOneWrite`
+    still pins `OIDCClientSecret` and `SAMLCert` (`pac50_sso_gate_test.go:152`
+    on that branch).
+
+### Consumers this breaks
+
+- **clockwise-like `factory/pac-22-contract` at `4b1d455`** (contract revision
+  1.1). It requires the client secret on every write, so D-12 and D-13 make it
+  wrong. The spec already says so. It must be revised before the contract
+  challenge.
+- **smart-calendar-flow PR #120** (open; types regenerated from revision 1.1).
+  Out of date for the same reason. It must be regenerated from the revised
+  contract or replaced.
+- **clockwise-like `backend/api/pac50_sso_gate_test.go:152`** (PAC-50 branch).
+  It pins the thirteen PascalCase keys and must change with this spec (§2.8).
+- **No hand-written consumer.** `git grep` for `admin/sso` and `SsoProvider` on
+  web `origin/main` (`aa5c52e`), outside `src/api/generated/`, finds nothing.
+  `mcp/` and `e2e/` on `main` have no SSO reference.
