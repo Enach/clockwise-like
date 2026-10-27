@@ -219,7 +219,8 @@ DELETE FROM team_analytics_cache
 -- One link per mutating test, each with a DIFFERENT host user and a DIFFERENT
 -- time window, so no two booking tests can make each other fail.
 --   uses_count is NOT a column: storage/scheduling_links.go computes it as
---   COUNT(bookings WHERE status <> 'cancelled'), so "exhausted" is seeded by
+--   COUNT(bookings) for the link, whatever their status (PAC-40, D-6: a
+--   cancelled booking does not give its use back), so "exhausted" is seeded by
 --   inserting a booking, not by setting a counter.
 --   min_notice_minutes = 0 so every slot in the window is bookable today.
 
@@ -248,7 +249,13 @@ VALUES
   -- so its slots and its booking confirmation reach the stand-in.
   ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888',
    'e2e-seam-30min', 'E2E Seam Link', '{30}', '{1,2,3,4,5}',
-   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true);
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
+  -- PAC-40 AC-18, owned by tests/link-lifecycle.spec.ts alone: single-use,
+  -- booked once; the test cancels that booking in the database and the link
+  -- must stay used up. Separate from the shared exhausted link on purpose.
+  ('c6666666-6666-4666-8666-666666666666', '44444444-4444-4444-8444-444444444444',
+   'e2e-cancelled-single-use', 'E2E Cancelled Single Use', '{30}', '{1,2,3,4,5}',
+   '15:00', '17:00', 0, 0, 0, 'single_use', NULL, true);
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
 -- with no accepted host renders with zero hosts and zero coverage.
@@ -257,7 +264,8 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('c2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'accepted', NOW()),
   ('c3333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', 'accepted', NOW()),
   ('c4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'accepted', NOW()),
-  ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888', 'accepted', NOW());
+  ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888', 'accepted', NOW()),
+  ('c6666666-6666-4666-8666-666666666666', '44444444-4444-4444-8444-444444444444', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.
@@ -265,6 +273,9 @@ INSERT INTO bookings (id, link_id, booker_name, booker_email, start_time, end_ti
 VALUES
   ('d3333333-3333-4333-8333-333333333333', 'c3333333-3333-4333-8333-333333333333',
    'E2E Past Booker', 'past.booker@paceday.test',
-   '2020-01-06T15:00:00Z', '2020-01-06T15:30:00Z', 'confirmed', 'seeded — exhausts the link');
+   '2020-01-06T15:00:00Z', '2020-01-06T15:30:00Z', 'confirmed', 'seeded — exhausts the link'),
+  ('d6666666-6666-4666-8666-666666666666', 'c6666666-6666-4666-8666-666666666666',
+   'E2E Cancelled Booker', 'cancelled.booker@paceday.test',
+   '2020-01-07T15:00:00Z', '2020-01-07T15:30:00Z', 'confirmed', 'seeded — PAC-40 AC-18 cancels it');
 
 COMMIT;

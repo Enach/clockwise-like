@@ -176,6 +176,17 @@ export const LINKS = {
     hostUserId: USERS.primary.id,
     durations: [45],
   },
+  /**
+   * PAC-40 AC-18 only (tests/link-lifecycle.spec.ts): single_use, booked once
+   * by `bookingId`; the test cancels that booking and the link stays used up.
+   */
+  cancelledSingleUse: {
+    id: 'c6666666-6666-4666-8666-666666666666',
+    slug: 'e2e-cancelled-single-use',
+    title: 'E2E Cancelled Single Use',
+    hostUserId: USERS.betaReport.id,
+    bookingId: 'd6666666-6666-4666-8666-666666666666',
+  },
 } as const;
 
 /** Hosted by CONNECTED.seam: AC-22's collective slots and booking confirmation. */

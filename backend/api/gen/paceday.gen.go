@@ -899,7 +899,7 @@ type CreatePublicBookingRequest struct {
 	Start time.Time `json:"start"`
 }
 
-// CreateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two accepted spellings; the canonical one wins when both are sent. Nothing is required at the JSON level, but validation rejects an empty title.
+// CreateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two accepted spellings. For durations and days the canonical spelling wins whenever it is carried (present and not null; `[]` counts as carried), on create and PATCH alike (PAC-40 D-5). The window aliases follow their own rule (see each field). Nothing is required at the JSON level, but validation rejects an empty title.
 type CreateSchedulingLinkRequest struct {
 	BufferAfter  *int `json:"buffer_after,omitempty"`
 	BufferBefore *int `json:"buffer_before,omitempty"`
@@ -907,17 +907,17 @@ type CreateSchedulingLinkRequest struct {
 	// CoHostEmails Emails are lowercased and trimmed, then resolved to existing accounts and added as `pending` hosts. Addresses with no account are skipped silently - the response gives no indication that an invite was dropped.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
-	// Days Alias for days_of_week, used only when days_of_week is absent. Accepts "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently dropped, which can turn a non-empty list into a 422 "at least one day".
-	Days *[]string `json:"days,omitempty"`
+	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently dropped, which can turn a non-empty list into a 422 "at least one day".
+	Days *[]string `json:"days"`
 
-	// DaysOfWeek Canonical spelling, 0=Sunday..6=Saturday. Wins over `days`. Defaults to [1,2,3,4,5] when both are absent.
-	DaysOfWeek *[]int `json:"days_of_week,omitempty"`
+	// DaysOfWeek Canonical spelling, 0=Sunday..6=Saturday. Wins over `days` whenever it is carried (present and not null), even as `[]` (then a 422). Defaults to [1,2,3,4,5] when both are absent or null.
+	DaysOfWeek *[]int `json:"days_of_week"`
 
-	// DurationOptions Canonical spelling. Wins over `durations`. Defaults to [30] when both are absent (a present-but-empty array is a 422).
-	DurationOptions *[]int `json:"duration_options,omitempty"`
+	// DurationOptions Canonical spelling. Wins over `durations` whenever it is carried (present and not null), even as `[]`, which is then a 422 "at least one duration is required" whatever `durations` says. Defaults to [30] when both are absent or null.
+	DurationOptions *[]int `json:"duration_options"`
 
-	// Durations Alias for duration_options, used only when duration_options is absent.
-	Durations *[]int `json:"durations,omitempty"`
+	// Durations Alias for duration_options, used only when duration_options is absent or null.
+	Durations *[]int `json:"durations"`
 
 	// MaxUses Required and must be positive when usage_type is `recurring`. Ignored (forced to null) otherwise.
 	MaxUses          *int `json:"max_uses"`
@@ -932,17 +932,17 @@ type CreateSchedulingLinkRequest struct {
 	// UsageType Lowercased and trimmed before validation; an empty string becomes `reusable`.
 	UsageType *CreateSchedulingLinkRequestUsageType `json:"usage_type,omitempty"`
 
-	// WindowEnd Alias, used only when window_end_time is empty.
-	WindowEnd *string `json:"window_end,omitempty"`
+	// WindowEnd Alias, used only when window_end_time is absent, null or the empty string. Not covered by PAC-40's precedence rule (D-10, OQ-7).
+	WindowEnd *string `json:"window_end"`
 
-	// WindowEndTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00".
-	WindowEndTime *string `json:"window_end_time,omitempty"`
+	// WindowEndTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00". An explicit null is the same as absent (the server decodes it to the empty string).
+	WindowEndTime *string `json:"window_end_time"`
 
-	// WindowStart Alias, used only when window_start_time is empty.
-	WindowStart *string `json:"window_start,omitempty"`
+	// WindowStart Alias, used only when window_start_time is absent, null or the empty string. Not covered by PAC-40's precedence rule: PATCH treats an empty canonical value differently (PAC-40 D-10, OQ-7).
+	WindowStart *string `json:"window_start"`
 
-	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00".
-	WindowStartTime *string `json:"window_start_time,omitempty"`
+	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00". An explicit null is the same as absent (the server decodes it to the empty string).
+	WindowStartTime *string `json:"window_start_time"`
 }
 
 // CreateSchedulingLinkRequestUsageType Lowercased and trimmed before validation; an empty string becomes `reusable`.
@@ -2053,6 +2053,7 @@ type SchedulingErrorResponse struct {
 
 // SchedulingLink backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`, `window_start` vs `window_start_time`).
 type SchedulingLink struct {
+	// Active false means paused: the owner switched the link off and can switch it back on with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).
 	Active       bool `json:"active"`
 	BufferAfter  int  `json:"buffer_after"`
 	BufferBefore int  `json:"buffer_before"`
@@ -2084,7 +2085,7 @@ type SchedulingLink struct {
 	Title     string                  `json:"title"`
 	UsageType SchedulingLinkUsageType `json:"usage_type"`
 
-	// UsesCount Count of non-cancelled bookings, computed by subquery at read time.
+	// UsesCount Number of booking rows stored for this link, whatever their status, so cancelled bookings are included and the figure never goes down when a booking is cancelled (PAC-40 D-6, API-051). Bookings made before PAC-40 count under the same rule (D-8). Exhaustion (410 on the public paths) is judged on this figure. No product path removes a booking row (cancel keeps it, delete of a link is a soft delete, D-2), so through the API the figure only grows. A row removed outside the product (e2e teardown, a manual database edit) is no longer counted (PAC-40 C-3). Whether the server stores or computes the figure is not part of the contract, provided it equals this count.
 	UsesCount int    `json:"uses_count"`
 	WindowEnd string `json:"window_end"`
 
@@ -2114,7 +2115,7 @@ type SchedulingLinkBookingRecord struct {
 	Notes     string    `json:"notes"`
 	StartTime time.Time `json:"start_time"`
 
-	// Status DB default is `confirmed`; `cancelled` rows are excluded from uses_count and from conflict checks.
+	// Status DB default is `confirmed`. `cancelled` rows are excluded from conflict checks but still count in the link's `uses_count` (PAC-40 D-6). No API path sets `cancelled` today.
 	Status string `json:"status"`
 }
 
@@ -2184,7 +2185,7 @@ type SchedulingLinkInviteResponseStatus string
 type SchedulingLinkListResponse struct {
 	Owned []SchedulingLink `json:"owned"`
 
-	// Shared Links where the caller is an accepted co-host but not the owner.
+	// Shared Links where the caller is an accepted co-host but not the owner. Deleted links are never included (PAC-40).
 	Shared []SchedulingLink `json:"shared"`
 }
 
@@ -2747,7 +2748,7 @@ type TeamSlotList struct {
 
 // UpdateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkPatch. Scalars are Go pointers, so an absent key leaves the stored value alone; slices are plain slices, so an absent key and an explicit `null` are indistinguishable and both mean "leave unchanged", while `[]` means "clear" (and then usually fails 422).
 type UpdateSchedulingLinkRequest struct {
-	// Active Setting false is the same soft-deactivation that DELETE performs.
+	// Active Pause (false) or resume (true). Not the same as DELETE: a paused link stays listed and fetchable by its owner and accepted co-hosts, and its public page answers 404 until resumed. Cannot reach a deleted link: PATCH on one answers 404 whatever this value is (PAC-40 AC-3, AC-11).
 	Active       *bool `json:"active"`
 	BufferAfter  *int  `json:"buffer_after"`
 	BufferBefore *int  `json:"buffer_before"`
@@ -2755,13 +2756,17 @@ type UpdateSchedulingLinkRequest struct {
 	// CoHostEmails When present, the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Unknown emails are skipped silently.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
-	// Days Applied after days_of_week, so `days` wins when both are sent - again the opposite of create.
-	Days            *[]string `json:"days,omitempty"`
-	DaysOfWeek      *[]int    `json:"days_of_week,omitempty"`
-	DurationOptions *[]int    `json:"duration_options,omitempty"`
+	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH).
+	Days *[]string `json:"days"`
 
-	// Durations Applied AFTER duration_options, so when both are sent `durations` wins - the opposite precedence from create.
-	Durations *[]int `json:"durations,omitempty"`
+	// DaysOfWeek Canonical spelling. When carried (present and not null) it wins over `days`, as on create (PAC-40 D-5); `[]` counts as carried and fails 422.
+	DaysOfWeek *[]int `json:"days_of_week"`
+
+	// DurationOptions Canonical spelling. When carried (present and not null) it wins over `durations`, as on create (PAC-40 D-5, API-049); `[]` counts as carried and fails 422 "at least one duration is required", leaving the link unchanged.
+	DurationOptions *[]int `json:"duration_options"`
+
+	// Durations Alias for duration_options, applied only when duration_options is absent or null. Ignored when duration_options is carried (PAC-40; before PAC-40 the alias won on PATCH).
+	Durations *[]int `json:"durations"`
 
 	// MaxUses An explicit null is indistinguishable from an absent key (both leave the stored value), so max_uses cannot be cleared by PATCH except by switching usage_type away from `recurring`.
 	MaxUses          *int `json:"max_uses"`
@@ -2772,11 +2777,11 @@ type UpdateSchedulingLinkRequest struct {
 	Title     *string                               `json:"title"`
 	UsageType *UpdateSchedulingLinkRequestUsageType `json:"usage_type"`
 
-	// WindowEnd Alias, applied only when window_end_time is absent.
+	// WindowEnd Alias, applied only when window_end_time is absent or null; same empty-string caveat as window_start (PAC-40 D-10, OQ-7).
 	WindowEnd     *string `json:"window_end"`
 	WindowEndTime *string `json:"window_end_time"`
 
-	// WindowStart Alias, applied only when window_start_time is absent.
+	// WindowStart Alias, applied only when window_start_time is absent or null. An empty-string window_start_time is carried and wins (then 422), unlike create; unchanged by PAC-40 (D-10, OQ-7).
 	WindowStart     *string `json:"window_start"`
 	WindowStartTime *string `json:"window_start_time"`
 }
@@ -5074,10 +5079,10 @@ type ServerInterface interface {
 	// Alias of GET /api/scheduling-links/host-invites (identical handler).
 	// (GET /api/scheduling-links/invites)
 	ListSchedulingLinkInvitesAlias(w http.ResponseWriter, r *http.Request)
-	// Deactivate a scheduling link (owner only).
+	// Delete a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Fetch one scheduling link by id.
+	// Fetch one scheduling link by id (owner or accepted co-host).
 	// (GET /api/scheduling-links/{id})
 	GetSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Partially update a scheduling link (owner only).
@@ -5707,13 +5712,13 @@ func (_ Unimplemented) ListSchedulingLinkInvitesAlias(w http.ResponseWriter, r *
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Deactivate a scheduling link (owner only).
+// Delete a scheduling link (owner only).
 // (DELETE /api/scheduling-links/{id})
 func (_ Unimplemented) DeleteSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Fetch one scheduling link by id.
+// Fetch one scheduling link by id (owner or accepted co-host).
 // (GET /api/scheduling-links/{id})
 func (_ Unimplemented) GetSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -14290,6 +14295,15 @@ func (response GetSchedulingLink401TextResponse) VisitGetSchedulingLinkResponse(
 	return err
 }
 
+type GetSchedulingLink403JSONResponse BookingError
+
+func (response GetSchedulingLink403JSONResponse) VisitGetSchedulingLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetSchedulingLink404JSONResponse BookingError
 
 func (response GetSchedulingLink404JSONResponse) VisitGetSchedulingLinkResponse(w http.ResponseWriter) error {
@@ -15870,10 +15884,10 @@ type StrictServerInterface interface {
 	// Alias of GET /api/scheduling-links/host-invites (identical handler).
 	// (GET /api/scheduling-links/invites)
 	ListSchedulingLinkInvitesAlias(ctx context.Context, request ListSchedulingLinkInvitesAliasRequestObject) (ListSchedulingLinkInvitesAliasResponseObject, error)
-	// Deactivate a scheduling link (owner only).
+	// Delete a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(ctx context.Context, request DeleteSchedulingLinkRequestObject) (DeleteSchedulingLinkResponseObject, error)
-	// Fetch one scheduling link by id.
+	// Fetch one scheduling link by id (owner or accepted co-host).
 	// (GET /api/scheduling-links/{id})
 	GetSchedulingLink(ctx context.Context, request GetSchedulingLinkRequestObject) (GetSchedulingLinkResponseObject, error)
 	// Partially update a scheduling link (owner only).

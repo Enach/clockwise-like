@@ -400,10 +400,25 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if link == nil {
+		// Unknown and deleted ids answer the same (PAC-40, D-9).
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.writeLink(w, link, userIDFromCtx(r.Context()))
+	// Only the people who see the link in their list may fetch it: its owner
+	// and its accepted co-hosts (PAC-40 D-7, contract C-1; API-006).
+	userID := userIDFromCtx(r.Context())
+	if link.OwnerUserID != userID {
+		status, found, err := storage.GetLinkHostStatus(h.db, link.ID, userID)
+		if err != nil {
+			writeServerError(w, r, "getLink host status", err, http.StatusInternalServerError)
+			return
+		}
+		if !found || status != "accepted" {
+			writeError(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+	h.writeLink(w, link, userID)
 }
 
 // PATCH /api/scheduling-links/{id}
@@ -441,16 +456,16 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		updated.Slug = normalizeSlug(*patch.Slug)
 		slugPatched = true
 	}
+	// The canonical spelling wins whenever it is carried (present and not
+	// null; [] counts), as on create (PAC-40 D-5; API-049).
 	if patch.DurationOptions != nil {
 		updated.DurationOptions = patch.DurationOptions
-	}
-	if patch.Durations != nil {
+	} else if patch.Durations != nil {
 		updated.DurationOptions = patch.Durations
 	}
 	if patch.DaysOfWeek != nil {
 		updated.DaysOfWeek = patch.DaysOfWeek
-	}
-	if patch.Days != nil {
+	} else if patch.Days != nil {
 		updated.DaysOfWeek = dayNumbers(patch.Days)
 	}
 	if patch.WindowStart != nil {
@@ -501,6 +516,11 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	result, err := storage.UpdateSchedulingLink(h.db, id, &updated)
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
+		return
+	}
+	if result == nil {
+		// Deleted between the read above and the write: nothing was written.
+		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
 	if patch.CoHostEmails != nil {

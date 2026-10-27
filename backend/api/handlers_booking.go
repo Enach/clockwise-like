@@ -278,20 +278,12 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "invalid duration", http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		writeError(w, "invalid end time, use RFC3339", http.StatusBadRequest)
-		return
-	}
 	if !end.After(start) {
 		writeError(w, "end must be after start", http.StatusBadRequest)
 		return
 	}
 	if !h.slotAllowed(link, engine.AvailableSlot{Start: start, End: end}, time.Now()) {
 		writeError(w, "booking is too soon", http.StatusUnprocessableEntity)
-		return
-	}
-	if (link.UsageType == "single_use" && link.UsesCount >= 1) || (link.UsageType == "recurring" && link.MaxUses != nil && link.UsesCount >= *link.MaxUses) {
-		writeError(w, "link is no longer accepting bookings", http.StatusGone)
 		return
 	}
 	if conflict, e := storage.HasOverlappingBooking(h.db, link.ID, start, end); e != nil {
