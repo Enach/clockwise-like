@@ -32,42 +32,75 @@ paths:
       - auth
       summary: Create or replace the OIDC SSO configuration for a domain
       description: "Upsert keyed on domain: a second POST for the same domain replaces the\nconfiguration\
-        \ (there is no PATCH/PUT). It is a replace, not a merge\n(PAC-22 spec §3.2): every configuration\
-        \ value is taken from this\nrequest, so changing any part of a configuration means supplying all\n\
-        of it, the client secret included. A stored secret is never kept for a\nrequest that leaves it\
-        \ out; such a request is refused (400 below).\n\nWho may call it is unchanged by PAC-22. The caller\
-        \ must belong to an\norg and the supplied domain must match that org's domain\n(domain.DomainMatchesOrg).\
+        \ (there is no PATCH/PUT). It is a replace for every value\na reader can see (PAC-22 spec §3.2):\
+        \ `provider_name`, `provider_type`,\n`oidc_issuer` and `oidc_client_id` are supplied on every\
+        \ write and\nstored as supplied.\n\nThe client secret is the one exception (spec D-12, D-13, D-14):\n\
+        - `oidc_client_secret` supplied (a non-empty string): it replaces the\n  stored secret.\n- `oidc_client_secret`\
+        \ left out (the property absent): the stored\n  secret is kept, unchanged, but only when all of\
+        \ these hold at the\n  moment the write is stored: a configuration exists for the domain,\n  it\
+        \ is of provider type `oidc`, its stored client secret is\n  non-empty, and the submitted `oidc_issuer`\
+        \ and `oidc_client_id` are\n  byte-for-byte equal to the stored ones (no case folding, no\n  trailing-slash\
+        \ or whitespace normalisation). Otherwise the write is\n  refused (400, check 6) and nothing changes.\
+        \ This binds a kept\n  secret to the place it is sent at sign-in: the issuer decides the\n  token\
+        \ endpoint the secret goes to (spec §2.2, D-13).\n- `oidc_client_secret` given as `\"\"` or `null`:\
+        \ refused (400, check\n  5). No write clears the client secret; removing the configuration\n \
+        \ (deleteSsoProvider) is the way to remove it.\nA create (no configuration for the domain) has\
+        \ nothing to keep, so it\nmust supply the secret.\n\nWho may call it is unchanged by PAC-22. The\
+        \ caller must belong to an\norg and the supplied domain must match that org's domain\n(domain.DomainMatchesOrg).\
         \ PAC-50 replaces that rule; PAC-22 neither\nwidens nor narrows it.\n\nOrder of checks. Membership\
         \ (403 `org membership required`) is checked\nfirst, as today, before the body is read: a caller\
         \ with no org gets\nthat 403 whatever the body holds. Checks 1-5 below run after it and\nbefore\
-        \ the org lookup (403 `org not found`), the domain match (403\n`can only configure SSO for your\
-        \ own domain`) and any PAC-50 write\nauthorization.\n\nSince PAC-22 (API-060, resolves U-21) the\
-        \ request is validated before\nanything is stored, and every refusal is a 400 that leaves the\
-        \ stored\nconfiguration exactly as it was (or absent). The checks run in this\norder, after membership;\
-        \ the first that fails decides the message:\n\n1. The body is JSON (`invalid JSON`).\n2. None\
-        \ of `saml_entry_point`, `saml_issuer`, `saml_cert` is present,\n   whatever its value (including\
-        \ `\"\"` and `null`). The first present,\n   in that order, is named: `saml_entry_point is not\
-        \ supported`,\n   `saml_issuer is not supported`, `saml_cert is not supported`\n   (spec D-8,\
-        \ AC-18). Such a value is refused, never stored and never\n   silently dropped.\n3. `domain`,\
-        \ `provider_name` and `provider_type` are non-empty\n   (`domain, provider_name and provider_type\
-        \ are required`, unchanged).\n4. `provider_type` is `oidc`. `saml` is refused with\n   `provider_type\
-        \ 'saml' is not supported` (spec D-1, AC-8): the\n   product cannot complete a SAML sign-in, so\
-        \ a SAML configuration is\n   refused when offered instead of stored and refused at sign-in. Any\n\
-        \   other value is refused with `provider_type must be 'oidc'`\n   (replaces `provider_type must\
-        \ be 'oidc' or 'saml'`).\n5. `oidc_issuer`, `oidc_client_id` and `oidc_client_secret` are each\n\
-        \   present and non-empty, checked in that order:\n   `oidc_issuer is required`, `oidc_client_id\
-        \ is required`,\n   `oidc_client_secret is required` (spec D-2, AC-7). Missing, `null`\n   and\
-        \ `\"\"` are the same refusal. Values are stored as given (not\n   trimmed).\n\nEvery one of these\
-        \ is decided from the request alone (and the\ncaller's membership), before any write authorization\
-        \ is consulted, so\na refused submission costs the caller nothing beyond the refusal\n(spec §3.4,\
-        \ AC-17). Properties\noutside the schema other than the three SAML ones are ignored today;\nrejecting\
-        \ them is PAC-50's (`unknown property: <name>`).\n\nActive state (spec §3.3, D-3, resolves API-066).\
-        \ This operation never\nchanges whether SSO is active: a new configuration is created active,\n\
-        and a replaced configuration keeps the state it had (an active one\nstays active, a suspended\
-        \ one stays suspended). Only\nsetSsoProviderState changes it. (Before PAC-22 every write forced\n\
-        `enabled` to true.)\n\nConfigurations stored before PAC-22 (a SAML row, an OIDC row with an\n\
-        empty issuer, client id or secret) are not rewritten or deleted by\nthese checks. They stay readable\
-        \ through listSsoProviders and can be\nsuspended, resumed and deleted.\n"
+        \ the org lookup (403 `org not found`) and the domain match (403\n`can only configure SSO for\
+        \ your own domain`). Check 6 runs after the\ndomain match, so the stored configuration it reads\
+        \ is always the\ncaller's own organisation's, and before any PAC-50 write\nauthorization.\n\n\
+        Since PAC-22 (API-060, resolves U-21) the request is validated before\nanything is stored, and\
+        \ every refusal is a 400 that leaves the stored\nconfiguration exactly as it was (or absent).\
+        \ The checks run in this\norder, after membership; the first that fails decides the message:\n\
+        \n1. The body is JSON (`invalid JSON`).\n2. None of `saml_entry_point`, `saml_issuer`, `saml_cert`\
+        \ is present,\n   whatever its value (including `\"\"` and `null`). The first present,\n   in\
+        \ that order, is named: `saml_entry_point is not supported`,\n   `saml_issuer is not supported`,\
+        \ `saml_cert is not supported`\n   (spec D-8, AC-18). Such a value is refused, never stored and\
+        \ never\n   silently dropped.\n3. `domain`, `provider_name` and `provider_type` are non-empty\n\
+        \   (`domain, provider_name and provider_type are required`, unchanged).\n4. `provider_type` is\
+        \ `oidc`. `saml` is refused with\n   `provider_type 'saml' is not supported` (spec D-1, AC-8):\
+        \ the\n   product cannot complete a SAML sign-in, so a SAML configuration is\n   refused when\
+        \ offered instead of stored and refused at sign-in. Any\n   other value is refused with `provider_type\
+        \ must be 'oidc'`\n   (replaces `provider_type must be 'oidc' or 'saml'`).\n5. `oidc_issuer` and\
+        \ `oidc_client_id` are each present and\n   non-empty, in that order: `oidc_issuer is required`,\n\
+        \   `oidc_client_id is required` (spec D-2, AC-7). Missing, `null` and\n   `\"\"` are the same\
+        \ refusal. Then, when `oidc_client_secret` is\n   present, it is a non-empty string: `\"\"` and\
+        \ `null` are refused with\n   `oidc_client_secret must not be empty` (spec D-12, AC-26). Its\n\
+        \   absence is not decided here (check 6). Values are stored as given\n   (not trimmed).\n6. Only\
+        \ when `oidc_client_secret` is absent, against the stored\n   configuration for the domain: `oidc_client_secret\
+        \ is required` when\n   there is no configuration, or it is not of type `oidc`, or its\n   stored\
+        \ client secret is empty (spec AC-7, AC-25); `oidc_client_secret\n   is required when oidc_issuer\
+        \ or oidc_client_id changes` when the\n   submitted issuer or client id differs from the stored\
+        \ one (spec\n   D-13, AC-24).\n\nChecks 1-5 are decided from the request alone (and the caller's\n\
+        membership). Check 6 reads the stored configuration but, like checks\n1-5, is decided before any\
+        \ write authorization is consulted. So a\nsubmission refused by any of them costs the caller nothing\
+        \ beyond the\nrefusal when nothing changes in between (spec §3.4, AC-17). Properties\noutside\
+        \ the schema other than the three SAML ones are ignored today;\nrejecting them is PAC-50's (`unknown\
+        \ property: <name>`).\n\nInterleaved writes (spec D-14, AC-27, AC-28). Another write to the\n\
+        same domain can be stored between this request's checks and its\nstore. What a replace keeps is\
+        \ therefore decided again, atomically\nwith the store, against the configuration as it is at that\
+        \ moment:\n- when the secret is left out, the store keeps the stored secret only\n  if the conditions\
+        \ of check 6 still hold at that moment; if they do\n  not (the issuer or client id now differs,\
+        \ there is no secret to\n  keep, the configuration was removed or is no longer `oidc`), the\n\
+        \  request is refused with the same 400 message check 6 would give\n  against that state, and\
+        \ nothing it carried is stored (no row is\n  created, no value is changed). A stored configuration\
+        \ never pairs\n  one write's issuer or client id with a secret kept from a\n  configuration that\
+        \ had a different issuer or client id, and never\n  holds an empty secret written by this operation;\n\
+        - the active state is never written by a replace: the configuration\n  keeps the state stored\
+        \ at the moment the replace is stored, so a\n  setSsoProviderState transition stored while the\
+        \ replace was in\n  flight is never undone (AC-28).\nWhether a write authorization (PAC-50) is\
+        \ spent when a refusal is\nonly detected at the moment of storing is not specified (spec D-14).\n\
+        \nActive state (spec §3.3, D-3, resolves API-066). This operation never\nchanges whether SSO is\
+        \ active: a new configuration is created active,\nand a replaced configuration keeps the state\
+        \ stored at the moment the\nreplace is stored (an active one stays active, a suspended one stays\n\
+        suspended). Only setSsoProviderState changes it. (Before PAC-22 every\nwrite forced `enabled`\
+        \ to true.)\n\nConfigurations stored before PAC-22 (a SAML row, an OIDC row with an\nempty issuer,\
+        \ client id or secret) are not rewritten or deleted by\nthese checks. They stay readable through\
+        \ listSsoProviders and can be\nsuspended, resumed and deleted.\n"
       requestBody:
         required: true
         content:
@@ -80,7 +113,15 @@ paths:
 
             as an SsoProvider: it never carries the client secret or a signing
 
-            certificate under any name (API-001 disclosure half, spec AC-2).
+            certificate under any name, nor anything derived from either
+
+            (API-001 disclosure half, spec AC-1, AC-2). The supplied secret,
+
+            when one was supplied, does not occur in the body or the headers.
+
+            After a replace that left the secret out, `has_oidc_client_secret`
+
+            is true (the kept secret, spec AC-22).
 
             '
           content:
@@ -98,9 +139,13 @@ paths:
 
             supported`; `provider_type must be ''oidc''`; `oidc_issuer is
 
-            required`; `oidc_client_id is required`; `oidc_client_secret is
+            required`; `oidc_client_id is required`; `oidc_client_secret must
 
-            required`. The body never echoes a submitted value.
+            not be empty`; `oidc_client_secret is required`;
+
+            `oidc_client_secret is required when oidc_issuer or oidc_client_id
+
+            changes`. The body never echoes a submitted or a stored value.
 
             '
           content:
@@ -115,8 +160,9 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
           description: '"org membership required" (checked before the body is read, so before every 400);
-            "org not found" and "can only configure SSO for your own domain" (checked after the 400s).
-            Nothing is stored or changed. Unchanged by PAC-22 (PAC-50 replaces this gate).'
+            "org not found" and "can only configure SSO for your own domain" (checked after the 400s of
+            checks 1-5 and before check 6). Nothing is stored or changed. Unchanged by PAC-22 (PAC-50
+            replaces this gate).'
           content:
             application/json:
               schema:
@@ -141,9 +187,13 @@ paths:
 
         (spec §3.7), whose items never carry the client secret or a signing
 
-        certificate under any name, whoever the caller is (API-001
+        certificate under any name, nor anything derived from either, whoever
 
-        disclosure half, spec AC-1). Suspended configurations are listed,
+        the caller is (API-001 disclosure half, spec AC-1): neither stored
+
+        value occurs anywhere in the body or the headers, raw or
+
+        JSON-escaped, in any letter case. Suspended configurations are listed,
 
         with `state: suspended`; so are configurations stored before PAC-22
 
@@ -250,25 +300,31 @@ paths:
         \ \"last one wins\" decides a kill switch; then `state` is `active` or\n   `suspended` (`state\
         \ must be 'active' or 'suspended'`, for a missing\n   or `null` state too).\n3. Domain: `{domain}`,\
         \ lower-cased and not trimmed, must equal the\n   caller's org domain exactly, case-insensitively,\
-        \ else 400\n   `provider_domain_mismatch`. A subdomain of the org domain, and\n   another org's\
-        \ domain, are both refused (spec AC-21).\n4. Authorization: the write authorization of createSsoProvider\n\
-        \   (PAC-50: a live step-up grant, consumed, or break-glass with a\n   fresh session), else 403\
-        \ with createSsoProvider's 403 body.\n   Steps 1-3 are decided from the request alone and leave\
-        \ the\n   authorization unspent.\n5. Lookup of the configuration for the lower-cased domain, whatever\n\
-        \   its state: none gives 404 `sso provider not found`; nothing is\n   created and nothing is\
-        \ recorded, and the authorization is spent\n   (spec D-9, AC-19).\n6. If the configuration is\
-        \ already in the requested state, nothing\n   changes and the answer is 200 with the configuration\
-        \ as stored\n   (spec AC-20). Otherwise only the active state is written.\n   `updated_at` is\
-        \ not changed by this operation in either case: it\n   records the last configuration write (createSsoProvider).\n\
-        7. Recording: every transition that found its configuration,\n   including one that changed nothing,\
-        \ is recorded where PAC-50\n   records configuration writes, as `sso_provider_written` with the\n\
-        \   operation `suspend` (state `suspended`) or `resume` (state\n   `active`), naming the organisation,\
-        \ the acting user and the\n   provider (spec D-10, AC-16). No operation exposes that record.\n\
-        \   The state write and its record are one transaction, as PAC-50's\n   configuration writes are:\
-        \ either both happen or neither does.\n\nThis operation acts on configurations stored before PAC-22\
-        \ that\ncreateSsoProvider would refuse today (a SAML row, an incomplete OIDC\nrow) exactly as\
-        \ on any other (spec AC-8).\n\n`PUT /api/admin/sso/stepup/state` (PAC-50 defines GET on\n`/api/admin/sso/stepup`)\
-        \ is this operation with `{domain}` =\n`stepup`, which is never an org domain: 400 `provider_domain_mismatch`.\n"
+        \ else 403\n   `provider_domain_mismatch`. A subdomain of the org domain, and\n   another org's\
+        \ domain, are both refused (spec AC-21). The status is\n   the one a configuration write to such\
+        \ a domain gets: 403, as the\n   owner decided for PAC-50 on 2026-10-27 (spec D-15), and as\n\
+        \   createSsoProvider answers on `main` today. PAC-50's branch at\n   `51aa70a` still answers\
+        \ 400 there; if PAC-50 merges with another\n   status, revision 2 (the rebase) follows what merged\
+        \ (spec D-15).\n4. Authorization: the write authorization of createSsoProvider\n   (PAC-50: a\
+        \ live step-up grant, consumed, or break-glass with a\n   fresh session), else 403 with createSsoProvider's\
+        \ 403 body.\n   Steps 1-3 are decided from the request alone and leave the\n   authorization unspent.\n\
+        5. Lookup of the configuration for the lower-cased domain, whatever\n   its state: none gives\
+        \ 404 `sso provider not found`; nothing is\n   created and nothing is recorded, and the authorization\
+        \ is spent\n   (spec D-9, AC-19).\n6. If the configuration is already in the requested state,\
+        \ nothing\n   changes and the answer is 200 with the configuration as stored\n   (spec AC-20).\
+        \ Otherwise only the active state is written: no\n   configuration value is read from the request\
+        \ or written, so a\n   replace stored while this request is in flight keeps its values\n   and\
+        \ this request keeps its state (spec AC-28).\n   `updated_at` is not changed by this operation\
+        \ in either case: it\n   records the last configuration write (createSsoProvider).\n7. Recording:\
+        \ every transition that found its configuration,\n   including one that changed nothing, is recorded\
+        \ where PAC-50\n   records configuration writes, as `sso_provider_written` with the\n   operation\
+        \ `suspend` (state `suspended`) or `resume` (state\n   `active`), naming the organisation, the\
+        \ acting user and the\n   provider (spec D-10, AC-16). No operation exposes that record.\n   The\
+        \ state write and its record are one transaction, as PAC-50's\n   configuration writes are: either\
+        \ both happen or neither does.\n\nThis operation acts on configurations stored before PAC-22 that\n\
+        createSsoProvider would refuse today (a SAML row, an incomplete OIDC\nrow) exactly as on any other\
+        \ (spec AC-8).\n\n`PUT /api/admin/sso/stepup/state` (PAC-50 defines GET on\n`/api/admin/sso/stepup`)\
+        \ is this operation with `{domain}` =\n`stepup`, which is never an org domain: 403 `provider_domain_mismatch`.\n"
       parameters:
       - name: domain
         in: path
@@ -301,9 +357,7 @@ paths:
 
             of: `invalid JSON`; `unknown property: <name>`; `duplicate
 
-            property: state`; `state must be ''active'' or ''suspended''`;
-
-            `provider_domain_mismatch`.
+            property: state`; `state must be ''active'' or ''suspended''`.
 
             '
           content:
@@ -317,15 +371,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '`org membership required` / `org not found` (step 1), or the
+          description: '`org membership required` / `org not found` (step 1);
 
-            caller is not permitted to write SSO configuration (step 4). The
+            `provider_domain_mismatch`, the target is not exactly the
 
-            body is the one createSsoProvider''s 403 uses (PAC-50:
+            caller''s org domain (step 3, spec AC-21, D-15; no authorization
 
-            SsoWriteForbiddenResponse after the rebase). The configuration''s
+            is spent); or the caller is not permitted to write SSO
 
-            state is unchanged and nothing is recorded (spec AC-15).
+            configuration (step 4). The step-4 body is the one
+
+            createSsoProvider''s 403 uses (PAC-50: SsoWriteForbiddenResponse
+
+            after the rebase). The configuration''s state is unchanged and
+
+            nothing is recorded (spec AC-15, AC-21).
 
             '
           content:
@@ -10812,9 +10872,21 @@ components:
           type: boolean
           description: 'True when a non-empty client secret is on file, false otherwise.
 
-            The secret itself is never returned (spec AC-3). False only for a
+            The secret itself is never returned (spec AC-3). It depends on the
 
-            row stored before PAC-22: every write since requires a secret.
+            stored secret and nothing else (AC-4). False only for a row stored
+
+            before PAC-22: every write since either supplies a non-empty
+
+            secret or keeps a non-empty one. A row of type `saml` stored
+
+            before PAC-22 can read true here (the write path stored a client
+
+            secret whatever the type); a replace of such a row that leaves the
+
+            secret out is still refused, because a secret is kept only from an
+
+            `oidc` row (spec §3.2, AC-25).
 
             '
         saml_entry_point:
@@ -10848,21 +10920,27 @@ components:
       type: object
       description: 'Body of createSsoProvider. Since PAC-22 (resolves U-21, API-060) it
 
-        describes a complete OIDC configuration and nothing else: every
+        describes an OIDC configuration and nothing else: every property but
 
-        property is required and non-empty, and the SAML properties are gone
+        the client secret is required and non-empty, and the SAML properties
 
-        (spec D-1, D-2, D-8). The server enforces each of these with the 400
+        are gone (spec D-1, D-2, D-8). The server enforces each of these with
 
-        messages listed on createSsoProvider, in the order given there,
+        the 400 messages listed on createSsoProvider, in the order given
 
-        including a named refusal of `saml_entry_point`, `saml_issuer` and
+        there, including a named refusal of `saml_entry_point`, `saml_issuer`
 
-        `saml_cert` when present. A replace supplies every value again: there
+        and `saml_cert` when present. A replace supplies every value a reader
 
-        is no "keep the stored value" (spec §3.2). Whether SSO is active is
+        can see again; the client secret alone may be left out of a replace,
 
-        not part of this body (spec §3.3); see setSsoProviderState.
+        which keeps the stored one under the conditions stated on
+
+        createSsoProvider (spec §3.2, D-12, D-13, D-14). Whether SSO is
+
+        active is not part of this body (spec §3.3); see
+
+        setSsoProviderState.
 
         '
       required:
@@ -10871,7 +10949,6 @@ components:
       - provider_type
       - oidc_issuer
       - oidc_client_id
-      - oidc_client_secret
       properties:
         domain:
           type: string
@@ -10905,15 +10982,14 @@ components:
         oidc_client_secret:
           type: string
           minLength: 1
-          description: 'Write-only. Required on every write, including a replace that
-
-            changes nothing else (spec §3.2, D-2). No response of any
-
-            operation returns it; SsoProvider reports only whether one is on
-
-            file (`has_oidc_client_secret`).
-
-            '
+          description: "Write-only. No response of any operation returns it, or anything\nderived from\
+            \ it; SsoProvider reports only whether one is on file\n(`has_oidc_client_secret`).\n- Supplied:\
+            \ a non-empty string that replaces the stored secret\n  (spec D-12, AC-23). `\"\"` and `null`\
+            \ are refused with 400\n  `oidc_client_secret must not be empty` (AC-26): no write clears\n\
+            \  the secret.\n- Absent: required on a create; on a replace, the stored secret\n  is kept\
+            \ when the stored configuration is `oidc`, holds a\n  non-empty secret, and has exactly the\
+            \ submitted `oidc_issuer`\n  and `oidc_client_id`, all decided at the moment the write is\n\
+            \  stored; otherwise 400 (spec D-13, D-14, AC-22, AC-24, AC-25,\n  AC-27).\n"
       additionalProperties: false
     SsoProviderList:
       type: object

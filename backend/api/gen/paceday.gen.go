@@ -2710,8 +2710,14 @@ type SsoProvider struct {
 	Domain    string    `json:"domain"`
 
 	// HasOidcClientSecret True when a non-empty client secret is on file, false otherwise.
-	// The secret itself is never returned (spec AC-3). False only for a
-	// row stored before PAC-22: every write since requires a secret.
+	// The secret itself is never returned (spec AC-3). It depends on the
+	// stored secret and nothing else (AC-4). False only for a row stored
+	// before PAC-22: every write since either supplies a non-empty
+	// secret or keeps a non-empty one. A row of type `saml` stored
+	// before PAC-22 can read true here (the write path stored a client
+	// secret whatever the type); a replace of such a row that leaves the
+	// secret out is still refused, because a secret is kept only from an
+	// `oidc` row (spec §3.2, AC-25).
 	HasOidcClientSecret bool `json:"has_oidc_client_secret"`
 
 	// HasSamlCert True when a non-empty SAML signing certificate is on file, false
@@ -2754,24 +2760,36 @@ type SsoProvider struct {
 type SsoProviderProviderType string
 
 // SsoProviderCreateRequest Body of createSsoProvider. Since PAC-22 (resolves U-21, API-060) it
-// describes a complete OIDC configuration and nothing else: every
-// property is required and non-empty, and the SAML properties are gone
-// (spec D-1, D-2, D-8). The server enforces each of these with the 400
-// messages listed on createSsoProvider, in the order given there,
-// including a named refusal of `saml_entry_point`, `saml_issuer` and
-// `saml_cert` when present. A replace supplies every value again: there
-// is no "keep the stored value" (spec §3.2). Whether SSO is active is
-// not part of this body (spec §3.3); see setSsoProviderState.
+// describes an OIDC configuration and nothing else: every property but
+// the client secret is required and non-empty, and the SAML properties
+// are gone (spec D-1, D-2, D-8). The server enforces each of these with
+// the 400 messages listed on createSsoProvider, in the order given
+// there, including a named refusal of `saml_entry_point`, `saml_issuer`
+// and `saml_cert` when present. A replace supplies every value a reader
+// can see again; the client secret alone may be left out of a replace,
+// which keeps the stored one under the conditions stated on
+// createSsoProvider (spec §3.2, D-12, D-13, D-14). Whether SSO is
+// active is not part of this body (spec §3.3); see
+// setSsoProviderState.
 type SsoProviderCreateRequest struct {
 	// Domain Must match the caller's org domain or the request is 403'd (rule unchanged by PAC-22; PAC-50 replaces it).
 	Domain       string `json:"domain"`
 	OidcClientId string `json:"oidc_client_id"`
 
-	// OidcClientSecret Write-only. Required on every write, including a replace that
-	// changes nothing else (spec §3.2, D-2). No response of any
-	// operation returns it; SsoProvider reports only whether one is on
-	// file (`has_oidc_client_secret`).
-	OidcClientSecret string `json:"oidc_client_secret"`
+	// OidcClientSecret Write-only. No response of any operation returns it, or anything
+	// derived from it; SsoProvider reports only whether one is on file
+	// (`has_oidc_client_secret`).
+	// - Supplied: a non-empty string that replaces the stored secret
+	//   (spec D-12, AC-23). `""` and `null` are refused with 400
+	//   `oidc_client_secret must not be empty` (AC-26): no write clears
+	//   the secret.
+	// - Absent: required on a create; on a replace, the stored secret
+	//   is kept when the stored configuration is `oidc`, holds a
+	//   non-empty secret, and has exactly the submitted `oidc_issuer`
+	//   and `oidc_client_id`, all decided at the moment the write is
+	//   stored; otherwise 400 (spec D-13, D-14, AC-22, AC-24, AC-25,
+	//   AC-27).
+	OidcClientSecret *string `json:"oidc_client_secret,omitempty"`
 
 	// OidcIssuer OIDC issuer used for discovery at sign-in. Stored as given.
 	OidcIssuer string `json:"oidc_issuer"`

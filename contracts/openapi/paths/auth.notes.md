@@ -76,11 +76,11 @@ merges. It also documents a response that was missing from the contract:
 
 ## (b) Surprising / inconsistent things
 
-1. **`storage.SSOProvider` has no json tags.** `POST` and `GET /api/admin/sso`
-   therefore return PascalCase Go field names (`ID`, `ProviderName`, …) — the
-   only PascalCase payload in this domain — and include
-   **`OIDCClientSecret` and `SAMLCert` in plaintext** to any authenticated org
-   member. Everything else in the codebase uses snake_case or camelCase tags.
+1. **`storage.SSOProvider` has no json tags.** Before PAC-22, `POST` and
+   `GET /api/admin/sso` therefore returned PascalCase Go field names (`ID`,
+   `ProviderName`, …) — the only PascalCase payload in this domain — and
+   included the OIDC client secret and the SAML certificate to any
+   authenticated org member (API-001). Everything else in the codebase uses snake_case or camelCase tags.
    **PAC-22 (contract):** both operations now answer `SsoProvider`, a
    snake_case projection with no secret under any name and two `has_*`
    booleans in their place; the list is wrapped in `SsoProviderList`
@@ -166,8 +166,8 @@ merges. It also documents a response that was missing from the contract:
 | Where | `x-uncertain` | What to verify |
 |---|---|---|
 | `CurrentUserResponse.provider` | Observed writers pass `"google"`, `"microsoft"`, `"sso"`, but the column is free text with no CHECK constraint found. | Grep the migrations for a constraint on `users.provider`, and confirm no other code path writes a fourth value (e.g. a seed script or the Zoom flow). If it is closed, turn it into an enum. |
-| `SsoProviderCreateRequest` (schema level) | Nothing beyond `domain` / `provider_name` / `provider_type` is validated, so an `oidc` row can be created with an empty issuer or client id; the failure only appears later as a 500 from `/api/auth/sso/{domain}`. | Decide whether `oidc_issuer` + `oidc_client_id` + `oidc_client_secret` should be required when `provider_type == "oidc"` (and the SAML trio when `"saml"`), then encode it as a `oneOf` / `dependentRequired`. |
-| `SsoProviderResponse` (schema level) | No frontend consumer exists, so the PascalCase key casing is inferred from the absence of json tags rather than observed on the wire. | Hit `GET /api/admin/sso` against a running server and confirm the casing — and confirm whether returning `OIDCClientSecret` / `SAMLCert` is intended before this is published as the contract. |
+| ~~`SsoProviderCreateRequest` (schema level)~~ | Resolved by PAC-22 (U-21, spec D-1, D-2, D-8, D-12): OIDC only; issuer and client id required; the client secret required on a create and kept on a replace only under createSsoProvider's conditions; SAML properties refused by name. | — |
+| ~~`SsoProviderResponse` (schema level)~~ | Resolved by PAC-22 (U-22): the schema is removed and replaced by `SsoProvider`, whose keys the contract defines and which carries no secret. | — |
 
 Additional points a human should settle that are **not** marked `x-uncertain`
 because the code is unambiguous, but where the code may not be the intent:
