@@ -136,3 +136,143 @@ OQ-6 (confirm D-2).
 
 See the Linear comment for this stage for the gate output on the final commits of
 `factory/pac-41-contract` and `factory/pac-41-contract-types`.
+
+## Challenge — 2026-10-27
+
+**Verdict**: accept-with-changes
+
+Reviewer: contract-challenger. Read: `factory/pac-41-contract` at `afd903d` (committed state
+only), `docs/specs/PAC-41.md` revision 1 as carried on that branch, the handlers and
+stores cited below, web `origin/main` `ad52160` and the paired web branch
+`factory/pac-41-contract-types` `cc63793`. I did not see the author's reasoning beyond
+this file and the manifest.
+
+### Requests wrongly permitted
+
+None found. No parameter, request body, required set or enum changed (`git diff
+origin/main...afd903d -- contracts/openapi/paths` is descriptions only). Attacked:
+
+1. `GET /api/rooms?q=helsinki&start=2026-10-27T09:00:00Z&end=2026-10-27T10:00:00Z`.
+   The contract now says `start`/`end` are ignored; `listRooms`
+   (`backend/api/handlers_events.go:312-329`) reads only `r.URL.Query().Get("q")`. Holds.
+   C-2 (not declaring them) is consistent with that: the generated web client offers no
+   `start`/`end`, so `LocationPicker.tsx:35,49` passing them through `client.ts:1418` is
+   the web defect the build removes, not a contract gap.
+2. `GET /api/rooms` returning a room with
+   `{"id":"x.resource.calendar.google.com@group.calendar.google.com","name":"X"}`, then
+   `PATCH /api/events/{id}` with `{"room_resource_email":"x.resource.calendar.google.com@group.calendar.google.com"}`.
+   `ListRooms` keeps that id (`backend/calendar/rooms_attendees.go:31` is a
+   `strings.Contains`), PATCH rejects it (`^[^@\s]+@resource\.calendar\.google\.com$`,
+   `handlers_events.go:48`, 400 `invalid room_resource_email`). The contract permits this
+   list-then-book sequence to 400, and `CalendarRoom.id` now says so explicitly. That is
+   the server's behaviour described honestly (factory §7 rule 2), so not blocking;
+   whether to filter the list is an owner question (C-1).
+
+### Responses the client cannot handle
+
+None introduced: the wire is unchanged. The existing mismatches (web `Room.email`
+required, `CoverageStatus` with `paceday_user`, `ParticipantCoverage.provider` in
+`smart-calendar-flow/src/api/types.ts:159-167,252-261`) are exactly what the spec's
+build stage removes (AC-6, AC-7); the contract now describes the shape the web must
+consume.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/generated/{types.ts,schemas.types.d.ts}`: doc comments
+  only on `factory/pac-41-contract-types` (`git diff ad52160...cc63793`: 8 changed
+  lines, all `@description`). No hand-written web code imports `CalendarRoom` or
+  `FreeBusyParticipant` (grep of `src/` outside `generated/` on `ad52160`: no hits).
+- `clockwise-like/backend/api/gen/paceday.gen.go`: doc comments only.
+- `clockwise-like/mcp/tools.go:207-216` (`clockwise_search_rooms`): sends `q` only,
+  relays the body. Unaffected.
+- `clockwise-like/e2e/tests/seam.spec.ts:350`: `GET /api/rooms` seam check, reads no
+  keys. `e2e/tests/calendar.spec.ts:195` and `seam.spec.ts:163-190` call free/busy and
+  read no `provider` or `status` value. Unaffected.
+- `FreeBusyParticipant` is referenced only from `queryFreeBusy` (`calendar.yaml:1510`);
+  `PublicLinkCoverage` (`booking.yaml:1255`) is a separate schema, not touched.
+
+### Contract/implementation divergences
+
+1. **BLOCKING: "an Outlook-connected caller ... gets the 401" is false for a reachable
+   user.** The `listRooms` description (`calendar.yaml:382-384`) says "a caller with no
+   stored Google credential, an Outlook-connected caller included, gets the 401
+   `calendar not connected`", and §1 of this file says the 401 "also covers Outlook
+   users". The handler decides on the Google token row alone: `calClient` ->
+   `engine.LoadCalendarToken` -> `auth.LoadUserToken`
+   (`backend/auth/token_store.go:40-50`, `SELECT ... FROM oauth_tokens WHERE user_id`).
+   A Microsoft sign-in does not remove that row: `microsoftCallback`
+   (`backend/api/handlers_microsoft_auth.go:69-77`) resolves the user with
+   `storage.UpsertUser(..., "microsoft", ...)`, which is `ON CONFLICT (email)`
+   (`backend/storage/users.go:21-28`), so a person who once signed in with Google keeps
+   the same user id; `auth.SaveMicrosoftToken` (`backend/auth/microsoft_oauth.go:63-81`)
+   only sets `settings.microsoft_tokens` and `calendar_provider = 'outlook'`.
+   Concretely: `a@corp.com` signs in with Google (row in `oauth_tokens`), later signs in
+   with Microsoft (`calendar_provider = 'outlook'`), then `GET /api/rooms` answers
+   **200** with the Google room list, not 401.
+   Fix (description only): replace the last sentence of the `listRooms` description with
+   "The list reads the caller's stored Google credential whatever `calendar_provider`
+   is: a caller with no stored Google credential gets the 401 `calendar not connected`
+   (every Outlook-only caller is one); an Outlook-selected caller who also holds a
+   Google credential (same email signed in with Google earlier) gets that Google
+   calendar's rooms." Correct the §1 table row here the same way. The spec's §3 bullet
+   ("this includes Outlook-connected users") carries the same overstatement; AC-16 is
+   unaffected (it reacts to the 401, whoever gets it).
+
+Everything else in the new descriptions matches the code:
+- `CalendarRoom` = `calendar.Room{ID, Name}` with no `omitempty`
+  (`rooms_attendees.go:11-14`): both keys always emitted; a nil list becomes `[]`
+  (`handlers_events.go:324-326`).
+- `FreeBusyParticipant` = `freeBusyParticipantDTO{Email, Status, Busy}`
+  (`backend/api/handlers_freebusy.go:23-27,83-87`); `Status` is
+  `ParticipantBusy.Coverage`, which `engine/freebusy_service.go:93,143-146` sets only
+  to `known` or `unknown`. No `provider` and no `paceday_user` producer anywhere in
+  `backend/` (grep: only the unrelated `is_paceday_user` on manager analytics).
+- `q` is lowercased, not trimmed; empty means no filter (`handlers_events.go:313`,
+  `rooms_attendees.go:34-38`).
+
+### Uncertainties not actually resolved
+
+None claimed: `resolvesUncertain` is `[]`, and no `x-uncertain` sits on `listRooms`,
+`queryFreeBusy`, `CalendarRoom` or `FreeBusyParticipant` on this branch. API-040, -041
+and -046 are `Claimed (PAC-41)`, not Fixed, which is truthful: no web or backend change
+has landed. AC-15's pinning test does not exist yet and is correctly assigned to the
+backend build.
+
+### Non-blocking
+
+1. API-040's row (edited by this change) and `calendar.notes.md` item 2 still cite
+   `handlers_events.go:106`; the handler is at `:312`. Fix the citation while the row is
+   being edited.
+2. The manifest's `acceptanceTests` paraphrase criteria and drop qualifiers the spec
+   has: AC-8 loses "(not an accepted host on the saved link)" and the named providers
+   ("Google", "Microsoft", "Outlook"); AC-12 loses "searching for a room or with a room
+   selected"; AC-14 loses "reopens it". A build stage reading only the manifest could
+   write a narrower test. Copy them verbatim.
+3. No PR is open yet for `factory/pac-41-contract` or `factory/pac-41-contract-types`
+   (`gh pr list --head <branch> --state all`: empty in both repos). The manifest puts
+   the PR after this challenge; both should open together once item 1 above is fixed.
+4. The spec is not yet accepted (manifest `mergeConditions`); this review does not
+   change that condition.
+5. No follow-up issue for API-047/075/078 was found in Linear (PAC search "API-047"),
+   so the fallback "Split from PAC-41 (D-4); follow-up issue not yet filed" note is the
+   form AC-11 asks for.
+
+### Verified clean
+
+- `python scripts/openapi_assemble.py --check` on `afd903d`: `OK: bundle is in sync (98
+  paths)`, rc=0. `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` =
+  `7e0d333c...eabee`, equal to the manifest's `contractHash`.
+- `make openapi-check WEB=/nonexistent` in a `golang:1.25-bookworm` LF clone of
+  `factory/pac-41-contract` at `afd903d`: bundle in sync; MIGRATION.md covers all 119
+  operations; `OK: backend/api/gen matches the contract`; web half SKIPPED there; rc=0.
+- Web half: `scripts/openapi-gen.sh --check` in a clone of
+  `factory/pac-41-contract-types` at `cc63793` against this branch's bundle:
+  `OK: src/api/generated matches the contract`, rc=0.
+- Not run: the full `api-gate.sh` (it requires the host checkout on this branch, and
+  the host checkout is in use on another branch), `web-gate.sh`, `e2e-gate.sh`. This
+  commit adds only this section.
+- Attacked and could not break: ignored `start`/`end`; a room's key set
+  (`additionalProperties: false`, both required, matches the struct); a third coverage
+  status or a `provider` key (no producer); a nil room list (`[]`); a credential-store
+  failure (`ErrCredentialStore` -> 500 via `server_errors.go:75-81`, matching the 500
+  description); the MCP and e2e consumers above.
