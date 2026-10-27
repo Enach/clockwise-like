@@ -2,81 +2,103 @@
 
 - **Linear**: https://linear.app/paceday/issue/PAC-67
 - **Status**: challenged (round 1 answered in "Revision 1", round 2 in "Revision 2",
-  round 3 in "Revision 3")
+  round 3 in "Revision 3", round 4 in "Revision 4")
 - **Author**: spec-author
 - **Origin**: PR Enach/clockwise-like#204 (PAC-24) merge condition 3,
   `calendarCredentialLifecycle`; PAC-24 spec §0 and OQ-6
   (`docs/specs/PAC-24.md:55-61`, `:785-795`). Related: PAC-48 (origin), PAC-23
   (audit `user_id`), PAC-47 (work-calendar provider setting ignored).
 - **Inherited scope**: every operation this feature touches or may touch, with
-  the `x-uncertain` markers and open audit findings on it. "Changed" means this
-  spec's criteria require a contract change there; "conditional" means the
-  marker or finding comes into scope **only if** the contract stage edits that
-  operation, under factory §7.1. Line numbers are in
-  `contracts/openapi/openapi.yaml` and `docs/factory/api-audit.md`.
-  - **Auth status** (`GET /api/auth/status`, calendar connection status §2.6).
-    No `x-uncertain`; API-009 is Fixed (PAC-24). Nothing inherited.
-  - **Calendar disconnect** (`DELETE /api/auth/disconnect`, `openapi.yaml:800`). **API-061**
-    (`api-audit.md:295`, disconnect also logs the user out) is open:
-    conditional. See OQ-3.
-  - **Microsoft sign-in and callback** (`GET /api/auth/microsoft`,
-    `GET /api/auth/microsoft/callback`). **API-012** (`:246`) and **API-011**
-    (`:245`) are open on the callback; **API-064** (`:298`, `login_hint`
-    ignored) is open on the sign-in start. All conditional. AC-11 changes what
-    the callback stores; see OQ-4.
-  - **Zoom connect and callback.** No marker, no finding. Nothing inherited.
-  - **Zoom disconnect** (`POST /api/conference/zoom/disconnect`). No marker, no
-    finding. AC-15 likely changes its response; nothing inherited either way.
-  - **Conferencing provider list** (`GET /api/conference/providers`, §2.6).
-    Changed in behaviour by AC-8, AC-12, AC-13 and AC-21. **API-070**
-    (`:304`, 1-4 entries depending on configuration, `custom` always
-    connected): conditional.
-  - **Standalone conference create** (`POST /api/conference/create`,
-    `openapi.yaml:1545`). Reached by AC-3, AC-5 and AC-8. **API-052** (`:286`,
-    no validation) and **API-091** (`:325`, no frontend consumer): conditional.
-  - **Conference on an event** (`POST /api/events/{id}/conference`,
-    `openapi.yaml:1717`). Creates Teams and Zoom meetings from the stored
-    credential (`backend/api/handlers_conferencing.go:33-48`, `:337-345`), but
-    only after reading the event with the **Google** credential (§2.8), so
-    AC-3, AC-5, AC-8, AC-10, AC-12 and AC-23 reach it. Checked: no
-    `x-uncertain` on it and no audit finding names it. Nothing inherited.
-  - **Activity log** (`GET /api/audit`, `openapi.yaml:371`). **Changed**: AC-8,
-    AC-15 and AC-16 add entry kinds to a closed set (§2.4, AC-22). U-02, API-005
-    and API-074 are all resolved; nothing further inherited.
-  - **Availability lookup** (`POST /api/freebusy`, `openapi.yaml:1951`). Its
-    response does **not** change under this spec (AC-8, D-6). Open findings
-    **API-028** (`:262`), **API-046** (`:280`) and **API-077** (`:311`):
-    conditional.
-  - **Team availability** (`GET /api/teams/{id}/availability`,
-    `openapi.yaml:4964`). Renews every team member's Google credential on a
-    member's request (§2.9). Reached by AC-26 and AC-27; its response does
-    **not** change (D-12). Checked: no `x-uncertain`, no audit finding.
+  the `x-uncertain` markers and open audit findings on it, re-derived in
+  Revision 4 against `origin/main` at `6d751f9` (rounds 1-4 used `16f3100`;
+  PAC-21, PAC-26 and PAC-35 have since fixed several of the findings listed
+  then). "Changed" means this spec's criteria require a contract change there;
+  "conditional" means the marker or finding comes into scope **only if** the
+  contract stage edits that operation, under factory §7.1; "unchanged" means a
+  criterion reaches the operation and pins its response as it is. Line numbers
+  are in `contracts/openapi/openapi.yaml` and `docs/factory/api-audit.md` at
+  `6d751f9`.
+  - **Auth status** (`GET /api/auth/status`, `openapi.yaml:1285`, calendar
+    connection status §2.6). No `x-uncertain`; API-009 is Fixed (PAC-24).
     Nothing inherited.
-  - **Public booking slots** (`GET /api/book/{slug}/slots`,
-    `openapi.yaml:1359`). Unauthenticated; renews each host's Google credential
-    (§2.9). Reached by AC-28; response unchanged (D-12). Checked: no
-    `x-uncertain`, no audit finding. Nothing inherited.
-  - **Public booking creation** (`POST /api/book/{slug}`,
-    `openapi.yaml:1299`). Unauthenticated; renews each host's Google credential
-    (§2.9). Reached by AC-28; response unchanged (D-12). No `x-uncertain`.
-    Open findings **API-051** (`api-audit.md:285`) and **API-073** (`:307`):
+  - **Calendar disconnect** (`DELETE /api/auth/disconnect`, `openapi.yaml:864`).
+    **API-061** (`api-audit.md:319`) is Fixed (PAC-35): disconnect keeps the
+    session, and for a user whose calendar provider is Outlook or WebCal it
+    answers 409 and deletes nothing (PAC-35 D-8, §2.1). No `x-uncertain`.
+    Nothing inherited. See OQ-3.
+  - **Microsoft sign-in and callback** (`GET /api/auth/microsoft`, `:1051`;
+    `GET /api/auth/microsoft/callback`, `:1100`). **API-011** (`api-audit.md:269`),
+    **API-012** (`:270`) and **API-064** (`:322`) are all Fixed (PAC-35). No
+    `x-uncertain`. Nothing inherited. AC-11 changes what the callback stores;
+    see OQ-4.
+  - **Zoom connect and callback** (`GET /api/auth/zoom`, `:1344`;
+    `GET /api/auth/zoom/callback`, `:1376`). No marker, no finding. Nothing
+    inherited.
+  - **Zoom disconnect** (`POST /api/conference/zoom/disconnect`, `:1789`). No
+    marker, no finding. AC-15 likely changes its response; nothing inherited
+    either way.
+  - **Conferencing provider list** (`GET /api/conference/providers`, `:1759`,
+    §2.6). Changed in behaviour by AC-8, AC-12, AC-13 and AC-21. **API-070**
+    (`api-audit.md:328`, Reported; 1-4 entries depending on configuration,
+    `custom` always connected): conditional.
+  - **Standalone conference create** (`POST /api/conference/create`, `:1713`).
+    Reached by AC-3, AC-5 and AC-8. **API-052** (`api-audit.md:310`, no
+    validation) and **API-091** (`:349`, no frontend consumer), both Reported:
     conditional.
-  - **Consumers acting for the credential's owner only** (scheduled
-    auto-decline, background habit re-optimisation and analytics recompute,
-    manager team detection, §2.9). They become subject to loss recording
-    (AC-29, D-13); none of their responses changes, so no operation's contract
-    is edited and nothing is inherited from them.
+  - **Conference on an event** (`POST /api/events/{id}/conference`, `:1943`).
+    Creates Teams and Zoom meetings from the stored credential
+    (`backend/api/handlers_conferencing.go:42-56`, `:375-383`), but only after
+    reading the event with the **Google** credential (§2.8), so AC-3, AC-5,
+    AC-8, AC-10, AC-12 and AC-23 reach it. Checked: no `x-uncertain` on it and
+    no audit finding names it. Nothing inherited.
+  - **Activity log** (`GET /api/audit`, `:367`; `AuditEntry` at `:5909`).
+    **Changed**: AC-8, AC-15 and AC-16 add entry kinds to a closed set (§2.4,
+    AC-22). U-02, API-005 and API-074 are all resolved; nothing further
+    inherited.
+  - **Availability lookup** (`POST /api/freebusy`, `:2194`). Its response does
+    **not** change under this spec (AC-8, D-6). **API-028** is Fixed (PAC-26).
+    Open findings **API-046** (`api-audit.md:304`) and **API-077** (`:335`):
+    conditional.
+  - **Team availability** (`GET /api/teams/{id}/availability`, `:5330`). Renews
+    every team member's Google credential on a member's request (§2.9).
+    Reached by AC-26 and AC-27; its response does **not** change (D-12).
+    Checked: no `x-uncertain`, no audit finding. Nothing inherited.
+  - **Public link info** (`GET /api/book/{slug}`, `:1432`, operation
+    `getPublicLinkInfo`; its `PublicLinkCoverage` schema at `:8706`).
+    Unauthenticated. Uses and renews no credential, but tells every visitor how
+    many hosts hold a stored Google credential (§2.9). **Unchanged** in
+    response: a host whose loss is recorded still counts as checked (D-14,
+    AC-28). The contract stage must make the `PublicLinkCoverage` description
+    say what is actually counted (§6). Checked: no `x-uncertain`, and no audit
+    finding names this operation (API-051 and API-073 are on the `POST` of the
+    same path). Nothing inherited.
+  - **Public booking slots** (`GET /api/book/{slug}/slots`, `:1532`).
+    Unauthenticated; renews each host's Google credential (§2.9). Reached by
+    AC-28; response unchanged (D-12). Checked: no `x-uncertain`, no audit
+    finding. Nothing inherited.
+  - **Public booking creation** (`POST /api/book/{slug}`, path item at `:1432`).
+    Unauthenticated; renews each host's Google credential (§2.9). Reached by
+    AC-28; response unchanged (D-12). No `x-uncertain`. Open findings
+    **API-051** (`api-audit.md:309`) and **API-073** (`:331`): conditional.
+  - **Consumers acting for the credential's owner only** (§2.9: scheduled
+    jobs, background work the owner started, and every request-driven path
+    that loads the caller's own credential). They become subject to loss
+    recording (AC-29, D-13); none of their responses changes, so no
+    operation's contract is edited and nothing is inherited from them.
   - **Google-backed operations** whose failure response would change if the
     contract stage chose to change it, notably **`GET /api/calendar/freebusy`**
-    (`openapi.yaml:1483`), which carries **U-03** (`:1493-1494`,
-    `api-audit.md:447`) and **API-091**. This spec requires no change to any
-    Google operation's failure response (D-7), so these are conditional.
-  - **`ConferenceMeetingDetails`** schema carries **U-12**
-    (`openapi.yaml:6020-6021`). Not changed here; conditional.
-  - **T8** (provider error text echoed to the client) is a theme, not a finding
-    on these operations; the Zoom and Microsoft callbacks echo `err.Error()`
-    today (`backend/api/handlers_microsoft_auth.go:56,73`,
-    `backend/api/handlers_conferencing.go:109,113`). Not resolved here (§5).
+    (`:1651`). Its U-03 marker was resolved as "keep" by PAC-21 and is gone
+    from the bundle; **API-091** (`api-audit.md:349`) remains open on it. This
+    spec requires no change to any Google operation's failure response (D-7),
+    so API-091 is conditional.
+  - **`ConferenceMeetingDetails`** schema (`:6412`) carries **U-12** (`:6433`).
+    Not changed here; conditional.
+  - **T8** (provider error text echoed to the client). Rounds 1-4 cited raw
+    echoes in the Zoom and Microsoft callbacks; PAC-21 removed them (the Zoom
+    exchange failure now goes through the generic server-error writer,
+    `backend/api/handlers_conferencing.go:131-134`, and provider-construction
+    refusals are fixed sentences, `backend/conference/factory.go:11-17`,
+    `backend/api/handlers_conferencing.go:62-74`). Nothing inherited (§5).
 
 ## 0. Scope and split
 
@@ -117,6 +139,13 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
 
 ## 2. Current behaviour
 
+Rounds 1-4 cited the backend at `16f3100`. Revision 4 re-read the paths whose
+behaviour changed on `origin/main` since then (PAC-21, PAC-35 and PAC-49 among
+others) at `6d751f9` and corrected §2.1, §2.2, §2.3, §2.5, §2.6, §2.8 and §2.9
+to match; the corrected citations are at `6d751f9`. Citations elsewhere in §2
+whose behaviour did not change were not all re-numbered and may be off by a
+few lines at `6d751f9`.
+
 ### 2.1 Outlook (Microsoft) credential
 
 - **Storage.** One JSON record per user on their settings row holding access
@@ -146,9 +175,13 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
   (`backend/api/handlers_auth.go:98-105`). Conferencing providers reports Teams
   connected whenever any Microsoft credential exists
   (`backend/api/handlers_conferencing.go:169,178-179`).
-- **No disconnect.** No route clears the Outlook credential. Calendar disconnect
-  deletes only the Google token row and expires the session cookie
-  (`backend/api/handlers_auth.go:135-144`, route `backend/api/routes.go:48`).
+- **No disconnect.** No route clears the Outlook credential. Calendar
+  disconnect keeps the session since PAC-35 (API-061 Fixed); for a user whose
+  calendar provider is Outlook or WebCal it answers 409 ("disconnecting this
+  kind of calendar is not available yet") and deletes nothing, the Google
+  credential included (PAC-35 D-8); for anyone else it deletes only the Google
+  token row (`backend/api/handlers_auth.go:171-197`, route
+  `backend/api/routes.go:48`).
 - **Provider flip (issue item 4).** Each Microsoft sign-in sets the *caller's*
   calendar provider to Outlook and nobody else's
   (`backend/auth/microsoft_oauth.go:68`, `WHERE user_id = $1`). The PAC-48 half
@@ -187,18 +220,19 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
 - **Disconnect clears locally, does not revoke.** `ClearZoomTokens` sets the
   caller's tokens to `''` and conferencing back to `meet`
   (`backend/storage/conferencing.go:11-14`; handler
-  `handlers_conferencing.go:186-192`; route `routes.go:127`). Nothing is sent to
+  `handlers_conferencing.go:217-223`, answering 204; route `routes.go:127`). Nothing is sent to
   Zoom. Isolation is proven by `TestZoomTokens_ArePerUser`
   (`backend/storage/settings_test.go:154-180`).
 - **Status.** Zoom is reported connected whenever the stored string is non-empty
-  (`handlers_conferencing.go:176`).
+  (`handlers_conferencing.go:207`).
 
 ### 2.3 Google credential (the issue's "confirm" item)
 
 - **Per-user.** One row per user in the OAuth token table
   (`backend/auth/token_store.go:16-30`); load and delete refuse a nil user
-  (`:40-59`). Disconnect deletes only the caller's row
-  (`handlers_auth.go:136-137`). The disconnect test
+  (`:40-59`). Disconnect deletes only the caller's row, and only when the
+  caller's calendar provider is Google (`handlers_auth.go:176-197`, PAC-35
+  D-8). The disconnect test
   (`backend/api/handlers_auth_test.go:42-50`) asserts only the status code, so
   that isolation is **not** test-protected today — a finding.
 - **Refresh works but is not persisted.** Consumers use the OAuth config's
@@ -209,10 +243,11 @@ Google users' tokens refresh, but a dead Google credential is equally invisible
   refreshes again. Google normally does not rotate refresh tokens, so this works,
   at the cost of an extra round trip per request.
 - **Failure is invisible.** Status reports Google connected whenever a row exists
-  (`handlers_auth.go:113-131`), whether or not the refresh token still works.
+  (`handlers_auth.go:140-160`), whether or not the refresh token still works.
 - **No revocation.** Disconnect deletes the row and sends nothing to Google.
 - **Not only read for its owner's actions.** Team availability and the public
-  booking routes read and renew *other* users' Google credentials (§2.9).
+  booking routes read and renew *other* users' Google credentials, and public
+  link info reports on hosts' credentials to anonymous visitors (§2.9).
 
 ### 2.4 Failure surfacing today
 
@@ -238,7 +273,10 @@ The e2e stack has a stand-in for Google only (`e2e/fake-google/`), reached by
 configuration rather than by host name. Every real provider host, Google's
 included, is routed to a refusing sink (`e2e/fake.ts:27-35`,
 `e2e/SEAM-REQUIRED.md`), so there is no Microsoft or Zoom stand-in. Criteria needing a Microsoft or Zoom exchange are
-therefore marked `[unit]` or `[contract]` below, not `[e2e]`.
+therefore marked `[unit]` or `[contract]` below, not `[e2e]`. At the unit level
+the Microsoft OAuth configuration already accepts an endpoint override for a
+local fake provider (`backend/auth/microsoft_oauth.go:23-26`, PAC-35); Zoom's
+exchange has no such seam today.
 
 ### 2.6 Status surfaces today
 
@@ -246,18 +284,18 @@ Two surfaces tell a user whether a provider is connected. These are what §3-§4
 mean by "status surfaces".
 
 - **Calendar connection status** (`GET /api/auth/status`,
-  `backend/api/handlers_auth.go:97-132`). Reports **only** the user's current
+  `backend/api/handlers_auth.go:110-161`). Reports **only** the user's current
   calendar provider: Outlook (connected when a refresh token is stored,
-  `:98-105`), WebCal (`:106-111`) or Google (connected when a token row exists,
-  `:113-131`). It never mentions Zoom, and it says nothing about a Microsoft
+  `:126-133`), WebCal (`:134-139`) or Google (connected when a token row exists,
+  `:140-160`). It never mentions Zoom, and it says nothing about a Microsoft
   credential when the calendar provider is not Outlook, nor about a Google
   credential when it is not Google.
 - **Conferencing provider list** (`GET /api/conference/providers`,
-  `backend/api/handlers_conferencing.go:161-184`). Rows, each present only when
+  `backend/api/handlers_conferencing.go:192-214`). Rows, each present only when
   the provider is configured on the server: `google_meet` connected whenever a
-  Google token row exists (`:173`); `zoom` connected whenever the stored Zoom
-  string is non-empty (`:176`); `teams` connected **and** enabled whenever a
-  Microsoft credential exists (`:179`); `custom` always connected (`:181`).
+  Google token row exists (`:204`); `zoom` connected whenever the stored Zoom
+  string is non-empty (`:207`); `teams` connected **and** enabled whenever a
+  Microsoft credential exists (`:210`); `custom` always connected (`:212`).
 
 Both derive "connected" from the credential being stored. Because D-1 keeps a
 refused credential stored, both would keep reporting connected after a loss
@@ -286,62 +324,99 @@ There are two meeting-creation actions, and they do not read the same
 credentials.
 
 - **Standalone create** (`createConference`,
-  `backend/api/handlers_conferencing.go:120-158`) reads only the user's settings
+  `backend/api/handlers_conferencing.go:146-190`) reads only the user's settings
   and the Teams (Microsoft) or Zoom credential.
 - **On an existing event** (`addEventConference`,
-  `backend/api/handlers_conferencing.go:251-358`) first builds a calendar client
-  from the user's **Google** credential (`:267-271`; `loadEventClient` is
-  `eventHandlers.calClient`, `:52-55`, which calls `auth.LoadUserToken`,
-  `backend/api/handlers_events.go:24-32`), whatever the user's calendar provider
-  is. Without a Google credential it answers 401 "not authenticated" (`:268-270`).
-  It then reads the event with that client; any failure there, including a
-  failed Google refresh, answers 404 "event not found: ..." (`:272-275`). Only
-  after that does it read the Teams or Zoom credential (`:337-345`), and after
-  the meeting is created it writes the link back to the event with the Google
-  client again (`:351-355`).
+  `backend/api/handlers_conferencing.go:293-401`) first builds a calendar client
+  from the user's **Google** credential (`:309-313`; `loadEventClient` is
+  `eventHandlers.calClient`, `:78-81`, which loads the credential through
+  `engine.LoadCalendarToken`, `backend/api/handlers_events.go:27-34`), whatever
+  the user's calendar provider is. Without a Google credential it answers the
+  401 calendar-not-connected refusal (`writeCalendarFailure`,
+  `backend/api/server_errors.go:75-81`, PAC-21). It then reads the event with
+  that client; any failure there, including a failed Google refresh, answers
+  404 "event not found" (`:314-318`; PAC-21 removed the error text that used to
+  follow). Only after that does it read the Teams or Zoom credential
+  (`:375-383`), and after the meeting is created it writes the link back to the
+  event with the Google client again (`:395-398`).
 
 So on the on-event path the Google credential is a precondition for ever
 reaching Teams or Zoom, and a dead Google credential stops the request before
 the Teams or Zoom credential is read. Listing events behaves the same way: it
 always uses the Google credential, whatever the calendar provider
-(`backend/api/handlers_calendar.go:133-144`).
+(`backend/api/handlers_calendar.go:137-145`, used by listing at `:146`).
 
 ### 2.9 Credentials used on someone else's behalf
 
 Every Google consumer builds a refreshing token source over the stored
 credential, so once AC-6 persists renewals, each of these reads becomes a write
 to the credential's owner's row. Three paths use a credential whose owner is
-not the one making the request:
+not the one making the request, and a fourth tells the public about it:
 
 - **Team availability** (`GET /api/teams/{id}/availability`, route
   `backend/api/routes.go:236`). A team member's request loops over every member
   and loads and renews *that member's* Google credential
-  (`backend/engine/team_availability.go:78-88`, `auth.LoadUserToken(e.DB,
-  m.UserID)`). Any failure for a member is swallowed: that member simply
-  contributes no busy periods (`:85-99`).
+  (`backend/engine/team_availability.go:78-100`, `auth.LoadUserToken(e.DB,
+  m.UserID)` at `:82`). Any failure for a member is swallowed: that member
+  simply contributes no busy periods (`:82-100`).
 - **Public booking slots** (`GET /api/book/{slug}/slots`) and **booking
   creation** (`POST /api/book/{slug}`), both outside authentication
   (`backend/api/routes.go:23-27`). Slots compute each host's busy time with that
-  host's Google credential (`backend/engine/booking.go:93`, `:114-124`, client
-  built at `:202-208`); creation writes the event to each host's calendar with
-  that host's credential (`:252`) and ignores a failure (`:269-272`), so the
-  booking is saved and confirmed anyway. No user is acting at all.
-- `GET /api/book/{slug}` (link info) only checks whether a host has a stored
-  credential row (`backend/api/handlers_booking.go:88-90`); it never uses or
-  renews it.
+  host's Google credential and tolerate a failing host
+  (`backend/engine/booking.go:75-95`, `:114-128`, client built at `:202-208`);
+  creation writes the event to each host's calendar with that host's credential
+  (`:269`) and ignores a failure, so the booking is saved and confirmed anyway.
+  No user is acting at all.
+- **Public link info** (`GET /api/book/{slug}`, route `backend/api/routes.go:25`,
+  no authentication) never uses or renews the credential, but it **reports on
+  it to every visitor**. For each accepted host it adds one to
+  `coverage.total`, and one to `coverage.checked` when that host's Google
+  credential row loads (`backend/api/handlers_booking.go:75-93`, the count at
+  `:87-90`). A stored row counts whether its refresh token works or not. The
+  contract describes `checked` as the hosts "with a usable OAuth token"
+  (`contracts/openapi/paths/booking.yaml:1215-1220`), which is not what the
+  server counts. The public booking page shows the result to every visitor
+  (`smart-calendar-flow/src/pages/PublicBooking.tsx:378-380`, rendering
+  `src/components/CoveragePill.tsx`; the field is typed at
+  `src/api/schedulingLinks.ts:62` and read at `:661`): "All participants
+  checked" when `checked >= total`, otherwise "Partial availability" with a
+  tooltip saying how many participants' availability "could not be verified".
+  So today a host whose Google credential is dead still counts as checked,
+  while the slots are computed without that host's calendar (bullet above). A
+  host with no Google credential at all (for example one on Outlook) counts as
+  not checked.
 
 Every other Google consumer acts for the credential's owner, triggered either
-by the owner's request or by a job running for the owner: scheduled
-auto-decline every 15 minutes (`backend/engine/auto_decline.go:77-87`,
-`backend/main.go:119-124`), habit re-optimisation
-run in the background after the owner's habit edits (`habits.go:250-254`,
-`backend/api/handlers_habits.go:139,241,384`), analytics computation and its
-background recompute (`analytics.go:212-216`,
-`backend/api/handlers_analytics.go:33,91`), and manager team detection, on the
-manager's request and in a weekly batch (`manager.go:191-195`,
-`backend/api/handlers_manager.go:80,102`, `backend/main.go:150-162`). Team
-analytics reads only stored weekly rows (`team_availability.go:175-176`) and
-uses no credential. The Outlook and Zoom credentials are only ever used for
+by the owner's request or by a job running for the owner. The list below is
+what Revision 4 found at `6d751f9`, given so a plan author can check it; it is
+**not** the definition of where loss recording applies. D-13 applies it to
+every consumer that renews the credential, listed here or not.
+
+- **Scheduled jobs, with no request from the owner:** auto-decline every 15
+  minutes (`backend/engine/auto_decline.go:77-87`, `backend/main.go:118-131`);
+  the personal-blocker sync every 30 minutes for every user
+  (`backend/main.go:92-114`, `backend/engine/personal_blocker.go:92`), which
+  renews the owner's work Google credential through the request-context helper
+  below; automatic focus-time scheduling, considered every minute per user
+  (`backend/scheduler/cron.go:51-53`, wired at `backend/main.go:86`, running
+  the focus-time engine); and the weekly manager team detection batch
+  (`backend/engine/manager.go:191-195`, `backend/main.go:147-168`).
+- **Background work started by the owner's request:** habit re-optimisation
+  after habit edits (`backend/engine/habits.go:250-254`,
+  `backend/api/handlers_habits.go:139,241,384`), analytics computation and its
+  background recompute (`backend/engine/analytics.go:210-216`,
+  `backend/api/handlers_analytics.go:33,91`), and manager team detection on the
+  manager's request (`backend/api/handlers_manager.go:100,122`).
+- **Request-driven paths that load the credential of the user in the request
+  context:** the engine helper (`backend/engine/cal_iface.go:84-96`) behind
+  focus time (`focus_time.go:54`), compression (`compression.go:43`) and smart
+  scheduling (`smart_schedule.go:56`); and the API handlers that build a Google
+  client for the caller (listing events and calendar free/busy,
+  `backend/api/handlers_calendar.go:137-145`; event operations and meeting
+  creation on an event, `backend/api/handlers_events.go:27-34`).
+
+Team analytics reads only stored weekly rows (`team_availability.go:175-176`)
+and uses no credential. The Outlook and Zoom credentials are only ever used for
 their owner's own actions (§2.1, §2.2, §2.7).
 
 ## 3. Desired behaviour
@@ -363,7 +438,9 @@ From the user's point of view:
   the connection-lost entry goes to the owner's activity log. The person or job
   that triggered it gets nothing: no entry in their log, no change to their
   status, and no answer that tells them more about the owner's connection than
-  today's answer does.
+  today's answer does. The same holds for what a public booking page says about
+  its hosts: a visitor learns nothing about a host's loss that they could not
+  learn today.
 - **Renewal survives rotation and concurrency.** Where the provider issues a new
   refresh credential on renewal, the new one is kept. Two simultaneous actions by
   the same user do not leave the stored credential unusable.
@@ -597,8 +674,11 @@ one new connection-lost entry naming Google; and A's audit log, A's status
 surfaces and A's stored credential are unchanged. If A and a third member C
 request the team's availability concurrently within one backend process and
 both reach B's refusal, B still gets exactly one entry and neither A's nor C's
-log changes. Fails against an implementation that writes the entry to the
-requester's log, or writes none.  [contract]
+log changes. Separately, when the double answers B's refresh with a temporary
+failure (timeout or 5xx) instead, the response is the same, B's status surfaces
+still report connected, and no connection-lost entry is written to anyone's
+log. Fails against an implementation that writes the entry to the requester's
+log, writes none, or records every swallowed error as a loss.  [contract]
 
 AC-27. Given A and B are members of the same team and B's Google access token
 is expired with a valid refresh token, when A requests the team's
@@ -618,17 +698,27 @@ calendar); neither response says H's connection was lost; H's status surfaces
 report Google not connected; and H's audit log holds exactly one new
 connection-lost entry naming Google for this loss, however many slot and
 booking requests reach the refusal. No other user's log or status changes.
+After H's loss has been recorded, the link's public info response is identical,
+status and body, to the one returned for the same link before the loss: in
+particular H still counts as checked in its coverage (D-14). Separately, when
+the double answers H's refresh with a temporary failure (timeout or 5xx)
+instead, the slots, booking and link-info responses are as above, H's status
+surfaces still report connected, and no connection-lost entry is written.
 Separately, given H's token is expired with a valid refresh token, the renewed
-token is stored for H only. Fails today: no entry and no status change for H.
-[contract]
+token is stored for H only. Fails today: no entry and no status change for H;
+and it fails against an implementation that stops counting a host whose loss
+is recorded.  [contract]
 
 AC-29. Given B's Google access token is expired and the double permanently
 refuses B's refresh, when a job runs for B with no request from B (the
-scheduled auto-decline run, and separately the weekly manager team detection
-batch for B), then B's status surfaces report Google not connected, B's audit log
-holds exactly one new connection-lost entry naming Google for this loss, no
-other user's log or status changes, and the job's outcome for B is what it is
-today. Fails today: no entry and no status change.  [unit]
+scheduled auto-decline run, separately the personal-blocker sync, and
+separately the weekly manager team detection batch for B), then B's status
+surfaces report Google not connected, B's audit log holds exactly one new
+connection-lost entry naming Google for this loss, no other user's log or
+status changes, and the job's outcome for B is what it is today. When the
+double answers with a temporary failure (timeout or 5xx) instead, B's status
+surfaces still report connected and no connection-lost entry is written. Fails
+today: no entry and no status change.  [unit]
 
 **Disconnect and revocation** (ticket acceptance 2)
 
@@ -656,9 +746,11 @@ otherwise it receives none, no request revoking A's other Microsoft sessions is
 sent, and the response tells A the grant can be removed from their Microsoft
 account.  [unit]
 
-AC-18. Given A and B have Google credentials, when A disconnects the calendar,
-then B's Google credential is still stored. (Already true per §2.3; pins it,
-since no test asserts it today.)  [unit]
+AC-18. Given A and B have Google credentials and A's calendar provider is
+Google, when A disconnects the calendar, then B's Google credential is still
+stored. (Already true per §2.3; pins it. Revision 4: confirm no PAC-35 test
+already asserts B's row before adding one; `handlers_auth_test.go` and
+`pac35_auth_flows_test.go` assert A's own deletion and session.)  [unit]
 
 **Provider flip (kept)**
 
@@ -680,10 +772,10 @@ today: such a listing is non-conforming.  [contract]
 - **Personal-calendar credentials** (§0, OQ-8).
 - **Outlook as the working calendar for event listing and creation** (the empty
   access token in the generic provider factory): PAC-47.
-- **Revoking Google on calendar disconnect, and API-061** (calendar disconnect
-  logs the user out): changing what calendar disconnect does to the session is a
-  product decision outside this issue. Not touched unless OQ-3 routes Outlook
-  disconnect through that operation.
+- **Revoking Google on calendar disconnect.** Calendar disconnect's session
+  behaviour was settled by PAC-35 (API-061 Fixed: the session is kept) and its
+  409 for Outlook and WebCal users by PAC-35 D-8; neither is changed here, and
+  sending a revocation to Google on that disconnect is not added (OQ-3).
 - **Proactive background refresh** for users who are not acting. A credential is
   renewed when it is needed; a scheduled job acting for a user gets renewal on
   the same terms when it uses the credential, nothing more.
@@ -706,8 +798,13 @@ today: such a listing is non-conforming.  [contract]
 - **Changing what the on-event action answers when Google is refused** (D-10).
 - **Telling a requester or booking visitor that a teammate's or host's
   connection was lost.** Team availability and public booking answers stay as
-  they are today (D-12); exposing another user's credential state to them would
-  widen who sees data.
+  they are today (D-12), and so does the public link info's host coverage
+  (D-14); exposing another user's credential state to them would widen who sees
+  data.
+- **Making the public coverage count truthful.** Today a host with a dead
+  Google credential counts as checked while slots ignore their calendar (§2.9).
+  Fixing that for visitors means telling them about the loss, which D-14
+  declines. Only the contract's description is corrected (§6).
 - **Booking confirmed without an event on a host's calendar** when the host's
   credential is dead (§2.9). Today's behaviour; the host is now told through
   their status and activity log, but making booking creation fail or warn is a
@@ -751,13 +848,26 @@ today: such a listing is non-conforming.  [contract]
   a credential (Zoom is not a calendar), so the contract stage will reword that
   description; the rewording must widen it to cover the new kinds and must not
   change what any of the seven existing kinds means.
-- **Team availability and public booking responses do not change** (D-12).
-  Protected today by `TestTeamAvailability_UsesInjectedEngineAndQuery`
-  (`backend/api/handlers_teams_test.go:354`), `TestPublicBookingSlotsContract`
-  and `TestPublicBookingCreateContract`
-  (`backend/api/handlers_booking_test.go:119,149`) and the e2e journey
-  `e2e/tests/public-booking.spec.ts`. None of them runs with a refused host or
-  member credential; AC-26 and AC-28 add that.
+- **Team availability and public booking responses do not change** (D-12,
+  D-14). That covers team availability, public booking slots, public booking
+  creation, and public link info, whose host coverage keeps counting a host
+  with a stored Google credential as checked whether or not the credential
+  still works. The link-info consumer is the public booking page's coverage pill
+  (`smart-calendar-flow/src/pages/PublicBooking.tsx:378-380`,
+  `src/components/CoveragePill.tsx`; field typed at
+  `src/api/schedulingLinks.ts:62`). Protected today by
+  `TestTeamAvailability_UsesInjectedEngineAndQuery`
+  (`backend/api/handlers_teams_test.go`), `TestPublicBookingSlotsContract`
+  and `TestPublicBookingCreateContract` (`backend/api/handlers_booking_test.go`)
+  and the e2e journey `e2e/tests/public-booking.spec.ts`. None of them runs
+  with a refused host or member credential, and no test pins link-info
+  coverage for a host with a dead credential; AC-26 and AC-28 add that.
+- **The public coverage description says what is counted.** The contract
+  describes `checked` as hosts "with a usable OAuth token"
+  (`contracts/openapi/paths/booking.yaml:1215-1220`); the server counts hosts
+  with a stored Google credential, usable or not (§2.9). Under factory §7.2 the
+  contract stage rewrites that description to match the server (and D-14),
+  changing no field, type or value; the web types regenerate from it.
 - **The existing Zoom disconnect caller keeps working** whatever the new
   response carries (`smart-calendar-flow/src/api/client.ts:1463` treats it as
   no content; `src/components/ConferencingSection.tsx:98` ignores the result).
@@ -782,8 +892,14 @@ they asked for by disconnecting.
 - **OQ-2 — Zoom revocation semantics.** Owner: contract-author. Confirm Zoom's
   revocation revokes this app's grant only, and which token it accepts.
 - **OQ-3 — Where does Outlook disconnect live?** Owner: contract-author. A new
-  operation next to Zoom's, or a change to calendar disconnect. The latter pulls
-  API-061 into scope.
+  operation next to Zoom's, or a change to calendar disconnect. Since PAC-35,
+  calendar disconnect answers 409 and deletes nothing for an Outlook user
+  (PAC-35 D-8), and PAC-35 OQ-5 left "disconnect for Outlook/webcal users" to
+  its own issue; this spec is where Outlook's half of that lands. Routing it
+  through calendar disconnect would change PAC-35's 409 for Outlook users and
+  must keep D-3 (calendar provider unchanged) and PAC-35 D-8 for WebCal; a
+  separate operation leaves PAC-35's behaviour untouched. The spec's criteria
+  hold either way.
 - **OQ-4 — Does AC-11 change the Microsoft or Zoom callback's documented
   behaviour?** Owner: contract-author. If yes, API-011 and API-012 come into
   scope for the Microsoft callback (factory §7.1).
@@ -870,7 +986,7 @@ per-user settings rows were created, `:1001-1002`).*
   recorded here so it is a decision rather than an accident. *Assumed by the
   factory, pending owner confirmation.*
 - **D-10 — When Google is refused on the on-event meeting path, the response
-  stays what it is today** (404 with an event-not-found error, §2.8); the loss
+  stays what it is today** (404 "event not found", §2.8); the loss
   is surfaced on Google's status surfaces and in the activity log (AC-23), and
   the Teams or Zoom credential is not read, renewed or reported. Rationale: it
   follows D-7 (no Google operation's failure response changes) and keeps a
@@ -902,6 +1018,20 @@ per-user settings rows were created, `:1001-1002`).*
   list of actions would leave a dead credential invisible to a user whose only
   use is through a job or a teammate. *Assumed by the factory, pending owner
   confirmation.*
+- **D-14 — The public link info's host coverage does not change when a host's
+  connection is lost.** A host whose Google loss has been recorded still
+  counts as checked, exactly as a host with a dead credential does today
+  (§2.9); the response is identical before and after the loss (AC-28). Options
+  considered: (a) stop counting a lost host, which matches the contract's word
+  "usable" but tells every anonymous visitor with the link that some host's
+  connection is dead, on a page the host did not choose to show it on: that
+  widens who sees data, against D-12 and §5; (b) keep counting stored
+  credentials, chosen. The cost of (b) is stated plainly: the page can keep
+  saying "All participants checked" while the slots ignore a lost host's
+  calendar, as it does today; the host is told through their own status and
+  activity log (AC-28). The contract's description of the count is corrected
+  to say what is counted (§6, factory §7.2), so the contract stops claiming
+  "usable". *Assumed by the factory, pending owner confirmation.*
 
 ## Challenge — 2026-10-26
 
@@ -1610,3 +1740,89 @@ operation, which §2.9 cites and then sets aside.
   page): breaks, or starts revealing a host's loss to visitors, if Blocking 1 is
   resolved by changing what `checked` counts; unaffected if it is resolved as
   unchanged.
+
+## Revision 4 — 2026-10-27
+
+Answers the one blocking finding of the round-4 challenge and its two
+non-blocking ones. The branch was brought up to date by merging `origin/main`
+(`6d751f9`, eleven commits after `16f3100`), and the spec was re-checked
+against it, because PAC-21, PAC-26 and PAC-35 changed several operations this
+spec cites.
+
+### Blocking 1 — public link info reports host credential state to visitors
+
+Accepted. Re-read at `6d751f9`: `getLinkInfo` (`backend/api/handlers_booking.go:106-121`)
+answers `publicLink`, which counts a host as checked when
+`auth.LoadUserToken` returns a stored row (`:87-90`), whether or not the
+credential works; the contract says "usable OAuth token"
+(`contracts/openapi/paths/booking.yaml:1215-1220`); the public booking page
+renders it through `CoveragePill` (`smart-calendar-flow/src/pages/PublicBooking.tsx:378-380`,
+checked on the web repo's `origin/main` at `ad52160`). Changes:
+
+- §2.9 now lists public link info as a fourth path that reports on a host's
+  credential to anonymous visitors, with what the page shows and the gap
+  between the contract's "usable" and what is counted.
+- New **D-14**: unchanged. A host whose loss is recorded still counts as
+  checked. Option (a), stop counting a lost host, was rejected because it tells
+  every visitor that some host's connection is dead, which widens who sees
+  data (D-12, §5). The cost of the chosen option is written into D-14.
+- Inherited scope lists `GET /api/book/{slug}` as unchanged in response.
+  Checked: no `x-uncertain`, and no audit finding names it.
+- §6's "responses do not change" bullet now covers link info and names its
+  consumer. A new §6 bullet requires the contract stage to rewrite the
+  `PublicLinkCoverage` description to say what is counted (factory §7.2),
+  changing no field, type or value.
+- AC-28 is extended: after H's loss is recorded, the link-info response is
+  identical to the one before, and H still counts as checked. It fails against
+  an implementation that stops counting a lost host.
+- §3's owner rule and §5 now say the public booking page reveals nothing about
+  a host's loss, and that making the coverage count truthful is out of scope.
+
+### Non-blocking
+
+1. §2.9's owner-only list is now introduced as examples found at `6d751f9`,
+   with D-13 as the rule. It adds the paths that load the credential of the
+   user in the request context (`backend/engine/cal_iface.go:84-96`: focus
+   time, compression, smart scheduling), the personal-blocker sync every 30
+   minutes (`backend/main.go:92-114`, `engine/personal_blocker.go:92`), the
+   automatic focus-time scheduler added by PAC-49 (`backend/scheduler/cron.go:51-53`,
+   `backend/main.go:86`), and the API handlers that build a Google client for
+   the caller. AC-29 now includes the personal-blocker sync. The inherited-scope
+   bullet for owner-only consumers points at §2.9 rather than repeating a list.
+2. AC-26, AC-28 and AC-29 each gain a temporary-failure case (timeout or 5xx):
+   responses as specified, the owner still reported connected, and no
+   connection-lost entry. AC-26 now also fails against an implementation that
+   records every swallowed error as a loss.
+
+### Changes from re-checking against `origin/main` (`6d751f9`)
+
+These are facts that changed on `main` after round 4 reviewed `16f3100`. None
+changes a criterion's intent.
+
+- **Calendar disconnect (PAC-35).** It keeps the session (API-061 Fixed). For
+  a user whose calendar provider is Outlook or WebCal it answers 409 and
+  deletes nothing (PAC-35 D-8). §2.1, §2.3, §5 and inherited scope are
+  updated. OQ-3 now records that PAC-35 OQ-5 left Outlook/WebCal disconnect to
+  its own issue, and that routing Outlook disconnect through calendar
+  disconnect would change PAC-35's 409. AC-18 gains the precondition that A's
+  calendar provider is Google, since otherwise A's disconnect deletes nothing.
+- **Fixed findings (PAC-35, PAC-26).** API-011, API-012, API-061 and API-064
+  are Fixed (PAC-35), and API-028 is Fixed (PAC-26). Inherited scope no longer
+  lists them as conditional. All inherited-scope line numbers are re-derived
+  at `6d751f9`.
+- **U-03 (PAC-21).** It was resolved as "keep" and is gone from the bundle.
+  API-091 stays open on `GET /api/calendar/freebusy`.
+- **On-event meeting creation (PAC-21).** With no Google credential it now
+  answers the 401 calendar-not-connected refusal. A failed Google read answers
+  404 "event not found" with no error text after it. §2.8 and D-10 are
+  updated; AC-8's Google on-event row still says "today's response", which
+  this now is.
+- **T8 (PAC-21).** The raw provider-error echoes earlier revisions cited in
+  the Zoom and Microsoft callbacks are gone. The inherited-scope note is
+  updated.
+- **Test seam (PAC-35).** The Microsoft OAuth configuration accepts an
+  endpoint override for a local fake provider (§2.5).
+- §2.6 status-surface citations, §2.2's Zoom status and disconnect citations,
+  and §2.9's citations are re-numbered at `6d751f9`. The §2 preamble says
+  which subsections were re-checked. Citations in §2.1, §2.4 and §2.7 whose
+  code did not change were not all re-numbered, and the preamble says so.
