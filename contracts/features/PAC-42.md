@@ -199,3 +199,208 @@ week, and `week_start` is already stored correctly. So a revert restores today's
 behaviour for every row, with no data step and no data deleted. The web change is a
 type regeneration that no web code reads, so the two reverts can happen in either
 order.
+
+## Challenge — 2026-10-27
+
+**Verdict**: accept-with-changes
+
+Reviewed on `factory/pac-42-contract` at `e212c05`, committed state only. I read it
+against spec revision 1 (`factory/pac-42-spec` at `93491a2`), the code on `main` at
+`6d751f9` (the branch's merge base), web `origin/main` `ad52160`, and the paired web
+branch `factory/pac-42-contract-types` at `6dace6c`. I did not consult the author.
+
+**What I ran, all on `e212c05`. Each ran in a fresh LF clone in Docker, because the
+host api checkout is on another stage's branch.**
+- `make openapi-check WEB=/nonexistent`: assembler `OK: bundle is in sync (98
+  paths)`, migration report `OK ... 119 operations`, `OK: backend/api/gen matches the
+  contract`, `openapi-check(api) rc=0`. The web half was SKIPPED there, so I ran it
+  separately (next item).
+- Web `make openapi-check CONTRACT=<e212c05 bundle>` on `6dace6c`: `OK:
+  src/api/generated matches the contract`, rc=0. `tsc --noEmit -p tsconfig.app.json`
+  rc=0. I did **not** run the full web `make verify` / `web-gate.sh`.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` gives `c06388ba…548873`.
+  This equals the manifest's `contractHash`.
+- `go build ./...` and `go vet ./api/...` (backend) both rc=0.
+- `go test ./... -count=1 -p 1` (backend) ran against a disposable `postgres:16-alpine`.
+  Every package was `ok`, rc=0. This includes the PAC-21 contract test that parses the
+  bundle, so the new 500 wording passes its raw-error rule. I did **not** run
+  `api-gate.sh` itself, lint or coverage, because the gate needs the host checkout on
+  this branch.
+- A throwaway storage test (run inside the container, never committed) called
+  `UpsertAnalyticsWeek` twice for the same user and week. The first call inserted and
+  the second took `ON CONFLICT DO UPDATE`. Both returned a non-nil row with a nil
+  error. The upsert, `GetAnalyticsWeek` and `ListAnalyticsTrends` all read back
+  `week_start = 0001-01-01T00:00:00Z`, while `SELECT week_start::text` returned
+  `2025-01-06`. That independently reproduces §4 (U-01) and spec §2.3.
+
+### Blocking
+
+1. **`contracts/openapi/paths/habits.notes.md` now contradicts the contract. It is not
+   in the diff.** That file is the fragment's companion notes, and it still states, as
+   current fact:
+   - `:68-73` (item 6): `week_start` has two wire formats, "Modelled as two distinct
+     schemas", one of them RFC3339.
+   - `:110-111` (item 15): "`habit_completion_rate` is a 0..1 fraction".
+   - `:210-213` (x-uncertain list item 1): the `/api/analytics/week` 404 is "Marked
+     inline in `habits.yaml`" and "Documented because the code path exists".
+   - `:216` (item 3): `buffer_minutes` is listed as an inline `x-uncertain`.
+
+   After `e212c05`, all four are false about the contract. A plan author who reads the
+   fragment's notes would be told that the 404 is still documented and that the rate is
+   a fraction. PAC-28 handled the same situation in the same file (`:225-227`, "**Resolved
+   by PAC-28:** …"). **Fix:** annotate each of the four items with "**Resolved by PAC-42:**"
+   plus the new declaration:
+   - `week_start` is `format: date` on both schemas.
+   - The rate is a percentage on 0..100 on both reads, and storage keeps the ratio.
+   - The 404 was removed, with a pointer to PAC-42.md §4.
+   - The `x-uncertain` on `buffer_minutes` was removed, and API-057 is still open.
+
+   Item 14 (`:106`, buffer always 0) stays true and needs no change. Items 7 and 8 stay
+   true, because they are deferred to PAC-42-B.
+
+### Requests wrongly permitted
+
+None that PAC-42 introduces. Neither request surface changed. I attacked both anyway:
+- `GET /api/analytics/week?date=2025-13-45`: the contract forbids it (`format: date`).
+  The server answers 200 for today's week, because `parseDateParam` falls back silently
+  (`handlers_analytics.go:100-110`).
+- `GET /api/analytics/trends?weeks=0` or `?weeks=100`: the contract forbids both
+  (`minimum: 1, maximum: 52`). The server answers 200 with up to 8 rows
+  (`handlers_analytics.go:52-55`).
+
+In both cases the contract is stricter than the server, and both cases predate PAC-42.
+Neither is an `x-uncertain` or an audit finding, so §7.1 does not pull them in.
+
+### Responses the client cannot handle
+
+None. No hand-written web code reads either operation. I grepped
+`origin/factory/pac-42-contract-types` `src/` outside `generated/` for
+`analytics/(week|trends)`, `week_start`, `habit_completion`, `AnalyticsWeekRow` and
+`AnalyticsWeekWithBreakdown`. The only `week_start` hits are `src/api/manager.ts:42,
+235, 578-599` and `managerTeam.test.ts`, which belong to `ManagerAnalyticsWeek`, a
+different operation. The `weekStart` at `client.ts:1107` is the focus-run mock. The
+generated zod on the paired branch carries `z.iso.date()` and `.min(0).max(100)`, and
+`tsc` passes.
+
+### Responses permitted that the server cannot produce, or the reverse
+
+1. **Until the backend PR lands, the server emits responses the new contract forbids.**
+   Today `GET /api/analytics/trends` returns
+   `[{"week_start":"0001-01-01T00:00:00Z","habit_completion_rate":0.75,…}]` (reproduced
+   above). That fails `format: date` and the "never the zero date" description, and it
+   reports 0.75 where the contract now promises 75. This is expected for a contract that
+   leads its implementation, so it is not blocking. It does mean that merging this
+   contract opens a window in which the bundle describes the post-build server. See
+   non-blocking 2.
+2. Attacked `habit_completion_rate > 100` and could not break it. The denominator counts
+   `scheduled` and `completed` and the numerator counts only `completed`
+   (`engine/analytics.go:97-108`), so the ratio is at most 1. 1.0 × 100 is exactly
+   100.0 in float64. The only other writers of `analytics_weeks` are test and seed SQL
+   (`backend/api/pac34_invite_analytics_test.go:200`, `e2e/seed/seed.sql:206`), and
+   both leave the column at its default of 0.
+3. Attacked a negative `focus_score` (§3's residual) and could not break it. The only
+   writer of `focus_blocks` is `SaveFocusBlock` from `engine/focus_time.go:194`. It is
+   reached only after `blockEnd - blockStart >= FocusMinBlockMinutes` (`:174`), and
+   settings validation requires that value to be positive (`handlers_settings.go:233`).
+   So `focusMinutes >= 0`, and `focus*100/(focus+meeting)` is within [0, 100]. A
+   reversed block needs a write outside the app.
+
+   The e2e seed rows store `focus_score` at its default of 50 next to 615/240 minutes,
+   which contradicts the documented formula. That only matters if a future e2e reads
+   these rows through the trend. Today they are read only through manager analytics.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts}`
+  change on regeneration. `6dace6c` matches the bundle (openapi-check rc=0), and nothing
+  else imports them for these schemas.
+- `clockwise-like/backend/api/gen/paceday.gen.go`: `AnalyticsWeekRow.WeekStart` changes
+  from `time.Time` to `openapi_types.Date`. No hand-written Go references it, and
+  `go build` and `go test` pass.
+- `mcp/`: no reference to either path, either schema or the rate (grep).
+- `e2e/`: no test calls `/api/analytics/week` or `/trends`. `seam.spec.ts:366` calls
+  `/recompute` (untouched, 202), and `focus-time.spec.ts:92` calls `/meetings`
+  (untouched). The seed's `analytics_weeks` rows are read by manager analytics
+  (`engine/manager.go:468-473`, its own SQL), which is not on the rescaled path.
+- `backend/engine/team_availability.go:176` shares the storage lookup and reads neither
+  changed field. This is correctly recorded in the manifest.
+
+### Contract/implementation divergences
+
+- None beyond Responses item 1, which is the intended stage-4 delta. The two schemas
+  are now identical apart from `breakdown`. I checked this programmatically on the
+  bundle: `required` differs only by `breakdown`, both set `additionalProperties:
+  false`, and every shared property has the same type, format and bounds. That matches
+  the claim in both operation descriptions.
+
+### Uncertainties not actually resolved
+
+- **U-01 (404) is determined but only half pinned.** The determination is sound. I read
+  the code (`handlers_analytics.go:38-41`, `engine/analytics.go:42-46`,
+  `storage/analytics.go:133-135`) and reproduced both upsert paths above. However, the
+  audit's prescribed action is "**Write a test**". The manifest's tests cover the insert
+  path (AC-2) and the cache hit (AC-3), but **no** acceptance test drives the `ON
+  CONFLICT DO UPDATE` path through the read. That path is a stored week older than 24
+  hours, recomputed by `GET /api/analytics/week`. The evidence for that half is an
+  uncommitted throwaway test, the author's and mine. This is not blocking, because the
+  spec's AC-9 allows removal without a test. See non-blocking 1.
+- **U-10 (`buffer_minutes`)**: resolved by certainty and backed by code
+  (`engine/analytics.go:190-206` sets no `BufferMinutes`). The departure from U-10's
+  prescribed action is recorded as owner-pending (OQ-8). It is honest, and nothing in
+  it is hidden.
+
+### Verified clean
+
+- AC-13 holds literally. `grep -n "0\.\.1\|fraction" contracts/openapi/paths/habits.yaml`
+  returns nothing. Rate and focus score declare `minimum: 0, maximum: 100` on both
+  schemas. Breakdown `percentage` has no bounds.
+- AC-5 holds: `format: date` on both, and neither operation description says the week
+  start differs. The remaining "breakdown exists only on /week" is about `breakdown`,
+  not `week_start`.
+- AC-9 and AC-10 hold on the bundle. Both operations and all four involved schemas
+  (`AnalyticsWeekRow`, `AnalyticsWeekWithBreakdown`, `AnalyticsBreakdownEntry`,
+  `MeetingTitle`) carry no `x-uncertain`. I checked this by walking the parsed bundle.
+- The manifest's `acceptanceTests` match spec AC-1 to AC-11, AC-13, AC-14 and DC-1, with
+  AC-12 withdrawn. The one narrowing is AC-9, from "either" to "removed". It is
+  deliberate and recorded as C-1, and it is one of the spec's own options.
+- Rejected alternatives are rejected for real reasons. `allOf` with
+  `additionalProperties: false` on both branches would accept nothing. A `pattern` on
+  `week_start` cannot exclude `"0001-01-01"`. A rename is unjustified with zero
+  consumers, and I re-verified the zero consumers.
+- The `contractHash` reproduces. The rollback holds under D-3, because nothing stored
+  changes. I confirmed that the stored DATE is correct (`2025-01-06`), so only the read
+  changes.
+- Naming, security and status codes are unchanged apart from the removed 404. The new
+  500 description passes the PAC-21 envelope test.
+
+### Non-blocking
+
+1. Plan: add a test for a stored week computed more than 24 hours ago. When `GET
+   /api/analytics/week?date=2025-01-08` is requested, it should return 200,
+   `week_start: "2025-01-06"`, the recomputed rate on 0..100, and the same row id. That
+   pins the conflict half of U-01 and the date fix on the third storage path (the
+   upsert after a stale cache). AC-2 and AC-3 do not reach it.
+2. Merge order: the contract will describe `week_start` as never the zero date and the
+   rate as 0..100 before the server does (Responses 1). Land the backend PR promptly
+   after the contract, or say in the contract PR body that the trend read violates the
+   bundle until it does.
+3. Process: the spec is not accepted, because round 2 has not run. The manifest and §0
+   both say not to merge before it is. If round 2 changes any AC, this contract needs a
+   re-challenge. Not a schema defect.
+4. Float note for the plan: the rate is `ratio * 100` on read, so non-dyadic ratios are
+   not exact. For example, 4/7 stored then ×100 gives `57.14285714285714`, while
+   `400/7` gives `57.142857142857146`, and `0.57 * 100` gives `56.99999999999999`. Both
+   reads use the same expression, so AC-7 equality holds. Tests should keep to exact
+   ratios (3/4, 1/2) or compare with a tolerance.
+
+### OWNER questions (not blocking)
+
+- OWNER: D-1 / OQ-1. `week_start` is a bare `YYYY-MM-DD` on both reads.
+- OWNER: D-2 / OQ-2. Every proportion is on 0..100, unrounded, and `habit_completion_rate`
+  keeps its name with a new scale (C-4).
+- OWNER: D-3 / OQ-7. Storage keeps the 0..1 ratio, and the rescale happens on read.
+- OWNER: D-4 / OQ-6. Split API-055's second half, API-056, API-083 and `scheduled_date`
+  into PAC-42-B (which does not yet exist, OQ-5).
+- OWNER: D-5 / OQ-8. Defer API-057 under factory §7.1, keeping `buffer_minutes` as
+  "always 0" instead of U-10's wire-up-or-drop.
+- OWNER: OQ-3. Which time zone defines "this week".
