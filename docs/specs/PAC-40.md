@@ -234,8 +234,11 @@ returning any of the link's details or its hosts (D-7).
 The public booking create path rejects exactly the same requests with exactly the
 same answers as today, without the two unreachable items: the repeated
 end-time error and the duplicated exhaustion test. A request that sends an end
-at or before its start keeps getting the answer it gets today, "invalid
-duration". A request that sends no end, on a link whose duration is so long
+at or before its start and sends no duration (or a duration of 0) keeps getting
+the answer it gets today, "invalid duration". The same request with a non-zero
+duration that differs from the time between start and end keeps getting the
+answer it gets today, "duration does not match end time"; that check runs
+first. A request that sends no end, on a link whose duration is so long
 that the computed end comes out before the start, keeps getting the answer it
 gets today, "end must be after start".
 
@@ -335,11 +338,14 @@ host details.  [contract]
 
 **Public booking create (API-073)**
 
-AC-20. Given each rejection the public booking create can make today (missing
-fields, bad start, bad end, end/duration mismatch, invalid duration — including
-a request that sends an end at or before its start — end not after start, too
-soon, used up, overlapping slot, unknown slug), when the same request is sent
-after the change, then the status and body are identical.  [contract] — This
+AC-20. Given each rejection the public booking create can make today (invalid
+request body, missing fields, bad start, bad end, end/duration mismatch —
+including a request that sends an end at or before its start together with a
+non-zero duration, answered 400 "duration does not match end time" — invalid
+duration — including a request that sends an end at or before its start with
+no duration or a duration of 0, answered 400 "invalid duration" — end not after
+start, too soon, used up, overlapping slot, unknown slug), when the same request
+is sent after the change, then the status and body are identical.  [contract] — This
 criterion is the regression net, not a failing test: removing unreachable code
 changes no observable behaviour, so the removal itself is proven by review of
 the diff. That is stated rather than hidden.
@@ -931,3 +937,32 @@ end 10:00, duration 30            -> 400 {"error":"duration does not match end t
   does not change it. The response normaliser reads `durations ?? duration_options`
   (`:98`), but that applies to response fields only, which this spec does not
   change.
+
+## Revision — 2026-10-27 (answers challenge round 3)
+
+The single blocking finding was checked against source at `6d751f9` (still the
+tip of `origin/main`) and accepted. No decision changed. Non-blocking item 2 of
+round 3 is applied; non-blocking items 1 and 3, and the earlier open items,
+stay open for the next stage.
+
+1. **Blocking 1, "end at or before start → invalid duration" is only true
+   without a duration.** Confirmed by reading source: when an end is sent, the
+   handler computes the actual duration from start and end and, if the request
+   carries a non-zero `duration` or `duration_minutes` that differs from it,
+   answers 400 "duration does not match end time"
+   (`handlers_booking.go:263-266`). `durationAllowed` (`:277-280`, which rejects
+   any duration `<= 0` at `:125-127`) only runs after that. So an end at or
+   before the start gets "invalid duration" only when no duration or a duration
+   of 0 is sent (or, from reading source only, a negative duration exactly equal
+   to end minus start, which passes the mismatch check and then fails
+   `durationAllowed`). I did not re-run the challenger's probe 2; the four
+   answers it recorded agree with this reading.
+   *Changed:*
+   - §3.5 limits "invalid duration" to an end at or before the start sent with
+     no duration or a duration of 0, and names "duration does not match end
+     time" for the same request with a non-zero, differing duration.
+   - AC-20 lists both sub-cases with their exact 400 answers.
+2. **Non-blocking 2, "invalid request body" missing from AC-20.** Confirmed
+   (`handlers_booking.go:234-237`). Added to AC-20's list.
+
+Status stays challenged. The spec goes back to the challenger for round 4.
