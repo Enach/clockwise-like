@@ -41,8 +41,8 @@ from the contract and any edit is reported as drift.
 ## Progress
 
 - operations: **120**
-- generated: **0**
-- handwritten: **120**
+- generated: **4**
+- handwritten: **116**
 
 ## Register
 
@@ -64,7 +64,7 @@ from the contract and any edit is reported as drift.
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
 | microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | |
-| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | handwritten | PAC-67: new; no handler exists yet. Factory §4 (new and modified endpoints use the generated interface) applies: the PAC-67 backend stage implements it through `StrictServerInterface` and flips this row to `generated` in the same PR (contracts/features/PAC-67.md, Revision 1). |
+| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | generated   | PAC-67: new; implemented as generatedServer.DisconnectMicrosoft (backend/api/handlers_credentials.go), mounted through the generated strict wrapper. |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |
 | getHealth                         | GET    | /api/health                                     | auth             | handwritten | |
@@ -89,11 +89,11 @@ from the contract and any edit is reported as drift.
 | listRooms                         | GET    | /api/rooms                                      | calendar         | handwritten | |
 | startZoomOAuth                    | GET    | /api/auth/zoom                                  | conferencing     | handwritten | |
 | handleZoomOAuthCallback           | GET    | /api/auth/zoom/callback                         | conferencing     | handwritten | |
-| createConferenceLink              | POST   | /api/conference/create                          | conferencing     | handwritten | |
+| createConferenceLink              | POST   | /api/conference/create                          | conferencing     | generated   | PAC-67: generatedServer.CreateConferenceLink (backend/api/handlers_credentials.go); body validation (API-052) and credential renewal. |
 | listConferenceProviders           | GET    | /api/conference/providers                       | conferencing     | handwritten | |
-| disconnectZoom                    | POST   | /api/conference/zoom/disconnect                 | conferencing     | handwritten | |
+| disconnectZoom                    | POST   | /api/conference/zoom/disconnect                 | conferencing     | generated   | PAC-67: generatedServer.DisconnectZoom (backend/api/handlers_credentials.go); 200 ProviderDisconnectResult with revocation at Zoom. |
 | removeEventConference             | DELETE | /api/events/{id}/conference                     | conferencing     | handwritten | |
-| addEventConference                | POST   | /api/events/{id}/conference                     | conferencing     | handwritten | |
+| addEventConference                | POST   | /api/events/{id}/conference                     | conferencing     | generated   | PAC-67: generatedServer.AddEventConference (backend/api/handlers_credentials.go); credential renewal and the connection-lost 400s. |
 | getDailyRecapSettings             | GET    | /api/settings/daily-recap                       | daily-recap      | handwritten | |
 | patchDailyRecapSettings           | PATCH  | /api/settings/daily-recap                       | daily-recap      | handwritten | |
 | previewDailyRecap                 | POST   | /api/settings/daily-recap/preview               | daily-recap      | handwritten | |
