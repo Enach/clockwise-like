@@ -473,14 +473,24 @@ paths:
         log is never written, and nothing in these entries identifies the requester or visitor. They obey
         the rule in the previous paragraph by construction: `details` holds only server-chosen enum values
         (the provider and, for a disconnect, the revocation outcome), never text supplied by the actor,
-        and never token material. There is exactly one `connection_lost` entry per LOSS: a loss starts
+        and never token material. Each LOSS writes exactly one `connection_lost` entry: a loss starts
         at the first permanent refusal of a credential that was usable and ends when the owner reconnects
         or disconnects that provider, so further refusals within one loss, and concurrent refusals within
         one backend process, add no entry, while a loss of a later, reconnected credential adds a new
         one (spec AC-9, AC-24, AC-25; across several backend processes is spec OQ-9). A temporary failure
         (timeout, network, provider 5xx) never writes one. Disconnects write `provider_disconnected`,
-        plus `revocation_unconfirmed` when a revocation was attempted and not confirmed; the per-case
-        counts are on `disconnectMicrosoft` and `disconnectZoom`.
+        plus `revocation_unconfirmed` when the revocation is not confirmed; the per-case counts are on
+        `disconnectMicrosoft` and `disconnectZoom`.
+
+
+        Like every kind in this log, these entries are written BEST-EFFORT (`storage.WriteAuditLog`, backend/storage/focus_blocks.go:
+        a failed insert is written to the server log and never fails the caller). Each is written after
+        the outcome it records is known, so a failed insert cannot change a response: a disconnect still
+        answers its 200, and a loss is still recorded and still reported on the status surfaces, which
+        do not read this log. The counts above are therefore what is WRITTEN when the insert succeeds;
+        an entry whose insert failed is not retried, and its loss or disconnect then has no entry (contract
+        challenge finding 2). The response of a disconnect, and the status surfaces for a loss, are the
+        authoritative record.
 
 
         There is no pagination — no `offset`, no cursor, no `before`. Entries older than the most recent
@@ -1186,9 +1196,19 @@ paths:
 
         (spec PAC-67 AC-11). With no refresh token stored before either, the
 
-        result is a credential with no refresh token, reported not connected
+        result is a credential with no refresh token. It can never be renewed,
 
-        exactly as today. (2) Storing the credential ends any recorded loss of
+        so it is reported not connected both by `getAuthStatus` (as today) and,
+
+        since PAC-67, by the `teams` row of `listConferenceProviders` (which
+
+        before PAC-67 reported it connected and enabled); once its access token
+
+        expires, Teams meeting creation with it answers the 400 "teams:
+
+        connection lost — reconnect at /api/auth/microsoft" without recording a
+
+        loss (contract challenge finding 5). (2) Storing the credential ends any recorded loss of
 
         the Outlook connection for the user it resolves to (AC-12, AC-24), so
 
@@ -1276,29 +1296,36 @@ paths:
       summary: Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
       description: "New in PAC-67 (spec AC-13, AC-16, AC-17, D-3, D-5, D-8). Protected by\nrequireAuth.\
         \ Takes no request body (any body is ignored). Acts on the\nCALLER only; no other user's credential,\
-        \ settings or activity log is\nread or written.\n\nEffects, in this order:\n1. The caller's stored\
-        \ Microsoft credential (access token, refresh\n   token, expiry) is removed, and any recorded\
-        \ loss of it is cleared:\n   a later Microsoft sign-in starts a fresh connection.\n2. When the\
-        \ caller's conferencing provider is `teams` it becomes\n   `meet` (spec D-8); any other conferencing\
-        \ provider is unchanged.\n3. The caller's calendar provider is NOT changed (spec D-3): a caller\n\
-        \   on `outlook` stays on `outlook` and `getAuthStatus` reports\n   `{connected: false, provider:\
-        \ \"outlook\"}` until they sign in with\n   Microsoft again or choose another provider in settings.\n\
-        4. Nothing is sent to Microsoft. Microsoft offers no revocation of one\n   application's grant\
-        \ for one user that Paceday can call with the\n   user's own delegated token: deleting the delegated\
-        \ permission\n   grant (`DELETE /oauth2PermissionGrants/{id}`) needs\n   `DelegatedPermissionGrant.ReadWrite.All`\
-        \ and an administrator role\n   for work or school accounts and is not supported for personal\n\
-        \   accounts, and the only per-user server call left\n   (`revokeSignInSessions`) signs the user\
-        \ out of every application,\n   which spec D-5 forbids (OQ-1, resolved in\n   contracts/features/PAC-67.md\
-        \ §3). The answer therefore always\n   carries `revocation: not_offered` when a credential was\
-        \ removed,\n   and the client tells the user the grant can be removed from their\n   Microsoft\
-        \ account (AC-17).\n5. One `provider_disconnected` activity entry is written for the\n   caller,\
-        \ details `{\"provider\":\"outlook\",\"revocation\":\"not_offered\"}`.\n   No `revocation_unconfirmed`\
-        \ entry is written: nothing was\n   attempted, so nothing failed (round-5 challenge NB-2).\n\n\
-        A caller with no stored Microsoft credential gets 200 with\n`revocation: nothing_stored`: step\
-        \ 2 still applies, nothing else\nchanges, and no activity entry is written.\n\nAfter a 200 the\
-        \ `teams` row of `listConferenceProviders` reports\n`connected: false` with `enabled` omitted.\n\
-        \nUnlike `disconnectCalendar`, there is no 409: the operation applies to\nevery caller whatever\
-        \ their calendar provider, and it does not touch\nthe Google credential or the webcal link.\n"
+        \ settings or activity log is\nread or written.\n\nEffects, in this order. Steps 1 and 2 are ONE\
+        \ atomic change: either\nboth happen or neither does (then the answer is the 500 below).\n1. The\
+        \ caller's stored Microsoft credential (access token, refresh\n   token, expiry) is removed WHETHER\
+        \ OR NOT IT DECODES (a stored value\n   that is not valid JSON, on which `LoadMicrosoftToken`\
+        \ fails, is\n   removed like any other, answers `not_offered` and writes the entry\n   of step\
+        \ 5; it is never a 500), and any recorded loss of it is\n   cleared: a later Microsoft sign-in\
+        \ starts a fresh connection.\n2. When the caller's conferencing provider is `teams` it becomes\n\
+        \   `meet` (spec D-8); any other conferencing provider is unchanged.\n3. The caller's calendar\
+        \ provider is NOT changed (spec D-3): a caller\n   on `outlook` stays on `outlook` and `getAuthStatus`\
+        \ reports\n   `{connected: false, provider: \"outlook\"}` until they sign in with\n   Microsoft\
+        \ again or choose another provider in settings.\n4. Nothing is sent to Microsoft. Microsoft offers\
+        \ no revocation of one\n   application's grant for one user that Paceday can call with the\n \
+        \  user's own delegated token: deleting the delegated permission\n   grant (`DELETE /oauth2PermissionGrants/{id}`)\
+        \ needs\n   `DelegatedPermissionGrant.ReadWrite.All` and an administrator role\n   for work or\
+        \ school accounts and is not supported for personal\n   accounts, and the only per-user server\
+        \ call left\n   (`revokeSignInSessions`) signs the user out of every application,\n   which spec\
+        \ D-5 forbids (OQ-1, resolved in\n   contracts/features/PAC-67.md §3). The answer therefore always\n\
+        \   carries `revocation: not_offered` when a credential was removed,\n   and the client tells\
+        \ the user the grant can be removed from their\n   Microsoft account (AC-17).\n5. One `provider_disconnected`\
+        \ activity entry is written for the\n   caller, details `{\"provider\":\"outlook\",\"revocation\"\
+        :\"not_offered\"}`,\n   after steps 1 and 2 have succeeded. The write is BEST-EFFORT, like\n \
+        \  every kind in the activity log (`storage.WriteAuditLog`): a failed\n   insert is written to\
+        \ the server log and the 200 stands, because\n   the credential is already removed; that disconnect\
+        \ then has no\n   entry. No `revocation_unconfirmed` entry is written: nothing was\n   attempted,\
+        \ so nothing failed (round-5 challenge NB-2).\n\nA caller with no stored Microsoft credential\
+        \ gets 200 with\n`revocation: nothing_stored`: step 2 still applies, nothing else\nchanges, and\
+        \ no activity entry is written.\n\nAfter a 200 the `teams` row of `listConferenceProviders` reports\n\
+        `connected: false` with `enabled` omitted.\n\nUnlike `disconnectCalendar`, there is no 409: the\
+        \ operation applies to\nevery caller whatever their calendar provider, and it does not touch\n\
+        the Google credential or the webcal link.\n"
       responses:
         '200':
           description: 'The Microsoft credential is gone (or there was none). The session
@@ -1317,10 +1344,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
-          description: 'The caller''s settings could not be read or written. NOTHING was changed: the
-            credential is still stored, the conferencing provider is unchanged and no activity entry is
-            written. Body: `{"error":"internal error"}`. The detail is written to the server log and Sentry
-            only (PAC-21).'
+          description: 'The caller''s settings could not be read, or the atomic change of steps 1 and
+            2 failed. NOTHING was changed: the credential is still stored, the conferencing provider is
+            unchanged and no activity entry is written, so a retry is safe. A stored credential that does
+            not decode is NOT this case (see step 1), and nothing that fails after steps 1 and 2 is a
+            500: a failed activity-entry write is logged only. Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).'
           content:
             application/json:
               schema:
@@ -1854,10 +1883,16 @@ paths:
 
 
         Since PAC-67 (finding API-052, resolved here under factory section 7.1) the body is validated
-        before any credential is read or any provider is called: `title` must be present and non-empty
-        after trimming, `start` and `end` must be present RFC 3339 date-times, and `end` must be after
-        `start`. Anything else is the 400 "invalid body". Before PAC-67 a missing field decoded to the
-        Go zero value and was forwarded to the provider (a blank title and the year 1).
+        before any credential is read or any provider is called: `title` must be present and contain at
+        least one character that is not whitespace, `start` and `end` must be present RFC 3339 date-times,
+        and `end` must be after `start`. Anything else is the 400 "invalid body". "Whitespace" is exactly
+        the set ECMA-262 `\s` matches (WhiteSpace and LineTerminator), so the server''s test and the schema''s
+        `pattern: ''\S''` on `CreateConferenceRequest.title` accept and refuse the same titles (contract
+        challenge finding 1). Neither Go''s `strings.TrimSpace` (`unicode.IsSpace`: adds U+0085, lacks
+        U+FEFF) nor Go''s `regexp` `\S` (ASCII only) is that set, so the server cannot use either as is.
+        A `start` or `end` equal to `0001-01-01T00:00:00Z` cannot be told apart from an absent one and
+        is refused as absent. Before PAC-67 a missing field decoded to the Go zero value and was forwarded
+        to the provider (a blank title and the year 1).
 
 
         Since PAC-67 (spec AC-3 to AC-5, AC-7 to AC-12) the Teams and Zoom credentials are renewed when
@@ -1867,9 +1902,17 @@ paths:
         the renewal (OAuth `invalid_grant` or equivalent) the request fails with the 400 "connection lost"
         sentence for that provider, the loss is recorded for the caller (the matching row of `listConferenceProviders`
         reports not connected, and the caller''s activity log gets ONE `connection_lost` entry per loss
-        however many requests hit it), and the stored credential is kept (spec D-1). A TEMPORARY renewal
-        failure (timeout, network, provider 5xx) is the 500 below: it never says reconnect and records
-        nothing (AC-10).
+        however many requests hit it, written best-effort: see CONNECTION ENTRIES on `listAuditEntries`),
+        and the stored credential is kept (spec D-1). A TEMPORARY renewal failure (timeout, network, provider
+        5xx) is the 500 below: it never says reconnect and records nothing (AC-10).
+
+
+        A Teams or Zoom credential whose access token has expired and that holds NO refresh token cannot
+        be renewed: no renewal request is sent and the request fails with the same 400 "connection lost"
+        sentence for that provider. Nothing is recorded and no activity entry is written, because such
+        a credential is never reported connected (see `ConferenceProviderStatus.connected`), so there
+        is no loss to start. A Zoom credential whose expiry is not stored (one stored before PAC-67) is
+        treated as expired, so it is renewed before it is used.
 
 
         API-091 (no frontend consumer) is resolved for this operation by keeping it: it is the standalone
@@ -1902,7 +1945,8 @@ paths:
             "teams: connection lost — reconnect at /api/auth/microsoft" and "zoom: connection lost — reconnect
             at /api/auth/zoom" (the provider permanently refused the renewal of the caller''s credential,
             on this request or on an earlier one whose loss is still recorded; spec AC-8 "fails with an
-            error telling A to reconnect").'
+            error telling A to reconnect"; also the answer when the access token has expired and no refresh
+            token is stored, which records nothing).'
           content:
             application/json:
               schema:
@@ -1934,9 +1978,11 @@ paths:
         Since PAC-67 `connected` means USABLE, not merely stored (spec PAC-67 §3, AC-8, AC-12 to AC-14,
         AC-21, AC-23): a credential whose renewal the provider permanently refused is kept (spec D-1)
         but reported `connected: false` until the caller reconnects that provider; a temporary failure
-        never changes it. This holds for every row whatever the caller''s calendar provider: the `teams`
-        row reports a lost Outlook credential even when the calendar provider is Google, and the `google_meet`
-        row a lost Google credential even when it is Outlook (AC-21). A loss recorded while the credential
+        never changes it. The exact predicate of each row is on `ConferenceProviderStatus.connected`:
+        a credential that can never be renewed (no refresh token) is not usable either and reads `connected:
+        false`. This holds for every row whatever the caller''s calendar provider: the `teams` row reports
+        a lost Outlook credential even when the calendar provider is Google, and the `google_meet` row
+        a lost Google credential even when it is Outlook (AC-21). A loss recorded while the credential
         was used for someone else (team availability, a public booking page, a scheduled job) changes
         the OWNER''s rows only, never the requester''s (spec D-12).
 
@@ -1976,20 +2022,38 @@ paths:
         and activity logs are untouched. Before PAC-24 the tokens were server-wide.
 
 
-        Since PAC-67 (spec AC-14 to AC-16, D-2, D-9), in this order: (1) the caller''s stored Zoom credential
-        is removed and any recorded loss of it is cleared, and the caller''s conferencing provider becomes
-        `meet` unconditionally (spec D-9, unchanged from before PAC-67); (2) only after the local removal
-        has succeeded, a revocation request for the removed credential is sent to Zoom''s token revocation
+        Since PAC-67 (spec AC-14 to AC-16, D-2, D-9), in this order: (1) LOCAL REMOVAL, one atomic change:
+        the caller''s stored Zoom credential is read into memory and then removed whether or not it decodes,
+        any recorded loss of it is cleared, and the caller''s conferencing provider becomes `meet` unconditionally
+        (spec D-9, unchanged from before PAC-67). A failure up to and including this step is the 500 below,
+        and then nothing has changed. (2) RENEWAL FOR REVOCATION, only when needed: when the removed access
+        token is empty, has expired, or has no stored expiry (a credential stored before PAC-67), and
+        a refresh token was stored, the server first renews it at Zoom''s token endpoint with the removed
+        refresh token, as a meeting creation would. The renewed access and refresh tokens are held in
+        memory for this request only and are NEVER stored: the credential stays removed. When that renewal
+        fails, refused permanently or temporarily, or when it is needed and no refresh token was stored,
+        nothing is sent to the revocation endpoint and the answer is `revocation: unconfirmed`. That is
+        not a loss: nothing is recorded and no `connection_lost` entry is written (the credential no longer
+        exists). A disconnect while a loss is recorded is this case, since the refresh token was already
+        refused. (3) REVOCATION: the unexpired or just-renewed access token is sent to Zoom''s token revocation
         endpoint (`POST https://zoom.us/oauth/revoke`, client credentials in Basic auth, `token` = the
-        access token; whether the server first renews an expired access token to revoke it is the plan''s
-        choice). The result is `revocation: confirmed` when Zoom answers success, and `revocation: unconfirmed`
-        when Zoom refuses, answers an error, or cannot be reached; the local removal stands either way
-        (spec D-2). No `connection_lost` entry is ever written by a disconnect; (3) activity entries for
-        the caller: `confirmed` writes ONE `provider_disconnected` entry (details `{"provider":"zoom","revocation":"confirmed"}`);
-        `unconfirmed` writes TWO, one `provider_disconnected` (details `{"provider":"zoom","revocation":"unconfirmed"}`)
+        access token). The answer is `revocation: confirmed` when Zoom answers success, and `revocation:
+        unconfirmed` when Zoom refuses, answers an error, or cannot be reached. A stored credential that
+        does not decode (non-blank `zoom_tokens` that is not valid JSON, the state behind the "zoom: stored
+        credential is invalid" 400 of `createConferenceLink`) cannot be revoked at all: steps 2 and 3
+        send nothing and the answer is `revocation: unconfirmed`. The local removal stands in every case
+        (spec D-2). No `connection_lost` entry is ever written by a disconnect. (4) ACTIVITY ENTRIES for
+        the caller, written after the outcome is known: `confirmed` writes one `provider_disconnected`
+        entry (details `{"provider":"zoom","revocation":"confirmed"}`); `unconfirmed`, including the undecodable
+        and failed-renewal cases, writes two, one `provider_disconnected` (details `{"provider":"zoom","revocation":"unconfirmed"}`)
         and one `revocation_unconfirmed` (details `{"provider":"zoom"}`) (spec AC-15, AC-16; round-5 challenge
-        NB-2). A caller with no stored Zoom credential gets 200 with `revocation: nothing_stored`: the
-        conferencing provider still becomes `meet`, nothing is sent to Zoom and no activity entry is written.
+        NB-2). These writes are BEST-EFFORT, like every kind in the activity log (`storage.WriteAuditLog`):
+        a failed insert is written to the server log and does not change the response, because the credential
+        is already removed and the 200 is the only truthful answer. Such a disconnect has fewer entries
+        than listed, possibly none; the 200 body is then the only record the user gets of the outcome.
+        A caller with no stored Zoom credential (blank `zoom_tokens`) gets 200 with `revocation: nothing_stored`:
+        the conferencing provider still becomes `meet`, nothing is sent to Zoom and no activity entry
+        is written.
 
 
         Before PAC-67 this answered 204 with no body and sent nothing to Zoom. The only consumer (smart-calendar-flow
@@ -2006,8 +2070,10 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Reading or clearing the caller''s stored Zoom credential failed. NOTHING was changed
-            locally, nothing was sent to Zoom and no activity entry was written. Body: `{"error":"internal
+          description: 'Reading the caller''s stored Zoom credential, or the local removal (step 1), failed.
+            NOTHING was changed locally, nothing was sent to Zoom and no activity entry was written, so
+            a retry is safe. Nothing that fails after step 1 is a 500: renewal and revocation failures
+            are `revocation: unconfirmed`, and a failed activity-entry write is logged only. Body: `{"error":"internal
             error"}`. The detail is written to the server log and Sentry only (PAC-21).'
           content:
             application/json:
@@ -2178,7 +2244,9 @@ paths:
         or Zoom credential is neither read, renewed nor reported. When the Teams or Zoom renewal is permanently
         refused the answer is the 400 "connection lost" sentence for that provider and that loss is recorded
         likewise. A temporary renewal failure records nothing: Google''s gives the 404 as today, Teams''
-        or Zoom''s gives the 502 "upstream provider error".'
+        or Zoom''s gives the 502 "upstream provider error". A Teams or Zoom credential whose access token
+        has expired and that holds no refresh token gets the same 400 "connection lost" sentence with
+        no renewal request, and records nothing (as on `createConferenceLink`).'
       requestBody:
         required: true
         content:
@@ -2206,7 +2274,8 @@ paths:
             "zoom: stored credential is invalid — reconnect at /api/auth/zoom"; NEW in PAC-67, "teams:
             connection lost — reconnect at /api/auth/microsoft" and "zoom: connection lost — reconnect
             at /api/auth/zoom" (the provider permanently refused the renewal of the caller''s Teams or
-            Zoom credential; see the operation description).'
+            Zoom credential, or its access token has expired and no refresh token is stored; see the operation
+            description).'
           content:
             application/json:
               schema:
@@ -6179,14 +6248,16 @@ components:
             (the provider permanently refused renewing the subject''s credential; one per loss, see the
             operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom),
             and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not
-            confirmed; Zoom only). After PAC-67 the falsifying command above must return these writers
-            as well, and the contract test of this enum against the writers covers all ten.
+            confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above
+            must return these writers as well. No test checks this enum against the writers today (none
+            exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend
+            stage ADDS one covering all ten (manifest CONTRACT-6).
 
 
             The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the
             set is held by this contract rather than by the database: adding an eighth action is a contract
-            change, and a writer added without one makes the contract test fail, which is the intended
-            alarm. Spec AC-14 requires that this set never shrinks.
+            change, and once the PAC-67 enum test exists a writer added without one makes it fail, which
+            is the intended alarm. Spec AC-14 requires that this set never shrinks.
 
 
             Because the body of the 200 is an array of this schema, a value outside this enum makes the
@@ -6706,9 +6777,15 @@ components:
           - custom
         connected:
           type: boolean
-          description: Always present. `custom` is hardcoded to true. For google_meet, zoom and teams,
-            true only when the caller's credential for that provider is stored AND not recorded as lost
-            after a permanently refused renewal (PAC-67; see `listConferenceProviders`).
+          description: 'Always present. `custom` is hardcoded to true. Since PAC-67 the other rows mean
+            USABLE (see `listConferenceProviders`), with these predicates over the caller''s own credentials:
+            `google_meet`, a Google token row is stored AND no loss of it is recorded; `zoom`, a stored
+            Zoom credential decodes AND holds a refresh token AND no loss of it is recorded; `teams`,
+            a stored Microsoft credential decodes AND holds a refresh token AND no loss of it is recorded,
+            the same predicate as `getAuthStatus` for an Outlook calendar provider. Before PAC-67 `zoom`
+            was true for any non-blank stored value (including one that does not decode) and `teams` for
+            any stored Microsoft credential, with or without a refresh token, which could report a credential
+            that can never be renewed as connected (contract challenge finding 5).'
         email:
           type: string
           description: Set only for google_meet (the configured calendar email); omitted when empty.
@@ -6716,8 +6793,9 @@ components:
           type: boolean
           description: 'json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only
             ever appears as `true`, and only for teams. Absence must be read as false. Since PAC-67 it
-            follows teams'' `connected`: a lost or disconnected Outlook credential omits it, so no field
-            of the row reports Teams usable (spec PAC-67 section 4 preamble).'
+            follows teams'' `connected` exactly (same predicate): a lost, disconnected or never-renewable
+            (no refresh token) Microsoft credential omits it, so no field of the row reports Teams usable
+            (spec PAC-67 section 4 preamble).'
         auto_with:
           type: string
           enum:
@@ -6738,10 +6816,16 @@ components:
         title:
           type: string
           minLength: 1
-          description: Must be non-empty after trimming whitespace.
+          pattern: \S
+          description: Must contain at least one character that is not whitespace in the ECMA-262 `\s`
+            sense. `pattern` states exactly the test the server applies (see `createConferenceLink`),
+            so a blank title such as "   " cannot be expressed by a client that validates against this
+            schema.
         start:
           type: string
           format: date-time
+          description: '`0001-01-01T00:00:00Z` (Go''s zero time) is refused with the 400 "invalid body",
+            like an absent `start`: the server cannot tell the two apart.'
         end:
           type: string
           format: date-time
@@ -8925,14 +9009,16 @@ components:
           - not_offered
           - nothing_stored
           description: "- `confirmed`: the provider answered success to the revocation\n  request (Zoom\
-            \ only).\n- `unconfirmed`: a revocation was attempted and the provider\n  refused it, answered\
-            \ an error, or could not be reached (Zoom\n  only). The client must tell the user that revocation\
-            \ at the\n  provider could not be confirmed (spec AC-15, D-2) and must not\n  show a plain\
-            \ success.\n- `not_offered`: the provider offers no revocation of this one\n  grant that Paceday\
-            \ may call, so none was attempted (Outlook\n  always, spec AC-17, D-5). The client tells the\
-            \ user the grant\n  can be removed from their account at the provider.\n- `nothing_stored`:\
-            \ the caller held no credential for this\n  provider; nothing was removed or sent, and no\
-            \ activity entry\n  was written.\n"
+            \ only).\n- `unconfirmed`: a credential was removed and its revocation is\n  not confirmed\
+            \ (Zoom only): either a revocation was attempted and\n  the provider refused it, answered\
+            \ an error, or could not be\n  reached; or no revocation could be attempted, because the stored\n\
+            \  credential does not decode or its expired access token could not\n  be renewed (see `disconnectZoom`).\
+            \ The client must tell the user\n  that revocation at the provider could not be confirmed\
+            \ (spec\n  AC-15, D-2) and must not show a plain success.\n- `not_offered`: the provider offers\
+            \ no revocation of this one\n  grant that Paceday may call, so none was attempted (Outlook\n\
+            \  always, spec AC-17, D-5). The client tells the user the grant\n  can be removed from their\
+            \ account at the provider.\n- `nothing_stored`: the caller held no credential for this\n \
+            \ provider; nothing was removed or sent, and no activity entry\n  was written.\n"
       additionalProperties: false
     PublicBookingConfirmation:
       type: object

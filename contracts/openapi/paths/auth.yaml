@@ -205,8 +205,13 @@ paths:
         token, the user's stored refresh token is kept, never overwritten with
         an empty one, so a working connection is never erased by a reconnect
         (spec PAC-67 AC-11). With no refresh token stored before either, the
-        result is a credential with no refresh token, reported not connected
-        exactly as today. (2) Storing the credential ends any recorded loss of
+        result is a credential with no refresh token. It can never be renewed,
+        so it is reported not connected both by `getAuthStatus` (as today) and,
+        since PAC-67, by the `teams` row of `listConferenceProviders` (which
+        before PAC-67 reported it connected and enabled); once its access token
+        expires, Teams meeting creation with it answers the 400 "teams:
+        connection lost — reconnect at /api/auth/microsoft" without recording a
+        loss (contract challenge finding 5). (2) Storing the credential ends any recorded loss of
         the Outlook connection for the user it resolves to (AC-12, AC-24), so
         `getAuthStatus` (Outlook calendar provider) and the `teams` row of
         `listConferenceProviders` report connected again. The credential is
@@ -292,10 +297,14 @@ paths:
         CALLER only; no other user's credential, settings or activity log is
         read or written.
 
-        Effects, in this order:
+        Effects, in this order. Steps 1 and 2 are ONE atomic change: either
+        both happen or neither does (then the answer is the 500 below).
         1. The caller's stored Microsoft credential (access token, refresh
-           token, expiry) is removed, and any recorded loss of it is cleared:
-           a later Microsoft sign-in starts a fresh connection.
+           token, expiry) is removed WHETHER OR NOT IT DECODES (a stored value
+           that is not valid JSON, on which `LoadMicrosoftToken` fails, is
+           removed like any other, answers `not_offered` and writes the entry
+           of step 5; it is never a 500), and any recorded loss of it is
+           cleared: a later Microsoft sign-in starts a fresh connection.
         2. When the caller's conferencing provider is `teams` it becomes
            `meet` (spec D-8); any other conferencing provider is unchanged.
         3. The caller's calendar provider is NOT changed (spec D-3): a caller
@@ -316,8 +325,12 @@ paths:
            and the client tells the user the grant can be removed from their
            Microsoft account (AC-17).
         5. One `provider_disconnected` activity entry is written for the
-           caller, details `{"provider":"outlook","revocation":"not_offered"}`.
-           No `revocation_unconfirmed` entry is written: nothing was
+           caller, details `{"provider":"outlook","revocation":"not_offered"}`,
+           after steps 1 and 2 have succeeded. The write is BEST-EFFORT, like
+           every kind in the activity log (`storage.WriteAuditLog`): a failed
+           insert is written to the server log and the 200 stands, because
+           the credential is already removed; that disconnect then has no
+           entry. No `revocation_unconfirmed` entry is written: nothing was
            attempted, so nothing failed (round-5 challenge NB-2).
 
         A caller with no stored Microsoft credential gets 200 with
@@ -347,9 +360,12 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
           description: >-
-            The caller's settings could not be read or written. NOTHING was changed:
-            the credential is still stored, the conferencing provider is unchanged and
-            no activity entry is written. Body: `{"error":"internal error"}`. The detail
+            The caller's settings could not be read, or the atomic change of steps 1
+            and 2 failed. NOTHING was changed: the credential is still stored, the
+            conferencing provider is unchanged and no activity entry is written, so a
+            retry is safe. A stored credential that does not decode is NOT this case
+            (see step 1), and nothing that fails after steps 1 and 2 is a 500: a failed
+            activity-entry write is logged only. Body: `{"error":"internal error"}`. The detail
             is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1054,11 +1070,14 @@ components:
           description: |
             - `confirmed`: the provider answered success to the revocation
               request (Zoom only).
-            - `unconfirmed`: a revocation was attempted and the provider
-              refused it, answered an error, or could not be reached (Zoom
-              only). The client must tell the user that revocation at the
-              provider could not be confirmed (spec AC-15, D-2) and must not
-              show a plain success.
+            - `unconfirmed`: a credential was removed and its revocation is
+              not confirmed (Zoom only): either a revocation was attempted and
+              the provider refused it, answered an error, or could not be
+              reached; or no revocation could be attempted, because the stored
+              credential does not decode or its expired access token could not
+              be renewed (see `disconnectZoom`). The client must tell the user
+              that revocation at the provider could not be confirmed (spec
+              AC-15, D-2) and must not show a plain success.
             - `not_offered`: the provider offers no revocation of this one
               grant that Paceday may call, so none was attempted (Outlook
               always, spec AC-17, D-5). The client tells the user the grant

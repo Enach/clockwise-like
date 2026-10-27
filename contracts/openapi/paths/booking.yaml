@@ -926,11 +926,19 @@ paths:
 
         Since PAC-67 (finding API-052, resolved here under factory section 7.1)
         the body is validated before any credential is read or any provider is
-        called: `title` must be present and non-empty after trimming, `start` and
-        `end` must be present RFC 3339 date-times, and `end` must be after
-        `start`. Anything else is the 400 "invalid body". Before PAC-67 a missing
-        field decoded to the Go zero value and was forwarded to the provider
-        (a blank title and the year 1).
+        called: `title` must be present and contain at least one character that
+        is not whitespace, `start` and `end` must be present RFC 3339 date-times,
+        and `end` must be after `start`. Anything else is the 400 "invalid body".
+        "Whitespace" is exactly the set ECMA-262 `\s` matches (WhiteSpace and
+        LineTerminator), so the server's test and the schema's `pattern: '\S'`
+        on `CreateConferenceRequest.title` accept and refuse the same titles
+        (contract challenge finding 1). Neither Go's `strings.TrimSpace`
+        (`unicode.IsSpace`: adds U+0085, lacks U+FEFF) nor Go's `regexp` `\S`
+        (ASCII only) is that set, so the server cannot use either as is. A
+        `start` or `end` equal to `0001-01-01T00:00:00Z` cannot be told apart from
+        an absent one and is refused as absent. Before PAC-67 a missing field
+        decoded to the Go zero value and was forwarded to the provider (a blank
+        title and the year 1).
 
 
         Since PAC-67 (spec AC-3 to AC-5, AC-7 to AC-12) the Teams and Zoom
@@ -943,9 +951,20 @@ paths:
         that provider, the loss is recorded for the caller (the matching row of
         `listConferenceProviders` reports not connected, and the caller's activity
         log gets ONE `connection_lost` entry per loss however many requests hit
-        it), and the stored credential is kept (spec D-1). A TEMPORARY renewal
+        it, written best-effort: see CONNECTION ENTRIES on `listAuditEntries`),
+        and the stored credential is kept (spec D-1). A TEMPORARY renewal
         failure (timeout, network, provider 5xx) is the 500 below: it never says
         reconnect and records nothing (AC-10).
+
+
+        A Teams or Zoom credential whose access token has expired and that holds
+        NO refresh token cannot be renewed: no renewal request is sent and the
+        request fails with the same 400 "connection lost" sentence for that
+        provider. Nothing is recorded and no activity entry is written, because
+        such a credential is never reported connected (see
+        `ConferenceProviderStatus.connected`), so there is no loss to start. A
+        Zoom credential whose expiry is not stored (one stored before PAC-67) is
+        treated as expired, so it is renewed before it is used.
 
 
         API-091 (no frontend consumer) is resolved for this operation by keeping
@@ -985,7 +1004,8 @@ paths:
             connection lost — reconnect at /api/auth/zoom" (the provider permanently
             refused the renewal of the caller's credential, on this request or on an
             earlier one whose loss is still recorded; spec AC-8 "fails with an error
-            telling A to reconnect").
+            telling A to reconnect"; also the answer when the access token has
+            expired and no refresh token is stored, which records nothing).
           content:
             application/json:
               schema:
@@ -1023,7 +1043,10 @@ paths:
         AC-8, AC-12 to AC-14, AC-21, AC-23): a credential whose renewal the provider
         permanently refused is kept (spec D-1) but reported `connected: false`
         until the caller reconnects that provider; a temporary failure never
-        changes it. This holds for every row whatever the caller's calendar
+        changes it. The exact predicate of each row is on
+        `ConferenceProviderStatus.connected`: a credential that can never be
+        renewed (no refresh token) is not usable either and reads
+        `connected: false`. This holds for every row whatever the caller's calendar
         provider: the `teams` row reports a lost Outlook credential even when the
         calendar provider is Google, and the `google_meet` row a lost Google
         credential even when it is Outlook (AC-21). A loss recorded while the
@@ -1074,26 +1097,49 @@ paths:
 
 
         Since PAC-67 (spec AC-14 to AC-16, D-2, D-9), in this order:
-        (1) the caller's stored Zoom credential is removed and any recorded loss of
-        it is cleared, and the caller's conferencing provider becomes `meet`
-        unconditionally (spec D-9, unchanged from before PAC-67);
-        (2) only after the local removal has succeeded, a revocation request for
-        the removed credential is sent to Zoom's token revocation endpoint
-        (`POST https://zoom.us/oauth/revoke`, client credentials in Basic auth,
-        `token` = the access token; whether the server first renews an expired
-        access token to revoke it is the plan's choice). The result is
+        (1) LOCAL REMOVAL, one atomic change: the caller's stored Zoom credential is
+        read into memory and then removed whether or not it decodes, any recorded
+        loss of it is cleared, and the caller's conferencing provider becomes
+        `meet` unconditionally (spec D-9, unchanged from before PAC-67). A failure
+        up to and including this step is the 500 below, and then nothing has
+        changed.
+        (2) RENEWAL FOR REVOCATION, only when needed: when the removed access token
+        is empty, has expired, or has no stored expiry (a credential stored before
+        PAC-67), and a refresh token was stored, the server first renews it at
+        Zoom's token endpoint with the removed refresh token, as a meeting creation
+        would. The renewed access and refresh tokens are held in memory for this
+        request only and are NEVER stored: the credential stays removed. When that
+        renewal fails, refused permanently or temporarily, or when it is needed
+        and no refresh token was stored, nothing is sent to the revocation
+        endpoint and the answer is `revocation: unconfirmed`. That is not a loss:
+        nothing is recorded and no `connection_lost` entry is written (the
+        credential no longer exists). A disconnect while a loss is recorded is
+        this case, since the refresh token was already refused.
+        (3) REVOCATION: the unexpired or just-renewed access token is sent to Zoom's
+        token revocation endpoint (`POST https://zoom.us/oauth/revoke`, client
+        credentials in Basic auth, `token` = the access token). The answer is
         `revocation: confirmed` when Zoom answers success, and
         `revocation: unconfirmed` when Zoom refuses, answers an error, or cannot
-        be reached; the local removal stands either way (spec D-2). No
-        `connection_lost` entry is ever written by a disconnect;
-        (3) activity entries for the caller: `confirmed` writes ONE
-        `provider_disconnected` entry (details
-        `{"provider":"zoom","revocation":"confirmed"}`); `unconfirmed` writes TWO,
-        one `provider_disconnected` (details
+        be reached. A stored credential that does not decode (non-blank
+        `zoom_tokens` that is not valid JSON, the state behind the "zoom: stored
+        credential is invalid" 400 of `createConferenceLink`) cannot be revoked at
+        all: steps 2 and 3 send nothing and the answer is
+        `revocation: unconfirmed`. The local removal stands in every case (spec
+        D-2). No `connection_lost` entry is ever written by a disconnect.
+        (4) ACTIVITY ENTRIES for the caller, written after the outcome is known:
+        `confirmed` writes one `provider_disconnected` entry (details
+        `{"provider":"zoom","revocation":"confirmed"}`); `unconfirmed`, including
+        the undecodable and failed-renewal cases, writes two, one
+        `provider_disconnected` (details
         `{"provider":"zoom","revocation":"unconfirmed"}`) and one
         `revocation_unconfirmed` (details `{"provider":"zoom"}`) (spec AC-15,
-        AC-16; round-5 challenge NB-2).
-        A caller with no stored Zoom credential gets 200 with
+        AC-16; round-5 challenge NB-2). These writes are BEST-EFFORT, like every
+        kind in the activity log (`storage.WriteAuditLog`): a failed insert is
+        written to the server log and does not change the response, because the
+        credential is already removed and the 200 is the only truthful answer.
+        Such a disconnect has fewer entries than listed, possibly none; the 200
+        body is then the only record the user gets of the outcome.
+        A caller with no stored Zoom credential (blank `zoom_tokens`) gets 200 with
         `revocation: nothing_stored`: the conferencing provider still becomes
         `meet`, nothing is sent to Zoom and no activity entry is written.
 
@@ -1115,9 +1161,11 @@ paths:
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: >-
-            Reading or clearing the caller's stored Zoom credential failed. NOTHING was
-            changed locally, nothing was sent to Zoom and no activity entry was written.
-            Body: `{"error":"internal error"}`. The detail is
+            Reading the caller's stored Zoom credential, or the local removal (step 1),
+            failed. NOTHING was changed locally, nothing was sent to Zoom and no activity
+            entry was written, so a retry is safe. Nothing that fails after step 1 is a
+            500: renewal and revocation failures are `revocation: unconfirmed`, and a
+            failed activity-entry write is logged only. Body: `{"error":"internal error"}`. The detail is
             written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1158,7 +1206,10 @@ paths:
         Teams or Zoom renewal is permanently refused the answer is the 400
         "connection lost" sentence for that provider and that loss is recorded
         likewise. A temporary renewal failure records nothing: Google's gives the
-        404 as today, Teams' or Zoom's gives the 502 "upstream provider error".
+        404 as today, Teams' or Zoom's gives the 502 "upstream provider error". A
+        Teams or Zoom credential whose access token has expired and that holds no
+        refresh token gets the same 400 "connection lost" sentence with no
+        renewal request, and records nothing (as on `createConferenceLink`).
       requestBody:
         required: true
         content:
@@ -1192,7 +1243,8 @@ paths:
             reconnect at /api/auth/zoom"; NEW in PAC-67, "teams: connection lost —
             reconnect at /api/auth/microsoft" and "zoom: connection lost — reconnect
             at /api/auth/zoom" (the provider permanently refused the renewal of the
-            caller's Teams or Zoom credential; see the operation description).
+            caller's Teams or Zoom credential, or its access token has expired and no
+            refresh token is stored; see the operation description).
           content:
             application/json:
               schema:
@@ -1955,10 +2007,18 @@ components:
         title:
           type: string
           minLength: 1
-          description: Must be non-empty after trimming whitespace.
+          pattern: '\S'
+          description: >-
+            Must contain at least one character that is not whitespace in the
+            ECMA-262 `\s` sense. `pattern` states exactly the test the server
+            applies (see `createConferenceLink`), so a blank title such as "   "
+            cannot be expressed by a client that validates against this schema.
         start:
           type: string
           format: date-time
+          description: >-
+            `0001-01-01T00:00:00Z` (Go's zero time) is refused with the 400 "invalid
+            body", like an absent `start`: the server cannot tell the two apart.
         end:
           type: string
           format: date-time
@@ -2010,10 +2070,18 @@ components:
         connected:
           type: boolean
           description: >-
-            Always present. `custom` is hardcoded to true. For google_meet, zoom and
-            teams, true only when the caller's credential for that provider is stored
-            AND not recorded as lost after a permanently refused renewal (PAC-67; see
-            `listConferenceProviders`).
+            Always present. `custom` is hardcoded to true. Since PAC-67 the other rows
+            mean USABLE (see `listConferenceProviders`), with these predicates over the
+            caller's own credentials: `google_meet`, a Google token row is stored AND
+            no loss of it is recorded; `zoom`, a stored Zoom credential decodes AND
+            holds a refresh token AND no loss of it is recorded; `teams`, a stored
+            Microsoft credential decodes AND holds a refresh token AND no loss of it
+            is recorded, the same predicate as `getAuthStatus` for an Outlook
+            calendar provider. Before PAC-67 `zoom` was true for any non-blank stored
+            value (including one that does not decode) and `teams` for any stored
+            Microsoft credential, with or without a refresh token, which could
+            report a credential that can never be renewed as connected (contract
+            challenge finding 5).
         email:
           type: string
           description: Set only for google_meet (the configured calendar email); omitted when empty.
@@ -2022,9 +2090,10 @@ components:
           description: >-
             json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key
             only ever appears as `true`, and only for teams. Absence must be read as false.
-            Since PAC-67 it follows teams' `connected`: a lost or disconnected Outlook
-            credential omits it, so no field of the row reports Teams usable (spec
-            PAC-67 section 4 preamble).
+            Since PAC-67 it follows teams' `connected` exactly (same predicate): a lost,
+            disconnected or never-renewable (no refresh token) Microsoft credential
+            omits it, so no field of the row reports Teams usable (spec PAC-67
+            section 4 preamble).
         auto_with:
           type: string
           enum: [google, outlook]

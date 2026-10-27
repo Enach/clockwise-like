@@ -900,17 +900,29 @@ paths:
         the requester or visitor. They obey the rule in the previous paragraph by
         construction: `details` holds only server-chosen enum values (the provider
         and, for a disconnect, the revocation outcome), never text supplied by
-        the actor, and never token material. There is exactly one
-        `connection_lost` entry per LOSS: a loss starts at the first permanent
-        refusal of a credential that was usable and ends when the owner reconnects
-        or disconnects that provider, so further refusals within one loss, and
+        the actor, and never token material. Each LOSS writes exactly one
+        `connection_lost` entry: a loss starts at the first permanent refusal of a
+        credential that was usable and ends when the owner reconnects or
+        disconnects that provider, so further refusals within one loss, and
         concurrent refusals within one backend process, add no entry, while a
         loss of a later, reconnected credential adds a new one (spec AC-9, AC-24,
         AC-25; across several backend processes is spec OQ-9). A temporary failure
         (timeout, network, provider 5xx) never writes one. Disconnects write
-        `provider_disconnected`, plus `revocation_unconfirmed` when a revocation
-        was attempted and not confirmed; the per-case counts are on
-        `disconnectMicrosoft` and `disconnectZoom`.
+        `provider_disconnected`, plus `revocation_unconfirmed` when the revocation
+        is not confirmed; the per-case counts are on `disconnectMicrosoft` and
+        `disconnectZoom`.
+
+
+        Like every kind in this log, these entries are written BEST-EFFORT
+        (`storage.WriteAuditLog`, backend/storage/focus_blocks.go: a failed insert
+        is written to the server log and never fails the caller). Each is written
+        after the outcome it records is known, so a failed insert cannot change a
+        response: a disconnect still answers its 200, and a loss is still recorded
+        and still reported on the status surfaces, which do not read this log. The
+        counts above are therefore what is WRITTEN when the insert succeeds; an
+        entry whose insert failed is not retried, and its loss or disconnect then
+        has no entry (contract challenge finding 2). The response of a disconnect,
+        and the status surfaces for a loss, are the authoritative record.
 
 
         There is no pagination — no `offset`, no cursor, no `before`. Entries older
@@ -1846,16 +1858,19 @@ components:
             subject's credential; one per loss, see the operation description),
             `provider_disconnected` (the subject disconnected Outlook or Zoom), and
             `revocation_unconfirmed` (a revocation sent to the provider on that
-            disconnect was not confirmed; Zoom only). After PAC-67 the falsifying
-            command above must return these writers as well, and the contract test
-            of this enum against the writers covers all ten.
+            disconnect was not confirmed, or could not be attempted; Zoom only).
+            After PAC-67 the falsifying command above must return these writers as
+            well. No test checks this enum against the writers today (none exists
+            in backend/api or backend/storage; contract challenge, non-blocking);
+            the PAC-67 backend stage ADDS one covering all ten (manifest
+            CONTRACT-6).
 
 
             The enum is closed on purpose. `audit_log.action` is an unconstrained
             `TEXT` column, so the set is held by this contract rather than by the
-            database: adding an eighth action is a contract change, and a writer
-            added without one makes the contract test fail, which is the intended
-            alarm. Spec AC-14 requires that this set never shrinks.
+            database: adding an eighth action is a contract change, and once the
+            PAC-67 enum test exists a writer added without one makes it fail, which
+            is the intended alarm. Spec AC-14 requires that this set never shrinks.
 
 
             Because the body of the 200 is an array of this schema, a value outside

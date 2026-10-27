@@ -64,7 +64,7 @@ from the contract and any edit is reported as drift.
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
 | microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | |
-| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | handwritten | |
+| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | handwritten | PAC-67: new; no handler exists yet. Factory §4 (new and modified endpoints use the generated interface) applies: the PAC-67 backend stage implements it through `StrictServerInterface` and flips this row to `generated` in the same PR (contracts/features/PAC-67.md, Revision 1). |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |
 | getHealth                         | GET    | /api/health                                     | auth             | handwritten | |
