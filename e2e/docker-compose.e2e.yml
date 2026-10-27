@@ -122,6 +122,16 @@ services:
       # set without Secure here, matching sessionCookie() in e2e/auth.ts. A
       # production deployment leaves this unset and every cookie is Secure.
       PACEDAY_INSECURE_COOKIES: "true"
+      # NEW-booking-rate-limit (spec Q1, AC-13): every e2e request reaches the
+      # backend as ONE client (nginx's address; TRUSTED_PROXIES is unset), and
+      # E2E_KEEP_STACK=1 keeps the in-memory counts between runs, so the
+      # production limits (20 bookings per 10 minutes, 120 slot listings per
+      # minute) would refuse the suite's own traffic. The counts are raised
+      # here only; the backend honours them only with PACEDAY_ALLOW_STANDINS
+      # and never changes the windows. Production keeps 20 and 120. The 429
+      # itself is proven by the backend unit tests (ratelimit_booking_test.go).
+      PACEDAY_PUBLIC_BOOKING_LIMIT: "1000"
+      PACEDAY_PUBLIC_SLOTS_LIMIT: "10000"
     extra_hosts:
       # See the HERMETICITY note above. Every name goes to the sink's fixed
       # address. Keep this list identical to SINK_HOSTS in e2e/fake.ts.

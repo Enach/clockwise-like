@@ -142,6 +142,11 @@ func (h *bookingHandlers) slotAllowed(link *storage.SchedulingLink, slot engine.
 
 // GET /api/book/{slug}/slots?date=YYYY-MM-DD&duration=30
 func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
+	// NEW-booking-rate-limit: counted before anything else, so 429 precedes
+	// every other status.
+	if !allowPublicBooking(w, r, bookingSlotsLimiter) {
+		return
+	}
 	link, err := storage.GetSchedulingLinkBySlug(h.db, chi.URLParam(r, "slug"))
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -209,6 +214,11 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/book/{slug}
 func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) {
+	// NEW-booking-rate-limit: counted before the link lookup and the body, so
+	// 429 precedes every other status and a refused request writes nothing.
+	if !allowPublicBooking(w, r, bookingCreateLimiter) {
+		return
+	}
 	link, err := storage.GetSchedulingLinkBySlug(h.db, chi.URLParam(r, "slug"))
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
@@ -278,20 +288,12 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "invalid duration", http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		writeError(w, "invalid end time, use RFC3339", http.StatusBadRequest)
-		return
-	}
 	if !end.After(start) {
 		writeError(w, "end must be after start", http.StatusBadRequest)
 		return
 	}
 	if !h.slotAllowed(link, engine.AvailableSlot{Start: start, End: end}, time.Now()) {
 		writeError(w, "booking is too soon", http.StatusUnprocessableEntity)
-		return
-	}
-	if (link.UsageType == "single_use" && link.UsesCount >= 1) || (link.UsageType == "recurring" && link.MaxUses != nil && link.UsesCount >= *link.MaxUses) {
-		writeError(w, "link is no longer accepting bookings", http.StatusGone)
 		return
 	}
 	if conflict, e := storage.HasOverlappingBooking(h.db, link.ID, start, end); e != nil {
