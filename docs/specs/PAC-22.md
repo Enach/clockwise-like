@@ -479,6 +479,14 @@ AC-6. Given an organisation with no SSO configuration, then one, then more than
 one, when its configurations are retrieved each time, then the top level of the
 response is a named container and not a bare sequence, and the response validates
 against the described shape in all three cases.  `[contract]`
+*Contract-stage note (2026-10-27, contract revision 1.1):* an organisation can
+hold at most one listed configuration today (both domains are unique and the list
+joins them exactly, `008_sso_providers.up.sql:3`, `007_organizations.up.sql:4`,
+`backend/storage/sso_providers.go:89`), so "more than one" cannot be arranged
+through the API. The contract manifest tests none and one through the API, and
+the "more than one" case by validating a constructed container of two items
+against the described shape. The criterion's intent (the shape holds for any
+count) is unchanged.
 
 **Validation at entry**
 
@@ -664,10 +672,14 @@ must keep signing in after this change.)*
   field (D-10). If a migration appears anywhere in this work, scope has grown and
   should be challenged rather than accepted. PAC-50's own migration is PAC-50's.
 - **The configuration write stays a replace for every configuration value**
-  (§3.2). `backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`)
-  protects that today. The one deliberate change is that the active state is no
-  longer a value of the configuration write (§3.3). If the storage test asserts
-  otherwise, it changes for that one property only, and the plan says so.
+  (§3.2). The one deliberate change is that the active state is no longer a value
+  of the configuration write (§3.3). *Corrected at the contract stage
+  (2026-10-27):* `backend/storage/sso_providers_test.go:59`
+  (`TestUpsertSSOProvider_Update`) does not protect this today: it asserts only the
+  provider name after a replace and writes the active state as true both times.
+  The plan names new assertions for both halves: every other configuration value
+  is replaced, and the active state survives a replace (see the contract,
+  `contracts/features/PAC-22.md` §4).
 - **Sign-in routing reads the same rows** (`backend/auth/sso_detect.go:37`). It
   is unaffected except where AC-9 deliberately changes it. It is protected at the
   status level by `pac35_auth_flows_test.go:803`.
@@ -739,6 +751,17 @@ not Google or Microsoft workspace administrators can therefore suspend its SSO
 only by asking the operator. The factory kept D-6, because the other option lets
 any member switch off the organisation's login, which widens who can act. The
 owner should know the limit exists.
+
+**OQ-8: Is "operator only" acceptable for a subdomain configuration stored under
+`main`'s suffix rule?** *Owner: human (product), non-blocking.* Raised by the
+contract challenge (2026-10-27). Before PAC-50, `createSsoProvider` accepts a
+subdomain of the org's domain (`domain/domain.go:45-49`), so a member of
+`acme.com` can store a configuration for `sub.acme.com`. Once PAC-50's exact rule
+lands, such a row stays active for sign-in (detection looks up the email's own
+domain), is not listed (the list joins exactly), and cannot be suspended (AC-21)
+or deleted (PAC-50) through the API. Only the operator can turn it off. Production
+has zero users, so none exists there (D-4); other deployments may have some. The
+factory's answer is D-11.
 
 ## Decisions
 
@@ -873,6 +896,19 @@ pending owner confirmation** (2026-10-27).
   as scope growth. If the plan finds the existing kind cannot carry it, that is a
   finding for the spec, not a migration to add quietly. Assumed by the factory,
   pending owner confirmation.
+- **D-11 (answers OQ-8): a subdomain configuration stored under `main`'s suffix
+  rule is the operator's to remove; the API is not widened to reach it.**
+  - **Why.** Reaching it through the API would mean giving setSsoProviderState,
+    the list or PAC-50's delete a suffix rule again, which lets one organisation
+    act on, or see, configurations for domains it does not exactly own. That is
+    the widening AC-21 and PAC-50 close.
+  - **What it costs.** In a deployment that holds such a row, an organisation's
+    admins cannot suspend it themselves; they ask the operator, as OQ-7 already
+    accepts for some organisations. Nothing is deleted or rewritten by PAC-22.
+  - **The release.** Production has zero users (D-4). The release note tells
+    other deployments' operators to look for configurations whose domain is not
+    exactly an organisation's domain.
+  - Assumed by the factory, pending owner confirmation.
 
 ## Revision v3.2 — 2026-10-27
 

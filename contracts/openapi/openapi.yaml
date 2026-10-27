@@ -37,34 +37,37 @@ paths:
         of it, the client secret included. A stored secret is never kept for a\nrequest that leaves it\
         \ out; such a request is refused (400 below).\n\nWho may call it is unchanged by PAC-22. The caller\
         \ must belong to an\norg and the supplied domain must match that org's domain\n(domain.DomainMatchesOrg).\
-        \ PAC-50 replaces that rule; PAC-22 neither\nwidens nor narrows it, and its own checks below all\
-        \ run before it.\n\nSince PAC-22 (API-060, resolves U-21) the request is validated before\nanything\
-        \ is stored, and every refusal is a 400 that leaves the stored\nconfiguration exactly as it was\
-        \ (or absent). The checks run in this\norder; the first that fails decides the message:\n\n1.\
-        \ The body is JSON (`invalid JSON`).\n2. None of `saml_entry_point`, `saml_issuer`, `saml_cert`\
-        \ is present,\n   whatever its value (including `\"\"` and `null`). The first present,\n   in\
-        \ that order, is named: `saml_entry_point is not supported`,\n   `saml_issuer is not supported`,\
-        \ `saml_cert is not supported`\n   (spec D-8, AC-18). Such a value is refused, never stored and\
-        \ never\n   silently dropped.\n3. `domain`, `provider_name` and `provider_type` are non-empty\n\
-        \   (`domain, provider_name and provider_type are required`, unchanged).\n4. `provider_type` is\
-        \ `oidc`. `saml` is refused with\n   `provider_type 'saml' is not supported` (spec D-1, AC-8):\
-        \ the\n   product cannot complete a SAML sign-in, so a SAML configuration is\n   refused when\
-        \ offered instead of stored and refused at sign-in. Any\n   other value is refused with `provider_type\
-        \ must be 'oidc'`\n   (replaces `provider_type must be 'oidc' or 'saml'`).\n5. `oidc_issuer`,\
-        \ `oidc_client_id` and `oidc_client_secret` are each\n   present and non-empty, checked in that\
-        \ order:\n   `oidc_issuer is required`, `oidc_client_id is required`,\n   `oidc_client_secret\
-        \ is required` (spec D-2, AC-7). Missing, `null`\n   and `\"\"` are the same refusal. Values are\
-        \ stored as given (not\n   trimmed).\n\nEvery one of these is decided from the request alone,\
-        \ before any\nwrite authorization is consulted, so a refused submission costs the\ncaller nothing\
-        \ beyond the refusal (spec §3.4, AC-17). Properties\noutside the schema other than the three SAML\
-        \ ones are ignored today;\nrejecting them is PAC-50's (`unknown property: <name>`).\n\nActive\
-        \ state (spec §3.3, D-3, resolves API-066). This operation never\nchanges whether SSO is active:\
-        \ a new configuration is created active,\nand a replaced configuration keeps the state it had\
-        \ (an active one\nstays active, a suspended one stays suspended). Only\nsetSsoProviderState changes\
-        \ it. (Before PAC-22 every write forced\n`enabled` to true.)\n\nConfigurations stored before PAC-22\
-        \ (a SAML row, an OIDC row with an\nempty issuer, client id or secret) are not rewritten or deleted\
-        \ by\nthese checks. They stay readable through listSsoProviders and can be\nsuspended, resumed\
-        \ and deleted.\n"
+        \ PAC-50 replaces that rule; PAC-22 neither\nwidens nor narrows it.\n\nOrder of checks. Membership\
+        \ (403 `org membership required`) is checked\nfirst, as today, before the body is read: a caller\
+        \ with no org gets\nthat 403 whatever the body holds. Checks 1-5 below run after it and\nbefore\
+        \ the org lookup (403 `org not found`), the domain match (403\n`can only configure SSO for your\
+        \ own domain`) and any PAC-50 write\nauthorization.\n\nSince PAC-22 (API-060, resolves U-21) the\
+        \ request is validated before\nanything is stored, and every refusal is a 400 that leaves the\
+        \ stored\nconfiguration exactly as it was (or absent). The checks run in this\norder, after membership;\
+        \ the first that fails decides the message:\n\n1. The body is JSON (`invalid JSON`).\n2. None\
+        \ of `saml_entry_point`, `saml_issuer`, `saml_cert` is present,\n   whatever its value (including\
+        \ `\"\"` and `null`). The first present,\n   in that order, is named: `saml_entry_point is not\
+        \ supported`,\n   `saml_issuer is not supported`, `saml_cert is not supported`\n   (spec D-8,\
+        \ AC-18). Such a value is refused, never stored and never\n   silently dropped.\n3. `domain`,\
+        \ `provider_name` and `provider_type` are non-empty\n   (`domain, provider_name and provider_type\
+        \ are required`, unchanged).\n4. `provider_type` is `oidc`. `saml` is refused with\n   `provider_type\
+        \ 'saml' is not supported` (spec D-1, AC-8): the\n   product cannot complete a SAML sign-in, so\
+        \ a SAML configuration is\n   refused when offered instead of stored and refused at sign-in. Any\n\
+        \   other value is refused with `provider_type must be 'oidc'`\n   (replaces `provider_type must\
+        \ be 'oidc' or 'saml'`).\n5. `oidc_issuer`, `oidc_client_id` and `oidc_client_secret` are each\n\
+        \   present and non-empty, checked in that order:\n   `oidc_issuer is required`, `oidc_client_id\
+        \ is required`,\n   `oidc_client_secret is required` (spec D-2, AC-7). Missing, `null`\n   and\
+        \ `\"\"` are the same refusal. Values are stored as given (not\n   trimmed).\n\nEvery one of these\
+        \ is decided from the request alone (and the\ncaller's membership), before any write authorization\
+        \ is consulted, so\na refused submission costs the caller nothing beyond the refusal\n(spec §3.4,\
+        \ AC-17). Properties\noutside the schema other than the three SAML ones are ignored today;\nrejecting\
+        \ them is PAC-50's (`unknown property: <name>`).\n\nActive state (spec §3.3, D-3, resolves API-066).\
+        \ This operation never\nchanges whether SSO is active: a new configuration is created active,\n\
+        and a replaced configuration keeps the state it had (an active one\nstays active, a suspended\
+        \ one stays suspended). Only\nsetSsoProviderState changes it. (Before PAC-22 every write forced\n\
+        `enabled` to true.)\n\nConfigurations stored before PAC-22 (a SAML row, an OIDC row with an\n\
+        empty issuer, client id or secret) are not rewritten or deleted by\nthese checks. They stay readable\
+        \ through listSsoProviders and can be\nsuspended, resumed and deleted.\n"
       requestBody:
         required: true
         content:
@@ -111,8 +114,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required"; "org not found"; "can only configure SSO for your own
-            domain". Nothing is stored or changed. Unchanged by PAC-22 (PAC-50 replaces this gate).'
+          description: '"org membership required" (checked before the body is read, so before every 400);
+            "org not found" and "can only configure SSO for your own domain" (checked after the 400s).
+            Nothing is stored or changed. Unchanged by PAC-22 (PAC-50 replaces this gate).'
           content:
             application/json:
               schema:
@@ -239,10 +243,12 @@ paths:
         \ against\nPAC-50's gate and this contract is rebased onto PAC-50 before it is\nimplemented (see\
         \ contracts/features/PAC-22.md, \"Rebase onto PAC-50\").\n\nChecks run in this order; the first\
         \ that fails decides the response:\n\n1. Membership: the caller belongs to an org, else 403\n\
-        \   `org membership required` (or `org not found`).\n2. Body: JSON (`invalid JSON`); no property\
-        \ other than `state`\n   (`unknown property: <name>`, naming the first such property in\n   body\
-        \ order), so no configuration value can ride along; `state` is\n   `active` or `suspended` (`state\
-        \ must be 'active' or 'suspended'`,\n   for a missing or `null` state too).\n3. Domain: `{domain}`,\
+        \   `org membership required` (or `org not found`).\n2. Body: JSON (`invalid JSON`); then its\
+        \ properties in body order:\n   the first property other than `state` is refused\n   (`unknown\
+        \ property: <name>`), so no configuration value can ride\n   along, and a second `state` is refused\
+        \ (`duplicate property:\n   state`), so a body never asks for two states and no decoder's\n  \
+        \ \"last one wins\" decides a kill switch; then `state` is `active` or\n   `suspended` (`state\
+        \ must be 'active' or 'suspended'`, for a missing\n   or `null` state too).\n3. Domain: `{domain}`,\
         \ lower-cased and not trimmed, must equal the\n   caller's org domain exactly, case-insensitively,\
         \ else 400\n   `provider_domain_mismatch`. A subdomain of the org domain, and\n   another org's\
         \ domain, are both refused (spec AC-21).\n4. Authorization: the write authorization of createSsoProvider\n\
@@ -258,10 +264,11 @@ paths:
         \ is recorded where PAC-50\n   records configuration writes, as `sso_provider_written` with the\n\
         \   operation `suspend` (state `suspended`) or `resume` (state\n   `active`), naming the organisation,\
         \ the acting user and the\n   provider (spec D-10, AC-16). No operation exposes that record.\n\
-        \nThis operation acts on configurations stored before PAC-22 that\ncreateSsoProvider would refuse\
-        \ today (a SAML row, an incomplete OIDC\nrow) exactly as on any other (spec AC-8).\n\n`PUT /api/admin/sso/stepup/state`\
-        \ (PAC-50 defines GET on\n`/api/admin/sso/stepup`) is this operation with `{domain}` =\n`stepup`,\
-        \ which is never an org domain: 400 `provider_domain_mismatch`.\n"
+        \   The state write and its record are one transaction, as PAC-50's\n   configuration writes are:\
+        \ either both happen or neither does.\n\nThis operation acts on configurations stored before PAC-22\
+        \ that\ncreateSsoProvider would refuse today (a SAML row, an incomplete OIDC\nrow) exactly as\
+        \ on any other (spec AC-8).\n\n`PUT /api/admin/sso/stepup/state` (PAC-50 defines GET on\n`/api/admin/sso/stepup`)\
+        \ is this operation with `{domain}` =\n`stepup`, which is never an org domain: 400 `provider_domain_mismatch`.\n"
       parameters:
       - name: domain
         in: path
@@ -292,9 +299,11 @@ paths:
         '400':
           description: 'JSON error; nothing changes and no authorization is spent. One
 
-            of: `invalid JSON`; `unknown property: <name>`; `state must be
+            of: `invalid JSON`; `unknown property: <name>`; `duplicate
 
-            ''active'' or ''suspended''`; `provider_domain_mismatch`.
+            property: state`; `state must be ''active'' or ''suspended''`;
+
+            `provider_domain_mismatch`.
 
             '
           content:
@@ -337,7 +346,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: 'Storage failed. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21). An authorization consumed for this request stays consumed.'
+            server log and Sentry only (PAC-21). An authorization consumed for this request stays consumed.
+            The state write and its `sso_provider_written` record are one transaction, so after a 500
+            the state is the one stored before the request and nothing is recorded for it.'
           content:
             application/json:
               schema:
@@ -977,7 +988,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
-          description: '"SSO not configured for this domain" — JSON, unlike the other errors here.'
+          description: '"SSO not configured for this domain" — JSON, unlike the other errors here. No
+            active provider row: none exists, or it is suspended (PAC-22). A sign-in started before a
+            suspension that reaches this callback after it gets this 404 and no session. Also returned
+            when the lookup errors.'
           content:
             application/json:
               schema:
@@ -1410,13 +1424,21 @@ paths:
 
         Since PAC-22 (API-060, spec D-1) createSsoProvider refuses SAML and
 
-        incomplete OIDC configurations, so the 501 and the empty-issuer 500
+        incomplete OIDC configurations, so the 501 below is reachable only for
 
-        below are reachable only for rows stored before PAC-22; those rows are
+        rows stored before PAC-22; those rows are neither rewritten nor
 
-        neither rewritten nor deleted, and this route keeps refusing them
+        deleted, and this route keeps refusing them exactly as before. The 500
 
-        exactly as before. Only an active row is looked up: a configuration
+        (issuer discovery failed) stays reachable for any row whose discovery
+
+        fails: a row stored before PAC-22 with an empty issuer, and equally a
+
+        row written since whose issuer is unreachable or unusable
+
+        (createSsoProvider requires only a non-empty issuer, so `" "` is
+
+        accepted). Only an active row is looked up: a configuration
 
         suspended through setSsoProviderState (PAC-22) answers the 404, as if
 
@@ -10293,7 +10315,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SsoProvider'
-          description: Ordered by `created_at`, oldest first. Empty when the org has none.
+          description: 'Ordered by `created_at`, oldest first. Empty when the org has none.
+
+            At most one item today: a configuration is listed when its domain
+
+            equals the org''s domain exactly, and both `sso_providers.domain`
+
+            and `organizations.domain` are unique. The array is kept so that
+
+            the type does not change if an org can ever hold more than one.
+
+            '
       additionalProperties: false
     SsoProviderState:
       type: string
@@ -10317,7 +10349,11 @@ components:
 
         nothing else (spec AC-12). Any other property, including any
 
-        configuration value, is refused with 400 `unknown property: <name>`.
+        configuration value, is refused with 400 `unknown property: <name>`,
+
+        and `state` given twice is refused with 400 `duplicate property:
+
+        state`.
 
         '
       required:

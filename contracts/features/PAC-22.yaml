@@ -2,10 +2,11 @@
   "featureId": "PAC-22",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-22",
   "status": "draft",
-  "contractRevision": "1",
+  "contractRevision": "1.1",
+  "contractRevisionNote": "1.1 answers the challenge of revision 1 (79d63d9, accept-with-changes): PAC-22.md section 'Revision 1.1'. Revision 2 is still the rebase onto PAC-50 (PAC-22.md section 0).",
   "contractBase": "origin/main 6d751f9 plus the spec branch factory/pac-22-spec (4a517e2). PAC-50 is NOT merged on this base (PR #212 open). Spec D-5: this revision is rebased onto main after PAC-50 merges (revision 2, procedure in PAC-22.md section 0) and only the rebased commit's gates count for implementation.",
-  "contractHash": "46b978ed70829704bb1d5daf78d2d6d16dc3024ab274cf2a90688389c0db8fd9",
-  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed in d4a2389 on factory/pac-22-contract (LF, as git stores it). Reproduce with: `git show d4a2389:contracts/openapi/openapi.yaml | sha256sum`. The api-gate's LF-clone `make openapi` regenerated nothing (see gates.apiGate), so this is also the hash of a fresh assembly.",
+  "contractHash": "a85c9e994c3994d30a6f12e62f4ee357b59396b7b405522e530093524136c412",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed in the revision 1.1 contract commit on factory/pac-22-contract (LF, as git stores it). Reproduce with: `git show <that commit>:contracts/openapi/openapi.yaml | sha256sum` (the commit is named in gates.apiGate). Revision 1 was 46b978ed...8fd9 (d4a2389).",
   "contractDoc": "contracts/features/PAC-22.md",
   "specDoc": "docs/specs/PAC-22.md",
   "sourceOfTruth": "Enach/clockwise-like",
@@ -45,22 +46,23 @@
   },
 
   "operationsAdded": [
-    { "operationId": "setSsoProviderState", "method": "PUT", "path": "/api/admin/sso/{domain}/state", "summary": "Body SsoProviderStateRequest {state: active|suspended}, nothing else (400 unknown property). Order: membership 403 -> body 400 -> exact domain 400 provider_domain_mismatch -> createSsoProvider's write authorization 403 -> lookup 404 'sso provider not found' (authorization spent, nothing recorded) -> 200 SsoProvider (unchanged when already in that state). Changes only enabled; updated_at untouched. Recorded as sso_provider_written op suspend|resume. Not implementable before PAC-50 merges (spec D-5, D-6)." }
+    { "operationId": "setSsoProviderState", "method": "PUT", "path": "/api/admin/sso/{domain}/state", "summary": "Body SsoProviderStateRequest {state: active|suspended}, nothing else (400 unknown property; a second state key is 400 'duplicate property: state', revision 1.1). State write and sso_provider_written record are one transaction: after a 500 the state is unchanged and nothing recorded (revision 1.1). Order: membership 403 -> body 400 -> exact domain 400 provider_domain_mismatch -> createSsoProvider's write authorization 403 -> lookup 404 'sso provider not found' (authorization spent, nothing recorded) -> 200 SsoProvider (unchanged when already in that state). Changes only enabled; updated_at untouched. Recorded as sso_provider_written op suspend|resume. Not implementable before PAC-50 merges (spec D-5, D-6)." }
   ],
 
   "operationsChanged": [
     { "operationId": "listSsoProviders", "method": "GET", "path": "/api/admin/sso", "change": "200: bare array of the storage row -> SsoProviderList {providers: SsoProvider[]}. No secret under any name. Suspended rows listed with state suspended. 401, 403, 500 unchanged." },
-    { "operationId": "createSsoProvider", "method": "POST", "path": "/api/admin/sso", "change": "201: storage row -> SsoProvider. Request: all six properties required non-empty, provider_type oidc only, saml_* refused by name. 400 messages (in order): invalid JSON; saml_entry_point|saml_issuer|saml_cert is not supported; domain, provider_name and provider_type are required; provider_type 'saml' is not supported; provider_type must be 'oidc' (replaces 'oidc' or 'saml'); oidc_issuer|oidc_client_id|oidc_client_secret is required. All before any authorization. Active state: create -> active; replace keeps the stored state (was forced true). 401, 403 (PAC-50's), 500 unchanged." },
-    { "operationId": "startSsoLogin", "method": "GET", "path": "/api/auth/sso/{domain}", "change": "Description only: 404 also covers a suspended row (already true); 501 and empty-issuer 500 reachable only for rows stored before PAC-22." },
+    { "operationId": "createSsoProvider", "method": "POST", "path": "/api/admin/sso", "change": "201: storage row -> SsoProvider. Request: all six properties required non-empty, provider_type oidc only, saml_* refused by name. Order (revision 1.1): membership 403 'org membership required' first, before the body is read, as today; then the 400 checks; then org lookup 403, domain match 403 and any PAC-50 authorization. 400 messages (in order): invalid JSON; saml_entry_point|saml_issuer|saml_cert is not supported; domain, provider_name and provider_type are required; provider_type 'saml' is not supported; provider_type must be 'oidc' (replaces 'oidc' or 'saml'); oidc_issuer|oidc_client_id|oidc_client_secret is required. Active state: create -> active; replace keeps the stored state (was forced true). 401, 403 (PAC-50's), 500 unchanged." },
+    { "operationId": "startSsoLogin", "method": "GET", "path": "/api/auth/sso/{domain}", "change": "Description only: 404 also covers a suspended row (already true); 501 reachable only for rows stored before PAC-22; the 500 (issuer discovery failed) stays reachable for any row whose discovery fails, including rows written since PAC-22 with an unreachable or whitespace issuer (revision 1.1)." },
+    { "operationId": "ssoOidcCallback", "method": "GET", "path": "/api/auth/callback/oidc/{domain}", "change": "Description only (revision 1.1): the 404 also covers a suspended row, so a sign-in started before a suspension and finished after it gets 404 and no session (already true, handlers_sso.go:112-116)." },
     { "operationId": "detectAuthProvider", "method": "POST", "path": "/api/auth/detect", "change": "Description only (SsoDetectResponse.type): a suspended row is ignored (already true)." }
   ],
 
   "schemasChanged": [
     "SsoProviderResponse: REMOVED (resolves U-22).",
     "SsoProvider: NEW. id (uuid), domain, provider_name, provider_type [oidc, saml], state (SsoProviderState), oidc_issuer, oidc_client_id, has_oidc_client_secret (bool), saml_entry_point, saml_issuer, has_saml_cert (bool), created_at, updated_at (last configuration write; not changed by setSsoProviderState). All required, additionalProperties false.",
-    "SsoProviderList: NEW. {providers: SsoProvider[]} ordered by created_at, required, additionalProperties false.",
+    "SsoProviderList: NEW. {providers: SsoProvider[]} ordered by created_at, required, additionalProperties false. At most one item today (both domains UNIQUE, exact join; revision 1.1); the array is kept so the type does not change.",
     "SsoProviderState: NEW. enum [active, suspended]; stored as the existing enabled column (true = active).",
-    "SsoProviderStateRequest: NEW. {state: SsoProviderState} required, additionalProperties false.",
+    "SsoProviderStateRequest: NEW. {state: SsoProviderState} required, additionalProperties false; a duplicate state key is refused (revision 1.1).",
     "SsoProviderCreateRequest: REWRITTEN (resolves U-21). required [domain, provider_name, provider_type, oidc_issuer, oidc_client_id, oidc_client_secret], each minLength 1; provider_type enum [oidc]; saml_entry_point, saml_issuer, saml_cert removed; additionalProperties false."
   ],
 
@@ -71,10 +73,16 @@
     "transitionShape": "PUT /api/admin/sso/{domain}/state; PATCH on the configuration and separate suspend/resume operations rejected. PAC-22.md 2.4.",
     "updatedAtSemantics": "updated_at is the last configuration write; the transition does not change it (AC-10, AC-20 say every described value but the state is unchanged). PAC-22.md 2.5.",
     "validationOrderAndMessages": "Ten fixed 400 messages in a fixed order; SAML properties named first; whitespace not trimmed, minLength 1 only (D-2 says non-empty). PAC-22.md 2.6.",
-    "samlNonSecretValuesKept": "saml_entry_point and saml_issuer stay readable for rows stored before PAC-22. PAC-22.md 2.8."
+    "samlNonSecretValuesKept": "saml_entry_point and saml_issuer stay readable for rows stored before PAC-22. PAC-22.md 2.8.",
+    "duplicateStateKey": "A second state key is 400 'duplicate property: state'; 'last one wins' rejected. PAC-22.md 2.5 (revision 1.1).",
+    "transitionAtomicity": "State write and its sso_provider_written record in one transaction, as PAC-50's recorded writes; record-outside-the-transaction rejected. PAC-22.md 2.5 (revision 1.1).",
+    "listCardinality": "providers holds at most one item today; kept an array. PAC-22.md 2.7 (revision 1.1)."
   },
 
-  "decisionsAddedToSpec": [],
+  "decisionsAddedToSpec": [
+    "D-11 (answers OQ-8, raised by the contract challenge): a subdomain configuration stored under main's suffix rule is the operator's to remove; the API is not widened to reach it. Assumed by the factory, pending owner confirmation.",
+    "Contract-stage notes, not behaviour changes: AC-6 ('more than one' cannot be arranged; transcription below) and section 6 (TestUpsertSSOProvider_Update does not guard the replace)."
+  ],
 
   "gates": {
     "contractApproval": "contract-challenger review on this branch, then (after PAC-50 merges) revision 2 rebased onto main, then a GitHub PR",
@@ -93,14 +101,14 @@
     "AC-3  [contract] has_oidc_client_secret true for a non-empty stored secret, false for an empty one; has_saml_cert likewise (rows with a cert arranged through storage). Each checked once with its own secret present and the other absent.",
     "AC-4  [contract] Replace changing only provider_name and supplying the same secret: has_oidc_client_secret still true, no described property other than provider_name and timestamps changes. Then a replace with an empty secret: refused 400 'oidc_client_secret is required' (AC-7), indicator still true.",
     "AC-5  [contract] Row stored before the change with empty secret and empty cert: response validates against SsoProvider, both indicators false, properties present.",
-    "AC-6  [contract] Org with 0, 1, then 2 configurations: response top level is SsoProviderList (not an array) and validates each time.",
+    "AC-6  [contract] Org with 0, then 1 configuration, through listSsoProviders: response top level is SsoProviderList (not an array) and validates each time ({\"providers\":[]}, then exactly one item). More than one cannot be arranged through the API (sso_providers.domain UNIQUE 008_sso_providers.up.sql:3, organizations.domain UNIQUE 007_organizations.up.sql:4, exact join backend/storage/sso_providers.go:89), so the multi-item shape is covered by validating a constructed SsoProviderList holding two SsoProvider items against the bundle's schema (revision 1.1).",
     "AC-7  [contract] For each of oidc_issuer, oidc_client_id, oidc_client_secret missing/empty: 400 '<name> is required', no configuration afterwards; with a stored working config, same 400 and the stored config unchanged.",
     "AC-8  [contract] provider_type saml: 400 \"provider_type 'saml' is not supported\", nothing stored or changed. A saml row written through storage can be listed, suspended, resumed and deleted exactly as any other.",
     "AC-18 [contract] Otherwise-complete OIDC body plus each of saml_entry_point, saml_issuer, saml_cert: 400 '<name> is not supported', no configuration afterwards; with a stored working config, same 400 and unchanged.",
     "AC-9  [e2e] Suspend an active config: detection does not answer sso (negative only), startSsoLogin 404, list shows state suspended. Resume: detection answers sso, list shows active.",
     "AC-10 [unit] Suspend then resume with no secret supplied: a sign-in through the in-process fake IdP that worked before still completes and issues a session; every described value but state unchanged (updated_at included).",
     "AC-11 [contract] Replace keeps state: active stays active, suspended stays suspended. Create starts active.",
-    "AC-12 [contract] setSsoProviderState accepts no configuration value: SsoProviderStateRequest has exactly one property (state) and additionalProperties false; a body carrying any of the eight configuration values is refused 400 'unknown property: <name>' and nothing changes.",
+    "AC-12 [contract] setSsoProviderState accepts no configuration value: SsoProviderStateRequest has exactly one property (state) and additionalProperties false; a body carrying any of the eight configuration values is refused 400 'unknown property: <name>' and nothing changes. {\"state\":\"active\",\"state\":\"suspended\"} is refused 400 'duplicate property: state', state unchanged, authorization unspent (revision 1.1).",
     "AC-15 [contract] A member who is not a permitted caller asks to suspend an active config (and to resume a suspended one): 403, state unchanged, nothing recorded.",
     "AC-19 [contract] Permitted caller, no config for the org domain, suspend (and resume): 404 'sso provider not found', no config afterwards, no transition record, authorization spent.",
     "AC-20 [contract] Suspend a suspended config (and resume an active one): 200 with that state, every described value unchanged, authorization spent, transition recorded.",
@@ -128,14 +136,16 @@
   "consumersAffected": [
     { "consumer": "Enach/smart-calendar-flow src/api/generated (types.ts, schemas.ts, schemas.types.d.ts)", "breaks": "regenerated", "detail": "Only references to the admin SSO operations; SsoProviderResponse disappears. Nothing outside generated/ imports it; no page calls /api/admin/sso." },
     { "consumer": "clockwise-like backend/api/gen", "breaks": "regenerated in this commit", "detail": "Handlers for these operations are handwritten and do not use the generated types; backend builds (go build ./... ok)." },
-    { "consumer": "clockwise-like backend/storage/sso_providers_test.go:59 TestUpsertSSOProvider_Update", "breaks": "one assertion", "detail": "enabled is no longer overwritten by the configuration write (D-3); the plan names the change, all other columns still replaced." },
+    { "consumer": "clockwise-like backend/storage/sso_providers_test.go:59 TestUpsertSSOProvider_Update", "breaks": "no", "detail": "Asserts only ProviderName == 'Okta' after a replace (:84) and sets Enabled true on both writes, so D-3 does not break it, and it guards neither property PAC-22 relies on (revision 1 misdescribed it). The plan must name new assertions: a replace keeps enabled false and keeps enabled true; a replace replaces every other configuration column (provider_name, provider_type, oidc_issuer, oidc_client_id, oidc_client_secret, saml_entry_point, saml_issuer, saml_cert), including a column cleared to empty, and sets updated_at." },
     { "consumer": "PAC-50 TestSSOWrite_OneGrantOneWrite (unmerged, PR #212)", "breaks": "yes, deliberately", "detail": "Pins the thirteen PascalCase keys; rewritten to SsoProvider by PAC-22's implementation (factory section 7 rule 2)." },
     { "consumer": "clockwise-like mcp/, e2e/", "breaks": "no", "detail": "No reference to /api/admin/sso." }
   ],
 
   "followUps": {
     "rebaseOntoPac50": "Revision 2 after PAC-50 merges: PAC-22.md section 0. Owner: contract-author.",
-    "ownerQuestions": "Spec OQ-5 (two writes to fix and resume), OQ-6 (OIDC public clients), OQ-7 (kill switch may need the operator): non-blocking, owner: product.",
+    "ownerQuestions": "Spec OQ-5 (two writes to fix and resume), OQ-6 (OIDC public clients), OQ-7 (kill switch may need the operator), OQ-8 (subdomain rows stored under main's suffix rule become operator-only once PAC-50 lands; factory answer D-11): non-blocking, owner: product.",
+    "migrationRegister": "contracts/openapi/MIGRATION.md lists setSsoProviderState as handwritten only because no handler exists; its implementation uses the generated server interface and flips the row to generated in the same PR (note on the row). Owner: backend-implementer.",
+    "webTypes": "Factory section 2 gate 4: revision 2 (the rebase onto PAC-50) ships with a paired smart-calendar-flow PR regenerated by REGEN=1 web-gate against the rebased branch, green before implementation starts. Owner: contract-author at revision 2.",
     "staleApi010Row": "api-audit.md API-010 row still says Confirmed (spec section 5): belongs to whoever closes PAC-35."
   },
 

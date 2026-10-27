@@ -7,7 +7,10 @@
 - **Branch**: `factory/pac-22-contract`, cut from `origin/main` at `6d751f9`, with the
   spec branch `factory/pac-22-spec` (`4a517e2`) fast-forwarded in so that the
   contract and the spec it transcribes travel together.
-- **Status**: contract revision 1, draft. Not yet challenged.
+- **Status**: contract revision 1.1, draft. Revision 1 (`79d63d9`) was challenged
+  on 2026-10-27 (accept-with-changes, three blocking); revision 1.1 applies every
+  change the challenge lists (see "Revision 1.1" below). Revision 2 is still the
+  rebase onto PAC-50 (§0), and only its gates count for implementation.
 - **Author**: contract-author (stage 2). Nothing in this document was executed against
   a running server. Every claim about current behaviour is read from source on
   `6d751f9`; the gate results at the end are the only things that were run.
@@ -79,7 +82,8 @@ as read on 2026-10-27, the rebase follows what merged and says so in revision 2.
 | `listSsoProviders` `GET /api/admin/sso` | 200 is `SsoProviderList` `{providers: SsoProvider[]}` instead of a bare array of the storage row. No secret under any name. Suspended configurations are listed with `state: suspended`. |
 | `createSsoProvider` `POST /api/admin/sso` | 201 is `SsoProvider`. Body is a complete OIDC configuration: all six properties required and non-empty, `provider_type` is `oidc` only, the three SAML properties are refused by name. A replace keeps the stored active state; a create starts active. |
 | `setSsoProviderState` `PUT /api/admin/sso/{domain}/state` | **New.** Body `{state: active \| suspended}` and nothing else. 200 `SsoProvider`; 400; 401; 403; 404; 500. |
-| `startSsoLogin` `GET /api/auth/sso/{domain}` | Description only: the 404 also covers a suspended configuration (already true: the lookup filters on `enabled`); the 501 and the empty-issuer 500 are reachable only for rows stored before PAC-22. |
+| `startSsoLogin` `GET /api/auth/sso/{domain}` | Description only: the 404 also covers a suspended configuration (already true: the lookup filters on `enabled`); the 501 is reachable only for rows stored before PAC-22. The 500 (issuer discovery failed) stays reachable for any row whose discovery fails, including a row written since PAC-22 whose issuer is unreachable or whitespace. |
+| `ssoOidcCallback` `GET /api/auth/callback/oidc/{domain}` | Description only: the 404 also covers a suspended configuration, so a sign-in started before a suspension and finished after it gets the 404 and no session (already true: same lookup, `handlers_sso.go:112-116`). |
 | `detectAuthProvider` `POST /api/auth/detect` | Description only (`SsoDetectResponse.type`): a suspended configuration is ignored (already true, same lookup). |
 | `deleteSsoProvider` `DELETE /api/admin/sso/{domain}` | Unchanged. It already acts on any row, suspended or not, SAML or not (AC-8). |
 
@@ -180,6 +184,22 @@ outcome that needs the stored row (not found, unchanged, changed) comes after
   suffix-rule behaviour to preserve.
 - An unchanged transition answers 200 with the stored configuration, not 409:
   D-9 explains why "it is off" is the true answer to "turn it off".
+- A body that gives `state` twice is refused, 400 `duplicate property: state`
+  (revision 1.1). Go's decoder would keep the last value, and an author of
+  `{"state":"active","state":"suspended"}` asked for two things. For a kill
+  switch, the conservative answer to an ambiguous request is to do nothing.
+  The check sits in step 2 with the unknown-property check, in body order, so
+  it is decided from the request alone and spends no authorization.
+  **Rejected: "last one wins"** (what a plain decode does): it makes the
+  outcome depend on the decoder rather than on the contract.
+- The state write and its `sso_provider_written` record are one transaction
+  (revision 1.1), as PAC-50's `UpsertSSOProviderRecorded` and
+  `DeleteSSOProviderRecorded` already are on its branch. After a 500 the state
+  is the one stored before the request and nothing is recorded; an
+  authorization consumed in step 4 stays consumed, as PAC-50 states for its own
+  500s. **Rejected: write, then record outside the transaction**: a 500 between
+  the two would leave a state change nobody can attribute, which is what AC-16
+  exists to prevent.
 
 **`updated_at` is not touched by the transition.** AC-10 says every described value
 other than the active state is unchanged after suspend and resume, and AC-20 says
@@ -234,6 +254,17 @@ allow later additions without changing the response type for every consumer. The
 schema's description repeats §3.7's instruction that it must not be "corrected"
 towards the bare arrays most other list operations return.
 
+**The list holds at most one item today** (revision 1.1). `sso_providers.domain`
+is unique (`008_sso_providers.up.sql:3`), `organizations.domain` is unique
+(`007_organizations.up.sql:4`), and the list joins them exactly
+(`backend/storage/sso_providers.go:89`). So an org has at most one listed
+configuration, and the `providers` description says so. The array stays an
+array: the type must not change if an org can ever hold more than one, and
+narrowing it to a single object would be the breaking change the container was
+introduced to avoid. AC-6 is transcribed accordingly: zero and one item through
+the API, and the multi-item shape by validating a constructed `SsoProviderList`
+with two `SsoProvider` items against the schema (manifest, AC-6).
+
 **Rejected: keep the bare array**, which would be consistent with most of the
 contract. §3.7 and AC-6 require the container.
 
@@ -270,7 +301,7 @@ Searched on 2026-10-27 in both repos (`grep -rn "admin/sso\|SsoProvider"`):
 |---|---|---|
 | `smart-calendar-flow/src/api/generated/{types.ts,schemas.ts,schemas.types.d.ts}` | Regenerated, not broken | The only references. `SsoProviderResponse` disappears from them. Nothing outside `generated/` imports it, and no page calls `/api/admin/sso` (spec §2.7). |
 | `clockwise-like/backend/api/gen` | Regenerated | The handlers do not use the generated types for these operations (all `handwritten`, `MIGRATION.md`); the new operation is to use the generated server interface (factory §4). |
-| `clockwise-like/backend/storage/sso_providers_test.go:59` `TestUpsertSSOProvider_Update` | Changes for one property only | Asserts that the upsert replaces every column, `enabled` included. D-3 takes `enabled` out of the configuration write; the plan names that one assertion (spec §6). |
+| `clockwise-like/backend/storage/sso_providers_test.go:59` `TestUpsertSSOProvider_Update` | No | Asserts only `ProviderName == "Okta"` after a replace (`:84`), and sets `Enabled: true` on both writes, so D-3 does not break it. It therefore guards neither property this contract relies on. The plan must name new assertions: (a) a replace of a row stored with `enabled = false` leaves it `false`, and of a row with `enabled = true` leaves it `true`; (b) a replace replaces every other configuration column (`provider_name`, `provider_type`, `oidc_issuer`, `oidc_client_id`, `oidc_client_secret`, `saml_entry_point`, `saml_issuer`, `saml_cert`), including a column cleared to `""` (a SAML value and the secret), and sets `updated_at`. (Revision 1 said this test asserts every column; it does not.) |
 | `clockwise-like/backend/api/handlers_sso_test.go`, `pac35_auth_flows_test.go` | No | Seed rows through storage and drive sign-in; sign-in is unchanged (AC-14). |
 | PAC-50 `TestSSOWrite_OneGrantOneWrite` (unmerged, PR #212) | Yes, deliberately | Pins the thirteen PascalCase keys of the 201. PAC-22's implementation rewrites it to the `SsoProvider` shape (spec §2.8, factory §7 rule 2). |
 | `clockwise-like/mcp`, `e2e` | No | Neither references the admin SSO operations. |

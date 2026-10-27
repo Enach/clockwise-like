@@ -324,10 +324,14 @@ paths:
         organisation's IdP an address outside that organisation's domain.
         Unchanged by PAC-35 (spec D-5): the 404, 500 and 501 answers below.
         Since PAC-22 (API-060, spec D-1) createSsoProvider refuses SAML and
-        incomplete OIDC configurations, so the 501 and the empty-issuer 500
-        below are reachable only for rows stored before PAC-22; those rows are
-        neither rewritten nor deleted, and this route keeps refusing them
-        exactly as before. Only an active row is looked up: a configuration
+        incomplete OIDC configurations, so the 501 below is reachable only for
+        rows stored before PAC-22; those rows are neither rewritten nor
+        deleted, and this route keeps refusing them exactly as before. The 500
+        (issuer discovery failed) stays reachable for any row whose discovery
+        fails: a row stored before PAC-22 with an empty issuer, and equally a
+        row written since whose issuer is unreachable or unusable
+        (createSsoProvider requires only a non-empty issuer, so `" "` is
+        accepted). Only an active row is looked up: a configuration
         suspended through setSsoProviderState (PAC-22) answers the 404, as if
         no SSO were configured.
       security: []
@@ -446,7 +450,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
-          description: '"SSO not configured for this domain" — JSON, unlike the other errors here.'
+          description: '"SSO not configured for this domain" — JSON, unlike the other errors here. No active provider row: none exists, or it is suspended (PAC-22). A sign-in started before a suspension that reaches this callback after it gets this 404 and no session. Also returned when the lookup errors.'
           content:
             application/json:
               schema:
@@ -659,12 +663,19 @@ paths:
         Who may call it is unchanged by PAC-22. The caller must belong to an
         org and the supplied domain must match that org's domain
         (domain.DomainMatchesOrg). PAC-50 replaces that rule; PAC-22 neither
-        widens nor narrows it, and its own checks below all run before it.
+        widens nor narrows it.
+
+        Order of checks. Membership (403 `org membership required`) is checked
+        first, as today, before the body is read: a caller with no org gets
+        that 403 whatever the body holds. Checks 1-5 below run after it and
+        before the org lookup (403 `org not found`), the domain match (403
+        `can only configure SSO for your own domain`) and any PAC-50 write
+        authorization.
 
         Since PAC-22 (API-060, resolves U-21) the request is validated before
         anything is stored, and every refusal is a 400 that leaves the stored
         configuration exactly as it was (or absent). The checks run in this
-        order; the first that fails decides the message:
+        order, after membership; the first that fails decides the message:
 
         1. The body is JSON (`invalid JSON`).
         2. None of `saml_entry_point`, `saml_issuer`, `saml_cert` is present,
@@ -688,9 +699,10 @@ paths:
            and `""` are the same refusal. Values are stored as given (not
            trimmed).
 
-        Every one of these is decided from the request alone, before any
-        write authorization is consulted, so a refused submission costs the
-        caller nothing beyond the refusal (spec §3.4, AC-17). Properties
+        Every one of these is decided from the request alone (and the
+        caller's membership), before any write authorization is consulted, so
+        a refused submission costs the caller nothing beyond the refusal
+        (spec §3.4, AC-17). Properties
         outside the schema other than the three SAML ones are ignored today;
         rejecting them is PAC-50's (`unknown property: <name>`).
 
@@ -741,7 +753,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required"; "org not found"; "can only configure SSO for your own domain". Nothing is stored or changed. Unchanged by PAC-22 (PAC-50 replaces this gate).'
+          description: '"org membership required" (checked before the body is read, so before every 400); "org not found" and "can only configure SSO for your own domain" (checked after the 400s). Nothing is stored or changed. Unchanged by PAC-22 (PAC-50 replaces this gate).'
           content:
             application/json:
               schema:
@@ -866,11 +878,14 @@ paths:
 
         1. Membership: the caller belongs to an org, else 403
            `org membership required` (or `org not found`).
-        2. Body: JSON (`invalid JSON`); no property other than `state`
-           (`unknown property: <name>`, naming the first such property in
-           body order), so no configuration value can ride along; `state` is
-           `active` or `suspended` (`state must be 'active' or 'suspended'`,
-           for a missing or `null` state too).
+        2. Body: JSON (`invalid JSON`); then its properties in body order:
+           the first property other than `state` is refused
+           (`unknown property: <name>`), so no configuration value can ride
+           along, and a second `state` is refused (`duplicate property:
+           state`), so a body never asks for two states and no decoder's
+           "last one wins" decides a kill switch; then `state` is `active` or
+           `suspended` (`state must be 'active' or 'suspended'`, for a missing
+           or `null` state too).
         3. Domain: `{domain}`, lower-cased and not trimmed, must equal the
            caller's org domain exactly, case-insensitively, else 400
            `provider_domain_mismatch`. A subdomain of the org domain, and
@@ -895,6 +910,8 @@ paths:
            operation `suspend` (state `suspended`) or `resume` (state
            `active`), naming the organisation, the acting user and the
            provider (spec D-10, AC-16). No operation exposes that record.
+           The state write and its record are one transaction, as PAC-50's
+           configuration writes are: either both happen or neither does.
 
         This operation acts on configurations stored before PAC-22 that
         createSsoProvider would refuse today (a SAML row, an incomplete OIDC
@@ -930,8 +947,9 @@ paths:
         '400':
           description: |
             JSON error; nothing changes and no authorization is spent. One
-            of: `invalid JSON`; `unknown property: <name>`; `state must be
-            'active' or 'suspended'`; `provider_domain_mismatch`.
+            of: `invalid JSON`; `unknown property: <name>`; `duplicate
+            property: state`; `state must be 'active' or 'suspended'`;
+            `provider_domain_mismatch`.
           content:
             application/json:
               schema:
@@ -966,7 +984,9 @@ paths:
           description: >-
             Storage failed. Body: `{"error":"internal error"}`. The detail is written to
             the server log and Sentry only (PAC-21). An authorization consumed for this
-            request stays consumed.
+            request stays consumed. The state write and its `sso_provider_written`
+            record are one transaction, so after a 500 the state is the one stored
+            before the request and nothing is recorded for it.
           content:
             application/json:
               schema:
@@ -1411,7 +1431,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SsoProvider'
-          description: Ordered by `created_at`, oldest first. Empty when the org has none.
+          description: |
+            Ordered by `created_at`, oldest first. Empty when the org has none.
+            At most one item today: a configuration is listed when its domain
+            equals the org's domain exactly, and both `sso_providers.domain`
+            and `organizations.domain` are unique. The array is kept so that
+            the type does not change if an org can ever hold more than one.
       additionalProperties: false
 
     SsoProviderState:
@@ -1429,7 +1454,9 @@ components:
       description: |
         Body of setSsoProviderState: the state wanted, never a toggle, and
         nothing else (spec AC-12). Any other property, including any
-        configuration value, is refused with 400 `unknown property: <name>`.
+        configuration value, is refused with 400 `unknown property: <name>`,
+        and `state` given twice is refused with 400 `duplicate property:
+        state`.
       required: [state]
       properties:
         state:

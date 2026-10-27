@@ -55,7 +55,7 @@ from the contract and any edit is reported as drift.
 | listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | handwritten | |
 | createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
-| setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | |
+| setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | PAC-22: a new operation, so its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
 | googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | |
 | ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | |
 | detectAuthProvider                | POST   | /api/auth/detect                                | auth             | handwritten | |
