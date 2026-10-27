@@ -3,7 +3,8 @@
 - **Linear issue**: [PAC-25](https://linear.app/paceday/issue/PAC-25/add-the-missing-owner-check-to-get-apischeduling-linksid-and-a-last)
 - **Spec**: `docs/specs/PAC-25.md`, revision 1 (carried on this branch from
   `factory/pac-25-spec` at `da6905f`; see §0)
-- **Stage**: contract-author, then contract-challenger
+- **Stage**: contract-author, then contract-challenger. **Contract revision 2**
+  (answers the 2026-10-27 contract challenge; see "Revision 2" at the end)
 - **Fragments edited**: `contracts/openapi/paths/booking.yaml` (`getSchedulingLink`),
   `contracts/openapi/paths/teams.yaml` (`removeTeamMember`), and their companions
   `booking.notes.md` (x-uncertain list, item 1) and `teams.notes.md` (A14)
@@ -53,11 +54,21 @@ accepted co-host keeps seeing pending and declined invitees' emails.
 **The 200 description names who receives it.** It says `is_owner: true` for the
 owner, `is_owner: false` with `my_status: accepted` for a co-host. A client can
 therefore never receive a 200 with `my_status` absent and `is_owner: false`; before
-PAC-25 that was what a stranger saw.
+PAC-25 that was what a stranger saw. That promise only holds if the `200` is built
+from a roster that was actually read, so the contract also says a failed roster read
+(the link's host rows, or a host's user record) is `500`, never a `200` with
+`hosts: []` or with a host's email missing (C-2, revision 2). Today's handler
+swallows both errors (`handlers_scheduling_links.go:287`, `:291-293`); the
+implementation must stop doing so on this operation.
 
-**The check order is part of the contract.** For `getSchedulingLink`: 400, lookup
-(500), 404, 200. The reader check has to come after the lookup, so a storage error
-still answers 500 rather than a misleading 404. For `removeTeamMember`: 400, then
+**The check order is part of the contract.** For `getSchedulingLink`: 400, then the
+link lookup, then the caller's host-status lookup, then 404, then 200; a storage
+error on either lookup, or on the roster read that builds the 200, answers
+`500 {"error":"internal error"}` (revision 2). The reader check has to come after the
+lookups, so a storage error never becomes a misleading 404 (an outage reported to a
+legitimate host as "not found", indistinguishable from a refusal by design) and never
+falls through to the permissive branch (a 200 to a stranger: fail-open on the very
+check this feature adds). For `removeTeamMember`: 400, then
 403 when caller is not target and not an owner, then 422, then 204. The 403 must come
 first (spec AC-17): if the 422 came first, a member could name each teammate in turn
 and learn who the owner is from which one answers 422.
@@ -89,6 +100,13 @@ can assert it.
   AC-1..AC-3, AC-6 and AC-15(a) change.
 - **Owner-only read** (the issue title). Refuses accepted co-hosts a record they get
   from the list anyway. Rejected (D-2); open as spec OQ-7.
+- **Keeping the swallowed roster read and dropping the `my_status` promise**
+  (revision 2; the challenge's alternative fix). The `200` would then admit
+  `is_owner: false`, no `my_status` and `hosts: []` on a storage error, which is
+  exactly the shape a stranger received before PAC-25: a client could no longer tell
+  "I am a co-host and the roster read failed" from the pre-PAC-25 leak, and the
+  co-host's view would silently lose every invitee. A `500` is honest and the client
+  already handles it. Rejected (C-2).
 - **`409 Conflict` for the last-owner refusal.** 409 describes a conflict with the
   current state that the client can resolve and retry (another owner appears). The
   product has no path to a second owner, so there is nothing to resolve; and the
@@ -109,6 +127,15 @@ one:
 
 - **C-1** The `422` body reuses `ErrorResponse` with an `example`, not a new
   enum-constrained schema (§2). Assumed by the factory, pending owner confirmation.
+- **C-2** (revision 2) On `getSchedulingLink`, a storage error on the link lookup, the
+  caller's host-status lookup or the roster read (host rows and each host's user
+  record) answers `500 {"error":"internal error"}`, never `404` and never `200`. This
+  is the fail-closed choice: it shows nobody anything a refusal would hide, and it
+  does not tell a legitimate host their link is gone. It applies to this operation
+  only; `listSchedulingLinks`, `createSchedulingLink` and `updateSchedulingLink` share
+  the same DTO builder and keep today's swallow (out of scope, follow-up
+  `dto-roster-errors` in the manifest). Assumed by the factory, pending owner
+  confirmation.
 
 None deletes user data or widens who can see data. D-1 and D-2 together narrow who can
 read a link's roster.
@@ -122,7 +149,7 @@ Searched: `smart-calendar-flow/src` at `origin/main` `ad52160`, `clockwise-like/
 |---|---|---|
 | web `src/api/schedulingLinks.ts:514,544,574` | No | All three single-link reads are owner flows (after create; read-before-PATCH in update; after update). Edit and toggle are gated on `is_owner` (`src/pages/Links.tsx:144,155`). A co-host who somehow reached update would get 200 on the read and 403 on the PATCH, as today. |
 | web `src/api/teams.ts:388`, `src/components/team/ProtectedHoursTab.tsx:709` | No | The remove control is never shown on the owner's own row, so the web never sends the refused request. A 422 would show the existing error toast (`:668`). |
-| web `src/api/generated` | No | `removeTeamMember` gains a `422`; descriptions change on both operations. Regenerated by the paired web PR (REGEN=1 web gate), never by hand. |
+| web `src/api/generated` | No | `removeTeamMember` gains a `422`; descriptions change on both operations. Regenerated by the paired draft web PR [smart-calendar-flow#121](https://github.com/Enach/smart-calendar-flow/pull/121) (`factory/pac-25-contract-types`, REGEN=1 web gate), never by hand. |
 | `e2e/tests/scheduling-links.spec.ts`, `e2e/tests/team-invite-analytics.spec.ts` | No | Neither reads a link by id as another user nor calls member removal. |
 | `mcp/` | No | Calls neither operation. |
 
@@ -133,6 +160,13 @@ the `404` description of `getSchedulingLink`; AC-4/AC-5 its `200`; AC-7, AC-8, A
 AC-14 and AC-19 the `422` of `removeTeamMember`; AC-9..AC-12 and AC-17 its unchanged
 `204`/`403` and the check order; AC-15 is checkable in the bundle (no `x-uncertain` and
 no `403` on `getSchedulingLink`; a `422` with the example body on `removeTeamMember`).
+AC-15(b) is deliberately split across two tests (C-1): the bundle carries the message
+only as a non-normative `example`, and neither generated type constrains it, so the
+contract test `backend/api/pac25_contract_test.go` (new, written by the backend
+stage, reading the bundle as `pac21_contract_5xx_test.go` does) asserts the example
+`{"error":"the team owner cannot be removed"}` on `removeTeamMember` `422`, and the
+AC-7 Go handler test asserts the body the server actually sends. The plan must name
+both.
 AC-18 concerns `DELETE /api/manager/team/members/{email}`, which this contract does not
 edit. AC-19 (concurrency) cannot be expressed in OpenAPI; it is stated in prose and
 belongs to an integration test.
@@ -158,11 +192,10 @@ belongs to an integration test.
   printed rc=0: openapi-check (bundle in sync, MIGRATION.md covers 119 operations,
   gen matches), backend and mcp lint, backend and mcp test, backend coverage 56.8%
   against a 43% floor, mcp 84.0% against 75%.
-- The api gate is re-run on the final commit of this branch; its output is in the
-  Linear comment on PAC-25.
-- **Not run at this stage**: the web gate and the e2e gate. The paired web type
-  regeneration (`REGEN=1 web-gate.sh`) is opened by the build stage against this
-  branch; no server behaviour has changed yet, so there is nothing for e2e to show.
+- Revision 2: see "Revision 2 — What was run" at the end of this file (api gate on
+  `5c70131`, web gate on the paired web branch).
+- **Not run at this stage**: the e2e gate. No server behaviour has changed yet, so
+  there is nothing for e2e to show.
 
 ---
 
@@ -317,3 +350,82 @@ All checked; none breaks. Each manifest line reference was opened and matches:
   narrowed except AC-15(b) above.
 - **Audit**: API-006 and API-023 are the only findings on the two operations;
   API-050 (on DELETE) and API-056 (habits) are correctly listed as not resolved.
+
+---
+
+## Revision 2 — 2026-10-27
+
+Contract-author's answer to the challenge above, one item per finding.
+
+### Blocking
+
+1. **`getSchedulingLink` check order and the swallowed roster read** — fixed as the
+   challenge proposed (its first option), description only, no schema change
+   (`5c70131`). The operation description now reads: `400`; then the link lookup;
+   then the caller's own host-status lookup; then `404`; then `200`; a storage error
+   on either lookup answers `500 {"error":"internal error"}`, never `404` and never
+   `200`. Building the record reads the roster (host rows and each host's user
+   record), and a storage error there also answers `500`, never `200` with
+   `hosts: []` or a host's email missing. The `200` description repeats that it is
+   sent only when the whole roster was read; the `500` description lists the three
+   reads. Recorded as decision C-2 (§4; spec "Decisions"); the rejected alternative
+   (drop the `my_status` promise, document `hosts: []`) is in §3. The constructed
+   case (accepted co-host B, `scheduling_link_hosts` read fails) is now contracted
+   to answer `500`. This also covers non-blocking 4 for this operation (below).
+
+### Non-blocking
+
+1. **Paired web type regeneration** — done. Branch `factory/pac-25-contract-types` on
+   `Enach/smart-calendar-flow` (from `main` `ad52160`), commit `26537a5`, draft PR
+   [#121](https://github.com/Enach/smart-calendar-flow/pull/121). `types.ts` now
+   carries the `422` on `removeTeamMember`. Both gates green, below.
+2. **AC-15(b) narrowed to an `example`** — accepted as stated, and the split is now
+   named (§6, manifest AC-15): the contract test `backend/api/pac25_contract_test.go`
+   asserts the bundle's example; the AC-7 handler test asserts the body the server
+   sends. The plan must list both.
+3. **Spec revision 1 not re-challenged** — agreed that it is the spec gate's, not the
+   contract's. Still true at this revision: `factory/pac-25-spec` is at `da6905f`,
+   with no re-challenge commit. Reported to the orchestrator as outstanding; this
+   branch does not claim the spec gate is green.
+4. **`toSchedulingLinkDTO` drops a host's email when `GetUserByID` fails** — for
+   `getSchedulingLink` the contract now requires `500` instead (C-2), since this is
+   the read this feature contracts and `SchedulingLinkHost.email` is required. A host
+   whose user row is gone cannot occur without an error: `scheduling_link_hosts.user_id`
+   is `ON DELETE CASCADE` (`migrations/009_scheduling_links.up.sql:19`) and
+   `GetUserByID` returns `sql.ErrNoRows` for a missing row. The same swallow in the
+   list, create and update answers is pre-existing and untouched; it is recorded as
+   follow-up `dto-roster-errors` in the manifest rather than fixed here (the spec
+   does not ask for it).
+5. **U-08 removed on a factory decision** — accepted as stated. The audit row keeps
+   "pending owner confirmation"; AC-1..AC-6 pin the behaviour once the backend lands.
+6. **OWNER: D-1** (404 rather than 403, spec OQ-6) — open, unchanged; listed for the
+   owner.
+7. **OWNER: D-2** (accepted co-hosts may read the detail, including pending and
+   declined invitees' emails, spec OQ-7) — open, unchanged; listed for the owner.
+8. **OWNER: D-5** (sole owner alone in the team is refused, spec OQ-8) — open,
+   unchanged; listed for the owner.
+9. **OWNER: C-1** (422 reuses `ErrorResponse` with an example) — open, unchanged;
+   listed for the owner. C-2 (above) is added to the same list.
+
+### What was run (revision 2)
+
+- `python scripts/openapi_assemble.py` then `--check`: `OK: bundle is in sync (98
+  paths)`, `x-uncertain: 11`. Bundle hash on `5c70131`
+  (`git show HEAD:contracts/openapi/openapi.yaml | sha256sum`):
+  `babf08329bc0ff62296767f517983fbc4a87fad090f8b72d699f9e7c2680cd55`.
+- `api-gate.sh factory/pac-25-contract` on `5c70131`: `make openapi rc=0`,
+  `regenerated: none`, `OK: bundle is in sync (98 paths)`, `OK: MIGRATION.md covers
+  all 119 operations (0 generated)`, `OK: backend/api/gen matches the contract`,
+  `openapi-check(api) rc=0`, `backend lint rc=0`, `mcp lint rc=0`,
+  `backend test rc=0`, `mcp test rc=0`, backend coverage 56.8% (floor 43%) rc=0,
+  mcp coverage 84.0% (floor 75%) rc=0.
+- `REGEN=1 web-gate.sh factory/pac-25-contract-types factory/pac-25-contract`:
+  regenerated `src/api/generated/types.ts` and `schemas.types.d.ts`, committed as
+  `26537a5`; then `web-gate.sh` (no REGEN) on `26537a5`: lint, typecheck,
+  design-check, openapi-check, test (297 passed), coverage all PASS,
+  `make verify rc=0`.
+- The api gate is re-run on this revision's final commit (docs only after
+  `5c70131`); its output is in the Linear comment on PAC-25.
+- Not run: the e2e gate (no server behaviour changed).
+
+Ready for re-challenge.

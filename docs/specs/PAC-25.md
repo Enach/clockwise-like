@@ -482,6 +482,14 @@ data or widens who can see data.*
   user sees, and the state the guard exists to prevent then never occurs. How
   it is met (a single conditional statement, a lock, a transaction) is the
   plan's choice. Assumed by the factory, pending owner confirmation.
+- **C-1, C-2 — contract-stage decisions** (recorded in full in
+  `contracts/features/PAC-25.md` §4). C-1: the `422` body reuses the shared error
+  shape with an example rather than a schema fixing the message. C-2: on the link
+  detail read, a storage failure on any read the answer depends on (the link, the
+  caller's host status, the roster) answers an internal error, never not-found and
+  never a success with the roster emptied; this keeps AC-4's promise and does not
+  fail open. Neither deletes user data or widens who can see data. Assumed by the
+  factory, pending owner confirmation.
 
 ---
 
