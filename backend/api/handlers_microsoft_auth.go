@@ -25,7 +25,7 @@ func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Reques
 	_, _ = rand.Read(b)
 	state := hex.EncodeToString(b)
 
-	http.SetCookie(w, &http.Cookie{
+	setCookie(w, &http.Cookie{
 		Name:     "ms_oauth_state",
 		Value:    state,
 		Path:     "/",
@@ -34,7 +34,7 @@ func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Reques
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	http.Redirect(w, r, auth.GetMicrosoftAuthURL(cfg, state), http.StatusFound)
+	http.Redirect(w, r, auth.GetMicrosoftAuthURL(cfg, state, loginHintFrom(r)), http.StatusFound)
 }
 
 func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "ms_oauth_state", MaxAge: -1, Path: "/"})
+	setCookie(w, &http.Cookie{Name: "ms_oauth_state", MaxAge: -1, Path: "/"})
 
 	cfg := microsoftConfig()
 	if cfg == nil {
@@ -53,31 +53,42 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 
 	token, err := auth.ExchangeMicrosoftCode(r.Context(), cfg, r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "token exchange failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// The credential belongs to the user who signed in with it (PAC-24), so
 	// the user is resolved first; without one there is nobody to attach it to.
+	// Both failures end on the app's sign-in failure state, not on a JSON
+	// error page on the API origin (PAC-35, API-012).
 	info, err := fetchMicrosoftUserInfo(r.Context(), token)
 	if err != nil || info.Email == "" {
-		http.Error(w, "could not read the Microsoft account", http.StatusBadGateway)
+		h.signInFailed(w, r, "could not read the Microsoft account", err)
 		return
 	}
 	user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID)
 	if err != nil {
-		http.Error(w, "save user failed", http.StatusInternalServerError)
+		h.signInFailed(w, r, "save user failed", err)
 		return
 	}
 	if err := auth.SaveMicrosoftToken(h.db, user.ID, token); err != nil {
-		http.Error(w, "save token failed: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "save token failed", err, http.StatusInternalServerError)
 		return
 	}
 	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
-	h.issueJWT(w, user)
-
+	if err := h.issueJWT(w, user); err != nil {
+		h.signInFailed(w, r, "issue session", err)
+		return
+	}
 	http.Redirect(w, r, h.frontendURL+"/auth/callback?provider=outlook", http.StatusFound)
 }
+
+// Test seams: Microsoft's OAuth endpoint (zero means the real one) and the
+// Graph profile URL.
+var (
+	microsoftOAuthEndpoint oauth2.Endpoint
+	microsoftGraphMeURL    = "https://graph.microsoft.com/v1.0/me?$select=id,mail,displayName"
+)
 
 type msUserInfo struct {
 	ID    string `json:"id"`
@@ -88,7 +99,7 @@ type msUserInfo struct {
 func fetchMicrosoftUserInfo(ctx context.Context, token *oauth2.Token) (*msUserInfo, error) {
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
 	client.Timeout = 5 * time.Second
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://graph.microsoft.com/v1.0/me?$select=id,mail,displayName", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, microsoftGraphMeURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -115,5 +126,6 @@ func microsoftConfig() *auth.MicrosoftConfig {
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURL,
+		Endpoint:     microsoftOAuthEndpoint,
 	}
 }

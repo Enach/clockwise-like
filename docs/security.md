@@ -9,7 +9,7 @@ Owner: security-engineer skill (see workspace `AGENT_TEAM.md`).
 | Asset | Sensitivity | Notes |
 |---|---|---|
 | **OAuth tokens** (Google, Microsoft, Zoom) | **Critical** | Long-lived refresh tokens; per-user since migration 017. Used to read/write the user's calendar on their behalf. |
-| **JWT session cookie** | **Critical** | HS256-signed (`backend/auth/jwt.go`); `Secure: true` / `HttpOnly: true` in production. Compromise = full account takeover until expiry. |
+| **JWT session cookie** | **Critical** | HS256-signed (`backend/auth/jwt.go`); `Secure` (unless `PACEDAY_INSECURE_COOKIES=true`, plain-HTTP dev/e2e only — PAC-20) / `HttpOnly: true`. Compromise = full account takeover until expiry. |
 | **Calendar event data** | **High** | Meeting titles, attendees, locations, descriptions. May include confidential meeting agendas. |
 | **User profile** (email, name, org) | **Medium** | Email is the join key for SSO and bookings. |
 | **Settings** (LLM API keys, SMTP creds, Slack tokens, AWS/GCP profiles) | **High** | Stored in plaintext in the `settings` table. Anyone with DB access reads these. |
@@ -52,14 +52,14 @@ Trust boundaries (numbered for STRIDE table below):
 | **B1 (Browser→Edge)** | Phishing of paceday.* domain (out of scope; rely on registrar + HSTS — note `docs/security.md` follow-up: nginx HSTS still missing per arch review §7). | TLS at edge. | HTTP access logs at nginx. | TLS prevents passive sniff. | Rate-limit at nginx (not yet configured; arch review §7). | n/a |
 | **B2 (Edge→Backend)** | Compose-network isolation — only nginx exposes ports. | Loopback only. | Backend `loggingMiddleware` logs method+path+latency (status not captured; tracked as a follow-up). | n/a | Per-process timeouts. | n/a |
 | **B3 (Backend→DB)** | DB password in compose env; rotated via secret-store in prod (out of scope for the agent team; documented as a follow-up). | Parameterized queries throughout — verified by arch review (§5 of the report). | DB-level audit log via `audit_log` table (`storage.WriteAuditLog`). | At-rest encryption is left to the host. | Postgres `max_connections` + pool config in `storage.Open`. | Single DB role used by the app; not least-privileged. Tracked. |
-| **B4 (Backend→3rd-party)** | OAuth flow with state cookie (currently missing `Secure: true` on the `oauth_state` cookie — arch review item; follow-up). | TLS + JWT/OAuth bearer at each provider. | Calls logged but not centralized. | Tokens never logged at info+; logging redaction utility to be added (arch review item §12 — structured logging). | Per-provider rate-limit per-user; aggressive retries currently absent. | Tokens scoped per user since migration 017 + PR #35. |
+| **B4 (Backend→3rd-party)** | OAuth flow with state cookie; every state cookie is `HttpOnly`, `SameSite=Lax` and `Secure` (PAC-20). | TLS + JWT/OAuth bearer at each provider. | Calls logged but not centralized. | Tokens never logged at info+; logging redaction utility to be added (arch review item §12 — structured logging). | Per-provider rate-limit per-user; aggressive retries currently absent. | Tokens scoped per user since migration 017 + PR #35. |
 | **B5 (MCP→Backend)** | **No authentication.** `MCP_AUTH_TOKEN` env var exists but is optional. *This is the largest open gap.* See §6. | HTTP only on loopback. | Backend logs all access. | Same as B2. | Same as B2. | MCP carries full backend privileges — a compromised MCP client = full account. |
 | **B6 (Claude→MCP)** | Stdio under the user's local account — trusted by definition. | n/a | n/a | n/a | n/a | n/a |
 | **B7 (Anon→Booking)** | None possible (anonymous). | Server-side validation of booking time vs availability. | Booking creates a calendar event traceable to the booker email. | Slugs are random base32; can't be enumerated. | **Rate limit per slug currently absent** — open follow-up. | Booking can write to host's calendar — bounded by per-link window. |
 
 ## 4. Authentication & authorization
 
-- **JWT** (HS256) issued by `backend/auth/jwt.go` on successful OAuth. Cookie `auth_token`; `HttpOnly`, `SameSite=Lax`, `Secure` in production.
+- **JWT** (HS256) issued by `backend/auth/jwt.go` on successful OAuth. Cookie `auth_token`; `HttpOnly`, `SameSite=Lax`, `Secure` unless the operator sets `PACEDAY_INSECURE_COOKIES=true` for plain-HTTP development or e2e (PAC-20; never in production). Every cookie is set through `setCookie` in `backend/api/cookies.go`.
 - **JWT_SECRET** is now a hard fail at startup (PR #7).
 - **Token scoping**: every `oauth_tokens` row keyed by `(user_id, calendar_id)` since migration 017. Handlers resolve userID from ctx via `auth.UserIDFromContext`; `auth.LoadUserToken(db, uuid.Nil)` returns `ErrNoUser` — no silent legacy fallback.
 - **Cron paths**: per-user iteration since PR #35. Each cron tick scopes ctx with `auth.UserIDKey` before any storage call.
@@ -80,7 +80,7 @@ Trust boundaries (numbered for STRIDE table below):
 
 1. **🔴 MCP server has no built-in auth** (B5). `MCP_AUTH_TOKEN` is optional. Any process on the docker-compose network can call any MCP tool. Mitigation: require `MCP_AUTH_TOKEN` to start the server (fatal on empty, mirror of JWT_SECRET fix in PR #7). Anytype task to be filed.
 
-2. **🟠 oauth_state cookie missing `Secure: true`** (B4). On plain HTTP an attacker on the wire can pin state. `handlers_auth.go:25–37`. Mitigation: set `Secure: true` always (or gated on `RUNTIME_ENV=production` env). Anytype task to be filed.
+2. ~~**🟠 oauth_state cookie missing `Secure: true`** (B4).~~ Fixed by PAC-20: every cookie carries `Secure` unless `PACEDAY_INSECURE_COOKIES=true` (plain-HTTP dev/e2e only).
 
 3. **🟠 nginx production config lacks TLS / HSTS / CSP / rate-limit** (B1, B7). Tracked in arch review §7; deferred by user.
 

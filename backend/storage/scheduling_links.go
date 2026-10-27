@@ -317,19 +317,38 @@ func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error)
 	return out, rows.Err()
 }
 
-func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) error {
-	_, err := db.ExecContext(context.Background(),
+// RemoveLinkHost deletes userID's host row on linkID. removed is false when
+// no row matched (the user was never a host, or already left): PAC-30.
+func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err error) {
+	res, err := db.ExecContext(context.Background(),
 		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`, linkID, userID)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
-func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) error {
-	_, err := db.ExecContext(context.Background(), `
+// RespondToHostInvite sets userID's host row on linkID to status. matched is
+// false when the user has no host row on that link (or no such link exists);
+// nothing is written in that case: PAC-30.
+func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) (matched bool, err error) {
+	res, err := db.ExecContext(context.Background(), `
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2
 	`, linkID, userID, status)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func scanLinkHost(row *sql.Row) (*LinkHost, error) {

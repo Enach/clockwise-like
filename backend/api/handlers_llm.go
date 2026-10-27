@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/storage"
 )
@@ -43,7 +45,7 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 
 	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "testLLM", err, http.StatusInternalServerError)
 		return
 	}
 	storedKey := s.LLMAPIKey
@@ -72,13 +74,21 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 
 	client, err := nlp.NewLLMClientFromSettings(s)
 	if err != nil {
-		writeError(w, redact(err.Error()), http.StatusInternalServerError)
+		// The detail is logged with both keys redacted (AC-14); the body is generic (PAC-21).
+		writeServerError(w, r, "build LLM client", errors.New(redact(err.Error())), http.StatusInternalServerError)
 		return
 	}
 
+	// PAC-66: an ambient-credential provider (named in the body or stored)
+	// sends nothing to a destination the operator has not approved. The check
+	// needs no credential, so the refusal is reported even where none exists.
+	if err := nlp.CheckDestination(r.Context(), client); err != nil {
+		writeProviderFailure(w, r, err, redact)
+		return
+	}
 	response, err := client.Complete(r.Context(), "You are a helpful assistant.", "Say hello")
 	if err != nil {
-		writeError(w, redact(err.Error()), http.StatusBadGateway)
+		writeProviderFailure(w, r, err, redact)
 		return
 	}
 
@@ -88,4 +98,26 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 		"response": redact(response),
 		"provider": s.LLMProvider,
 	})
+}
+
+// writeProviderFailure answers a failed provider call: a PAC-66 destination
+// refusal is a 422 LLMDestinationRefusal (nothing was sent); anything else is
+// the 502 it has always been.
+func writeProviderFailure(w http.ResponseWriter, r *http.Request, err error, redact func(string) string) {
+	var refusal *nlp.DestinationRefusal
+	if !errors.As(err, &refusal) {
+		writeServerError(w, r, "LLM provider call", errors.New(redact(err.Error())), http.StatusBadGateway)
+		return
+	}
+	body := gen.LLMDestinationRefusal{
+		Error:  refusal.Message,
+		Reason: gen.LLMDestinationRefusalReason(refusal.Reason),
+	}
+	if refusal.Property != "" {
+		p := gen.LLMDestinationRefusalProperty(refusal.Property)
+		body.Property = &p
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	_ = json.NewEncoder(w).Encode(body)
 }

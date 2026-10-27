@@ -51,6 +51,8 @@ type contractCompressor struct {
 	err       error
 }
 
+func (c *contractCompressor) CheckCalendar(context.Context) error { return nil }
+
 func (c *contractCompressor) SuggestForDay(context.Context, time.Time) (*engine.CompressionResult, error) {
 	return nil, nil
 }

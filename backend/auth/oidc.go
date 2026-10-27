@@ -57,9 +57,11 @@ func NewOIDCClient(ctx context.Context, issuer, clientID, clientSecret, redirect
 	return &OIDCClient{provider: p, config: cfg}, nil
 }
 
-// AuthURL returns the authorization redirect URL for the given CSRF state.
-func (c *OIDCClient) AuthURL(state string) string {
-	return c.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+// AuthURL returns the authorization redirect URL for the given CSRF state. A
+// non-empty loginHint (already checked by the caller) is sent as login_hint.
+func (c *OIDCClient) AuthURL(state, loginHint string) string {
+	opts := append([]oauth2.AuthCodeOption{oauth2.AccessTypeOnline}, loginHintOption(loginHint)...)
+	return c.config.AuthCodeURL(state, opts...)
 }
 
 // Exchange trades the auth code for tokens and returns verified user claims.

@@ -24,12 +24,17 @@ paths:
       tags: [focus]
       summary: Run the focus-time engine for a week
       description: >
-        Creates focus blocks for the target week. The request body is decoded
-        best-effort: if the body is absent or is malformed JSON the handler
-        silently falls back to `week = ""` (i.e. the current week) and returns
-        200 - it does NOT return 400 for malformed JSON. A 400 is only produced
-        when `week` decodes to a non-empty string that fails
-        `time.Parse("2006-01-02", ...)`.
+        Creates focus blocks for the target week. The body is optional: an
+        absent or empty body (zero bytes or only whitespace) and the JSON
+        literal `null` are treated as `{}`, i.e. the current week. Any other
+        body that does not decode into FocusRunRequest is a 400 `invalid JSON`:
+        a syntax error, a non-object top-level value (array, string, number,
+        boolean), or a member of the wrong type such as `{"week":5}`. Before
+        PAC-36 such a body was silently treated as `{}` and answered 200 for the
+        current week (API-035). Only the first JSON value is read; bytes after
+        it are not inspected, as on every sibling endpoint. A non-empty `week`
+        that fails `time.Parse("2006-01-02", ...)` is a 400 `invalid week format,
+        use YYYY-MM-DD`.
       requestBody:
         required: false
         content:
@@ -45,19 +50,24 @@ paths:
                 $ref: '#/components/schemas/FocusRunResult'
         '400':
           description: >
-            `invalid week format, use YYYY-MM-DD` - JSON error shape (writeError).
+            `invalid JSON` (the body is present, is not `null`, and does not
+            decode into FocusRunRequest; PAC-36, API-035) or `invalid week format,
+            use YYYY-MM-DD`. Fixed messages, JSON error shape (writeError).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            Engine failure. Written with http.Error, so the body is the raw Go
-            error string as text/plain, NOT the JSON error shape.
+          description: >-
+            Engine failure for a user who HAS a stored Google credential (a user with none
+            gets the 401 `calendar not connected`). Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/focus/blocks:
     get:
@@ -68,9 +78,11 @@ paths:
         Returns the caller's rows from the `focus_blocks` table (`user_id` = the
         authenticated user) where `date >= week AND date < week+7days`, ordered by
         start_time. Other users' blocks are never listed.
-        NOTE: `storage.FocusBlock` carries no json struct tags, so the encoder
-        emits Go field names (`ID`, `GoogleEventID`, `StartTime`, `EndTime`,
-        `Date`, `CreatedAt`) - not snake_case and not camelCase.
+        Keys are snake_case (`id`, `google_event_id`, `start_time`, `end_time`,
+        `date`, `created_at`) from explicit json tags on `storage.FocusBlock`
+        (PAC-26, API-014). Before PAC-26 the struct had no tags and the encoder
+        emitted the Go field names (`ID`, `GoogleEventID`, `StartTime`, ...),
+        which the web app's FocusBlock type could not read.
       parameters:
         - name: week
           in: query
@@ -101,11 +113,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
         '500':
-          description: DB failure, raw Go error as text/plain (http.Error).
+          description: >-
+            DB failure. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     delete:
       operationId: clearFocusBlocks
       tags: [focus]
@@ -136,12 +150,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: Engine failure, raw Go error as text/plain (http.Error).
+          description: >-
+            Engine failure for a user who HAS a stored Google credential (a user with none
+            gets the 401 `calendar not connected`). Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/compress:
     post:
@@ -149,14 +168,26 @@ paths:
       tags: [schedule]
       summary: Preview meeting-compression proposals
       description: >
-        Body decode errors are swallowed (`_ = json.NewDecoder(...).Decode(&body)`),
-        so malformed JSON behaves like an empty body and yields 200 for today.
+        Read-only: computes proposals, moves nothing.
+        The body is optional: an absent or empty body (zero bytes or only
+        whitespace) and the JSON literal `null` are treated as `{}`, i.e. today.
+        Any other body that does not decode into CompressionRequest is a 400
+        `invalid JSON` (a syntax error, a non-object top-level value, or a member
+        of the wrong type). Before PAC-36 the decode error was discarded and such
+        a body answered 200 for today (API-035). Only the first JSON value is read.
         If `week` is set it wins over `date`: the handler snaps the parsed date to
-        Monday (startOfWeek) and iterates Mon..Fri, appending one CompressionResult
-        per day and SILENTLY SKIPPING days whose engine call errors - so week mode
-        never returns 500, and returns `[]` if all five days error.
+        Monday (startOfWeek) and computes Mon..Fri in order. A 200 in week mode
+        carries exactly five CompressionResult entries, one per day, Monday
+        first; a non-working day is an entry with no proposals, not a missing
+        entry. If ANY day's computation fails, the whole request fails exactly as
+        single-day mode fails (401 CalendarNotConnected or 500 `internal error`)
+        and no per-day results are returned. Before PAC-36 week mode skipped every
+        failing day and answered 200 with the survivors, `[]` if all five failed,
+        which a client cannot tell apart from "nothing to compress" (API-034).
         If `week` is empty, `date` (or today) produces a single-element array and
-        an engine error becomes a 500.
+        an engine error is the 500.
+        A caller with no stored Google credential gets the 401 `calendar not connected`
+        in BOTH modes, before any day is computed (PAC-21, API-054).
       requestBody:
         required: false
         content:
@@ -166,29 +197,43 @@ paths:
       responses:
         '200':
           description: >
-            Array of per-day results. `[]` when the slice stayed empty
-            (week mode with every day failing).
+            Array of per-day results: exactly one entry in single-day mode,
+            exactly five (Mon..Fri, in that order) in week mode. Never `[]`
+            (PAC-36: a week in which a day failed is an error response, not a
+            shorter array).
           content:
             application/json:
               schema:
                 type: array
+                minItems: 1
+                maxItems: 5
                 items:
                   $ref: '#/components/schemas/CompressionResult'
         '400':
           description: >
-            `invalid week format` or `invalid date format` - JSON error shape
+            `invalid JSON` (the body is present, is not `null`, and does not
+            decode into CompressionRequest; PAC-36, API-035), `invalid week
+            format` or `invalid date format`. Fixed messages, JSON error shape
             (writeError).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            Single-day mode only. Raw Go error as text/plain (http.Error).
+          description: >-
+            Both modes: an engine failure for a user who HAS a stored Google credential
+            (a user with none gets the 401 `calendar not connected`), on the single day
+            or on any one of the five week days (PAC-36, API-034: week mode no longer
+            skips it); or reading the credential store failed (checked before any day is
+            computed). Body: `{"error":"internal error"}`, with no per-day results and no
+            indication of which day failed. The detail is written to the server log and
+            Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/compress/apply:
     post:
@@ -222,12 +267,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: Engine Apply() error, raw Go error as text/plain (http.Error).
+          description: >-
+            Engine Apply() failure for a user who HAS a stored Google credential (a user
+            with none gets the 401 `calendar not connected`). Body: `{"error":"internal
+            error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/suggest:
     post:
@@ -243,13 +293,15 @@ paths:
         The engine walks candidate starts in 30-minute steps
         (engine/smart_schedule.go: `t = t.Add(30 * time.Minute)`) and returns at
         most 3 slots, each at least 1h apart (pickTopUnique(candidates, 3, time.Hour)).
-      x-uncertain: >
-        The task brief mentions a 15-minute increment rule. No 15-minute
-        constraint exists anywhere on this route: the smart scheduler steps 30
-        minutes, and the only 15-minute stepping in the repo is in
-        engine/booking.go, engine/habits.go and engine/team_availability.go,
-        which back other domains (booking links, habits, team availability).
-        A human should confirm whether a 15-minute rule was intended here.
+        There is no 15-minute increment rule on this route: every step in
+        engine/smart_schedule.go (lines 113, 121 and 135) is 30 minutes, so
+        every suggested start is the start of a free interval (`range_start` or
+        the end of a busy interval) plus a multiple of 30 minutes. The 15-minute stepping in
+        engine/booking.go, engine/habits.go and engine/team_availability.go
+        backs other domains. U-07 resolved by PAC-21 from the engine, to be
+        pinned by TestSmartScheduler_Suggest_StepsThirtyMinutes (AC-6, written
+        in the backend PR before the code); assumed by the
+        factory, pending owner confirmation that no 15-minute rule was intended.
       requestBody:
         required: true
         content:
@@ -272,14 +324,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            Engine error (freebusy failure, settings load, or the out-of-hours
-            allowance counter). Raw Go error as text/plain (http.Error).
+          description: >-
+            Engine error (freebusy failure or settings load) for a user who HAS a stored
+            Google credential (a user with none gets the 401 `calendar not connected`):
+            `{"error":"internal error"}`; or the weekly out-of-hours allowance is spent:
+            `{"error":"out-of-hours meeting allowance reached"}` (still a 500, not a 4xx:
+            changing that status is not part of this change). The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/schedule/create:
     post:
@@ -293,9 +351,12 @@ paths:
         creation once the weekly allowance is spent - that refusal surfaces as a
         500 with the text `out-of-hours meeting allowance reached`, not a 4xx.
         On success an audit row `meeting_created` is written.
-        The response body is the raw Google Calendar API
-        `calendar/v3.Event` struct as returned by the calendar client - it is
-        NOT normalised into the app's own event shape.
+        The response body is the created event flattened by toCalendarEventDTO:
+        the CalendarEvent DTO, the same shape as one element of
+        GET /api/calendar/events, never Google's own keys (`summary`,
+        `start.dateTime`, `hangoutLink`). PAC-29 (API-017, U-14): until PAC-29's
+        implementation lands the server still encodes the raw `calendar/v3.Event`
+        here, so this response describes the server after that PR.
       requestBody:
         required: true
         content:
@@ -304,11 +365,14 @@ paths:
               $ref: '#/components/schemas/ScheduleCreateRequest'
       responses:
         '200':
-          description: The created Google Calendar event.
+          description: >-
+            The created event as the CalendarEvent DTO (PAC-29). Room resource
+            attendees are dropped from `attendees` / `attendee_details`, as in the
+            list; `attendees` is omitted when there are none.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleCalendarEvent'
+                $ref: '#/components/schemas/CalendarEvent'
         '400':
           description: >
             `invalid JSON`, or `invalid start or end (use RFC3339)` - JSON error
@@ -317,12 +381,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: Calendar/engine error, raw Go error as text/plain (http.Error).
+          description: >-
+            Calendar or engine error for a user who HAS a stored Google credential (a user
+            with none gets the 401 `calendar not connected`): `{"error":"internal error"}`;
+            or the weekly out-of-hours allowance is spent: `{"error":"out-of-hours meeting
+            allowance reached"}`. The detail is written to the server log and Sentry only
+            (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/nlp/parse:
     post:
@@ -355,11 +426,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
         '500':
-          description: Parser error, raw Go error as text/plain (http.Error).
+          description: >-
+            Parse() returned an error. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/nlp/confirm:
     post:
@@ -372,14 +445,18 @@ paths:
         and `suggested_slots[selected_slot_index]` are used; `duration_minutes`,
         `range_start`, `range_end`, `preferred_times` and `avoid_times` are
         ignored here. On success an audit row `nlp_confirmed` is written and the
-        raw Google Calendar event is returned.
-      x-uncertain: >
-        The bounds check is `len(SuggestedSlots) == 0 || SelectedSlotIndex >= len(...)`.
-        A NEGATIVE `selected_slot_index` passes validation and then indexes the
-        slice out of range, which panics. The panic is re-raised by
-        sentryMiddleware and becomes a generic 500 from net/http - it is not a
-        400. A human should confirm whether this is intended before the spec
-        documents a 400 for negative indexes.
+        created event is returned as the CalendarEvent DTO (toCalendarEventDTO, the
+        same shape as GET /api/calendar/events), never Google's own keys. PAC-29
+        (API-017, U-14): until PAC-29's implementation lands the server still encodes
+        the raw `calendar/v3.Event` here, so this response describes the server
+        after that PR.
+        A NEGATIVE `selected_slot_index` is a 400 `invalid selected_slot_index`, like
+        an index past the end. Before PAC-21 was finished it passed the bounds check,
+        indexed the slice out of range and panicked; the panic was re-raised by
+        sentryMiddleware, so net/http aborted the response with no status and no body
+        at all. That was U-06 / API-024, resolved here: a crash is not a contract to
+        preserve, and the 400 is the response the handler already gives every other
+        out-of-range index.
       requestBody:
         required: true
         content:
@@ -388,27 +465,36 @@ paths:
               $ref: '#/components/schemas/NLPConfirmRequest'
       responses:
         '200':
-          description: The created Google Calendar event.
+          description: >-
+            The created event as the CalendarEvent DTO (PAC-29). Room resource
+            attendees are dropped from `attendees` / `attendee_details`, as in the
+            list; `attendees` is omitted when there are none.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GoogleCalendarEvent'
+                $ref: '#/components/schemas/CalendarEvent'
         '400':
           description: >
-            `invalid JSON`, or `invalid selected_slot_index` (empty slot list, or
-            index >= len). JSON error shape (writeError).
+            `invalid JSON`, or `invalid selected_slot_index` (empty slot list,
+            index < 0, or index >= len). JSON error shape (writeError).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          $ref: '#/components/responses/CalendarNotConnected'
         '500':
-          description: >
-            CreateMeeting error as text/plain (http.Error), or an empty-body
-            panic-derived 500 for a negative index (see x-uncertain).
+          description: >-
+            CreateMeeting failed for a user who HAS a stored Google credential (a user with
+            none gets the 401 `calendar not connected`): `{"error":"internal error"}`; or
+            the weekly out-of-hours allowance is spent: `{"error":"out-of-hours meeting
+            allowance reached"}`. A negative `selected_slot_index` is a 400, never a 500
+            (resolves U-06 / API-024). The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/llm/test:
     post:
@@ -474,16 +560,58 @@ paths:
         is API-054 / T8 and is NOT resolved here; the narrower guarantee PAC-24
         adds is that the key itself never appears (spec AC-14).
 
-        NOT resolved here, and recorded rather than silently fixed (factory §7):
-        a caller can still steer this probe indirectly by first writing
-        `llmBaseUrl` or `azureEndpoint` into their OWN settings via
-        `PATCH /api/settings` and then probing. That path exists today via
-        the pre-PAC-24 `PUT /api/settings` plus this operation, PAC-24 neither opens
-        nor closes it (the write is now `PATCH`), and on
-        the ambient-credential providers it reaches a deployment-wide cloud
-        identity rather than the caller's own key. It needs its own issue
-        (allow-listing or scheme/host restriction on the endpoint properties);
-        see `contracts/features/PAC-24.md` §2.
+        **PAC-66: the deployment's cloud identity goes only to hosts the
+        OPERATOR approved.** PAC-24 left one indirect channel open: a caller
+        could write `azureEndpoint` or `gcpLocation` into their OWN settings
+        with `PATCH /api/settings` and then probe, and on the three
+        ambient-credential providers (`azure_openai`, `vertex`, `bedrock`) the
+        server sent the DEPLOYMENT'S cloud credential (an Entra ID token, a
+        Google ADC token, an AWS SigV4 signature) to the host those values
+        built (`backend/nlp/llm_azure_openai.go:28-50`, `llm_vertex.go:29-53`;
+        a Vertex location such as `attacker.example/x` changes the URL's
+        authority). PAC-66 closes it for those three providers:
+
+        * The operator names the approved inference hosts per provider in
+          deployment configuration (`PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI`,
+          `PACEDAY_LLM_APPROVED_HOSTS_VERTEX`,
+          `PACEDAY_LLM_APPROVED_HOSTS_BEDROCK`; format in
+          `contracts/features/PAC-66.md` §4). No request property and no
+          stored setting can add to that set. A host approved for one provider
+          is not approved for another (spec D-8). Nothing approved means the
+          provider is not enabled on this deployment (spec D-1, fail closed).
+
+        * Before an ambient provider sends anything, the server computes the
+          EFFECTIVE HOST of the inference request, the host it would actually
+          contact after every default is applied (Azure: the stored endpoint's
+          host, none when empty; Vertex: `<location>-aiplatform.googleapis.com`,
+          `us-central1` when empty; Bedrock: the host the AWS SDK resolves for
+          the stored region, `us-east-1` when empty, and the stored profile).
+          The request is sent only if that host, over `https` on the default
+          port, is approved for the provider the probe USES: the body's
+          `llmProvider` when present, otherwise the stored one (spec AC-18).
+          Otherwise this operation answers 422 and makes no outbound inference
+          request at all (spec AC-1, AC-2, AC-4, AC-7, AC-16, AC-19, AC-20).
+
+        * The 422 is reported whether or not a cloud credential could be
+          acquired: a destination refusal never surfaces as the credential
+          error (spec, shared Given "Refusal does not depend on the
+          credential").
+
+        * A redirect from an approved host is never followed with the
+          deployment credential to another host or to `http` (spec AC-8). It
+          is reported as the 502 below, because the approved provider
+          answered and its answer was unusable.
+
+        * The check is made on every send, not only on write, so a value stored
+          before PAC-66 is refused here too (spec AC-9).
+
+        The user-key and keyless providers (`openai`, `anthropic`, `ollama`)
+        are unchanged by PAC-66: `llmBaseUrl` and `ollamaBaseUrl` still
+        address any host, carrying the caller's own key or none. That
+        request-forgery channel is PAC-66-B (spec §0, D-4). An approved host is
+        approved whatever path, project, deployment or model the stored values
+        put in the URL; that sibling problem is recorded in
+        `contracts/features/PAC-66.md` §7, not solved here.
       requestBody:
         required: true
         content:
@@ -513,23 +641,64 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
-        '500':
+        '422':
           description: >
-            Two different encodings share this code. Settings load failure ->
-            text/plain (http.Error). Client construction failure (e.g.
-            `LLM not configured - set API key in Settings`) -> JSON error shape
-            (writeError).
+            PAC-66. The probe would send the deployment's cloud credential
+            (provider `azure_openai`, `vertex` or `bedrock`, as named in the
+            body or stored) to a destination the operator has not approved for
+            that provider, so nothing was sent. `reason` says which of three
+            cases applies; `property` names the stored setting to correct.
+            The body never carries a token, a key or any part of the
+            deployment credential, and `error` is a non-empty sentence (spec
+            AC-11). Distinct from the 400 (the request body itself is
+            malformed) and from the 502 (the provider call failed: credential
+            acquisition, provider configuration, transport, or an unusable or
+            redirecting answer; a 502 does not imply a request was sent). A
+            422 always means nothing was sent; the converse does not hold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMDestinationRefusal'
+              examples:
+                notEnabled:
+                  value:
+                    error: azure_openai is not enabled on this deployment; ask your administrator to approve an Azure OpenAI endpoint
+                    reason: provider_not_enabled
+                notApproved:
+                  value:
+                    error: azureEndpoint is not an approved Azure OpenAI endpoint on this deployment
+                    reason: destination_not_approved
+                    property: azureEndpoint
+                notSet:
+                  value:
+                    error: the Azure endpoint is not set; save an approved endpoint in Settings first
+                    reason: destination_not_set
+                    property: azureEndpoint
+        '500':
+          description: >-
+            Settings load failure (`{"error":"internal error"}`), or the LLM client could
+            not be constructed (a fixed configuration sentence such as `LLM not configured -
+            set API key in Settings`). One encoding, the JSON error envelope, for both
+            (before PAC-21 was finished the settings-load failure was text/plain). A PAC-66
+            destination refusal is NEVER a 500; it is the 422. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
-            text/plain:
-              schema:
-                type: string
         '502':
-          description: >
-            The provider call failed. JSON error shape (writeError) carrying the
-            upstream error string.
+          description: >-
+            The provider call failed. Body: `{"error":"upstream provider error"}`. The
+            upstream error string is NOT returned: it is redacted of both keys and written
+            to the server log and Sentry only (PAC-21). A 502 does NOT imply an inference
+            request was sent: the handler maps every provider-call error to 502, including
+            failures before any request leaves the server - Azure or Vertex credential
+            acquisition and Bedrock configuration loading (e.g. a stored `awsProfile` absent
+            from the deployment's shared config). PAC-66: this includes an approved
+            ambient-provider host answering with a redirect, which is not followed with the
+            deployment credential to any other host or to `http` (spec AC-8). The body never
+            carries the deployment credential. It is never used for a destination refusal;
+            see 422.
           content:
             application/json:
               schema:
@@ -565,11 +734,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Settings'
         '500':
-          description: DB failure, raw Go error as text/plain (http.Error).
+          description: >-
+            DB failure. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     patch:
       operationId: patchSettings
       tags: [settings]
@@ -601,6 +772,22 @@ paths:
         normalisation (e.g. `workingHours` defaulting) rather than the submitted
         body, and it does not contain `llmApiKey`.
 
+        **PAC-66 destination rules.** When a write CHANGES `azureEndpoint`,
+        `gcpLocation` or `awsRegion` to a non-empty value, that value is
+        checked whichever provider is selected (spec AC-5, AC-7):
+        `azureEndpoint` must be an `https` URL whose host is approved for
+        `azure_openai`; `gcpLocation` must build a Vertex host approved for
+        `vertex`; `awsRegion` must be a valid AWS region name (one host label;
+        the Bedrock host itself is checked when a request is sent). A refused
+        value is a 400 naming the property, and nothing in the body is stored.
+        Three things are deliberately NOT refused here: `""` for any of the
+        three (a user can always clear a bad value, spec AC-15, D-3); a value
+        equal to the one already stored (the changed-only rule above, PAC-24
+        AC-17, spec AC-9); and a write that changes only `llmProvider`, even
+        onto a stored unapproved endpoint (spec AC-17). Each of those is refused
+        when a request would be sent instead (see `testLLMConnection`). The
+        server never rewrites or clears a stored value (spec D-3).
+
         Before PAC-24 there was no PATCH; the only write was a full-replace PUT
         that persisted every omitted field as its Go zero value (API-004).
       requestBody:
@@ -619,11 +806,13 @@ paths:
         '400':
           $ref: '#/components/responses/SettingsValidationError'
         '500':
-          description: Save or re-read failure, text/plain (http.Error).
+          description: >-
+            Load, save or re-read failure. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     # PUT /api/settings is REMOVED by PAC-24. Revision 1 of this contract
     # retained it as a deprecated merge-semantics alias, on the argument that it
     # shielded the pre-PAC-24 frontend during the factory's cross-repo window
@@ -667,11 +856,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/DailyRecapSettings'
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
     patch:
       operationId: patchDailyRecapSettings
       tags: [daily-recap]
@@ -711,11 +902,13 @@ paths:
               schema:
                 type: string
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/settings/daily-recap/preview:
     post:
@@ -743,11 +936,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/DailyRecapPreview'
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
   /api/settings/daily-recap/test:
     post:
@@ -780,17 +975,21 @@ paths:
               schema:
                 type: string
         '500':
-          description: '`db error` as text/plain (http.Error).'
+          description: >-
+            DB failure. Body: `{"error":"db error"}`. The detail is written to the server
+            log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
         '502':
-          description: '`send error: <err>` as text/plain (http.Error).'
+          description: >-
+            Sending the test message failed. Body: `{"error":"upstream provider error"}`.
+            The detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/SchedulingErrorResponse'
 
 components:
   responses:
@@ -802,7 +1001,15 @@ components:
         of SettingsUpdate is nullable (spec AC-8).
 
         Messages that already exist:
-        `invalid JSON: <err>`;
+        `invalid JSON` (the body cannot be read; fixed text, PAC-21: before, the
+        read error was appended);
+        `invalid JSON: the body must be an object` (the body is not a JSON
+        object, or is `null`; an existing fixed literal, unchanged);
+        `invalid JSON: <property> has the wrong type` (a value of the wrong JSON
+        type; `<property>` is the dotted path of JSON property names from the
+        request, e.g. `timeFormat` or `workingHours.days.monday.start`, never a
+        Go type or struct name; before PAC-21 was finished this was the decoder's
+        own error text, which named Go types);
         `<field> must be in HH:MM format` (workStart/workEnd/lunchStart/lunchEnd);
         `focusMinBlockMinutes must be positive`;
         `focusMaxBlockMinutes must be positive`;
@@ -811,7 +1018,8 @@ components:
         `bufferBeforeMinutes must be positive`;
         `bufferAfterMinutes must be positive`;
         `autoScheduleCron must be a 5-part cron expression`;
-        `autoScheduleCron is invalid: <err>`;
+        `autoScheduleCron is invalid` (fixed text; before PAC-21 was finished the
+        cron parser's error was appended);
         `llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex`;
         `workingHours.mode must be all_days or by_day`;
         `workingHours.mode is required when day-specific hours are provided`;
@@ -838,7 +1046,7 @@ components:
         `conferencingProvider must be one of: meet, zoom, teams`.
 
         Message PAC-55 adds: `timeFormat must be 12h or 24h`, for `""` and any
-        other string (a non-string is `invalid JSON: <err>`).
+        other string (a non-string is `invalid JSON: timeFormat has the wrong type`).
 
         Messages revision 2 of this contract adds, each with its reason:
         `recapSendTime must be in HH:MM format` now also covers `""`. The write
@@ -862,6 +1070,21 @@ components:
         `propertyNames`, so the handler is the only enforcement point
         (revision 3/4).
 
+        Messages PAC-66 adds, each produced only when the write CHANGES the
+        property to a non-empty value (`""` is always accepted for all three,
+        spec AC-15):
+        `azureEndpoint must be an https URL whose host is approved for azure_openai on this deployment`
+        (an unapproved host, a scheme other than `https`, a port other than
+        443, userinfo, or a value that does not parse as an absolute URL);
+        `azureEndpoint cannot be set: azure_openai is not enabled on this deployment`
+        (the operator approved no Azure host);
+        `gcpLocation must be a region whose Vertex host is approved on this deployment`
+        (including any value that changes the URL's authority, e.g.
+        `attacker.example/x`);
+        `gcpLocation cannot be set: vertex is not enabled on this deployment`;
+        `awsRegion must be a valid AWS region name`.
+        Each names the property first, so a client can attach it to the field.
+
         `""` is NOT in this catalogue for `workStart`, `workEnd`, `lunchStart`
         or `lunchEnd`. It is a valid value for all four, on read and on write
         (spec AC-7); the handler already skips the format check for it
@@ -879,9 +1102,10 @@ components:
       type: object
       description: >
         The JSON error shape produced by api.writeError (handlers_settings.go:206).
-        Emitted with `Content-Type: application/json`. Handlers that use the Go
-        stdlib `http.Error` instead return text/plain and do NOT use this shape;
-        each response above says which applies.
+        Emitted with `Content-Type: application/json`. Every 5xx in this domain
+        uses it, with a fixed server-chosen message (PAC-21). Handlers that use the
+        Go stdlib `http.Error` for a 4xx return text/plain and do NOT use this
+        shape; each response above says which applies.
         The 401 from requireAuth is a hybrid: the body text is
         `{"error":"unauthorized"}` but it is written through http.Error, which
         overwrites the Content-Type to `text/plain; charset=utf-8`.
@@ -896,7 +1120,9 @@ components:
     FocusRunRequest:
       type: object
       description: >
-        Optional. A malformed body is silently treated as `{}`.
+        Optional. Absent, empty or `null` is treated as `{}`. Any other body that
+        does not decode into this object is a 400 `invalid JSON` (PAC-36,
+        API-035; it was silently treated as `{}` before).
       properties:
         week:
           type: string
@@ -909,7 +1135,11 @@ components:
 
     FocusRunResult:
       type: object
-      description: engine.FocusRunResult (backend/engine/focus_time.go). camelCase.
+      description: >
+        engine.FocusRunResult (backend/engine/focus_time.go). camelCase wrapper; the
+        blocks inside `createdBlocks` are snake_case (FocusRunBlock, PAC-26). The
+        wrapper casing is unchanged by PAC-26: the web app's snake_case FocusRunResult
+        type is aligned to it by PAC-32 (API-015), which needs no contract change.
       properties:
         weekStart:
           type: string
@@ -924,9 +1154,12 @@ components:
           type: array
           items:
             type: string
+            format: date
           description: >
-            x-uncertain at field level - the format of each entry is not pinned
-            by a struct tag; it is whatever the engine appends.
+            `YYYY-MM-DD` of each weekday the engine skipped (daily target already
+            met, or the day is disabled in the working window). Both append sites in
+            engine/focus_time.go append the same `day.Format("2006-01-02")` string
+            (U-23, resolved by reading the code for PAC-26).
         totalMinutes:
           type: integer
         errors:
@@ -939,49 +1172,57 @@ components:
     FocusRunBlock:
       type: object
       description: >
-        engine.FocusBlock. This struct has NO json tags, so the encoder emits
-        exported Go field names verbatim. It is a DIFFERENT shape from
-        FocusBlockRecord (storage.FocusBlock) returned by GET /api/focus/blocks.
+        engine.FocusBlock, with explicit snake_case json tags (PAC-26, API-014).
+        The keys it shares with FocusBlockRecord (storage.FocusBlock, returned by
+        GET /api/focus/blocks) are spelled the same: the Go fields `Start`/`End`
+        are tagged `start_time`/`end_time` so that one block shape can be read
+        from both operations. It has no `id` and no `created_at`: the engine
+        reports what it created before any row id is known to the response.
+        Before PAC-26 the struct had no tags and the keys were `GoogleEventID`,
+        `Start`, `End`, `Date`.
       properties:
-        GoogleEventID:
+        google_event_id:
           type: string
-        Start:
-          type: string
-          format: date-time
-        End:
+        start_time:
           type: string
           format: date-time
-        Date:
+        end_time:
+          type: string
+          format: date-time
+        date:
           type: string
           format: date
           description: '`YYYY-MM-DD`.'
-      required: [GoogleEventID, Start, End, Date]
+      required: [google_event_id, start_time, end_time, date]
       additionalProperties: false
 
     FocusBlockRecord:
       type: object
       description: >
-        storage.FocusBlock (backend/storage/models.go). No json tags either, so
-        the wire field names are the Go field names.
+        storage.FocusBlock (backend/storage/models.go), with explicit snake_case
+        json tags (PAC-26, API-014). The keys match the `focus_blocks` columns and
+        the web app's FocusBlock type. Before PAC-26 the struct had no tags and
+        the keys were `ID`, `GoogleEventID`, `StartTime`, `EndTime`, `Date`,
+        `CreatedAt`.
       properties:
-        ID:
+        id:
           type: integer
           format: int64
-        GoogleEventID:
+        google_event_id:
           type: string
-        StartTime:
-          type: string
-          format: date-time
-        EndTime:
+        start_time:
           type: string
           format: date-time
-        Date:
+        end_time:
+          type: string
+          format: date-time
+        date:
           type: string
           format: date
-        CreatedAt:
+        created_at:
           type: string
           format: date-time
-      required: [ID, GoogleEventID, StartTime, EndTime, Date, CreatedAt]
+      required: [id, google_event_id, start_time, end_time, date, created_at]
       additionalProperties: false
 
     FocusClearResult:
@@ -999,6 +1240,9 @@ components:
       type: object
       description: >
         Both fields optional; `week` takes precedence over `date` when non-empty.
+        The whole body is optional too: absent, empty or `null` is treated as
+        `{}`. Any other body that does not decode into this object is a 400
+        `invalid JSON` (PAC-36, API-035; the decode error was discarded before).
       properties:
         date:
           type: string
@@ -1198,74 +1442,6 @@ components:
       required: [start, end]
       additionalProperties: true
 
-    GoogleCalendarEvent:
-      type: object
-      description: >
-        The raw `google.golang.org/api/calendar/v3.Event` returned by the
-        calendar client and re-encoded as-is. Only the members this repo sets or
-        reads are listed; the real payload carries the full Google Calendar
-        event resource and omits empty fields (the generated struct uses
-        `omitempty` almost everywhere).
-      x-uncertain: >
-        This schema is deliberately open (`additionalProperties: true`) and
-        partial. The exact member set is fixed by the vendored Google API client
-        version, not by this repo. A human should decide whether the contract
-        pins a normalised subset instead of leaking the vendor struct.
-      properties:
-        id:
-          type: string
-        summary:
-          type: string
-        description:
-          type: string
-        location:
-          type: string
-        status:
-          type: string
-        htmlLink:
-          type: string
-        hangoutLink:
-          type: string
-        start:
-          $ref: '#/components/schemas/GoogleEventDateTime'
-        end:
-          $ref: '#/components/schemas/GoogleEventDateTime'
-        attendees:
-          type: array
-          items:
-            $ref: '#/components/schemas/GoogleEventAttendee'
-      additionalProperties: true
-
-    GoogleEventDateTime:
-      type: object
-      description: calendar/v3.EventDateTime. This repo only ever sets `dateTime`.
-      properties:
-        dateTime:
-          type: string
-          format: date-time
-        date:
-          type: string
-          format: date
-        timeZone:
-          type: string
-      additionalProperties: true
-
-    GoogleEventAttendee:
-      type: object
-      description: calendar/v3.EventAttendee. This repo only ever sets `email`.
-      properties:
-        email:
-          type: string
-          format: email
-        displayName:
-          type: string
-        organizer:
-          type: boolean
-        responseStatus:
-          type: string
-        optional:
-          type: boolean
-      additionalProperties: true
 
     # ------------------------------------------------------------------- nlp
 
@@ -1368,9 +1544,10 @@ components:
           $ref: '#/components/schemas/NLPParseResult'
         selected_slot_index:
           type: integer
+          minimum: 0
           description: >
-            Index into `parse_result.suggested_slots`. Only the upper bound is
-            checked; see the operation's x-uncertain note about negatives.
+            Index into `parse_result.suggested_slots`. A negative value or one
+            >= the slot count is a 400 `invalid selected_slot_index`.
       required: [parse_result, selected_slot_index]
       additionalProperties: true
 
@@ -1417,6 +1594,11 @@ components:
             `anthropic` the host is the caller's stored `llmBaseUrl` (or the
             vendor default when that is empty); on the other four it is built
             entirely from the caller's stored endpoint properties. Spec AC-15.
+            PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's
+            approved-host check follows THIS value when present, not the stored
+            provider, so naming an ambient provider here for one probe is
+            checked exactly as if it were saved (spec AC-18; a 422 when
+            refused). Nothing submitted here is stored.
         llmModel:
           type: string
           description: >
@@ -1454,6 +1636,49 @@ components:
             string when unset. It is what tells a client which configuration the
             result is about. It never carries the key.
       required: [ok, response, provider]
+      additionalProperties: false
+
+    LLMDestinationRefusal:
+      type: object
+      description: >
+        PAC-66. Body of the 422 from POST /api/llm/test: the probe would have
+        sent the deployment's cloud credential to a destination the operator has
+        not approved, so no inference request was sent. A superset of
+        `SchedulingErrorResponse` (`error` is the same member, so a client that
+        reads only `error`, as the web settings page does, renders it
+        unchanged). Never carries a token, a key or any part of the deployment
+        credential (spec AC-11).
+      properties:
+        error:
+          type: string
+          minLength: 1
+          description: A human-readable sentence saying what was refused and why.
+        reason:
+          type: string
+          enum: [provider_not_enabled, destination_not_approved, destination_not_set]
+          description: >
+            `provider_not_enabled`: the operator approved no host for this
+            provider (spec AC-4, AC-18 b). It wins over the other two: when
+            nothing is approved for the provider, this is the reason whatever
+            is stored.
+            `destination_not_approved`: the effective host, over `https` on
+            the default port, is not approved for this provider. This includes
+            an `http` endpoint, an explicit non-443 port, a host approved only
+            for a DIFFERENT provider, and an empty Vertex location or Bedrock
+            region whose built-in default region's host is not approved (spec
+            AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19).
+            `destination_not_set`: the destination cannot be built because the
+            stored value is empty and the provider has no default; today only
+            an empty `azureEndpoint` (spec AC-20).
+        property:
+          type: string
+          enum: [azureEndpoint, gcpLocation, awsRegion, awsProfile]
+          description: >
+            The stored setting the refused destination was built from. Present
+            whenever `reason` is not `provider_not_enabled`. `awsProfile` only
+            when the Bedrock host came from that profile's endpoint
+            configuration rather than from the region.
+      required: [error, reason]
       additionalProperties: false
 
     # -------------------------------------------------------------- settings
@@ -1779,12 +2004,36 @@ components:
           description: Also the legacy fallback for the ollama base URL.
         awsRegion:
           type: string
+          description: >
+            Bedrock region. Empty means the built-in `us-east-1`, applied as an
+            explicit region that overrides the deployment's AWS region
+            configuration (spec D-7). PAC-66: a write changing it to a
+            non-empty value must be a valid region name (one host label); the
+            Bedrock host the SDK resolves is sent to only if approved in
+            `PACEDAY_LLM_APPROVED_HOSTS_BEDROCK`. Deliberately no `pattern`:
+            this map is shared with `Settings`, and rows stored before PAC-66
+            are kept as they are (spec D-3), so a pattern would make the
+            response schema false for them.
         awsProfile:
           type: string
+          description: >
+            Named profile in the deployment's AWS shared config. Not checked by
+            PAC-66 (spec OQ-4): it selects which deployment identity signs, but
+            any endpoint it configures is still subject to the Bedrock
+            approved-host check at send time.
         bedrockModel:
           type: string
         azureEndpoint:
           type: string
+          description: >
+            Azure OpenAI resource endpoint, e.g.
+            `https://my-resource.openai.azure.com`. PAC-66: a write changing it
+            to a non-empty value must be an `https` URL whose host is approved
+            in `PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI` (400 otherwise). `""`
+            is always accepted and means "not set", which is refused when a
+            request would be sent. The path is not constrained (see
+            `contracts/features/PAC-66.md` §7). No `format` or `pattern`, for
+            the reason given on `awsRegion`.
         azureDeployment:
           type: string
         azureApiVersion:
@@ -1793,6 +2042,15 @@ components:
           type: string
         gcpLocation:
           type: string
+          description: >
+            Vertex region, e.g. `europe-west4`. Empty means the built-in
+            `us-central1`. The server builds the host
+            `<gcpLocation>-aiplatform.googleapis.com` from it. PAC-66: a write
+            changing it to a non-empty value must build a host approved in
+            `PACEDAY_LLM_APPROVED_HOSTS_VERTEX` (400 otherwise), so a value that
+            changes the URL's authority (`attacker.example/x`) is refused. The
+            same check is made when a request would be sent, including for
+            `""`. No `pattern`, for the reason given on `awsRegion`.
         vertexModel:
           type: string
         ollamaBaseUrl:
@@ -1921,7 +2179,7 @@ components:
             never chose reads `12h`. There is no "unset": `""` and any other
             STRING are a 400 `timeFormat must be 12h or 24h`; a non-string
             (`24`, `true`, `["24h"]`) fails decoding first and is a 400
-            `invalid JSON: <err>` naming `timeFormat`; `null` is a 400 like every
+            `invalid JSON: timeFormat has the wrong type`; `null` is a 400 like every
             property of this body. Display only: the server formats
             nothing with it, and the public booking page ignores it (always
             12-hour, PAC-55 §5).

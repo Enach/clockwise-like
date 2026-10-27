@@ -39,6 +39,10 @@ test.describe('calendar — the disconnected state', () => {
     // of checking the token first — a real regression this catches.
     expect(res.status()).toBe(401);
     expect(await res.text()).toContain('not connected');
+    // PAC-21: the exact CalendarNotConnected body, JSON, with no error text
+    // appended (it used to be text/plain "not connected: not authenticated").
+    expect(res.headers()['content-type']).toMatch(/^application\/json/);
+    expect(await res.json()).toEqual({ error: 'calendar not connected' });
   });
 
   test('GET /api/calendar/events validates its time range before anything else', async ({
@@ -231,8 +235,14 @@ test.describe('calendar — a connected calendar (PAC-43, through the stand-in)'
 
     const res = await apiAs(rejected).get('/api/calendar/events', { start, end });
     expect(res.ok(), await res.text()).toBe(false);
-    // The provider's refusal is what the backend relays.
-    expect(await res.text()).toMatch(/401|invalid authentication credentials/i);
+    // Refused with the generic 5xx body: since PAC-21 the provider's own
+    // error text goes to the server log and Sentry, never to the client.
+    // Since the second half of PAC-21 every 5xx is the JSON envelope.
+    expect(res.status()).toBe(500);
+    expect(res.headers()['content-type']).toMatch(/^application\/json/);
+    const body = await res.text();
+    expect(JSON.parse(body)).toEqual({ error: 'internal error' });
+    expect(body).not.toMatch(/invalid authentication credentials|googleapi/i);
 
     // It really reached the stand-in and was refused there — not refused
     // locally for want of a token.

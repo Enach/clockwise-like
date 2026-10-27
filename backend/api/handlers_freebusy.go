@@ -44,7 +44,7 @@ func (h *freeBusyHandlers) query(w http.ResponseWriter, r *http.Request) {
 		EndTime   string   `json:"end_time"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 	if len(body.Emails) == 0 {
@@ -69,7 +69,7 @@ func (h *freeBusyHandlers) query(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.svc.Query(r.Context(), userID, body.Emails, start, end)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "query", err, http.StatusInternalServerError)
 		return
 	}
 

@@ -38,6 +38,14 @@ services:
       # HS256 secret for JWT cookies — generate with: openssl rand -hex 32
       JWT_SECRET: ${JWT_SECRET}                        # required
 
+      # ── Trusted proxies (PAC-39) ────────────────────────────────────────────
+      # IPs/CIDRs whose X-Real-IP header the backend believes for per-client
+      # rate limiting. The backend port is not published here, so only containers
+      # on the compose network (nginx) can reach it; these are Docker's default
+      # private address pools. Empty = trust nobody (every request keys on the
+      # socket peer, i.e. all users behind nginx share one bucket).
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
+
       # ── CORS ─────────────────────────────────────────────────────────────────
       # Frontend origin for cross-origin requests (e.g. https://paceday.nhochart.ovh)
       # Leave unset (or *) only if frontend and backend share the same domain.

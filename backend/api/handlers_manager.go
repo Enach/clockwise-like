@@ -20,6 +20,24 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// The reads that answer a write with the row it produced (PAC-26, D-3). They
+// are variables so a test can make the read-back fail after the write has
+// committed; production code never reassigns them.
+var (
+	readManagerMember        = storage.GetManagerTeamMemberByEmail
+	readManagerMemberForTeam = storage.GetManagerTeamMemberByEmailForTeam
+	readTeam                 = storage.GetTeam
+)
+
+// readMemberInScope reads one roster row: the team view when teamID is set,
+// the manager's global row otherwise.
+func readMemberInScope(db *sql.DB, managerID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, error) {
+	if teamID != nil {
+		return readManagerMemberForTeam(db, managerID, *teamID, email)
+	}
+	return readManagerMember(db, managerID, email)
+}
+
 type managerHandlers struct {
 	db        *sql.DB
 	newEngine func() ManagerWorkflow
@@ -41,7 +59,8 @@ func (h *managerHandlers) getProfile(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	p, err := storage.GetOrCreateUserProfile(h.db, userID)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	count := 0
@@ -67,7 +86,8 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 
 	p, err := storage.GetOrCreateUserProfile(h.db, userID)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	p.IsManager = body.IsManager
@@ -101,7 +121,7 @@ func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 
 	result, err := eng.DetectTeam(ctx, userID)
 	if err != nil {
-		http.Error(w, "detection error: "+err.Error(), http.StatusInternalServerError)
+		writeCalendarFailure(w, r, "detection error", err)
 		return
 	}
 	type candidateResponse struct {
@@ -115,7 +135,8 @@ func (h *managerHandlers) detect(w http.ResponseWriter, r *http.Request) {
 		_, lookupErr := storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, candidate.Email)
 		alreadyAssigned := lookupErr == nil
 		if lookupErr != nil && lookupErr != sql.ErrNoRows {
-			http.Error(w, "db error", http.StatusInternalServerError)
+			logServerError(r, "db error", lookupErr, http.StatusInternalServerError)
+			writeError(w, "db error", http.StatusInternalServerError)
 			return
 		}
 		if !alreadyAssigned {
@@ -167,7 +188,8 @@ func (h *managerHandlers) confirmDetection(w http.ResponseWriter, r *http.Reques
 	}
 	assigned, skipped, total, err := storage.ConfirmManagerTeamMembers(h.db, userID, *teamID, normalized)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -198,7 +220,8 @@ func (h *managerHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 
 	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -302,12 +325,21 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 		err = storage.UpsertManagerTeamMember(h.db, m)
 	}
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	// Answer with the stored row, through the team view when scoped (PAC-26,
+	// API-031, D-4): the pre-insert struct has a zero id and zero timestamps.
+	stored, err := readMemberInScope(h.db, userID, teamID, email)
+	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(m)
+	_ = json.NewEncoder(w).Encode(stored)
 }
 
 func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
@@ -357,7 +389,8 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	} else if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	displayName := m.DisplayName
@@ -389,12 +422,16 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		err = storage.PatchManagerTeamMemberForTeam(h.db, userID, *teamID, email, displayName, cadence, customDays)
 	}
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	updated, _ := storage.GetManagerTeamMemberByEmail(h.db, userID, email)
-	if teamID != nil {
-		updated, _ = storage.GetManagerTeamMemberByEmailForTeam(h.db, userID, *teamID, email)
+	// A failed re-read is a 500, never 200 null (PAC-26, API-032, D-3).
+	updated, err := readMemberInScope(h.db, userID, teamID, email)
+	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
@@ -412,12 +449,13 @@ func (h *managerHandlers) getGaps(w http.ResponseWriter, r *http.Request) {
 	// are what count (PAC-54).
 	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	gaps, err := h.newEngine().GetGaps(r.Context(), userID, members)
 	if err != nil {
-		http.Error(w, "gap detection error: "+err.Error(), http.StatusInternalServerError)
+		writeServerError(w, r, "gap detection error", err, http.StatusInternalServerError)
 		return
 	}
 	if gaps == nil {
@@ -454,7 +492,8 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	} else if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -492,7 +531,8 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	months := 3
 	members, err := h.listManagerMembers(userID, teamID)
 	if err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
@@ -504,9 +544,11 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 		DataAvailable  bool   `json:"data_available"`
 	}
 	type memberAnalytics struct {
-		Email string     `json:"email"`
-		Name  string     `json:"display_name"`
-		Weeks []weekData `json:"weeks"`
+		Email         string     `json:"email"`
+		Name          string     `json:"display_name"`
+		IsPacedayUser bool       `json:"is_paceday_user"`
+		DataAvailable bool       `json:"data_available"`
+		Weeks         []weekData `json:"weeks"`
 	}
 	_ = months
 
@@ -514,13 +556,15 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 	var result []memberAnalytics
 	numWeeks := months * 4
 	for _, m := range members {
-		var weeks []weekData
+		weeks := make([]weekData, 0, numWeeks)
+		anyMeasured := false
 		for i := 0; i < numWeeks; i++ {
 			ws := weekStart.Add(time.Duration(-i*7) * 24 * time.Hour)
 			stats, _ := eng.GetMemberWeek(r.Context(), userID, m, ws)
 			if stats == nil {
 				stats = &engine.MemberWeekStats{}
 			}
+			anyMeasured = anyMeasured || stats.DataAvailable
 			weeks = append(weeks, weekData{
 				WeekStart:      ws.Format("2006-01-02"),
 				FocusMinutes:   stats.FocusMinutes,
@@ -529,7 +573,15 @@ func (h *managerHandlers) getAnalytics(w http.ResponseWriter, r *http.Request) {
 				DataAvailable:  stats.DataAvailable,
 			})
 		}
-		result = append(result, memberAnalytics{Email: m.MemberEmail, Name: m.DisplayName, Weeks: weeks})
+		// is_paceday_user matches the roster's derivation; data_available is
+		// any(weeks[].data_available), so it cannot disagree with the buckets (PAC-34 D-1).
+		result = append(result, memberAnalytics{
+			Email:         m.MemberEmail,
+			Name:          m.DisplayName,
+			IsPacedayUser: m.MemberUserID != nil,
+			DataAvailable: anyMeasured,
+			Weeks:         weeks,
+		})
 	}
 	if result == nil {
 		result = []memberAnalytics{}

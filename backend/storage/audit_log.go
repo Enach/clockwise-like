@@ -3,6 +3,15 @@ package storage
 import (
 	"database/sql"
 	"time"
+
+	"github.com/google/uuid"
+)
+
+// The limit GET /api/audit applies when none is asked for, and the most it
+// returns (contracts/openapi/paths/calendar.yaml, listAuditEntries `limit`).
+const (
+	AuditDefaultLimit = 50
+	AuditMaxLimit     = 500
 )
 
 type AuditEntry struct {
@@ -12,11 +21,17 @@ type AuditEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func ListAuditLog(db *sql.DB, limit int) ([]AuditEntry, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+// ListAuditLog returns userID's own entries, newest first (PAC-23). Entries
+// recorded before migration 026 have no subject and are returned to nobody. A
+// limit of zero or less means the default; above the maximum, the maximum.
+func ListAuditLog(db *sql.DB, userID uuid.UUID, limit int) ([]AuditEntry, error) {
+	switch {
+	case limit <= 0:
+		limit = AuditDefaultLimit
+	case limit > AuditMaxLimit:
+		limit = AuditMaxLimit
 	}
-	rows, err := db.Query(`SELECT id, action, details, created_at FROM audit_log ORDER BY created_at DESC, id DESC LIMIT $1`, limit)
+	rows, err := db.Query(`SELECT id, action, details, created_at FROM audit_log WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
 	}

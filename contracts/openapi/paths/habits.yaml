@@ -103,7 +103,9 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "500":
-          description: 'Insert failed. `error` is the literal prefix "create failed: " plus the driver error.'
+          description: >-
+            Insert failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -149,7 +151,9 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "500":
-          description: 'Lookup failed ("internal error") or the UPDATE failed ("update failed: " + driver error).'
+          description: >-
+            Lookup or UPDATE failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -177,7 +181,9 @@ paths:
         "404":
           $ref: '#/components/responses/NotFound'
         "500":
-          description: 'Lookup failed ("internal error") or the UPDATE failed ("deactivate failed: " + driver error).'
+          description: >-
+            Lookup or UPDATE failed. Body: `{"error":"internal error"}`. The detail is
+            written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -330,7 +336,9 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
           x-uncertain: "Believed unreachable in practice: compute() always returns a row from the INSERT ... RETURNING, or an error. Documented because the branch exists."
         "500":
-          description: '`error` is the literal prefix "compute failed: " plus the underlying error.'
+          description: >-
+            Compute failed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -403,13 +411,13 @@ paths:
                 items:
                   $ref: '#/components/schemas/AnalyticsMeeting'
         "401":
-          $ref: '#/components/responses/Unauthorized'
+          $ref: '#/components/responses/CalendarNotConnected'
         "500":
-          description: |
-            `error` is the literal prefix "internal error: " plus the underlying error.
-            NOTE this is also what a user with no connected Google account receives —
-            `calOpsForUser` returns "no token for user <uuid>" and the handler maps it
-            to 500 rather than a 4xx.
+          description: >-
+            The calendar read failed for a user who HAS a stored Google credential (a user
+            with none gets the 401 `calendar not connected`). Before PAC-21 was finished a
+            user with no credential got this 500 (API-054). Body: `{"error":"internal
+            error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -464,11 +472,13 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "500":
-          description: '"db error" as PLAIN TEXT via `http.Error` — not the JSON error shape.'
+          description: >-
+            Database error. Body: `{"error":"db error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/meetings/{event_id}/brief/refresh:
     parameters:
@@ -502,11 +512,13 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "500":
-          description: 'PLAIN TEXT "generation error: " plus the underlying error.'
+          description: >-
+            Brief generation returned an error. Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/slack/connect:
     get:
@@ -535,11 +547,12 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "503":
-          description: '`SLACK_CLIENT_ID` is unset. PLAIN TEXT body "Slack not configured".'
+          description: >-
+            `SLACK_CLIENT_ID` is unset. Body: `{"error":"Slack not configured"}`.
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/slack/callback:
     get:
@@ -582,17 +595,23 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "500":
-          description: 'PLAIN TEXT "db error" — the upsert failed.'
+          description: >-
+            The upsert failed. Body: `{"error":"db error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
         "502":
-          description: 'PLAIN TEXT "token exchange failed: " plus the error (transport error, unparseable JSON, or Slack''s `error` string when `ok:false`).'
+          description: >-
+            The token exchange failed (transport error, unparseable JSON, or Slack's `error`
+            string when `ok:false`). Body: `{"error":"upstream provider error"}`. Slack's
+            string is not returned. The detail is written to the server log and Sentry only
+            (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/slack/status:
     get:
@@ -653,11 +672,12 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "503":
-          description: '`NOTION_CLIENT_ID` is unset. PLAIN TEXT body "Notion not configured".'
+          description: >-
+            `NOTION_CLIENT_ID` is unset. Body: `{"error":"Notion not configured"}`.
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/notion/callback:
     get:
@@ -699,17 +719,23 @@ paths:
         "401":
           $ref: '#/components/responses/Unauthorized'
         "500":
-          description: 'PLAIN TEXT "db error" — the upsert failed.'
+          description: >-
+            The upsert failed. Body: `{"error":"db error"}`. The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
         "502":
-          description: 'PLAIN TEXT "token exchange failed: " plus the error (transport error, unparseable JSON, or a non-empty `error` field from Notion).'
+          description: >-
+            The token exchange failed (transport error, unparseable JSON, or a non-empty
+            `error` field from Notion). Body: `{"error":"upstream provider error"}`.
+            Notion's string is not returned. The detail is written to the server log and
+            Sentry only (PAC-21).
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/notion/status:
     get:
@@ -804,7 +830,10 @@ components:
       properties:
         error:
           type: string
-          description: Human-readable message. Several handlers concatenate the driver/underlying error onto a fixed prefix, so this is not a stable machine-readable code.
+          description: >-
+            Human-readable, server-chosen message. Never the text of a Go, driver or
+            provider error (PAC-21): those go to the server log and Sentry only. Not a
+            stable machine-readable code.
 
     HabitTemplate:
       type: object

@@ -114,6 +114,14 @@ services:
       # declaration makes the server refuse to start (tests/startup.spec.ts).
       PACEDAY_ALLOW_STANDINS: "true"
       GOOGLE_CALENDAR_API_BASE_URL: http://fake-google:8080/calendar/v3/
+      # PAC-66 AC-10: exactly one approved Azure OpenAI inference host. Nothing
+      # listens on it and the stack has no cloud identity, so no request is
+      # ever sent to it (tests/llm-destination.spec.ts).
+      PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI: e2e-approved.openai.azure.com
+      # PAC-20: the stack is plain HTTP (http://localhost:8088), so cookies are
+      # set without Secure here, matching sessionCookie() in e2e/auth.ts. A
+      # production deployment leaves this unset and every cookie is Secure.
+      PACEDAY_INSECURE_COOKIES: "true"
     extra_hosts:
       # See the HERMETICITY note above. Every name goes to the sink's fixed
       # address. Keep this list identical to SINK_HOSTS in e2e/fake.ts.

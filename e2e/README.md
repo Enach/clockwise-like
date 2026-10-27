@@ -136,6 +136,7 @@ reasons in `SEAM-REQUIRED.md` item B, and is marked `test.fixme` in
 | Anonymous public booking: link info, slot maths, booking, conflict, exhaustion, 404/410 | **covered, UI + API** | `tests/public-booking.spec.ts` |
 | Create a scheduling link, then book it anonymously through the public route | **covered, API round trip** | `tests/scheduling-links.spec.ts` |
 | Sign in and land authenticated; cookie and Bearer branches; expired and forged tokens; logout | **covered** | `tests/auth-session.spec.ts` |
+| Disconnect a Google calendar and stay signed in (PAC-35 AC-11) | **covered, UI + API** | `tests/calendar-disconnect.spec.ts` |
 | Manager roster scoped to the selected team, exact per-member figures, cross-team leak, 403/400 | **covered, UI + API** | `tests/manager-team.spec.ts` |
 | View the calendar — the *disconnected* contract, and the UI surfacing it rather than faking it (AC-24) | **covered** | `tests/calendar.spec.ts` |
 | View the calendar — with events (AC-16) | **covered, UI + API + stand-in log** | `tests/calendar.spec.ts` |

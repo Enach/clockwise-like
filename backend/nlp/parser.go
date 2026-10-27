@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -123,6 +124,11 @@ func (c *OllamaClient) Complete(ctx context.Context, system, user string) (strin
 }
 
 func postJSON(ctx context.Context, url string, headers map[string]string, payload interface{}, extract func([]byte) (string, error)) (string, error) {
+	return postJSONWith(ctx, http.DefaultClient, url, headers, payload, extract)
+}
+
+// postJSONWith is postJSON through client.
+func postJSONWith(ctx context.Context, client *http.Client, url string, headers map[string]string, payload interface{}, extract func([]byte) (string, error)) (string, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
@@ -135,7 +141,7 @@ func postJSON(ctx context.Context, url string, headers map[string]string, payloa
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -180,6 +186,13 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 	if err != nil {
 		return &ParseResult{Intent: "unknown", Error: err.Error()}, nil
 	}
+	// PAC-66: refuse before the first Complete (attendee extraction), in the
+	// existing "LLM unusable" shape (spec AC-13). Other errors surface from
+	// Complete as before.
+	var refusal *DestinationRefusal
+	if err := CheckDestination(ctx, client); errors.As(err, &refusal) {
+		return &ParseResult{Intent: "unknown", Error: refusal.Message}, nil
+	}
 
 	// Pass 1: Extract attendee emails with a lightweight prompt
 	attendees := s.extractAttendees(ctx, client, text)
@@ -219,7 +232,7 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 		}
 	}
 
-	storage.WriteAuditLog(s.DB, "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
+	storage.WriteAuditLog(s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
 	return result, nil
 }
 

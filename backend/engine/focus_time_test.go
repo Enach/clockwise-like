@@ -411,3 +411,67 @@ func TestFocusRun_UserWithNoPriorSettings(t *testing.T) {
 		t.Fatalf("RunForUser for a user with no settings row: %v", err)
 	}
 }
+
+// auditActions lists the actions recorded against user, newest first (PAC-23).
+func auditActions(t *testing.T, db *sql.DB, user uuid.UUID) []string {
+	t.Helper()
+	entries, err := storage.ListAuditLog(db, user, storage.AuditMaxLimit)
+	if err != nil {
+		t.Fatalf("ListAuditLog: %v", err)
+	}
+	actions := make([]string, 0, len(entries))
+	for _, e := range entries {
+		actions = append(actions, e.Action)
+	}
+	return actions
+}
+
+// PAC-23 AC-6: a cron-shaped run (no user in the context, the id passed
+// explicitly) is recorded in that user's log and in nobody else's.
+func TestRunForUser_AuditEntrySubjectIsTheRunUser(t *testing.T) {
+	db := openTestDB(t)
+	runUser, err := storage.UpsertUser(db, "audit-cron-run@example.com", "Run", "", "google", "audit-cron-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bystander, err := storage.UpsertUser(db, "audit-cron-bystander@example.com", "Bystander", "", "google", "audit-cron-bystander")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := &FocusTimeEngine{DB: db, calOps: &mockCalOps{calID: "primary", events: []*googlecalendar.Event{}}}
+
+	if _, err := eng.RunForUser(context.Background(), runUser.ID, time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("RunForUser: %v", err)
+	}
+	if got := auditActions(t, db, runUser.ID); len(got) != 1 || got[0] != "focus_created" {
+		t.Errorf("run user's log = %v, want [focus_created]", got)
+	}
+	if got := auditActions(t, db, bystander.ID); len(got) != 0 {
+		t.Errorf("bystander's log = %v, want empty", got)
+	}
+}
+
+// PAC-23 AC-5 / AC-14: clearing a week is recorded against the caller in ctx.
+func TestClearWeek_AuditEntrySubjectIsCallerFromContext(t *testing.T) {
+	db := openTestDB(t)
+	caller, err := storage.UpsertUser(db, "audit-clear@example.com", "Clear", "", "google", "audit-clear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := storage.UpsertUser(db, "audit-clear-other@example.com", "Other", "", "google", "audit-clear-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := &FocusTimeEngine{DB: db, calOps: &mockCalOps{calID: "primary"}}
+	ctx := context.WithValue(context.Background(), auth.UserIDKey, caller.ID)
+
+	if _, err := eng.ClearWeek(ctx, time.Date(2025, 1, 6, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("ClearWeek: %v", err)
+	}
+	if got := auditActions(t, db, caller.ID); len(got) != 1 || got[0] != "focus_cleared" {
+		t.Errorf("caller's log = %v, want [focus_cleared]", got)
+	}
+	if got := auditActions(t, db, other.ID); len(got) != 0 {
+		t.Errorf("other user's log = %v, want empty", got)
+	}
+}

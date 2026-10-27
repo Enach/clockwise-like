@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -41,6 +41,16 @@ func (e *CompressionEngine) calClient(ctx context.Context) (calendarOps, error) 
 		return e.calOps, nil
 	}
 	return newCalOps(ctx, e.DB, e.OAuthConfig)
+}
+
+// CheckCalendar fails exactly when SuggestForDay and Apply would fail to open
+// the caller's calendar: ErrCalendarNotConnected when there is no stored
+// credential, ErrCredentialStore when it cannot be read. The preview runs it
+// once, before any day is computed, so week mode cannot turn either into an
+// empty success (PAC-21).
+func (e *CompressionEngine) CheckCalendar(ctx context.Context) error {
+	_, err := e.calClient(ctx)
+	return err
 }
 
 func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (*CompressionResult, error) {
@@ -155,6 +165,8 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 		return nil, nil, err
 	}
 
+	// The subject of every move is the caller (PAC-23); read it once.
+	subject := auth.UserIDFromContext(ctx)
 	var applied, failed []string
 	for _, p := range proposals {
 		busy, err := client.getFreeBusy(ctx, nil, p.ProposedStart, p.ProposedEnd)
@@ -177,7 +189,7 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 			continue
 		}
 
-		storage.WriteAuditLog(e.DB, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
+		storage.WriteAuditLog(e.DB, subject, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
 		applied = append(applied, p.EventID)
 	}
 
