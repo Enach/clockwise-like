@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/nlp"
+	"github.com/Enach/paceday/backend/nlp/nlptest"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -83,7 +85,11 @@ func TestLLMTest_BodyRulesAndNoKeyEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.LLMProvider, s.LLMModel, s.LLMBaseURL, s.LLMAPIKey = "openai", "gpt-test", provider.URL, "sk-stored-secret-1"
+	// PAC-66-B §B6: the public-host Given. The stored base URL is empty, so the
+	// destination the rule sees is api.openai.com (approved, D-B2); the test's
+	// transport delivers the request to the in-process provider instead.
+	t.Cleanup(nlp.SetUserTransport(nlptest.ForwardTo(provider)))
+	s.LLMProvider, s.LLMModel, s.LLMBaseURL, s.LLMAPIKey = "openai", "gpt-test", "", "sk-stored-secret-1"
 	if err := storage.SaveSettingsForUser(db, user, s); err != nil {
 		t.Fatal(err)
 	}
@@ -97,12 +103,12 @@ func TestLLMTest_BodyRulesAndNoKeyEcho(t *testing.T) {
 	}
 
 	for name, body := range map[string]string{
-		"absent body":       "",
-		"null body":         "null",
-		"a destination":     `{"llmBaseUrl":"https://attacker.example"}`,
-		"an endpoint":       `{"ollamaBaseUrl":"http://10.0.0.1"}`,
-		"unknown provider":  `{"llmProvider":"skynet"}`,
-		"malformed":         `{"llmProvider":`,
+		"absent body":      "",
+		"null body":        "null",
+		"a destination":    `{"llmBaseUrl":"https://attacker.example"}`,
+		"an endpoint":      `{"ollamaBaseUrl":"http://10.0.0.1"}`,
+		"unknown provider": `{"llmProvider":"skynet"}`,
+		"malformed":        `{"llmProvider":`,
 	} {
 		if w := probe(body); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400; body %s", name, w.Code, w.Body.String())
@@ -120,6 +126,25 @@ func TestLLMTest_BodyRulesAndNoKeyEcho(t *testing.T) {
 		for _, key := range []string{"sk-stored-secret-1", "sk-submitted-secret-2"} {
 			if strings.Contains(w.Body.String(), key) {
 				t.Errorf("%s: the response carries a key: %s", name, w.Body.String())
+			}
+		}
+	}
+
+	// PAC-66-B AC-B1 supersedes the old 502 after contacting an
+	// http://127.0.0.1 base URL: it is now refused with the 422, still with no
+	// key in the body (AC-B16), and nothing reaches the provider.
+	s.LLMBaseURL = provider.URL
+	if err := storage.SaveSettingsForUser(db, user, s); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"stored key": `{}`, "submitted key": `{"llmApiKey":"sk-submitted-secret-2"}`} {
+		w := probe(body)
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"property":"llmBaseUrl"`) {
+			t.Errorf("%s with a loopback base URL: %d %s, want 422 naming llmBaseUrl", name, w.Code, w.Body.String())
+		}
+		for _, key := range []string{"sk-stored-secret-1", "sk-submitted-secret-2"} {
+			if strings.Contains(w.Body.String(), key) {
+				t.Errorf("%s: the 422 carries a key: %s", name, w.Body.String())
 			}
 		}
 	}
@@ -191,9 +216,9 @@ func TestPatchSettings_LegacyValuesDoNotLockTheUserOut(t *testing.T) {
 	}
 	// Contract challenge r3, finding 1: days and default are checked whatever the mode.
 	for name, body := range map[string]string{
-		"bad day in all_days":     `{"workingHours":{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"Monday":{"enabled":true,"start":"99:99","end":"x"}}}}`,
-		"bad clock in all_days":   `{"workingHours":{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"monday":{"enabled":true,"start":"99:99","end":"10:00"}}}}`,
-		"bad default in by_day":   `{"workingHours":{"mode":"by_day","default":{"enabled":true,"start":"99:99","end":"17:00"},"days":{"monday":{"enabled":true,"start":"09:00","end":"17:00"}}}}`,
+		"bad day in all_days":   `{"workingHours":{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"Monday":{"enabled":true,"start":"99:99","end":"x"}}}}`,
+		"bad clock in all_days": `{"workingHours":{"mode":"all_days","default":{"enabled":true,"start":"09:00","end":"17:00"},"days":{"monday":{"enabled":true,"start":"99:99","end":"10:00"}}}}`,
+		"bad default in by_day": `{"workingHours":{"mode":"by_day","default":{"enabled":true,"start":"99:99","end":"17:00"},"days":{"monday":{"enabled":true,"start":"09:00","end":"17:00"}}}}`,
 	} {
 		if w := settingsRequest(t, h, http.MethodPatch, user, body); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d, want 400; body %s", name, w.Code, w.Body.String())
