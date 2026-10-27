@@ -190,10 +190,12 @@
     "e2e: no reference today; AC-23 adds the API-level journey."
   ],
   "gates": {
+    "api-gate (revision 4)": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract on 5bc0eb0: make openapi rc=0, regenerated: none, openapi-check(api) rc=0, backend/mcp lint rc=0, backend/mcp test rc=0, backend coverage 56.8% (floor 43%) rc=0, mcp coverage 84.0% (floor 75%) rc=0; output in contracts/features/PAC-50.md Revision 4.",
+    "web-gate (revision 4)": "REGEN=1 web-gate main factory/pac-50-contract regenerated the three generated files (make verify rc=0); committed in https://github.com/Enach/smart-calendar-flow/pull/119 (chore/regen-types-pac-50 at 51d1eb7); web-gate chore/regen-types-pac-50 factory/pac-50-contract: make verify rc=0.",
     "openapi_assemble --check (revision 3, local)": "python scripts/openapi_assemble.py --check: OK: bundle is in sync (100 paths); python scripts/openapi_migration_report.py --check: OK: MIGRATION.md covers all 121 operations (0 generated)",
     "api-gate (revision 3)": "see contracts/features/PAC-50.md, Revision 3, Gates; output pasted there from the run on the final commit.",
     "web-gate (revision 3)": "REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh main factory/pac-50-contract: regenerated src/api/generated/{schemas.ts,schemas.types.d.ts,types.ts}; lint, typecheck, design-check, openapi-check, test (297 passed), coverage PASS; make verify rc=0. The regenerated files were NOT committed by this stage (contract-author opens no web PR); the host web checkout was restored to main.",
-    "e2e-gate": "not run at stage 2: the contract revision changes no runtime behaviour on this branch (no handler code on it)."
+    "e2e-gate": "not run at stage 2 (revisions 3 and 4): the contract revision changes no runtime behaviour on this branch (no handler code on it)."
   },
   "rollback": "Contract-only revision: revert this commit; no code depends on it until stage 4. After stage 4, reverting the code removes the gate and the step-up operations and restores 'any member writes', which is the defect PAC-50 closes - a security regression to be release-noted (spec §7). Migration 028's down drops the grant and SSO event tables and organizations.ms_tenant_id (ids and short enums only, no user data) and restores raw UNIQUE(domain) without restoring backfilled casing.",
   "mergeConditions": [

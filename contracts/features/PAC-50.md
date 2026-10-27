@@ -1183,3 +1183,52 @@ spec §9 D-7. The bundle was reassembled from the fragments, and the new
   touches every generated operation and is a cross-cutting change. It needs
   its own issue.
 - **Fixing logout's `Max-Age=-1` here.** It is outside PAC-50's operations.
+
+### Gates run for revision 4
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+was run on `f15273c`. It regenerated `backend/api/gen/paceday.gen.go` (the
+added content types), which was committed as `5bc0eb0`. Rerun on `5bc0eb0`
+(script exit 0):
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (100 paths)
+OK: MIGRATION.md covers all 121 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 56.8% (floor 43%) [3725 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+`git show f15273c:contracts/openapi/openapi.yaml | sha256sum` printed the
+manifest's `contractHash`. The bundle is unchanged in `5bc0eb0` and after.
+
+`REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh main factory/pac-50-contract`
+regenerated `src/api/generated/{schemas.ts,schemas.types.d.ts,types.ts}`
+(+741/-36 lines), with `make verify rc=0`. Unlike revision 3, the regenerated
+files are committed in the paired web PR,
+https://github.com/Enach/smart-calendar-flow/pull/119
+(`chore/regen-types-pac-50` at `51d1eb7`).
+`bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh chore/regen-types-pac-50 factory/pac-50-contract`
+was run on that commit:
+
+```
+lint           PASS
+typecheck      PASS
+design-check   PASS (impeccable, ratcheted)
+openapi-check  PASS
+test           PASS
+coverage       PASS (ratchet floor in vitest.config.ts, target 70%)
+make verify rc=0
+```
+
+Not run: e2e. This branch carries no handler code, so it changes no runtime
+behaviour. The e2e gate belongs to #212 after its rebase.
