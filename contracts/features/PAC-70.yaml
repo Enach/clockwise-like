@@ -129,7 +129,7 @@
     "Spec §B6 lists the existing tests whose Given or assertion changes and which criteria authorise it; no test is deleted or skipped. TestUserKeyProviders_AreNotChecked, TestPAC66_UserKeyAndKeylessProbesUnchanged (anthropic half), TestLLMTest_BodyRulesAndNoKeyEcho (502 half) and possibly TestDecideLLMApprovedHosts_PerProvider:87-89 are superseded as §B6 says."
   ],
 
-  "resolvesFindings": [],
+  "resolvesFindings": ["API-093 (row added to docs/factory/api-audit.md by the implementation PR, status Fixed (PAC-70); answers followUps.auditApi093)"],
   "resolvesDeferrals": [
     "contracts/features/PAC-66.yaml followUps.pac66B: channel 2, openai/anthropic/ollama base URLs (request forgery with an oracle).",
     "contracts/features/PAC-24.yaml followUps.llmProbeEndpointAllowlist: the remaining half (user-key and keyless providers)."

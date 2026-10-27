@@ -13,7 +13,7 @@ import (
 // D-B1 to D-B3). The vendors' public hosts are approved by the product, each
 // for its own vendor; anything else is approved by the operator, per
 // provider. Format and matching are fixed by
-// contracts/features/NEW-pac66b-llm-base-url.yaml (operatorConfiguration).
+// contracts/features/PAC-70.yaml (operatorConfiguration).
 const (
 	EnvLLMApprovedHostsOpenAI    = "PACEDAY_LLM_APPROVED_HOSTS_OPENAI"
 	EnvLLMApprovedHostsAnthropic = "PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC"
