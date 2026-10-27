@@ -117,8 +117,14 @@ Create and edit accept `duration_options` or its alias `durations`, and
   (`handlers_scheduling_links.go:157-175`).
 - **Edit** applies the canonical spelling, then the alias over it
   (`handlers_scheduling_links.go:444-455`), so the **alias** wins.
-- The window start/end aliases do *not* have this defect: both verbs prefer the
-  canonical spelling (create `:177-188`, edit `:456-465`).
+- The window start/end aliases agree between the verbs only when the canonical
+  value is non-empty. Create treats an empty-string canonical window as absent
+  and falls back to the alias (`:176-188`, `if start == ""`); edit treats any
+  non-null canonical value as carried, so an empty one wins over the alias
+  (`:456-465`, `patch.WindowStart != nil`) and validation then rejects it. The
+  challenge (round 5) probed this: canonical `""` beside alias `10:00`/`16:00`
+  gives 201 with a 10:00-16:00 window on create and 422
+  `{"error":"window times must use HH:MM"}` on edit. Out of scope here (§5).
 - The web app sends only the canonical spellings
   (`smart-calendar-flow/src/api/schedulingLinks.ts:118-131`). No caller in
   `mcp/` builds a link body (grep of `mcp/` for the four field names: no hits).
@@ -225,12 +231,18 @@ link by id only right after the owner creates or edits it
 
 ### 3.2 Both spellings, one meaning
 
-When a create or an edit carries both the canonical spelling and the alias for
-the same setting, the canonical spelling wins and the alias is ignored, on both
-verbs (D-5). Sending one spelling alone behaves as today. A spelling counts as
-carried when its value is present and not null; an empty list counts as
-carried, so a canonical empty list beside a non-empty alias is rejected for
-having no values, on both verbs, as create already does.
+This rule covers two settings only: the meeting durations and the bookable
+days, the two the issue and API-049 name. When a create or an edit carries both
+the canonical spelling and the alias for either of them, the canonical spelling
+wins and the alias is ignored, on both verbs (D-5). Sending one spelling alone
+behaves as today. For these two settings a spelling counts as carried when its
+value is present and not null; an empty list counts as carried, so a canonical
+empty list beside a non-empty alias is rejected for having no values, on both
+verbs, as create already does.
+
+The bookable-hours window (start and end time) is not covered by this rule and
+keeps today's behaviour on both verbs, including the divergence for an empty
+canonical value described in §2.3 (§5, D-10).
 
 ### 3.3 A use, once spent, stays spent
 
@@ -254,10 +266,13 @@ The public booking create path rejects exactly the same requests with exactly th
 same answers as today, without the two unreachable items: the repeated
 end-time error and the duplicated exhaustion test.
 
-"The stated duration" of a booking request means the duration under the
-API's primary spelling when the request carries that spelling — even when its
-value is 0 — otherwise the duration under the alternative spelling, otherwise
-none (§2.5 names the two fields). For a request that sends an end at or before
+A booking request may state its duration under two spellings. The **primary
+spelling** is the one that takes precedence when both are sent, as the API
+documents it today; it is not necessarily the spelling the response uses for
+the booking's duration. "The stated duration" of a booking request means the
+duration under the primary spelling when the request carries that spelling —
+even when its value is 0 — otherwise the duration under the alternative
+spelling, otherwise none (§2.5 names the two fields). For a request that sends an end at or before
 its start, today and after the change:
 
 - if the stated duration is non-zero and differs from the time between start
@@ -298,7 +313,14 @@ AC-5. Given a deleted link with a pending co-host invite, when the invitee lists
 their invites, then the invite is absent; and when the invitee accepts or
 declines it, then the answer is not found and the invite's status is
 unchanged. Given a deleted link with an accepted co-host, when the co-host
-leaves it, then the answer is not found.  [contract]
+leaves it, then the answer is not found. Given a deleted link with a pending
+invitee, when the pending invitee leaves it, then the answer is not found and
+their invite still exists in storage with its status unchanged. Given a deleted
+link, when its owner leaves it, then the answer is not found (not the refusal
+an owner gets for leaving a live link) and nothing changes.  [contract]
+*(the pending-invitee and owner cases fail today: the invitee's leave answers
+204 and removes their host record, the owner's answers 400 "owner cannot leave
+link" — challenge round 5 probe)*
 
 AC-6. Given a deleted link, when its owner lists its bookings, invites a co-host
 to it, or deletes it again, then each answers not found and nothing
@@ -450,6 +472,12 @@ take it out.
   so large that booking arithmetic overflows (§2.5). Bounding it would turn
   link creates and edits that succeed today into errors and is not in the audit
   or the issue; it is OQ-6. Until then, AC-20a keeps today's answer.
+- **The bookable-hours window's two spellings** (§2.3, fourth bullet). On
+  create an empty canonical window falls back to the alias; on edit it wins and
+  is rejected. It is the same kind of defect as API-049, but neither the issue
+  nor API-049 names the window, and every fix turns some request that succeeds
+  today into an error or changes what it stores (D-10). The web app sends
+  non-empty canonical windows only, so no Paceday client reaches it. OQ-7.
 - **API-053** (`days` alias silently drops unrecognised day names), **API-069**
   (duplicate invite routes), **API-072** (ambiguous 404 on invite), **API-019**
   (bookings list shape) — same operations, different defects, not lifecycle.
@@ -471,6 +499,11 @@ take it out.
   (`handlers_scheduling_links_test.go:213-268`) and its siblings. For a
   *deleted* link the answer becomes not found (AC-3, AC-6); for a live link the
   403 stays.
+- **The bookable-hours window aliases behave as today on both verbs**,
+  including an empty canonical value beside an alias (201 on create, 422 on
+  edit; §2.3, D-10). *Finding:* no test covers the empty-string case; the plan
+  should pin today's answers so the alias work for durations and days cannot
+  change them by accident.
 - **Sending only an alias still works on both verbs** —
   `TestSchedulingLinksPatchUsesFrontendAliases`
   (`handlers_scheduling_links_test.go:128-157`) and
@@ -552,6 +585,11 @@ introduces and confirm the down migration matches this section.
   arithmetic overflow (§2.5, AC-20a). *Owner:* triage, to file a follow-up issue
   alongside OQ-4. *Resolve:* a separate spec; this one preserves today's
   answer.
+- **OQ-7 — Should an empty canonical window beside an alias mean the same on
+  create and edit?** Today create uses the alias and edit rejects the request
+  (§2.3). This spec leaves both as they are (D-10). *Owner:* triage, to file a
+  follow-up issue alongside OQ-4 and OQ-6. *Resolve:* a separate spec choosing
+  one answer for both verbs.
 
 ## Decisions
 
@@ -577,9 +615,9 @@ None deletes user data or widens who can see data.
   (the invite list would still name a link the owner deleted). For paused links
   PAC-30 D-5 is unchanged. Busy-time computation is not a "path that names the
   link" and keeps counting its bookings (AC-7).
-- **D-5 — The canonical spelling wins on both verbs.** It is what create does
-  today, what both verbs already do for the window aliases, and the only spelling
-  the web app sends, so no Paceday client changes behaviour. The alternative —
+- **D-5 — The canonical spelling wins on both verbs**, for durations and days.
+  It is what create does today, what both verbs already do for a non-empty
+  window value, and the only spelling the web app sends, so no Paceday client changes behaviour. The alternative —
   rejecting a request that carries both with different values — is stricter but
   would turn requests that succeed today into errors; it can be revisited if a
   client is found sending conflicting values.
@@ -605,6 +643,11 @@ None deletes user data or widens who can see data.
   a live link gives would tell a stranger that the id once existed. This
   settles the precondition of OQ-5: whatever refusal the contract picks for a
   live link in AC-19, a deleted link answers not found.
+- **D-10 — The window aliases are left as they are.** §3.2's rule is limited to
+  durations and days. Applying it to the window would turn today's create 201
+  for an empty canonical window beside an alias into a 422; applying create's
+  rule to edit would change what an edit stores. Either changes a request
+  outside the issue's scope, so neither is done here (§5, OQ-7).
 
 ## Challenge — 2026-10-27
 
@@ -1281,3 +1324,43 @@ durations and days.
 - Nothing new. The lists from rounds 1–4 still stand. The web app sends
   non-empty canonical windows only (`schedulingLinks.ts:125`), so neither
   resolution of Blocking 1 changes it. `mcp/` has no scheduling-link caller.
+
+## Revision — 2026-10-27 (answers challenge round 5)
+
+Checked against source at `6d751f9`, still the tip of `origin/main`
+(`handlers_scheduling_links.go:157-190, 440-470, 690-720`;
+`contracts/openapi/paths/booking.yaml:1322-1332`). Nothing was run. I did not
+re-run the challenger's probe; the window and leave answers below come from
+reading source and from the round 5 probe output. No comment from the product
+owner answers an open question, so every decision stays assumed.
+
+1. **Blocking 1, §2.3 wrong about the window aliases; §3.2 read as covering
+   them.** Accepted. Create falls back to the alias when the canonical window is
+   `""` (`:176-188`); edit takes any non-null canonical value (`:456-465`).
+   *Changed:* §2.3's window bullet now states the empty-string divergence with
+   the probe answers. §3.2 is limited to durations and days and says the
+   window keeps today's behaviour on both verbs. §5 lists the window
+   divergence as out of scope; §6 lists today's window answers as behaviour to
+   preserve, noting no test covers them; new OQ-7 asks triage for a follow-up.
+   D-5 now says "for durations and days" and no longer claims the window
+   aliases are consistent; new D-10 records the choice. I took the first
+   resolution the challenge offered because it changes no request that
+   succeeds today, consistent with D-5's reasoning.
+2. **Non-blocking 1, leave on a deleted link by a pending invitee and by the
+   owner.** Accepted (`:695-718`: the owner check at `:704` answers 400 before any host
+   row lookup; `RemoveLinkHost` removes the pending row and the handler
+   answers 204). *Changed:* AC-5 now covers both: the pending invitee gets not
+   found and their invite is still stored, unchanged; the owner gets not found
+   and nothing changes. Both cases are marked as failing today.
+3. **Non-blocking 2, "primary spelling" defined only by inference.** Accepted
+   (`booking.yaml:1328`: the field "Takes precedence over `duration_minutes`
+   when both are sent"). *Changed:* §3.5 defines the primary spelling as the
+   one that takes precedence when both are sent, and says it need not be the
+   spelling the response uses. AC-20 (c) is unchanged and now reads one way.
+4. **Non-blocking 3, revision 4's other changes check out.** Nothing to change.
+
+New decision D-10 is assumed by the factory, pending owner confirmation. It
+deletes no data and widens no one's view of data; it leaves today's behaviour
+in place.
+
+Status stays challenged. The spec goes back to the challenger for round 6.
