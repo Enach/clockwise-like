@@ -367,3 +367,132 @@ data or widens who can see data.*
   having the team deleted for them. Deleting a team is a data-destroying action
   the user must choose explicitly; it stays available as its own operation.
   Assumed by the factory, pending owner confirmation.
+
+---
+
+## Challenge — 2026-10-27
+
+*spec-challenger, against `factory/pac-25-spec` at `08667202`. Every citation
+below was re-read on that commit (api) and on `smart-calendar-flow` `origin/main`
+`ad52160` (web). Nothing was established by running a request or a test.*
+
+**Verdict**: accept-with-changes
+
+§2 is accurate almost line for line: every handler, storage, route, contract and
+web citation I checked holds, including the inferences (no web path reads a link
+the caller does not own; the product cannot create a second owner — the only
+`AddTeamMember(..., "owner")` call and the only `CreateTeam` call are
+`handlers_teams.go:48,54`). The scope is right and the split seam is clean. Two
+statements are contradicted by the record and must be corrected before the
+contract stage builds on them.
+
+### Blocking
+
+1. **D-1 says "The ticket allows either" (403 or 404). It does not.** The PAC-25
+   issue text says "Adds a 403 and a 422 to the spec", and the very U-08
+   resolution this spec claims to resolve says "Add the owner check and a `403`
+   to the spec" (`docs/factory/api-audit.md:476`); batch B4 says "new 403/422
+   responses" (`:549`). The issue title also asks for an *owner* check, while
+   D-2 admits accepted co-hosts. Choosing not-found and owner + accepted
+   co-hosts may well be the right call, but the spec presents it as within the
+   ticket when it departs from both the ticket and the audit's recorded
+   resolution of U-08. The contract stage and the audit update will inherit the
+   misstatement (U-08 would be marked resolved with an answer its own
+   resolution text contradicts). **Resolves when**: D-1 and D-2 state that the
+   issue and U-08 prescribe owner-only + `403`, that this spec departs from them
+   and why, and "Inherited scope" says U-08 is resolved *differently* from its
+   recorded resolution (so the audit row is updated to match, not left saying
+   `403`).
+
+2. **§6 cites tests that do not exist.** "The manager-domain owner-protection
+   rule (`handlers_manager.go:358-361`) and its tests in
+   `backend/api/handlers_manager_test.go`": no test in that file (or anywhere in
+   `backend/`) exercises that refusal. The string "the team owner cannot be
+   removed" appears only at `handlers_manager.go:359`, and the file's only
+   `422` assertion (`handlers_manager_test.go:101`) is for invalid add-member
+   input. The rule D-3 reuses, and which §6 says must not change, is
+   unprotected, exactly as the spec correctly says of the other two operations.
+   **Resolves when**: §6 says the manager rule has no test, and either an AC
+   pins it (an owner removed through the manager path answers `422` and the row
+   is unchanged) or the spec records that it stays unpinned.
+
+### Non-blocking
+
+1. **D-3 "one rule, one wording, across both removal paths" is not true after
+   D-4.** The manager path refuses removing *any* owner (role check,
+   `handlers_manager.go:358`); this spec's guard refuses only a removal that
+   leaves zero owners (D-4, AC-13), and §6 freezes the manager rule. In a
+   two-owner team the two paths would disagree. Unreachable today (one owner
+   per team), so not blocking; reword D-3 to "one wording" or record the
+   divergence as accepted.
+2. **AC-4 "byte-identical to what B receives today"** cannot be checked once
+   "today" is gone. Restate as observable fields: `is_owner=false`,
+   `my_status="accepted"`, `hosts` lists every host row including pending and
+   declined ones with email/name/avatar, link fields as stored.
+3. **AC-15's last sentence overstates the gate.** `make contract` mechanically
+   checks the x-uncertain rule (README §2, gate 3); it cannot detect prose that
+   "still describes today's behaviour", and `removeTeamMember` carries no
+   `x-uncertain` at all (`contracts/openapi/paths/teams.yaml:700-727`). Restate
+   as checkable facts: `getSchedulingLink` has no `x-uncertain` and no `403`,
+   and its `404` names the refused population; `removeTeamMember` declares a
+   `422` with body `{"error":"the team owner cannot be removed"}`. The prose
+   halves are reviewer checks, not gate checks.
+4. **AC-4, AC-5, AC-9..AC-12 and the first half of AC-13 pass today.** They are
+   correctly labelled as pins and are useful, but none can demonstrate the
+   change. The failing-today criteria are AC-1..AC-3, AC-6, AC-7, AC-8, AC-13
+   (second half), AC-14 and AC-15.
+5. **OQ-5 hands the plan an option, not a requirement.** The spec should state
+   the requirement ("no interleaving of removals may leave a team with zero
+   owners", or explicitly "a race between two co-owners is accepted") and let
+   the plan choose how. As written, neither outcome is falsifiable.
+6. **Missing pin: a non-owner removing the owner.** M removes O (caller is not
+   target, M is not an owner) must stay `403` with O still owner. This is the
+   path where the new refusal and the existing `403` could be ordered either
+   way; one AC fixes the order (`403` first, so a member cannot learn who the
+   owner is from the answer).
+7. **Accepted co-hosts keep seeing pending and declined invitees' emails.** §1a
+   argues those emails are the harm, yet §3a/§5 keep them visible to accepted
+   co-hosts (through the list today, and the detail). Recorded as out of scope,
+   which is acceptable; flagged so it is a conscious choice.
+8. **Minor citation drift.** `booking.yaml:508-546` runs to `:549`;
+   `teams.yaml:700-724` runs to `:727`. The issue and API-006 cite
+   `handlers_scheduling_links.go:414-431`, which is stale; the spec's
+   `:391-407` is correct.
+9. **OWNER: should refused link reads answer `404` (D-1) or the `403` the issue
+   and U-08 asked for?** A product call on whether a link id's existence is
+   sensitive; it also decides OQ-2.
+10. **OWNER: owner-only (as the issue title says) or owner + accepted co-hosts
+    (D-2)?** No current web screen reads a link by id as a co-host
+    (`smart-calendar-flow/src/api/schedulingLinks.ts:514,544,574` are owner
+    flows; edit and toggle are gated on `is_owner`, `src/pages/Links.tsx:144,155`),
+    so either choice breaks no consumer.
+11. **OWNER: D-5, a sole owner alone in the team is refused rather than the
+    team being deleted for them.** Conservative and consistent with not
+    deleting data; needs confirmation.
+
+### Criteria I could not falsify
+
+- AC-4 (as written): "byte-identical to what B receives today" has no reference
+  once the change lands (non-blocking 2).
+- AC-15 (last sentence): no gate can fail on prose that describes old behaviour
+  (non-blocking 3).
+
+### Citations I checked and found wrong
+
+- §6 "its tests in `backend/api/handlers_manager_test.go`": no such test
+  exists; the refusal at `handlers_manager.go:359` is untested (blocking 2).
+- D-1 "The ticket allows either": the issue says "Adds a 403"; U-08's
+  resolution says "a `403`" (`docs/factory/api-audit.md:476`) (blocking 1).
+- D-3 "One rule ... across both removal paths": the manager path's rule is
+  role-based (`handlers_manager.go:358`), D-4's is count-based (non-blocking 1).
+
+### Consumers this breaks
+
+- None found. Checked: web `src/api/schedulingLinks.ts:514,544,574` (single-link
+  reads, owner-only flows after create/update); web `src/api/teams.ts:380-391`
+  and `src/components/team/ProtectedHoursTab.tsx:708` (remove control shown only
+  to the owner and never on their own row; errors toasted at `:668`);
+  `mcp/tools.go` (calls neither operation); e2e `tests/scheduling-links.spec.ts`
+  (never reads a link by id; reads `/bookings` and the list as the owner). The
+  web's generated types gain a `422` on `removeTeamMember`, which no
+  hand-written web code narrows on.
