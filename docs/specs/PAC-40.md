@@ -158,14 +158,21 @@ Create and edit accept `duration_options` or its alias `durations`, and
   at `:221`, again inline at `:293-296`, with the same message and status. The
   inline copy can only differ from the first if the link changed in between,
   and it reads the same in-memory copy, so it never does.
-- The "end must be after start" check at `:285-288` cannot fire either. When
-  the request sends an end, the duration is computed as the whole minutes
-  between start and end (`:262`), so any end at or before start gives a
+- The "end must be after start" check at `:285-288` **is reachable** and is
+  not part of API-073. When the request sends an end, the duration is the whole
+  minutes between start and end (`:262`), so an end at or before start gives a
   duration of 0 or less, which `durationAllowed` rejects first as "invalid
-  duration" (`:125-127`, called at `:277`). When the request sends no end, the
-  end is start plus a duration that has passed the same check, so it is always
-  after start. This is a third unreachable branch of the API-073 kind; it is
-  removed with the other two (§3.5). Found by the challenge, Blocking 1.
+  duration" (`:125-127`, called at `:277`). When the request sends no end,
+  the end is computed as `start.Add(time.Duration(requestedDuration) *
+  time.Minute)` (`:275`). Link validation requires only that each duration
+  option is positive (`handlers_scheduling_links.go:219-223`); neither the
+  contract nor the `INTEGER[]` column sets a maximum. For an option of
+  153,722,868 minutes or more the multiplication overflows int64 nanoseconds
+  and wraps, so the end lands before the start, the duration still passes
+  `durationAllowed` (it is in the list), and the request is answered 400
+  `{"error":"end must be after start"}`. The challenge (round 2) reproduced this
+  with a probe; see Revision 2. Whether such duration options should be accepted
+  at all is a separate defect (§5, OQ-6).
 
 ### 2.6 Fetching one link has no authorization (API-006)
 
@@ -225,10 +232,12 @@ returning any of the link's details or its hosts (D-7).
 ### 3.5 Public booking create
 
 The public booking create path rejects exactly the same requests with exactly the
-same answers as today, without the two unreachable checks (the repeated
-end-time error and "end must be after start") and the duplicated exhaustion
-test. A request whose end is at or before its start keeps getting the answer it
-gets today, "invalid duration".
+same answers as today, without the two unreachable items: the repeated
+end-time error and the duplicated exhaustion test. A request that sends an end
+at or before its start keeps getting the answer it gets today, "invalid
+duration". A request that sends no end, on a link whose duration is so long
+that the computed end comes out before the start, keeps getting the answer it
+gets today, "end must be after start".
 
 ## 4. Acceptance criteria
 
@@ -328,12 +337,21 @@ host details.  [contract]
 
 AC-20. Given each rejection the public booking create can make today (missing
 fields, bad start, bad end, end/duration mismatch, invalid duration — including
-an end at or before start — too soon, used up, overlapping slot, unknown slug),
-when the same request is sent after the change, then the status and body are
-identical.  [contract] — This criterion is the regression net, not a failing
-test: removing unreachable code changes no observable behaviour, so the
-removal itself is proven by review of the diff. That is stated rather than
-hidden.
+a request that sends an end at or before its start — end not after start, too
+soon, used up, overlapping slot, unknown slug), when the same request is sent
+after the change, then the status and body are identical.  [contract] — This
+criterion is the regression net, not a failing test: removing unreachable code
+changes no observable behaviour, so the removal itself is proven by review of
+the diff. That is stated rather than hidden.
+
+AC-20a. Given an active reusable link with no minimum notice whose only
+duration option is 200,000,000 minutes (long enough that the start plus that
+duration wraps to a time before the start), when a booker requests a future
+start on it without sending an end, then the answer is status 400 with body
+`{"error":"end must be after start"}`, both before and after the change, and no
+booking is created.  [contract] — Passes today (challenge round 2 probe); it
+pins the "end not after start" rejection so that the API-073 removal cannot
+take it out.
 
 ## 5. Explicitly out of scope
 
@@ -354,6 +372,10 @@ hidden.
   by "used up". Changing it is a frontend copy decision.
 - **Accept / decline / leave on a paused link** — unchanged, PAC-30 D-5 stands
   for paused links.
+- **Unbounded duration options.** A link may be created with a duration option
+  so large that booking arithmetic overflows (§2.5). Bounding it would turn
+  link creates and edits that succeed today into errors and is not in the audit
+  or the issue; it is OQ-6. Until then, AC-20a keeps today's answer.
 - **API-053** (`days` alias silently drops unrecognised day names), **API-069**
   (duplicate invite routes), **API-072** (ambiguous 404 on invite), **API-019**
   (bookings list shape) — same operations, different defects, not lifecycle.
@@ -383,7 +405,8 @@ hidden.
   is stored, the seed must still produce an exhausted link.
 - **All public booking error answers** — `TestPublicBookingErrorsContract`
   (`handlers_booking_test.go:178-213`) covers five; the others in AC-20 have no
-  test today. *Finding:* AC-20 adds them.
+  test today, including "end must be after start". *Finding:* AC-20 and AC-20a
+  add them.
 - **Bookings make hosts busy whether or not a calendar event was written** —
   `TestGetConfirmedBookingsForUser_CountsHostedLinksWithoutCalendarEvents`
   (`storage/booking_busy_test.go:23`). AC-7 extends it to deleted links.
@@ -436,6 +459,11 @@ introduces and confirm the down migration matches this section.
   hide whether the id exists. The spec requires only that no link data is
   returned; the contract stage chooses and records why. *Owner:*
   contract-author.
+- **OQ-6 — Should duration options have a maximum?** Today any positive integer
+  is accepted, and options of 153,722,868 minutes or more make booking
+  arithmetic overflow (§2.5, AC-20a). *Owner:* triage, to file a follow-up issue
+  alongside OQ-4. *Resolve:* a separate spec; this one preserves today's
+  answer.
 
 ## Decisions
 
@@ -626,6 +654,7 @@ No decision changed. The non-blocking findings are not addressed in this round.
    removed under API-073 together with the other two. §3.5 now names both
    unreachable checks and says a request with its end at or before its start
    keeps today's "invalid duration" answer.
+   *[Superseded by Revision 2 item 1: the check is reachable.]*
 2. **Blocking 2, §1 contradicts §2.4 about cancellations outside the app.**
    Confirmed: no code in `backend/`, `mcp/` or the web app writes a booking's
    status. The only `'cancelled'` uses on bookings are reads
@@ -753,3 +782,39 @@ API-049/050/051/073); no SQL on `scheduling_links`/`bookings` outside
   under D-6 because it reads the same figure the server will gate on. Not a
   break; listed so the contract stage keeps the field's meaning and its name
   aligned.
+
+## Revision — 2026-10-27 (answers challenge round 2)
+
+The single blocking finding was checked against source at `6d751f9` and
+accepted. No decision changed. Non-blocking items 1, 2 and 4 of round 2 and
+round 1's non-blocking items stay open for the next stage; item 3 is now
+recorded (§5, OQ-6).
+
+1. **Blocking 1, "end must be after start" is reachable.** Confirmed by reading
+   source: `validateSchedulingLink` requires only that each duration option is
+   positive (`handlers_scheduling_links.go:219-223`), and when no end is sent
+   the handler computes `end = start.Add(time.Duration(requestedDuration) *
+   time.Minute)` (`handlers_booking.go:275`), which overflows for large options.
+   I also ran a standalone Go check of that expression (not the handler, no
+   database) from a start of 2026-11-02T10:00Z: 153,722,867 min gives
+   2319-02-12, `After(start)=true`; 153,722,868 min gives 1734-07-24,
+   `After(start)=false`; 200,000,000 min gives 1822-07-20, `After(start)=false`.
+   I did not re-run the challenger's HTTP probe; the 400 body cited in AC-20a is
+   the challenger's recorded output. Round 1's Blocking 1, and Revision 1
+   item 1 which applied it, were wrong; Revision 1 item 1 is marked superseded.
+   *Changed:*
+   - §2.5 third bullet now says the check is reachable, explains the overflow
+     path, and keeps it out of API-073.
+   - §3.5 names only the two unreachable items: the repeated end-time error
+     (`:281-284`) and the duplicated exhaustion test (`:293-296`). It states
+     that the overflowing-duration request keeps "end must be after start".
+   - AC-20 lists "end not after start" again as a reachable rejection, and
+     restricts "end at or before start → invalid duration" to requests that
+     send an end.
+   - New AC-20a pins the overflow case: a link whose only option is 200,000,000
+     minutes, booked with no end, answers 400 `{"error":"end must be after
+     start"}` before and after the change.
+   - §5 lists unbounded duration options as out of scope, and §8 adds OQ-6 for
+     triage to file it with OQ-4. §6 notes AC-20a as new coverage.
+
+Status stays challenged. The spec goes back to the challenger for round 3.
