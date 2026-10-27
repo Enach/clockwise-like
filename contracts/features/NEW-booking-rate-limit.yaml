@@ -2,12 +2,13 @@
   "featureId": "NEW-booking-rate-limit",
   "linearIssueUrl": "none yet: no PAC issue exists (spec header, searches of 2026-10-27); to be opened at intake and linked here",
   "status": "draft",
-  "contractRevision": "1",
-  "contractHash": "8a8a0cca5a656a0b39146db261e9109025b0887b797eca6d6befd0c9dd65b8be",
+  "contractRevision": "2",
+  "contractHash": "d56e57b32bbba488adfc1db2515f9ef501f29ee30363199a11a780400fee69dc",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it (LF), computed after `python scripts/openapi_assemble.py` and verified with `python scripts/openapi_assemble.py --check` (exit 0, `OK: bundle is in sync (98 paths)`). Reproduce with: `python3 scripts/openapi_assemble.py && python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`.",
   "contractDoc": "contracts/features/NEW-booking-rate-limit.md",
   "specDoc": "docs/specs/NEW-booking-rate-limit.md (branch factory/new-booking-rate-limit-spec at 136fa1c; not yet on main)",
   "sourceOfTruth": "Enach/clockwise-like",
+  "mergeAfter": "factory/new-booking-rate-limit-spec: the createPublicBooking description cites API-094 as open, and API-094 is defined only in that branch's docs/factory/api-audit.md. This contract must not merge before the spec branch (challenge non-blocking 3).",
 
   "repositories": {
     "backend": {
@@ -43,7 +44,7 @@
   },
 
   "operationsChanged": [
-    { "operationId": "createPublicBooking", "method": "POST", "path": "/api/book/{slug}", "change": "429 BookingCreateRateLimited added: 20 requests per client per fixed 10-minute window, checked and counted atomically as the handler's first step (before link lookup, body read and validation), so 429 precedes 400/404/409/410/422/500. Description added: per client across all links, PAC-39 client identification, one exact address (no IPv6 grouping), per process, sweep on request, OPTIONS not counted, and API-094 (no availability check) stated. 400 message list gains \"end must be after start\" (already returned, previously undocumented)." },
+    { "operationId": "createPublicBooking", "method": "POST", "path": "/api/book/{slug}", "change": "429 BookingCreateRateLimited added: 20 requests per client per fixed 10-minute window, checked and counted atomically as the handler's first step (before link lookup, body read and validation), so 429 precedes 400/404/409/410/422/500. Description added: per client across all links, PAC-39 client identification, one exact address (no IPv6 grouping), per process, sweep on request, OPTIONS not counted, and API-094 (no availability check) stated, with calendar writes described as best effort (accepted hosts whose calendar loads; failures ignored; 201 regardless). Operation-level `security: []` kept unchanged (public; registered outside requireAuth). 400 message list gains \"end must be after start\" (already returned, previously undocumented; reachable only through time.Duration overflow of a link duration option above about 153,722,867 minutes)." },
     { "operationId": "getPublicBookingSlots", "method": "GET", "path": "/api/book/{slug}/slots", "change": "429 BookingSlotsRateLimited added: 120 requests per client per fixed 1-minute window, with or without date, separate budget from booking, same ordering and identification. Description extended." }
   ],
 

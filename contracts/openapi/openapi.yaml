@@ -1474,6 +1474,7 @@ paths:
       tags:
       - booking
       summary: Book a slot on a public scheduling link.
+      security: []
       description: 'Rate limited per client (NEW-booking-rate-limit). A client may make at most 20 requests
         to this operation per fixed 10-minute window; the window starts at the client''s first counted
         request and is not extended by refused requests. The limit is checked and the request counted
@@ -1492,8 +1493,12 @@ paths:
         by the CORS middleware and is not counted. Not checked (API-094, open): the requested time is
         never checked against the hosts'' availability, the link''s days or hours, or any upper date bound.
         The only time checks are the minimum notice (422) and overlap with this link''s own non-cancelled
-        bookings (409); any other start is accepted and written to every host''s calendar, with the booker
-        email as a guest.'
+        bookings (409); any other start is accepted. The booking row is saved, then a calendar event (with
+        the booker email as a guest) is attempted on each accepted host''s calendar, best effort: a host
+        whose user record or calendar client cannot be loaded is skipped and a failed event creation is
+        ignored, so a 201 does not mean any host''s calendar was written. Operation-level `security: []`
+        is kept: this operation is public and is registered outside requireAuth; the rate limit is not
+        authentication.'
       requestBody:
         required: true
         content:
@@ -1510,7 +1515,10 @@ paths:
         '400':
           description: 'Validation failure. Messages: "invalid request body"; "name, email, and start
             are required"; "invalid start time, use RFC3339"; "invalid end time, use RFC3339"; "duration
-            does not match end time"; "invalid duration"; "end must be after start".'
+            does not match end time"; "invalid duration"; "end must be after start" (reachable only when
+            the end computed from `duration_minutes` overflows, which needs a link duration option above
+            about 153,722,867 minutes; an ordinary end at or before start answers "duration does not match
+            end time" or "invalid duration" instead).'
           content:
             application/json:
               schema:
