@@ -1,604 +1,719 @@
 # Spec — PAC-22: SSO configuration must not disclose identity-provider secrets
 
-- **Linear**: https://linear.app/paceday/issue/PAC-22/add-an-ssoproviderdto-that-omits-oidcclientsecret-and-samlcert-and
-- **Status**: draft (v3)
+- **Linear**: https://linear.app/paceday/issue/PAC-22/stop-returning-oidcclientsecret-and-samlcert-from-apiadminsso
+- **Status**: draft (v3.1, 2026-10-27). v1 and v2 were rejected (see History). v3
+  was never challenged. v3.1 is v3 checked again against `origin/main` at
+  `6d751f9`, with the open questions answered as factory assumptions (see
+  **Decisions**). It is ready for `spec-challenger`. What changed since v3 is
+  listed under "Revision v3.1" just before History.
 - **Author**: spec-author
-- **Inherited scope**:
-  - **Resolved here**: API-001 (disclosure half — see below), API-060, API-066,
-    API-067, API-092 (the three `/api/admin/sso` operations), `x-uncertain` U-21,
-    `x-uncertain` U-22.
-  - **Moved to PAC-50**: API-001 (authorization half), and the exact-domain rule
-    PAC-46 reports.
-  - **Inherited, not resolved, position stated**: API-010 (§5), API-091 (§5),
-    API-011 (§2.7 — it is on the operation AC-14 asserts and shapes how AC-14 is
-    written).
-- **Depends on**: nothing. In particular this spec does not depend on PAC-45 —
-  see "Scope" below.
+- **Inherited scope** (factory §7 rule 1):
+  - **Resolved here**: API-001 (disclosure half; the write half is PAC-50's),
+    API-060, API-066, and the `listSsoProviders` share of API-092 (its 200 and
+    403; the three writes are covered by PAC-50, the five sign-in paths by
+    PAC-35).
+  - **`x-uncertain`**: U-21 is on the create request
+    (`contracts/openapi/paths/auth.yaml:1080`). It is resolved here, because AC-7
+    and AC-8 decide the validation it asks about. U-22 is on the response
+    (`auth.yaml:1141`). PAC-50's contract closes it by observation (see §2.8). If
+    PAC-50 has not landed when this contract is written, it is resolved here,
+    because AC-1 to AC-6 replace the schema it is about.
+  - **Moved to PAC-50**: API-001's authorization half, API-067 (removal of
+    nothing reported as success: v3's AC-13), and the exact-domain rule PAC-46
+    reports.
+  - **Inherited, not resolved, position stated**: API-091 (§5). API-010 and
+    API-011 were listed by v3. Both are fixed now (§2.7), so neither shapes a
+    criterion here any more.
+- **Depends on**: **PAC-50 lands first.** That ordering was decided on 2026-10-22
+  (`docs/specs/PAC-50.md`, §4.9) and this spec adopts it (D-5). It is an ordering,
+  not a dependency on PAC-50's outcome: every criterion below means the same
+  thing whatever PAC-50's gate turns out to be, because each one says "a caller
+  permitted to change SSO configuration" and leaves PAC-50 to define who that is.
 
-## Scope: this spec is the projection half only
+## Scope: this spec is the projection-and-validation half
 
-Two different changes were previously written as one document. They are now two:
-
-| Spec | Covers | Blocked on |
+| Spec | Covers | State on 2026-10-27 |
 |---|---|---|
-| **PAC-22** (this one) | Identity-provider secrets stop crossing the API boundary; the response shape becomes a described one; a configuration that cannot work is refused when it is offered; SSO can be suspended and resumed; removing nothing is reported as removing nothing | nothing |
-| **PAC-50** | Who may write an SSO configuration and for which domain: operator-designated principals, the exact-domain rule PAC-46 reports, and making configuration changes observable | its own open questions, stated there |
+| **PAC-22** (this one) | Identity-provider secrets stop crossing the API boundary. The response becomes a described shape. A configuration that cannot work is refused when it is offered. SSO can be suspended and resumed. | spec draft v3.1 |
+| **PAC-50** | Who may write an SSO configuration and for which domain. Removal of nothing is reported as such. Changes are recorded. | contract on `factory/pac-50-contract`; implementation PR #212 open, not merged |
 
-The line is drawn at *decisions*. Everything in this spec is a projection or a
-validation: it changes what leaves the server and what the server refuses to
-accept, needs no product decision, needs no schema change, and every criterion
-below is writable as a failing test against the code as it stands. Everything in
-PAC-50 requires a privilege model that does not exist today.
-
-**This spec's severity claim does not assume PAC-45.** The disclosure is live on
-`origin/main` regardless of what happens to PAC-45: the secrets are selected,
-scanned and encoded on every read, and no part of that path was touched by
-PAC-45's branch. PAC-45 is **not merged** — `origin/main` is at `6f7a856`, the
-fix is one commit (`b1a07bb`) on `nihochart/pac-45-oidc-email-domain-binding`
-with a pull request open. If PAC-45 never merges, nothing in this spec changes.
-What does change is PAC-50's severity, and PAC-50 states both cases.
-
-> **Erratum, 2026-09-17 (local verification).** PAC-45 *is* merged: PR #172 was
-> squash-merged at 09:50 UTC as `5c5f34f`, which is on `origin/main`. The
-> `--contains b1a07bb` check cannot see a squash merge. This spec's claims are
-> unaffected, as it says above. Citations against `6f7a856` still hold. On
-> current `main`, lines past 176 in `backend/api/handlers_sso.go` sit eight
-> lower.
+The line is drawn at *decisions about privilege*. Everything in this spec is a
+projection or a validation: it changes what leaves the server and what the server
+refuses to accept. It adds no privilege model and needs no migration. PAC-50
+supplies the privilege model.
 
 ## 1. Problem
 
 Paceday lets an organisation replace password login with its own identity
-provider. To do that, somebody hands Paceday the credentials that let Paceday
-impersonate the organisation to that identity provider: an OIDC client secret,
-or a SAML signing certificate. These are the keys to the organisation's front
-door.
+provider. To set that up, somebody gives Paceday the credentials that let Paceday
+identify itself to that identity provider on the organisation's behalf: an OIDC
+client secret, or a SAML signing certificate. These are the keys to the
+organisation's front door.
 
 **Today any employee with a working Paceday account can read them.** The
 organisation's SSO configuration is served back in full, secrets included, to any
 authenticated caller who belongs to the organisation. A curious colleague with
-browser devtools reads the client secret. Anyone who phishes a single
-low-privilege account — an intern, a contractor, a departed employee whose
-account was not disabled — walks away with credentials to impersonate Paceday to
-the organisation's identity provider.
+browser devtools can read the client secret. So can anyone who phishes a single
+low-privilege account, such as an intern, a contractor, or a former employee
+whose account was not disabled. With it they hold the credential that identifies
+Paceday to the organisation's identity provider.
 
-**What it costs them.** A secret that any employee can read is not a secret, and
-must be treated as compromised the moment this is understood. The remedy is
-rotation at the identity provider for every organisation that ever configured
-SSO — an action the customer must take, coordinated with a Paceday
-reconfiguration, with SSO login broken in between. The organisation's security
-team is affected worst: they handed over a secret on the understanding that it
-was held, not published, and no audit on their side would reveal that it is
-readable by their whole staff.
+**What it costs them.** A secret that any employee can read is not a secret. Once
+anyone knows this, the secret must be treated as compromised. The fix is to
+rotate it at the identity provider, which the customer has to do, coordinated
+with a Paceday reconfiguration. The organisation's security team is hit hardest.
+They handed over a secret expecting it to be held, not published, and no audit on
+their side would show that their whole staff can read it.
 
 **Who is affected.** Every organisation that has configured SSO, and every user
-in it.
+in it. Production had zero users on 2026-10-21 (human decision, recorded in
+`docs/specs/PAC-49.md` §2 item 1). So no real customer secret has been exposed
+yet. The defect must close before one can be.
 
-Two smaller problems sit on the same surface and cost the person doing the
-configuring rather than the organisation. An SSO configuration that cannot
-possibly work is accepted without complaint, and the person who entered it finds
-out only when a colleague cannot log in. And once SSO is configured there is no
-way to turn it off again short of deleting it — so a misconfiguration that is
-locking people out cannot be paused while it is diagnosed.
+Two smaller problems on the same surface cost the person who configures SSO, not
+the organisation:
 
-Who may *write* an SSO configuration is a third problem on the same surface, and
-it is serious. It is PAC-50's, and it is a reason to close this leak sooner
-rather than to wait: rotating an exposed secret requires writing a new one, so
-the leak and the write path have to be fixed in this order anyway.
+- A configuration that cannot possibly work is accepted without complaint. The
+  person who entered it finds out only when a colleague cannot log in.
+- Once SSO is configured there is no way to turn it off short of deleting it. A
+  misconfiguration that is locking people out cannot be paused while someone
+  diagnoses it.
 
 ## 2. Current behaviour
 
-Nothing here was executed — the sandbox blocks the Go module proxy, so no build
-or test was run. Every claim comes from reading source, and every `file:line` was
-read personally for this revision rather than carried over.
-
-**Citation basis.** Go and SQL citations are against **`origin/main`** at
-`6f7a856`, which is the codebase as it actually is: PAC-45 is not merged. The
-working tree (`factory/spec-driven-pipeline`) contains no `backend/` change
-against `origin/main`, so the two are identical for every Go and SQL citation
-here. Citations into `contracts/` and `docs/factory/` are against the working
-tree, because those directories do not exist on `origin/main` at all. Line
-numbers differ from v2 of this spec, which cited the PAC-45 branch; where they
-do, the v2 numbers were the branch's and these are `main`'s.
+Every claim was read from source on `origin/main` at `6d751f9` for this revision.
+None was carried over from v3. Some line numbers differ from v3 because PAC-21,
+PAC-35 and PAC-45 have since landed. Nothing was executed for this spec; the
+behaviour described is what the code says. Where a claim is an inference, it is
+marked as one.
 
 ### 2.1 The response contains the secrets
 
-`storage.SSOProvider` (`backend/storage/sso_providers.go:12-26`) declares
-thirteen fields and **no struct tags**, among them `OIDCClientSecret`
-(`:20`) and `SAMLCert` (`:23`).
+`storage.SSOProvider` (`backend/storage/sso_providers.go:12-26`) declares thirteen
+fields and **no struct tags**. Two of them are `OIDCClientSecret` (`:20`) and
+`SAMLCert` (`:23`).
 
-The list handler encodes the slice of these structs directly
-(`backend/api/handlers_sso.go:276`), and the create handler encodes the stored
-struct directly (`:254`). There is no intermediate type in either path. Both
-secret columns are selected into the struct on every read (`sso_providers.go:28-31`
-column list, `:33-45` scan, `:84-87` the list query).
+The create handler encodes the stored struct directly
+(`backend/api/handlers_sso.go:228`). The list handler encodes the slice of these
+structs directly (`:250`). Neither path has an intermediate type. Both secret
+columns are selected into the struct on every read: the column list is at
+`sso_providers.go:28-31`, the scan at `:33-45`, and the list query at `:84-87`.
 
-Because the struct has no tags, `encoding/json` emits the Go field names, so the
-response keys are PascalCase. *This is an inference from reading the struct
-definition, not an observed response* — the same inference the contract records
-as unverified in U-22 (`contracts/openapi/paths/auth.yaml:885-888`). The contract
-documents the full PascalCase shape including `OIDCClientSecret`
-(`auth.yaml:829-888`), with a comment that it is documented "because it is what
-the code does, not because it is intended" (`:866-871`). The list response's top
-level is a bare JSON array (`handlers_sso.go:276`, `auth.yaml:535-537`).
+The struct has no tags, so `encoding/json` emits the Go field names and the keys
+are PascalCase. The contract documents the full PascalCase shape, including
+`OIDCClientSecret` (`contracts/openapi/paths/auth.yaml:1122`) and `SAMLCert`
+(`:1132`). It says it does so because that is what the code does, not because it
+is intended (`:1126`). The list response is a bare array at the top level
+(`handlers_sso.go:250`, `auth.yaml:700`).
 
-The column type is plain `TEXT` with no encryption at rest
+The columns are plain `TEXT` with no encryption at rest
 (`backend/storage/migrations/008_sso_providers.up.sql:9,12`).
 
-**The API boundary is the only channel that leaks these values.** The others were
-checked rather than assumed: Sentry never receives a request body or cookies —
-`scrubRequest` sets `req.Cookies = ""` and `req.Data = ""` unconditionally
-(`backend/sentry.go:63-77`); the request logger emits method, path and duration
-only (`backend/api/middleware.go:86-91`); none of the seven `WriteAuditLog` call
-sites is on an SSO path (`engine/focus_time_cleaner.go:39`,
-`engine/focus_time.go:106`, `engine/smart_schedule.go:323`,
-`engine/compression.go:178`, `api/handlers_nlp.go:67`,
-`api/handlers_schedule.go:188`, `nlp/parser.go:221`); and the raw error echoed
-into a 500 on OIDC setup is built from the issuer, not the secret
-(`handlers_sso.go:113`, `:164`).
+**The API boundary is the only channel that leaks these values.** The other
+channels were checked:
+
+- **Sentry** never receives a request body or cookies. `scrubRequest` blanks
+  both unconditionally (`backend/sentry.go:64-78`).
+- **The request logger** prints only method, path and duration
+  (`backend/api/middleware.go:91`).
+- **The audit log** has seven `WriteAuditLog` call sites, and none is on an SSO
+  path (`api/handlers_nlp.go:69`, `api/handlers_schedule.go:212`,
+  `engine/compression.go:192`, `engine/focus_time.go:110`,
+  `engine/focus_time_cleaner.go:47`, `engine/smart_schedule.go:331`,
+  `nlp/parser.go:235`).
+- **Error responses** no longer echo errors raw. Since PAC-21, an OIDC setup
+  failure answers a generic message and sends the detail only to the log and
+  Sentry (`handlers_sso.go:69-72`, `backend/api/server_errors.go:41-57`). Any
+  such error is built from the issuer, not from the secret.
 
 ### 2.2 There is no update operation; the single write replaces
 
-There are exactly three admin routes: `POST /api/admin/sso`, `GET
-/api/admin/sso`, `DELETE /api/admin/sso/{domain}` (`backend/api/routes.go:171-175`).
-**There is no update operation.** The single write is an upsert keyed on domain
-that overwrites every column from `EXCLUDED` — provider name, type, enabled,
-issuer, client id, client secret and all three SAML values
-(`sso_providers.go:63-73`). It is a replace, not a merge, and
+There are exactly three admin routes: create, list, and delete by domain
+(`backend/api/routes.go:172-175`). **There is no update operation.** The single
+write is an upsert keyed on domain. On conflict it overwrites every column from
+`EXCLUDED`: provider name, type, enabled, issuer, client id, client secret and all
+three SAML values (`sso_providers.go:63-73`). It is a replace, not a merge, and
 `backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`)
-asserts that today.
+asserts that.
 
 ### 2.3 An unusable configuration is accepted
 
-Create validates that domain, provider name and provider type are non-empty and
-that the type is one of two values (`handlers_sso.go:215-222`). Nothing else. The
-OIDC issuer, client id and client secret, and all three SAML fields, are accepted
-empty and persisted empty (`handlers_sso.go:240-245`; the columns default to `''`,
-`008_sso_providers.up.sql:7-12`).
+Create checks only that domain, provider name and provider type are non-empty,
+and that the type is one of two values (`handlers_sso.go:189-196`). The OIDC
+issuer, client id and client secret are accepted empty and stored empty, and so
+are all three SAML values (`:209-220`). The columns default to `''`
+(`008_sso_providers.up.sql:7-12`).
 
-The consequence is deferred and unhelpful. With an empty issuer, login
-construction fails inside `auth.NewOIDCClient` and surfaces as a 500 with the raw
-error (`handlers_sso.go:107-115`). A SAML provider is accepted and stored, then
-the sign-in route rejects it with 501 "SAML not yet supported" (`:99-102`) — so
-SAML is configurable but non-functional by design. This is U-21
-(`auth.yaml:824-827`) and API-060.
+The failure comes later and does not help:
+
+- **Empty issuer.** Building the login fails inside `auth.NewOIDCClient` at the
+  sign-in start route, which answers a generic 500 (`handlers_sso.go:64-72`).
+- **SAML.** A SAML provider is accepted and stored, then the start route refuses
+  it with 501 "SAML not yet supported" (`:56-59`). SAML can be configured but does
+  not work, by design.
+
+This is API-060, and it is what U-21 (`auth.yaml:1080`) asks to decide. PAC-35
+pinned the start route's 501 and 500 answers in Go
+(`backend/api/pac35_auth_flows_test.go:396`) and left fixing them to this spec
+(`docs/specs/PAC-35.md`, D-5).
 
 ### 2.4 SSO cannot be disabled through the API
 
-Create hardcodes `Enabled: true` (`handlers_sso.go:239`), and the replace-upsert
-writes that value over the existing one on conflict (`sso_providers.go:66`). No
-route sets it false. The column exists and works as a kill switch — the sign-in
-lookup filters on `enabled = true` (`sso_providers.go:51`) and the listing query
-does not (`:82-92`) — so the capability is present in the schema and unreachable
-through the API. This is API-066.
+Create hardcodes `Enabled: true` (`handlers_sso.go:213`), and the replace-upsert
+writes that value over the stored one on conflict (`sso_providers.go:66`). No
+route sets it to false.
 
-### 2.5 Deleting a domain that has no configuration reports success
+The column already works as a kill switch. The sign-in lookup filters on
+`enabled = true` (`sso_providers.go:51`), and both sign-in detection
+(`backend/auth/sso_detect.go:37`) and the start and callback routes
+(`handlers_sso.go:51`, `:112`) go through that lookup. The listing query does not
+filter on it (`sso_providers.go:82-92`). So the schema has the capability, but
+the API cannot reach it. This is API-066.
 
-`DeleteSSOProvider` discards the result and returns only the error
-(`sso_providers.go:108-112`), so the handler cannot distinguish "deleted one row"
-from "matched nothing" and returns 204 either way (`handlers_sso.go:300-304`).
-This is API-067.
+### 2.5 Who may call these operations today
 
-PAC-46 observes correctly that this sits in the same three lines as the
-domain-authorization check it wants changed (`handlers_sso.go:295-298`). The
-reporting defect needs no decision and is falsifiable today, so it stays here;
-the authorization rule in the adjacent lines is PAC-50's. §5 records the ordering
-that follows.
+All three admin handlers start with the same check: load the caller, require a
+non-nil organisation reference, and otherwise answer 403 "org membership
+required". The check is at `handlers_sso.go:167-172` for create, `:233-238` for
+list and `:257-262` for delete. A database error takes the same branch
+(`err != nil || user == nil || user.OrgID == nil`). So a 403 here does not by
+itself mean the caller was refused for lack of membership, and any criterion
+below that asserts a refusal also asserts what is stored afterwards.
 
-### 2.6 Who may call these operations today
+Create and delete also require the target domain to match the caller's
+organisation domain, and that match is a suffix match (`handlers_sso.go:204`,
+`:269`; `backend/domain/domain.go`, `DomainMatchesOrg`). On `main` today,
+therefore, **any member can create, replace and delete their organisation's SSO
+configuration**. PAC-50 replaces both checks. Its implementation PR, #212, is
+open and adds a step-up gate (IdP-admin re-authentication, or a break-glass list
+held by the deployment) and an exact-domain rule. Its contract does not gate
+the list operation beyond membership, and it leaves the secret in the response to
+this spec (its create 201 description says so).
 
-All three admin handlers perform the identical first check: load the caller,
-require that their organisation reference is non-nil, otherwise 403 "org
-membership required" — create at `handlers_sso.go:193-198`, list at `:259-264`,
-delete at `:283-288`. That same condition is also the database-error path
-(`err != nil || user == nil || user.OrgID == nil` are one branch), so a 403 from
-these handlers does not by itself mean "refused for lack of membership". Any
-criterion below that asserts a refusal therefore also asserts a stored-state
-outcome.
+### 2.6 Sign-in is protected by tests today
 
-Create and delete additionally require that the target domain match the caller's
-organisation domain via `domain.DomainMatchesOrg`
-(`handlers_sso.go:230-233`, `:295-298`; `backend/domain/domain.go:31-35`), which
-is a **suffix** match. That is PAC-50's subject and is not restated here.
+v3 said nothing protected SSO sign-in. That is no longer true:
 
-### 2.7 Consumers and tests
+- `backend/api/handlers_sso_test.go:172` (`TestOIDCCallback_AcceptsEmailInProviderDomain`)
+  drives the callback against an in-process fake identity provider
+  (`:30-93`). It asserts a 302 to the frontend and a non-empty session cookie.
+- `backend/api/pac35_auth_flows_test.go:286` and `:396` assert every documented
+  status of the callback and start routes.
+- `:803` asserts every documented status of detection.
 
-- **Frontend**: no match for the admin SSO route, `ssoProvider`,
-  `OIDCClientSecret` or `SAMLCert` anywhere in `/home/claude/smart-calendar-flow/src`.
-  But `smart-calendar-flow/src/components/auth/AuthDialog.tsx:30,34,99,111-112`
-  **is** a consumer of the two sign-in operations the suspend/resume criteria act
-  on. It is already broken by API-010 (`docs/factory/api-audit.md:244`): it gates
-  the SSO redirect on `res.domain`, which `auth.DetectResult` never declares
-  (`backend/auth/sso_detect.go:18-22`), so the branch is dead and no user can
-  reach the SSO flow through the UI at all.
-- **MCP server**: no match for `sso` in any case anywhere under
-  `/home/claude/clockwise-like/mcp/`.
-- **e2e**: no scenario; the only occurrence of `sso` under `e2e/` is a mention in
-  `e2e/TESTIDS-REQUIRED.md`.
+All of these seed the provider row through the storage layer directly. **No
+test, on any branch merged to `main`, exercises the three admin handlers.** PAC-50's open PR
+adds tests for the writes. Nothing tests the list handler's 200 or 403 (API-092,
+`docs/factory/api-audit.md:350`).
 
-This is the API-091 category (`api-audit.md:325`), whose own comment is that
-API-001 "sat undetected in exactly this category".
+### 2.7 Consumers
 
-**Test coverage.** `backend/storage/sso_providers_test.go` covers the storage
-layer (five tests, at `:9`, `:47`, `:59`, `:89`, `:112`). There is **no handler
-test file for SSO at all** on `origin/main` — `backend/api/` contains
-`handlers_auth_test.go` and nothing else for this surface — so nothing asserts
-anything about the admin surface's authorization gate, response body or status
-codes, and nothing protects SSO sign-in either. The first tests on this surface
-arrive with PAC-45, which is not merged. API-092 (`api-audit.md:326`) names five
-paths plus "all `/api/admin/sso`"; this spec closes the three `/api/admin/sso`
-operations and leaves the five sign-in paths open.
+- **Frontend.** The only references to the admin SSO operations in
+  `smart-calendar-flow/src` are the generated types (`src/api/generated/types.ts`,
+  `schemas.ts`, `schemas.types.d.ts`). No hand-written code calls them, and no
+  page exists for them. The sign-in dialog consumes detection and the start route
+  and now follows the `redirect_url` that detection returns
+  (`src/components/auth/AuthDialog.tsx:105-108`). API-010 is therefore fixed in
+  the web app by PAC-35. Its audit row (`api-audit.md:268`) still says
+  "Confirmed", and that row is stale. API-011, the silent session-issue failure,
+  is marked Fixed (PAC-35) (`api-audit.md:269`).
+- **MCP server.** `sso` appears nowhere under `mcp/`, in any case.
+- **e2e.** No scenario touches SSO on `main`.
+- **Outside the repositories.** None can exist in production, which has zero
+  users (D-4).
 
-All three admin operations are `handwritten` in
-`contracts/openapi/MIGRATION.md:55-57`.
+All three admin operations are `handwritten` (`contracts/openapi/MIGRATION.md:55-57`).
 
-**One finding on the sign-in operation AC-14 asserts.** API-011
-(`api-audit.md:245`) records that `issueJWT` returns without setting a cookie when
-the signing secret is empty or token generation fails, while the callback still
-redirects to the success page (`backend/api/handlers_auth.go:139-146`,
-`:147-155`). A criterion that asserts "the sign-in did not fail" can therefore
-pass with no session issued. This spec does not fix API-011; AC-14 is written to
-assert a session positively so that it cannot pass for that reason.
+### 2.8 What PAC-50 changes on the same operations (not merged)
+
+This section is read from `origin/impl/pac-50-sso-write-gate-backend` (PR #212).
+It may change before PAC-50 merges, and the contract stage must re-read it.
+
+- Create and delete are gated, as §2.5 describes. A refused write answers 403
+  with a machine-readable code.
+- Every 400 is decided before the write authorization is consumed. One
+  authorization pays for one write.
+- Removal of a domain with no configuration answers 404 (API-067 is marked
+  "Fixed (PAC-50)").
+- Domains are stored lower-cased.
+- SSO writes are recorded in an operator-only SSO event table.
+- U-22 is marked resolved, and the 201 body is pinned to exactly the thirteen
+  PascalCase keys (`TestSSOWrite_OneGrantOneWrite`). This **pins the leak in a
+  test**, so this spec's implementation must change that test as well as the
+  handler. That is deliberate (factory §7 rule 2), not a regression.
+- The audit row for API-001 is annotated: the write half is closed, and the read
+  half plus the secret in both responses are left to PAC-22.
 
 ## 3. Desired behaviour
 
-The actor throughout is **a caller who is permitted to configure SSO for an
-organisation**. Who that is does not change in this spec: it is whoever may
-configure it today, and narrowing it is PAC-50's subject. Where behaviour is
-available to any organisation member, this section says "any member".
+The actors:
+
+- **Any member**: any authenticated member of the organisation.
+- **A permitted caller**: a caller allowed to change the organisation's SSO
+  configuration. Who that is belongs to PAC-50, and this spec does not change it.
+  Whatever rule PAC-50 sets for configuration writes also governs every new write
+  this spec introduces (D-6).
 
 ### 3.1 The secrets stop leaving the server
 
-Someone permitted to configure SSO can see that it is configured for their
-organisation, which identity provider it points at, and whether it is currently
-active. They cannot read back the client secret or the signing certificate, and
-neither can anybody else, on any response from any operation. The secrets are
-write-only: they can be supplied, they can be replaced, and they can never be
-retrieved.
+Any member can see that SSO is configured for their organisation, which identity
+provider it points at, and whether it is currently active. Nobody can read back
+the client secret or the signing certificate, from any response of any operation.
+The secrets are write-only: they can be supplied and replaced, never retrieved.
 
-A reader can still tell whether a secret has been supplied, because "configured
-but no secret entered" and "configured with a secret" are different states that
-the person configuring SSO needs to distinguish. Knowing that a secret exists is
-not knowing the secret. That indicator must mean exactly that and nothing else —
-it must not change when anything other than the secret changes.
+A reader can still tell whether a secret has been supplied. "Configured, no
+secret entered" and "configured with a secret" are different states, and the
+person configuring SSO needs to tell them apart. Knowing that a secret exists is
+not knowing the secret. The indicator means exactly that and nothing else. It
+does not change when anything other than the secret changes.
 
-Making the secrets write-only has a consequence this spec accepts deliberately:
-somebody who forgets a client secret cannot retrieve it and must re-enter it.
+The trade-off is deliberate: someone who forgets a client secret cannot retrieve
+it and must re-enter it.
 
 ### 3.2 Supplying a configuration means supplying all of it
 
-There is one write today and it replaces the stored configuration wholesale
-(§2.2). **This spec does not turn it into a merge.** Omitting a value on that
-write means the value is absent, not "keep what is stored". So changing any part
-of the configuration means supplying the whole configuration, secrets included.
-The cost is real and is accepted: renaming a provider means re-entering its
-secret. A merge would silently change the stored-data semantics of an operation
-that already exists, and would reintroduce the question of what "required" means
-on a value that is already stored.
+The configuration write stays a replace (§2.2). **This spec does not turn it into
+a merge.** If a configuration write leaves out one of the configuration's values,
+that value is stored as absent. The stored value is not kept. So changing any
+part of the configuration means supplying all of it, secrets included. Renaming
+a provider means re-entering its secret. That cost is accepted. A merge would
+quietly change the stored-data meaning of an operation that already exists, and
+would bring back the question of what "required" means for a value that is
+already stored.
 
-### 3.3 Turning SSO off is a separate act from configuring it
+### 3.3 Whether SSO is active is not part of the configuration
 
-**This spec requires one write operation beyond the three that exist today: a
-named transition that changes only whether SSO is active.** It carries no
-configuration values and no secrets. This is stated as a requirement, not left to
-the contract, because the alternative reading is incoherent: §3.2 refuses a
-merge, §3.4 makes every value a kind of provider needs required on every write of
-the configuration, and those two together make it impossible to suspend SSO
-through the configuration write without re-supplying the secret — which is the
-opposite of an emergency control.
+**This spec adds exactly one write operation: a named transition that changes
+only whether SSO is active.** It carries no configuration values and no secrets.
+The spec requires this outright rather than leaving it to the contract. The
+alternative cannot work: §3.2 refuses a merge, and §3.4 makes every value a
+provider kind needs required on every configuration write. Together those would
+make it impossible to suspend SSO through the configuration write without
+re-supplying the secret, and an emergency control must not need that.
 
-The two writes therefore divide cleanly. The configuration write replaces the
-configuration and never suspends by omission: a configuration write that says
-nothing about the active state leaves SSO active, which is what happens today, so
-nobody switches SSO off by accident and nobody has to think about the active
-state while entering credentials. The state transition changes the active state
-and nothing else, so suspending and resuming never require a secret.
+The two writes divide cleanly:
 
-One consequence is deliberate and is stated so nobody discovers it: replacing the
-configuration of a suspended organisation resumes it. Anyone who wants it to stay
-suspended suspends it again, which costs nothing because the transition needs no
-secret.
+- **The configuration write** replaces the configuration and never touches
+  whether SSO is active (D-3). A new configuration starts active, as today. A
+  replaced configuration keeps the active state it had. Nobody switches SSO off by
+  accident, and nobody switches back on, by entering credentials, an SSO that a
+  colleague deliberately suspended.
+- **The transition** changes the active state and nothing else. Suspending and
+  resuming never need a secret.
+
+The trade-off is deliberate: fixing a suspended configuration and putting it back
+into service takes two writes, a replace and then a resume.
 
 ### 3.4 A configuration that cannot work is refused at the point of entry
 
-Someone setting up SSO who omits something the chosen kind of identity provider
-requires is told immediately, in terms naming what is missing, instead of finding
-out when a colleague cannot log in. Because the configuration write replaces
-(§3.2), "required" means required on every configuration write, with no exception
-for values already stored.
+If someone setting up SSO leaves out something their kind of identity provider
+needs to complete a sign-in, they are told at once, and told what is missing.
+They do not find out later when a colleague cannot log in. Because the
+configuration write replaces (§3.2), "required" means required on every
+configuration write. Values already stored do not count.
 
-The same applies to the kind of identity provider the product cannot actually
-complete a login with: if it cannot work, it is refused when offered rather than
-stored and rejected at sign-in.
+A kind of identity provider that the product cannot complete a sign-in with is
+refused when it is offered. It is not stored only to be rejected at sign-in (D-1).
+Configurations already stored are not changed, deleted or rewritten by this rule.
+They stay readable, removable and suspendable, and sign-in keeps refusing them
+exactly as it does today.
+
+A refused configuration costs the caller nothing beyond the refusal. Whatever
+authorization PAC-50 requires for a write is still unspent afterwards, so the
+caller can correct the submission and send it again.
 
 ### 3.5 SSO can be turned off without being thrown away
 
 Someone investigating a misconfiguration that is locking colleagues out can
-suspend SSO, leaving the configuration intact to fix, and turn it back on.
+suspend SSO, leaving the configuration intact to fix, and later resume it. While
+SSO is suspended, sign-in for that domain behaves as if no SSO were configured.
 
-**Suspension stops new sign-ins; it does not end sessions.** Sessions already
-established through the provider survive suspension, deletion and reconfiguration
-alike, because the session is a self-contained bearer credential with a week's
-life and no server-side state. Anyone reaching for suspend after a compromise
-must be told this, and changing it is out of scope (§5).
+**Suspension stops new sign-ins. It does not end sessions.** Sessions already
+established through the provider survive suspension, deletion and
+reconfiguration alike. A session is a self-contained bearer credential that lasts
+a week and keeps no state on the server. Anyone who reaches for suspend after a
+compromise must be told this. Changing it is out of scope (§5).
 
-### 3.6 Removing a configuration reports honestly
+### 3.6 Suspending and resuming are changes to SSO configuration
 
-Removing something that is there and removing something that was never there are
-distinguishable outcomes, so somebody who mistypes a domain learns that they did,
-instead of being told the removal succeeded.
+Suspending and resuming are authorized by exactly the rule that authorizes
+configuration writes, never by membership alone (D-6). Otherwise any member could
+switch off the organisation's SSO. They are also recorded wherever PAC-50 records
+configuration writes, so that "who turned SSO off" has the same answer as "who
+changed the configuration".
 
 ### 3.7 The response shape is stable and conventional
 
-The shape stops being an accident of how the server happens to store the data and
+The response shape stops being an accident of how the server stores the data. It
 becomes a described, deliberate shape, consistent with the rest of the API. In
-particular the retrieval response is a named container rather than a bare
-sequence, so a later addition does not change the response's type for every
+particular, the retrieval response is a named container rather than a bare
+sequence, so that a later addition does not change the response's type for every
 consumer at once.
 
 ## 4. Acceptance criteria
 
-None of these tests exist — nothing exercises the admin surface at all (§2.7).
-Which of them fail today is stated per criterion rather than claimed for all of
-them: AC-1 to AC-8, AC-9, AC-10, AC-12 and AC-13 fail against current behaviour;
-AC-11's first half already holds and its second half cannot yet be arranged; and
-AC-14 already holds but is protected by nothing, so it is a new guard rather than a
-failing test. Where a criterion asserts a refusal it also asserts a stored-state
-outcome, because the 403 on this surface is shared with the database-error path
-(§2.6) and a status code alone can pass for the wrong reason.
+None of these tests exist (§2.6). Each criterion says whether it fails today or
+guards behaviour that already holds:
+
+- **Fail against `main` today**: AC-1 to AC-10, AC-12, AC-15 and AC-16.
+- **AC-11**: one half guards existing behaviour, the other cannot be arranged
+  today.
+- **AC-14**: a regression guard that already exists and must stay green.
+- **AC-13**: withdrawn (moved to PAC-50).
+- **AC-17**: needs PAC-50's gate to exist, and is written to fail until this
+  spec's validation runs before that gate's authorization is spent.
+
+Whenever a criterion asserts a refusal, it also asserts what is stored
+afterwards, because a status code alone can pass for the wrong reason (§2.5).
+
+In these tests, "a permitted caller" means one arranged through PAC-50's
+mechanism as it stands on `main` when the test is written: a step-up grant or
+the break-glass list. If PAC-50 has not merged when these tests are written, the
+plan says how the caller is arranged.
 
 **Secret non-disclosure**
 
-AC-1. Given an SSO configuration exists for an organisation with a non-empty
-client secret and a non-empty signing certificate, when a member of that
-organisation retrieves the organisation's SSO configuration, then no value
-anywhere in the response equals either stored value, and no property of the
-response carries either one under any name.  `[contract]`
+AC-1. Given an SSO configuration for an organisation with a non-empty client
+secret and a non-empty signing certificate, and given a member of that
+organisation who is not a permitted caller, when that member retrieves the
+organisation's SSO configuration, then no value anywhere in the response equals
+either stored value, and no property of the response carries either one under any
+name. The same holds when the caller is a permitted caller.  `[contract]`
 
-AC-2. Given a request that stores an SSO configuration and supplies a client
-secret, when the request succeeds, then the response describes the stored
-configuration and contains no value equal to the supplied secret.  `[contract]`
+AC-2. Given a permitted caller, when they submit a configuration with a client
+secret and a signing certificate and the request succeeds, then the response
+describes the stored configuration and no value in it equals either supplied
+value. Given a member who is not a permitted caller, when they make the same
+submission, then the response, whatever its status, contains neither supplied
+value.  `[contract]`
 
-AC-3. Given a stored SSO configuration whose client secret is non-empty, when it
-is retrieved, then a named property of the response whose documented meaning is
-"a client secret is on file" is true; and given a stored configuration whose
-client secret is empty, when it is retrieved, then that same property is false.
-The assertion is about the value of that one property on each configuration, not
-about how two configurations differ from each other.  `[contract]`
+AC-3. Given a stored configuration whose client secret is non-empty, when it is
+retrieved, then a named property of the response, documented as meaning "a client
+secret is on file", is true. Given a stored configuration whose client secret is
+empty, when it is retrieved, then that same property is false. The assertion is
+about the value of that one property on each configuration, not about how two
+configurations differ.  `[contract]`
 
-AC-4. Given a stored configuration with a non-empty client secret, when it is
-replaced by a configuration write that changes only its display name and supplies
-the same secret, then the property of AC-3 is still true and no other described
-property changes except the display name and any timestamp; and when it is
-replaced by a write that supplies an empty secret, then that property becomes
-false. The indicator tracks the secret and nothing else.  `[contract]`
+AC-4. Given a stored configuration with a non-empty client secret, when a
+configuration write replaces it, changing only its display name and supplying the
+same secret, then the property of AC-3 is still true, and no described property
+other than the display name and any timestamp changes. When a write then replaces
+it supplying an empty secret, that property becomes false. The indicator tracks
+the secret and nothing else.  `[contract]`
 
 AC-5. Given a configuration stored before this change with an empty client secret
 and an empty certificate, when it is retrieved, then the response is valid against
-the described shape and reports that no secret is on file, rather than failing to
-serialise or omitting the property.  `[contract]`
+the described shape and reports that no secret is on file. It does not fail to
+serialise, and it does not omit the property.  `[contract]`
 
 **Response shape**
 
-AC-6. Given any number of SSO configurations for an organisation, when they are
-retrieved, then the top level of the response is a named container and not a bare
-sequence, and the response validates against the described shape when the
-organisation has none, one, and more than one.  `[contract]`
+AC-6. Given an organisation with no SSO configuration, then one, then more than
+one, when its configurations are retrieved each time, then the top level of the
+response is a named container and not a bare sequence, and the response validates
+against the described shape in all three cases.  `[contract]`
 
 **Validation at entry**
 
 AC-7. Given no SSO configuration for a domain, when a permitted caller submits one
-naming a kind of identity provider but omitting a value that kind requires to
-complete a sign-in, then the request is rejected with a client error naming the
-missing value, and afterwards no configuration exists for that domain.
-`[contract]`
+for the kind of identity provider the product can complete a sign-in with, and
+leaves out any one of the values that kind needs to complete a sign-in (D-2), then
+the request is rejected with a client error naming the missing value, and
+afterwards no configuration exists for that domain. The test is run once for each
+required value. Given a stored, working configuration for the domain, when the
+same incomplete submission is made, then it is rejected the same way and the
+stored configuration is unchanged.  `[contract]`
 
-AC-8. Given the current state, when a permitted caller submits a configuration for
-the kind of identity provider the product cannot complete a sign-in with, then the
-request is rejected at submission time with a client error saying so, and nothing
-is stored.  `[contract]`
-*(This changes existing behaviour — see OQ-1, which must settle before the
-contract is written. If OQ-1 settles the other way, AC-8 is struck and the
-contract documents the deferred rejection instead.)*
+AC-8. Given any state, when a permitted caller submits a configuration for the
+kind of identity provider the product cannot complete a sign-in with, then the
+request is rejected at submission with a client error saying that kind is not
+supported, and nothing is stored or changed (D-1). Given a configuration of that
+kind already stored, written directly to storage as a pre-existing row would be,
+when it is retrieved, suspended, resumed or removed, then each of those succeeds
+exactly as for any other configuration.  `[contract]`
 
 **Active state**
 
-AC-9. Given an active SSO configuration, when a permitted caller suspends it, then
-the sign-in routing step for that organisation's domain no longer routes users to
-SSO, the SSO sign-in route reports no configuration for that domain, and the
-configuration is still retrievable and reports itself suspended; and when it is
-resumed, both resume.  `[e2e]`
+AC-9. Given an active SSO configuration, when a permitted caller suspends it, then:
 
-AC-10. Given an active SSO configuration with a client secret, when it is
-suspended and then resumed with no secret supplied at either step, then a sign-in
-that succeeded before the suspension succeeds again afterwards, and every
-described value of the configuration other than its active state is unchanged.
-`[e2e]`
+- sign-in detection for an address in that domain no longer routes to SSO;
+- the SSO sign-in start route reports no configuration for that domain;
+- the configuration can still be retrieved, and it reports itself suspended.
 
-AC-11. Given an existing SSO configuration, when a configuration write replaces it
-and says nothing about whether it is active, then afterwards it is active —
-omission never suspends SSO. This holds whether the configuration was active or
-suspended beforehand (§3.3).  `[contract]`
-*(The active-beforehand half is a regression guard: it already holds, because the
-active state is hardcoded true on the write today (§2.4). The suspended-beforehand
-half is new and cannot even be arranged today, because nothing can suspend.)*
+When a permitted caller resumes it, detection routes to SSO again and the
+configuration reports itself active.  `[e2e]`
+
+AC-10. Given an active configuration with a client secret, pointing at a working
+identity provider, when it is suspended and then resumed, with no secret supplied
+at either step, then a sign-in through that provider that succeeded before the
+suspension completes and issues a session afterwards. Every described value of
+the configuration other than its active state is unchanged.  `[unit]`
+
+AC-11. Given an existing configuration, when a configuration write replaces it,
+then afterwards its active state is what it was before: active stays active and
+suspended stays suspended (D-3). Given no existing configuration, when a
+configuration write creates one, then it is active.  `[contract]`
+*(The active-stays-active half and the creation half guard existing behaviour:
+the active state is hardcoded true today (§2.4). The suspended-stays-suspended
+half is new, and today it cannot even be arranged through the API.)*
 
 AC-12. Given the described interface, when the operation that changes only the
 active state is examined, then no request it accepts carries a client secret, a
 signing certificate, or any other value that belongs to the configuration itself,
-and no value it requires is one that the configuration write also requires.
+and nothing it requires is something the configuration write also requires.
 `[contract]`
-*(The structural guarantee behind AC-10: it fails today because no such operation
-exists, and it would fail again if suspension were later folded back into the
-configuration write.)*
+*(This is the structural guarantee behind AC-10. It fails today because no such
+operation exists, and it would fail again if suspension were later folded back
+into the configuration write.)*
+
+AC-15. Given an active configuration, when a member who is not a permitted caller
+asks to suspend it, then the request is refused and the configuration is still
+active. The same holds for resuming a suspended configuration: it stays
+suspended.  `[contract]`
+
+AC-16. Given an active configuration, when a permitted caller suspends it and then
+resumes it, then for each of the two transitions a record exists, in the place
+PAC-50 records configuration writes, naming the transition, the organisation and
+the acting user.  `[unit]`
 
 **Removal**
 
-AC-13. Given a domain the caller is permitted to remove a configuration for, and
-no configuration stored for it, when the caller removes that domain's
-configuration, then the response reports that there was nothing to remove,
-distinguishably from the response given when there was.  `[contract]`
+AC-13. *Withdrawn in v3.1.* Removing a configuration that does not exist is
+PAC-50's AC-16c, and PAC-50's implementation marks API-067 fixed. One change is
+not specified twice.
+
+**Validation and the write authorization**
+
+AC-17. Given a permitted caller holding exactly one unspent write authorization
+under PAC-50's rule, when they submit a configuration that AC-7 or AC-8 refuses,
+and then submit a corrected configuration without obtaining a new authorization,
+then the first submission is refused as AC-7 or AC-8 says, and the second
+succeeds.  `[unit]`
 
 **Preserved sign-in behaviour**
 
-AC-14. Given an organisation whose SSO configuration points at a working identity
-provider and is active, when a user whose email domain is that configuration's
-domain signs in through SSO, then the sign-in completes and a session is issued.
-`[e2e]`
-*(New guard, not a regression guard: nothing protects SSO sign-in today (§2.7). It
-must assert that a session was issued positively rather than that the sign-in did
-not error, because a sign-in can complete without issuing a session when the
-deployment's token-signing secret is unset — API-011, §2.7.)*
+AC-14. Given an active configuration pointing at a working identity provider,
+when a user whose email domain is the configuration's domain signs in through it,
+then the sign-in completes and a session is issued.  `[unit]`
+*(This guard already exists: `TestOIDCCallback_AcceptsEmailInProviderDomain`
+(`backend/api/handlers_sso_test.go:172`), which asserts the session cookie
+positively. The criterion is that it stays green unchanged. Stored configurations
+must keep signing in after this change.)*
 
-**Note on how AC-9, AC-10 and AC-14 are proven.** There is no usable user
-interface for any of this: the admin surface has no consumer at all, and the
-sign-in surface's only consumer is broken by API-010, which this spec does not fix
-(§5). These must be API-level scenarios against the running stack. Stage 5 should
-not read the absence of a UI journey as permission to skip them. They also require
-the verification stack to be able to act as an identity provider, which today it
-cannot — nothing it starts is one. Providing one is part of satisfying these
-criteria, not a prerequisite someone else supplies.
+**How AC-9, AC-10, AC-14 and AC-16 are proven.**
+
+- **AC-9** is an API-level e2e scenario. It needs no identity provider: detection
+  and the start route's "not configured" answer never contact one. It does need a
+  permitted caller in the e2e stack, arranged through whatever PAC-50 provides
+  there.
+- **AC-10, AC-14 and AC-16** are handler-level tests against a real database. The
+  in-process fake identity provider that the sign-in tests already use
+  (`handlers_sso_test.go:30-93`) stands in for the provider. A full e2e sign-in
+  would need an identity provider that the e2e stack does not run on `main`, and
+  this spec does not make adding one its job.
 
 ## 5. Explicitly out of scope
 
-- **Who may write an SSO configuration, and for which domains.** PAC-50. Both the
-  operator-designated principals and the exact-domain rule. This spec changes
-  neither, so the write path is exactly as permissive after it as before.
-- **Making changes to SSO configuration observable.** PAC-50. It needs a
-  destination that is not readable by another organisation's members, which today
-  no destination is.
-- **Restricting who may *read* the configuration.** With the secrets removed, what
-  remains is the fact that the organisation uses SSO and the name of its provider,
-  which any member learns by signing in. Restricting it further needs the privilege
-  model PAC-50 defers.
+- **Who may write an SSO configuration, and for which domains.** This is PAC-50,
+  covering both the gate and the exact-domain rule. This spec only requires that
+  its new transition is governed by the same rule (§3.6).
+- **Reporting a removal that removed nothing.** PAC-50 (AC-16c, API-067).
+- **Restricting who may *read* the configuration.** Once the secrets are gone,
+  what remains is that the organisation uses SSO, the provider's name, its issuer
+  and client identifier, and whether it is active. Any member learns the first two
+  by signing in. PAC-50's contract does not gate the list beyond membership.
+  Narrowing that is a privilege decision, and PAC-50 is where such decisions live.
+  It does not widen access, so the factory does not take it here.
 - **Encrypting the secrets at rest.** They are plain text in the database (§2.1).
-  This spec stops them crossing the API boundary, which is the reported finding;
-  encryption at rest is a separate, larger piece of work with its own
-  key-management questions.
+  This spec stops them crossing the API boundary, which is the reported finding.
+  Encryption at rest is separate, larger work with its own key-management
+  questions.
 - **Ending sessions when SSO is suspended, removed or reconfigured.** Sessions are
-  self-contained week-long bearer credentials with no server-side state, so nothing
-  this spec does can revoke one. §3.5 requires that this be said plainly rather
-  than fixed.
-- **Rotating secrets already exposed.** Every secret configured before this ships
-  must be assumed compromised and rotated at the identity provider by the
-  organisation that owns it. That is an operational and customer-communication
-  task, not a code change, and it does not become unnecessary because the leak is
-  closed. OQ-4.
-- **Making SAML work.** If OQ-1 settles on refusing it, this spec refuses it;
-  implementing it is a feature.
-- **Fixing the broken sign-in routing in the frontend (API-010).** A frontend
-  defect on two operations this spec only reads, already tracked in the audit's D5
-  batch, and the cross-repo ordering rule puts frontend work after the contract
-  lands anyway. The consequence is recorded in §4: every criterion touching sign-in
-  must be proven at the API level, because no user can reach the SSO flow through
-  the UI until API-010 is fixed. It also means §1's "a misconfiguration locking
-  people out cannot be paused" describes a journey that, today, nobody can enter
-  through the UI — the problem is real at the API, not yet at the UI.
-- **Deciding whether this surface should exist at all (API-091 / audit batch E3).**
-  The audit's position is that surfaces with no consumer and no test should be
-  either built for or deleted. If the answer is "deleted", most of this spec is
-  moot — but the leak is live now and cannot wait for that decision.
-- **Building a UI for SSO configuration.** A frontend feature with its own spec.
-
-Ordering against PAC-50: this spec and PAC-50 both change the removal path, three
-lines apart. This spec changes what that path *reports*; PAC-50 changes who it
-*permits*. Whichever lands second rebases onto the first. Neither depends on the
-other's outcome, and this one is the one with no open decisions, so it should go
-first.
+  self-contained week-long bearer credentials with no state on the server, so
+  nothing in this spec can revoke one. §3.5 requires that this be said plainly
+  rather than fixed.
+- **Rotating secrets already exposed.** See D-4. Production has no users, so there
+  is nothing to rotate there. Any other deployment is its operator's to handle.
+- **Making SAML work.** This spec refuses SAML at submission (D-1). Implementing
+  SAML is a feature.
+- **Deciding whether this surface should exist at all** (API-091, audit batch E3).
+  The leak cannot wait for that decision.
+- **Building a UI for SSO configuration.** PAC-50 §3 records that follow-up.
+- **Updating API-010's stale audit row** (§2.7). It belongs to whoever closes
+  PAC-35. It is noted here only so that nobody reads "Confirmed" as a blocker on
+  AC-9.
 
 ## 6. What must not change
 
-- **SSO sign-in must keep working for configurations stored before this change.**
-  **No test protects this.** There is no handler test file for SSO on
-  `origin/main` at all (§2.7). AC-14 adds the first guard, and it is a new guard,
-  not a regression guard.
+- **SSO sign-in keeps working for configurations stored before this change.** The
+  guard is `handlers_sso_test.go:172` and the PAC-35 status tests (§2.6), which
+  must stay green unchanged.
 - **No stored data changes, and there is no migration.** The secrets stay in the
-  database; only what crosses the boundary changes. The suspend/resume work needs
-  no migration either — the column it acts on already exists and already works as a
-  kill switch (`008_sso_providers.up.sql:6`, read at
-  `backend/storage/sso_providers.go:51`). If a migration appears anywhere in this
-  work, scope has grown and that should be challenged rather than accepted.
-- **The configuration write stays a replace, not a merge** (§3.2). Protected by
-  `backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`),
-  which asserts replace semantics today. The new state transition is not a partial
-  write of the configuration; it writes one thing and that thing is not part of the
-  configuration a caller supplies.
-- **Sign-in routing reads the same rows** (`backend/auth/sso_detect.go:37`) and
-  must be unaffected except where AC-9 deliberately changes it. No test protects
-  it: `backend/auth/` has no test for `DetectAuthProvider`.
-- **The secrets must not become recoverable by another route.** Making them
-  write-only means somebody who forgets a client secret must re-enter it (§3.1).
-  That is the intended trade and must not be softened later with a "reveal"
-  affordance.
-- **Anything reading the current PascalCase keys breaks.** No such reader was
-  found: none in the frontend, none in the MCP server, none in e2e (§2.7), which is
-  what U-22 predicted. Absence of a consumer in these two repos is not absence of a
-  consumer — a script or saved request outside the tree would break silently. OQ-2.
-- **The 403 on this surface is also its database-error path** (§2.6). Any new
-  criterion asserting a refusal asserts a stored-state outcome too.
-- **The write path's permissiveness is unchanged by this spec, and that is not an
-  endorsement of it.** PAC-50 exists because it is wrong. Nothing here should be
-  read at stage 6 as this spec having reviewed and accepted it.
+  database; only what crosses the boundary changes. Suspend and resume need no
+  migration either: the column they act on already exists and already works as a
+  kill switch (`008_sso_providers.up.sql:6`, read at `sso_providers.go:51`). If a
+  migration appears anywhere in this work, scope has grown and should be
+  challenged rather than accepted. PAC-50's own migration is PAC-50's.
+- **The configuration write stays a replace for every configuration value**
+  (§3.2). `backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`)
+  protects that today. The one deliberate change is that the active state is no
+  longer a value of the configuration write (§3.3). If the storage test asserts
+  otherwise, it changes for that one property only, and the plan says so.
+- **Sign-in routing reads the same rows** (`backend/auth/sso_detect.go:37`). It
+  is unaffected except where AC-9 deliberately changes it. It is protected at the
+  status level by `pac35_auth_flows_test.go:803`.
+- **The secrets do not become recoverable by another route.** Making them
+  write-only means someone who forgets a client secret must re-enter it (§3.1).
+  That is the intended trade, and it must not be softened later with a "reveal"
+  feature.
+- **Configurations already stored are never deleted or rewritten** by the new
+  validation (§3.4, D-1).
+- **The write path's permissiveness is PAC-50's.** Nothing here should be read at
+  stage 6 as this spec having reviewed it.
 
 ## 7. Rollback
 
 **There is no migration and nothing to roll back in the database.** Nothing here
 changes stored data, and the secret columns keep their values throughout.
 
-Reverting restores the leak, in full, for every organisation — so a revert is not
-a neutral act and should be treated as reopening a critical finding rather than as
-a rollback. If a defect is found after release, prefer fixing forward.
+A revert brings the leak back, in full, for every organisation. So a revert is not
+a neutral act: treat it as reopening a critical finding, not as a rollback. If a
+defect is found after release, prefer fixing forward.
 
 Two things do not roll back cleanly:
 
-1. **Secrets entered after release are unrecoverable through the API.** They are
-   in the database, so nothing is lost; but anyone who relied on reading them back
-   must go to the database. By design (§3.1).
+1. **Secrets entered after release cannot be read back through the API.** They
+   are in the database, so nothing is lost. Anyone who relied on reading them back
+   must go to the database. This is by design (§3.1).
 2. **A configuration suspended after release is a state the pre-release code
-   cannot produce but can read.** The sign-in lookup already filters on the active
-   state, so a reverted deployment would serve a suspended configuration as
-   unconfigured and offer no way to resume it. A revert should be preceded by
-   resuming anything suspended.
+   cannot produce, though it can read it.** The sign-in lookup already filters on
+   the active state, so a reverted deployment would treat a suspended
+   configuration as unconfigured and offer no way to resume it. Worse, the
+   pre-release configuration write hardcodes active, so the first replace after a
+   revert would silently resume it. Before reverting, resume anything that should
+   be active, and remove anything that must stay off.
 
-The behaviour changes a consumer could notice — the removed secret properties, the
-key casing, the response envelope, the removal-of-nothing outcome, the refusal of
-configurations previously accepted — all revert with the code, because no state
-depends on them.
+The other changes a consumer could notice all revert with the code, because no
+stored state depends on them: the removed secret properties, the key casing, the
+response container, and the refusal of configurations that used to be accepted.
 
 ## 8. Open questions
 
-**OQ-1 — Should the unimplementable kind of identity provider be refused at
-submission instead of at sign-in?** *Owner: human (product), before the contract
-is written.* Today it is accepted and stored, then rejected at sign-in (§2.3).
-Refusing it at submission is the honest behaviour and is what AC-8 assumes, but it
-removes a capability someone may be using to stage a configuration ahead of the
-feature existing, and any already-stored row of that kind becomes unreplaceable.
-Resolve by deciding; if the decision is to keep accepting it, AC-8 is struck and
-the contract documents the deferred rejection.
+v3's four open questions are answered under **Decisions**: OQ-1 as D-1, OQ-2 as
+D-4, OQ-3 as D-7, OQ-4 as D-4. All are factory assumptions pending owner
+confirmation. One new question remains, and it does not block the contract:
 
-**OQ-2 — Is there a consumer of this surface outside the two repositories?**
-*Owner: whoever operates the existing deployments.* The response shape change
-breaks any reader of the current PascalCase keys. There is none in the frontend,
-the MCP server or e2e (§2.7), but operator scripts, saved requests and anything
-that has ever called this by hand are not visible from here, and no deployment
-logs were available. The risk is low but not zero.
+**OQ-5: Is two writes to fix-and-resume acceptable?** *Owner: human (product),
+non-blocking.* D-3 means fixing a suspended configuration and resuming it takes
+two writes. Under PAC-50, each write spends one step-up authorization. The
+alternative, where a replace resumes, is what v3 proposed. The factory did not
+choose it, because it lets credential entry silently re-enable a login path that a
+colleague deliberately turned off. If the owner prefers v3's behaviour, AC-11's
+suspended half is inverted and §7 item 2 simplifies. Nothing else changes.
 
-**OQ-3 — Will the audit register accept API-001 being split into a disclosure row
-and an authorization row?** *Owner: whoever maintains `docs/factory/api-audit.md`,
-before the contract stage, since the contract gate enforces touch-it-fix-it.* As
-one row, API-001 cannot be closed by this spec, which fixes only the disclosure.
-API-092 needs the same treatment in a milder form: it names five paths plus all of
-`/api/admin/sso` (`api-audit.md:326`), and this spec closes only the
-`/api/admin/sso` share, so either the row is split or it is annotated as partially
-closed. The audit's B1 batch (`api-audit.md:502-506`) also bundles the DTO and the
-admin gate into one PR; it should be re-cut along the PAC-22/PAC-50 line.
+## Decisions
 
-**OQ-4 — Who tells existing customers to rotate their identity-provider secrets?**
-*Owner: human.* Out of scope for the code (§5) and cannot be dropped: closing the
-leak does not un-expose a secret that has been readable by an organisation's whole
-staff. Needs a named owner and a sequence. Note the ordering constraint: rotation
-requires writing a new secret, so it has to happen while the write path is still
-open to the people who need it — which is a reason to sequence rotation against
-PAC-50's designation work rather than against this spec.
+These answer v3's open questions and the gaps found while re-checking it against
+`main`. Each follows the factory rule for product decisions with no recorded
+owner answer: take the most conservative option consistent with `PRODUCT.md` and
+earlier owner decisions in `docs/specs/*.md`, and never choose an option that
+deletes user data or widens who can see data. Each is **assumed by the factory,
+pending owner confirmation** (2026-10-27).
+
+- **D-1 (answers OQ-1): the kind of identity provider the product cannot complete
+  a sign-in with is refused at submission.**
+  - **Why.** It is the honest behaviour (§3.4), and it is what PAC-35 assumed this
+    spec would do (`docs/specs/PAC-35.md`, D-5: "refusing SAML and incomplete OIDC
+    rows at create time … PAC-22 owns").
+  - **What v3 feared.** Its worry was that someone might be staging such a
+    configuration ahead of the feature. No such person can exist: production has
+    zero users (PAC-49 §2 item 1, human, 2026-10-21).
+  - **Rows already stored.** None are deleted or rewritten. They stay readable,
+    removable and suspendable, and sign-in keeps refusing them exactly as it does
+    today (AC-8, §6).
+  - **This narrows behaviour.** Something previously accepted is refused. It
+    widens nothing.
+  - Assumed by the factory, pending owner confirmation.
+- **D-2: for the kind of provider that works, the values it needs are the issuer,
+  the client identifier and the client secret.** All three are used to complete a
+  sign-in today (`handlers_sso.go:64-68`, `:121-125`). Each is required, non-empty,
+  on every configuration write (§3.2). The contract names them. Requiring the
+  secret is the conservative reading: a configuration without one is the
+  "configured but no secret" state AC-3 exposes, and it cannot complete the
+  server-side code exchange. Assumed by the factory, pending owner confirmation.
+- **D-3: the configuration write preserves the active state; only the transition
+  changes it.**
+  - **Why.** This replaces v3 §3.3, which had a replace resume a suspended
+    configuration. v3's choice was an author's choice, not an owner's.
+  - **Why it is conservative.** Preserving the state is the more conservative of
+    the two: entering credentials never re-enables a login path that someone
+    deliberately turned off. A new configuration starts active, as today, so
+    nobody turns SSO off by accident either.
+  - **The cost** is OQ-5.
+  - Assumed by the factory, pending owner confirmation.
+- **D-4 (answers OQ-2 and OQ-4): no out-of-tree consumer is assumed, and no
+  customer rotation notice is owed by this change.**
+  - **Production has zero users** (PAC-49 §2 item 1, human, 2026-10-21). So no
+    production organisation has configured SSO, no production secret has been
+    exposed, and no production consumer of the current shape exists.
+  - **The release.** The release-manager (stage 7) confirms, by a count of stored
+    SSO configurations and never by reading values, that this still holds for
+    production at release time.
+  - **If the count is non-zero**, the release does not proceed until a human names
+    who tells those organisations to rotate. The sequencing constraint from v3
+    still applies: rotation means writing a new secret, which means passing
+    PAC-50's gate.
+  - **Other deployments** (development, staging, self-hosted) are their operators'
+    to handle. The release note says that any secret configured before this
+    release must be treated as exposed.
+  - Assumed by the factory, pending owner confirmation.
+- **D-5: PAC-50 lands before PAC-22, and PAC-22's contract is written on top of
+  PAC-50's.**
+  - **Why.** This adopts the ordering decided on 2026-10-22 (PAC-50 §4.9), and it
+    is the order PAC-50's implementation PR (#212) already assumes. That PR pins
+    today's thirteen-key response in a test and leaves the projection to this spec
+    (§2.8).
+  - **If PAC-22's contract is drafted while PAC-50 is unmerged**, it is drafted
+    against PAC-50's contract. It is rebased onto `main` once PAC-50 merges, and
+    its gate counts only on the rebased commit.
+  - Assumed by the factory, pending owner confirmation.
+- **D-6: suspending and resuming are SSO writes.** They are authorized by
+  PAC-50's rule for configuration writes and recorded where PAC-50 records them
+  (§3.6, AC-15, AC-16). The alternative, any member, would let every employee
+  switch off the organisation's login. Assumed by the factory, pending owner
+  confirmation.
+- **D-7 (answers OQ-3): API-001 stays one audit row and is annotated, not split.**
+  - **Precedent.** PAC-50's implementation already annotates the row with its
+    write half closed (§2.8), and PAC-35's D-7 split API-092 the same way.
+  - **When PAC-22 merges**, its implementer marks API-001 **Fixed**, citing
+    PAC-50 for the write half and PAC-22 for the disclosure half, with the tests
+    that prove AC-1 and AC-2. Reads by any member remain, but they no longer
+    disclose anything secret. The row's consequence ("can read the org's OIDC
+    client secret and SAML signing cert") then no longer holds, and the read
+    restriction is recorded as out of scope (§5).
+  - **The implementer also** marks API-060 and API-066 Fixed (PAC-22), marks
+    API-092 Fixed once the list's 200 and 403 are asserted, and re-cuts audit
+    batch B1 (`api-audit.md:526-530`) along the PAC-22/PAC-50 line.
+  - Assumed by the factory, pending owner confirmation.
+
+## Revision v3.1 — 2026-10-27
+
+v3 was never challenged, so this revision answers no challenge. It brings v3 up to
+date with what landed after 2026-09-17 and answers its open questions:
+
+- **Citations.** Every citation in §2 was re-read on `main` at `6d751f9`. The v3
+  citation basis (`6f7a856`, and "PAC-45 not merged" with its erratum) is gone.
+- **What other specs settled.** PAC-35 fixed API-010 (in the web app) and API-011,
+  and added sign-in tests, so AC-14 is now a guard that already exists. PAC-21
+  stopped echoing raw errors.
+- **Moved to PAC-50.** AC-13 (API-067), because PAC-50 specifies and implements
+  it.
+- **Decisions.** OQ-1 to OQ-4 are answered as D-1, D-4, D-7 and D-4. D-2, D-3, D-5
+  and D-6 close gaps the new landscape opened. D-3 reverses v3's
+  "a replace resumes".
+- **New criteria.** AC-15, AC-16 and AC-17.
+- **Proof levels.** AC-10 and AC-14 are now `[unit]` against the in-process fake
+  identity provider. AC-9 stays `[e2e]` and needs none.
 
 ---
 
@@ -609,7 +724,8 @@ review **v1** and **v2** of this document, not the spec above. Their section
 numbers, AC numbers and `file:line` citations refer to those versions and to the
 codebase as each was written against; do not read them against v3. The v2
 challenge's central recommendation — split the spec at the authorization boundary
-— is what produced v3 and PAC-50.
+— is what produced v3 and PAC-50. v3.1 (above) refreshes v3; neither v3 nor v3.1
+has been challenged yet.
 
 ---
 
