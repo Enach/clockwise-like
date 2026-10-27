@@ -81,6 +81,10 @@ merges. It also documents a response that was missing from the contract:
    only PascalCase payload in this domain — and include
    **`OIDCClientSecret` and `SAMLCert` in plaintext** to any authenticated org
    member. Everything else in the codebase uses snake_case or camelCase tags.
+   **PAC-22 (contract):** both operations now answer `SsoProvider`, a
+   snake_case projection with no secret under any name and two `has_*`
+   booleans in their place; the list is wrapped in `SsoProviderList`
+   (API-001 disclosure half, U-22).
 
 2. **Two error encodings side by side.** `writeError()`
    (`handlers_settings.go:206`) emits `application/json` `{"error": "..."}`.
@@ -123,9 +127,15 @@ merges. It also documents a response that was missing from the contract:
 9. **`provider_type: "saml"` is storable but unusable.** `POST /api/admin/sso`
    accepts and persists it; `GET /api/auth/sso/{domain}` then returns
    **501 "SAML not yet supported"**. 501 is otherwise unused in the codebase.
+   **PAC-22 (contract):** `POST /api/admin/sso` refuses SAML and an
+   incomplete OIDC body with a 400 naming the problem (API-060, U-21); the
+   501 stays reachable only for rows stored before PAC-22.
 
 10. **`Enabled` is hardcoded `true`** on upsert and there is no update path that
     can set it false — the column exists but is write-once via this API.
+    **PAC-22 (contract):** `PUT /api/admin/sso/{domain}/state`
+    (`setSsoProviderState`) suspends and resumes; `POST /api/admin/sso` keeps
+    the stored state on a replace (API-066).
 
 11. **`DELETE /api/admin/sso/{domain}` returns 204 for a domain that has no
     provider row** (no rows-affected check), so delete is not observably

@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **119**
+- operations: **120**
 - generated: **0**
-- handwritten: **119**
+- handwritten: **120**
 
 ## Register
 
@@ -55,6 +55,7 @@ from the contract and any edit is reported as drift.
 | listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | handwritten | |
 | createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
+| setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | |
 | googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | |
 | ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | |
 | detectAuthProvider                | POST   | /api/auth/detect                                | auth             | handwritten | |
