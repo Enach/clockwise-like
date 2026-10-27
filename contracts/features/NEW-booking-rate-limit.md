@@ -156,4 +156,16 @@ already returns it.
 
 ## 9. Gates run
 
-Recorded in the manifest's `gateRuns` after the run on this branch's head commit.
+`python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98 paths)`, rc 0.
+`python scripts/openapi_migration_report.py --check`: `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc 0.
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-booking-rate-limit-contract`
+on `b7a8488` printed `regenerated: backend/api/gen/paceday.gen.go` (committed as `63505bf`),
+then `make openapi rc=0`, `openapi-check(api) rc=0`, `backend lint rc=0`, `mcp lint rc=0`,
+`backend test rc=0`, `mcp test rc=0`, `backend coverage: 56.8% (floor 43%)` rc=0,
+`mcp coverage: 84.0% (floor 75%)` rc=0. The gate is re-run on the branch head after this
+commit; its result is reported in the stage hand-off, not here, because recording it would
+create a new head.
+
+Not run: the web gate (paired web regeneration belongs to the build stage, AC-9) and the
+e2e gate (no behaviour change yet).
