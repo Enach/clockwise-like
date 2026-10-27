@@ -732,3 +732,135 @@ still says 18, the count when revision 1 was cut. See the non-blocking items.)
   - Not run: the web gate and the e2e gate. This stage changes no behaviour,
     and they belong to the rebased #219 and smart-calendar-flow#109
     (`gates.webGate`, `gates.e2eGate`).
+
+## 13. Revision 3 — 2026-10-27 (answers the revision 2 challenge)
+
+The revision 2 challenge accepted with 2 blocking and 7 non-blocking changes.
+Every one is answered below. No behaviour, schema shape or enum changes; the
+edits are to descriptions, pointers and this document.
+
+### Blocking
+
+1. **The 500 body is `internal error`, not a configuration sentence.** The
+   challenger is right, and §12 item 2 was wrong to say main's 500 wording
+   "describes the server as it is after PAC-21". `handlers_llm.go:75-79` answers a
+   `NewLLMClientFromSettings` failure through `writeServerError`, whose body is
+   `genericServerMessage(500)` = `internal error` (`server_errors.go:26-35`); the
+   sentence `LLM not configured - set API key in Settings` reaches only the log
+   and Sentry. §9 already said so. Fixed in the fragment:
+   - the 500 description (`scheduling.yaml` 500 of `testLLMConnection`) now says
+     both causes, a settings-load failure and a client-construction failure (no
+     key for a key-carrying provider, or `llmProvider: ""`), answer the fixed
+     `{"error":"internal error"}`, and that the cause is never in the body;
+   - the PAC-66-B bullet now reads "is the 422, not the 500";
+   - the `llmProvider: ""` sentence now says it "is the 500
+     `{"error":"internal error"}` (the configuration sentence is logged only,
+     PAC-21)";
+   - the manifest's `operationsChanged[0]` and §1 of this document are aligned,
+     and §12 item 2 carries an inline correction marker pointing here.
+   The round-1 challenge text (`llm_factory.go:31-33 returns the 500 LLM not
+   configured`) is left as written: it is a record of that review, and it names
+   the sentence the factory produces, not the body.
+2. **The rationale pointer.** `scheduling.yaml` now says "rationale in
+   `contracts/features/PAC-70.md`". The bundle was re-assembled; `grep -c
+   'NEW-pac66b\|LLM not configured -' contracts/openapi/openapi.yaml` prints `0`.
+   The new `contractHash` is
+   `a1ca5e15720e1c9778e765c8eb94a1d2233e25022b217a582ba06c0c2d36bce5`, and
+   `contractRevision` is `3`.
+
+**Rejected: making the server send the configuration sentence** so the old
+description became true. That is a behaviour change the spec does not ask for,
+and PAC-21 deliberately forbids error-derived text in a 5xx body. A sentence
+that reports "no key on file" would also be a new oracle the spec's
+"Refusal does not depend on the key" rule is written to avoid.
+
+### Non-blocking
+
+1. **OWNER: OQ-B1** (Ollama only on self-hosted deployments with an approved
+   origin). Unchanged; still assumed by the factory, pending owner confirmation.
+   Now also listed in the manifest as `followUps.ollamaSelfHostedOnly`.
+2. **OWNER: OQ-B2** (advertise enabled providers). Unchanged; stays
+   `followUps.enabledProviders`. Not taken into this contract (§12, "Rejected:
+   re-opening the design").
+3. **OWNER: OQ-B6, second half** (operator path prefix for a gateway). Unchanged;
+   D-B8's "no" stands, the conservative option. `followUps.gatewayPathPrefix`.
+4. **OWNER: OQ-B7** (web Ollama field writes `llmBaseUrl`). Unchanged;
+   `followUps.webOllamaField`.
+5. **Stale line references.** Re-read on web `origin/main` `ad52160`: `llmTest` is
+   `client.ts:1354-1362`; the `llm_base_url` → `llmBaseUrl` mapping is `:651`;
+   the diff-only PATCH key set is `:745-761`; `client.ts:2` imports
+   `CalendarDisconnectUnsupported` and `SettingsUpdate`, neither of them
+   `LLMDestinationRefusal`. §8 and the manifest's `consumersAffected` are
+   updated. Round-1 NB-2 is fixed: §8 and the manifest now name
+   `docker-compose.yml:56-58` for the approved-host variables (with the stale
+   comment at `:50-52` to be rewritten) and say `docker-compose.prod.yml:89-91`
+   is rewritten, not added beside. The round-1 §5 text and older documents
+   (`PAC-66.md`, the spec) keep their historical references.
+6. **`x-uncertain` count.** §10 now says 12 on `origin/main` `6d751f9` and on
+   this branch, 18 when revision 1 was cut from `c954521` (measured:
+   `git show c954521:contracts/openapi/openapi.yaml | grep -c 'x-uncertain:'`
+   prints 18; the same on `origin/main` and on this branch prints 12). §11's "still
+   18" is left as the record of what revision 1 measured on its base.
+7. **Linear PAC-70 description and API-093.** The description is not this
+   stage's to rewrite; a comment on PAC-70 records that the file names are now
+   `contracts/features/PAC-70.{md,yaml}`. `docs/factory/api-audit.md` on main has
+   no API-093 row (`grep -c API-093` prints 0), so the manifest cannot claim it.
+   It is filed as `followUps.auditApi093` for the plan stage: either #219 adds the
+   row and the manifest lists it in `resolvesFindings`, or the issue drops it.
+
+### Paired web PR
+
+Enach/smart-calendar-flow#109 (`chore/regen-types-pac-66b`) was behind web main.
+`origin/main` was merged into it (no history rewritten; generated files taken
+from main), then `REGEN=1 web-gate.sh chore/regen-types-pac-66b
+factory/pac-70-contract` regenerated `src/api/generated/types.ts` and
+`schemas.types.d.ts` (descriptions only), committed as `9d68d8d`. When #219 is
+rebased onto this contract, its bundle must equal this one, so #109 stays in
+sync with it.
+
+### What was run (revision 3)
+
+All on Windows Git Bash, host checkouts on the named branches.
+
+- `python scripts/openapi_assemble.py`: `paths 98, operations 119, x-uncertain: 12`,
+  rc=0. `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98
+  paths)`, rc=0. `sha256sum contracts/openapi/openapi.yaml`: the `contractHash`
+  above.
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-70-contract`
+  on `11c0c79` (the fragment, bundle and manifest edits), exit 0:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (98 paths)
+OK: MIGRATION.md covers all 119 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 56.8% (floor 43%) [3646 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+- `web-gate.sh chore/regen-types-pac-66b factory/pac-70-contract` (no REGEN) on
+  web `66d6f20`, before the regen: `make verify rc=2`, with
+  `FAIL: src/api/generated/types.ts is out of date with the contract.` and the
+  same for `schemas.ts` and `schemas.types.d.ts`. That is the failure the regen
+  fixes.
+- `REGEN=1 web-gate.sh chore/regen-types-pac-66b factory/pac-70-contract` on web
+  `7539957` (main merged in): `regenerated: src/api/generated/schemas.types.d.ts`,
+  `regenerated: src/api/generated/types.ts`, lint, typecheck, design-check,
+  openapi-check, test (297 passed), coverage PASS, `make verify rc=0`.
+- `web-gate.sh chore/regen-types-pac-66b factory/pac-70-contract` on web
+  `9d68d8d` (the committed regen): `make verify rc=0`.
+- Not run: the e2e gate. This stage changes no behaviour, and the contract branch
+  carries no implementation; e2e belongs to the rebased #219 and #109
+  (`gates.e2eGate`).
+
+The commit that adds this section changes only this document. The api and web
+gates were re-run on it; their result is in the PAC-70 Linear comment and the
+#109 body.
