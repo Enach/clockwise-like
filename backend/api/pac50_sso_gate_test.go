@@ -221,7 +221,28 @@ func TestSSOWrite_DomainMismatchLeavesGrantLive(t *testing.T) {
 
 type failingSSOStore struct {
 	ssoStore
-	failWrite, failRecord bool
+	failWrite, failRecord, failDelete, failList, failConsume bool
+}
+
+func (f *failingSSOStore) deleteProvider(ctx context.Context, d string, actor, org uuid.UUID, via string) (bool, error) {
+	if f.failDelete {
+		return false, errors.New("injected store failure")
+	}
+	return f.ssoStore.deleteProvider(ctx, d, actor, org, via)
+}
+
+func (f *failingSSOStore) listProviders(ctx context.Context, org uuid.UUID) ([]*storage.SSOProvider, error) {
+	if f.failList {
+		return nil, errors.New("injected store failure")
+	}
+	return f.ssoStore.listProviders(ctx, org)
+}
+
+func (f *failingSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error) {
+	if f.failConsume {
+		return false, errors.New("injected store failure")
+	}
+	return f.ssoStore.consumeGrant(ctx, user, org, now)
 }
 
 func (f *failingSSOStore) upsertProvider(ctx context.Context, p *storage.SSOProvider, actor, org uuid.UUID, via string) (*storage.SSOProvider, error) {
@@ -247,9 +268,7 @@ func TestSSOWrite_StoreFailureConsumesGrant(t *testing.T) {
 	e.h.store = &failingSSOStore{ssoStore: real, failWrite: true}
 	sess := session(t, u, time.Now())
 	rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(org.Domain), sess)
-	if rec.Code < 500 || !strings.HasPrefix(errorBody(t, rec)["error"].(string), "save failed") {
-		t.Fatalf("status = %d %s, want 5xx save failed", rec.Code, rec.Body.String())
-	}
+	wantInternalError(t, "create after the gate", rec, rec.Code, rec.Body.String())
 	if !grantConsumed(t, e, g.ID) {
 		t.Fatal("grant not consumed by a write that passed the gate")
 	}

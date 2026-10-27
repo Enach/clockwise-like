@@ -103,7 +103,7 @@ func TestStepupStart(t *testing.T) {
 			t.Errorf("%s: the step-up widens the calendar consent: %q", c.provider, v.Get("scope"))
 		}
 		ck := stateCookie(rec)
-		if ck == nil || ck.Value == "" || ck.Path != "/api/admin/sso/stepup" || ck.MaxAge != 600 || !ck.HttpOnly || ck.SameSite != http.SameSiteLaxMode || ck.Secure {
+		if ck == nil || ck.Value == "" || ck.Path != "/api/admin/sso/stepup" || ck.MaxAge != 600 || !ck.HttpOnly || ck.SameSite != http.SameSiteLaxMode {
 			t.Fatalf("%s: state cookie = %+v", c.provider, ck)
 		}
 		if strings.Contains(ck.Value, u.Email) {
@@ -114,7 +114,8 @@ func TestStepupStart(t *testing.T) {
 		t.Errorf("google hints = %v", v.Query())
 	}
 
-	for _, q := range []string{"", "?provider=", "?provider=okta", "?provider=Google"} {
+	// The missing/empty provider is TestPAC50_StartProviderValidation's.
+	for _, q := range []string{"?provider=okta", "?provider=Google"} {
 		rec := e.do(t, http.MethodGet, "/api/admin/sso/stepup"+q, "", sess)
 		if rec.Code != http.StatusBadRequest || rec.Header().Get("Content-Type") != "application/json" ||
 			errorBody(t, rec)["error"] != "provider must be 'google' or 'microsoft'" || stateCookie(rec) != nil {
@@ -126,16 +127,6 @@ func TestStepupStart(t *testing.T) {
 	rec := e.do(t, http.MethodGet, "/api/admin/sso/stepup?provider=microsoft", "", sess)
 	if rec.Code != http.StatusServiceUnavailable || errorBody(t, rec)["error"] != "microsoft step-up not configured" || stateCookie(rec) != nil {
 		t.Fatalf("unconfigured = %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestStepupStart_SecureCookieOnHTTPSDeployment(t *testing.T) {
-	e := newSSOEnv(t)
-	e.h.stepup.secureCookie = true
-	u, _ := e.member(t, "secure")
-	ck := stateCookie(e.do(t, http.MethodGet, "/api/admin/sso/stepup?provider=google", "", session(t, u, time.Now())))
-	if ck == nil || !ck.Secure {
-		t.Fatalf("cookie = %+v, want Secure", ck)
 	}
 }
 

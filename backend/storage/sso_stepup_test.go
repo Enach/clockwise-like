@@ -14,7 +14,7 @@ import (
 )
 
 // PAC-50 storage: the step-up grant (spec §4.1, §4.2 step 5a), the SSO event
-// table (§4.6), the tenant pin (§4.3) and migration 026 (§4.8).
+// table (§4.6), the tenant pin (§4.3) and migration 028 (§4.8).
 
 // stepupFixture creates a user in a fresh org and returns both ids.
 func stepupFixture(t *testing.T, db *sql.DB, label string) (uuid.UUID, uuid.UUID, string) {
@@ -271,15 +271,16 @@ func TestSSOProviderRecordedWrites(t *testing.T) {
 	}
 }
 
-// AC-20a: migration 026 lower-cases existing rows and makes uniqueness
-// case-insensitive; the down migration restores the raw constraint.
-func TestMigration026_LowerCasesAndUniquesProviderDomains(t *testing.T) {
+// AC-20a: migration 028 lower-cases existing rows and makes uniqueness
+// case-insensitive; the down migration restores the raw constraint and
+// leaves main's 026 (PAC-23) and 027 (PAC-49) applied (spec §9 D-7).
+func TestMigration028_LowerCasesAndUniquesProviderDomains(t *testing.T) {
 	db, to := migrationTestDB(t)
-	to(25)
+	to(27)
 	if _, err := db.Exec(`INSERT INTO sso_providers (domain, provider_name, provider_type) VALUES ('ACME.com', 'Okta', 'oidc')`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	to(26)
+	to(28)
 	var got string
 	if err := db.QueryRow(`SELECT domain FROM sso_providers`).Scan(&got); err != nil || got != "acme.com" {
 		t.Fatalf("domain after 026 = %q, %v; want acme.com", got, err)
@@ -299,7 +300,7 @@ func TestMigration026_LowerCasesAndUniquesProviderDomains(t *testing.T) {
 	}
 
 	// Down, then up again: both directions run.
-	to(25)
+	to(27)
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_name IN ('sso_stepup_grants','sso_events')`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("tables left after down: %d, %v", n, err)
@@ -310,5 +311,9 @@ func TestMigration026_LowerCasesAndUniquesProviderDomains(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO sso_providers (domain, provider_name, provider_type) VALUES ('acme.com', 'Dup', 'oidc')`); err == nil {
 		t.Fatal("raw UNIQUE(domain) not restored by the down migration")
 	}
-	to(26)
+	// 027's column and 026's are still there: 028's down touches neither.
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE (table_name = 'audit_log' AND column_name = 'user_id') OR (table_name = 'settings' AND column_name = 'auto_schedule_last_run')`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("026/027 columns after 028 down: %d, %v; want 2", n, err)
+	}
+	to(28)
 }

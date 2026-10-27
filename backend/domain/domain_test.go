@@ -50,7 +50,8 @@ func TestDomainMatchesOrg(t *testing.T) {
 		{"notacme.com", "acme.com", false},
 		{"acmeevil.com", "acme.com", false},
 		{"ACME.COM", "acme.com", true},
-		{" acme.com ", "ACME.com", true},
+		// PAC-50 D-9: compared as sent, no trimming.
+		{" acme.com ", "ACME.com", false},
 		{"", "acme.com", false},
 		{"", "", false},
 	}
