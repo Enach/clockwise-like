@@ -1,7 +1,7 @@
 # Spec — PAC-40: A deleted scheduling link does not go away, the same request means different things on create and edit, and cancelling a booking re-opens a used-up link
 
 - **Linear**: https://linear.app/paceday/issue/PAC-40
-- **Status**: draft
+- **Status**: challenged
 - **Author**: spec-author
 - **Inherited scope**:
   - **API-050** (soft delete visible in two of three read paths), **API-049**
@@ -47,9 +47,9 @@ changes meaning the first time it is saved.
 promises the owner makes to themselves: this link will not take more than N
 meetings. The count behind that promise is recomputed from live bookings on
 every read, so a cancelled booking hands its use back and the link silently
-re-opens to whoever still has the URL. Paceday has no cancel action yet, so this
-is latent — it becomes a real defect the day cancellation ships, and it already
-happens to any booking cancelled outside the app.
+re-opens to whoever still has the URL. Nothing in Paceday cancels a booking yet
+(cancelling the calendar event leaves the booking as it was), so this is latent
+— it becomes a real defect the day cancellation ships.
 
 **Anyone signed in can read any link by id.** Fetching one link has no
 ownership check, unlike every other owner operation on links, and returns every
@@ -158,6 +158,14 @@ Create and edit accept `duration_options` or its alias `durations`, and
   at `:221`, again inline at `:293-296`, with the same message and status. The
   inline copy can only differ from the first if the link changed in between,
   and it reads the same in-memory copy, so it never does.
+- The "end must be after start" check at `:285-288` cannot fire either. When
+  the request sends an end, the duration is computed as the whole minutes
+  between start and end (`:262`), so any end at or before start gives a
+  duration of 0 or less, which `durationAllowed` rejects first as "invalid
+  duration" (`:125-127`, called at `:277`). When the request sends no end, the
+  end is start plus a duration that has passed the same check, so it is always
+  after start. This is a third unreachable branch of the API-073 kind; it is
+  removed with the other two (§3.5). Found by the challenge, Blocking 1.
 
 ### 2.6 Fetching one link has no authorization (API-006)
 
@@ -217,8 +225,10 @@ returning any of the link's details or its hosts (D-7).
 ### 3.5 Public booking create
 
 The public booking create path rejects exactly the same requests with exactly the
-same answers as today, without the unreachable check and the duplicated
-exhaustion test.
+same answers as today, without the two unreachable checks (the repeated
+end-time error and "end must be after start") and the duplicated exhaustion
+test. A request whose end is at or before its start keeps getting the answer it
+gets today, "invalid duration".
 
 ## 4. Acceptance criteria
 
@@ -316,10 +326,10 @@ host details.  [contract]
 
 **Public booking create (API-073)**
 
-AC-20. Given each rejection the public booking create makes today (missing
-fields, bad start, bad end, end not after start, end/duration mismatch, invalid
-duration, too soon, used up, overlapping slot, unknown slug), when the same
-request is sent after the change, then the status and body are
+AC-20. Given each rejection the public booking create can make today (missing
+fields, bad start, bad end, end/duration mismatch, invalid duration — including
+an end at or before start — too soon, used up, overlapping slot, unknown slug),
+when the same request is sent after the change, then the status and body are
 identical.  [contract] — This criterion is the regression net, not a failing
 test: removing unreachable code changes no observable behaviour, so the
 removal itself is proven by review of the diff. That is stated rather than
@@ -598,3 +608,31 @@ Checked and correct: `storage/scheduling_links.go:87-163, 300-318, 426-452,
   error toast (`Links.tsx:355`). This is acceptable and consistent with §3.1, but
   it is a user-visible change that §5's "no web changes" should acknowledge.
 - No consumer in `mcp/` (verified by grep).
+
+## Revision — 2026-10-27 (answers challenge round 1)
+
+Both blocking findings were checked against source at `6d751f9` and accepted.
+No decision changed. The non-blocking findings are not addressed in this round.
+
+1. **Blocking 1, AC-20 lists an unreachable rejection.** Confirmed:
+   `durationAllowed` returns false for any duration of 0 or less
+   (`handlers_booking.go:125-127`) and runs at `:277`, before the "end must be
+   after start" check at `:285-288`. With an end sent, the duration is the whole
+   minutes from start to end (`:262`), so an end at or before start is rejected
+   as "invalid duration". Without one, the end is start plus a duration that has
+   already passed that check. *Changed:* "end not after start" is removed from
+   AC-20's list, and AC-20 now says such a request falls under "invalid
+   duration". §2.5 names `:285-288` as a third unreachable branch, and says it is
+   removed under API-073 together with the other two. §3.5 now names both
+   unreachable checks and says a request with its end at or before its start
+   keeps today's "invalid duration" answer.
+2. **Blocking 2, §1 contradicts §2.4 about cancellations outside the app.**
+   Confirmed: no code in `backend/`, `mcp/` or the web app writes a booking's
+   status. The only `'cancelled'` uses on bookings are reads
+   (`storage/scheduling_links.go:87, 101, 113, 126, 151, 392`) and the column
+   check (`migrations/009_scheduling_links.up.sql:33`). *Changed:* §1 no longer
+   says the re-opening already happens. It now says nothing in Paceday cancels a
+   booking yet, so the defect is latent, which matches §2.4. D-6 is unchanged.
+
+Status moved from draft to challenged. The spec goes back to the challenger for
+round 2.
