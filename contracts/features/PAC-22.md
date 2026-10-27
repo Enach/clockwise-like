@@ -303,3 +303,221 @@ before reverting.
 
 Recorded in `contracts/features/PAC-22.yaml` (`gates`), with the commands run and
 their output.
+
+## Challenge — 2026-10-27
+
+Applies to contract revision 1, commit `79d63d9` on `factory/pac-22-contract`
+(bundle sha256 `46b978ed…8fd9`, identical in `d4a2389` and `79d63d9`). Read
+against the committed artefacts, the handler and storage on this branch
+(unchanged from `main` `6d751f9`), spec v3.2, and PAC-50's contract on
+`origin/impl/pac-50-sso-write-gate-backend` at `51aa70a`. The challenger did not
+see the author's reasoning beyond this document and the manifest.
+
+**Verdict**: accept-with-changes
+
+**Checks run by the challenger** (nothing else is claimed):
+
+- `make openapi-check WEB=/nonexistent` in an LF clone of this branch
+  (golang:1.25-bookworm): `OK: bundle is in sync (99 paths)`, `OK: MIGRATION.md
+  covers all 120 operations (0 generated)`, `OK: backend/api/gen matches the
+  contract`, `SKIPPED: web generated types (no repo at /nonexistent)`; rc=0.
+  `go build ./...` in `backend/` in the same clone: rc=0.
+- `python3 scripts/openapi_assemble.py --check` in the worktree: `OK: bundle is
+  in sync (99 paths)`.
+- `x-uncertain:` keys in the bundle: 12 on `6d751f9`, 10 here. Matches the
+  manifest.
+- `sha256sum` of the bundle at `d4a2389` and `HEAD`: both `46b978ed…8fd9`.
+  Matches `contractHash`.
+- Not run: the full api-gate (the host checkout is on another branch and was
+  not switched), the web half of openapi-check, e2e.
+
+### Blocking
+
+1. **createSsoProvider says PAC-22's checks run before the membership check.
+   The handler, PAC-50 and this contract's own rebase plan put membership
+   first.** `auth.yaml` (createSsoProvider description) says: "The caller must
+   belong to an org and the supplied domain must match … PAC-22 neither widens
+   nor narrows it, and its own checks below all run before it." Here "it" is
+   the whole rule, membership included.
+   - Request: a user with no org (`users.org_id` NULL) sends `POST
+     /api/admin/sso` with `{"domain":"acme.com","provider_name":"x","provider_type":"saml"}`.
+   - Read literally, the contract answers 400 `provider_type 'saml' is not
+     supported`.
+   - The handler answers 403 `org membership required` before it decodes the
+     body (`backend/api/handlers_sso.go:167-172`).
+   - PAC-50 makes membership step 1 and body shape step 2. PAC-22.md §0, rebase
+     item 1, inserts PAC-22's checks "into PAC-50's step 2".
+   - `setSsoProviderState` in this same contract also checks membership first
+     (step 1).
+
+   So the contract states an order the code contradicts and that its own
+   revision 2 would reverse. An implementer working from revision 1 would move
+   the membership check. **Fix**: reword the sentence to: "Membership (403
+   `org membership required`) is checked first, as today. Checks 1-5 below run
+   after it and before the org lookup, the domain match and any PAC-50 write
+   authorization."
+
+2. **The manifest's AC-6 asks for an org with two configurations. No such org
+   can exist.**
+   - `sso_providers.domain` is `UNIQUE` (`008_sso_providers.up.sql:3`).
+   - `organizations.domain` is `UNIQUE` (`007_organizations.up.sql:4`).
+   - The list query joins `o.domain = s.domain` exactly
+     (`backend/storage/sso_providers.go:89`), and the contract repeats that
+     ("listed when its domain equals the org's domain exactly").
+
+   So `listSsoProviders` returns at most one item for any org. A second row for
+   a subdomain or for a different casing is never joined. "Org with 0, 1, then
+   2 configurations: … validates each time" is therefore a test that cannot be
+   arranged. Spec AC-6 says "more than one" too, and the contract stage
+   inherited it silently. **Fix** (manifest and `SsoProviderList.providers`
+   description):
+   - say that the list holds at most one item today, and why;
+   - change AC-6 to exercise 0 and 1 through the API;
+   - cover the multi-item shape only by validating a constructed
+     `SsoProviderList` against the schema, or send AC-6 back to the spec. Do not
+     leave a criterion that cannot be satisfied.
+
+3. **The consumer row for `TestUpsertSSOProvider_Update` misdescribes the
+   test.**
+   - PAC-22.md §4 says the test "Asserts that the upsert replaces every column,
+     `enabled` included". The manifest says it "breaks: one assertion".
+   - The test (`backend/storage/sso_providers_test.go:59-87`) sets `Enabled:
+     true` on both writes and asserts only `ProviderName == "Okta"`. It asserts
+     nothing about `enabled` and nothing about any other column.
+
+   So it does not break. Two properties that the contract and spec §6 rely on
+   are not guarded by it: that the replace still replaces every configuration
+   value, and that a replace now keeps `enabled`. **Fix**: correct the row in
+   both files to say "does not break; asserts `provider_name` only". The plan
+   must then name new assertions:
+   - a replace keeps `enabled = false` and keeps `enabled = true`;
+   - every other configuration column is replaced, including the SAML columns
+     and the secret being cleared.
+
+### Requests wrongly permitted
+
+None found beyond Blocking 1, which is about order, not about what is
+admitted. Attacked:
+
+- `POST /api/admin/sso` with an otherwise complete OIDC body plus
+  `"saml_cert": null` → step 2, `saml_cert is not supported`. The schema has no
+  such property, so a generated client cannot send it.
+- `{"provider_type":"saml","saml_cert":"x", …}` → `saml_cert` is named first, as
+  §2.6 intends.
+- `"oidc_client_secret": null` → `oidc_client_secret is required`.
+- `"oidc_issuer": " "` → accepted. This is documented as deliberate (§2.6) and
+  its consequence is stated.
+- `PUT /api/admin/sso/acme.com/state` with
+  `{"state":"suspended","oidc_client_secret":"x"}` → 400 `unknown property`.
+- `{"state":"Suspended"}` and `{}` → 400 `state must be …`.
+- `PUT /api/admin/sso/sub.acme.com/state` → 400 `provider_domain_mismatch`.
+- `PUT /api/admin/sso/stepup/state` → 400 `provider_domain_mismatch`.
+
+### Responses the client cannot handle
+
+None. No hand-written consumer exists. On `origin/main` of smart-calendar-flow,
+`SsoProvider`/`admin/sso` appear only in `src/api/generated/{types.ts,
+schemas.ts, schemas.types.d.ts}`.
+
+The projection was checked against the table. Every column is `NOT NULL`
+(`008_sso_providers.up.sql:2-14`), so every required string and boolean of
+`SsoProvider` is always derivable. `provider_type`'s CHECK matches the enum
+`[oidc, saml]`, and the list's `ORDER BY s.created_at` matches "oldest first".
+
+### Consumers affected
+
+- smart-calendar-flow `src/api/generated/*`: regenerated. `SsoProviderResponse`
+  disappears and nothing imports it (verified on `origin/main`).
+- clockwise-like `backend/api/gen`: regenerated in `d4a2389`, in sync, builds.
+- `mcp/`, `e2e/`: no reference to `/api/admin/sso` (grep, this branch).
+- `backend/api/pac21_contract_5xx_test.go` reads the bundle. The new 500 uses
+  `ErrorResponse` with the PAC-21 wording, so it is consistent with what that
+  test checks. Not run here.
+- `backend/storage/sso_providers_test.go:59`: see Blocking 3.
+
+### Contract/implementation divergences
+
+- Blocking 1.
+- Pre-existing, re-stated rather than introduced: `SsoProviderCreateRequest`
+  has `additionalProperties: false`, but the handler ignores undeclared
+  properties (`handlers_sso.go:174-185`, a plain `Decode`). The description now
+  says so ("ignored today"), and PAC-50 closes it on rebase. Acceptable for
+  revision 1 because the divergence is stated.
+
+### Uncertainties not actually resolved
+
+None. U-21 is decided by spec D-1, D-2 and D-8, and each decision is pinned by
+AC-7, AC-8 and AC-18. U-22's question (casing inferred, not observed) dissolves
+because the wire type is now defined by the contract, and AC-5 and AC-6
+validate responses against it. Both removals carry evidence and a test.
+
+### Verified clean
+
+- **Suspension semantics.** `GetSSOProviderByDomain` filters `enabled = true`
+  (`sso_providers.go:51`). Detection (`backend/auth/sso_detect.go:37`), start
+  (`handlers_sso.go:51`) and callback (`:112`) all go through it, so the
+  described 404 and "not `sso`" for a suspended row is what the code does.
+- **deleteSsoProvider** does not filter on `enabled` (`sso_providers.go:110`),
+  as §1 says.
+- **`updated_at` untouched by the transition is implementable.** There is no
+  trigger on `sso_providers`; only the upsert sets `updated_at = NOW()`
+  (`sso_providers.go:73`).
+- **Rebase $ref.** PAC-50's `SsoWriteForbiddenResponse` is a `oneOf` whose
+  `SsoWriteMembershipRequired` variant carries `error: [org membership
+  required, org not found]` (`51aa70a`). Swapping setSsoProviderState's 403
+  `$ref` in revision 2 therefore also covers its step-1 403s.
+- **PAC-50's step 1 is membership, including `org not found`.** This matches
+  setSsoProviderState's step 1.
+- **Routing.** `PUT /api/admin/sso/{domain}/state` is one segment deeper than
+  `DELETE /api/admin/sso/{domain}` and does not collide. The `stepup` case is
+  stated.
+- **Acceptance tests.** The manifest's `acceptanceTests` cover every spec
+  criterion except AC-13, which the spec withdrew. Only AC-6 diverges
+  (Blocking 2).
+- **Security conventions.** The new operation inherits global `bearerAuth` (no
+  `security: []`). No response schema has a property carrying either secret,
+  and both `SsoProvider` and `SsoProviderList` are `additionalProperties:
+  false`.
+- **Rejected alternatives** (§2.2-§2.4, §2.6): each is rejected for a reason
+  tied to a criterion (AC-1, AC-3, AC-12, D-1, D-8), not to taste.
+
+### Non-blocking
+
+1. **ssoOidcCallback's 404 is not updated.** A sign-in that started before a
+   suspension reaches the callback after it and gets 404 `SSO not configured
+   for this domain` (`handlers_sso.go:112-116`). The callback's 404
+   description should say "no active row, none or suspended (PAC-22)", as
+   startSsoLogin's now does.
+2. **The "empty-issuer 500" wording can be misread.** startSsoLogin's 500 is
+   "Issuer discovery failed", which stays reachable for any row written after
+   PAC-22 whose issuer is unreachable or whitespace (`" "` passes
+   `minLength: 1`). The manifest's summary "501 and empty-issuer 500 reachable
+   only for rows stored before PAC-22" reads as if the 500 were. Suggest:
+   "the 500 stays reachable for any row whose discovery fails".
+3. **Atomicity is not stated for setSsoProviderState.** The contract does not
+   say whether the state write and the `sso_provider_written` record are one
+   transaction, so a 500 after the write leaves "did the state change?"
+   undefined. The 500 description, or the plan, should say which.
+4. **The `MIGRATION.md` register disagrees with §4.** The register lists
+   `setSsoProviderState` as `handwritten`, while PAC-22.md §4 says it is to use
+   the generated server interface. The implementation must flip the row.
+5. **Factory §2 gate 4 (web types in sync) is not met on revision 1**, as the
+   manifest admits. Revision 2 must ship with the paired web PR (`REGEN=1
+   web-gate`) green before implementation starts.
+6. **Duplicate `state` keys are undefined.** For
+   `{"state":"active","state":"suspended"}`, Go keeps the last value, and the
+   contract does not say which wins. This is low risk, but it is unspecified.
+7. **OWNER:** OQ-5 (fixing and resuming a configuration takes two writes, two
+   step-ups).
+8. **OWNER:** OQ-6 (no OIDC public clients).
+9. **OWNER:** OQ-7 (the kill switch may need the operator).
+10. **OWNER:** a subdomain row stored under `main`'s suffix rule cannot be
+    reached through the API once PAC-50's exact rule lands. An example is
+    `sub.acme.com` written by an `acme.com` member before PAC-50. Such a row:
+    - stays active for sign-in (detection looks up the email's own domain);
+    - is not listed (the join is exact);
+    - cannot be suspended (AC-21) or deleted (PAC-50's exact rule).
+
+    Only the operator can turn it off. Production has zero users, so none exists
+    there (D-4), but other deployments may have such rows. Is "operator only" the
+    accepted answer?
