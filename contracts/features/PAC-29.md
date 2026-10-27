@@ -830,3 +830,137 @@ all-day event lasts at least 24 h. No other caller exists (`grep -rn updateEvent
 - **Consumers.** The `clockwise_update_event` row now reads "error text where there was a
   silent conversion" (manifest and §5). The e2e `event delete` scenario is listed as
   unaffected.
+
+## Challenge — 2026-10-27 (round 3, contract revision 3)
+
+Reviewer: `contract-challenger`, against the committed state of `factory/pac-29-contract`
+at `0102b26`. Read: this file and `PAC-29.yaml` as committed, the fragment diff against
+`a927732` (round 2) and against `origin/main`, `handlers_events.go`, `calendar/events.go`,
+`handlers_settings.go` (`validClockTime`), `mcp/tools.go`, and the web consumers in
+`smart-calendar-flow` `origin/main` at `90def70` (`Dashboard.tsx`, `EventEditForm.tsx`,
+`RescheduleSuggestions.tsx`, `EventDetailView.tsx`, `client.ts`, `vitest.config.ts`,
+`Dashboard.timeFormat.test.tsx`).
+
+**Verdict**: accept. C2-B1 is resolved by option (a): the `allowedPaths` scope, AC-9 (ii) and AC-11
+together close every silent all-day-to-timed source the code has. Revision 3 changes only
+descriptions; the generated Go changes only in its embedded spec. I found no request wrongly
+permitted or forbidden, no response a consumer cannot handle, and no consumer that breaks.
+The non-blocking items below are for the plan and frontend stages.
+
+### Blocking
+
+None.
+
+### Requests wrongly permitted
+
+None that PAC-29 introduces. Tried:
+- `PATCH /api/events/evt-allday {"start":"2026-05-10"}` on an all-day event stored as
+  `2026-05-04`..`2026-05-05`: both sides are dates, so it passes the D-8 kind check; Google
+  rejects the empty/negative range and the server answers 500 `internal error`. The 500
+  description ("the Google update call failed") covers it, so it is not a divergence, and
+  the same request with date-times (`end <= start`) is a 500 on `main` today with no audit
+  finding. Non-blocking, R3-N3.
+- `PATCH {"send_updates":"bogus","start":"2026-05-04","end":"2026-05-04T10:00:00Z"}`: D-10
+  gives 400 `invalid send_updates` before any Google call; the mixed pair would be 400 after
+  GetEvent. Exactly one documented 400 either way, nothing written.
+- `DELETE /api/events/x?send_updates=` (empty value): present and neither `all` nor `none`,
+  so 400 per the 400 description. No consumer sends it (web always `all`/`none`,
+  `client.ts:1381-1383`; MCP sends no query, `mcp/tools.go:122`).
+
+### Responses the client cannot handle
+
+None. The 200 and error bodies are unchanged from round 2. D-11's new 404 for a cancelled
+event is `ErrorResponse` with the existing text and goes through the same `apiErrorMessage`
+toast (and, on drag, `revert()`) in `EventEditForm.tsx` and `Dashboard.tsx`.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/pages/Dashboard.tsx`: verified AC-11 is sufficient.
+  `allDaySlot={false}` (`:481`) means all-day events render only in `dayGridMonth`, so a
+  timed event cannot be dropped into an all-day row and an all-day event cannot be dropped
+  into a time slot; the only all-day transitions are the month-view drop/resize AC-11 pins.
+  A timed event dragged in month view keeps `allDay: false` and its time, and AC-11 keeps
+  `toISOString()` for it.
+- `smart-calendar-flow/src/components/RescheduleSuggestions.tsx` (`:128-131`, `:160-171`):
+  the "never fires for an all-day event" claim holds. `durationMs` for a bare-date DTO is
+  >= 24 h; a slot must satisfy `t + durationMs <= dayEnd` inside one business day, and
+  `work_end` is at most `23:59` (`validClockTime` parses `15:04`, so `24:00` is rejected).
+  The only exception would be a 25 h DST fall-back day with work hours `00:00`-`23:xx`; in
+  the EU and US that day is a Sunday, which `isBusinessDay` skips. Not a finding.
+- `mcp/tools.go:113` `clockwise_update_event`: as round 2; the manifest row now says
+  "error text where there was a silent conversion", as asked.
+
+### Contract/implementation divergences
+
+None. Every revision-3 "until PAC-29's implementation lands" clause matches
+`handlers_events.go` on this branch: decode before `calClient` (`:46-53`), every GetEvent
+error a 404 (`:55-58`), nothing inspects `existing.Status` (so a cancelled event is written
+like any other, as the new sentence says), DELETE reads no query (`:93-103`).
+
+### Uncertainties not actually resolved
+
+None claimed beyond rounds 1 and 2. Bundle `x-uncertain` lines: 14 on `origin/main`, 13 on
+HEAD (`grep -c`).
+
+### Non-blocking
+
+- **R3-N1 AC-9 has no timezone, and the form's date field depends on one.**
+  `EventEditForm.tsx` `isoDateOnly` (`:24-27`) parses a bare DTO date as UTC midnight.
+  Checked with node 24: `process.env.TZ="America/New_York"; new Date("2026-05-04")` gives
+  `getDate() === 3`. A user west of UTC therefore sees the all-day event `2026-05-04` in the
+  form as `2026-05-03`. AC-9 (ii) is phrased as "only the date changed to `2026-05-06`"; an
+  implementation that keeps `isoDateOnly` passes it in UTC or Europe/Paris and still shows
+  the wrong date in the Americas. Pre-existing display bug, nothing wrong is sent (D is
+  whatever the user picks), but the frontend stage rewrites exactly this all-day path.
+  Suggested AC-9 addition, as AC-11 does: run in a negative-offset zone and assert the date
+  input shows `2026-05-04` for DTO `start` `2026-05-04`.
+- **R3-N2 Set the zone inside the test, not in the shell.** On this Windows host,
+  `TZ=America/New_York node -e ...` from Git Bash was not applied (printed the host zone),
+  while assigning `process.env.TZ` inside the process was. AC-11 and an AC-9 non-UTC test
+  should set it in the test file or vitest setup, or they may pass vacuously.
+- **R3-N3 `end <= start` is a 500, not a 400**, now also reachable with bare dates (e.g.
+  `{"start":"2026-05-10"}` alone on a one-day all-day event), as it is with date-times today.
+  Google rejects it and the server reports `internal error` to Sentry. Not an audit finding
+  and not PAC-29's to fix; the 500 description is honest. A follow-up could make it a
+  request-only 400 if the owner wants it.
+- **R3-N4 AC-7 examples differ between the manifest and §6.** The manifest uses
+  `2026-05-06`/`2026-05-07` and a start-only `2026-05-06T10:00:00Z`; §6 uses
+  `2026-05-04`/`2026-05-05` (the dates the event already has, so that request cannot fail)
+  and `2026-05-04T10:00:00Z`. The manifest's version is the stronger test; the backend
+  stage should use it.
+- **R3-N5 AC-11 test path.** The frontend `forbiddenPaths` entry "src/pages other than
+  Dashboard.tsx handleEventChange" does not literally exempt a test file, while
+  `allowedPaths` says "and a test for it". The intent is clear
+  (`src/pages/Dashboard.*.test.tsx`, after `Dashboard.timeFormat.test.tsx`, which already
+  stubs the page's dependencies); the plan should name the file. `handleEventChange` is a
+  closure in the component, so the test either drives it through a stubbed
+  `@fullcalendar/react` that captures `eventDrop`/`eventResize`, or extracts a pure helper;
+  if the latter, the plan must name where it lives, since no `src/lib` path is allowed.
+- **Carried**: N-2 (no `docs/specs/PAC-29.md`) and C2-N5 (`nullable` in 3.1) unchanged and
+  acknowledged.
+
+### Verified clean
+
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-29-contract` run by
+  the challenger on `0102b26`, exit 0:
+  - `make openapi rc=0`, `regenerated: none`
+  - `OK: bundle is in sync (98 paths)`
+  - `OK: MIGRATION.md covers all 119 operations (0 generated)`
+  - `OK: backend/api/gen matches the contract`, `openapi-check(api) rc=0`
+  - `backend lint rc=0`, `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`
+  - backend coverage 55.4% (floor 43%) rc=0; mcp coverage 84.0% (floor 75%) rc=0
+- `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (98 paths)`, rc=0.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` =
+  `ee3b2f5e28516e0d447b40cc7ff0a0d3e5e0b1943c9a509c5478cc361fd5665c`, matching
+  `contractHash`.
+- Revision-3 fragment diff (`a927732..HEAD`): descriptions only in `calendar.yaml`
+  (`patchEvent`, its 404, `deleteEvent`, `EventPatchRequest.attendees`). `5652bb8` touches
+  only `paceday.gen.go` (2 lines, embedded spec) and this file, as §8 says.
+- D-10 keeps existing tests valid: `pac21_calendar_not_connected_test.go` sends
+  `{"title":"x"}` and no query, which passes every request-only check and still reaches 401.
+- D-11 deletes no data and widens no visibility: a cancelled event is not written; DELETE of
+  one gets Google's 410, which is 404 under D-9.
+- C2-N1 description now states the room-rule asymmetry; it can only keep an attendee.
+- Every `updateEvent` caller on web `main` (`git grep`): `EventEditForm.tsx:95` (AC-9),
+  `RescheduleSuggestions.tsx:238` (never on all-day, above), `Dashboard.tsx:269` (AC-11).
+  No other PATCH/DELETE of `/api/events/{id}` outside `client.ts`.
