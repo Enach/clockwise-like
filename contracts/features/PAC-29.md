@@ -3,7 +3,8 @@
 - **Linear issue**: [PAC-29](https://linear.app/paceday/issue/PAC-29)
 - **Spec**: none (see §0)
 - **Stage**: contract-author, then contract-challenger
-- **Contract revision**: 2 (revision 1 was challenged; §9 answers the challenge)
+- **Contract revision**: 3 (revisions 1 and 2 were challenged; §9 and §10 answer the
+  challenges)
 - **Fragments edited**: `contracts/openapi/paths/calendar.yaml` (`patchEvent`,
   `deleteEvent`, `EventPatchRequest`, `CalendarEvent` descriptions,
   `GoogleCalendarEventRaw` deleted) and
@@ -117,10 +118,18 @@ still lands in `src/api/generated` and invites a consumer to type against it.
 - **`room_resource_email: ""` removes the room.** The web cannot see the room (the DTO
   filters it) and sends `""` or nothing when no room is picked, so this would delete
   bookings the user never saw. Rejected (D-6).
-- **Reject a date-time `start`/`end` on an all-day event** instead of converting. The
-  web edit form always sends both, so every title edit of an all-day event would fail.
-  Rejected (D-8): a bare date keeps it all-day, two date-times convert it explicitly,
-  only a mixed pair is a 400.
+- **Reject a date-time `start`/`end` on an all-day event** instead of converting.
+  Revision 2 gave the reason "the web edit form always sends both, so every title edit
+  of an all-day event would fail". That was wrong (challenge C2-B1): today the form
+  cannot save an all-day event at all, because it builds `start` and `end` on one date
+  from two equal times and its own `end <= start` check fires. The reason that holds:
+  turning an all-day event into a timed one is a legitimate edit, and the API has no
+  other way to express it. A rejection would leave the web form's "change the time"
+  case (AC-9 iii) and the MCP `clockwise_update_event` tool, whose `start`/`end` are
+  RFC3339 by its own description, with no way to do it. API-043 is about a *silent*
+  conversion. Revision 3 removes the silent cases: the web sends bare dates whenever the
+  user did not touch a time (AC-9, AC-11), a mixed pair is a 400, and only two explicit
+  date-times convert. Rejected (D-8).
 - **Make DELETE of a missing event a 204 (idempotent).** Hides a wrong id from the
   caller and disagrees with PATCH. Rejected (D-9): 404 on both.
 - **`send_updates` default `all`.** Would start emailing guests on every drag-reschedule
@@ -162,13 +171,30 @@ still lands in `src/api/generated` and invites a consumer to type against it.
   Assumed by the factory, pending owner confirmation.
 - **D-8** `start` / `end` accept a bare `YYYY-MM-DD` date (written as Google `date`) or an
   RFC3339 date-time (written as `dateTime` in UTC). If after applying the patch one side
-  is a date and the other a date-time, the request is a 400 and nothing is written. The
-  web edit form omits `start` / `end` for an all-day event whose date and times the user
-  did not change, so editing its title keeps it all-day. Assumed by the factory, pending
-  owner confirmation.
+  is a date and the other a date-time, the request is a 400 and nothing is written. Two
+  date-times on an all-day event are an explicit conversion to timed. *Revised in
+  revision 3 (C2-B1):* the web sends that conversion only when the user changed a time.
+  For an all-day event the edit form omits `start` / `end` when nothing changed; sends
+  bare dates when only the date changed (`start` = D, `end` = D plus the event's
+  original span in days, so D+1 for a one-day event; keeping the span means a multi-day
+  event is never shortened); and sends date-times only when a time changed. A month-view
+  drag or resize of an all-day event sends bare dates (exclusive end). Assumed by the
+  factory, pending owner confirmation.
 - **D-9** A Google 404 or 410 is a 404 `event not found` on both PATCH (from GetEvent)
   and DELETE; any other Google failure is a 500 `internal error` on both. Assumed by the
   factory, pending owner confirmation.
+- **D-10** (revision 3, C2-N2) Error precedence. PATCH: the checks that need only the
+  request come first (`invalid body`, `invalid send_updates`,
+  `invalid room_resource_email`: 400), then the stored credential (401 / 500), then
+  GetEvent (404 / 500), then the start/end kind check against the stored event (400),
+  then the Google write. DELETE: an invalid `send_updates` is a 400 before the
+  credential is read and before any Google call. This extends today's order, where
+  `invalid body` already comes before the credential, and makes "nothing is written"
+  hold trivially. Assumed by the factory, pending owner confirmation.
+- **D-11** (revision 3, C2-N3) A GetEvent answer with `status: cancelled` (Google
+  returns a recently deleted event that way, with 200) is a 404 `event not found` and
+  nothing is written, so PATCH never resurrects a deleted event. Assumed by the factory,
+  pending owner confirmation.
 
 None of these deletes user data or widens who can see data. D-6 and D-7 stop PATCH from
 deleting rooms, names and RSVPs it deleted before; D-8 stops it from silently converting
@@ -191,13 +217,15 @@ Searched: `smart-calendar-flow/src`, `clockwise-like/mcp`, `clockwise-like/e2e/t
 | backend `pac21_4xx_bodies_test.go` `TestPatchEvent_SuccessBodyIsRawGoogleEvent` | Yes, by design | It pins the raw body this contract replaces; the backend stage rewrites it to assert the DTO (AC-1), never skips or deletes it without a replacement. |
 | backend `TestCreateMeeting_Success`, `TestNLPConfirm_Success` | No | Assert status only; extended by AC-2. |
 | `e2e/tests/seam.spec.ts` event patch, NLP confirm | No | Assert on the fake Google request, not the response body. |
-| web `EventEditForm.tsx` save (rev 2) | No (fixed) | Its request (`send_updates`, `room_resource_email`, `attendee_details`) becomes valid under the contract (B-2). The "notify guests" checkbox now notifies (D-5); a picked room is added (D-6); the room and guests' RSVPs survive a save (D-6, D-7). For an all-day event the frontend stage omits `start` / `end` unless the user changed the date or times (D-8, AC-9). |
-| web `RescheduleSuggestions.tsx`, `Dashboard.tsx` drag reschedule (rev 2) | No | Send date-time `start`/`end` with `send_updates: "none"`; same behaviour, now keeping the room and RSVPs. |
+| web `EventEditForm.tsx` save (rev 2/3) | No (fixed) | Its request (`send_updates`, `room_resource_email`, `attendee_details`) becomes valid under the contract (B-2). The "notify guests" checkbox now notifies (D-5); a picked room is added (D-6); the room and guests' RSVPs survive a save (D-6, D-7). For an all-day event the frontend stage omits `start` / `end` when nothing changed, sends bare dates for a date-only change and date-times only for a time change (D-8, AC-9). Rev 3: today the form cannot save any all-day event (its `end <= start` check fires on two equal times); AC-9 (i) pins that the save succeeds. |
+| web `Dashboard.tsx` `handleEventChange`, drag and resize (rev 3, C2-B1) | No (fixed) | Today it sends `toISOString()` for every event, so dragging an all-day event in `dayGridMonth` converts it to timed (the API-043 impact). The frontend stage sends bare `YYYY-MM-DD` dates for an all-day event (AC-11); timed events are unchanged; `send_updates` stays `none`. Added to the frontend `allowedPaths`. |
+| web `RescheduleSuggestions.tsx` (rev 2/3) | No | Sends date-time `start`/`end` with `send_updates: "none"`; same behaviour, now keeping the room and RSVPs. Never fires for an all-day event: a candidate slot must fit in one working day and an all-day event lasts at least 24 h, so no slot is offered. |
 | web `client.ts` `deleteEvent` / `EventEditForm.tsx` delete (rev 2) | No (fixed) | Sends `?send_updates=all` or `none`, now honoured. Deleting an already-deleted event is a 404 instead of a 500; the caller shows the API error toast either way. |
-| `mcp/tools.go` `clockwise_update_event` (rev 2) | No | Sends no `send_updates` (= `none`, today's behaviour). Its `start`/`end` description says RFC3339, which the new pattern accepts; `attendees` now keeps rooms and RSVPs. |
+| `mcp/tools.go` `clockwise_update_event` (rev 2/3) | Error text where there was a silent conversion | Sends no `send_updates` (= `none`, today's behaviour). Its `start`/`end` description says RFC3339, which the new pattern accepts; `attendees` now keeps rooms and RSVPs. Passing only `start` or only `end` for an all-day event used to be a 200 that silently converted it; it is now the D-8 400, surfaced as MCP error text. Both as date-times still converts, as the caller asked. |
 | `mcp/tools.go` `clockwise_delete_event` (rev 2) | No (error text) | Sends no query parameter (= `none`). A missing event now yields an MCP error text carrying 404 instead of 500. |
 | backend `pac21_4xx_bodies_test.go` `TestPAC21PatchEventNotFoundIsFixed` (rev 2) | No | Its fake Google answers GET with 404, which stays a 404 under D-9. |
-| backend `pac21_calendar_not_connected_test.go` patchEvent / deleteEvent rows (rev 2) | No | The no-credential path is unchanged (401). |
+| backend `pac21_calendar_not_connected_test.go` patchEvent / deleteEvent rows (rev 2) | No | The no-credential path is unchanged (401). Their requests (`{"title":"x"}`, no query) pass every request-only check, so D-10 still reaches the credential. |
+| `e2e/tests/seam.spec.ts` event delete (rev 3) | No | Sends no query parameter (= `none`) and asserts only `events.delete` on the fake Google. |
 
 ## 6. Acceptance criteria, as they apply
 
@@ -232,14 +260,31 @@ handler tests against a fake Google except AC-9:
   with `"room_resource_email":"room-2@resource.calendar.google.com"` both rooms are
   written; with `"room_resource_email":"x@example.com"` it is a 400. The challenger's
   B-2 request is answered 200.
-- **AC-9** [web unit] (D-8): `EventEditForm` saving an all-day event (`start` a bare
-  date) with only the title changed sends no `start`/`end`; with a changed time it sends
-  both as date-times.
+- **AC-9** [web unit] (D-8; extended in revision 3): `EventEditForm` saving an all-day
+  event (DTO `start` `2026-05-04`, `end` `2026-05-05`): (i) only the title changed: the
+  save succeeds (no "End time must be after start time" toast) and sends no
+  `start`/`end`; (ii) only the date changed to `2026-05-06`: sends `start` `2026-05-06`,
+  `end` `2026-05-07` (bare dates); a three-day event (`end` `2026-05-07`) moved to
+  `2026-05-06` sends `end` `2026-05-09`; (iii) a time changed: sends both as RFC3339
+  date-times. A timed event keeps sending date-times as today.
 - **AC-10** (API-045, D-9): GetEvent answering 500 makes PATCH a 500 `internal error`
   (not 404); GetEvent 404 or 410 stays a 404. DELETE answered 404 or 410 by Google is a
-  404 `event not found`; answered 500 is a 500.
+  404 `event not found`; answered 500 is a 500. Revision 3 (D-11): GetEvent answering 200
+  with `status: cancelled` makes PATCH a 404 with no update request.
+- **AC-11** [web unit] (API-043, D-8; revision 3): `Dashboard.tsx` `handleEventChange`,
+  given an all-day event (FullCalendar `allDay`, from DTO `start` `2026-05-01`, `end`
+  `2026-05-02`) dropped one day later with the test clock in a non-UTC timezone (e.g.
+  `TZ=Europe/Paris`), calls `updateEvent(id, {start: "2026-05-02", end: "2026-05-03"},
+  "none")`: bare dates, exclusive end. A resize of the same event to two days sends
+  `start` `2026-05-01`, `end` `2026-05-03`. A timed event dropped still sends
+  `toISOString()` date-times.
+- **AC-12** (D-10; revision 3): PATCH `{"send_updates":"bogus"}` with no stored
+  credential is 400 `invalid send_updates`, not 401; PATCH
+  `{"room_resource_email":"x@example.com"}` on an id GetEvent would answer 404 is 400
+  `invalid room_resource_email` with no GetEvent call; `DELETE ?send_updates=bogus` with
+  no stored credential is 400.
 
-AC-1..AC-3 are backend handler tests; AC-4 is a web unit test. No new e2e scenario is
+AC-1..AC-3 are backend handler tests; AC-4, AC-9 and AC-11 are web unit tests. No new e2e scenario is
 required: the existing seam scenarios exercise PATCH and NLP confirm end to end and do
 not read the body.
 
@@ -255,15 +300,21 @@ not read the body.
 - Findings resolved: **API-017**, and in revision 2 **API-018, API-042, API-043,
   API-044, API-045**. The implementation PR updates their status in
   `docs/factory/api-audit.md` (and the U-04 / U-14 rows). After revision 2 no open audit
-  finding remains on `patchEvent` or `deleteEvent`.
+  finding remains on `patchEvent` or `deleteEvent`. Revision 3 corrects the scope of that
+  claim for API-043 (C2-B1): revision 2 resolved it at the API boundary only, while the
+  web's month-view drag still sent two date-times for an all-day event and the manifest
+  forbade fixing it. API-043 is resolved when both the backend (AC-7) and the two web
+  callers that can touch an all-day event (AC-9, AC-11) land; the implementation PRs flip
+  its audit row only then.
 
 ## 8. What was run
 
 - `python scripts/openapi_assemble.py` on the host: wrote the bundle, 98 paths,
   119 operations, 144 schemas, `x-uncertain: 12`, rc=0, no orphan warning. `--check`:
   `OK: bundle is in sync (98 paths)`, rc=0.
-- `sha256sum contracts/openapi/openapi.yaml` (LF):
-  `268a1834cd4a860c2d98c36959e252f2327004994d62a3d9c95af7cc25bedf21`.
+- Revision 1 bundle `sha256sum contracts/openapi/openapi.yaml` (LF):
+  `268a1834cd4a860c2d98c36959e252f2327004994d62a3d9c95af7cc25bedf21` (superseded by
+  revision 2, then revision 3; the manifest carries the current hash).
 - `api-gate.sh factory/pac-29-contract` on `addf2e4` (the fragment change): `make openapi
   rc=0`, `regenerated: backend/api/gen/paceday.gen.go` (embedded spec, the 200 response
   types of the three operations, the four deleted `Google*` types), committed unchanged
@@ -694,3 +745,74 @@ assembler's own count of 12 (§8) measures something different, and its delta is
   no-credential 401 path is unchanged.
 - No rejected alternative in §3 lacks a reason. The one whose stated reason the code
   contradicts is listed under C2-B1.
+
+## 10. Revision — 2026-10-27 (contract revision 3, answering the round 2 challenge)
+
+Author: `contract-author`. The response change (API-017) and the request shape of
+revision 2 are unchanged: `EventPatchRequest` gains no key and loses none, and no status
+code is added. Revision 3 changes the manifest's frontend scope, the acceptance tests,
+D-8, and descriptions in `calendar.yaml` (non-blocking items below).
+
+### C2-B1. API-043 claimed resolved while the web still caused it: resolved by option (a)
+
+The challenge is right on all three counts, checked against `smart-calendar-flow` `main`
+at `90def70`:
+
+1. `Dashboard.tsx` `handleEventChange` (`:253-283`) sends `event.start.toISOString()` /
+   `event.end.toISOString()` for every drop and resize. `fcEvents` passes the DTO's bare
+   date through, so FullCalendar renders an all-day event in `dayGridMonth`, and it is
+   draggable. The request that results is valid under revision 2 and converts the event.
+2. AC-9 did not pin a date-only change on an all-day event.
+3. `EventEditForm.tsx` cannot save any all-day event today. `isoTimeOnly` gives the same
+   local time for both bare dates, `start` and `end` are combined on the one `date`, and
+   `end <= start` fires in every timezone. §3's revision-2 reason described a request the
+   form never sends.
+
+Option (a) is taken rather than (b). Option (b) would leave a known API-043 path open
+behind a follow-up, and the fix is small and confined to one handler. Option (a) needs no
+schema change, because the `start`/`end` pattern already accepts bare dates:
+
+- **Manifest scope.** `src/pages/Dashboard.tsx` (`handleEventChange` only, plus a test) is
+  added to the frontend `allowedPaths`. The `forbiddenPaths` entry now reads "src/pages
+  other than Dashboard.tsx handleEventChange".
+- **AC-11** (new). A drag or resize of an all-day event sends bare `YYYY-MM-DD`
+  `start`/`end` with an exclusive end. The dates are taken from the local calendar date,
+  never from `toISOString()`, and the test runs in a non-UTC timezone so that the
+  `2026-05-01T22:00:00.000Z` failure is caught. Timed events are unchanged.
+- **AC-9** (extended). There are three cases: (i) title only: the save succeeds and sends
+  no `start`/`end`, which also pins the fix for item 3; (ii) date only: bare dates
+  `start` = D, `end` = D plus the original span in days; (iii) time changed: date-times.
+  The challenge suggested `end` = D+1. That is what (ii) gives for a one-day event. For
+  a multi-day event, D+1 would silently shorten it, so the span is kept instead (the
+  more conservative choice; D-8).
+- **D-8** is revised in §4 to say the same, and §3's reason is corrected. The rejection
+  stands because an explicit conversion has to be expressible. A web time change and
+  an MCP caller passing two RFC3339 times are explicit requests. What API-043 forbids
+  is the *silent* conversion, and revision 3 removes every silent source the code has.
+- **§7** now states that API-043 is resolved only when the backend (AC-7) and both web
+  callers (AC-9, AC-11) land. Its audit row is flipped by the implementation PRs, not by
+  this contract.
+
+Other web callers of `updateEvent` were re-checked. `RescheduleSuggestions.tsx` never
+offers a slot for an all-day event: a slot must fit inside one working day, and an
+all-day event lasts at least 24 h. No other caller exists (`grep -rn updateEvent src`).
+
+### Non-blocking
+
+- **C2-N1** Answered in the `attendees` description. It now says that the two room rules
+  differ (the DTO hides only the suffix; PATCH keeps `resource: true` or the suffix), and
+  that the difference can only keep an attendee, never drop one. Unifying the two rules
+  would either drop non-suffix resources from PATCH or change the list DTO, which no
+  criterion asks for.
+- **C2-N2** Decided as D-10 and pinned by AC-12. Request-only checks come first, then the
+  credential, then GetEvent, then the kind check. This is written into the `patchEvent`
+  and `deleteEvent` descriptions.
+- **C2-N3** Decided as D-11 and pinned in AC-10. A `cancelled` GetEvent answer is a 404
+  with no write, so PATCH never restores a deleted event. This is written into the
+  `patchEvent` description and its 404.
+- **C2-N4** Fixed. §8 labels the first hash as revision 1.
+- **C2-N5** Acknowledged, unchanged. `nullable` is the repo-wide convention and is not
+  PAC-29's to change.
+- **Consumers.** The `clockwise_update_event` row now reads "error text where there was a
+  silent conversion" (manifest and §5). The e2e `event delete` scenario is listed as
+  unaffected.

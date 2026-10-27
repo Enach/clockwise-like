@@ -1832,13 +1832,18 @@ paths:
         `end`, `attendees: string[]`, ...), never Google''s own keys (`summary`, `start.dateTime`, `htmlLink`,
         `hangoutLink`) (API-017, U-04). Like the list, the DTO drops room resource attendees (`*@resource.calendar.google.com`)
         from `attendees` and `attendee_details`, so a room on the event is not visible in this body even
-        though PATCH keeps it. Only a Google 404 or 410 from the initial GetEvent is a 404; any other
-        GetEvent failure is a 500 (API-045). PAC-29: until PAC-29''s implementation lands the server still
-        encodes the raw google.golang.org/api/calendar/v3.Event, ignores `send_updates`, `room_resource_email`
-        and `attendee_details`, decodes `start` / `end` as date-times only (a bare date is a 400 `invalid
-        body`) and writes them as UTC `dateTime` (converting an all-day event to a timed one), replaces
-        the whole attendee list with email-only entries (dropping names, RSVPs and the room), and maps
-        every GetEvent failure to 404. This operation describes the server after that PR, not before it.'
+        though PATCH keeps it. Only a Google 404 or 410 from the initial GetEvent, or a GetEvent answer
+        whose `status` is `cancelled` (Google returns recently deleted events that way), is a 404; any
+        other GetEvent failure is a 500 (API-045). Error precedence (PAC-29): checks that need only the
+        request come first (`invalid body`, `invalid send_updates`, `invalid room_resource_email`: 400),
+        then the stored credential (401 / 500), then GetEvent (404 / 500), then the start/end kind check
+        against the stored event (400); Google is written only after all of them pass. PAC-29: until PAC-29''s
+        implementation lands the server still encodes the raw google.golang.org/api/calendar/v3.Event,
+        ignores `send_updates`, `room_resource_email` and `attendee_details`, decodes `start` / `end`
+        as date-times only (a bare date is a 400 `invalid body`) and writes them as UTC `dateTime` (converting
+        an all-day event to a timed one), replaces the whole attendee list with email-only entries (dropping
+        names, RSVPs and the room), maps every GetEvent failure to 404, and writes to a cancelled event
+        like any other. This operation describes the server after that PR, not before it.'
       requestBody:
         required: true
         content:
@@ -1869,8 +1874,9 @@ paths:
           $ref: '#/components/responses/CalendarNotConnected'
         '404':
           description: 'Body: `{"error":"event not found"}` (fixed text; the Google error is not appended,
-            PAC-21). Since PAC-29 (API-045) only when GetEvent fails with a Google 404 or 410; any other
-            GetEvent failure (transport, permission, quota) is a 500.'
+            PAC-21). Since PAC-29 (API-045) only when GetEvent fails with a Google 404 or 410, or returns
+            the event with `status: cancelled` (a deleted event; it is not written, so PATCH never restores
+            it); any other GetEvent failure (transport, permission, quota) is a 500.'
           content:
             application/json:
               schema:
@@ -1893,7 +1899,8 @@ paths:
         like PATCH (API-045). PAC-29: until PAC-29''s implementation lands the server reads no query parameter
         (so guests are never notified and an invalid `send_updates` is not rejected) and every delete
         failure, including a missing event, is a 500. This operation describes the server after that PR,
-        not before it.'
+        not before it. Error precedence (PAC-29): an invalid `send_updates` is a 400 before the stored
+        credential is read (401 / 500) and before any Google call.'
       parameters:
       - name: send_updates
         in: query
@@ -6895,8 +6902,12 @@ components:
             (display name, RSVP, organizer, optional); a new email is added as an email-only entry. Room
             resource attendees already on the event (`resource: true` or `*@resource.calendar.google.com`)
             are always kept, so writing back the list GET /api/calendar/events returned (which omits rooms)
-            does not drop the room. `[]` removes every non-room attendee. PAC-29, API-044: before PAC-29
-            this replaced the whole list with email-only entries, dropping names, RSVPs and the room.'
+            does not drop the room. `[]` removes every non-room attendee. The two room rules differ on
+            purpose: the DTO hides only the `*@resource.calendar.google.com` suffix, so a `resource: true`
+            attendee without that suffix is shown as an ordinary guest, yet PATCH still keeps it if the
+            client leaves it out. The difference can only keep an attendee, never drop one. PAC-29, API-044:
+            before PAC-29 this replaced the whole list with email-only entries, dropping names, RSVPs
+            and the room.'
           items:
             type: string
             format: email
