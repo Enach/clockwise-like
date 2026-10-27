@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/smtp"
@@ -334,7 +335,13 @@ func (h *teamHandlers) removeMember(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := storage.RemoveTeamMember(h.db, teamID, targetID); err != nil {
+	// Never leave the team without an owner (PAC-25, API-023). Checked after
+	// the 403 above, so a non-owner cannot learn who the owner is.
+	if err := storage.RemoveTeamMemberKeepingOwner(h.db, teamID, targetID); err != nil {
+		if errors.Is(err, storage.ErrLastOwner) {
+			writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
+			return
+		}
 		writeServerError(w, r, "removeMember", err, http.StatusInternalServerError)
 		return
 	}

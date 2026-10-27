@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
@@ -13,18 +14,38 @@ import (
 // user_id+calendar_id, enforced by migration 017). Returns ErrNoUser when
 // userID is uuid.Nil — production callers must always supply the
 // authenticated user's UUID (see UserIDFromContext).
+//
+// It is the Google (re)connect (PAC-67): a token without a refresh token keeps
+// the stored one, so a reconnect never erases a working credential, and
+// storing ends any recorded loss of the Google connection (AC-12, AC-24).
 func UpsertUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}
-	_, err := db.Exec(`
+	if _, err := db.Exec(`
 		INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id, updated_at)
 		VALUES ($1, $2, $3, $4, 'primary', NOW())
 		ON CONFLICT (user_id, calendar_id) DO UPDATE SET
 			access_token  = EXCLUDED.access_token,
-			refresh_token = EXCLUDED.refresh_token,
+			refresh_token = COALESCE(NULLIF(EXCLUDED.refresh_token, ''), oauth_tokens.refresh_token),
 			expiry        = EXCLUDED.expiry,
 			updated_at    = NOW()
+	`, userID, token.AccessToken, token.RefreshToken, token.Expiry.UTC()); err != nil {
+		return err
+	}
+	return storage.ClearCredentialLoss(db, userID, storage.CredentialGoogle)
+}
+
+// UpdateUserToken writes a renewed Google token back for its owner only, and
+// only while the owner still has a stored row: a renewal finishing after a
+// disconnect never re-stores what the user removed (PAC-67).
+func UpdateUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+	if userID == uuid.Nil {
+		return ErrNoUser
+	}
+	_, err := db.Exec(`
+		UPDATE oauth_tokens SET access_token = $2, refresh_token = $3, expiry = $4, updated_at = NOW()
+		WHERE user_id = $1
 	`, userID, token.AccessToken, token.RefreshToken, token.Expiry.UTC())
 	return err
 }
@@ -49,13 +70,16 @@ func LoadUserToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
 	return scanToken(row)
 }
 
-// DeleteUserToken removes the OAuth token for a specific user.
+// DeleteUserToken removes the OAuth token for a specific user, and with it
+// any recorded loss of it (PAC-67: a disconnect ends a loss).
 func DeleteUserToken(db *sql.DB, userID uuid.UUID) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}
-	_, err := db.Exec(`DELETE FROM oauth_tokens WHERE user_id = $1`, userID)
-	return err
+	if _, err := db.Exec(`DELETE FROM oauth_tokens WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	return storage.ClearCredentialLoss(db, userID, storage.CredentialGoogle)
 }
 
 func scanToken(row *sql.Row) (*oauth2.Token, error) {

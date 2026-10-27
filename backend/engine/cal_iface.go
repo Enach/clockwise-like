@@ -82,11 +82,12 @@ func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax ti
 }
 
 func newCalOps(ctx context.Context, db *sql.DB, oauthConfig *oauth2.Config) (calendarOps, error) {
-	token, err := LoadCalendarToken(db, auth.UserIDFromContext(ctx))
+	userID := auth.UserIDFromContext(ctx)
+	token, err := LoadCalendarToken(db, userID)
 	if err != nil {
 		return nil, err
 	}
-	ts := auth.TokenSource(ctx, oauthConfig, token)
+	ts := auth.UserTokenSource(ctx, db, oauthConfig, userID, token)
 	client, err := calendar.NewClient(ctx, ts)
 	if err != nil {
 		return nil, err
