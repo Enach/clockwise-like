@@ -150,4 +150,16 @@ belongs to an integration test.
 
 ## 8. What was run
 
-Recorded in the commit that adds this file's gate section and in the Linear comment.
+- `python scripts/openapi_assemble.py` then `--check` on the host:
+  `OK: bundle is in sync (98 paths)`, 119 operations, `x-uncertain: 11` (12 on `main`).
+- `api-gate.sh factory/pac-25-contract` on the first contract commit (`37a30a0`):
+  `make openapi` regenerated `backend/api/gen/paceday.gen.go` (embedded spec and the
+  strict-server response types for the new `422`), committed as `26269ee`. Every step
+  printed rc=0: openapi-check (bundle in sync, MIGRATION.md covers 119 operations,
+  gen matches), backend and mcp lint, backend and mcp test, backend coverage 56.8%
+  against a 43% floor, mcp 84.0% against 75%.
+- The api gate is re-run on the final commit of this branch; its output is in the
+  Linear comment on PAC-25.
+- **Not run at this stage**: the web gate and the e2e gate. The paired web type
+  regeneration (`REGEN=1 web-gate.sh`) is opened by the build stage against this
+  branch; no server behaviour has changed yet, so there is nothing for e2e to show.
