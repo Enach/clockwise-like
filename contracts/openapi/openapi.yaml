@@ -3994,9 +3994,10 @@ paths:
         is no time-window filter and no availability check, so any other query parameter (`start`, `end`
         included) is ignored and changes nothing; clients send `q` only (API-040, PAC-41). Each room is
         exactly `{id, name}` (CalendarRoom): the server reads no building, floor, capacity or availability
-        for a room (API-041; PAC-41 D-1). The list always reads the caller''s Google calendar, so a caller
-        with no stored Google credential, an Outlook-connected caller included, gets the 401 `calendar
-        not connected`.'
+        for a room (API-041; PAC-41 D-1). The list reads the caller''s stored Google credential whatever
+        `calendar_provider` is: a caller with no stored Google credential gets the 401 `calendar not connected`
+        (every Outlook-only caller is one); an Outlook-selected caller who also holds a Google credential
+        (the same email signed in with Google earlier) gets that Google calendar''s rooms.'
       parameters:
       - name: q
         in: query

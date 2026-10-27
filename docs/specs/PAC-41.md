@@ -176,9 +176,12 @@ All web citations are `smart-calendar-flow` at `ad52160`.
   (`LocationPicker.tsx:46-53`) and the existing-room lookup a `.then` with no
   `catch` (`:35-38`); the list then shows "No rooms matched." or "Start typing to
   search rooms." (`:163-166`). The room list answers 401 `calendar not connected`
-  for any user without a stored Google credential, an Outlook-connected user
-  included, because it always uses the Google client
-  (`handlers_events.go:27-34,312-317`; `engine/cal_iface.go:32-44`), and 500 on any
+  for any user without a stored Google credential, because it always uses the
+  Google client whatever calendar provider the user selected
+  (`handlers_events.go:27-34,312-317`; `engine/cal_iface.go:32-44`). Every
+  Outlook-only user is such a user; an Outlook-selected user who also holds a
+  Google credential (the same email signed in with Google earlier) gets that Google
+  calendar's rooms instead (corrected at contract revision 2). It answers 500 on any
   other failure (`handlers_events.go:319-323`). Only an unreachable server falls
   back to demo data (`src/api/client.ts:548-561`).
 
@@ -233,8 +236,9 @@ new coverage information are invented (D-1, D-2).
   cannot be read, the picker says the rooms could not be loaded, instead of "no
   rooms matched" or an invitation to type. When the reason is that the user has no
   connected Google calendar (room booking reads Google's room calendars only, so
-  this includes Outlook-connected users), it says room booking needs a connected
-  Google calendar. The form's room address is not changed by the failure.
+  this includes every Outlook-only user; an Outlook user who also holds a Google
+  credential sees that Google calendar's rooms, corrected at contract revision 2),
+  it says room booking needs a connected Google calendar. The form's room address is not changed by the failure.
 - **Room search asks only for what the server answers.** It sends the search text
   and nothing that implies a time-window filter.
 - **Coverage has two states.** A participant's calendar is either readable

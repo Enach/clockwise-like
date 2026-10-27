@@ -39,7 +39,7 @@ backend test (AC-15) and the web change land. See `contracts/features/PAC-41.md`
 ### 2. `GET /api/rooms` — `start`/`end` query params are sent and ignored
 `client.ts:1198` calls `requestApi<Room[]>("GET", "/rooms", undefined, { q, start, end })`
 and `contract.ts` declares `searchRooms(q, start?, end?)`. The handler
-(`handlers_events.go:106`) reads only `q`. So the availability filtering the signature
+(`handlers_events.go:312`, `listRooms`) reads only `q`. So the availability filtering the signature
 implies is mock-only; against the real backend `available` is never computed.
 
 **PAC-41 (contract):** the `listRooms` description now states that `q` is the only

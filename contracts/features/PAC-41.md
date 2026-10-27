@@ -44,7 +44,7 @@ author needs and could get wrong:
 
 | Where | Added | Why |
 |---|---|---|
-| `listRooms` description | `q` is the only parameter read; no time-window or availability filter; `start`/`end` are ignored; each room is exactly `{id, name}`; an Outlook-connected caller gets the 401 `calendar not connected` | API-040 happened because a client sent parameters it believed were honoured. AC-16 needs the web to know the 401 also covers Outlook users. |
+| `listRooms` description | `q` is the only parameter read; no time-window or availability filter; `start`/`end` are ignored; each room is exactly `{id, name}`; the list reads the stored Google credential whatever `calendar_provider` is, so a caller with none gets the 401 `calendar not connected` (every Outlook-only caller is one) and an Outlook-selected caller who also holds a Google credential gets that Google calendar's rooms (revision 2) | API-040 happened because a client sent parameters it believed were honoured. AC-16 needs the web to know the 401 is decided by the Google credential, not by the selected provider. |
 | `CalendarRoom` | no building/floor/capacity/email/availability field; this is the only room type | API-041 is a hand-written type that grew fields the server never sends (AC-6). |
 | `CalendarRoom.id` | send it unchanged as `EventPatchRequest.room_resource_email`; the list does not itself check PATCH's stricter pattern | Booking (AC-1, AC-2) depends on exactly this mapping, which before was implicit in the word "email". |
 | `FreeBusyParticipant` | exactly three keys; no provider key; no Paceday-user status | API-046 (AC-7, AC-8); D-2 makes "no Paceday-user status" a privacy property, not an omission. |
