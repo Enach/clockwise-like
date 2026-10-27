@@ -61,6 +61,11 @@ const (
 	AuthStatusResponseProviderWebcal  AuthStatusResponseProvider = "webcal"
 )
 
+// Defines values for BookingRateLimitErrorError.
+const (
+	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
+)
+
 // Defines values for Cadence.
 const (
 	CadenceBiweekly Cadence = "biweekly"
@@ -657,11 +662,19 @@ type AuthStatusResponse struct {
 // Google was configured.
 type AuthStatusResponseProvider string
 
-// BookingError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// BookingError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type BookingError struct {
 	// Error Human-readable, server-chosen message. Never the text of a Go, driver or provider error (PAC-21): those go to the server log and Sentry only.
 	Error string `json:"error"`
 }
+
+// BookingRateLimitError The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingRateLimitError struct {
+	Error BookingRateLimitErrorError `json:"error"`
+}
+
+// BookingRateLimitErrorError defines model for BookingRateLimitError.Error.
+type BookingRateLimitErrorError string
 
 // Cadence 1:1 cadence. "none" disables gap detection for that member.
 type Cadence string
@@ -2845,6 +2858,12 @@ type SchedulingLinkIdPath = openapi_types.UUID
 // TeamIdPath defines model for TeamIdPath.
 type TeamIdPath = openapi_types.UUID
 
+// BookingCreateRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingCreateRateLimited = BookingRateLimitError
+
+// BookingSlotsRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingSlotsRateLimited = BookingRateLimitError
+
 // CalendarNotConnected The JSON error envelope for "this user has no calendar connected". The message is a single fixed value so a client can branch on it.
 type CalendarNotConnected = CalendarNotConnectedError
 
@@ -2884,7 +2903,7 @@ type JsonUnauthorized = ErrorResponse
 // provider error; every 5xx in this document uses this envelope (PAC-21).
 type NotFound = ErrorResponse
 
-// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type SchedulingLinkValidationError = BookingError
 
 // ServerError The shared JSON error envelope, written by writeError()
@@ -6616,6 +6635,14 @@ func (siw *ServerInterfaceWrapper) CreatePublicBooking(w http.ResponseWriter, r 
 		return
 	}
 
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreatePublicBooking(w, r, slug)
 	}))
@@ -10061,6 +10088,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	return r
 }
 
+type BookingCreateRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingCreateRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingCreateRateLimitedResponseHeaders
+}
+
+type BookingSlotsRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingSlotsRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingSlotsRateLimitedResponseHeaders
+}
+
 type BookingUnauthorizedTextResponse string
 
 type CalendarNotConnectedJSONResponse CalendarNotConnectedError
@@ -11107,6 +11152,18 @@ func (response CreatePublicBooking422JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreatePublicBooking429JSONResponse struct {
+	BookingCreateRateLimitedJSONResponse
+}
+
+func (response CreatePublicBooking429JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreatePublicBooking500JSONResponse BookingError
 
 func (response CreatePublicBooking500JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
@@ -11159,6 +11216,18 @@ func (response GetPublicBookingSlots410JSONResponse) VisitGetPublicBookingSlotsR
 	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPublicBookingSlots429JSONResponse struct {
+	BookingSlotsRateLimitedJSONResponse
+}
+
+func (response GetPublicBookingSlots429JSONResponse) VisitGetPublicBookingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetPublicBookingSlots500JSONResponse BookingError
