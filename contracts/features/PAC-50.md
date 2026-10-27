@@ -824,3 +824,53 @@ unchanged from revision 2 except one added `500` on `startSsoAdminStepup`.
 `main`) and `smart-calendar-flow/src`: the web hits are the three generated
 files only; `mcp` none; `e2e` none on `main` (#212 adds `sso-stepup.spec.ts`).
 Unchanged from revision 1.
+
+### Gates run for revision 3
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `f4afd20` (the first run, on the merge commit `41d9b34`, regenerated
+`backend/api/gen/paceday.gen.go`, committed as `0dc81e2`; this run regenerated
+nothing). `git show f4afd20:contracts/openapi/openapi.yaml | sha256sum` printed
+the manifest's `contractHash`.
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (100 paths)
+OK: MIGRATION.md covers all 121 operations (0 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 56.8% (floor 43%) [3723 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+`REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh main factory/pac-50-contract`
+(run on `41d9b34`; the bundle is byte-identical at `f4afd20`):
+
+```
+regenerated: src/api/generated/schemas.ts
+regenerated: src/api/generated/schemas.types.d.ts
+regenerated: src/api/generated/types.ts
+      Tests  297 passed (297)
+lint           PASS
+typecheck      PASS
+design-check   PASS (impeccable, ratcheted)
+openapi-check  PASS
+test           PASS
+coverage       PASS (ratchet floor in vitest.config.ts, target 70%)
+make verify rc=0
+```
+
+This shows the bundle generates and type-checks against web `main`. The
+regenerated files (+702/-36 lines) were **not** committed: contract-author
+opens no web PR, and the host web checkout was restored to `main`. The paired
+web PR is the build stage's, against #212's rebased branch.
+
+Not run: e2e. This branch carries no handler code, so no runtime behaviour
+changes here; the e2e gate belongs to #212 after its rebase.
