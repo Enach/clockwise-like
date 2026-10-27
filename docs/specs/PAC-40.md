@@ -818,3 +818,116 @@ recorded (§5, OQ-6).
      triage to file it with OQ-4. §6 notes AC-20a as new coverage.
 
 Status stays challenged. The spec goes back to the challenger for round 3.
+
+## Challenge — 2026-10-27 (round 3)
+
+I reviewed the committed spec at `7f19704` (revision 2). I checked it against
+source on `main` at `6d751f9`, which is still the tip of `origin/main`, the
+web repo at `origin/main` `ad52160`, and the Linear issue text. I ran two
+probes and one arithmetic check. Each used a temporary test file that I deleted
+afterwards, against a throwaway Postgres 16 container that I then removed.
+Nothing was committed apart from this section.
+
+**Verdict**: accept-with-changes
+
+Revision 2 fixed round 2's blocking item correctly, and I confirmed that fix
+independently (probe 1 below). One sentence that revision 1 introduced is still
+contradicted by the code, and AC-20 inherits it. That is the only blocking
+item. The scope matches the issue. The decisions are still conservative: none
+deletes data, and none widens who can see data.
+
+### Blocking
+1. **§3.5 and AC-20 say that a request whose end is at or before its start
+   gets "invalid duration". The code contradicts this when the request also
+   sends a non-zero `duration` or `duration_minutes`.** When an end is sent,
+   the mismatch check at `handlers_booking.go:262-266`
+   (`requestedDuration != 0 && requestedDuration != actualDuration`) runs
+   before `durationAllowed` at `:277`. A request with an end of start−30 min
+   and `duration_minutes: 30` is therefore answered "duration does not match
+   end time", not "invalid duration" (probe 2). Today's behaviour is fine: the
+   answer stays the same before and after the change. The spec's description of
+   that behaviour is wrong, though, and an AC-20 case written from §3.5's
+   sentence would fail on current code. That is the same failure mode as
+   rounds 1 and 2.
+   *Resolve:* in §3.5 and AC-20, limit "end at or before start → invalid
+   duration" to requests that send no duration or a duration of 0. State that
+   when such a request also sends a non-zero duration, the answer is "duration
+   does not match end time".
+
+### Non-blocking
+1. **Open items carried forward.** Round 1 items 1, 3, 4, 6 and 7 and round 2
+   items 2 and 4 are still open, and the revisions say so. Two of them are
+   still worth settling before the contract stage:
+   - Round 1 item 1 (non-owner on a deleted link). §3.1 already decides it: a
+     non-owner gets the not-found answer it would get for an id that never
+     existed, not 403. No AC tests it, though, and OQ-5 depends on it.
+   - Round 2 item 4 (the starting value if uses become a stored count). §3.3's
+     definition ("counts bookings made, including cancelled ones") already
+     answers it: bookings that existed before the change count. The spec should
+     say that explicitly, and the plan should not pick another rule.
+2. **AC-20's list of rejections leaves out "invalid request body"**
+   (`handlers_booking.go:236-239`, malformed JSON → 400). The list is presented
+   as "each rejection the public booking create can make today". Add it, or say
+   the list is not exhaustive.
+3. **e2e cleanup hard-deletes links.** `e2e/tests/scheduling-links.spec.ts:110`
+   and `:188` delete rows from `scheduling_links` directly. This is test-only
+   and not a product path, and D-2 does not apply to it. I list it so that the
+   plan does not take it as a precedent for a hard delete.
+
+### Criteria I could not falsify
+- None. AC-20 is a regression net and AC-20a is a pin, and both are labelled as
+  such. Every other AC has a test that is red today, or one that pins current
+  behaviour (round 1, non-blocking item 2).
+
+### Citations I checked and found wrong
+- §3.5, "A request that sends an end at or before its start keeps getting the
+  answer it gets today, 'invalid duration'", and the matching clause in AC-20.
+  This holds only when no non-zero duration is sent (Blocking 1, probe 2).
+
+Checked and correct this round:
+- `handlers_booking.go:65-73, 107-136, 211-304`. `:281-284` is unreachable.
+  `:293-296` repeats `:221` against the same in-memory link. `:285-288` is
+  reachable through overflow.
+- `handlers_scheduling_links.go:212-260` (no upper bound on durations), and
+  `:426, :543, :571, :604` (403 for non-owners).
+- `booking.yaml`: the only `maximum` values are on days (`:1549`, `:1634`), so
+  durations have no maximum.
+- `TestPublicBookingErrorsContract` (`handlers_booking_test.go:178-213`) has
+  five cases. No backend test sends 404, 409, 410, the end/duration mismatch or
+  "end must be after start" to the booking create, so §6's "the others have no
+  test today" holds.
+- Web: `Links.tsx:146, 330-336, 349-355, 375`; `schedulingLinks.ts:118-131, 514,
+  544, 574`; `PublicBooking.tsx:193-199` (404 renders "Link not found", 410
+  renders the "used up or paused" copy); `client.ts:548-561`.
+- `mcp/` has no caller of `/api/scheduling-links` or `/api/book`.
+- No other backend code calls the link lookups outside
+  `handlers_scheduling_links.go` and `handlers_booking.go`, except
+  `engine/booking.go:161`, which is busy time (AC-7).
+
+**Probe 1 (AC-20a, re-run independently).** A link with
+`DurationOptions: [200000000]` and min notice 0, for which
+`validateSchedulingLink` returns nil, was booked with no end:
+```
+zz_pac40_r3_probe_test.go:19: validate=<nil>
+zz_pac40_r3_probe_test.go:24: status=400 resp={"error":"end must be after start"}
+```
+Arithmetic from 2026-11-02T10:00Z: 153722867 min → 2319-02-12 (`After`=true);
+153722868 min → 1734-07-24 (false); 200000000 min → 1822-07-20 (false). This
+matches revision 2.
+
+**Probe 2 (Blocking 1).** A reusable link with options [30, 60], start
+2026-10-30T10:00Z:
+```
+end 09:30, no duration            -> 400 {"error":"invalid duration"}
+end 09:30, duration_minutes 30    -> 400 {"error":"duration does not match end time"}
+end 10:00, duration_minutes 0     -> 400 {"error":"invalid duration"}
+end 10:00, duration 30            -> 400 {"error":"duration does not match end time"}
+```
+
+### Consumers this breaks
+- The lists from rounds 1 and 2 still stand, and I found nothing new. When the
+  web app toggles pause, it sends a full-body PATCH that uses only the canonical
+  spellings (`schedulingLinks.ts:544-559`, body built at `:118-131`), so D-5
+  does not change it. The response normaliser reads `durations ?? duration_options`
+  (`:98`), but that applies to response fields only, which this spec does not
+  change.
