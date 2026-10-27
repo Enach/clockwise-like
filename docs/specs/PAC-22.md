@@ -1384,3 +1384,208 @@ check at 177-184) and 14 to `domain.go`, so +8 after line 176 and +14 after line
   so the branch is dead and API-010 is confirmed exactly as §2.10 states. The
   spec's position on it is the right one and the consequence it records in §4 is
   correct.
+
+---
+
+## Challenge — 2026-10-27 (applies to **v3.1**, commit `5b7d3be`)
+
+**Verdict**: accept-with-changes
+
+The spec solves what is left of the Linear issue after its 2026-09-17 split. That
+is the projection, create-time validation, and a settable active state; the admin
+check and the RowsAffected fix are PAC-50's. §2 is accurate: every `file:line`
+in §2.1 to §2.7 was re-read on `origin/main` at `6d751f9`, which has not moved
+since the spec was written, and every one holds. The five blocking findings are
+local to §3.3 and §4:
+
+- one AC contradicts a Decision;
+- one leaves the accepted request body undefined;
+- one forbids the obvious shape of the new operation;
+- the new operation has no error paths and no cross-organisation criterion.
+
+None of them needs a new decision from the owner. Nothing was executed for this
+review; every claim is from reading source.
+
+### Blocking
+
+1. **AC-4's second half contradicts D-2 and AC-7.**
+   - **The conflict.** AC-4 ends: "When a write then replaces it supplying an
+     empty secret, that property becomes false." D-2 makes the client secret
+     "required, non-empty, on every configuration write", and AC-7 requires
+     exactly that write to be rejected with nothing changed. Both cannot pass.
+   - **Why it matters.** After this change no API write can produce an empty
+     secret. The "false" state exists only for rows stored before the change,
+     and AC-3's second half and AC-5 already arrange those through storage.
+   - **Resolves it.** Delete AC-4's second half, or restate it as "a write
+     supplying an empty secret is refused (AC-7) and the property stays true".
+     Keep D-2 as is.
+
+2. **The spec does not define what an accepted submission does with the other
+   kind's values, and AC-2 depends on it.**
+   - **The gap.** After D-1 the only accepted kind is OIDC. The create body still
+     carries `saml_entry_point`, `saml_issuer` and `saml_cert`
+     (`handlers_sso.go:181-183`; still declared in `ssoProviderBodyProperties`
+     on PAC-50's branch). The spec never says whether an OIDC submission
+     carrying a signing certificate is refused, accepted and stored, or accepted
+     and discarded.
+   - **If refused.** AC-2's first sentence requires a *successful* submission
+     "with a client secret and a signing certificate". If the contract refuses
+     SAML values on an OIDC write, which is a natural reading of D-1, AC-2 cannot
+     be arranged.
+   - **If stored.** §3.1 says a reader can tell whether a secret was supplied,
+     but AC-3 defines an indicator only for the client secret. A stored
+     certificate would be invisible and could never be inspected.
+   - **Resolves it.** State which of the three behaviours applies. Then make
+     AC-2's success case use only values an accepted submission may carry, and
+     either extend AC-3 to the certificate or say why no indicator is needed.
+
+3. **AC-12 as worded forbids the transition from naming its target.**
+   - **The wording.** AC-12 says "nothing it requires is something the
+     configuration write also requires."
+   - **The conflict.** The configuration write requires `domain`
+     (`handlers_sso.go:189`). Every other SSO write names its target by domain
+     (`DELETE /api/admin/sso/{domain}`, `routes.go:174`). Read literally, a
+     transition addressed by domain fails AC-12. So the criterion either forbids
+     the conventional contract or cannot tell a pass from a fail.
+   - **Resolves it.** Restrict AC-12 to *configuration values* and list them:
+     provider name, provider type, issuer, client id, client secret, and the
+     three SAML values. Say that the identifier of the target configuration is
+     not one of them.
+
+4. **The new transition has no error paths.**
+   - **What the spec leaves out.** It specifies suspend and resume only on an
+     existing configuration in the opposite state. It says nothing about:
+     - (a) a transition for a domain with no configuration;
+     - (b) suspending a configuration already suspended, or resuming one already
+       active;
+     - (c) whether a transition that changes nothing spends PAC-50's one-use
+       authorization.
+   - **The precedent.** PAC-50's delete spends the authorization on a 404
+     (`deleteSSOProvider` on `origin/impl/pac-50-sso-write-gate-backend`: "The
+     grant (if one was used) is consumed").
+   - **The risk.** As written, a contract may answer success to "suspend" for a
+     domain that has nothing configured. That recreates API-067 ("removal of
+     nothing reported as success", which this spec moved to PAC-50) on the new
+     operation. An operator in an emergency would then believe SSO is off when
+     it never existed.
+   - **Resolves it.** Add a criterion that a transition on a domain with no
+     configuration is refused and creates nothing. State the outcome of a
+     repeated transition: success that changes nothing, or a refusal. Say whether
+     either one spends the authorization, consistently with §3.4's "a refused
+     configuration costs the caller nothing".
+
+5. **No criterion keeps the transition inside the caller's organisation.**
+   - **The gap.** AC-15 tests only a *non-permitted member of the same
+     organisation*. §3 and §5 say the transition is governed by PAC-50's rule,
+     including "for which domains", but no AC asserts it.
+   - **Why it matters.** The transition is new code that PAC-50's tests do not
+     cover, and on `main` the domain check is still a suffix match
+     (`domain/domain.go:45-49`). A permitted caller of one organisation could
+     suspend another organisation's SSO, or a subdomain's. That is exactly the
+     kind of cross-tenant write this codebase has shipped before.
+   - **Resolves it.** Add an AC: given a permitted caller of organisation A and
+     an active configuration whose domain is not A's own (one case for another
+     organisation's domain, one for a subdomain of A's), when they suspend it,
+     the request is refused and that configuration is still active. Add the
+     mirror case for resume.
+
+### Non-blocking
+
+1. **§2.8 understates what PAC-50 resolves.**
+   - **The fact.** PAC-50's branch removes the U-21 marker as well as U-22.
+     `SsoProviderCreateRequest` there says "Determined at stage 2 from the
+     handler (resolves U-21)" (`contracts/openapi/paths/auth.yaml:1385` on
+     `origin/impl/pac-50-sso-write-gate-backend`). The operation no longer
+     carries any `x-uncertain`.
+   - **The consequence.** Once PAC-50 lands (D-5), "U-21 … is resolved here" has
+     no marker left to resolve. What remains is API-060, plus rewriting that
+     description ("Nothing else is validated…"), which AC-7 and AC-8 will make
+     false.
+   - **Fix.** Say this in the inherited-scope list.
+2. **AC-16 versus §6 "no migration".**
+   - **The constraint.** PAC-50's migration restricts the record table:
+     `sso_events.kind CHECK (kind IN ('sso_stepup', 'sso_provider_written'))`
+     (`028_sso_admin_stepup.up.sql` on PAC-50's branch).
+   - **The consequence.** A record "naming the transition" fits under the
+     existing kind only if the transition is named in `details`. A distinct kind
+     needs a migration, and §6 says a migration means scope has grown.
+   - **Fix.** State which of the two satisfies AC-16, so the plan is not
+     challenged for a migration the spec required.
+3. **The bundle contradicts §3.7's rationale.**
+   - **The claim.** §3.7 gives "consistent with the rest of the API" as the
+     reason for a named container.
+   - **The bundle.** 20 other 2xx JSON responses in
+     `contracts/openapi/openapi.yaml` are bare arrays, e.g. `GET /api/teams`,
+     `/api/rooms`, `/api/habits`, `/api/org/members` and `/api/audit`.
+   - **Fix.** The container may still be right for the second reason given
+     (future additions). Restate the rationale so the contract stage does not
+     "fix" it back towards consistency.
+4. **AC-9's detection assertion should be negative only.** A suspended
+   configuration makes detection fall through to the Microsoft tenant heuristic,
+   an outbound call with a 2 s timeout (`auth/sso_detect.go:49-55`), and then to
+   `google`. "No longer routes to SSO" is the right assertion. A test that
+   asserts a specific fallback type would depend on network reachability from the
+   e2e stack.
+5. **The Linear issue body is stale.** It still lists the admin check, the
+   RowsAffected fix and "Spec … (v3)". The spec's scope is correct. The issue
+   text should point at v3.1 and PAC-50, so that stage 6 does not review against
+   the old text.
+6. **OWNER:** D-2 makes the client secret mandatory. An OIDC client registered as
+   a public client (PKCE, no secret) can therefore never be configured. The
+   choice is conservative and matches what sign-in uses today
+   (`handlers_sso.go:64-68`), but it is a product limit the owner should
+   confirm.
+7. **OWNER:** OQ-5 / D-3. Fixing a suspended configuration and resuming it takes
+   two writes, and under PAC-50 two step-up authorizations.
+8. **OWNER:** D-6 puts emergency suspension behind PAC-50's step-up.
+   - **Who can use it.** That step-up is offered only through Google or Microsoft
+     (`sso_stepup_grants.provider CHECK (provider IN ('google','microsoft'))` on
+     PAC-50's branch), or through the deployment's break-glass list.
+   - **The consequence.** An organisation whose SSO administrators are not
+     Google or Microsoft workspace admins can suspend SSO only through the
+     operator.
+   - **The question.** That is acceptable if intended. The owner should know
+     that the "kill switch" may need the operator.
+
+### Criteria I could not falsify
+
+- **AC-4 (second half).** Once AC-7 holds, no API write can produce the state it
+  starts from (blocking 1).
+- **AC-2 (first sentence).** It cannot be arranged if SAML values are refused on
+  an OIDC write (blocking 2).
+- **AC-12.** Whether a domain-addressed transition passes or fails depends on how
+  "requires" is read (blocking 3).
+
+For every other AC I could describe a test that fails on `main` today. AC-14 is
+the exception: it is an existing guard (`handlers_sso_test.go:172`).
+
+### Citations I checked and found wrong
+
+- **None in §2.1 to §2.7.** Checked on `6d751f9`:
+  - `sso_providers.go:12-26,20,23,28-31,33-45,51,63-73,66,82-92`
+  - `handlers_sso.go:51,56-59,64-72,112,121-125,167-172,189-196,204,209-220,213,228,233-238,250,257-262,269`
+  - `routes.go:172-175`, `008_sso_providers.up.sql:6-12`
+  - `sentry.go:64-78`, `middleware.go:91`, `server_errors.go:41-57`, and the
+    seven `WriteAuditLog` sites
+  - `handlers_sso_test.go:30,93,172`, `pac35_auth_flows_test.go:286,396,803`,
+    `sso_providers_test.go:59`
+  - `sso_detect.go:37`, and `domain.go` (`DomainMatchesOrg` suffix match)
+  - `MIGRATION.md:55-57`, `api-audit.md:268,269,350,526-530`
+  - `auth.yaml:700,1080,1122,1126,1132,1141`
+  - web `AuthDialog.tsx:105-108`
+- **§2.8** is incomplete rather than wrong: see non-blocking 1 (U-21).
+- **§3.7** "consistent with the rest of the API": see non-blocking 3.
+
+### Consumers this breaks
+
+- **smart-calendar-flow generated types** (`src/api/generated/types.ts`,
+  `schemas.ts` and `schemas.types.d.ts`). They regenerate when the schema
+  changes. They are generated files, and nothing hand-written calls them:
+  `git grep` on web `origin/main` (`ad52160`) finds no reference outside
+  `src/api/generated/`.
+- **clockwise-like/backend/api/pac50_sso_gate_test.go:149-152** (PAC-50 branch,
+  `TestSSOWrite_OneGrantOneWrite`). It pins the 201 body to the thirteen
+  PascalCase keys, including `OIDCClientSecret` and `SAMLCert`. It must change
+  with this spec, as §2.8 already says.
+- **No other consumer.** There is no hand-written consumer in MCP, e2e or the
+  web app: `mcp/` and `e2e/` contain no SSO reference.
