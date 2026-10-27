@@ -169,3 +169,224 @@ create a new head.
 
 Not run: the web gate (paired web regeneration belongs to the build stage, AC-9) and the
 e2e gate (no behaviour change yet).
+
+## Challenge — 2026-10-27
+
+Reviewed by contract-challenger at `cb1c6c4`, using the committed state only, against
+the spec at `factory/new-booking-rate-limit-spec` `136fa1c`. No PAC issue exists,
+so this challenge is not posted to Linear.
+
+**Verdict**: accept-with-changes (one blocking item, fixed by restoring one line)
+
+### Requests wrongly permitted
+
+1. **The contract no longer marks `createPublicBooking` as public.** The fragment
+   edit replaced the operation's `security: []` line with the new `description`
+   when it should have inserted the description above that line. See
+   `git diff origin/main -- contracts/openapi/paths/booking.yaml`, hunk
+   `@@ -51,7 +51,35 @@`, which removes `security: []`.
+   - In the bundle at `cb1c6c4`, `paths['/api/book/{slug}'].post` has no
+     `security` key, so it inherits the global
+     `[{bearerAuth: []}, {cookieAuth: []}]`. On `origin/main` it is
+     `security: []`. Both sibling operations still carry `security: []`
+     (`booking.yaml:24`, `:163`).
+   - The contract now rejects the very request this feature is about. Take
+     `POST /api/book/acme-30min` with no cookie and no `Authorization` header,
+     body
+     `{"name":"Ann","email":"ann@example.com","start":"2026-11-02T10:00:00Z","duration_minutes":30}`.
+     The contract says this anonymous request is not authorised. The handler
+     serves it, because the route is registered outside `requireAuth`
+     (`routes.go:24-27`).
+   - The regenerated Go code carries the change. `CreatePublicBooking` in
+     `ServerInterfaceWrapper` now sets `BearerAuthScopes` and `CookieAuthScopes`
+     on the request context (`backend/api/gen/paceday.gen.go`, diff hunk
+     `@@ -6616,6 +6635,14 @@`).
+   - Factory §4 says modified endpoints move to the generated interface. A
+     backend implementer who follows the generated wrapper, with an auth
+     middleware keyed on those scopes, would answer 401 to every anonymous
+     booking.
+   - The edit also breaks the contract-author convention "Public operations
+     carry `security: []` explicitly". It contradicts §1 of this document, whose
+     statement that "no existing response changes shape" and whose list of what
+     is not changed say nothing about a security change.
+   - The api gate passed, so no gate catches this today.
+
+   **Fix**: restore `security: []` on `createPublicBooking` in
+   `contracts/openapi/paths/booking.yaml`, between `summary`/`description` and
+   `requestBody`. Then re-run `make openapi` and commit the regenerated bundle,
+   the regenerated `paceday.gen.go` (the two `*AuthScopes` lines disappear) and
+   the new `contractHash`.
+
+I found no other request that the contract wrongly permits or forbids (see "Verified clean").
+
+### Responses the client cannot handle
+
+None. Take a `createPublicBooking` 429 with body
+`{"error":"rate limit exceeded"}` and header `Retry-After: 417`:
+
+- It reaches `requestApi` (`smart-calendar-flow/src/api/client.ts:433-440` on
+  `origin/main`), which throws `ApiHttpError(429, data)`.
+- `bookSlot` and `getPublicSlots` let the error through, because `withFallback`
+  falls back only when `isApiUnreachableError` is true (`client.ts:548-561`).
+- For a booking, the page takes the generic branch (`PublicBooking.tsx:181-183`):
+  it shows "rate limit exceeded" and fires the "Booking failed" toast. For slots
+  it shows the message from `apiErrorMessage` (`:139-142`).
+
+The page renders and does not crash. Replacing that generic message is the
+AC-10/AC-11 web work, and the spec already covers it.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/pages/PublicBooking.tsx:165-183`, `:139-142`: a 429
+  is rendered through the generic branches described above. AC-10 and AC-11
+  cover this.
+- `smart-calendar-flow/src/api/generated/*`: regenerate in the paired web PR.
+  `git grep` on `origin/main` finds nothing outside `generated/` that names
+  `createPublicBooking`, `getPublicBookingSlots` or `BookingError`. A search for
+  `429` and "rate limit exceeded" in `src/pages` and `src/components` also finds
+  nothing. The only files that import the page are `App.tsx` and its own test.
+- `mcp/`: no caller (grepped for `/api/book` and `/book/`).
+- `e2e/tests`: no test asserts a 429 or "rate limit". There are 8 `/slots`
+  references, far below 120 per minute. Booking POST volume and the kept-stack
+  case stay with the plan (AC-13, spec Q1).
+- `backend/api/gen/paceday.gen.go`: apart from blocking item 1, this diff only
+  adds types. `DetectAuthProvider429JSONResponse` is unchanged: it is still
+  `ErrorResponse` with no `Retry-After`, as spec §6 requires.
+
+### Contract/implementation divergences
+
+The only divergence that blocks is blocking item 1. Two others are imprecise but do not block:
+
+1. **`"end must be after start"` is listed as a 400 message the handler "already
+   returns", but in practice it never fires.** It can only fire when a
+   `time.Duration` overflows.
+   - Every path that reaches `handlers_booking.go:285` has already passed
+     `durationAllowed` (`:278`), which requires a positive duration.
+   - When `end` is given, `int(end.Sub(start).Minutes()) > 0` implies
+     `end > start`.
+   - When `end` is omitted, `end = start + n min`, which is after `start`
+     unless `n * time.Minute` overflows. That needs a link duration option above
+     about 153,722,867 minutes.
+   - `validateSchedulingLink` only requires each option to be `> 0`
+     (`handlers_scheduling_links.go:219-222`), so such a link can exist.
+
+   Documenting the message is therefore literally true. The rationale should
+   still say it is practically unreachable, so the plan does not write a test
+   that expects it from a plain inverted `end`. That request answers
+   `"invalid duration"`.
+2. **"Written to every host's calendar" overstates what `ConfirmBooking` does**
+   (`engine/booking.go:241-271`). It loops over accepted hosts only. It skips a
+   host whose user record or calendar client cannot be loaded, and it ignores a
+   `CreateEvent` failure. The booking row and the 201 are written either way.
+   Suggested wording: "written to each accepted host's connected calendar
+   (failures are skipped; the 201 does not depend on them)". This does not
+   affect the rate-limit shape.
+
+### Uncertainties not actually resolved
+
+- `resolvesUncertain` is empty. The `x-uncertain` markers in `booking.yaml` are
+  at lines 563 and 1945, outside the three public operations (lines 21-230). An
+  empty list is correct.
+- **API-073**, which the implementation is said to resolve, checks out:
+  - The `if err != nil` at `handlers_booking.go:281-284` is unreachable, because
+    `err` is nil on both branches that reach it.
+  - The inline exhausted test at `:293-296` uses the same predicate as
+    `linkExhausted` (`:65-73`), on the same `link`, which is not reloaded. That
+    check already ran at `:221-224`.
+
+  So the claim holds, and removing both blocks changes no response. Only the
+  backend PR marking the register entry fixed pins this, and the manifest
+  requires that.
+- **API-094** is cited as "open" in the operation description. It is not in
+  `docs/factory/api-audit.md` on this branch; it exists only on the spec branch
+  (`136fa1c`). This does not block. However, the contract must not merge before
+  the spec branch, or the description will point at a finding that does not
+  exist on `main`.
+
+### Verified clean
+
+- **Gates.**
+  - `python scripts/openapi_assemble.py --check` printed
+    `OK: bundle is in sync (98 paths)`, rc 0.
+  - `python scripts/openapi_migration_report.py --check` printed
+    `OK: MIGRATION.md covers all 119 operations (0 generated)`, rc 0.
+  - In an LF clone of `cb1c6c4` (golang:1.25-bookworm), I ran step 1 of the api
+    gate without copying anything back. `make openapi rc=0` left no drift.
+    `make openapi-check rc=0` printed that the bundle is in sync, that
+    MIGRATION.md covers every operation, and
+    `backend/api/gen matches the contract`. Web types were SKIPPED (no web repo
+    mounted), so only half of factory §2 gate 4 was checked.
+  - The bundle's sha256 is `8a8a0cca...65b8be`, which equals the manifest's
+    `contractHash`. The hash will change with the fix.
+  - **Not run by me**: backend and mcp lint, tests and coverage; the web gate;
+    e2e. The host checkout is on another stage's branch, and I did not switch
+    it.
+- **429 body.** `BookingRateLimitError` (`additionalProperties: false`, `error`
+  enum `['rate limit exceeded']`) rejects both `{"error":"internal error"}` and
+  `{"error":"rate limit exceeded","retry_after":5}`. It matches exactly what
+  `writeError` emits (`handlers_settings.go:388-392`: `{"error": msg}` with
+  `Content-Type: application/json`) and the detect limiter's message
+  (`handlers_sso.go:25`).
+- **`Retry-After` bounds.**
+  - These values are all non-conforming: `0`, `-1`, `601` on booking, `61` on
+    slots, and the HTTP-date form `Wed, 21 Oct 2026 07:28:00 GMT`.
+  - `required: true` forbids a 429 without the header.
+  - The bounds match the precedent's window. The limiter refuses only while
+    `!now.After(windowEnd)` (`ratelimit_detect.go:55`), so the remaining time
+    lies in `[0, window]`. The "never less than 1" clause covers the instant
+    `now == windowEnd`.
+- **Ordering.**
+  - From a client at the booking limit, `POST /api/book/does-not-exist` with
+    body `{}` must answer 429, not 404 or 400. The description says so, and AC-5
+    pins it.
+  - From a client at the slot limit, `GET /api/book/x/slots?duration=abc` must
+    answer 429, not 404 or 400. The description says so, and AC-7 covers it
+    ("with or without a date").
+- **CORS preflight.** `corsMiddleware` answers `OPTIONS /api/book/x` with 204
+  for every origin, before chi routing (`middleware.go:79-82`). The statement
+  "preflight is not counted" is therefore true. Chi does not route `HEAD` to an
+  `r.Get` handler unless `middleware.GetHead` is installed, so `HEAD` cannot
+  spend the slot budget either.
+- **Client identification.** I checked the description against `clientIP`
+  (`ratelimit_detect.go:94-114`) and found it matches on every point:
+  - the key is the socket peer;
+  - `X-Real-IP` is used only from a trusted peer, and only when it parses;
+  - `X-Forwarded-For` is never read;
+  - addresses are canonicalised with `net.IP.String()`, so `::ffff:1.2.3.4` and
+    `1.2.3.4` are one client;
+  - unparseable `TRUSTED_PROXIES` entries are ignored (`:66-89`).
+- **Manifest vs spec.** The manifest's `acceptanceTests` AC-1..AC-15 match the
+  spec's AC-1..AC-15 at `136fa1c`. That includes the widened AC-12, the
+  kept-stack case in AC-13 and the concurrency criteria AC-14 and AC-15. No
+  criterion was silently narrowed.
+- **Rejected alternatives.** Both rejections have real reasons:
+  - A shared `RateLimited` response cannot carry a different `maximum` for each
+    operation (60 vs 600).
+  - A richer body would diverge from both `BookingError` and the detect 429.
+- **Test-only override left out of the contract.** I agree with leaving it out:
+  it is operator configuration, not part of the HTTP shape. The manifest lists
+  the `docker-compose.prod.yml` limit values as a forbidden path, which keeps
+  the production numbers fixed.
+
+### Non-blocking
+
+1. In §1 or §6, note that `"end must be after start"` can only fire through
+   duration overflow (divergence 1).
+2. Tighten "written to every host's calendar" (divergence 2).
+3. Merge order: this contract must merge after the spec branch, which brings
+   API-094 into `api-audit.md`.
+4. oapi-codegen generates the package-level Go constant `RateLimitExceeded` for
+   the enum. A later enum elsewhere pinned to "rate limit exceeded" would
+   collide with it or be renamed. Consider having the detect 429 reuse
+   `BookingRateLimitError` later (out of scope here, spec §5).
+5. OWNER: three decisions remain "assumed by the factory, pending owner
+   confirmation": D-1 (20 per 10 minutes; 120 per minute), D-3 (per client
+   across all links) and D-4 (every request counts, including 409s and unknown
+   slugs). If D-1 changes, the two `maximum` bounds change with it.
+6. OWNER: spec Q7. Is slowing one client's flood from seconds to hours the
+   outcome you want?
+7. OWNER: spec Q3. Should `getPublicLinkInfo` be limited too? It remains an
+   unlimited way to test whether a slug exists (404 vs 200), while the other
+   two operations are capped.
+8. The release stage's Q4 (does nginx see the real client address?) decides
+   whether the limits can ship. It is not a contract matter.
