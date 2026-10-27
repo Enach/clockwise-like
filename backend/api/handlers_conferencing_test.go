@@ -79,32 +79,60 @@ func setupConferencingRoutes(t *testing.T, client ConferenceEventClient, factory
 	return r
 }
 
+// API-070 (PAC-67, CONTRACT-4): the rows are looked up by provider, never by
+// position, and the list is checked for every subset of configured providers:
+// a row is present exactly when its provider is configured, and `custom` is
+// always present and connected.
 func TestConferencingProvidersContract(t *testing.T) {
-	for _, key := range []string{
-		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL",
-		"MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_REDIRECT_URL",
-		"ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_REDIRECT_URL",
-	} {
-		t.Setenv(key, "configured-for-test")
+	providerEnv := map[string]string{"google_meet": "GOOGLE", "teams": "MICROSOFT", "zoom": "ZOOM"}
+	redirect := map[string]string{
+		"GOOGLE":    "http://localhost:8080/api/auth/callback",
+		"MICROSOFT": "http://localhost:8080/api/auth/microsoft/callback",
+		"ZOOM":      "http://localhost:8080/api/auth/zoom/callback",
 	}
-	t.Setenv("GOOGLE_REDIRECT_URL", "http://localhost:8080/api/auth/callback")
-	t.Setenv("MICROSOFT_REDIRECT_URL", "http://localhost:8080/api/auth/microsoft/callback")
-	t.Setenv("ZOOM_REDIRECT_URL", "http://localhost:8080/api/auth/zoom/callback")
 	userID := createTestUser(t, "conf-providers@example.com")
 	r := setupConferencingRoutes(t, nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/conference/providers", nil)
-	req = withUser(req, userID)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-	var got []conferenceProviderStatus
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got) != 4 || got[0].Provider != "google_meet" || got[3].Provider != "custom" || !got[3].Connected {
-		t.Fatalf("providers = %+v", got)
+	rows := []string{"google_meet", "teams", "zoom"}
+	for mask := 0; mask < 1<<len(rows); mask++ {
+		configured := map[string]bool{}
+		for i, row := range rows {
+			prefix := providerEnv[row]
+			on := mask&(1<<i) != 0
+			configured[row] = on
+			for _, k := range []string{"_CLIENT_ID", "_CLIENT_SECRET"} {
+				if on {
+					t.Setenv(prefix+k, "configured-for-test")
+				} else {
+					t.Setenv(prefix+k, "")
+				}
+			}
+			t.Setenv(prefix+"_REDIRECT_URL", redirect[prefix])
+		}
+		req := withUser(httptest.NewRequest(http.MethodGet, "/api/conference/providers", nil), userID)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+		var got []conferenceProviderStatus
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		byProvider := map[string]conferenceProviderStatus{}
+		for _, row := range got {
+			byProvider[row.Provider] = row
+		}
+		if len(byProvider) != len(got) {
+			t.Errorf("configured %v: duplicate rows %+v", configured, got)
+		}
+		for _, row := range rows {
+			if _, ok := byProvider[row]; ok != configured[row] {
+				t.Errorf("configured %v: %s row present = %v", configured, row, ok)
+			}
+		}
+		if c, ok := byProvider["custom"]; !ok || !c.Connected {
+			t.Errorf("configured %v: custom row = %+v, want present and connected", configured, c)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
@@ -212,7 +213,7 @@ func (e *AnalyticsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
-	ts := e.OAuthConfig.TokenSource(ctx, token)
+	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, userID, token)
 	client, err := calendar.NewClient(ctx, ts)
 	if err != nil {
 		return nil, err

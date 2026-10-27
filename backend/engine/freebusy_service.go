@@ -47,10 +47,28 @@ type cachedResult struct {
 type FreeBusyService struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
-	Clock       Clock
+	// Microsoft renews the requester's Outlook credential (PAC-67); nil means
+	// this server's configuration (auth.MicrosoftConfigFromEnv).
+	Microsoft *auth.MicrosoftConfig
+	Clock     Clock
 
 	mu    sync.Mutex
 	cache map[string]cachedResult
+
+	// newOutlook builds the Outlook free/busy reader over a token source; a
+	// test seam, nil means calendar.NewOutlookClient.
+	newOutlook func(oauth2.TokenSource) outlookFreeBusy
+}
+
+type outlookFreeBusy interface {
+	GetFreeBusy(ctx context.Context, emails []string, start, end time.Time) (map[string][]calendar.TimeSlot, error)
+}
+
+func (s *FreeBusyService) outlookReader(ts oauth2.TokenSource) outlookFreeBusy {
+	if s.newOutlook != nil {
+		return s.newOutlook(ts)
+	}
+	return calendar.NewOutlookClient(ts)
 }
 
 func (s *FreeBusyService) now() time.Time {
@@ -117,23 +135,43 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 
 	var fetched map[string][]calendar.TimeSlot
 	provider := strings.ToLower(settings.CalendarProvider)
+	credential := storage.CredentialGoogle
 
+	// The requester's own credential, renewed when expired and stored for them
+	// (PAC-67). A failure still degrades to unknown coverage (D-6); a permanent
+	// refusal is recorded as the requester's loss by the token source.
 	switch provider {
 	case "outlook":
+		credential = storage.CredentialOutlook
 		token, err := auth.LoadMicrosoftToken(s.DB, requestingUserID)
 		if err == nil && token != nil {
-			oc := calendar.NewOutlookClient(oauth2.StaticTokenSource(token))
-			fetched, _ = oc.GetFreeBusy(qCtx, queryEmails, start, end)
+			cfg := s.Microsoft
+			if cfg == nil {
+				cfg = auth.MicrosoftConfigFromEnv()
+			}
+			ts := auth.MicrosoftTokenSource(qCtx, s.DB, cfg, requestingUserID, token)
+			fetched, _ = s.outlookReader(ts).GetFreeBusy(qCtx, queryEmails, start, end)
 		}
 	default:
 		// Google (default).
 		token, err := auth.LoadUserToken(s.DB, requestingUserID)
 		if err == nil && token != nil {
-			ts := auth.TokenSource(qCtx, s.OAuthConfig, token)
+			ts := auth.UserTokenSource(qCtx, s.DB, s.OAuthConfig, requestingUserID, token)
 			gc, err := calendar.NewClient(qCtx, ts)
 			if err == nil {
 				fetched, _ = gc.GetFreeBusy(qCtx, queryEmails, start, end)
 			}
+		}
+	}
+
+	// A degraded result computed while the credential is recorded as lost is
+	// not cached: after a reconnect the lookup is asked again with the new
+	// credential instead of serving it (AC-20). Caching after a temporary
+	// failure is unchanged.
+	cacheable := true
+	if fetched == nil {
+		if lost, err := storage.IsCredentialLost(s.DB, requestingUserID, credential); err != nil || lost {
+			cacheable = false
 		}
 	}
 
@@ -147,7 +185,9 @@ func (s *FreeBusyService) Query(ctx context.Context, requestingUserID uuid.UUID,
 		if slots == nil {
 			slots = []calendar.TimeSlot{}
 		}
-		s.setCached(p.cacheKey, cachedResult{slots: slots, coverage: coverage, expiresAt: ttl})
+		if cacheable {
+			s.setCached(p.cacheKey, cachedResult{slots: slots, coverage: coverage, expiresAt: ttl})
+		}
 		results = append(results, ParticipantBusy{Email: p.email, Coverage: coverage, Busy: slots})
 	}
 

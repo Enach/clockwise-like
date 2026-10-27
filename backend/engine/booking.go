@@ -204,7 +204,8 @@ func (e *BookingEngine) calendarClientForUser(ctx context.Context, userID uuid.U
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("no token for user %s", userID)
 	}
-	ts := e.OAuthConfig.TokenSource(ctx, token)
+	// The host's own credential, renewed and stored for the host (PAC-67, D-12).
+	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, userID, token)
 	return calendar.NewClient(ctx, ts)
 }
 
