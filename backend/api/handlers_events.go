@@ -125,7 +125,8 @@ func mergeAttendees(existing []*googlecalendar.EventAttendee, emails *[]string, 
 			if a, ok := byEmail[key]; ok {
 				out = append(out, a)
 			} else {
-				out = append(out, &googlecalendar.EventAttendee{Email: email})
+				// A room address listed here is still a room (D-6).
+				out = append(out, &googlecalendar.EventAttendee{Email: email, Resource: strings.HasSuffix(key, roomResourceSuffix)})
 			}
 		}
 		out = append(out, rooms...)

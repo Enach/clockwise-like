@@ -114,6 +114,22 @@ func (g *pac29Google) counts() (gets, puts, deletes int) {
 	return g.gets, g.puts, g.deletes
 }
 
+// sendUpdates returns the sendUpdates query of the last update or delete request.
+func (g *pac29Google) sendUpdates(method string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if method == http.MethodDelete {
+		return g.sendUpdates(http.MethodDelete)
+	}
+	return g.sendUpdates(http.MethodPut)
+}
+
+func (g *pac29Google) lastPutResponse() []byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.putResponse
+}
+
 // putEvent is the event the server last asked Google to write.
 func (g *pac29Google) putEvent() map[string]any {
 	g.mu.Lock()
@@ -167,7 +183,7 @@ func TestPAC29PatchEventAnswersCalendarEventDTO(t *testing.T) {
 	}
 
 	var fromGoogle googlecalendar.Event
-	if err := json.Unmarshal(g.putResponse, &fromGoogle); err != nil {
+	if err := json.Unmarshal(g.lastPutResponse(), &fromGoogle); err != nil {
 		t.Fatalf("decode fake response: %v", err)
 	}
 	want, _ := json.Marshal(toCalendarEventDTO(&fromGoogle))
@@ -252,7 +268,7 @@ func TestPAC29PatchSendUpdates(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d; body %q", rec.Code, rec.Body.String())
 			}
-			if got := g.putQuery.Get("sendUpdates"); got != tc.want {
+			if got := g.sendUpdates(http.MethodPut); got != tc.want {
 				t.Fatalf("sendUpdates = %q, want %q", got, tc.want)
 			}
 		})
@@ -286,7 +302,7 @@ func TestPAC29DeleteSendUpdatesAndNotFound(t *testing.T) {
 			if rec.Code != http.StatusNoContent {
 				t.Fatalf("status = %d; body %q", rec.Code, rec.Body.String())
 			}
-			if got := g.deleteQuery.Get("sendUpdates"); got != tc.want {
+			if got := g.sendUpdates(http.MethodDelete); got != tc.want {
 				t.Fatalf("sendUpdates = %q, want %q", got, tc.want)
 			}
 		})
@@ -483,6 +499,17 @@ func TestPAC29PatchAttendeesAndRooms(t *testing.T) {
 			t.Fatalf("attendees = %v, want the three existing ones unchanged", got)
 		}
 	})
+	t.Run("a new room address in attendees is a resource", func(t *testing.T) {
+		g := newPAC29Google(t, &pac29Google{getBody: pac29AttendeeEvent})
+		user := userWithGoogleToken(t, "pac29-att-roomlisted@example.com")
+		rec := doEvent(t, user, http.MethodPatch, "/api/events/evt-1", `{"attendees":["a@x.com","room-9@resource.calendar.google.com"]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; body %q", rec.Code, rec.Body.String())
+		}
+		if r := attendeesOf(t, g.putEvent())["room-9@resource.calendar.google.com"]; r == nil || r["resource"] != true {
+			t.Fatalf("room-9 = %v, want a resource attendee", r)
+		}
+	})
 	t.Run("empty list keeps only the room", func(t *testing.T) {
 		g := newPAC29Google(t, &pac29Google{getBody: pac29AttendeeEvent})
 		user := userWithGoogleToken(t, "pac29-att-empty@example.com")
@@ -512,8 +539,8 @@ func TestPAC29PatchAttendeesAndRooms(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d; body %q", rec.Code, rec.Body.String())
 		}
-		if g.putQuery.Get("sendUpdates") != "all" {
-			t.Fatalf("sendUpdates = %q", g.putQuery.Get("sendUpdates"))
+		if g.sendUpdates(http.MethodPut) != "all" {
+			t.Fatalf("sendUpdates = %q", g.sendUpdates(http.MethodPut))
 		}
 	})
 }
