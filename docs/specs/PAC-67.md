@@ -1,8 +1,9 @@
 # Spec — PAC-67: Per-user Outlook and Zoom credentials have no refresh or revocation lifecycle
 
 - **Linear**: https://linear.app/paceday/issue/PAC-67
-- **Status**: challenged (round 1 answered in "Revision 1", round 2 in "Revision 2",
-  round 3 in "Revision 3", round 4 in "Revision 4")
+- **Status**: accepted (challenge round 5, verdict accept, `fc27821`; rounds 1-4
+  answered in "Revision 1" to "Revision 4"; the round-4 blocking finding, public
+  link info coverage, is resolved by Revision 4 and D-14)
 - **Author**: spec-author
 - **Origin**: PR Enach/clockwise-like#204 (PAC-24) merge condition 3,
   `calendarCredentialLifecycle`; PAC-24 spec §0 and OQ-6
