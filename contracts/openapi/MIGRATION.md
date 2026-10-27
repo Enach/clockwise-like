@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **120**
-- generated: **0**
-- handwritten: **120**
+- operations: **121**
+- generated: **4**
+- handwritten: **117**
 
 ## Register
 
@@ -50,8 +50,8 @@ from the contract and any edit is reported as drift.
 |-----------------------------------|--------|-------------------------------------------------|------------------|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | listAnalyticsMeetings             | GET    | /api/analytics/meetings                         | analytics        | handwritten | |
 | recomputeAnalytics                | POST   | /api/analytics/recompute                        | analytics        | handwritten | |
-| listAnalyticsTrends               | GET    | /api/analytics/trends                           | analytics        | handwritten | |
-| getAnalyticsWeek                  | GET    | /api/analytics/week                             | analytics        | handwritten | |
+| listAnalyticsTrends               | GET    | /api/analytics/trends                           | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `weeks` with 400, which this operation does not declare, where the handler falls back (to 8 outside 1..52, spec PAC-42 section 6). |
+| getAnalyticsWeek                  | GET    | /api/analytics/week                             | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `date` with 400, which this operation does not declare, where the handler falls back (to today). |
 | listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | handwritten | |
 | createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
@@ -65,6 +65,7 @@ from the contract and any edit is reported as drift.
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
 | microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | |
+| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | generated   | PAC-67: new; implemented as generatedServer.DisconnectMicrosoft (backend/api/handlers_credentials.go), mounted through the generated strict wrapper. |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |
 | getHealth                         | GET    | /api/health                                     | auth             | handwritten | |
@@ -89,11 +90,11 @@ from the contract and any edit is reported as drift.
 | listRooms                         | GET    | /api/rooms                                      | calendar         | handwritten | |
 | startZoomOAuth                    | GET    | /api/auth/zoom                                  | conferencing     | handwritten | |
 | handleZoomOAuthCallback           | GET    | /api/auth/zoom/callback                         | conferencing     | handwritten | |
-| createConferenceLink              | POST   | /api/conference/create                          | conferencing     | handwritten | |
+| createConferenceLink              | POST   | /api/conference/create                          | conferencing     | generated   | PAC-67: generatedServer.CreateConferenceLink (backend/api/handlers_credentials.go); body validation (API-052) and credential renewal. |
 | listConferenceProviders           | GET    | /api/conference/providers                       | conferencing     | handwritten | |
-| disconnectZoom                    | POST   | /api/conference/zoom/disconnect                 | conferencing     | handwritten | |
+| disconnectZoom                    | POST   | /api/conference/zoom/disconnect                 | conferencing     | generated   | PAC-67: generatedServer.DisconnectZoom (backend/api/handlers_credentials.go); 200 ProviderDisconnectResult with revocation at Zoom. |
 | removeEventConference             | DELETE | /api/events/{id}/conference                     | conferencing     | handwritten | |
-| addEventConference                | POST   | /api/events/{id}/conference                     | conferencing     | handwritten | |
+| addEventConference                | POST   | /api/events/{id}/conference                     | conferencing     | generated   | PAC-67: generatedServer.AddEventConference (backend/api/handlers_credentials.go); credential renewal and the connection-lost 400s. |
 | getDailyRecapSettings             | GET    | /api/settings/daily-recap                       | daily-recap      | handwritten | |
 | patchDailyRecapSettings           | PATCH  | /api/settings/daily-recap                       | daily-recap      | handwritten | |
 | previewDailyRecap                 | POST   | /api/settings/daily-recap/preview               | daily-recap      | handwritten | |

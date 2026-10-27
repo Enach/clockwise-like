@@ -579,3 +579,250 @@ func TestSchedulingLinksInvitedHostAcceptsIs200(t *testing.T) {
 		})
 	}
 }
+
+// --- PAC-25: GET /api/scheduling-links/{id} is readable only by the owner and
+// accepted co-hosts (spec AC-1..AC-5, D-1, D-2; contract C-2). ---
+
+// pac25LinkFixture is link L owned by A with co-host rows B accepted, C pending
+// and D declined, plus E who has no host row at all.
+type pac25LinkFixture struct {
+	r                 *chi.Mux
+	link              *storage.SchedulingLink
+	owner, accepted   uuid.UUID
+	pending, declined uuid.UUID
+	stranger          uuid.UUID
+}
+
+func newPAC25LinkFixture(t *testing.T, prefix string) pac25LinkFixture {
+	t.Helper()
+	db := openTestDB(t)
+	f := pac25LinkFixture{r: setupSchedulingLinkRoutes(t)}
+	f.owner = createTestUser(t, prefix+"-owner@example.com")
+	f.accepted = createTestUser(t, prefix+"-accepted@example.com")
+	f.pending = createTestUser(t, prefix+"-pending@example.com")
+	f.declined = createTestUser(t, prefix+"-declined@example.com")
+	f.stranger = createTestUser(t, prefix+"-stranger@example.com")
+	for _, u := range []uuid.UUID{f.owner, f.accepted, f.pending, f.declined} {
+		if _, err := db.Exec(`UPDATE users SET avatar_url = $1 WHERE id = $2`, "https://avatars.example.com/"+u.String(), u); err != nil {
+			t.Fatalf("set avatar: %v", err)
+		}
+	}
+	f.link = createSchedulingLinkRecord(t, f.owner, prefix+"-link", "PAC-25 "+prefix)
+	for u, status := range map[uuid.UUID]string{f.accepted: "accepted", f.pending: "pending", f.declined: "declined"} {
+		if _, err := storage.AddLinkHost(db, f.link.ID, u, status); err != nil {
+			t.Fatalf("add %s host: %v", status, err)
+		}
+	}
+	return f
+}
+
+func (f pac25LinkFixture) get(t *testing.T, caller uuid.UUID) *httptest.ResponseRecorder {
+	t.Helper()
+	return f.getID(t, caller, f.link.ID.String())
+}
+
+func (f pac25LinkFixture) getID(t *testing.T, caller uuid.UUID, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/scheduling-links/"+id, nil)
+	w := httptest.NewRecorder()
+	f.r.ServeHTTP(w, withUser(req, caller))
+	return w
+}
+
+// listEntry is the caller's entry for L in GET /api/scheduling-links, as raw
+// JSON: the list is the read that already shows L to its owner and accepted
+// co-hosts, so the detail must answer them with the same record.
+func (f pac25LinkFixture) listEntry(t *testing.T, caller uuid.UUID) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/scheduling-links", nil)
+	w := httptest.NewRecorder()
+	f.r.ServeHTTP(w, withUser(req, caller))
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d; body: %s", w.Code, w.Body.String())
+	}
+	var got map[string][]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	for _, group := range [][]json.RawMessage{got["owned"], got["shared"]} {
+		for _, raw := range group {
+			var probe struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(raw, &probe)
+			if probe.ID == f.link.ID.String() {
+				return string(raw)
+			}
+		}
+	}
+	t.Fatalf("link %s is not in the caller's list: %s", f.link.ID, w.Body.String())
+	return ""
+}
+
+// assertRefusedLikeUnknown is AC-1's "the same status and the same body as for
+// a well-formed identifier that matches no link", plus "no host, no email, no
+// title and no slug".
+func (f pac25LinkFixture) assertRefusedLikeUnknown(t *testing.T, what string, caller uuid.UUID) {
+	t.Helper()
+	unknown := f.getID(t, caller, uuid.New().String())
+	assertNotFoundJSON(t, what+" (unknown id baseline)", unknown)
+	w := f.get(t, caller)
+	assertNotFoundJSON(t, what, w)
+	if w.Body.String() != unknown.Body.String() {
+		t.Fatalf("%s: body %q differs from the unknown-id body %q", what, w.Body.String(), unknown.Body.String())
+	}
+	body := w.Body.String()
+	for _, leak := range []string{"hosts", "@example.com", f.link.Title, f.link.Slug, f.link.ID.String()} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("%s: body %q carries %q", what, body, leak)
+		}
+	}
+}
+
+// AC-1: a caller with no host row on L gets the unknown-id answer.
+func TestPAC25GetLinkStrangerIsNotFound(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-ac1")
+	f.assertRefusedLikeUnknown(t, "stranger", f.stranger)
+}
+
+// AC-2: a pending invitee gets the unknown-id answer.
+func TestPAC25GetLinkPendingInviteeIsNotFound(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-ac2")
+	f.assertRefusedLikeUnknown(t, "pending invitee", f.pending)
+}
+
+// AC-3: an invitee who declined gets the unknown-id answer.
+func TestPAC25GetLinkDeclinedInviteeIsNotFound(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-ac3")
+	f.assertRefusedLikeUnknown(t, "declined invitee", f.declined)
+}
+
+// Contract 404 description: a co-host who left is refused like a stranger.
+func TestPAC25GetLinkCoHostWhoLeftIsNotFound(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-left")
+	req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+f.link.ID.String()+"/leave", nil)
+	w := httptest.NewRecorder()
+	f.r.ServeHTTP(w, withUser(req, f.accepted))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("leave status = %d; body: %s", w.Code, w.Body.String())
+	}
+	f.assertRefusedLikeUnknown(t, "co-host who left", f.accepted)
+}
+
+// AC-4 (pin): an accepted co-host reads the whole record, roster included.
+func TestPAC25GetLinkAcceptedCoHostReadsFullRoster(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-ac4")
+	w := f.get(t, f.accepted)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var got schedulingLinkDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.IsOwner || got.MyStatus != "accepted" {
+		t.Fatalf("is_owner=%v my_status=%q, want false/accepted", got.IsOwner, got.MyStatus)
+	}
+	if got.ID != f.link.ID.String() || got.OwnerID != f.owner.String() || got.Title != f.link.Title || got.Slug != f.link.Slug {
+		t.Fatalf("link fields = %+v, want the stored link %+v", got, f.link)
+	}
+	want := map[string]string{
+		f.owner.String(): "accepted", f.accepted.String(): "accepted",
+		f.pending.String(): "pending", f.declined.String(): "declined",
+	}
+	if len(got.Hosts) != len(want) {
+		t.Fatalf("hosts = %+v, want %d rows", got.Hosts, len(want))
+	}
+	for _, h := range got.Hosts {
+		if want[h.UserID] != h.Status {
+			t.Fatalf("host %s status %q, want %q", h.UserID, h.Status, want[h.UserID])
+		}
+		if !strings.HasSuffix(h.Email, "@example.com") || h.Name == "" || h.AvatarURL != "https://avatars.example.com/"+h.UserID {
+			t.Fatalf("host %+v lacks email, name or avatar", h)
+		}
+	}
+	if list := f.listEntry(t, f.accepted); strings.TrimSpace(w.Body.String()) != list {
+		t.Fatalf("detail differs from the co-host's list entry:\ndetail: %s\nlist:   %s", w.Body.String(), list)
+	}
+}
+
+// AC-5 (pin): the owner reads the same record as before PAC-25.
+func TestPAC25GetLinkOwnerReadsFullRecord(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-ac5")
+	w := f.get(t, f.owner)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var got schedulingLinkDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.IsOwner || got.MyStatus != "accepted" || len(got.Hosts) != 4 {
+		t.Fatalf("got is_owner=%v my_status=%q hosts=%d, want true/accepted/4", got.IsOwner, got.MyStatus, len(got.Hosts))
+	}
+	if list := f.listEntry(t, f.owner); strings.TrimSpace(w.Body.String()) != list {
+		t.Fatalf("detail differs from the owner's list entry:\ndetail: %s\nlist:   %s", w.Body.String(), list)
+	}
+}
+
+// hideTable makes every read of one table fail for the duration of the test
+// while the rest of the database works (the pattern of hideOAuthTokens).
+func hideTable(t *testing.T, table string) {
+	t.Helper()
+	db := openTestDB(t)
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` RENAME TO ` + table + `_pac25_hidden`); err != nil {
+		t.Fatalf("hide %s: %v", table, err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`ALTER TABLE ` + table + `_pac25_hidden RENAME TO ` + table); err != nil {
+			t.Fatalf("restore %s: %v", table, err)
+		}
+	})
+}
+
+func assertInternalErrorNoLink(t *testing.T, what string, f pac25LinkFixture, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("%s: status = %d, want 500; body: %s", what, w.Code, w.Body.String())
+	}
+	exactJSONError(t, w, "internal error")
+	for _, leak := range []string{f.link.Title, f.link.Slug, "@example.com"} {
+		if strings.Contains(w.Body.String(), leak) {
+			t.Fatalf("%s: body %q carries %q", what, w.Body.String(), leak)
+		}
+	}
+}
+
+// C-2a: an accepted co-host whose host-status lookup fails gets 500, not 404 or 200.
+func TestPAC25GetLinkHostStatusFailureForCoHostIs500(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-c2a")
+	_, _ = captureServerErrors(t)
+	hideTable(t, "scheduling_link_hosts")
+	assertInternalErrorNoLink(t, "co-host, host lookup down", f, f.get(t, f.accepted))
+}
+
+// C-2b: a caller with no host row whose host-status lookup fails gets 500 and
+// no part of the link.
+func TestPAC25GetLinkHostStatusFailureForStrangerIs500(t *testing.T) {
+	f := newPAC25LinkFixture(t, "pac25-c2b")
+	_, _ = captureServerErrors(t)
+	hideTable(t, "scheduling_link_hosts")
+	assertInternalErrorNoLink(t, "stranger, host lookup down", f, f.get(t, f.stranger))
+}
+
+// C-2c: a failed roster read is 500, never 200 with hosts emptied (host rows
+// unreadable, owner caller) or an email dropped (host users unreadable).
+func TestPAC25GetLinkRosterFailureIs500(t *testing.T) {
+	t.Run("host rows unreadable", func(t *testing.T) {
+		f := newPAC25LinkFixture(t, "pac25-c2c-rows")
+		_, _ = captureServerErrors(t)
+		hideTable(t, "scheduling_link_hosts")
+		assertInternalErrorNoLink(t, "owner, roster rows down", f, f.get(t, f.owner))
+	})
+	t.Run("host users unreadable", func(t *testing.T) {
+		f := newPAC25LinkFixture(t, "pac25-c2c-users")
+		_, _ = captureServerErrors(t)
+		hideTable(t, "users")
+		assertInternalErrorNoLink(t, "co-host, roster users down", f, f.get(t, f.accepted))
+	})
+}

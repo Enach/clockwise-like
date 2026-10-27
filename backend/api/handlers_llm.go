@@ -73,14 +73,21 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client, err := nlp.NewLLMClientFromSettings(s)
+	var refusal *nlp.DestinationRefusal
+	if errors.As(err, &refusal) {
+		// PAC-66-B: a refused openai/anthropic destination is the 422 even
+		// when no key is on file or submitted (spec §B4).
+		writeProviderFailure(w, r, err, redact)
+		return
+	}
 	if err != nil {
 		// The detail is logged with both keys redacted (AC-14); the body is generic (PAC-21).
 		writeServerError(w, r, "build LLM client", errors.New(redact(err.Error())), http.StatusInternalServerError)
 		return
 	}
 
-	// PAC-66: an ambient-credential provider (named in the body or stored)
-	// sends nothing to a destination the operator has not approved. The check
+	// PAC-66 / PAC-66-B: the provider the probe uses (named in the body or
+	// stored) sends nothing to a destination not approved for it. The check
 	// needs no credential, so the refusal is reported even where none exists.
 	if err := nlp.CheckDestination(r.Context(), client); err != nil {
 		writeProviderFailure(w, r, err, redact)

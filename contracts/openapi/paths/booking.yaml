@@ -52,6 +52,40 @@ paths:
       tags: [booking]
       summary: Book a slot on a public scheduling link.
       security: []
+      description: >-
+        Rate limited per client (NEW-booking-rate-limit). A client may make at
+        most 20 requests to this operation per fixed 10-minute window; the
+        window starts at the client's first counted request and is not extended
+        by refused requests. The limit is checked and the request counted
+        atomically, as the very first step of the handler: before the link
+        lookup, before the body is read and before any validation, so every
+        request counts whatever it would otherwise have answered (201, 400, 404,
+        409, 410, 422 or 500), and a refused request answers 429 even for an
+        unknown slug and never writes a booking. Concurrent requests cannot
+        exceed the limit. The count is per client across all links, not per
+        link or per host, and is separate from the slot-listing budget of
+        `getPublicBookingSlots`. A client is identified exactly as for
+        `detectAuthProvider` (PAC-39): the socket peer address, or the
+        `X-Real-IP` header only when the socket peer is inside `TRUSTED_PROXIES`
+        (comma-separated IPs or CIDRs; empty or unset trusts nobody; an
+        unparseable entry trusts less, never more). `X-Forwarded-For` is never
+        read. A client is one exact IPv4 or IPv6 address, with no prefix
+        grouping. Counts live in process memory: the limit is per backend
+        process (20 per replica, as API-062's residue), and a restart clears
+        them. Clients whose window has ended are forgotten by a sweep that runs
+        on a request, at most once per window, so memory stays bounded. CORS
+        preflight (`OPTIONS`) is answered by the CORS middleware and is not
+        counted. Not checked (API-094, open): the requested time is never
+        checked against the hosts' availability, the link's days or hours, or
+        any upper date bound. The only time checks are the minimum notice (422)
+        and overlap with this link's own non-cancelled bookings (409); any other
+        start is accepted. The booking row is saved, then a calendar event (with
+        the booker email as a guest) is attempted on each accepted host's
+        calendar, best effort: a host whose user record or calendar client
+        cannot be loaded is skipped and a failed event creation is ignored, so a
+        201 does not mean any host's calendar was written. Operation-level
+        `security: []` is kept: this operation is public and is registered
+        outside requireAuth; the rate limit is not authentication.
       requestBody:
         required: true
         content:
@@ -70,7 +104,11 @@ paths:
             Validation failure. Messages: "invalid request body";
             "name, email, and start are required"; "invalid start time, use RFC3339";
             "invalid end time, use RFC3339"; "duration does not match end time";
-            "invalid duration".
+            "invalid duration"; "end must be after start" (reachable only when
+            the end computed from `duration_minutes` overflows, which needs a
+            link duration option above about 153,722,867 minutes; an ordinary
+            end at or before start answers "duration does not match end time" or
+            "invalid duration" instead).
           content:
             application/json:
               schema:
@@ -99,6 +137,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '429':
+          $ref: '#/components/responses/BookingCreateRateLimited'
         '500':
           description: >-
             Storage or engine failure. `error` is one of "internal error" or "booking
@@ -119,6 +159,17 @@ paths:
         always the empty array. Without `date`: the handler probes the next 60 calendar
         days from `time.Now()` and returns those day strings in `available_dates`, with
         `slots` always the empty array. Both keys are always present in both modes.
+        Rate limited per client (NEW-booking-rate-limit), separately from and more
+        loosely than `createPublicBooking`: at most 120 requests per client per
+        fixed 1-minute window, with or without `date`. The limit is checked and the
+        request counted atomically as the handler's first step, before the link
+        lookup and before the query is validated, so every request counts whatever
+        it would otherwise have answered, and a refused request answers 429 even
+        for an unknown slug. Booking requests do not consume this budget and slot
+        requests do not consume the booking budget. Client identification, the
+        per-process caveat, the sweep and the CORS preflight exemption are exactly
+        as described on `createPublicBooking`; this limiter has its own counts and
+        its own sweep.
       security: []
       parameters:
         - name: slug
@@ -171,6 +222,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '429':
+          $ref: '#/components/responses/BookingSlotsRateLimited'
         '500':
           description: 'Storage or engine failure. Body: {"error":"internal error"}'
           content:
@@ -231,6 +284,16 @@ paths:
         otherwise); before PAC-24 it wrote the single shared settings row.
         Error bodies here use `http.Error`, i.e. `text/plain; charset=utf-8` plain text,
         NOT the shared JSON error envelope.
+
+
+        Since PAC-67 (spec AC-3, AC-11, AC-12, AC-24) this is also the Zoom
+        RECONNECT, and what it stores changes; no response, status or Location
+        changes. The access token's expiry (from the exchange's `expires_in`) is
+        stored with the tokens so the credential can be renewed when it expires.
+        When the exchange returns no refresh token, the caller's stored refresh
+        token is kept rather than overwritten with an empty one (AC-11). Storing
+        the credential ends any recorded loss of the caller's Zoom connection, so
+        the `zoom` row of `listConferenceProviders` reports connected again.
       parameters:
         - name: code
           in: query
@@ -511,18 +574,38 @@ paths:
     get:
       operationId: getSchedulingLink
       tags: [scheduling-links]
-      summary: Fetch one scheduling link by id.
+      summary: Fetch one scheduling link by id (owner or accepted co-host).
       description: >-
-        No ownership or membership check: any authenticated user who knows the UUID
-        receives the full link including every host's email, name and avatar.
-        `is_owner` is computed against the caller and `my_status` is only emitted when
-        the caller is one of the hosts.
-      x-uncertain: >-
-        Missing authorization looks unintentional next to PATCH/DELETE/bookings which
-        all enforce owner-only; treating it as deliberate would be a guess.
+        Readable only by the link's owner and by co-hosts whose host row on the link
+        is `accepted` (PAC-25, API-006). That is the same set of callers who receive the
+        link from `GET /api/scheduling-links`, so this read discloses nothing the list
+        does not. Every other authenticated caller (no host row, a `pending` or
+        `declined` invitation, a co-host who left or was removed) receives the same
+        `404 {"error":"not found"}` as for an id that matches no link, with no part of
+        the link in the body, so the answer does not reveal whether a link exists. A
+        refused read is never `403` (PAC-25 D-1; contrast the owner-only siblings
+        PATCH, DELETE, `/bookings` and `/hosts`, which still answer `403` and are out
+        of scope). Check order: `400` malformed id; then the link lookup; then the
+        caller's own host-status lookup on that link; then `404` for no link or a caller
+        who may not read it; then `200`. A storage error on either lookup answers `500`
+        `{"error":"internal error"}`, never `404` (an outage is not reported as "not
+        found") and never `200` (the reader check does not fail open). An allowed reader
+        receives the full record including every host row (accepted, pending and
+        declined) with each host's email, name and avatar; `is_owner` is computed
+        against the caller and `my_status` is the caller's own host status. Building
+        that record reads the roster (the link's host rows and each host's user record);
+        a storage error on that read also answers `500` `{"error":"internal error"}`,
+        never `200` with `hosts: []` or with a host's email missing (PAC-25 C-2). An
+        accepted co-host therefore still sees pending and declined invitees' emails, as
+        through the list (PAC-25 D-2).
       responses:
         '200':
-          description: The link, with hosts.
+          description: >-
+            The link, with hosts. Returned only to the owner (`is_owner: true`) or an
+            accepted co-host (`is_owner: false`, `my_status: accepted`), and only when
+            the whole roster was read: `hosts` is never emptied and no host's email is
+            dropped because a storage read failed. A failed roster read is `500`, not
+            this response.
           content:
             application/json:
               schema:
@@ -536,13 +619,24 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '404':
-          description: 'Body: {"error":"not found"}. Also returned for soft-deleted (active=false) links only if the row was hard-removed; GetSchedulingLinkByID ignores `active`, so a soft-deleted link still returns 200.'
+          description: >-
+            Body exactly `{"error":"not found"}`. Returned when no link has that id, AND
+            when the link exists but the caller is neither its owner nor an accepted
+            co-host (never invited, invitation pending or declined, left or removed).
+            The two cases are indistinguishable by status and body (PAC-25 D-1). A
+            soft-deleted link (`active=false`) is NOT a 404 for its owner or accepted
+            co-hosts: GetSchedulingLinkByID ignores `active`, so they still receive 200
+            (API-050, not resolved by PAC-25).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+              example:
+                error: not found
         '500':
-          description: 'Body: {"error":"internal error"}'
+          description: >-
+            Body: {"error":"internal error"}. A storage error on the link lookup, on the
+            caller's host-status lookup, or on the roster read (PAC-25 C-2).
           content:
             application/json:
               schema:
@@ -911,9 +1005,56 @@ paths:
       description: >-
         Provider comes from the CALLER'S stored settings (`ConferencingProvider`),
         not from the request; the Teams credential is the caller's own (PAC-24;
-        before it, both came from the single shared settings row). No field validation at all: a missing `title`, `start` or `end`
-        decodes to the Go zero value and is forwarded to the provider as-is.
-        Not referenced anywhere in the frontend.
+        before it, both came from the single shared settings row).
+
+
+        Since PAC-67 (finding API-052, resolved here under factory section 7.1)
+        the body is validated before any credential is read or any provider is
+        called: `title` must be present and contain at least one character that
+        is not whitespace, `start` and `end` must be present RFC 3339 date-times,
+        and `end` must be after `start`. Anything else is the 400 "invalid body".
+        "Whitespace" is exactly the set ECMA-262 `\s` matches (WhiteSpace and
+        LineTerminator), so the server's test and the schema's `pattern: '\S'`
+        on `CreateConferenceRequest.title` accept and refuse the same titles
+        (contract challenge finding 1). Neither Go's `strings.TrimSpace`
+        (`unicode.IsSpace`: adds U+0085, lacks U+FEFF) nor Go's `regexp` `\S`
+        (ASCII only) is that set, so the server cannot use either as is. A
+        `start` or `end` equal to `0001-01-01T00:00:00Z` cannot be told apart from
+        an absent one and is refused as absent. Before PAC-67 a missing field
+        decoded to the Go zero value and was forwarded to the provider (a blank
+        title and the year 1).
+
+
+        Since PAC-67 (spec AC-3 to AC-5, AC-7 to AC-12) the Teams and Zoom
+        credentials are renewed when the stored access token has expired, using
+        the caller's own refresh token, and the renewed credential is stored for
+        the caller only (a rotated refresh token replaces the stored one). A
+        token that has not expired is used as is, with no renewal request. When
+        the provider PERMANENTLY refuses the renewal (OAuth `invalid_grant` or
+        equivalent) the request fails with the 400 "connection lost" sentence for
+        that provider, the loss is recorded for the caller (the matching row of
+        `listConferenceProviders` reports not connected, and the caller's activity
+        log gets ONE `connection_lost` entry per loss however many requests hit
+        it, written best-effort: see CONNECTION ENTRIES on `listAuditEntries`),
+        and the stored credential is kept (spec D-1). A TEMPORARY renewal
+        failure (timeout, network, provider 5xx) is the 500 below: it never says
+        reconnect and records nothing (AC-10).
+
+
+        A Teams or Zoom credential whose access token has expired and that holds
+        NO refresh token cannot be renewed: no renewal request is sent and the
+        request fails with the same 400 "connection lost" sentence for that
+        provider. Nothing is recorded and no activity entry is written, because
+        such a credential is never reported connected (see
+        `ConferenceProviderStatus.connected`), so there is no loss to start. A
+        Zoom credential whose expiry is not stored (one stored before PAC-67) is
+        treated as expired, so it is renewed before it is used.
+
+
+        API-091 (no frontend consumer) is resolved for this operation by keeping
+        it: it is the standalone meeting-creation path spec PAC-67 AC-3, AC-5 and
+        AC-8 test through, so those Go contract tests are its second opinion.
+        Still not referenced anywhere in the frontend.
       requestBody:
         required: true
         content:
@@ -933,14 +1074,22 @@ paths:
             dash in the three provider sentences is U+2014 EM DASH, exactly as the
             server writes it today; the new stored-credential sentence uses the same
             character on purpose, so the three read alike:
-            "invalid body"; "teams: not connected — visit /api/auth/microsoft to
+            "invalid body" (the body is not JSON, or, since PAC-67, fails the
+            validation in the operation description: API-052); "teams: not
+            connected — visit /api/auth/microsoft to
             authenticate" (also returned when reading the stored Microsoft token
             fails, not only when there is none: the server does not separate the two
             on this path; see the PAC-21 contract's doesNotResolve); "zoom: not
             connected — visit /api/auth/zoom to authenticate"; "zoom: stored
             credential is invalid — reconnect at /api/auth/zoom" (the stored Zoom
             token does not decode; before PAC-21 was finished this was
-            "zoom: invalid token: " plus the JSON decoder's error).
+            "zoom: invalid token: " plus the JSON decoder's error); NEW in PAC-67,
+            "teams: connection lost — reconnect at /api/auth/microsoft" and "zoom:
+            connection lost — reconnect at /api/auth/zoom" (the provider permanently
+            refused the renewal of the caller's credential, on this request or on an
+            earlier one whose loss is still recorded; spec AC-8 "fails with an error
+            telling A to reconnect"; also the answer when the access token has
+            expired and no refresh token is stored, which records nothing).
           content:
             application/json:
               schema:
@@ -949,8 +1098,12 @@ paths:
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: >-
-            Settings load or meeting creation failed. Body: `{"error":"internal error"}`.
-            The detail is written to the server log and Sentry only (PAC-21).
+            Settings load or meeting creation failed, or (since PAC-67) renewing the
+            Teams or Zoom credential failed TEMPORARILY (timeout, network, provider
+            5xx; spec AC-10): nothing is recorded and the credential is still reported
+            connected. Body: `{"error":"internal error"}`, which never tells the caller
+            to reconnect. The detail is written to the server log and Sentry only
+            (PAC-21).
           content:
             application/json:
               schema:
@@ -968,6 +1121,32 @@ paths:
         Connection state and the Meet email describe the CALLER'S own settings and
         credentials (PAC-24).
         Length is therefore 1..4.
+
+
+        Since PAC-67 `connected` means USABLE, not merely stored (spec PAC-67 §3,
+        AC-8, AC-12 to AC-14, AC-21, AC-23): a credential whose renewal the provider
+        permanently refused is kept (spec D-1) but reported `connected: false`
+        until the caller reconnects that provider; a temporary failure never
+        changes it. The exact predicate of each row is on
+        `ConferenceProviderStatus.connected`: a credential that can never be
+        renewed (no refresh token) is not usable either and reads
+        `connected: false`. This holds for every row whatever the caller's calendar
+        provider: the `teams` row reports a lost Outlook credential even when the
+        calendar provider is Google, and the `google_meet` row a lost Google
+        credential even when it is Outlook (AC-21). A loss recorded while the
+        credential was used for someone else (team availability, a public booking
+        page, a scheduled job) changes the OWNER's rows only, never the
+        requester's (spec D-12).
+
+
+        API-070 (resolved here under factory section 7.1, contract side): the
+        variable length and the always-connected `custom` row were already
+        documented above and are confirmed against `providers` in
+        backend/api/handlers_conferencing.go; they are intended, not defects. What
+        remains of the finding is a test that indexes the array by position and so
+        passes only on a fully configured server; the PAC-67 backend stage looks
+        rows up by `provider` instead (contracts/features/PAC-67.yaml
+        resolvesFindings).
       responses:
         '200':
           description: Provider statuses.
@@ -994,19 +1173,83 @@ paths:
     post:
       operationId: disconnectZoom
       tags: [conferencing]
-      summary: Clear the stored Zoom tokens.
+      summary: Disconnect the caller's Zoom credential and ask Zoom to revoke it.
       description: >-
-        Takes no request body. Clears the CALLER'S Zoom tokens and returns the
-        caller's conferencing provider to `meet`; other users are untouched.
-        Before PAC-24 the tokens were server-wide.
+        Takes no request body. Acts on the CALLER only; other users' credentials,
+        settings and activity logs are untouched. Before PAC-24 the tokens were
+        server-wide.
+
+
+        Since PAC-67 (spec AC-14 to AC-16, D-2, D-9), in this order:
+        (1) LOCAL REMOVAL, one atomic change: the caller's stored Zoom credential is
+        read into memory and then removed whether or not it decodes, any recorded
+        loss of it is cleared, and the caller's conferencing provider becomes
+        `meet` unconditionally (spec D-9, unchanged from before PAC-67). A failure
+        up to and including this step is the 500 below, and then nothing has
+        changed.
+        (2) RENEWAL FOR REVOCATION, only when needed: when the removed access token
+        is empty, has expired, or has no stored expiry (a credential stored before
+        PAC-67), and a refresh token was stored, the server first renews it at
+        Zoom's token endpoint with the removed refresh token, as a meeting creation
+        would. The renewed access and refresh tokens are held in memory for this
+        request only and are NEVER stored: the credential stays removed. When that
+        renewal fails, refused permanently or temporarily, or when it is needed
+        and no refresh token was stored, nothing is sent to the revocation
+        endpoint and the answer is `revocation: unconfirmed`. That is not a loss:
+        nothing is recorded and no `connection_lost` entry is written (the
+        credential no longer exists). A disconnect while a loss is recorded is
+        this case, since the refresh token was already refused.
+        (3) REVOCATION: the unexpired or just-renewed access token is sent to Zoom's
+        token revocation endpoint (`POST https://zoom.us/oauth/revoke`, client
+        credentials in Basic auth, `token` = the access token). The answer is
+        `revocation: confirmed` when Zoom answers success, and
+        `revocation: unconfirmed` when Zoom refuses, answers an error, or cannot
+        be reached. A stored credential that does not decode (non-blank
+        `zoom_tokens` that is not valid JSON, the state behind the "zoom: stored
+        credential is invalid" 400 of `createConferenceLink`) cannot be revoked at
+        all: steps 2 and 3 send nothing and the answer is
+        `revocation: unconfirmed`. The local removal stands in every case (spec
+        D-2). No `connection_lost` entry is ever written by a disconnect.
+        (4) ACTIVITY ENTRIES for the caller, written after the outcome is known:
+        `confirmed` writes one `provider_disconnected` entry (details
+        `{"provider":"zoom","revocation":"confirmed"}`); `unconfirmed`, including
+        the undecodable and failed-renewal cases, writes two, one
+        `provider_disconnected` (details
+        `{"provider":"zoom","revocation":"unconfirmed"}`) and one
+        `revocation_unconfirmed` (details `{"provider":"zoom"}`) (spec AC-15,
+        AC-16; round-5 challenge NB-2). These writes are BEST-EFFORT, like every
+        kind in the activity log (`storage.WriteAuditLog`): a failed insert is
+        written to the server log and does not change the response, because the
+        credential is already removed and the 200 is the only truthful answer.
+        Such a disconnect has fewer entries than listed, possibly none; the 200
+        body is then the only record the user gets of the outcome.
+        A caller with no stored Zoom credential (blank `zoom_tokens`) gets 200 with
+        `revocation: nothing_stored`: the conferencing provider still becomes
+        `meet`, nothing is sent to Zoom and no activity entry is written.
+
+
+        Before PAC-67 this answered 204 with no body and sent nothing to Zoom. The
+        only consumer (smart-calendar-flow `zoomDisconnect`, typed `void`) resolves
+        a 200 JSON body as it did the 204 and ignores it, so it keeps working; it
+        owes the "revocation could not be confirmed" message (spec section 5).
       responses:
-        '204':
-          description: Tokens cleared. Empty body.
+        '200':
+          description: >-
+            The Zoom credential is gone locally (or there was none); `revocation` says
+            what Zoom answered. Never a failure status because of revocation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderDisconnectResult'
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: >-
-            Clearing the tokens failed. Body: `{"error":"internal error"}`. The detail is
+            Reading the caller's stored Zoom credential, or the local removal (step 1),
+            failed. NOTHING was changed locally, nothing was sent to Zoom and no activity
+            entry was written, so a retry is safe. Nothing that fails after step 1 is a
+            500: renewal and revocation failures are `revocation: unconfirmed`, and a
+            failed activity-entry write is logged only. Body: `{"error":"internal error"}`. The detail is
             written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1033,6 +1276,24 @@ paths:
         private extended properties. (3) `google_meet`: asks Google to mint a Meet link.
         (4) anything else (`zoom`, `teams`): creates a meeting through the provider
         factory and stores the join URL in extended properties.
+
+
+        Since PAC-67 (spec AC-3, AC-8, AC-10, AC-12, AC-23, D-10) every credential
+        this operation uses is renewed when expired and the renewal is stored for
+        the caller. The event is read with the caller's GOOGLE credential before
+        the Teams or Zoom credential is touched. When Google permanently refuses
+        that renewal the answer is the existing 404 "event not found" (unchanged,
+        spec D-7, D-10), the Google loss is recorded for the caller (the
+        `google_meet` row and, for a Google calendar provider, `getAuthStatus`
+        report not connected; one `connection_lost` entry naming `google`), and the
+        Teams or Zoom credential is neither read, renewed nor reported. When the
+        Teams or Zoom renewal is permanently refused the answer is the 400
+        "connection lost" sentence for that provider and that loss is recorded
+        likewise. A temporary renewal failure records nothing: Google's gives the
+        404 as today, Teams' or Zoom's gives the 502 "upstream provider error". A
+        Teams or Zoom credential whose access token has expired and that holds no
+        refresh token gets the same 400 "connection lost" sentence with no
+        renewal request, and records nothing (as on `createConferenceLink`).
       requestBody:
         required: true
         content:
@@ -1063,7 +1324,11 @@ paths:
             /api/auth/microsoft to authenticate" (also returned when reading the
             stored Microsoft token fails); "zoom: not connected — visit
             /api/auth/zoom to authenticate"; "zoom: stored credential is invalid —
-            reconnect at /api/auth/zoom".
+            reconnect at /api/auth/zoom"; NEW in PAC-67, "teams: connection lost —
+            reconnect at /api/auth/microsoft" and "zoom: connection lost — reconnect
+            at /api/auth/zoom" (the provider permanently refused the renewal of the
+            caller's Teams or Zoom credential, or its access token has expired and no
+            refresh token is stored; see the operation description).
           content:
             application/json:
               schema:
@@ -1073,7 +1338,10 @@ paths:
         '404':
           description: >-
             Body: `{"error":"event not found"}` (fixed text; the Google error is not
-            appended, PAC-21). Any GetEvent failure maps to 404.
+            appended, PAC-21). Any GetEvent failure maps to 404, including, since
+            PAC-67, a permanently refused or temporarily failing renewal of the
+            caller's Google credential (spec D-10: unchanged on purpose; the loss is
+            reported on Google's status surfaces and in the activity log instead).
           content:
             application/json:
               schema:
@@ -1097,8 +1365,9 @@ paths:
         '502':
           description: >-
             Upstream provider problem. `error` is one of "Google Meet creation is still
-            pending", "upstream provider error" (the provider's create-meeting call failed)
-            or "conference provider returned no join URL". The detail is written to the
+            pending", "upstream provider error" (the provider's create-meeting call
+            failed, or, since PAC-67, renewing the Teams or Zoom credential failed
+            temporarily; spec AC-10) or "conference provider returned no join URL". The detail is written to the
             server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1149,6 +1418,55 @@ components:
         format: uuid
 
   responses:
+    BookingCreateRateLimited:
+      description: >-
+        The client has already made 20 requests to `createPublicBooking` in its
+        current 10-minute window (NEW-booking-rate-limit). Nothing was looked up
+        or written. Body: `{"error":"rate limit exceeded"}`, Content-Type
+        application/json, the same envelope and message as the detect limiter's
+        429. `Retry-After` is the whole number of seconds until the client's
+        window ends, rounded up, never less than 1 and never more than 600. The
+        header is not listed in `Access-Control-Expose-Headers`, so a page on
+        another origin cannot read it; the web booking page does not need it.
+      headers:
+        Retry-After:
+          required: true
+          description: >-
+            Delay-seconds form of RFC 9110 section 10.2.3 (never the HTTP-date
+            form): seconds remaining in the client's booking window, rounded up.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 600
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BookingRateLimitError'
+
+    BookingSlotsRateLimited:
+      description: >-
+        The client has already made 120 requests to `getPublicBookingSlots` in its
+        current 1-minute window (NEW-booking-rate-limit). Nothing was looked up.
+        Body: `{"error":"rate limit exceeded"}`, Content-Type application/json.
+        `Retry-After` is the whole number of seconds until the client's window
+        ends, rounded up, never less than 1 and never more than 60. Not exposed
+        to cross-origin pages, as for `BookingCreateRateLimited`.
+      headers:
+        Retry-After:
+          required: true
+          description: >-
+            Delay-seconds form of RFC 9110 section 10.2.3 (never the HTTP-date
+            form): seconds remaining in the client's slot-listing window, rounded
+            up.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BookingRateLimitError'
+
     BookingUnauthorized:
       description: >-
         Emitted by the requireAuth middleware when the `auth_token` cookie and the
@@ -1181,7 +1499,7 @@ components:
     BookingError:
       type: object
       description: >-
-        Shared error envelope written by api.writeError (handlers_settings.go:206):
+        Shared error envelope written by api.writeError (handlers_settings.go:388):
         Content-Type application/json, body `{"error": "<message>"}`. The one
         exception in this domain is the requireAuth 401 (text/plain). Every 5xx,
         including the Zoom OAuth callback's, is this envelope (PAC-21).
@@ -1193,6 +1511,19 @@ components:
           description: >-
             Human-readable, server-chosen message. Never the text of a Go, driver or
             provider error (PAC-21): those go to the server log and Sentry only.
+
+    BookingRateLimitError:
+      type: object
+      description: >-
+        The `BookingError` envelope with its one possible message pinned, so a
+        client can tell a rate-limit refusal from every other error by status
+        and body alone (NEW-booking-rate-limit). Written by api.writeError.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: ['rate limit exceeded']
 
     # ---- Public booking ------------------------------------------------------
 
@@ -1215,9 +1546,18 @@ components:
     PublicLinkCoverage:
       type: object
       description: >-
-        How many accepted hosts had a loadable calendar token when the page was
-        rendered. `total` counts accepted hosts whose user record resolved; `checked`
-        counts those with a usable OAuth token. Always present, even as {0,0}.
+        How many accepted hosts had a STORED Google calendar token when the page was
+        rendered. `total` counts accepted hosts whose user record resolved;
+        `checked` counts those among them for whom a Google token row loads,
+        whether or not that token still works. Nothing is renewed or tested to
+        compute it. A host whose Google credential is dead, including one whose
+        loss Paceday has recorded (PAC-67), still counts as checked, while the
+        slots are computed without that host's calendar; a host with no Google
+        token row at all (for example one on Outlook) is not counted as checked.
+        This is deliberate: counting only usable tokens would tell every visitor
+        with the link that a host's connection is dead (spec PAC-67 D-14, AC-28).
+        Before PAC-67 this description said "a usable OAuth token", which was not
+        what the server counted (factory section 7.2). Always present, even as {0,0}.
       required: [total, checked]
       additionalProperties: false
       properties:
@@ -1803,19 +2143,32 @@ components:
     CreateConferenceRequest:
       type: object
       description: >-
-        POST /api/conference/create. No handler-side validation; every field silently
-        defaults to the Go zero value when absent.
+        POST /api/conference/create. Since PAC-67 (API-052) all three fields are
+        required and validated before any provider is called; a body that fails is
+        the 400 "invalid body". Before PAC-67 every field silently defaulted to the
+        Go zero value when absent and was forwarded to the provider.
+      required: [title, start, end]
       additionalProperties: false
       properties:
         title:
           type: string
+          minLength: 1
+          pattern: '\S'
+          description: >-
+            Must contain at least one character that is not whitespace in the
+            ECMA-262 `\s` sense. `pattern` states exactly the test the server
+            applies (see `createConferenceLink`), so a blank title such as "   "
+            cannot be expressed by a client that validates against this schema.
         start:
           type: string
           format: date-time
-          description: Decoded into time.Time. Absent means the zero time, which is forwarded to the provider.
+          description: >-
+            `0001-01-01T00:00:00Z` (Go's zero time) is refused with the 400 "invalid
+            body", like an absent `start`: the server cannot tell the two apart.
         end:
           type: string
           format: date-time
+          description: Must be strictly after `start`.
 
     ConferenceMeetingDetails:
       type: object
@@ -1827,19 +2180,29 @@ components:
       properties:
         provider:
           type: string
-          description: Provider-supplied label.
+          enum: [meet, zoom, teams]
+          description: >-
+            A literal set by the concrete provider (U-12, resolved by PAC-67 from
+            backend/conference: `MeetProvider.CreateMeeting` writes "meet",
+            `ZoomProvider.CreateMeeting` "zoom", `TeamsProvider.CreateMeeting`
+            "teams"; `grep -n 'Provider:' backend/conference/*.go` shows the three).
+            Note "meet", not "google_meet": this is not the
+            `ConferenceProviderStatus.provider` vocabulary.
         joinUrl:
           type: string
-          format: uri
+          description: >-
+            Always present (no omitempty). The join URL for zoom and teams. For meet
+            it is the EMPTY STRING: `MeetProvider` creates nothing (a Meet link is
+            minted by Google Calendar on event creation), so the standalone create
+            with a `meet` conferencing provider answers `{"provider":"meet","joinUrl":""}`.
+            Because of that the earlier `format: uri` was not true of every response
+            and is removed (U-12, factory section 7.2).
         meetingId:
           type: string
-          description: Omitted when empty.
+          description: Omitted when empty (always omitted for meet).
         password:
           type: string
           description: Omitted when empty.
-      x-uncertain: >-
-        `provider` is whatever the concrete provider implementation puts there; the
-        exact string set was not verified against meet.go / zoom.go / teams.go.
 
     ConferenceProviderStatus:
       type: object
@@ -1852,7 +2215,19 @@ components:
           enum: [google_meet, zoom, teams, custom]
         connected:
           type: boolean
-          description: Always present. `custom` is hardcoded to true.
+          description: >-
+            Always present. `custom` is hardcoded to true. Since PAC-67 the other rows
+            mean USABLE (see `listConferenceProviders`), with these predicates over the
+            caller's own credentials: `google_meet`, a Google token row is stored AND
+            no loss of it is recorded; `zoom`, a stored Zoom credential decodes AND
+            holds a refresh token AND no loss of it is recorded; `teams`, a stored
+            Microsoft credential decodes AND holds a refresh token AND no loss of it
+            is recorded, the same predicate as `getAuthStatus` for an Outlook
+            calendar provider. Before PAC-67 `zoom` was true for any non-blank stored
+            value (including one that does not decode) and `teams` for any stored
+            Microsoft credential, with or without a refresh token, which could
+            report a credential that can never be renewed as connected (contract
+            challenge finding 5).
         email:
           type: string
           description: Set only for google_meet (the configured calendar email); omitted when empty.
@@ -1861,6 +2236,10 @@ components:
           description: >-
             json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key
             only ever appears as `true`, and only for teams. Absence must be read as false.
+            Since PAC-67 it follows teams' `connected` exactly (same predicate): a lost,
+            disconnected or never-renewable (no refresh token) Microsoft credential
+            omits it, so no field of the row reports Teams usable (spec PAC-67
+            section 4 preamble).
         auto_with:
           type: string
           enum: [google, outlook]

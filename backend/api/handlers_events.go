@@ -25,11 +25,12 @@ type eventHandlers struct {
 // calClient opens the caller's Google calendar; see getCalendarClient for the
 // two errors it distinguishes (PAC-21).
 func (h *eventHandlers) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
-	token, err := engine.LoadCalendarToken(h.db, userIDFromCtx(ctx))
+	userID := userIDFromCtx(ctx)
+	token, err := engine.LoadCalendarToken(h.db, userID)
 	if err != nil {
 		return nil, err
 	}
-	ts := auth.TokenSource(ctx, h.oauthConfig, token)
+	ts := auth.UserTokenSource(ctx, h.db, h.oauthConfig, userID, token)
 	return calendar.NewClient(ctx, ts)
 }
 
