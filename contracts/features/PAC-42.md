@@ -20,6 +20,12 @@ check two things:
 
 Do not merge this contract before the spec is accepted.
 
+**Update 2026-10-27.** Spec challenge round 2 ran on revision 1 (`93491a2`) and returned
+**accept** with no blocking findings and no change to any acceptance criterion. The spec
+status is now "accepted" (`docs/specs/PAC-42.md`, "Challenge — 2026-10-27 (round 2)").
+This contract revision therefore stands unchanged, the merge precondition above is met, and
+the manifest status moves from `draft` to `accepted`.
+
 ## 1. What the contract says now that it did not say before
 
 | Area | Before | After |

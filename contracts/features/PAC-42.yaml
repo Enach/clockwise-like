@@ -1,12 +1,12 @@
 {
   "featureId": "PAC-42",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-42",
-  "status": "draft",
+  "status": "accepted",
   "contractRevision": "1",
   "contractHash": "c06388ba6c97ac8e52a7e25ee49755d1b0fcc286b726d7a16771cb5e77548873",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-42-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py. Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-42.md",
-  "specDoc": "docs/specs/PAC-42.md on branch factory/pac-42-spec at 93491a2 (revision 1). NOT yet accepted or merged: its status line reads 'challenged (round 1 answered in Revision 1)'; round 1 returned accept-with-changes and round 2 has not run. This contract is a draft against revision 1 (see PAC-42.md section 0).",
+  "specDoc": "docs/specs/PAC-42.md, revision 1 (factory/pac-42-spec at 93491a2, carried unchanged on impl/pac-42-analytics-units-backend). Accepted: spec challenge round 2 (2026-10-27) returned accept with no blocking findings and changed no acceptance criterion, so this contract revision stands unchanged (see PAC-42.md section 0). Decisions D-1 to D-5 and C-1 to C-5 remain assumed by the factory, pending owner confirmation.",
   "sourceOfTruth": "Enach/clockwise-like",
 
   "repositories": {
@@ -136,7 +136,7 @@
   ],
 
   "mergeConditions": [
-    "Do not merge until docs/specs/PAC-42.md is accepted (spec challenge round 2 has not run on 93491a2). If round 2 changes any acceptance criterion, this contract is revised and challenged again (contract challenge non-blocking 3).",
+    "Met 2026-10-27: docs/specs/PAC-42.md is accepted (spec challenge round 2 on revision 1 / 93491a2 returned accept, no acceptance criterion changed, so no contract revision is needed). Original condition: do not merge until the spec is accepted; if round 2 changes any acceptance criterion, this contract is revised and challenged again (contract challenge non-blocking 3).",
     "Until the backend implementation lands, the running server violates this contract on both reads: GET /api/analytics/trends returns week_start \"0001-01-01T00:00:00Z\" (not format: date, and the zero date) and habit_completion_rate 0.75 where the contract promises 75; GET /api/analytics/week returns week_start \"0001-01-01\" and the 0..1 rate. The contract PR body states this, and the backend PR is landed promptly after the contract (contract challenge non-blocking 2)."
   ],
 

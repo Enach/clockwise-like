@@ -1,7 +1,7 @@
 # Spec — PAC-42: Analytics week start reported two ways (and wrongly), and two rate units in one response
 
 - **Linear**: https://linear.app/paceday/issue/PAC-42
-- **Status**: challenged (round 1 answered in "Revision 1")
+- **Status**: accepted (challenge round 2, 2026-10-27: accept, no blocking findings; round 1 answered in "Revision 1"). Decisions D-1 to D-5 remain assumed by the factory, pending owner confirmation (§8).
 - **Author**: spec-author
 - **Inherited scope**:
   - **API-055** (`docs/factory/api-audit.md:313`, medium, Reported): the week
@@ -720,3 +720,91 @@ them blocks the next stage: each has a factory assumption recorded under
 
 Status moved from draft to challenged. The spec goes back to the challenger for
 round 2.
+
+## Challenge — 2026-10-27 (round 2)
+
+**Verdict**: accept
+
+Reviewed on `impl/pac-42-analytics-units-backend`, whose copy of this file is
+byte-identical to `factory/pac-42-spec` at `93491a2` (revision 1). Every code and
+contract citation below was checked on `main` at `6d751f9`, which is where the spec
+branch starts. I also checked the Linear issue text as read on 2026-10-27 and
+`smart-calendar-flow` `origin/main`. The challenger did not consult the spec author.
+Disclosure: this round was run at the factory orchestrator's request, by an agent
+that also holds the backend-implementer role for PAC-42 in the same session. It did
+not write this spec or revision 1, and it reviewed the spec against the code on
+`main`, not against the implementation.
+
+**Scope of this round.** Does revision 1 answer round 1, and did revision 1 add
+anything new that is wrong?
+
+### Blocking
+
+None. Round 1's one blocking item, the rollback under D-3, is answered. D-3 now
+says that every week, whenever it is computed, is stored as a 0..1 fraction. §3 and
+§7 say the same thing, and §6 lists it as a must-not-change item. AC-14 is the test
+that holds the plan to it. I checked it can be falsified: an implementation that
+writes `75` into `analytics_weeks.habit_completion_rate` fails the direct-read half
+of AC-14, while the current code passes that half and fails the "both reads report
+75" half. AC-8 alone could not tell these apart. The rollback statement in §7 is now
+true for every implementation the spec allows.
+
+### Non-blocking
+
+1. **In AC-6, "on 0..100" for the breakdown percentages is a scale, not a range.**
+   §2.2 says the breakdown percentages can exceed 100. The working total covers only
+   the Monday to Friday windows (`backend/engine/analytics.go:62-76`). Meeting and
+   personal minutes include every timed event that overlaps the seven days
+   (`:117-155`, and an event is kept unless it ends before the week or starts after
+   it). So a test that reads AC-6 as `0 <= percentage <= 100` would fail on valid
+   data. AC-13 already says not to declare a maximum that the server does not honour.
+   No criterion changes. A test for AC-6 should check the scale (`minutes / total *
+   100`, where 100 is the whole), not an upper bound.
+2. **The scale exists only on the reads.** A row written by anything other than the
+   engine can hold a value above 1, and a read would then report a value above 100.
+   That would break the new `maximum: 100` on `habit_completion_rate`. Nothing writes
+   such rows today. The engine always produces `completed / counted`, which is in
+   0..1 (`analytics.go:105-108`). The column defaults to 0 (`011_analytics.up.sql:14`),
+   and the e2e seed (`e2e/seed/seed.sql:206`) does not set it. I am recording this
+   only so that a future writer knows the 0..100 bound depends on storage holding
+   0..1, which D-3 and AC-14 already require.
+3. **Open owner items are still open.** OQ-1, OQ-2, OQ-6, OQ-7 and OQ-8 still have
+   no owner answer. D-1 to D-5 are each recorded as assumed by the factory, so they
+   do not block. OQ-5 also still stands: PAC-42-B and the API-057 issue are not
+   linked from this spec. So D-4's rule holds: PAC-42 must not be closed on this
+   spec alone.
+
+### Criteria I could not falsify
+
+- None. AC-12 is withdrawn, and DC-1 is correctly marked as a delivery condition,
+  not a criterion. For each of AC-1 to AC-11, AC-13 and AC-14, the "fails today"
+  note names an observable value that differs before and after the change. AC-11
+  and the breakdown/focus clause of AC-6 are labelled as regression guards.
+
+### Citations I checked and found wrong
+
+- None. Revision 1's new and corrected citations hold at `6d751f9`. These are:
+  `engine/analytics.go` `:62-76`, `:118-153`, `:182-188`, `:190-206`;
+  `storage/analytics.go:153-170`; `engine/team_availability.go:176` and
+  `:178-183`; `habits.yaml:1271-1272`; and `api-audit.md` `:315`, `:478`,
+  `:664-667`. I re-checked the §2.3 and §2.4 mechanism at the cited lines. Both
+  scanners scan `week_start` into a `string` and discard the parse error
+  (`storage/analytics.go:139`, `:166`). The upsert is `ON CONFLICT … DO UPDATE`
+  with no `WHERE`, followed by `RETURNING`, so it always returns a row. The trend
+  query is scoped by `user_id` (`:104`).
+
+### Consumers this breaks
+
+- None. Outside `src/api/generated/`, the web repo's `src/` has no reference to
+  `habit_completion_rate`, `/api/analytics/week`, `/api/analytics/trends`,
+  `AnalyticsWeekRow` or `AnalyticsWeekWithBreakdown` (web `origin/main`, grep
+  2026-10-27). Neither `mcp/` nor `e2e/` reads either operation. In the backend,
+  the only other reader of the stored week is team analytics
+  (`team_availability.go:176`), which §2.5 and §6 already cover. The only other
+  caller of the compute path is `POST /api/analytics/recompute`
+  (`handlers_analytics.go:91`), and it discards the result, so it is not a third
+  surface for either value.
+
+**Result**: the spec is accepted at this revision, and no acceptance criterion
+changed in this round. So under the contract's merge condition, the PAC-42 contract
+needs no revision because of this round.
