@@ -1,7 +1,7 @@
 # Spec — PAC-47: Selecting Outlook or WebCal shows "connected", then an empty calendar
 
 - **Linear**: https://linear.app/paceday/issue/PAC-47
-- **Status**: challenged — revised after round 4 (see "Revision 1" to "Revision 4")
+- **Status**: challenged — revised after round 5 (see "Revision 1" to "Revision 5")
 - **Author**: spec-author
 - **Inherited scope**:
   - **U-18** (`docs/factory/api-audit.md:486`). PAC-24 closed the "enforce the
@@ -81,6 +81,13 @@ on `main` at `7de7044`:
     (`backend/api/handlers_events.go:27-35`).
   - Citations in §2 were re-anchored where these commits moved lines. Revision 4
     lists them.
+- **Revision 5** re-read `main` at `6d751f9` (api) and `ad52160` (web), still the
+  tips of both `main` branches, and read PAC-67 as accepted: its spec on
+  `origin/factory/pac-67-spec` at `d42d84a` (PR #231) and its open backend PR #232
+  (`origin/impl/pac-67-credential-lifecycle-backend` at `a5fed00`). Neither is on
+  `main` yet. PAC-67 adds Outlook token refresh, status after a credential loss,
+  and an Outlook disconnect, and it keeps the sign-in provider reset that D-17
+  removes. §3.3, §5, §6, OQ-4 and D-17 now say how the two specs fit together.
 
 ## 1. Problem
 
@@ -388,6 +395,22 @@ once the week view shows that calendar instead (§3.1).
    decides whether it is a connect or a sign-in. A session being present when the
    flow completes does not make it a connect.
 
+   **A Microsoft flow that no connect action started is a sign-in, wherever it
+   was started** (D-18). That covers the sign-in page, a bookmark, and a link on
+   another site that sends the browser straight to the Microsoft step, with or
+   without a live session. Such a flow behaves exactly like a sign-in from the
+   sign-in page. It signs the browser in as the Paceday user for the Microsoft
+   account that completed the step (created if absent) and replaces any live
+   session. It stores the Microsoft credential on that user. It changes that
+   user's work calendar only as D-17 says, so it never changes an existing
+   user's. A start from outside the product cannot pass itself off as a connect.
+   A connect is recognised only by something that a connect action of the
+   signed-in user produces and another site cannot. A start that imitates a
+   connect without it is either refused, changing no session and creating no
+   user, or handled as the sign-in above. In neither case is it credited to the
+   user whose session was live. This keeps signing in as it is today. What
+   changes is how the four connect actions start, not how a sign-in starts.
+
    **A sign-in sets a work calendar only for the account it creates** (D-17).
    This is the one change to signing in. A Microsoft sign-in affects the work
    calendar of the Paceday user it signs in as follows:
@@ -498,7 +521,10 @@ once the week view shows that calendar instead (§3.1).
 9. **No status line claims more than is true for the chosen calendar.** No surface
    says "Syncing in real time" for a feed, and no surface names Google Calendar
    (in its status text or in a connect or disconnect message) for a user whose
-   work calendar is Outlook or WebCal. Onboarding never shows a WebCal or Outlook
+   work calendar is Outlook or WebCal. That includes the Outlook disconnect that
+   PAC-67 adds (PAC-67 AC-13): its message names Outlook, never Google Calendar.
+   After it, the status reads not connected (§3.2), and every connect action leads
+   back to the Microsoft connection (§3.3). Onboarding never shows a WebCal or Outlook
    calendar as connected unless the status says so; it may still let the user
    continue to the next step. The product's agent tools are a surface too. No
    tool description or answer calls the user's chosen calendar "Google Calendar".
@@ -581,7 +607,10 @@ use **each** connect action the product shows (the dashboard's not-connected
 prompt, the dashboard's calendar status card, the Settings work-calendar panel and
 onboarding's connect step), then each leads to reconnecting the provider they
 chose (for WebCal, to editing the feed address; for Outlook, to the Microsoft
-connection), and none starts a Google connection.  [e2e]
+connection), and none starts a Google connection. For Outlook, once PAC-67's
+Outlook disconnect is on `main`, the test also runs from the state that
+disconnect leaves (credential cleared, work calendar still Outlook, PAC-67
+D-3).  [e2e]
 
 AC-3e. Given user A signed in with Google as `a@x`, a separate existing Paceday
 user B whose email is `b@y`, and a Microsoft stand-in account whose email is
@@ -589,9 +618,17 @@ user B whose email is `b@y`, and a Microsoft stand-in account whose email is
 Microsoft credential and A's work calendar is Outlook; B's credentials and
 settings are unchanged; no Paceday user is created; and the browser's session is
 still A's (the next authenticated request is answered for A). The test runs once
-from each of the four connect actions: Settings, onboarding's connect step (with
-A a user who has not finished onboarding, who then continues onboarding as A), the
-dashboard's not-connected prompt and the dashboard's status card.  [e2e]
+from each of the four connect actions, each from a state in which that action is
+shown:
+- *Settings*: A's work calendar is the default (Google, connected through A's
+  Google credential). A picks Outlook in the Settings work-calendar panel.
+- *Onboarding's connect step, the dashboard's not-connected prompt and the
+  dashboard's status card*: A's stored work calendar is already Outlook, and A
+  holds no Microsoft credential. The status therefore reports not connected
+  (AC-3c). Onboarding shows its connect step, which it skips for a connected
+  user, and the dashboard shows its prompt and its status card's connect action.
+  For the onboarding run, A has not finished onboarding, chooses Outlook in the
+  connect step, and then continues onboarding as A.  [e2e]
 
 AC-3f. Given user A started an Outlook connect from a connect action, and in the
 same browser A's session is then replaced by user C's session (or signed out)
@@ -610,12 +647,32 @@ Microsoft sign-in stand-ins of §3.6 exist, so it is a regression guard for the 
 code rather than a check of today's. It guards against an implementation of D-7
 that treats "a session is present" as "this is a connect".  [e2e]
 
-AC-3i. Given user A signed in (work calendar Google) and a Microsoft stand-in
-account that has already consented, when a Microsoft flow that was not started
-from one of the four connect actions (for example a link on another site that
-starts it directly) completes in A's browser, then A holds no Microsoft
-credential, A's work calendar is unchanged, and no other Paceday user's
-credential or work calendar is changed.  [unit]
+AC-3i. Given user A (`a@x`) signed in in a browser, with work calendar Google
+and a Google credential; an existing Paceday user B (`b@y`) whose work calendar
+is WebCal with a stored feed address; and Microsoft stand-in accounts `a@x`,
+`b@y` and `m@z` that have already consented, where no Paceday user has `m@z`.
+When a Microsoft flow that no connect action started completes in A's browser
+(a link on another site sends the browser straight to the start of the
+Microsoft step):
+(a) completed as `a@x`: the browser holds a session for A (the next
+authenticated request is answered for A). A holds the Microsoft credential. A's
+work calendar is still Google, and the status still names Google. B is
+unchanged. No Paceday user is created.
+(b) completed as `b@y`: the browser holds a session for B, not A. B holds the
+Microsoft credential. B's work calendar is still WebCal, with the same feed
+address. A's credentials and work calendar are unchanged. No Paceday user is
+created.
+(c) the link imitates a connect action, in whatever form the contract gives a
+connect start, and the flow is completed as `m@z`: A holds no Microsoft
+credential, and A's work calendar is unchanged. The outcome is one of two. It is
+a refusal that changes no session and creates no user. Or it is the sign-in of
+(a) and (b) for `m@z`: the browser holds a session for a new Paceday user `m@z`,
+who holds the credential and whose work calendar is Outlook (D-17). The
+credential is never credited to A.
+(a) and (b) fail today, because every completion sets that user's work calendar
+to Outlook (`backend/auth/microsoft_oauth.go:79`). (c) passes today, because
+today every start is a sign-in. It is a regression guard for the connect marker
+that D-7 introduces.  [unit]
 
 AC-3j. Given no Paceday user has the email `new@z`, when sign-in with Microsoft is
 started from the sign-in page and completed as the Microsoft stand-in account
@@ -640,7 +697,8 @@ stays Google. Today both fail, because the work calendar becomes Outlook.  [unit
 AC-3g. Given a WebCal user whose feed has been read successfully, when the
 dashboard and Settings are shown, then neither says "Syncing in real time"; and
 given an Outlook or WebCal user, when any status line, connect or disconnect
-message is shown, then none names Google Calendar.  [e2e]
+message is shown, then none names Google Calendar. Once PAC-67's Outlook
+disconnect is on `main`, its message is among those checked.  [e2e]
 
 **Free/busy**
 
@@ -727,6 +785,16 @@ The change that releases the Outlook half of D-13, after PAC-67 is released,
 un-skips the three cases and retires AC-4i in the same pull request, because AC-4i
 then describes behaviour this spec no longer wants. That retirement is a recorded
 product change in that pull request, never a way to make a red run green.
+
+**"PAC-67 is released" means merged to `main`** (added in Revision 5). Throughout
+this spec, the phrase means that PAC-67's backend change that renews Outlook
+credentials (PR #232 today, or whatever replaces it) is merged to `main` of
+`clockwise-like`. It does not mean deployed (README §2, stage 7). Deployments
+ship `main` in order, so no deployment can carry the Outlook half of D-13
+without PAC-67's refresh. The skip comments name PAC-67 until that merge. The
+change that un-skips the three cases and retires AC-4i may be opened only after
+it. If PAC-67's refresh is later reverted on `main`, the Outlook half of D-13 is
+reverted with it (§7).
 
 AC-4f. Given an Outlook user and, separately, a WebCal user, each holding a Google
 credential, when the calendar free/busy read used by the agent tools is
@@ -831,11 +899,31 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
   prerequisite for releasing the Outlook half to users. For the Outlook
   booking-slot behaviour of §3.4 it is a **requirement**, not a recommendation:
   that part is released only after PAC-67 is released (D-13). The WebCal half
-  does not depend on it. **Who owns which criterion** (added in Revision 4):
-  PAC-67's draft acceptance also asks that the status report not connected for a
-  dead Outlook credential. That criterion is owned here (§3.2, AC-3b, AC-3c),
-  because this spec makes the status a verified claim. PAC-67 reuses it and owns
-  only refresh, revocation and the audit entry.
+  does not depend on it. "Released" means merged to `main` (see "Release-gated
+  tests" in §4).
+- **Who owns which criterion, against PAC-67 as accepted** (restated in Revision
+  5; Revision 4's split was wrong). PAC-67's accepted spec owns:
+  - refreshing Outlook credentials, and recording a credential loss;
+  - the status after a loss. Its AC-8(b) makes the calendar status report
+    Outlook not connected when the user's work calendar is Outlook and Microsoft
+    permanently refuses the refresh. It does the same for the Teams row, always.
+  - the return to connected after a reconnect (its AC-12);
+  - the Outlook disconnect and the status after it (its AC-13, D-3);
+  - revocation and the audit entries.
+
+  This spec owns the status as a verified read claim everywhere else:
+  - every WebCal case (no address, a fetch that fails, a non-2xx answer, a body
+    that is not a calendar; AC-3, AC-3c);
+  - Outlook with no Microsoft credential (AC-3c);
+  - Outlook whose calendar read Microsoft refuses while the credential is not
+    recorded as lost (AC-3b);
+  - and the rule that the week view and the status never disagree (§3.2).
+
+  Where both apply, for an Outlook user whose refresh Microsoft refuses, both
+  specs' tests stand and neither replaces the other. If PAC-67's loss state is
+  on `main` when this spec is built, the build reuses it rather than adding a
+  second one. Except for the one amendment in §6 (D-17), it changes no answer
+  that a PAC-67 test pins.
 - **Withdrawing Outlook or WebCal from the picker.** Rejected: PRODUCT.md lists
   both as supported calendars (see Decisions D-1).
 - **Personal calendars**, except for the feed-fetch rules. The personal-calendar
@@ -843,10 +931,13 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
   for §3.5 (address guard, redirect and lookup rules, redaction), because they use
   the same reader and the gap is live today (§2.5). Its blocker writes are in scope
   for §3.8 only.
-- **What "disconnect" does for an Outlook or WebCal user.** Since PAC-35 it
-  answers 409 and deletes nothing, and it never signs anyone out
-  (`backend/api/handlers_auth.go:172-195`; API-061 fixed). Not changed here;
-  recorded as §8 OQ-4.
+- **What "disconnect" does for an Outlook or WebCal user.** Since PAC-35 the
+  calendar disconnect answers 409 for these users, deletes nothing, and never
+  signs anyone out (`backend/api/handlers_auth.go:172-195`; API-061 fixed).
+  PAC-67's accepted AC-13 adds an Outlook disconnect that clears the caller's
+  Microsoft credential and keeps their work calendar on Outlook (PAC-67 D-3; PR
+  #232). This spec changes neither. It only requires their wording (§3.9) and
+  the not-connected state afterwards (§3.2, AC-3d). See §8 OQ-4.
 - **Computing meeting suggestions, or the agent tools' calendar free/busy, from
   Outlook or a feed.** Both are reported unavailable for Outlook and WebCal users
   (§3.4, D-11, D-12), not answered from the chosen calendar. Affected population:
@@ -891,7 +982,22 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
   to make a test user an Outlook user. If D-17 is built by moving the provider
   change out of the credential store, those fixtures set the work calendar
   explicitly instead, and their assertions do not change. They are never skipped
-  or deleted.
+  or deleted. PR #232 keeps `pac35_auth_flows_test.go:645` on the credential
+  store, so the same applies there if PAC-67 lands first.
+- **PAC-67's provider-flip test keeps testing what it tests, with one recorded
+  amendment** (added in Revision 5). Open PR #232 adds
+  `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller`
+  (`backend/api/pac67_conferencing_test.go:320-359` on
+  `impl/pac-67-credential-lifecycle-backend` at `a5fed00`). It pins PAC-67's
+  AC-19: alice, an existing user on Google, reads `outlook` after a Microsoft
+  sign-in. That contradicts D-17 and AC-3k. Whichever of PR #232 and the change
+  that builds D-17 reaches `main` second changes that one assertion. alice's
+  work calendar is then expected to stay Google. The PR body records this as a
+  product change and links D-17, PAC-67 AC-19 and OQ-13. Every other assertion
+  is kept: alice's refresh token is kept, her loss is ended, and bob's work
+  calendar is unchanged. The test is never skipped or deleted. PAC-67's other
+  tests, including its AC-8(b), AC-12 and AC-13 status tests, keep passing
+  unmodified.
 - **Personal-calendar syncs from public WebCal addresses and from Google personal
   calendars keep working.** Protected for Google by `e2e/tests/seam.spec.ts:384-413`;
   nothing protects the WebCal branch today (§2.6).
@@ -912,6 +1018,10 @@ ticket's acceptance line is traceable; it needs no test.  [gate]
 - **Signing in with Microsoft from the sign-in page while a session is live**
   still signs in as the Microsoft account's user and replaces the session, as
   today (D-14, AC-3h).
+- **A Microsoft sign-in started outside the sign-in page** (a bookmark, or a link
+  on another site) is still a sign-in. It has the same outcome as one from the
+  sign-in page, with or without a live session (D-18, AC-3i (a) and (b)). Only
+  its effect on the work calendar changes, as D-17 says.
 
 ## 7. Rollback
 
@@ -925,6 +1035,12 @@ entered.
 
 Revert order is the reverse of the merge order: frontend first, then backend, so
 the frontend never expects a status shape the server no longer sends.
+
+The Outlook half of D-13 depends on PAC-67's refresh being on `main`. If that
+refresh is reverted, the change that released the Outlook half is reverted too.
+That re-skips the three release-gated cases and restores AC-4i (§4). Reverting
+the D-17 change also reverts its amendment to PAC-67's test (§6), so the test
+again expects the reset.
 
 ## 8. Open questions
 
@@ -946,10 +1062,14 @@ the frontend never expects a status shape the server no longer sends.
   error rather than an empty week, so the PAC-47 symptom does not occur, but the
   same dishonesty exists. Owner: product. Resolution: decide whether to widen this
   spec or file it separately; the factory assumed separately (D-4).
-- **OQ-4 — disconnect for Outlook and WebCal users.** Should "Disconnect" clear the
-  Microsoft credential / feed address? Since PAC-35 it answers 409 and deletes
-  nothing for these users (§5). Owner: product. Resolution: PAC-35's OQ-5 (a
-  follow-up issue) owns it; this spec does not change disconnect.
+- **OQ-4 — disconnect for Outlook and WebCal users.** Revised in Revision 5.
+  *Outlook*: PAC-67 owns it. Its accepted AC-13 adds an Outlook disconnect that
+  clears the caller's Microsoft credential, and its D-3 keeps the work calendar
+  on Outlook (PR #232). This spec only requires that disconnect's wording (§3.9,
+  AC-3g) and the not-connected state after it (§3.2, AC-3d). *WebCal*: the
+  calendar disconnect still answers 409 and deletes nothing (PAC-35). Whether
+  it should clear the feed address is still PAC-35 OQ-5's follow-up. Owner:
+  product (Nicolas Hochart), for WebCal. This spec does not change disconnect.
 - **OQ-5 — feed refresh interval.** The reader's 15-minute cache is ineffective
   today (§2.5). How fresh must a feed be? "Syncing in real time" is not true for a
   feed under any implementation. Owner: product, for the copy; contract-author,
@@ -1004,6 +1124,22 @@ the frontend never expects a status shape the server no longer sends.
   issue. Until then nothing is rewritten, because the stored value cannot be told
   apart from a real choice and changing it unasked is what D-17 forbids. These
   users can change it in Settings.
+- **OQ-13 — OWNER: does a Microsoft sign-in reset an existing user's work
+  calendar to Outlook?** Added in Revision 5. D-17 (this spec) says no. PAC-67
+  D-4 and AC-19 say yes ("left as is"). Both are assumed by the factory, and they
+  cannot both hold (§6, D-17). Owner: product (Nicolas Hochart). Resolution: the
+  owner chooses one, or confirms D-17's more conservative answer. This should
+  happen before either implementation merges, and at the latest before the
+  change that builds D-17 merges. Until then the factory keeps D-17 and the
+  reconciliation it records. If the owner chooses PAC-67 D-4, D-17 is withdrawn
+  and AC-3k, AC-3l and AC-3i (a)/(b) are rewritten to the reset outcome. The
+  cost of the reset is then recorded in D-1 and D-9, as round 4 asked.
+- **OQ-14 — OWNER: should a Microsoft flow started from outside the product
+  still sign the browser in?** Added in Revision 5. This covers a link on
+  another site, with or without a live session. Either answer changes or
+  confirms sign-in behaviour for every Microsoft user. Owner: product (Nicolas
+  Hochart). Resolution: an owner answer. Until then the factory assumes yes
+  (D-18), which keeps today's sign-in.
 - **OQ-9 — closing the parent issue.** The issue asks that the status endpoint stop
   reporting any unverified connection; Google stays unverified here (D-4, OQ-3).
   Owner: product. Resolution: PAC-47 is not closed by this feature while OQ-3 is
@@ -1169,7 +1305,57 @@ the frontend never expects a status shape the server no longer sends.
   work calendar. If they hold no Google credential, they are shown not connected,
   and the connect actions lead them to Google, their chosen calendar, until they
   pick Outlook in Settings. For an existing Outlook user, a Microsoft sign-in
-  still stores the fresh credential, so it still reconnects them (D-13).
+  still stores the fresh credential, so it still reconnects them (D-13). That is
+  also PAC-67's reconnect (PAC-67 AC-12), and D-17 leaves it unchanged.
+
+  **Conflict with PAC-67, and how it is reconciled** (added in Revision 5).
+  PAC-67's accepted spec answers the same question the other way. Its D-4
+  leaves the sign-in provider reset as is. Its AC-19, "Provider flip (kept)",
+  pins that a user on Google becomes Outlook after a Microsoft sign-in. Open PR
+  #232 asserts this in
+  `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller`
+  (`backend/api/pac67_conferencing_test.go:320-359`, `a5fed00`). That test seeds
+  alice, an existing user on Google with a Microsoft credential, and expects
+  `outlook` after the callback. Under D-17 she is AC-3k's user and stays Google.
+  Whichever PR merges second would go red.
+  - **D-17 is kept.** It is the option that overwrites no stored choice. PAC-67
+    D-4's reason, that changing the reset "is not needed for the lifecycle", is
+    true for PAC-67. It does not hold for this spec. Here the work calendar
+    decides the week view, every write, suggestions and booking slots.
+  - **PAC-67's test is amended, not skipped.** The change is the single
+    assertion on alice's work calendar (§6), done as a recorded product change
+    in whichever PR reaches `main` second. AC-19's second half ("B's is still
+    Google") is kept and still holds. Its first half ("A's provider is Outlook")
+    is superseded for existing users. It still holds for a user whom the sign-in
+    creates (AC-3j).
+  - **Flagged to PAC-67** by a comment on Linear PAC-67 that links this
+    section. PAC-67's spec is accepted and belongs to another stream, so this
+    stage does not edit it.
+  - **The owner decides** (OQ-13). If the owner chooses PAC-67 D-4, D-17 is
+    withdrawn as OQ-13 describes, and PAC-67's test needs no amendment.
+- **D-18 — a Microsoft flow that no connect action started is a sign-in,
+  wherever it was started.** *Assumed by the factory, pending owner confirmation
+  (OQ-14).* Added in Revision 5. The two options round 5 named:
+  - (a) it is a sign-in, as today;
+  - (b) it is credited to nobody and changes no session.
+
+  Option (b) needs the server to tell the product's sign-in page apart from
+  every other start of the same request. That would change signing in for every
+  Microsoft user, including legitimate starts outside the dialog, such as a
+  bookmarked sign-in. It would be a second change to signing in that no issue
+  asks for. Option (a) keeps signing in as it is. Under D-17 such a flow no
+  longer changes any existing user's work calendar. That removes the harm round
+  3 named: a link on another site silently switching a user to Outlook and so
+  stopping Paceday's writes for them. Option (a) widens nothing. The browser is
+  signed in only as the user of the Microsoft account that completed the step
+  in that browser, and the credential is stored only on that user, both as
+  today. A connect still attaches only when a connect action started it (§3.3,
+  D-7). A start that imitates one is never credited to the session holder
+  (AC-3i (c)). Residual cost, recorded so the owner can weigh it: a link on
+  another site can still sign the browser in as the Paceday user of whichever
+  Microsoft account that browser holds, replacing the live session and creating
+  that user if absent, as it can today. Closing that is option (b), which is
+  left to the owner (OQ-14).
 
 ## Challenge — 2026-10-26
 
@@ -2459,3 +2645,92 @@ second is an inconsistency that D-17 sharpens.
   is resolved by making only product-started flows sign in, these starts must
   change too, because today they are indistinguishable from a link on another
   site.
+
+## Revision 5 — 2026-10-27
+
+Answers to the round-5 challenge above. The spec body was edited in place, and
+this section lists what changed and where. `main` is unchanged since Revision 4
+(`6d751f9` api, `ad52160` web). PAC-67 was read as accepted: its spec at
+`d42d84a` on `origin/factory/pac-67-spec` (PR #231, AC-8, AC-12, AC-13, AC-19,
+D-3, D-4, OQ-5) and its backend PR #232 at `a5fed00`
+(`backend/api/pac67_conferencing_test.go:320-359`,
+`backend/api/pac67_world_test.go:99-104`). Both citations match the challenge.
+The Microsoft start route was re-read on `main`
+(`backend/api/handlers_microsoft_auth.go:17-38`, `backend/api/routes.go:35`): it
+reads no session. Nothing was compiled or run, because this is a text stage.
+
+### Blocking
+
+1. **D-17 contradicts PAC-67 D-4/AC-19, and §5 misstated PAC-67's ownership.**
+   Accepted.
+   - D-17 now names the conflict: PAC-67 D-4, AC-19 ("Provider flip (kept)") and
+     `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller`. It records
+     the reconciliation in four points: D-17 is kept, PAC-67's test is amended
+     and never skipped, PAC-67 is flagged, and the owner decides.
+   - **D-17 is kept.** It is the option that overwrites no stored choice. The
+     other option would let one sign-in silently switch a WebCal or Google user's
+     week view, writes and booking slots. That was the round-4 finding.
+   - **§6 lists the test.** Whichever of PR #232 and the D-17 change reaches
+     `main` second changes its one assertion on alice's work calendar, from
+     Outlook to Google. This is a recorded product change, and every other
+     assertion is kept. §7 says that reverting D-17 reverts the amendment.
+   - **Flagged to PAC-67** by a Linear comment on PAC-67. PAC-67's spec is not
+     edited here.
+   - **New OQ-13 (OWNER)** asks the owner to choose between D-17 and PAC-67 D-4,
+     and says what is rewritten if PAC-67 D-4 wins.
+   - **§5 restates ownership against PAC-67 as accepted.** PAC-67 owns refresh,
+     loss recording, the status after a loss (its AC-8(b), Teams row included),
+     the return to connected after a reconnect (AC-12), the Outlook disconnect
+     and the status after it (AC-13), revocation and the audit entries. This
+     spec owns the status as a verified read claim everywhere else: every WebCal
+     case, Outlook with no credential (AC-3c), an Outlook read that Microsoft
+     refuses while the credential is not recorded as lost (AC-3b), and the rule
+     that the week view and the status never disagree. Where both apply, both
+     specs' tests stand. The build reuses PAC-67's loss state and changes no
+     PAC-67-pinned answer except the §6 amendment.
+
+2. **AC-3i contradicted §3.3 and D-17.** Accepted. The factory chose the reading
+   that keeps signing in as it is.
+   - **§3.3 now says what a flow started outside the product does.** It is a
+     sign-in, wherever it was started (sign-in page, bookmark, link on another
+     site), with or without a live session. It has the same outcome as a sign-in
+     from the sign-in page, and its work-calendar effect is D-17's. A start that
+     imitates a connect is either refused or handled as that sign-in, and it is
+     never credited to the session holder. Recorded as **D-18**, assumed pending
+     owner confirmation, with option (b) (credited to nobody) rejected as a
+     second change to signing in. The residual cost is recorded: a forced
+     sign-in into the visitor's own Microsoft-linked account, as today.
+   - **AC-3i is rewritten.** It names the Microsoft emails, with (a) A's own
+     `a@x` and (b) another existing user `b@y` on WebCal. It asserts the session
+     outcome in each case (A's session, or B's), who holds the credential, and
+     that neither work calendar changes. (a) and (b) fail today
+     (`microsoft_oauth.go:79`). (c) covers a link that imitates a connect,
+     completed as an unknown `m@z`. It is never credited to A, and it is a
+     regression guard for the connect marker.
+   - Because such a flow is a sign-in, D-17 is still "the one change to signing
+     in". §6 adds a must-not-change item: a sign-in started outside the sign-in
+     page is still a sign-in. No AC for "sign-in with nobody signed in still
+     works" is needed beyond AC-3j and §6, because sign-in is not changed.
+
+### Non-blocking
+
+1. **OQ-4 and §5 were stale against PAC-67.** OQ-4 now points Outlook disconnect
+   at PAC-67 AC-13 and D-3, and leaves only WebCal with PAC-35 OQ-5. §5's
+   disconnect bullet says the same. §3.9 now covers the message of PAC-67's
+   Outlook disconnect and the not-connected state after it. AC-3d runs from
+   that state too, and AC-3g checks that message, once it is on `main`.
+2. **AC-3e's Given made three runs unreachable.** AC-3e now gives one
+   precondition per run. For Settings, A is on the default Google work calendar
+   and picks Outlook. For onboarding, the dashboard prompt and the dashboard
+   status card, A's work calendar is already Outlook with no Microsoft
+   credential, so the status is not connected and each action is shown. In the
+   onboarding run A also chooses Outlook in the connect step.
+3. **"PAC-67 released" now means merged to `main`**, not deployed. A new
+   paragraph after "Release-gated tests" says so. It names PAC-67's Outlook
+   refresh change (PR #232 today), explains why merged is enough (deployments
+   ship `main` in order), and says that the release change may be opened only
+   after that merge. §5 points to it, and §7 ties the Outlook half's rollback to
+   PAC-67's.
+4. **OWNER: D-17 vs PAC-67 D-4.** Recorded as OQ-13.
+5. **OWNER: should a flow started outside the product still sign in?** Recorded
+   as OQ-14. D-18 records the factory's assumption (yes).
