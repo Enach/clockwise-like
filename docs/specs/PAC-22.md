@@ -1,23 +1,28 @@
 # Spec — PAC-22: SSO configuration must not disclose identity-provider secrets
 
 - **Linear**: https://linear.app/paceday/issue/PAC-22/stop-returning-oidcclientsecret-and-samlcert-from-apiadminsso
-- **Status**: draft (v3.1, 2026-10-27). v1 and v2 were rejected (see History). v3
+- **Status**: challenged (v3.2, 2026-10-27). v1 and v2 were rejected (see History). v3
   was never challenged. v3.1 is v3 checked again against `origin/main` at
   `6d751f9`, with the open questions answered as factory assumptions (see
-  **Decisions**). It is ready for `spec-challenger`. What changed since v3 is
-  listed under "Revision v3.1" just before History.
+  **Decisions**). The challenge of v3.1 (History) accepted it with changes. v3.2
+  applies every one of those changes, and "Revision v3.2" answers each of them
+  in turn. What changed between v3 and v3.1 is listed under "Revision v3.1".
 - **Author**: spec-author
 - **Inherited scope** (factory §7 rule 1):
   - **Resolved here**: API-001 (disclosure half; the write half is PAC-50's),
     API-060, API-066, and the `listSsoProviders` share of API-092 (its 200 and
     403; the three writes are covered by PAC-50, the five sign-in paths by
     PAC-35).
-  - **`x-uncertain`**: U-21 is on the create request
-    (`contracts/openapi/paths/auth.yaml:1080`). It is resolved here, because AC-7
-    and AC-8 decide the validation it asks about. U-22 is on the response
-    (`auth.yaml:1141`). PAC-50's contract closes it by observation (see §2.8). If
-    PAC-50 has not landed when this contract is written, it is resolved here,
-    because AC-1 to AC-6 replace the schema it is about.
+  - **`x-uncertain`**: on `main`, U-21 is on the create request
+    (`contracts/openapi/paths/auth.yaml:1080`) and U-22 is on the response
+    (`auth.yaml:1141`). PAC-50's branch removes **both** markers by observation
+    (§2.8). Once PAC-50 lands (D-5), no marker is left on these operations for
+    this spec to resolve. What remains is API-060. This spec also has to rewrite
+    the create request's description, which PAC-50 words as "Nothing else is
+    validated…" and which AC-7, AC-8 and AC-18 make false. If PAC-50 has not
+    landed when this contract is written, U-21 and U-22 are resolved here
+    instead: AC-7, AC-8 and AC-18 decide the validation U-21 asks about, and
+    AC-1 to AC-6 replace the schema U-22 is about.
   - **Moved to PAC-50**: API-001's authorization half, API-067 (removal of
     nothing reported as success: v3's AC-13), and the exact-domain rule PAC-46
     reports.
@@ -237,6 +242,25 @@ It may change before PAC-50 merges, and the contract stage must re-read it.
   "Fixed (PAC-50)").
 - Domains are stored lower-cased.
 - SSO writes are recorded in an operator-only SSO event table.
+- **U-21 is removed as well.** `SsoProviderCreateRequest` says "Determined at
+  stage 2 from the handler (resolves U-21)". It then states that nothing beyond
+  domain, provider name and provider type is validated, and that an `oidc`
+  provider can be stored with an empty issuer, client id or secret (API-060, "not
+  changed by PAC-50") (`contracts/openapi/paths/auth.yaml:1379-1391` on that
+  branch). After PAC-50, that description is what this spec makes false. It is
+  not an open marker.
+- **The domain rule becomes exact.** `DomainMatchesOrg` becomes a
+  case-insensitive equality (`backend/domain/domain.go:49-51` on that branch),
+  and delete compares its path segment with it before the authorization is
+  consumed.
+- **Writes are recorded under one kind.** The SSO event table allows exactly two
+  kinds, `sso_stepup` and `sso_provider_written`
+  (`028_sso_admin_stepup.up.sql:35` on that branch). A configuration write's
+  details name the operation (`op`: `create` or `delete`), the provider, the
+  organisation and how the write was authorized
+  (`backend/storage/sso_stepup.go:64`, `:269`, `:298`). A delete that finds no
+  row records no event: it returns at `:291-293`, before the record at
+  `:297-298`.
 - U-22 is marked resolved, and the 201 body is pinned to exactly the thirteen
   PascalCase keys (`TestSSOWrite_OneGrantOneWrite`). This **pins the leak in a
   test**, so this spec's implementation must change that test as well as the
@@ -261,11 +285,17 @@ provider it points at, and whether it is currently active. Nobody can read back
 the client secret or the signing certificate, from any response of any operation.
 The secrets are write-only: they can be supplied and replaced, never retrieved.
 
-A reader can still tell whether a secret has been supplied. "Configured, no
-secret entered" and "configured with a secret" are different states, and the
-person configuring SSO needs to tell them apart. Knowing that a secret exists is
-not knowing the secret. The indicator means exactly that and nothing else. It
-does not change when anything other than the secret changes.
+A reader can still tell whether a secret is on file, for each of the two
+secrets: the client secret and the signing certificate. "Configured, no secret
+entered" and "configured with a secret" are different states, and the person
+configuring SSO needs to tell them apart. Knowing that a secret exists is not
+knowing the secret. Each indicator means exactly that and nothing else. It does
+not change when anything other than its own secret changes.
+
+After this change no write through the API can store a signing certificate
+(§3.4, D-8). The certificate indicator therefore describes only configurations
+stored before the change. Those configurations stay readable (§3.4), and a
+reader must still be able to see what they hold.
 
 The trade-off is deliberate: someone who forgets a client secret cannot retrieve
 it and must re-enter it.
@@ -303,6 +333,28 @@ The two writes divide cleanly:
 
 The trade-off is deliberate: fixing a suspended configuration and putting it back
 into service takes two writes, a replace and then a resume.
+
+**The transition names its target and states the outcome it wants.** It
+identifies the configuration it acts on in the same way removal does, and it
+asks for a state ("suspended" or "active"). It does not ask to flip the current
+state. Its outcomes are fixed here, not left to the contract (D-9):
+
+- **No configuration for the target.** The transition is refused with a "not
+  found" outcome. Nothing is created, and nothing is recorded. An operator who
+  is told SSO was suspended must be able to rely on SSO having existed.
+- **The configuration is already in the requested state.** The transition
+  succeeds, changes nothing, and reports the state the configuration is in. It
+  is not refused. Someone reaching for the kill switch in an emergency wants SSO
+  off, and "it is off" is the true answer whoever got there first. The answer is
+  never success for a configuration that does not exist (the previous case).
+- **A target outside the caller's organisation** is refused exactly as a
+  configuration write to it is refused (§3.6, AC-21).
+- **The write authorization.** PAC-50's rule decides it in the same way as for
+  the configuration write: a refusal decided from the request alone (a malformed
+  request, a target outside the caller's organisation) leaves the authorization
+  unspent. Any outcome that needs the stored configuration (not found, already
+  in the requested state, changed) spends it. This is PAC-50's D-5 for a removal
+  that finds nothing, applied to the new operation.
 
 ### 3.4 A configuration that cannot work is refused at the point of entry
 
@@ -345,17 +397,24 @@ changed the configuration".
 ### 3.7 The response shape is stable and conventional
 
 The response shape stops being an accident of how the server stores the data. It
-becomes a described, deliberate shape, consistent with the rest of the API. In
-particular, the retrieval response is a named container rather than a bare
-sequence, so that a later addition does not change the response's type for every
-consumer at once.
+becomes a described, deliberate shape. In particular, the retrieval response is a
+named container rather than a bare sequence. The only reason is to allow for
+later additions: a property added beside the sequence later does not change the
+response's type for every consumer at once.
+
+This is **not** done for consistency with the rest of the API. Most list
+responses in the contract are bare sequences today (the teams, rooms, habits,
+organisation members and audit listings among them). A later stage must not
+"correct" this container back to a bare sequence in the name of consistency.
 
 ## 4. Acceptance criteria
 
 None of these tests exist (§2.6). Each criterion says whether it fails today or
 guards behaviour that already holds:
 
-- **Fail against `main` today**: AC-1 to AC-10, AC-12, AC-15 and AC-16.
+- **Fail against `main` today**: AC-1 to AC-10, AC-12, AC-15, AC-16 and AC-18 to
+  AC-21. (AC-4 fails today only because the property it reads does not exist
+  yet.)
 - **AC-11**: one half guards existing behaviour, the other cannot be arranged
   today.
 - **AC-14**: a regression guard that already exists and must stay green.
@@ -380,26 +439,34 @@ organisation's SSO configuration, then no value anywhere in the response equals
 either stored value, and no property of the response carries either one under any
 name. The same holds when the caller is a permitted caller.  `[contract]`
 
-AC-2. Given a permitted caller, when they submit a configuration with a client
-secret and a signing certificate and the request succeeds, then the response
-describes the stored configuration and no value in it equals either supplied
-value. Given a member who is not a permitted caller, when they make the same
-submission, then the response, whatever its status, contains neither supplied
-value.  `[contract]`
+AC-2. Given a permitted caller, when they submit a complete configuration of the
+supported kind with a non-empty client secret, and the request succeeds, then the
+response describes the stored configuration and no value in it equals the
+supplied secret. Given a permitted caller who submits the same configuration and
+also supplies a signing certificate, then the request is refused (AC-18) and the
+response, whatever its status, contains neither supplied secret. Given a member
+who is not a permitted caller, when they make either submission, then the
+response, whatever its status, contains neither supplied secret.  `[contract]`
 
 AC-3. Given a stored configuration whose client secret is non-empty, when it is
 retrieved, then a named property of the response, documented as meaning "a client
 secret is on file", is true. Given a stored configuration whose client secret is
-empty, when it is retrieved, then that same property is false. The assertion is
-about the value of that one property on each configuration, not about how two
-configurations differ.  `[contract]`
+empty, when it is retrieved, then that same property is false. The same holds,
+with a second named property documented as meaning "a signing certificate is on
+file", for the signing certificate. Configurations holding a certificate are
+arranged through storage, because no API write can store one (AC-18). Each
+assertion is about the value of one property on one configuration, not about how
+two configurations differ. Each property is checked once with its own secret
+present and the other secret absent.  `[contract]`
 
 AC-4. Given a stored configuration with a non-empty client secret, when a
 configuration write replaces it, changing only its display name and supplying the
-same secret, then the property of AC-3 is still true, and no described property
-other than the display name and any timestamp changes. When a write then replaces
-it supplying an empty secret, that property becomes false. The indicator tracks
-the secret and nothing else.  `[contract]`
+same secret, then the client-secret property of AC-3 is still true, and no
+described property other than the display name and any timestamp changes. When a
+write then tries to replace it supplying an empty secret, that write is refused
+(AC-7), and the property is still true. The indicator tracks the secret and
+nothing else. The "false" state after this change exists only for configurations
+stored before it, and AC-3 and AC-5 cover those.  `[contract]`
 
 AC-5. Given a configuration stored before this change with an empty client secret
 and an empty certificate, when it is retrieved, then the response is valid against
@@ -432,11 +499,23 @@ kind already stored, written directly to storage as a pre-existing row would be,
 when it is retrieved, suspended, resumed or removed, then each of those succeeds
 exactly as for any other configuration.  `[contract]`
 
+AC-18. Given no configuration for a domain, when a permitted caller submits a
+configuration of the supported kind that is otherwise complete, and it also
+carries any one of the values that belong only to the unsupported kind (its
+sign-in address, its issuer or its signing certificate), then the request is
+rejected with a client error naming that value, and afterwards no configuration
+exists for that domain. The test is run once for each such value. Given a stored,
+working configuration for the domain, when the same submission is made, then it
+is rejected the same way and the stored configuration is unchanged (D-8).
+`[contract]`
+
 **Active state**
 
 AC-9. Given an active SSO configuration, when a permitted caller suspends it, then:
 
-- sign-in detection for an address in that domain no longer routes to SSO;
+- sign-in detection for an address in that domain does not answer SSO. The test
+  asserts only that negative. It does not assert which other answer detection
+  gives, because the fallback can depend on an outbound network call;
 - the SSO sign-in start route reports no configuration for that domain;
 - the configuration can still be retrieved, and it reports itself suspended.
 
@@ -458,10 +537,14 @@ the active state is hardcoded true today (§2.4). The suspended-stays-suspended
 half is new, and today it cannot even be arranged through the API.)*
 
 AC-12. Given the described interface, when the operation that changes only the
-active state is examined, then no request it accepts carries a client secret, a
-signing certificate, or any other value that belongs to the configuration itself,
-and nothing it requires is something the configuration write also requires.
-`[contract]`
+active state is examined, then no request it accepts carries any configuration
+value. The configuration values are exactly these eight: the provider's display
+name, the kind of provider, the issuer, the client identifier, the client secret,
+and the three values of the unsupported kind (its sign-in address, its issuer and
+its signing certificate). The identifier of the configuration the operation acts
+on is **not** a configuration value. The operation may, and must, name its
+target the same way removal does. The requested active state is not a
+configuration value either.  `[contract]`
 *(This is the structural guarantee behind AC-10. It fails today because no such
 operation exists, and it would fail again if suspension were later folded back
 into the configuration write.)*
@@ -471,10 +554,33 @@ asks to suspend it, then the request is refused and the configuration is still
 active. The same holds for resuming a suspended configuration: it stays
 suspended.  `[contract]`
 
+AC-19. Given no SSO configuration for the caller's own organisation domain, when a
+permitted caller asks to suspend it, then the request is refused with a "not
+found" outcome. Afterwards no configuration exists for that domain, no record of
+a transition exists, and the caller's write authorization is spent (D-9). The
+same holds for resuming.  `[contract]`
+
+AC-20. Given a suspended configuration, when a permitted caller asks to suspend it
+again, then the request succeeds and reports the configuration as suspended.
+Every described value of the configuration, including its active state, is
+unchanged, and the caller's write authorization is spent (D-9). The same holds
+for resuming a configuration that is already active, which stays active.
+`[contract]`
+
+AC-21. Given a permitted caller of organisation A, when they ask to suspend an
+active configuration whose domain is not A's own domain, then the request is
+refused and that configuration is still active. The test is run for two targets:
+the domain of another organisation B, and a subdomain of A's own domain, with the
+subdomain configuration arranged through storage. The mirror case holds for
+resume: a suspended configuration of either target stays suspended. In each case
+no record of a transition exists afterwards.  `[contract]`
+
 AC-16. Given an active configuration, when a permitted caller suspends it and then
 resumes it, then for each of the two transitions a record exists, in the place
 PAC-50 records configuration writes, naming the transition, the organisation and
-the acting user.  `[unit]`
+the acting user. A record of the kind PAC-50 already uses for configuration
+writes, with the transition named in its details, satisfies this criterion. A
+new kind of record is not required (§6, D-10).  `[unit]`
 
 **Removal**
 
@@ -551,9 +657,12 @@ must keep signing in after this change.)*
 - **No stored data changes, and there is no migration.** The secrets stay in the
   database; only what crosses the boundary changes. Suspend and resume need no
   migration either: the column they act on already exists and already works as a
-  kill switch (`008_sso_providers.up.sql:6`, read at `sso_providers.go:51`). If a
-  migration appears anywhere in this work, scope has grown and should be
-  challenged rather than accepted. PAC-50's own migration is PAC-50's.
+  kill switch (`008_sso_providers.up.sql:6`, read at `sso_providers.go:51`).
+  Recording the transitions (AC-16) needs no migration: PAC-50's event table
+  accepts only two kinds (§2.8), and a transition is recorded under
+  `sso_provider_written`, with the transition named in the details' operation
+  field (D-10). If a migration appears anywhere in this work, scope has grown and
+  should be challenged rather than accepted. PAC-50's own migration is PAC-50's.
 - **The configuration write stays a replace for every configuration value**
   (§3.2). `backend/storage/sso_providers_test.go:59` (`TestUpsertSSOProvider_Update`)
   protects that today. The one deliberate change is that the active state is no
@@ -605,11 +714,31 @@ confirmation. One new question remains, and it does not block the contract:
 
 **OQ-5: Is two writes to fix-and-resume acceptable?** *Owner: human (product),
 non-blocking.* D-3 means fixing a suspended configuration and resuming it takes
-two writes. Under PAC-50, each write spends one step-up authorization. The
-alternative, where a replace resumes, is what v3 proposed. The factory did not
-choose it, because it lets credential entry silently re-enable a login path that a
-colleague deliberately turned off. If the owner prefers v3's behaviour, AC-11's
-suspended half is inverted and §7 item 2 simplifies. Nothing else changes.
+two writes. Under PAC-50, each write spends one step-up authorization, so the
+person fixing it re-authenticates twice. The alternative, where a replace
+resumes, is what v3 proposed. The factory did not choose it, because it lets
+credential entry silently re-enable a login path that a colleague deliberately
+turned off. If the owner prefers v3's behaviour, AC-11's suspended half is
+inverted and §7 item 2 simplifies. Nothing else changes.
+
+**OQ-6: May an OIDC public client (PKCE, no client secret) be configured?**
+*Owner: human (product), non-blocking.* D-2 requires a non-empty client secret on
+every configuration write. A provider registered as a public client therefore
+cannot be configured at all. The factory chose this because sign-in today always
+sends the secret in the server-side code exchange (`handlers_sso.go:64-68`,
+`:121-125`), so a configuration without one cannot complete a sign-in. If the
+owner wants public clients, that is a sign-in feature (PKCE) as well as a change
+to D-2, and belongs in its own spec.
+
+**OQ-7: Is it acceptable that the kill switch may need the operator?** *Owner:
+human (product), non-blocking.* D-6 puts suspend and resume behind PAC-50's
+step-up. PAC-50 offers that step-up only through Google or Microsoft (its grant
+table's provider check on `origin/impl/pac-50-sso-write-gate-backend`) or through
+the deployment's break-glass list. An organisation whose SSO administrators are
+not Google or Microsoft workspace administrators can therefore suspend its SSO
+only by asking the operator. The factory kept D-6, because the other option lets
+any member switch off the organisation's login, which widens who can act. The
+owner should know the limit exists.
 
 ## Decisions
 
@@ -640,7 +769,9 @@ pending owner confirmation** (2026-10-27).
   on every configuration write (§3.2). The contract names them. Requiring the
   secret is the conservative reading: a configuration without one is the
   "configured but no secret" state AC-3 exposes, and it cannot complete the
-  server-side code exchange. Assumed by the factory, pending owner confirmation.
+  server-side code exchange. It also means a public client (PKCE, no secret)
+  cannot be configured. That is OQ-6. Assumed by the factory, pending owner
+  confirmation.
 - **D-3: the configuration write preserves the active state; only the transition
   changes it.**
   - **Why.** This replaces v3 §3.3, which had a replace resume a suspended
@@ -695,6 +826,110 @@ pending owner confirmation** (2026-10-27).
     API-092 Fixed once the list's 200 and 403 are asserted, and re-cuts audit
     batch B1 (`api-audit.md:526-530`) along the PAC-22/PAC-50 line.
   - Assumed by the factory, pending owner confirmation.
+- **D-8: a submission of the supported kind that carries any value of the
+  unsupported kind is refused, not stored and not discarded** (AC-18).
+  - **The three options.** Such a submission could be refused, accepted with the
+    values stored, or accepted with the values silently dropped.
+  - **Why refused.** Storing would keep a secret, the certificate, that nothing
+    uses and nobody can read back. Dropping would tell the caller that something
+    they supplied was accepted when it was thrown away. Refusing tells them at
+    once, which is §3.4's principle, and stores nothing.
+  - **What it costs.** An accepted write of the supported kind stores the
+    unsupported kind's values as absent. Today's replace does exactly that when
+    they are left out (§3.2), so this deletes nothing that today's replace would
+    keep. Configurations already stored are not rewritten by this rule (§3.4).
+  - **Consequences.** AC-2's success case carries only a client secret. AC-3
+    gains a certificate indicator, which describes configurations stored before
+    the change (§3.1).
+  - **The authorization.** The refusal is decided from the request alone, so,
+    like every other validation refusal, it leaves PAC-50's authorization
+    unspent (§3.4, AC-17).
+  - Assumed by the factory, pending owner confirmation.
+- **D-9: the transition's error paths** (§3.3, AC-19, AC-20, AC-21).
+  - **No configuration.** The transition is refused as "not found", creates
+    nothing and records nothing. Anything else would recreate API-067 on the new
+    operation.
+  - **Already in the requested state.** The transition succeeds without change
+    and reports the actual state. A refusal was considered and rejected: in an
+    emergency it would make two people suspending at once look like a failure,
+    and it tells the caller nothing truer than "it is suspended". The success
+    can never be for a configuration that does not exist, because that case is
+    refused first.
+  - **The authorization.** It follows PAC-50's rule unchanged. Refusals decided
+    from the request alone leave it unspent. Outcomes that need the stored
+    configuration spend it, as PAC-50's D-5 does for a removal that finds
+    nothing. This is consistent with §3.4: "a refused configuration costs
+    nothing" is about refusals decided before the authorization is consumed, and
+    a missing configuration cannot be known without consulting storage.
+  - **Recording.** A transition that found its configuration is recorded (AC-16),
+    including one that changed nothing, because an authorization was spent on
+    it. A transition that found nothing is not recorded, as PAC-50 does not
+    record a removal that found nothing (§2.8).
+  - Assumed by the factory, pending owner confirmation.
+- **D-10: transitions are recorded under PAC-50's existing record kind** (AC-16,
+  §6). They are recorded as `sso_provider_written` with the transition named in
+  the operation field of its details, beside PAC-50's `create` and `delete`. A
+  new kind would need a migration of PAC-50's table, and §6 treats a migration
+  as scope growth. If the plan finds the existing kind cannot carry it, that is a
+  finding for the spec, not a migration to add quietly. Assumed by the factory,
+  pending owner confirmation.
+
+## Revision v3.2 — 2026-10-27
+
+This revision answers the challenge of v3.1 (History, "Challenge — 2026-10-27").
+The challenge accepted v3.1 with changes. Every change it listed is applied
+below, in the challenge's order. No owner answer was needed. Where a choice was
+open, it is recorded as a factory assumption (D-8, D-9, D-10).
+
+**Blocking**
+
+1. **AC-4 contradicted D-2 and AC-7.** Its second half is restated as the
+   challenge proposed: a replace supplying an empty secret is refused (AC-7) and
+   the indicator stays true. D-2 is unchanged.
+2. **What an accepted submission does with the unsupported kind's values.** It
+   is refused (D-8, new AC-18). AC-2's success case now carries only a client
+   secret, and its certificate case is a refusal that leaks neither value. AC-3
+   gains a "signing certificate on file" indicator, so the certificates on
+   configurations stored before the change stay visible as present or absent
+   (§3.1).
+3. **AC-12 forbade the transition from naming its target.** AC-12 now lists the
+   eight configuration values and says that the target's identifier and the
+   requested state are not among them.
+4. **The transition had no error paths.** §3.3 now states them, and D-9 records
+   the choice. Transitioning a missing configuration is refused, creates
+   nothing, records nothing and spends the authorization (AC-19). A repeated
+   transition succeeds without change, reports the real state and spends the
+   authorization (AC-20). Both follow PAC-50's D-5. Refusals decided from the
+   request alone leave the authorization unspent, as §3.4 says.
+5. **No cross-organisation criterion.** AC-21 is added. A permitted caller of A
+   cannot suspend or resume a configuration for another organisation's domain or
+   for a subdomain of A's, and the target's state is unchanged. The subdomain
+   case targets the suffix match still on `main` (`domain/domain.go:45-49`).
+
+**Non-blocking**
+
+1. **§2.8 and U-21.** §2.8 and the inherited-scope list now say that PAC-50's
+   branch removes U-21 too. After PAC-50, what is left here is API-060 and
+   rewriting the create request's description, which AC-7, AC-8 and AC-18 make
+   false.
+2. **AC-16 versus "no migration".** The existing kind, with the transition named
+   in its details, satisfies AC-16. No new kind and no migration are needed
+   (AC-16, §6, D-10).
+3. **§3.7's rationale.** It is restated as allowing for later additions only. It
+   now says that most list responses are bare sequences, and that the container
+   must not be "corrected" towards them.
+4. **AC-9's detection assertion** is negative only: detection does not answer
+   SSO. Which fallback it gives is not asserted.
+5. **The Linear issue body is stale.** The body was not rewritten: this stage
+   only reads issues and comments on them. A comment on PAC-22 points at v3.2,
+   says what moved to PAC-50 (the admin check, the RowsAffected fix, API-067),
+   and asks the issue owner to update the body.
+6. **OWNER: public OIDC clients.** Recorded as OQ-6 and noted under D-2. D-2 is
+   unchanged, pending the owner.
+7. **OWNER: two writes, two step-ups.** OQ-5 now says that each write needs its
+   own step-up.
+8. **OWNER: the kill switch may need the operator.** Recorded as OQ-7. D-6 is
+   unchanged, pending the owner.
 
 ## Revision v3.1 — 2026-10-27
 
@@ -724,8 +959,9 @@ review **v1** and **v2** of this document, not the spec above. Their section
 numbers, AC numbers and `file:line` citations refer to those versions and to the
 codebase as each was written against; do not read them against v3. The v2
 challenge's central recommendation — split the spec at the authorization boundary
-— is what produced v3 and PAC-50. v3.1 (above) refreshes v3; neither v3 nor v3.1
-has been challenged yet.
+— is what produced v3 and PAC-50. v3.1 refreshes v3. Its challenge, the last
+entry below, accepted it with changes, and v3.2 (above) applies them. That
+challenge's AC numbers and section references are v3.1's.
 
 ---
 
