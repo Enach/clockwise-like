@@ -299,3 +299,237 @@ Run on the final commit of `factory/pac-67-contract`:
   - The web gate. The web types are regenerated in the paired web PR against
     this branch.
   - The e2e gate. No behaviour has changed yet.
+
+## Challenge — 2026-10-27
+
+Reviewer: contract-challenger, against `factory/pac-67-contract` at `3a38fcc`
+(committed state only), spec `docs/specs/PAC-67.md` at `fc27821` on
+`factory/pac-67-spec`, web `smart-calendar-flow` at `origin/main` `ad52160`.
+
+**Verdict**: accept-with-changes
+
+### Requests wrongly permitted
+
+1. `POST /api/conference/create` with
+   `{"title":"   ","start":"2030-01-07T10:00:00Z","end":"2030-01-07T11:00:00Z"}`
+   is permitted by `CreateConferenceRequest` (`title` has `minLength: 1`, and
+   three spaces have length 3), but the operation description says the server
+   answers 400 "invalid body" for a title that is empty after trimming. §8 of
+   this document says the schema change means "a generated client cannot
+   express the wrong request". For this request that is false.
+   **Fix**: add `pattern: '\S'` to `CreateConferenceRequest.title`, keeping
+   `minLength: 1`. The `end`-after-`start` rule cannot be expressed in OpenAPI,
+   so the `end` description is the right place for it, and it is already there.
+
+### Responses the client cannot handle / responses the contract cannot honour
+
+2. **`disconnectZoom` and `disconnectMicrosoft` promise activity entries that the
+   server cannot guarantee.** The contract makes two promises. A 200 with
+   `confirmed` writes ONE `provider_disconnected` entry, `unconfirmed` writes TWO,
+   and Outlook writes one. A 500 means that "NOTHING was changed ... no activity
+   entry is written".
+   - The `provider_disconnected` details carry the `revocation` outcome. On Zoom
+     that outcome is only known after the remote call, and the remote call happens
+     only after the local removal has committed (step 2). So that entry is
+     written after the removal is final.
+   - The only writer, `storage.WriteAuditLog` (`backend/storage/focus_blocks.go:80-88`),
+     swallows insert failures: it logs and returns nothing.
+   - Concretely, on Zoom: the credential is removed, Zoom answers success, and the
+     audit INSERT fails. The server can no longer answer 500, because something
+     did change. It answers `200 {"provider":"zoom","revocation":"confirmed"}`
+     with zero entries, which contradicts the unconditional "writes ONE".
+   - The same applies to every `connection_lost` "exactly one per loss" when the
+     insert fails.
+
+   **Fix (contract text only)**: in `disconnectZoom`, `disconnectMicrosoft` and
+   the CONNECTION ENTRIES paragraph, say that activity entries are written after
+   the outcome is known. Say they are best-effort, like every existing kind: a
+   failed write is logged, the 200 stands, and no entry may then appear. Or, if
+   the owner wants them guaranteed, the contract must name the status returned
+   when the entry write fails after removal. Today it names none. Keep "500 =
+   nothing changed" for failures before the removal commits.
+
+3. **`disconnectZoom` has no truthful `revocation` value for a stored credential
+   that does not decode.** That state is documented and reachable: the
+   `createConferenceLink` 400 "zoom: stored credential is invalid — reconnect at
+   /api/auth/zoom" comes from `conference.NewProvider`
+   (`backend/conference/factory.go:26-29`), where `settings.zoom_tokens` is
+   non-blank but is not valid JSON. Suppose such a user calls disconnect. The
+   blob is removed (`ClearZoomTokens` blanks it), but no access token can be
+   extracted, so no revocation can be sent. None of the four values fits:
+   - `confirmed` is false;
+   - `unconfirmed` is defined as "a revocation was attempted and ...", and none
+     was attempted;
+   - `not_offered` is Outlook only;
+   - `nothing_stored` says "nothing was removed", which is false.
+
+   The server must answer one of these, and whichever it picks contradicts its
+   own definition.
+   **Fix**: widen `unconfirmed` to "a revocation was attempted and not confirmed,
+   or could not be attempted because the stored credential is unreadable". Say on
+   `disconnectZoom` that this case writes `provider_disconnected` plus
+   `revocation_unconfirmed`, so the user is still told (D-2).
+
+4. **The observable `revocation` value on `disconnectZoom` is left to the plan.**
+   The description says "whether the server first renews an expired access token
+   to revoke it is the plan's choice". Zoom access tokens last one hour (this
+   document §3). Zoom's OAuth page, which I re-read on 2026-10-27, gives `token`
+   as the access token and does not say what happens to an expired one. Take a
+   user who connected Zoom yesterday and disconnects today:
+   - If the plan sends the stored, expired access token, the likely answer is an
+     error. So nearly every real disconnect answers `unconfirmed`, and the grant
+     (with a refresh token valid for 90 days) stays live at Zoom.
+   - That defeats spec §3 ("the provider is asked to revoke Paceday's grant") and
+     makes AC-14's `confirmed` reachable only in the first hour.
+
+   Two implementations that both satisfy the contract would give different
+   answers for the same stored state.
+   **Fix**: pin the behaviour in the `disconnectZoom` description. An expired
+   access token is renewed first with the removed refresh token, and the renewed
+   token is held in memory only and never stored. The renewed access token is
+   what is revoked. A refused or failed renewal makes `revocation: unconfirmed`
+   and writes no `connection_lost` entry.
+
+### Contract/implementation divergences
+
+5. **The Teams row and `getAuthStatus` disagree on a Microsoft credential that
+   has no refresh token, and the contract says they agree.**
+   - The new `microsoftOAuthCallback` text says: "With no refresh token stored
+     before either, the result is a credential with no refresh token, reported
+     not connected exactly as today."
+   - Today `getAuthStatus` (outlook) does report it not connected
+     (`backend/api/handlers_auth.go:128`, `msToken != nil && msToken.RefreshToken != ""`).
+   - The `teams` row of `listConferenceProviders` reports
+     `{"provider":"teams","connected":true,"enabled":true,"auto_with":"outlook"}`
+     for the same credential (`backend/api/handlers_conferencing.go:210`,
+     `Connected: microsoftToken != nil, Enabled: microsoftToken != nil`).
+   - The new `ConferenceProviderStatus.connected` text ("stored AND not recorded
+     as lost") still permits that `true`, even though the credential can never
+     be renewed. That breaks spec §3 "connected means usable" on the Teams row.
+   - It is also unspecified what `createConferenceLink` and `addEventConference`
+     answer once such a token expires. There is no provider refusal, so neither
+     "connection lost" nor any listed sentence clearly applies.
+
+   `offline_access` is requested (`backend/auth/microsoft_oauth.go:38`), so this
+   is a guard case (spec OQ-6), but the contract's sentence is false today.
+   **Fix**:
+   - make `ConferenceProviderStatus.connected` and `enabled` for `teams` read
+     "stored WITH a refresh token AND not recorded lost", the same predicate as
+     `getAuthStatus` outlook (and state the Zoom row's predicate likewise);
+   - add to both meeting-creation operations that an expired Teams or Zoom access
+     token with no stored refresh token answers the 400 "connection lost"
+     sentence for that provider (or name another listed sentence).
+
+### Uncertainties not actually resolved
+
+None. U-12 is settled. `grep -n 'Provider:' backend/conference/*.go` shows
+exactly `meet` (meet.go:14), `teams` (teams.go:53) and `zoom` (zoom.go:58).
+`conference.Details.JoinURL` has no `omitempty` (`backend/conference/provider.go:11`),
+and `MeetProvider` returns `&Details{Provider: "meet"}`, so `joinUrl: ""` is
+real and removing `format: uri` is correct. The bundle goes from 12 markers to
+11.
+
+### Manifest vs spec
+
+6. Spec AC-10 includes "listing events fails as it does today". The manifest's
+   `acceptanceTests` AC-10 entry drops the event-listing row, so it is narrowed
+   silently. **Fix**: add "listing events fails as today" to the manifest's
+   AC-10 line.
+
+### Consumers affected (checked, none breaks)
+
+- `smart-calendar-flow/src/api/client.ts:1521-1523` `zoomDisconnect` →
+  `requestApi<void>`. `requestApi` (`client.ts:442-450`) returns early only on
+  204. On a 200 it requires `content-type` to include `application/json`, then
+  parses. The new 200 is `application/json`, so it resolves, and
+  `ConferencingSection.tsx:98-99` ignores the value and shows "Disconnected Zoom".
+  It does not break, but it shows plain success on `unconfirmed`, which the
+  frontend stage owes (spec §5).
+- `smart-calendar-flow/src/pages/Audit.tsx:97` renders `entry.action` raw. There
+  is no exhaustive map over the enum, so the three new kinds render.
+- `ConferencingSection.tsx:67-69` finds rows by `provider`, not by index, so it
+  is unaffected by the `enabled` change.
+- `Dashboard.tsx:114` and `Onboarding.tsx:61,84` read `getAuthStatus.connected`.
+  After `disconnectMicrosoft` or a recorded loss, an Outlook user sees
+  `calendarNotConnected`. That is intended (D-3) and the shape is unchanged.
+- `mcp/tools.go:243` (`clockwise_calendar_status`) passes `/api/auth/status`
+  through as JSON, and the shape is unchanged. No MCP tool calls conference,
+  disconnect or audit.
+- `e2e/tests/audit.spec.ts` asserts scoping and limits only. No e2e calls
+  `/api/conference/*` or a disconnect.
+- `backend/api/pac21_4xx_bodies_test.go:172` sends a valid
+  `{"title":"T","start":...,"end":...}` body, which passes the new validation. No
+  backend test asserts the 204 of `disconnectZoom`.
+
+### Verified clean (attacked, could not break)
+
+- `make openapi-check WEB=/nonexistent` in an LF clone of `3a38fcc`
+  (golang:1.25-bookworm): "OK: bundle is in sync (99 paths)", "OK: MIGRATION.md
+  covers all 120 operations", "OK: backend/api/gen matches the contract", web
+  half SKIPPED, rc=0. `go build ./...` rc=0. The bundle's sha256 is
+  `886a3e2d…a557c`, which matches the manifest's `contractHash`.
+- **Google refusal on `addEventConference` really is the 404.**
+  `calClient` (`handlers_events.go:27-34`) builds a lazy `TokenSource`, so the
+  refresh runs inside `GetEvent`. Any error there is mapped to 404 "event not
+  found" (`handlers_conferencing.go:314-317`), so D-10's "unchanged" holds. The
+  loader fails with 401 only when no token row exists.
+- **`getAuthStatus` outlook predicate.** The contract says "stored with a refresh
+  token", which matches `handlers_auth.go:128`.
+- **`disconnectZoom` resets conferencing to `meet` unconditionally (D-9).** One
+  UPDATE does it (`storage/conferencing.go:12`), so "nothing changed on 500"
+  holds for the local step.
+- **`disconnectMicrosoft` is protected.** It inherits the global
+  `security: [bearerAuth, cookieAuth]`, unlike the public `/api/auth/microsoft*`
+  routes (`routes.go:35-36`), so the plan must register it in a `requireAuth`
+  group. A 401 PlainTextError is consistent with the other auth operations.
+- **`POST /api/events/{id}/conference` with `{"provider":"zoom"}`** while the
+  Zoom row is lost. The 400 sentences are new, fixed, and in the same envelope
+  as the three existing ones. The 401 and 409 meanings are untouched.
+- **`ProviderDisconnectResult`** is closed (`additionalProperties: false`, both
+  fields required), carries no token material, and every documented case maps to
+  exactly one value. The exception is finding 3.
+- **`createConferenceLink`** with `{"start":"x"}`: `time.Time` decode fails, and
+  the answer is the existing 400 "invalid body".
+- **OQ-1 / D-5.** No Microsoft call is made, and the contract text forbids
+  `revokeSignInSessions`.
+- **PAC-35 `disconnectCalendar` 409.** It is untouched; the change is to its
+  description only.
+- **`AuditEntry.action`.** The seven existing values are unchanged and in place.
+  The three new values are appended.
+
+### Not run
+
+- The full `api-gate.sh`: the host checkout is on another stream's branch
+  (`impl/pac-25-owner-guards-backend`), and I did not move it.
+- The DB-backed Go tests, including `TestPAC21Every5xxInTheContractIsTheJSONEnvelope`,
+  which reads the bundle. In the container they failed to start with "connect
+  to test database at 127.0.0.1:15432: connection refused", so their result on
+  this bundle is unknown.
+- The web gate: web types are regenerated in the paired web PR.
+
+### Non-blocking
+
+- OWNER: should a Zoom disconnect whose revocation is `unconfirmed` also give
+  the user a way to retry the revocation later? The contract has no retry
+  operation, and the token is gone after removal.
+- OWNER: is `connection_lost` / `provider_disconnected` as raw identifiers in
+  the activity log acceptable until the frontend stage gives them copy?
+- OWNER: a disconnect when nothing is stored writes no entry. This is assumed by
+  the factory.
+- Zoom disconnect while a loss is recorded (the refresh token is already refused)
+  will almost surely answer `unconfirmed` and write `revocation_unconfirmed`. The
+  grant is probably already gone. That is truthful, but the plan should test it.
+- An undecodable `microsoft_tokens` blob. `LoadMicrosoftToken` returns an error
+  (`microsoft_oauth.go:92-94`). `disconnectMicrosoft` should still remove it
+  (`not_offered`) rather than 500. The contract's 500 says only "settings could
+  not be read or written", so the plan should state which applies.
+- The `AuditEntry.action` description says "the contract test of this enum
+  against the writers covers all ten", and spec §6 calls it "protected today".
+  I found no such Go test (`backend/api/handlers_audit_test.go`,
+  `backend/storage/audit_log_test.go`), so the plan must add it, not extend it.
+- `MIGRATION.md` registers the new `disconnectMicrosoft` as `handwritten`, while
+  factory §4 says new endpoints use the generated interface. The plan should say
+  which applies.
+- `createConferenceLink` with an explicit `"start":"0001-01-01T00:00:00Z"` is
+  schema-valid but will be 400 (indistinguishable from absent). This is
+  acceptable, but it could be documented.
