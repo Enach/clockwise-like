@@ -522,18 +522,27 @@ paths:
         the link in the body, so the answer does not reveal whether a link exists. A
         refused read is never `403` (PAC-25 D-1; contrast the owner-only siblings
         PATCH, DELETE, `/bookings` and `/hosts`, which still answer `403` and are out
-        of scope). Check order: `400` malformed id, then the link lookup (`500` on a
-        storage error), then `404` for no link or a caller who may not read it, then
-        `200`. An allowed reader receives the full record including every host row
-        (accepted, pending and declined) with each host's email, name and avatar;
-        `is_owner` is computed against the caller and `my_status` is the caller's own
-        host status. An accepted co-host therefore still sees pending and declined
-        invitees' emails, as through the list (PAC-25 D-2).
+        of scope). Check order: `400` malformed id; then the link lookup; then the
+        caller's own host-status lookup on that link; then `404` for no link or a caller
+        who may not read it; then `200`. A storage error on either lookup answers `500`
+        `{"error":"internal error"}`, never `404` (an outage is not reported as "not
+        found") and never `200` (the reader check does not fail open). An allowed reader
+        receives the full record including every host row (accepted, pending and
+        declined) with each host's email, name and avatar; `is_owner` is computed
+        against the caller and `my_status` is the caller's own host status. Building
+        that record reads the roster (the link's host rows and each host's user record);
+        a storage error on that read also answers `500` `{"error":"internal error"}`,
+        never `200` with `hosts: []` or with a host's email missing (PAC-25 C-2). An
+        accepted co-host therefore still sees pending and declined invitees' emails, as
+        through the list (PAC-25 D-2).
       responses:
         '200':
           description: >-
             The link, with hosts. Returned only to the owner (`is_owner: true`) or an
-            accepted co-host (`is_owner: false`, `my_status: accepted`).
+            accepted co-host (`is_owner: false`, `my_status: accepted`), and only when
+            the whole roster was read: `hosts` is never emptied and no host's email is
+            dropped because a storage read failed. A failed roster read is `500`, not
+            this response.
           content:
             application/json:
               schema:
@@ -562,7 +571,9 @@ paths:
               example:
                 error: not found
         '500':
-          description: 'Body: {"error":"internal error"}'
+          description: >-
+            Body: {"error":"internal error"}. A storage error on the link lookup, on the
+            caller's host-status lookup, or on the roster read (PAC-25 C-2).
           content:
             application/json:
               schema:
