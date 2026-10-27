@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -128,6 +130,60 @@ func AddTeamMember(db *sql.DB, teamID, userID uuid.UUID, role string) error {
 
 func RemoveTeamMember(db *sql.DB, teamID, userID uuid.UUID) error {
 	_, err := db.Exec(`DELETE FROM team_members WHERE team_id = $1 AND user_id = $2`, teamID, userID)
+	return err
+}
+
+// ErrLastOwner is returned by RemoveTeamMemberKeepingOwner when the removal
+// would leave the team without an owner (PAC-25).
+var ErrLastOwner = errors.New("the team owner cannot be removed")
+
+// RemoveTeamMemberKeepingOwner deletes the user's membership unless the user
+// is an owner of the team and no other owner would remain, in which case it
+// returns ErrLastOwner and writes nothing. Removing a user who is not a member
+// is a no-op. The team row is locked for the transaction, so concurrent
+// removals on one team are serialised and no interleaving of them can leave
+// the team with zero owners (PAC-25 D-6).
+func RemoveTeamMemberKeepingOwner(db *sql.DB, teamID, userID uuid.UUID) (err error) {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	var locked int
+	err = tx.QueryRow(`SELECT 1 FROM teams WHERE id = $1 FOR NO KEY UPDATE`, teamID).Scan(&locked)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var role string
+	err = tx.QueryRow(`SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2`, teamID, userID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = tx.Commit()
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if role == "owner" {
+		var otherOwners int
+		err = tx.QueryRow(`
+			SELECT count(*) FROM team_members
+			WHERE team_id = $1 AND role = 'owner' AND user_id <> $2`, teamID, userID).Scan(&otherOwners)
+		if err != nil {
+			return err
+		}
+		if otherOwners == 0 {
+			err = ErrLastOwner
+			return err
+		}
+	}
+	if _, err = tx.Exec(`DELETE FROM team_members WHERE team_id = $1 AND user_id = $2`, teamID, userID); err != nil {
+		return err
+	}
+	err = tx.Commit()
 	return err
 }
 

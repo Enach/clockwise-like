@@ -5188,7 +5188,7 @@ type ServerInterface interface {
 	// Deactivate a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Fetch one scheduling link by id.
+	// Fetch one scheduling link by id (owner or accepted co-host).
 	// (GET /api/scheduling-links/{id})
 	GetSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Partially update a scheduling link (owner only).
@@ -5257,7 +5257,7 @@ type ServerInterface interface {
 	// Create a 7-day team invite and email it. Owner only.
 	// (POST /api/teams/{id}/members/invite)
 	InviteTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath)
-	// Remove a member by user id. Owner, or the member themselves.
+	// Remove a member by user id. Owner, or the member themselves; never the last owner.
 	// (DELETE /api/teams/{id}/members/{userId})
 	RemoveTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath, userId openapi_types.UUID)
 	// All no-meeting zones for a team. Membership required.
@@ -5830,7 +5830,7 @@ func (_ Unimplemented) DeleteSchedulingLink(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Fetch one scheduling link by id.
+// Fetch one scheduling link by id (owner or accepted co-host).
 // (GET /api/scheduling-links/{id})
 func (_ Unimplemented) GetSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -5968,7 +5968,7 @@ func (_ Unimplemented) InviteTeamMember(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Remove a member by user id. Owner, or the member themselves.
+// Remove a member by user id. Owner, or the member themselves; never the last owner.
 // (DELETE /api/teams/{id}/members/{userId})
 func (_ Unimplemented) RemoveTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath, userId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -15594,6 +15594,15 @@ func (response RemoveTeamMember403JSONResponse) VisitRemoveTeamMemberResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
+type RemoveTeamMember422JSONResponse ErrorResponse
+
+func (response RemoveTeamMember422JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type RemoveTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
 
 func (response RemoveTeamMember500JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
@@ -16087,7 +16096,7 @@ type StrictServerInterface interface {
 	// Deactivate a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(ctx context.Context, request DeleteSchedulingLinkRequestObject) (DeleteSchedulingLinkResponseObject, error)
-	// Fetch one scheduling link by id.
+	// Fetch one scheduling link by id (owner or accepted co-host).
 	// (GET /api/scheduling-links/{id})
 	GetSchedulingLink(ctx context.Context, request GetSchedulingLinkRequestObject) (GetSchedulingLinkResponseObject, error)
 	// Partially update a scheduling link (owner only).
@@ -16156,7 +16165,7 @@ type StrictServerInterface interface {
 	// Create a 7-day team invite and email it. Owner only.
 	// (POST /api/teams/{id}/members/invite)
 	InviteTeamMember(ctx context.Context, request InviteTeamMemberRequestObject) (InviteTeamMemberResponseObject, error)
-	// Remove a member by user id. Owner, or the member themselves.
+	// Remove a member by user id. Owner, or the member themselves; never the last owner.
 	// (DELETE /api/teams/{id}/members/{userId})
 	RemoveTeamMember(ctx context.Context, request RemoveTeamMemberRequestObject) (RemoveTeamMemberResponseObject, error)
 	// All no-meeting zones for a team. Membership required.
