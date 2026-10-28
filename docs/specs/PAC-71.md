@@ -635,3 +635,263 @@ Answers every finding of "Challenge, revision 0". §1–§9 above are rewritten 
 - **OQ-1 (narrowed)**: does connecting a calendar also add the sign-in method? Factory default: yes, disclosed, listed, removable.
 - **OQ-2 (unchanged)**: may SSO reach existing members without each adding it? Factory default: no.
 - **OQ-3 item 4 (conditional)**: becomes an owner question only if stage 2 finds that unmanaged Microsoft directories defeat tenant evidence.
+
+## Challenge, revision 1 — 2026-10-28
+
+**Verdict**: accept-with-changes.
+
+Revision 1 fixes all six revision-0 blocking findings as written. I re-checked each one:
+- B1: the evidence table and the standings exist, and a Google verified flag no longer makes a squatted address a person.
+- B2: adding a method needs fresh proof, methods are listed and removable, and a disconnect tells the user.
+- B3: SSO is out of migration (a) and (b), break-glass is keyed on the account, and an SSO link path exists.
+- B4: AC-31 exists.
+- B5: all four `authConnectUrl` callers are listed. `git grep` on `eea0cf6` finds no fifth.
+- B6: the scope set is pinned to `pac50_signin_scopes_test.go:19-69`.
+
+N1 to N10 are applied.
+
+The new model opens six problems, and they block stage 2:
+- two takeover or lock-out paths that the new standings create;
+- a revocation site that the standings silently disable;
+- a last-method rule that can leave an account with no usable method;
+- a migration step that hands a real user's credential to an account other people may hold;
+- a direct contradiction with PAC-47 on the same four controls.
+
+What I checked:
+- `clockwise-like` `origin/main` `ae5c2cf` (still the tip), this spec at `ea39bbf`, `origin/factory/pac-47-spec` `24e0833` and `origin/factory/pac-68-spec` `ec76099`.
+- `smart-calendar-flow` `origin/main` `eea0cf6`, read with `git show` only.
+
+I ran no code and called no provider endpoint. Line numbers below are this file at `ea39bbf`.
+
+### Blocking
+
+1. **Migration (b) puts a real user's fresh credential into an account that other people may still hold sessions or integrations on. So OQ-6's "no longer required for safety" (line 436) is false.**
+   - Lines 180-182 bind an authoritative identity to *any* unbound pre-existing account that carries the address. They do not ask who created that account or who holds sessions on it.
+   - §5 (line 389) keeps sessions from before the change valid for up to 7 days.
+
+   *Attack:*
+   - Before deployment, an attacker who receives mail at `henry@acme.com` signs in with a consumer Google account on that address. Henry has never used Paceday, so today's email matching creates account A.
+   - The attacker connects their own Slack and Notion to A and sets a personal LLM key on it.
+   - After deployment, Henry signs in for the first time with acme's Workspace (`hd=acme.com`). Rule (b) binds Henry's G1 to A and stores Henry's Google calendar credential on A.
+   - The attacker's old session on A is a 7-day JWT, and there is no server-side session store (`e2e/auth.ts:13-15`). It now reads and writes Henry's calendar through the API.
+   - The attacker's integrations on A keep receiving Henry's meeting data with no time limit. This is the "pre-account-hijacking" class.
+
+   Revision 0's B2 closed this route through the link step. The migration route is still open.
+
+   *Resolve:* state requirements for the moment (b) binds an identity other than the one the account recorded:
+   - every session issued before the binding ends;
+   - before continuing, the user sees the third-party connections, keys and sign-in-relevant settings the account already carries, and can drop them.
+
+   Alternatively, make OQ-6's secret rotation mandatory and add the second requirement. Add an AC for the scenario either way.
+
+2. **A squatter with mailbox evidence permanently locks out the person who holds the mailbox now. This contradicts §5's residual (line 393).**
+   - Rule 4's mailbox branch (line 153) and AC-25 (line 258) refuse a new identity with mailbox evidence whenever *any* account carries the address, at *any* standing, unconfirmed included.
+   - §5 says that on a domain with no authority, "whoever controls the mailbox can confirm the address by email". That person cannot: they cannot create an account at all, so they never reach AC-26's confirmation.
+
+   *Attack:*
+   - The domain `smallco.io` has no Workspace, no Entra tenant and no SSO.
+   - A former employee's consumer Google account on `pat@smallco.io` is still marked "verified". The former employee signs in first and gets account A, unconfirmed.
+   - Pat now holds that mailbox. Pat signs in with their own consumer Google account on the same address, verified, and is refused for good:
+     - there is no authority that could win;
+     - the refusal tells Pat to "sign in the way you did before" (line 191), and Pat never has;
+     - §5 (line 391) rules out operator tools.
+
+   The unconfirmed squatter gains nothing except the denial, and the denial is permanent and costs nothing.
+
+   *Resolve:* choose one, and add the AC either way:
+   - require that an address held only *unconfirmed* never stops another identity from creating its own account and confirming the address by email, with an email-confirmed holder then outranking unconfirmed carriers; or
+   - record the lock-out as a limit the owner accepts, and correct §5.
+
+   If email confirmation is deferred (OQ-7), say which of the two applies meanwhile.
+
+3. **Domain-confirmed standing never lapses. A departed employee keeps the address as a person, and the domain's owner cannot give it to the new holder.**
+   - Standing is set once, from one sign-in's evidence (line 125).
+   - "Authority wins" only over email-confirmed or unconfirmed holders (line 143).
+   - A recycled address is refused while the old account holds it domain-confirmed (line 207, D-12 at line 454).
+
+   *Attack:*
+   - While employed, Henry links his personal Gmail through the link step, with a fresh session.
+   - Henry leaves acme. acme suspends his Workspace account G1 and later gives `henry@acme.com` to a new hire.
+   - Henry keeps signing in with Gmail indefinitely. His account still holds `henry@acme.com` domain-confirmed, so:
+     - he receives every team invite, co-host invitation and manager-roster resolution addressed to it (AC-28);
+     - he stays break-glass if that address is on the operator's list (line 216, AC-38);
+     - the new hire is refused (D-12).
+
+   This is §1 case 1's "former employee whose mail still arrives", made permanent by the product.
+
+   *Resolve:* state when domain-confirmed standing ends. For example:
+   - it is lost when an authoritative sign-in arrives from a *different* subject of the *same* authority (the domain's owner reassigned the address); or
+   - it lapses when the confirming identity has not signed in with authoritative evidence for a stated period.
+
+   State which address-as-person sites and break-glass check the standing at the time of use. Add ACs for both:
+   - a reassigned address moves to the new holder;
+   - the departed holder's link-added method no longer makes the address a person.
+
+4. **AC-28 turns a revoking site into a silent no-op, and AC-27 creates exactly the members it can no longer remove.**
+   - AC-28 (line 293) makes the manager's member *remove* resolve an unconfirmed address to nobody.
+   - At `handlers_manager.go:356-366`, a lookup that finds nobody skips `RemoveTeamMember` and still answers 204.
+   - These accounts keep their accepted grants but are no longer resolved:
+     - AC-27 (line 291) and D-9 keep the accepted grants of an account that loses its standing;
+     - AC-24's squatter A and an account migrated with mailbox evidence (line 181) are in the same position.
+
+   *Scenario:*
+   - E accepted a team invite while email-confirmed.
+   - G1 arrives with `hd=acme.com`, and E becomes unconfirmed.
+   - The manager removes `henry@acme.com` and gets 204. E is still a team member, and there is no path in the product to remove E.
+
+   The co-host list patch (`handlers_scheduling_links.go:551-556`) has the reverse problem. An accepted unconfirmed co-host who is still on the list is no longer "kept", so they are silently removed, against D-9.
+
+   *Resolve:*
+   - Split the address-as-person sites into two kinds:
+     - *granting* sites (invite acceptance, co-host add, member add, roster import) resolve only confirmed holders;
+     - *revoking or retaining* sites (member remove, the co-host list's keep set) act on every account that carries the address, at any standing.
+   - Add an AC for removing a member who has lost their standing.
+
+5. **The last-method rule is not airtight. An account can end up with no method that can sign in, and nothing recovers it.**
+
+   Line 171 forbids removing "the last one", counting bound identities. A bound identity can be dead:
+   - (I1, S1) after the organisation's issuer changes. Line 185, and AC-36 at line 342, say it "no longer matches".
+   - A Microsoft identity whose tenant answer can no longer be classified (AC-11b).
+
+   *Scenario:*
+   - Henry is bound to G1 and to (I1, S1).
+   - acme moves to issuer I2.
+   - Henry removes G1. The rule allows it because one method remains.
+   - Henry is now locked out, and there is no support tool (line 391).
+
+   Two more gaps:
+   - The rule says nothing about two fresh sessions each removing a different one of two methods at the same time. Both see two methods, and the result is zero.
+   - "Every other session of the account ends" (line 171, AC-33 at line 329) needs per-account session revocation. Today there is no session store, and logout only clears the cookie (`handlers_me.go:31-42`). Neither §2 nor §7 names this new state or how it rolls back.
+
+   *Resolve:*
+   - Define "last method" as the last method that can sign in now. An SSO identity counts only for the issuer currently configured for its domain.
+   - Require removal to be atomic against a concurrent removal.
+   - State the session-revocation requirement in §3, and in §7 with its down-migration consequence.
+   - Add ACs for the dead-SSO case and the concurrent case.
+
+6. **PAC-47 defines the same four connect controls differently, and PAC-71 does not mention it.**
+
+   `docs/specs/PAC-47.md:377-411` (on `origin/factory/pac-47-spec` `24e0833`, revision 5) says a connect from those four actions:
+   - "attaches the Microsoft credential to the account that started it, whatever email the Microsoft account has";
+   - is credited while that account is still signed in, with no freshness condition;
+   - adds no sign-in method. A later Microsoft sign-in "signs the browser in as the Paceday user for that Microsoft account (created if absent)".
+
+   PAC-71 says the same controls:
+   - start a link step that binds a sign-in method (line 167);
+   - refuse a new identity on a session older than 10 minutes (line 161, AC-30);
+   - make a later Microsoft sign-in with no session reach Henry (AC-12, last bullet).
+
+   Both cannot be built as written, and whichever spec lands second breaks the other's ACs. OQ-5 (line 432) only orders the callbacks. OQ-1 (line 415) does not cite PAC-47, although PAC-47's model is OQ-1's "alternative".
+
+   *Resolve:*
+   - State which spec owns the semantics of the connect start and callback. Either:
+     - record the fresh-proof rule as an amendment to PAC-47 §3 item 3; or
+     - adopt PAC-47's connect without binding as the answer to OQ-1.
+   - Name the PAC-47 ACs that change.
+
+### Non-blocking
+
+1. **The PAC-35 success tests will not "keep passing with the binding in place"** (AC-8 at line 262, §6 at line 397).
+   - The Google fixture has no `verified_email` (`pac35_auth_flows_test.go:169`). Under rule 4 that is "no evidence, refused".
+   - The Microsoft fixture serves only the `/me` profile and no organisation answer (`:241`). It ends on AC-11b's generic failure.
+   - The failure-path tests at `:142`, `:160`, `:193` and `:208` change for the same reason: a refusal now comes before the session step they exercise.
+
+   Say that their fixtures change and what each one must still assert.
+
+2. **SSO configurations written before PAC-50's gate count as authoritative for new accounts** (evidence table, line 133).
+   - Before `ae5c2cf`, any member of an organisation could write the SSO row.
+   - Under "authority wins" (line 143), such an issuer can take the standing and pending invites of an email-confirmed holder at `acme.com`.
+   - It can also create domain-confirmed accounts, and AC-38 makes those break-glass.
+
+   Either require that an SSO configuration is authoritative only if it was written under PAC-50's gate, or release-note the residual.
+
+3. **A stolen fresh session is a complete, silent takeover.**
+   - With a session under 10 minutes old (malware, or an XSS on the API origin), an attacker can link their own identity, remove all of Henry's other methods, and end Henry's other sessions (AC-33).
+   - Mail notification is out of scope (line 390), so nothing reaches Henry.
+
+   Either state this residual in §5, or require that adding or removing a method is reported to the owner of the account through a channel the session does not control.
+
+4. **Break-glass narrows more than §6 says.**
+   - Line 177 treats unbound legacy accounts as email-confirmed, and line 216 requires domain-confirmed. So an operator's break-glass stops working until their account binds with authoritative evidence.
+   - An operator whose address is on a domain with no authority loses break-glass for good.
+
+   Release-note it, or ask the owner.
+
+5. **Letter case (D-17, AC-29).**
+   - Line 186: say whether migration (a) on a case-collided account counts as an "address match". The identifier matches, but the rule also requires the address.
+   - Extend AC-7's race to `Zoe@example.org` and `zoe@example.org` arriving concurrently. As written it only covers one exact string.
+   - AC-24 needs two accounts that carry the same address, but `users.email` is `UNIQUE` today (`006_auth.up.sql:5`). Say that uniqueness moves from "carries" to "holds confirmed", so that the contract and the plan know.
+
+6. **OQ-7 (deferring email confirmation) is safe for security, but costs more than line 437 says.**
+   - Legacy accounts that bind under (a) with mailbox evidence drop from "treated as email-confirmed" (line 177) to unconfirmed. They get no new invites and cannot recover until the follow-up.
+   - Blocking 2 then has no remedy at all.
+
+   Name the ACs that move with the follow-up: AC-26, the Settings offer at line 141, and the email-confirmed branches of AC-27 and AC-38.
+
+7. **PAC-68 AC-15 allows `openid`; PAC-71 (line 398) forbids it.**
+   - PAC-68 (accepted, `ec76099`) lets the plan add "sign-in identity scopes that need no tenant-admin consent" (D-5, AC-15).
+   - PAC-71, `pac50_signin_scopes_test.go` and the owner's "keeps today's permissions" forbid any added scope.
+
+   Record that PAC-71 supersedes PAC-68 AC-15's allowance, or have PAC-68 amended. Otherwise a PAC-68 plan that adds `openid` fails AC-11 here.
+
+8. **Graph `/organization` under `User.Read` (OQ-3 item 1) is plausible but unverified.** From memory:
+   - Microsoft documents `User.Read` as the least-privileged delegated permission for listing the organization.
+   - With `User.Read`, the readable properties are limited to a few, including `id` and `verifiedDomains`.
+   - Personal accounts are documented as not supported.
+
+   If that holds, a personal account's answer is a refusal, which does not tell "personal" apart from a transient error. Under AC-11b every personal sign-in then fails. That is consistent with line 114, but release-note it.
+
+9. **AC-27's "pending invitation resolves to H".** Co-host invitations are stored against a user id when they are created (`AddLinkHost(..., invitee.ID, "pending")`, `handlers_scheduling_links.go:382`). Team invites are stored against the address. Say whether E's existing pending co-host rows move to H, or stay and can no longer be accepted.
+
+10. **The SSO link step (AC-36).** Say whether PAC-45's rule that the email must belong to `{domain}` still applies when SSO is *linked* rather than used to sign in.
+
+### Criteria I could not falsify
+
+- **AC-11b, second sentence.** Under today's Microsoft scopes, only one answer carries the tenant: `/organization`.
+  - `/me?$select=id,mail,displayName` carries none (`handlers_microsoft_auth.go:90`).
+  - No ID token is issued without `openid`.
+
+  So "a fake whose two answers disagree on the tenant" has no second answer to disagree with. The step-up's mismatch check (`handlers_sso_stepup.go:512`) compares against an ID-token `tid` that sign-in does not have. Name the second source, or drop the clause.
+- **AC-32, last sentence.** "Shows, before leaving, that the provider account will also become a way to sign in" names nothing observable: no text, role or confirmation control.
+- **AC-11c.** It has two expected outcomes until OQ-3 is answered, so it can only be falsified after stage 2. That is acceptable if the contract records the answer.
+
+Every other AC has a test that fails today and passes afterwards. For example:
+- AC-24 fails today because the second Google sign-in upserts into A (`users.go:25`).
+- AC-30 fails today because the Microsoft callback ignores the session and switches accounts (`handlers_microsoft_auth.go:69-79`).
+
+### Citations I checked and found wrong
+
+- **Revision 1 record (line 628), "public routes are `:33-42`".** `routes.go:38-39` (Zoom start and callback) are behind `requireAuth`. §2 at line 35 lists the public routes one by one and is correct.
+- **AC-32 (line 325) and §2 (line 65), the dialog's "three starts".** There is a fourth: the SSO start at `AuthDialog.tsx:105-108`, which follows `redirect_url` from `/api/auth/detect`. It is a public start, so the requirement still holds, but the list is incomplete.
+- **AC-8 (line 262) and §6 (line 397), "today's success tests keep passing".** They do not (Non-blocking 1).
+
+Checked and correct at `ae5c2cf` / `eea0cf6`:
+- `clockwise-like` backend:
+  - `jwt.go:17-27`, `middleware.go:18-24`
+  - `handlers_sso_stepup.go:43,228-252,238-244,494-533,511-513`, `stepup.go:172-182,290`
+  - `handlers_teams.go:214,300-305,621-651`, `handlers_manager.go:319,356`, `engine/manager.go:244`
+  - `users.go:21-31,37-40`, `006_auth.up.sql:5,8-9`, `paceday.gen.go:1186-1197`
+  - `handlers_auth.go:43-84,232,235-240`, `handlers_microsoft_auth.go:64-97`, `handlers_sso.go:118-131,150-166`
+  - `oidc.go:19-23,79-83`, `orgs.go:42-52`, `google_oauth.go:16-19`, `microsoft_oauth.go:17-18,40,90`
+  - `handlers_scheduling_links.go:377-382,553,656-660`
+- `clockwise-like` tests: `pac67_conferencing_test.go:322`, `pac50_signin_scopes_test.go:19`, `handlers_teams_test.go:53-60`, `e2e/auth.ts:13-25`.
+- `smart-calendar-flow`: `client.ts:1181-1182`, `WorkCalendarConnection.tsx:77,87`, `ConnectionStatus.tsx:18`, `Dashboard.tsx:475`, `Onboarding.tsx:80`, `AuthDialog.tsx:79,98,102`, `AuthCallback.tsx:8`, `Index.tsx:568`, `SignInFailedNotice.tsx:8`.
+- "No code reads `provider_id`" holds. The only other match is the JSON tag of an unrelated struct (`storage/sso_stepup.go:70`).
+
+### Consumers this breaks
+
+- `clockwise-like` `backend/api/pac35_auth_flows_test.go:142,160,167,193,208,239`: the fixtures carry no Google verified flag and no Microsoft organisation answer (Non-blocking 1).
+- `clockwise-like` `backend/api/pac67_conferencing_test.go:322-358`: already named in §6.
+- `clockwise-like` `backend/api/handlers_manager.go:356-366`: removal becomes a silent no-op for unconfirmed carriers (Blocking 4).
+- `clockwise-like` `docs/specs/PAC-47.md:377-411` (`origin/factory/pac-47-spec`): the connect semantics conflict (Blocking 6).
+- `clockwise-like` `docs/specs/PAC-68.md` AC-15 / D-5 (`origin/factory/pac-68-spec`): the `openid` allowance (Non-blocking 7).
+- `smart-calendar-flow` `src/pages/Index.tsx:568` and `src/pages/AuthCallback.tsx:8`: they need a reader for the refusal state. AC-19 already covers this.
+
+### Provider facts: known vs unverified
+
+I called nothing. From memory, unverified:
+- Graph `/organization` answers under `User.Read` with `id` and `verifiedDomains`, and does not support personal accounts (Non-blocking 8).
+- An Entra domain can be verified in only one tenant at a time.
+- Google Workspace `hd` is the primary domain only.
+
+Whether unmanaged Entra directories still list a domain in `verifiedDomains` stays OQ-3 item 4. Google has had at least one reported flaw that let Workspace accounts exist on domains their creator did not verify. So `hd` evidence carries a residual of the same kind; release-note it next to item 4.
