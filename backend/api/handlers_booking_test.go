@@ -89,8 +89,15 @@ func createPublicBookingLink(t *testing.T, ownerID uuid.UUID, slug, title string
 	return link
 }
 
+// futureBookingStart is 10:00 UTC on the first weekday at least 72 hours
+// ahead: a start a createPublicBookingLink link offers whatever day the suite
+// runs (a link day, inside the hours, on the grid, after the notice, inside
+// the 60-day horizon; PAC-72).
 func futureBookingStart() time.Time {
 	future := time.Now().UTC().Add(72 * time.Hour)
+	for future.Weekday() == time.Saturday || future.Weekday() == time.Sunday {
+		future = future.AddDate(0, 0, 1)
+	}
 	return time.Date(future.Year(), future.Month(), future.Day(), 10, 0, 0, 0, time.UTC)
 }
 
@@ -154,7 +161,10 @@ func TestPublicBookingCreateContract(t *testing.T) {
 	bookingID := uuid.New()
 	start := futureBookingStart()
 	end := start.Add(30 * time.Minute)
-	eng := &fakeBookingFlow{confirmResult: &storage.Booking{ID: bookingID, LinkID: link.ID, BookerName: "Alice", BookerEmail: "alice@example.com", StartTime: start, EndTime: end, Notes: "Need a demo"}}
+	eng := &fakeBookingFlow{
+		slotsResult:   []engine.AvailableSlot{{Start: start, End: end}}, // PAC-72: the listing offers it
+		confirmResult: &storage.Booking{ID: bookingID, LinkID: link.ID, BookerName: "Alice", BookerEmail: "alice@example.com", StartTime: start, EndTime: end, Notes: "Need a demo"},
+	}
 	r := setupPublicBookingRoutes(t, eng)
 
 	body := fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":30,"notes":"Need a demo"}`, start.Format(time.RFC3339))
@@ -181,8 +191,12 @@ func TestPublicBookingErrorsContract(t *testing.T) {
 	ownerID := createTestUser(t, "public-errors-owner@example.com")
 	link := createPublicBookingLink(t, ownerID, "public-errors", "Public Errors", 120, "reusable", nil)
 	futureStart := futureBookingStart().Format(time.RFC3339)
-	tooSoon := time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339)
-	r := setupPublicBookingRoutes(t, &fakeBookingFlow{})
+	tooSoonAt := time.Now().UTC().Add(30 * time.Minute).Truncate(15 * time.Minute)
+	tooSoon := tooSoonAt.Format(time.RFC3339)
+	// PAC-72: the engine reports the too-soon start free, so the refusal is
+	// the minimum notice's (or, on a weekend or outside the hours, another
+	// rule's: every refusal has the same answer).
+	r := setupPublicBookingRoutes(t, &fakeBookingFlow{slotsResult: []engine.AvailableSlot{{Start: tooSoonAt, End: tooSoonAt.Add(30 * time.Minute)}}})
 
 	tests := []struct {
 		name         string
@@ -195,7 +209,7 @@ func TestPublicBookingErrorsContract(t *testing.T) {
 		{name: "slots reject invalid duration", method: http.MethodGet, path: "/api/book/" + link.Slug + "/slots?duration=45", want: http.StatusBadRequest, wantContains: "invalid duration"},
 		{name: "slots reject invalid date", method: http.MethodGet, path: "/api/book/" + link.Slug + "/slots?date=12-08-2026", want: http.StatusBadRequest, wantContains: "invalid date format"},
 		{name: "booking requires fields", method: http.MethodPost, path: "/api/book/" + link.Slug, body: `{}`, want: http.StatusBadRequest, wantContains: "name, email, and start are required"},
-		{name: "booking rejects too soon", method: http.MethodPost, path: "/api/book/" + link.Slug, body: fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":30}`, tooSoon), want: http.StatusUnprocessableEntity, wantContains: "booking is too soon"},
+		{name: "booking rejects too soon", method: http.MethodPost, path: "/api/book/" + link.Slug, body: fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":30}`, tooSoon), want: http.StatusConflict, wantContains: `{"error":"slot is no longer available"}`},
 		{name: "booking rejects invalid duration", method: http.MethodPost, path: "/api/book/" + link.Slug, body: fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":45}`, futureStart), want: http.StatusBadRequest, wantContains: "invalid duration"},
 	}
 
@@ -217,10 +231,13 @@ func TestPublicBookingErrorsContract(t *testing.T) {
 func TestPublicBookingPropagatesEngineFailure(t *testing.T) {
 	ownerID := createTestUser(t, "public-engine-owner@example.com")
 	link := createPublicBookingLink(t, ownerID, "public-engine", "Public Engine", 0, "reusable", nil)
-	eng := &fakeBookingFlow{confirmErr: errors.New("calendar write failed")}
+	start := futureBookingStart()
+	eng := &fakeBookingFlow{
+		slotsResult: []engine.AvailableSlot{{Start: start, End: start.Add(30 * time.Minute)}}, // PAC-72: the listing offers it
+		confirmErr:  errors.New("calendar write failed"),
+	}
 	r := setupPublicBookingRoutes(t, eng)
 
-	start := futureBookingStart()
 	body := fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":30}`, start.Format(time.RFC3339))
 	req := httptest.NewRequest(http.MethodPost, "/api/book/"+link.Slug, bytes.NewBufferString(body))
 	w := httptest.NewRecorder()

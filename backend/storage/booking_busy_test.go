@@ -10,6 +10,8 @@ import (
 
 // PAC-64: a confirmed booking makes its hosts busy whether or not a calendar
 // event was created for it, and focus blocks belong to the user who owns them.
+// PAC-72 (D-11): every booking that is not cancelled (pending or confirmed)
+// is busy time, so the PAC-64 test below also seeds a pending booking.
 
 func mustUser(t *testing.T, db *sql.DB, email string) uuid.UUID {
 	t.Helper()
@@ -20,7 +22,7 @@ func mustUser(t *testing.T, db *sql.DB, email string) uuid.UUID {
 	return u.ID
 }
 
-func TestGetConfirmedBookingsForUser_CountsHostedLinksWithoutCalendarEvents(t *testing.T) {
+func TestGetBusyBookingsForUser_CountsHostedLinksWithoutCalendarEvents(t *testing.T) {
 	db := openTestDB(t)
 	owner := mustUser(t, db, "pac64-owner@example.com")
 	accepted := mustUser(t, db, "pac64-accepted@example.com")
@@ -42,9 +44,11 @@ func TestGetConfirmedBookingsForUser_CountsHostedLinksWithoutCalendarEvents(t *t
 
 	day := time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC)
 	confirmed := day.Add(13 * time.Hour)
+	pendingAt := day.Add(14 * time.Hour)
 	cancelled := day.Add(15 * time.Hour)
 	for _, b := range []*Booking{
 		{LinkID: link.ID, BookerName: "A", BookerEmail: "a@x.com", StartTime: confirmed, EndTime: confirmed.Add(30 * time.Minute), Status: "confirmed"},
+		{LinkID: link.ID, BookerName: "P", BookerEmail: "p@x.com", StartTime: pendingAt, EndTime: pendingAt.Add(30 * time.Minute), Status: "pending"},
 		{LinkID: link.ID, BookerName: "B", BookerEmail: "b@x.com", StartTime: cancelled, EndTime: cancelled.Add(30 * time.Minute), Status: "cancelled"},
 	} {
 		created, err := CreateBooking(db, b)
@@ -62,20 +66,21 @@ func TestGetConfirmedBookingsForUser_CountsHostedLinksWithoutCalendarEvents(t *t
 		user uuid.UUID
 		want int
 	}{
-		"owner":            {owner, 1},
-		"accepted co-host": {accepted, 1},
+		"owner":            {owner, 2},
+		"accepted co-host": {accepted, 2},
 		"pending co-host":  {pending, 0},
 		"stranger":         {stranger, 0},
 	} {
-		times, err := GetConfirmedBookingsForUser(db, tc.user, day, day.Add(24*time.Hour))
+		times, err := GetBusyBookingsForUser(db, tc.user, day, day.Add(24*time.Hour))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if got := len(times) / 2; got != tc.want {
 			t.Errorf("%s: %d busy booking(s), want %d", name, got, tc.want)
 		}
-		if tc.want == 1 && (!times[0].Equal(confirmed) || !times[1].Equal(confirmed.Add(30*time.Minute))) {
-			t.Errorf("%s: busy range %v..%v, want the confirmed booking", name, times[0], times[1])
+		if tc.want == 2 && len(times) == 4 && (!times[0].Equal(confirmed) || !times[1].Equal(confirmed.Add(30*time.Minute)) ||
+			!times[2].Equal(pendingAt) || !times[3].Equal(pendingAt.Add(30*time.Minute))) {
+			t.Errorf("%s: busy ranges %v, want the confirmed then the pending booking (never the cancelled one)", name, times)
 		}
 	}
 }

@@ -69,6 +69,11 @@ const (
 	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
 )
 
+// Defines values for BookingSlotUnavailableErrorError.
+const (
+	SlotIsNoLongerAvailable BookingSlotUnavailableErrorError = "slot is no longer available"
+)
+
 // Defines values for Cadence.
 const (
 	CadenceBiweekly Cadence = "biweekly"
@@ -711,6 +716,14 @@ type BookingRateLimitError struct {
 // BookingRateLimitErrorError defines model for BookingRateLimitError.Error.
 type BookingRateLimitErrorError string
 
+// BookingSlotUnavailableError The `BookingError` envelope with its one possible 409 message pinned (PAC-72): every start `createPublicBooking` refuses because the slot listing would not offer it carries this exact body, whatever rule failed. Written by api.writeError.
+type BookingSlotUnavailableError struct {
+	Error BookingSlotUnavailableErrorError `json:"error"`
+}
+
+// BookingSlotUnavailableErrorError defines model for BookingSlotUnavailableError.Error.
+type BookingSlotUnavailableErrorError string
+
 // Cadence 1:1 cadence. "none" disables gap detection for that member.
 type Cadence string
 
@@ -932,16 +945,16 @@ type CreateConferenceRequest struct {
 
 // CreatePublicBookingRequest Anonymous request body of POST /api/book/{slug}. `name`, `email` and `start` are required by the handler; `end`, `duration` and `duration_minutes` are three overlapping ways to express the length.
 type CreatePublicBookingRequest struct {
-	// Duration Minutes. Takes precedence over `duration_minutes` when both are sent. This is the field the frontend actually populates.
+	// Duration Minutes. Takes precedence over `duration_minutes` whenever it is present and not null, even when it is 0. A requested length of 0 or null counts as not sent: with `end` no length comparison is made, without `end` the fallback below applies (so `"duration":0` with `"duration_minutes":60` books the fallback length, not 60). This is the field the frontend actually populates.
 	Duration *int `json:"duration"`
 
-	// DurationMinutes Minutes. Overridden by `duration` when both are present. When neither is sent and `end` is absent, the length falls back to durations[0] (else 30). The resolved value must be in the link's duration set, else 400.
+	// DurationMinutes Minutes. Overridden by `duration` when that is present and not null. When no length is sent (both absent or null, or the one that applies is 0) and `end` is absent, the length falls back to durations[0] (else 30). The resolved value must be in the link's duration set, else 400.
 	DurationMinutes *int `json:"duration_minutes"`
 
 	// Email Trimmed; must be non-empty after trimming. Never validated as an email address.
 	Email string `json:"email"`
 
-	// End RFC3339, optional. When present it wins: the resulting length must equal `duration`/`duration_minutes` if either was also sent, else 400. When absent, end = start + resolved duration.
+	// End RFC3339, optional. When present it wins: end - start must be exactly the requested length in minutes if one was sent (else 400 "duration does not match end time"); the requested length is `duration` when it is present and not null, else `duration_minutes`, and a requested length of 0 or null counts as not sent (no comparison is made). The length must be exactly a whole number of minutes that is one of the link's durations (else 400 "invalid duration"); a length with seconds or a fraction is never rounded. When absent, end = start + resolved duration.
 	End *time.Time `json:"end,omitempty"`
 
 	// Name Trimmed; must be non-empty after trimming.
@@ -950,7 +963,7 @@ type CreatePublicBookingRequest struct {
 	// Notes Free text; no length limit enforced.
 	Notes *string `json:"notes,omitempty"`
 
-	// Start RFC3339. Must be at least `min_notice_minutes` in the future, else 422.
+	// Start RFC3339, any UTC offset; compared as an instant. Must be the start of a slot `getPublicBookingSlots` would offer now for this link and the resolved duration (on the 15-minute grid, zero seconds, within the link's days, window and 60-day horizon, at least `min_notice_minutes` ahead, every accepted host free), else 409.
 	Start time.Time `json:"start"`
 }
 
@@ -2037,7 +2050,7 @@ type PublicLinkInfoUsageType string
 
 // PublicSlotsResponse Both keys are always present. Exactly one is populated depending on whether the `date` query parameter was supplied.
 type PublicSlotsResponse struct {
-	// AvailableDates Populated only when `date` was omitted; YYYY-MM-DD strings for days within the next 60 that have at least one bookable slot. Otherwise the empty array.
+	// AvailableDates Populated only when `date` was omitted; YYYY-MM-DD strings (UTC calendar days), in ascending order, for days within the 60-day booking horizon (today UTC and the next 59 days) that are among the link's `days_of_week` and have at least one offered slot. Otherwise the empty array.
 	AvailableDates []openapi_types.Date `json:"available_dates"`
 
 	// Slots Populated only when `date` was given; otherwise the empty array.
@@ -3317,7 +3330,7 @@ type HandleZoomOAuthCallbackParams struct {
 
 // GetPublicBookingSlotsParams defines parameters for GetPublicBookingSlots.
 type GetPublicBookingSlotsParams struct {
-	// Date Day to enumerate, parsed with Go layout "2006-01-02". Omit for the 60-day availability summary.
+	// Date Day to enumerate, parsed with Go layout "2006-01-02" as a UTC calendar day. A day outside the 60-day booking horizon (before today UTC, or after today + 59 days) answers 200 with no slots. Omit for the 60-day availability summary.
 	Date *openapi_types.Date `form:"date,omitempty" json:"date,omitempty"`
 
 	// Duration Meeting length in minutes. Must be one of the link's `durations` (or exactly 30 when the link has none). Default is `durations[0]`, else 30.
@@ -11495,7 +11508,7 @@ func (response CreatePublicBooking404JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type CreatePublicBooking409JSONResponse BookingError
+type CreatePublicBooking409JSONResponse BookingSlotUnavailableError
 
 func (response CreatePublicBooking409JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -11509,15 +11522,6 @@ type CreatePublicBooking410JSONResponse BookingError
 func (response CreatePublicBooking410JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(410)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
-type CreatePublicBooking422JSONResponse BookingError
-
-func (response CreatePublicBooking422JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(422)
 
 	return json.NewEncoder(w).Encode(response)
 }
