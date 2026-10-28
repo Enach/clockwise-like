@@ -9,3 +9,7 @@ backend/api/gen/*.gen.go text eol=lf
 # PAC-81 Part B: nginx/paceday-render.sh runs under /bin/sh in the container;
 # a CRLF checkout (core.autocrlf=true) would break it.
 nginx/** text eol=lf
+
+# Shell scripts run under bash or sh; CRLF breaks them (PAC-81 Part D). This
+# covers scripts/ops/*.sh and every other *.sh in the repository.
+*.sh text eol=lf
