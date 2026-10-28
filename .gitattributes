@@ -5,3 +5,7 @@ contracts/openapi/** text eol=lf
 # Same for the generated Go client: openapi_gen_go.sh writes LF and diffs the
 # result byte-for-byte against this file.
 backend/api/gen/*.gen.go text eol=lf
+
+# PAC-81 Part B: nginx/paceday-render.sh runs under /bin/sh in the container;
+# a CRLF checkout (core.autocrlf=true) would break it.
+nginx/** text eol=lf

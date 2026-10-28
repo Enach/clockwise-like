@@ -78,7 +78,14 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('88888888-8888-4888-8888-888888888888', 'e2e.seam@paceday.test',      'E2E Seam User',           '', 'google', 'e2e-seam'),
   ('99999999-9999-4999-8999-999999999999', 'e2e.rejected@paceday.test',  'E2E Rejected Credential', '', 'google', 'e2e-rejected'),
   -- PAC-35 AC-11: disconnects its own calendar, so no other journey loses one.
-  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e.disconnect@paceday.test', 'E2E Disconnect User',     '', 'google', 'e2e-disconnect');
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e.disconnect@paceday.test', 'E2E Disconnect User',     '', 'google', 'e2e-disconnect'),
+  -- PAC-81 AC-B3 (tests/csp.spec.ts): hosts whose avatar is shown on their
+  -- public booking page. The Google one must load under the CSP; the other is
+  -- the negative control and must be blocked (img-src). seed/ids.ts AVATAR_HOSTS.
+  ('b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'e2e.avatar.google@paceday.test',  'E2E Avatar Google',
+   'https://lh3.googleusercontent.com/a/e2e-avatar-google=s96-c', 'google', 'e2e-avatar-google'),
+  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'e2e.avatar.foreign@paceday.test', 'E2E Avatar Foreign',
+   'https://avatars.e2e-not-allowed.test/e2e-avatar-foreign.png', 'google', 'e2e-avatar-foreign');
 
 -- ON DELETE CASCADE from users removes these on the next run.
 INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
@@ -248,6 +255,13 @@ VALUES
   -- so its slots and its booking confirmation reach the stand-in.
   ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888',
    'e2e-seam-30min', 'E2E Seam Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
+  -- PAC-81 AC-B3: read-only public pages showing each avatar host.
+  ('c6666666-6666-4666-8666-666666666666', 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1',
+   'e2e-avatar-google-30min', 'E2E Avatar Google Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
+  ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2',
+   'e2e-avatar-foreign-30min', 'E2E Avatar Foreign Link', '{30}', '{1,2,3,4,5}',
    '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true);
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
@@ -257,7 +271,9 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('c2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'accepted', NOW()),
   ('c3333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', 'accepted', NOW()),
   ('c4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'accepted', NOW()),
-  ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888', 'accepted', NOW());
+  ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888', 'accepted', NOW()),
+  ('c6666666-6666-4666-8666-666666666666', 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'accepted', NOW()),
+  ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.
