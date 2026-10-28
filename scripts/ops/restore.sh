@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Paceday restore (PAC-81 Part D, AC-D3; docs/runbook.md "Restore").
+#
+# Restores a dump written by backup.sh into an EMPTY database: a fresh host,
+# or a fresh postgres volume. Start only the postgres service first, with the
+# .env saved beside the dump (same POSTGRES_PASSWORD), then run this, then
+# start the backend at the SAME image version and the rest of the stack.
+#
+# It refuses to restore over a database that already has tables in the public
+# schema: restoring is never a way to "merge" into a live database.
+#
+# Usage:
+#   scripts/ops/restore.sh --dump FILE
+#                          [--compose-file FILE | --container NAME]
+#                          [--db NAME] [--user NAME]
+#
+# Defaults: --compose-file docker-compose.prod.yml (its postgres service),
+# --db clockwise, --user clockwise. When FILE's .sha256 sits beside it, the
+# checksum is verified first.
+set -euo pipefail
+export MSYS_NO_PATHCONV=1 # Git Bash: do not rewrite /paths passed to docker
+
+dump="" compose_file="docker-compose.prod.yml" container="" db=clockwise user=clockwise
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dump) dump="$2"; shift 2 ;;
+    --compose-file) compose_file="$2"; shift 2 ;;
+    --container) container="$2"; shift 2 ;;
+    --db) db="$2"; shift 2 ;;
+    --user) user="$2"; shift 2 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "restore: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$dump" ] && [ -f "$dump" ] || { echo "restore: --dump FILE is required and must exist" >&2; exit 2; }
+
+sums="${dump%.dump}.sha256"
+if [ -f "$sums" ]; then
+  ( cd "$(dirname "$dump")" && grep -E "[ *]$(basename "$dump")$" "$(basename "$sums")" | sha256sum -c --quiet - ) \
+    || { echo "restore: checksum mismatch for $dump" >&2; exit 1; }
+fi
+
+if [ -z "$container" ]; then
+  container="$(docker compose -f "$compose_file" ps -q postgres)"
+  [ -n "$container" ] || { echo "restore: no running postgres service in $compose_file" >&2; exit 1; }
+fi
+
+tables="$(docker exec "$container" psql -U "$user" -d "$db" -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")"
+if [ "$tables" != "0" ]; then
+  echo "restore: database $db already has $tables tables in public; restore only into an empty database (fresh volume)" >&2
+  exit 1
+fi
+
+docker exec -i "$container" pg_restore -U "$user" -d "$db" --no-owner --exit-on-error --single-transaction < "$dump"
+echo "restore: $dump restored into $db" >&2
