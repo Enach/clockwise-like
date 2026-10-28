@@ -114,6 +114,12 @@ services:
       # declaration makes the server refuse to start (tests/startup.spec.ts).
       PACEDAY_ALLOW_STANDINS: "true"
       GOOGLE_CALENDAR_API_BASE_URL: http://fake-google:8080/calendar/v3/
+      # PAC-50: the SSO admin step-up's Google identity provider is the same
+      # stand-in (e2e/fake-google/idp.go), under the same declaration. The
+      # step-up's redirect_uri is APP_URL + /api/admin/sso/stepup/callback,
+      # reached through nginx like every other API path.
+      PACEDAY_GOOGLE_IDP_BASE_URL: http://fake-google:8080
+      APP_URL: http://localhost:8088
       # PAC-66 AC-10: exactly one approved Azure OpenAI inference host.
       # Nothing listens on it; the tests that store an Azure key there only
       # ever reach the refusal, so no request is sent to it
@@ -143,6 +149,7 @@ services:
       - "www.googleapis.com:10.143.43.20"
       - "oauth2.googleapis.com:10.143.43.20"
       - "accounts.google.com:10.143.43.20"
+      - "admin.googleapis.com:10.143.43.20"
       - "graph.microsoft.com:10.143.43.20"
       - "login.microsoftonline.com:10.143.43.20"
       - "slack.com:10.143.43.20"

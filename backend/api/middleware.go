@@ -15,7 +15,22 @@ type ctxKey string
 
 const (
 	ctxUserEmail ctxKey = "userEmail"
+	// ctxSessionIssuedAt is the session JWT's issue time (time.Time; zero when
+	// the token carries none). PAC-50's break-glass freshness rule reads it.
+	ctxSessionIssuedAt ctxKey = "sessionIssuedAt"
 )
+
+// sessionIssuedAt returns the session's issue time, or the zero time.
+func sessionIssuedAt(ctx context.Context) time.Time {
+	t, _ := ctx.Value(ctxSessionIssuedAt).(time.Time)
+	return t
+}
+
+// sessionEmail returns the session's email claim, or "".
+func sessionEmail(ctx context.Context) string {
+	e, _ := ctx.Value(ctxUserEmail).(string)
+	return e
+}
 
 func userIDFromCtx(ctx context.Context) uuid.UUID {
 	return auth.UserIDFromContext(ctx)
@@ -53,6 +68,9 @@ func requireAuth(jwtSecret string) func(http.Handler) http.Handler {
 			}
 			ctx := context.WithValue(r.Context(), auth.UserIDKey, userID)
 			ctx = context.WithValue(ctx, ctxUserEmail, claims.Email)
+			if claims.IssuedAt != nil {
+				ctx = context.WithValue(ctx, ctxSessionIssuedAt, claims.IssuedAt.Time)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

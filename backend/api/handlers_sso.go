@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/Enach/paceday/backend/api/gen"
@@ -22,10 +23,6 @@ import (
 // checks and its store, to land another write in that gap (PAC-22 AC-27,
 // AC-28). Always nil outside tests.
 var ssoBeforeStoreHook func()
-
-type ssoHandlers struct {
-	ah *authHandlers
-}
 
 // --- POST /api/auth/detect (public) ----------------------------------------
 
@@ -170,6 +167,12 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Admin SSO CRUD (protected) -------------------------------------------
+//
+// PAC-50 (spec docs/specs/PAC-50.md §4.2, contract revision 8.1): every SSO
+// configuration write passes the gate in this order before the provider
+// store is written: membership (callerOrg), the body's 400s, the exact
+// domain 403, PAC-22's stored-row check (create only), authorization
+// (authorizeWrite, which consumes the grant), then the store.
 
 // POST /api/admin/sso
 //
@@ -178,35 +181,34 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 // pointer), never sees the SAML properties the contract refuses by name, and
 // answers an undecodable body with its own message, not "invalid JSON".
 func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) {
-	userID := userIDFromCtx(r.Context())
-	user, err := storage.GetUserByID(h.ah.db, userID)
-	if err != nil || user == nil || user.OrgID == nil {
-		writeError(w, "org membership required", http.StatusForbidden)
+	// Step 1: membership, both messages before the body is read.
+	caller, ok := h.callerOrg(w, r)
+	if !ok {
 		return
 	}
 
+	// Step 2: the body (PAC-22 checks 1-5 and PAC-50's unknown property).
 	body, msg := decodeSSOProviderWrite(r)
 	if msg != "" {
 		writeError(w, msg, http.StatusBadRequest)
 		return
 	}
 
-	// Only allow configuring SSO for the user's own org domain.
-	org, err := storage.GetOrgByID(h.ah.db, *user.OrgID)
-	if err != nil || org == nil {
-		writeError(w, "org not found", http.StatusForbidden)
+	// Step 3, owner 2026-10-27 (spec §9 D-10): a subdomain of, or a domain
+	// foreign to, the caller's org domain is understood and not permitted:
+	// 403 (RFC 9110 §15.5.4). Untrimmed; before the grant is touched (AC-3c).
+	if !domain.DomainMatchesOrg(body.Domain, caller.org.Domain) {
+		writeError(w, "provider_domain_mismatch", http.StatusForbidden)
 		return
 	}
-	if !domain.DomainMatchesOrg(body.Domain, org.Domain) {
-		writeError(w, "can only configure SSO for your own domain", http.StatusForbidden)
-		return
-	}
+	body.Domain = strings.ToLower(body.Domain)
 
-	// Check 6: a secret left out is kept only from the row this write would
-	// be stored under, and only while the issuer and client id are unchanged
-	// (PAC-22 spec D-13). Decided again when the write is stored (D-14).
+	// Step 4, PAC-22's check 6: a secret left out is kept only from the row
+	// this write would be stored under, and only while the issuer and client
+	// id are unchanged (PAC-22 spec D-13). Before authorization, so a
+	// mistyped issuer does not burn a grant (spec §4.2 step 4b, AC-3c).
 	if body.ClientSecret == nil {
-		current, err := storage.GetSSOProviderByDomainAnyState(h.ah.db, body.Domain)
+		current, err := h.store.getProvider(r.Context(), body.Domain)
 		if err != nil {
 			writeServerError(w, r, "read sso provider", err, http.StatusInternalServerError)
 			return
@@ -217,11 +219,20 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Step 5: authorization; the grant, if any, is consumed here.
+	via, ok := h.authorizeWrite(w, r, caller)
+	if !ok {
+		return
+	}
+
 	if ssoBeforeStoreHook != nil {
 		ssoBeforeStoreHook()
 	}
 
-	p, err := storage.SaveOIDCProvider(h.ah.db, body)
+	// Step 6: store and record. What a replace keeps is decided again inside
+	// the store's transaction (PAC-22 D-14); its refusal comes after the
+	// consume and spends the grant (spec §9 D-14(2)).
+	p, err := h.store.saveProvider(r.Context(), body, caller.user.ID, caller.org.ID, via)
 	if refusal := ssoKeepRefusal(err); refusal != "" {
 		writeError(w, refusal, http.StatusBadRequest)
 		return
@@ -255,6 +266,13 @@ func ssoKeepRefusal(err error) string {
 // (PAC-22 spec D-8, AC-18).
 var samlProperties = []string{"saml_entry_point", "saml_issuer", "saml_cert"}
 
+// ssoProviderWriteProperties are SsoProviderCreateRequest's declared
+// properties (the SAML ones are refused by name before this set is used).
+var ssoProviderWriteProperties = map[string]bool{
+	"domain": true, "provider_name": true, "provider_type": true,
+	"oidc_issuer": true, "oidc_client_id": true, "oidc_client_secret": true,
+}
+
 // decodeSSOProviderWrite applies createSsoProvider's checks 1 to 5 to the
 // request body (PAC-22 contract, in that order) and returns the write, or the
 // 400 message of the first check that fails. No message echoes a value.
@@ -273,7 +291,10 @@ func decodeSSOProviderWrite(r *http.Request) (storage.OIDCProviderWrite, string)
 	// secret while the presence check below, on props, did not see it, and an
 	// empty secret could be stored (review finding on PAC-22). Reading the
 	// presence and the value from the same map makes a case variant what the
-	// contract says it is: an undeclared property, ignored today.
+	// contract says it is: an undeclared property, refused since PAC-50.
+	// null for a declared property is not a type error: it decodes as empty
+	// and is refused by the required checks below (contract revision 8.1,
+	// N1).
 	var body struct {
 		Domain, ProviderName, ProviderType, OIDCIssuer, OIDCClientID string
 		OIDCClientSecret                                             *string
@@ -295,6 +316,20 @@ func decodeSSOProviderWrite(r *http.Request) (storage.OIDCProviderWrite, string)
 	for _, name := range samlProperties {
 		if _, present := props[name]; present {
 			return storage.OIDCProviderWrite{}, name + " is not supported"
+		}
+	}
+	// PAC-50 (contract step 2c, spec AC-16a): any other property outside the
+	// schema is refused, never ignored; the first in byte order of the
+	// names is named. After the SAML refusals, so a SAML property is always
+	// named, and before the required-field check.
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !ssoProviderWriteProperties[name] {
+			return storage.OIDCProviderWrite{}, "unknown property: " + name
 		}
 	}
 	if body.Domain == "" || body.ProviderName == "" || body.ProviderType == "" {
@@ -357,6 +392,10 @@ func (h *ssoHandlers) listSSOProviders(w http.ResponseWriter, r *http.Request) {
 	newGeneratedHandler(h.ah.db, nil).ListSsoProviders(w, r)
 }
 
+// listSSOProvidersByOrg is the list query; a test replaces it to reach the
+// PAC-21 500 (PAC-50 mergeConditions).
+var listSSOProvidersByOrg = storage.ListSSOProvidersByOrg
+
 // ListSsoProviders answers listSsoProviders: the caller's organisation's
 // configurations as an SsoProviderList, never carrying either secret.
 func (s *generatedServer) ListSsoProviders(ctx context.Context, _ gen.ListSsoProvidersRequestObject) (gen.ListSsoProvidersResponseObject, error) {
@@ -364,7 +403,7 @@ func (s *generatedServer) ListSsoProviders(ctx context.Context, _ gen.ListSsoPro
 	if err != nil || user == nil || user.OrgID == nil {
 		return gen.ListSsoProviders403JSONResponse{Error: "org membership required"}, nil
 	}
-	providers, err := storage.ListSSOProvidersByOrg(s.db, *user.OrgID)
+	providers, err := listSSOProvidersByOrg(s.db, *user.OrgID)
 	if err != nil {
 		return gen.ListSsoProviders500JSONResponse{Error: serverFailure(ctx, "listSSOProviders", err, http.StatusInternalServerError)}, nil
 	}
@@ -377,27 +416,32 @@ func (s *generatedServer) ListSsoProviders(ctx context.Context, _ gen.ListSsoPro
 
 // DELETE /api/admin/sso/{domain}
 func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) {
-	d := chi.URLParam(r, "domain")
-
-	userID := userIDFromCtx(r.Context())
-	user, err := storage.GetUserByID(h.ah.db, userID)
-	if err != nil || user == nil || user.OrgID == nil {
-		writeError(w, "org membership required", http.StatusForbidden)
+	caller, ok := h.callerOrg(w, r)
+	if !ok {
+		return
+	}
+	// The segment is a target, never an authorization: lower-cased, and it
+	// must be the caller's own org domain exactly, as sent (no trimming:
+	// spec §9 D-9).
+	d := strings.ToLower(chi.URLParam(r, "domain"))
+	if !domain.DomainMatchesOrg(d, caller.org.Domain) {
+		writeError(w, "provider_domain_mismatch", http.StatusForbidden) // spec §9 D-10
 		return
 	}
 
-	org, err := storage.GetOrgByID(h.ah.db, *user.OrgID)
-	if err != nil || org == nil {
-		writeError(w, "org not found", http.StatusForbidden)
-		return
-	}
-	if !domain.DomainMatchesOrg(d, org.Domain) {
-		writeError(w, "can only delete SSO for your own domain", http.StatusForbidden)
+	via, ok := h.authorizeWrite(w, r, caller)
+	if !ok {
 		return
 	}
 
-	if err := storage.DeleteSSOProvider(h.ah.db, d); err != nil {
+	found, err := h.store.deleteProvider(r.Context(), d, caller.user.ID, caller.org.ID, via)
+	if err != nil {
 		writeServerError(w, r, "deleteSSOProvider", err, http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		// The grant (if one was used) is consumed: spec Decisions, D-5.
+		writeError(w, "sso provider not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

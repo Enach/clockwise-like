@@ -27,8 +27,9 @@ import (
 // hand-written (contracts/openapi/MIGRATION.md).
 type generatedServer struct {
 	gen.StrictServerInterface
-	db *sql.DB
-	ch *conferencingHandlers
+	db  *sql.DB
+	ch  *conferencingHandlers
+	sso *ssoHandlers // getSsoStepupOptions only (PAC-50)
 }
 
 type requestKey struct{}

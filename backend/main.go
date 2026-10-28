@@ -49,6 +49,23 @@ func main() {
 	}
 	calendar.Configure(calDecision)
 
+	// SSO admin step-up identity providers (PAC-50 §4.1): the same test-mode
+	// declaration governs any redirection, and an unsafe one refuses to start.
+	googleIdP, err := config.DecideGoogleIdP(os.Getenv(config.EnvGoogleIdPBaseURL), os.Getenv(config.EnvAllowStandins))
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+	microsoftIdP, err := config.DecideMicrosoftIdP(os.Getenv(config.EnvMicrosoftIdPBaseURL), os.Getenv(config.EnvAllowStandins))
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+	for _, n := range []string{googleIdP.Notice, microsoftIdP.Notice} {
+		if n != "" {
+			log.Printf("WARNING: %s", n)
+		}
+	}
+	api.ConfigureSSOStepup(googleIdP, microsoftIdP)
+
 	// LLM approved hosts (PAC-66). Never fatal: a malformed entry is logged and
 	// approves nothing; unset approves nothing (fail closed).
 	llmHosts, llmNotices := config.DecideLLMApprovedHosts(os.Getenv)
