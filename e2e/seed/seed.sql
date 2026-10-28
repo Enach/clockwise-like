@@ -80,6 +80,15 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   -- PAC-35 AC-11: disconnects its own calendar, so no other journey loses one.
   ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e.disconnect@paceday.test', 'E2E Disconnect User',     '', 'google', 'e2e-disconnect');
 
+-- PAC-71: every seeded user is bound to a Google identity with authoritative
+-- evidence, so its address is domain-confirmed and the journeys that resolve an
+-- address to a person (co-hosts, manager roster, team invites) find it. The
+-- subjects are decimal strings, the Google format (contract section 3 item 6).
+UPDATE users SET address_standing = 'domain_confirmed' WHERE email LIKE 'e2e.%@paceday.test';
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by)
+SELECT id, 'google', '', '71' || lpad((row_number() OVER (ORDER BY id))::text, 6, '0'), 'authoritative', 'created'
+FROM users WHERE email LIKE 'e2e.%@paceday.test';
+
 -- ON DELETE CASCADE from users removes these on the next run.
 INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
   ('55555555-5555-4555-8555-555555555555', 'e2e-connected-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),

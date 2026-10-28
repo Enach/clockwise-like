@@ -41,8 +41,8 @@ from the contract and any edit is reported as drift.
 ## Progress
 
 - operations: **129**
-- generated: **9**
-- handwritten: **120**
+- generated: **11**
+- handwritten: **118**
 
 ## Register
 
@@ -64,12 +64,12 @@ from the contract and any edit is reported as drift.
 | detectAuthProvider                | POST   | /api/auth/detect                                | auth             | handwritten | |
 | disconnectCalendar                | DELETE | /api/auth/disconnect                            | auth             | handwritten | |
 | startGoogleOAuth                  | GET    | /api/auth/google                                | auth             | handwritten | |
-| startGoogleConnect                | POST   | /api/auth/google/connect                        | auth             | handwritten | PAC-71: new. Its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the backend PR; `handwritten` here only means no handler exists yet. |
+| startGoogleConnect                | POST   | /api/auth/google/connect                        | auth             | generated   | PAC-71: new; implemented as generatedServer.StartGoogleConnect (backend/api/handlers_pac71_auth.go), mounted through the generated strict wrapper. |
 | logout                            | POST   | /api/auth/logout                                | auth             | handwritten | |
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
 | microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | PAC-71: modified (tenant check, refusal redirect, connect branch), kept handwritten for the same reason as googleOAuthCallback. |
-| startMicrosoftConnect             | POST   | /api/auth/microsoft/connect                     | auth             | handwritten | PAC-71: new. Its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the backend PR; `handwritten` here only means no handler exists yet. |
+| startMicrosoftConnect             | POST   | /api/auth/microsoft/connect                     | auth             | generated   | PAC-71: new; implemented as generatedServer.StartMicrosoftConnect (backend/api/handlers_pac71_auth.go), mounted through the generated strict wrapper. |
 | disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | generated   | PAC-67: new; implemented as generatedServer.DisconnectMicrosoft (backend/api/handlers_credentials.go), mounted through the generated strict wrapper. |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |
