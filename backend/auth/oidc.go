@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
@@ -38,7 +39,7 @@ func NewOIDCClient(ctx context.Context, issuer, clientID, clientSecret, redirect
 
 	if !ok {
 		var err error
-		p, err = gooidc.NewProvider(ctx, issuer)
+		p, err = gooidc.NewProvider(outbound.WithIdentityClient(ctx), issuer)
 		if err != nil {
 			return nil, fmt.Errorf("oidc discovery %q: %w", issuer, err)
 		}
@@ -66,6 +67,7 @@ func (c *OIDCClient) AuthURL(state, loginHint string) string {
 
 // Exchange trades the auth code for tokens and returns verified user claims.
 func (c *OIDCClient) Exchange(ctx context.Context, code string) (*OIDCUserInfo, *oauth2.Token, error) {
+	ctx = outbound.WithIdentityClient(ctx)
 	token, err := c.config.Exchange(ctx, code)
 	if err != nil {
 		return nil, nil, fmt.Errorf("token exchange: %w", err)

@@ -1,13 +1,17 @@
 package calendar
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/emersion/go-ical"
 )
 
@@ -61,13 +65,24 @@ func (c *WebcalClient) fetch(ctx context.Context) ([]GenericEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// PAC-81 AC-A17: the fetch is bounded in time and size. Over either
+	// limit the feed is not parsed at all (no blocker from a partial feed),
+	// and the error names the limit that was hit.
+	limits := outbound.Current()
+	resp, err := outbound.ICSClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("webcal: fetch: %w", err)
+		return nil, fmt.Errorf("webcal: fetch: %w", nameTimeLimit(err, limits.ICS))
 	}
 	defer resp.Body.Close()
+	body, err := outbound.ReadLimited(resp.Body, limits.ICSMaxBytes)
+	if errors.Is(err, outbound.ErrTooLarge) {
+		return nil, fmt.Errorf("webcal: feed exceeds the %d-byte size limit: %w", limits.ICSMaxBytes, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("webcal: read: %w", nameTimeLimit(err, limits.ICS))
+	}
 
-	events, err := parseICS(resp.Body)
+	events, err := parseICS(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("webcal: parse: %w", err)
 	}
@@ -124,4 +139,13 @@ func parseICS(r io.Reader) ([]GenericEvent, error) {
 		})
 	}
 	return events, nil
+}
+
+// nameTimeLimit says so when err is the fetch's own time limit.
+func nameTimeLimit(err error, limit time.Duration) error {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return fmt.Errorf("feed exceeded the %s time limit: %w", limit, err)
+	}
+	return err
 }

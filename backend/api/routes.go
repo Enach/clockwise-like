@@ -2,12 +2,25 @@ package api
 
 import (
 	"database/sql"
+	"net/http"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 )
+
+// requestBudget is the handler budget (a test seam; 90 s in production).
+var requestBudget = budget.Default
+
+// trackRequest makes every handler goroutine a shutdown unit, so one still
+// blocked after its response (a context-free database call) is awaited by
+// the drain and logged if abandoned (PAC-81 AC-A7).
+func trackRequest(r *http.Request) func() {
+	return lifecycle.Default().Track(lifecycle.Unit{Kind: "request", ID: r.Method + " " + r.URL.Path})
+}
 
 func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin, frontendURL string) {
 	// Sentry panic reporting must be the outermost middleware so it observes
@@ -15,10 +28,18 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 	// still becomes a 500 exactly as before (contract §3, §5). When Sentry was
 	// not initialized (no DSN), the hub is a no-op and this is transparent.
 	r.Use(sentryMiddleware())
-	r.Use(corsMiddleware(allowedOrigin))
+	// PAC-81 Part A, outer to inner: the access log records the status
+	// actually sent (AC-A13); the body cap answers 413 before any handler
+	// (AC-A12); the budget answers 503 for a handler still running at 90 s
+	// and tracks every handler goroutine for the shutdown (AC-A2, AC-A7).
 	r.Use(loggingMiddleware)
+	r.Use(corsMiddleware(allowedOrigin))
+	r.Use(bodyCapMiddleware(maxRequestBody))
+	r.Use(budget.Middleware(requestBudget, trackRequest))
 
 	r.Get("/api/health", healthHandler)
+	// Readiness (getReadiness): no auth, no abuse limit, single-flight ping.
+	r.Get("/api/ready", readinessHandler(newReadiness(db)))
 
 	// Public booking routes — no JWT required
 	bh := newBookingHandlers(db, oauthConfig)

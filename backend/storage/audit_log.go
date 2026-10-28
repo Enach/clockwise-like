@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +23,7 @@ type AuditEntry struct {
 // ListAuditLog returns userID's own entries, newest first (PAC-23). Entries
 // recorded before migration 026 have no subject and are returned to nobody. A
 // limit of zero or less means the default; above the maximum, the maximum.
-func ListAuditLog(db *sql.DB, userID uuid.UUID, limit int) ([]AuditEntry, error) {
+func ListAuditLog(db DBTX, userID uuid.UUID, limit int) ([]AuditEntry, error) {
 	switch {
 	case limit <= 0:
 		limit = AuditDefaultLimit

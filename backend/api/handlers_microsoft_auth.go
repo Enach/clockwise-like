@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
@@ -98,7 +98,7 @@ type msUserInfo struct {
 
 func fetchMicrosoftUserInfo(ctx context.Context, token *oauth2.Token) (*msUserInfo, error) {
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
-	client.Timeout = 5 * time.Second
+	client.Timeout = outbound.Current().Identity
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, microsoftGraphMeURL, nil)
 	if err != nil {
 		return nil, err

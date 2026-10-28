@@ -18,7 +18,7 @@ type UserProfile struct {
 	UpdatedAt                  time.Time  `json:"updated_at"`
 }
 
-func GetOrCreateUserProfile(db *sql.DB, userID uuid.UUID) (*UserProfile, error) {
+func GetOrCreateUserProfile(db DBTX, userID uuid.UUID) (*UserProfile, error) {
 	_, err := db.Exec(`
 		INSERT INTO user_profiles (user_id) VALUES ($1)
 		ON CONFLICT (user_id) DO NOTHING`, userID)
@@ -28,7 +28,7 @@ func GetOrCreateUserProfile(db *sql.DB, userID uuid.UUID) (*UserProfile, error) 
 	return GetUserProfile(db, userID)
 }
 
-func GetUserProfile(db *sql.DB, userID uuid.UUID) (*UserProfile, error) {
+func GetUserProfile(db DBTX, userID uuid.UUID) (*UserProfile, error) {
 	row := db.QueryRow(`
 		SELECT user_id, is_manager, detected_at, analytics_shared_with_manager, updated_at
 		FROM user_profiles WHERE user_id = $1`, userID)
@@ -39,7 +39,7 @@ func GetUserProfile(db *sql.DB, userID uuid.UUID) (*UserProfile, error) {
 	return &p, nil
 }
 
-func UpsertUserProfile(db *sql.DB, p *UserProfile) error {
+func UpsertUserProfile(db DBTX, p *UserProfile) error {
 	_, err := db.Exec(`
 		INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_with_manager, updated_at)
 		VALUES ($1,$2,$3,$4,now())
@@ -94,7 +94,7 @@ func upsertManagerTeamMember(exec sqlExecutor, m *ManagerTeamMember) error {
 	return err
 }
 
-func UpsertManagerTeamMember(db *sql.DB, m *ManagerTeamMember) error {
+func UpsertManagerTeamMember(db DBTX, m *ManagerTeamMember) error {
 	return upsertManagerTeamMember(db, m)
 }
 
@@ -108,7 +108,7 @@ func GetManagerTeamMemberByEmail(db *sql.DB, managerID uuid.UUID, email string) 
 	return scanTeamMember(row)
 }
 
-func ListManagerTeamMembers(db *sql.DB, managerID uuid.UUID) ([]*ManagerTeamMember, error) {
+func ListManagerTeamMembers(db DBTX, managerID uuid.UUID) ([]*ManagerTeamMember, error) {
 	rows, err := db.Query(`
 		SELECT id, manager_user_id, member_email, member_user_id, display_name,
 		       source, cadence, cadence_custom_days, last_one_on_one_at, created_at, updated_at
@@ -130,7 +130,7 @@ func ListManagerTeamMembers(db *sql.DB, managerID uuid.UUID) ([]*ManagerTeamMemb
 	return members, rows.Err()
 }
 
-func UpsertManagerTeamMemberForTeam(db *sql.DB, teamID uuid.UUID, m *ManagerTeamMember) error {
+func UpsertManagerTeamMemberForTeam(db DBTX, teamID uuid.UUID, m *ManagerTeamMember) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -152,7 +152,7 @@ func UpsertManagerTeamMemberForTeam(db *sql.DB, teamID uuid.UUID, m *ManagerTeam
 	return tx.Commit()
 }
 
-func AssignManagerTeamMembersMatchingFormalTeam(db *sql.DB, managerID, teamID uuid.UUID) (int64, error) {
+func AssignManagerTeamMembersMatchingFormalTeam(db DBTX, managerID, teamID uuid.UUID) (int64, error) {
 	result, err := db.Exec(`
 		INSERT INTO manager_team_member_assignments (manager_user_id, team_id, member_email)
 		SELECT mtm.manager_user_id, $2, mtm.member_email
@@ -167,7 +167,7 @@ func AssignManagerTeamMembersMatchingFormalTeam(db *sql.DB, managerID, teamID uu
 	return result.RowsAffected()
 }
 
-func ListManagerTeamMembersForTeam(db *sql.DB, managerID, teamID uuid.UUID) ([]*ManagerTeamMember, error) {
+func ListManagerTeamMembersForTeam(db DBTX, managerID, teamID uuid.UUID) ([]*ManagerTeamMember, error) {
 	rows, err := db.Query(`
 		SELECT mtm.id, mtm.manager_user_id, mtm.member_email, mtm.member_user_id,
 		       COALESCE(NULLIF(btrim(a.display_name_override), ''), mtm.display_name),
@@ -210,7 +210,7 @@ func GetManagerTeamMemberByEmailForTeam(db *sql.DB, managerID, teamID uuid.UUID,
 	return scanTeamMember(row)
 }
 
-func UnassignManagerTeamMember(db *sql.DB, managerID, teamID uuid.UUID, email string) error {
+func UnassignManagerTeamMember(db DBTX, managerID, teamID uuid.UUID, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := db.Exec(`
 		DELETE FROM manager_team_member_assignments
@@ -219,14 +219,14 @@ func UnassignManagerTeamMember(db *sql.DB, managerID, teamID uuid.UUID, email st
 	return err
 }
 
-func DeleteManagerTeamMemberByEmail(db *sql.DB, managerID uuid.UUID, email string) error {
+func DeleteManagerTeamMemberByEmail(db DBTX, managerID uuid.UUID, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := db.Exec(`DELETE FROM manager_team_members WHERE manager_user_id=$1 AND member_email=$2`,
 		managerID, email)
 	return err
 }
 
-func PatchManagerTeamMember(db *sql.DB, managerID uuid.UUID, email, displayName, cadence string, customDays *int) error {
+func PatchManagerTeamMember(db DBTX, managerID uuid.UUID, email, displayName, cadence string, customDays *int) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := db.Exec(`
 		UPDATE manager_team_members
@@ -238,7 +238,7 @@ func PatchManagerTeamMember(db *sql.DB, managerID uuid.UUID, email, displayName,
 
 // PatchManagerTeamMemberForTeam changes only team-scoped preferences. The
 // canonical display name and email identity remain on manager_team_members.
-func PatchManagerTeamMemberForTeam(db *sql.DB, managerID, teamID uuid.UUID, email, displayName, cadence string, customDays *int) error {
+func PatchManagerTeamMemberForTeam(db DBTX, managerID, teamID uuid.UUID, email, displayName, cadence string, customDays *int) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	displayName = strings.TrimSpace(displayName)
 	var override *string
@@ -268,7 +268,7 @@ func PatchManagerTeamMemberForTeam(db *sql.DB, managerID, teamID uuid.UUID, emai
 // ConfirmManagerTeamMembers atomically assigns known global candidates to one
 // explicitly selected team. Duplicate and unknown emails are counted once as
 // skipped; repeated confirmation is idempotent.
-func ConfirmManagerTeamMembers(db *sql.DB, managerID, teamID uuid.UUID, emails []string) (assigned, skipped, total int, err error) {
+func ConfirmManagerTeamMembers(db DBTX, managerID, teamID uuid.UUID, emails []string) (assigned, skipped, total int, err error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, 0, 0, err
@@ -339,7 +339,7 @@ func scanTeamMember(s scanner) (*ManagerTeamMember, error) {
 
 // ── OneOnOneOccurrence ────────────────────────────────────────────────────────
 
-func UpsertOneOnOneOccurrence(db *sql.DB, managerID uuid.UUID, memberEmail, calendarEventID string, occurredAt time.Time) error {
+func UpsertOneOnOneOccurrence(db DBTX, managerID uuid.UUID, memberEmail, calendarEventID string, occurredAt time.Time) error {
 	_, err := db.Exec(`
 		INSERT INTO one_on_one_occurrences (manager_user_id, member_email, calendar_event_id, occurred_at)
 		VALUES ($1,$2,$3,$4)
@@ -362,7 +362,7 @@ type TeamAnalyticsRow struct {
 	ComputedAt     time.Time
 }
 
-func UpsertTeamAnalytics(db *sql.DB, r *TeamAnalyticsRow) error {
+func UpsertTeamAnalytics(db DBTX, r *TeamAnalyticsRow) error {
 	_, err := db.Exec(`
 		INSERT INTO team_analytics_cache
 			(manager_user_id, member_email, week_start, focus_minutes, meeting_minutes,
@@ -380,7 +380,7 @@ func UpsertTeamAnalytics(db *sql.DB, r *TeamAnalyticsRow) error {
 	return err
 }
 
-func GetTeamAnalytics(db *sql.DB, managerID uuid.UUID, memberEmail string, weekStart time.Time) (*TeamAnalyticsRow, error) {
+func GetTeamAnalytics(db DBTX, managerID uuid.UUID, memberEmail string, weekStart time.Time) (*TeamAnalyticsRow, error) {
 	row := db.QueryRow(`
 		SELECT manager_user_id, member_email, week_start,
 		       focus_minutes, meeting_minutes, free_minutes, is_paceday_user, data_available, computed_at
@@ -396,7 +396,7 @@ func GetTeamAnalytics(db *sql.DB, managerID uuid.UUID, memberEmail string, weekS
 }
 
 // ListManagerUserIDs returns all user IDs where is_manager=true (for batch jobs).
-func ListManagerUserIDs(db *sql.DB) ([]uuid.UUID, error) {
+func ListManagerUserIDs(db DBTX) ([]uuid.UUID, error) {
 	rows, err := db.Query(`SELECT user_id FROM user_profiles WHERE is_manager=true`)
 	if err != nil {
 		return nil, err

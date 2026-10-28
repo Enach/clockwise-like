@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"log"
 	"time"
 
@@ -10,7 +9,7 @@ import (
 
 // SaveFocusBlock records a focus block created on userID's calendar. The owner
 // is stored so readers can scope blocks to the user they belong to (PAC-64).
-func SaveFocusBlock(db *sql.DB, userID uuid.UUID, googleEventID, date string, start, end time.Time) error {
+func SaveFocusBlock(db DBTX, userID uuid.UUID, googleEventID, date string, start, end time.Time) error {
 	_, err := db.Exec(`
 		INSERT INTO focus_blocks (user_id, google_event_id, start_time, end_time, date, created_at)
 		VALUES ($5, $1, $2, $3, $4, NOW())
@@ -28,7 +27,7 @@ func SaveFocusBlock(db *sql.DB, userID uuid.UUID, googleEventID, date string, st
 // weekStart, never nil. Every reader goes through this: focus blocks belong to
 // the user whose calendar holds them. Blocks saved before owners were recorded (user_id NULL) belong to
 // nobody and are not returned.
-func ListFocusBlocksForUserWeek(db *sql.DB, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
+func ListFocusBlocksForUserWeek(db DBTX, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
 	rows, err := db.Query(`
 		SELECT id, google_event_id, start_time, end_time, date, created_at
@@ -56,13 +55,13 @@ func ListFocusBlocksForUserWeek(db *sql.DB, userID uuid.UUID, weekStart time.Tim
 
 // DeleteFocusBlock removes userID's focus block for googleEventID. Another
 // user's block with that event ID is left alone.
-func DeleteFocusBlock(db *sql.DB, userID uuid.UUID, googleEventID string) error {
+func DeleteFocusBlock(db DBTX, userID uuid.UUID, googleEventID string) error {
 	_, err := db.Exec(`DELETE FROM focus_blocks WHERE user_id = $1 AND google_event_id = $2`, userID, googleEventID)
 	return err
 }
 
 // FocusMinutesForDay sums the minutes of userID's focus blocks on date.
-func FocusMinutesForDay(db *sql.DB, userID uuid.UUID, date string) (int, error) {
+func FocusMinutesForDay(db DBTX, userID uuid.UUID, date string) (int, error) {
 	row := db.QueryRow(`
 		SELECT COALESCE(SUM(
 			EXTRACT(EPOCH FROM (end_time - start_time)) / 60
@@ -77,7 +76,7 @@ func FocusMinutesForDay(db *sql.DB, userID uuid.UUID, date string) (int, error) 
 // effort and never fails the caller, but it is never silent either: an entry
 // with no subject is refused before it reaches the database, and a failed
 // insert is written to the server log.
-func WriteAuditLog(db *sql.DB, userID uuid.UUID, action, details string) {
+func WriteAuditLog(db DBTX, userID uuid.UUID, action, details string) {
 	if userID == uuid.Nil {
 		log.Printf("audit: %s not recorded: no subject", action)
 		return

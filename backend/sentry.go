@@ -9,12 +9,6 @@ import (
 	"github.com/getsentry/sentry-go"
 )
 
-// defaultBackendDSN is the PAC-14 backend Sentry DSN. It is used only when the
-// SENTRY_DSN env var is unset. A Sentry ingest DSN is a client-side identifier,
-// not a classic secret, but it MUST remain env-configurable so staging and prod
-// can target different projects (contract §2).
-const defaultBackendDSN = "https://4383608feea22d8fe1b1bb0c4a922ab1@o4512081160896512.ingest.de.sentry.io/4512083547062352"
-
 // sensitiveHeaderKeys are request headers that must never be shipped to Sentry.
 var sensitiveHeaderKeys = []string{"authorization", "cookie", "set-cookie", "x-auth-token"}
 
@@ -99,17 +93,32 @@ func scrubAnyMap(m map[string]interface{}) {
 }
 
 // initSentry initializes Sentry from the environment. It is deliberately
-// non-fatal: a bad/empty DSN degrades to "monitoring disabled" and the caller
-// still boots (unlike DATABASE_URL, which is fatal by design — contract §2).
-func initSentry() {
+// non-fatal: a bad DSN degrades to "monitoring disabled" and the caller still
+// boots (unlike DATABASE_URL, which is fatal by design — contract §2).
+func initSentry() bool { return initSentryFrom(os.Getenv, nil) }
+
+// initSentryFrom is initSentry with its inputs injected (tests pass a stub
+// transport). PAC-81 AC-A14 (PAC-14 §2 amendment): there is no default DSN.
+// With SENTRY_DSN unset or empty, Sentry is not initialised at all, so no
+// event leaves the process, and "monitoring disabled" is logged. It reports
+// whether monitoring is on.
+func initSentryFrom(getenv func(string) string, transport sentry.Transport) bool {
+	dsn := strings.TrimSpace(getenv("SENTRY_DSN"))
+	if dsn == "" {
+		log.Printf("monitoring disabled: SENTRY_DSN is not set")
+		return false
+	}
 	if err := sentry.Init(sentry.ClientOptions{
-		Dsn:              cmp.Or(os.Getenv("SENTRY_DSN"), defaultBackendDSN),
-		Environment:      cmp.Or(os.Getenv("SENTRY_ENVIRONMENT"), "development"),
-		Release:          os.Getenv("SENTRY_RELEASE"), // set by CI; empty locally
-		SendDefaultPII:   false,                       // PII off by default (contract §2)
-		TracesSampleRate: 0.0,                         // errors only for v1
-		BeforeSend:       scrubSensitive,              // drops auth/cookie/token/secret
+		Dsn:              dsn,
+		Environment:      cmp.Or(getenv("SENTRY_ENVIRONMENT"), "development"),
+		Release:          getenv("SENTRY_RELEASE"), // set by CI; empty locally
+		SendDefaultPII:   false,                    // PII off by default (contract §2)
+		TracesSampleRate: 0.0,                      // errors only for v1
+		BeforeSend:       scrubSensitive,           // drops auth/cookie/token/secret
+		Transport:        transport,
 	}); err != nil {
 		log.Printf("sentry init failed, monitoring disabled: %v", err)
+		return false
 	}
+	return true
 }

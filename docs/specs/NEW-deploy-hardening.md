@@ -738,8 +738,9 @@ AC-B5 (F-B3). Given nginx with the shipped config, a trusted-proxy list
 containing address P, and a stub upstream in place of the backend that records
 the headers it receives, when a request arrives from P with `X-Forwarded-For:
 F, C` (F forged by the client, C appended by P) and `X-Forwarded-Proto: https`,
-then the upstream receives `X-Real-IP: C`, an `X-Forwarded-For` whose last
-entry is C, and `X-Forwarded-Proto: https`; nginx's access log shows C.
+then the upstream receives `X-Real-IP: C`, an `X-Forwarded-For` that is the
+chain as received plus P's own address (`F, C, P`; rev 3.1: C is no longer the
+last entry), and `X-Forwarded-Proto: https`; nginx's access log shows C.
 [integration]
 
 AC-B6 (F-B3). Given the same setup, when a request arrives from an address Q
@@ -1132,7 +1133,8 @@ Factory-assumed (pending challenge):
   (Q-O2); `Referrer-Policy: strict-origin-when-cross-origin`; `nosniff`. CSP:
   `default-src 'self'`; `script-src 'self'` (no inline, no eval); `style-src
   'self' 'unsafe-inline' https://fonts.googleapis.com` (inline styles needed by
-  the chart component); `font-src 'self' https://fonts.gstatic.com`; `img-src
+  the chart component); `font-src 'self' data: https://fonts.gstatic.com`
+  (rev 3.1: `data:` for FullCalendar's embedded `fcicons` font); `img-src
   'self' data: https://*.googleusercontent.com` (F-1); `connect-src 'self'` +
   the frontend's Sentry ingest origin (an operator setting, default the origin
   of the web's hard-coded DSN, `smart-calendar-flow:src/lib/sentry.ts:19-20`;
@@ -2077,3 +2079,15 @@ rev 2 and covered by stage 2.
 
 **Ready for the Part A contract stage: yes. Ready for the B/C/D plan stage:
 yes.**
+
+## Revision 3.1 — 2026-10-28, from Part B implementation
+
+Recorded by the Part A implementer at the coordinator's request, from the Part B
+review (Enach/clockwise-like#245). Two corrections; no other AC changes.
+
+- **D-8:** `font-src 'self' data: https://fonts.gstatic.com`. FullCalendar embeds
+  its `fcicons` font as a `data:` URL. `data:` only, no wildcard.
+- **AC-B5:** from a trusted proxy P, the upstream's `X-Forwarded-For` is the chain
+  as received plus P's own address (`F, C, P`), so the client C is no longer its
+  last entry. Nothing reads `X-Forwarded-For`; the backend uses only `X-Real-IP`
+  from trusted peers (section 6 unchanged).

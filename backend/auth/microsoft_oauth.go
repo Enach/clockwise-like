@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -50,7 +51,7 @@ func GetMicrosoftAuthURL(cfg *MicrosoftConfig, state, loginHint string) string {
 }
 
 func ExchangeMicrosoftCode(ctx context.Context, cfg *MicrosoftConfig, code string) (*oauth2.Token, error) {
-	return cfg.oauthConfig().Exchange(ctx, code)
+	return cfg.oauthConfig().Exchange(outbound.WithIdentityClient(ctx), code)
 }
 
 type microsoftTokenRecord struct {
@@ -66,7 +67,7 @@ type microsoftTokenRecord struct {
 // It is the Outlook (re)connect (PAC-67): a token without a refresh token
 // keeps the stored one (AC-11), and storing ends any recorded loss of the
 // Outlook connection (AC-12, AC-24).
-func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+func SaveMicrosoftToken(db storage.DBTX, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveMicrosoftToken: userID is required")
 	}
@@ -109,7 +110,7 @@ func MicrosoftConfigFromEnv() *MicrosoftConfig {
 
 // LoadMicrosoftToken returns userID's Outlook credential, or nil when they
 // have none.
-func LoadMicrosoftToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+func LoadMicrosoftToken(db storage.DBTX, userID uuid.UUID) (*oauth2.Token, error) {
 	row := db.QueryRow(`SELECT microsoft_tokens FROM settings WHERE user_id = $1`, userID)
 	var raw sql.NullString
 	if err := row.Scan(&raw); err != nil || !raw.Valid || raw.String == "" {
