@@ -5,7 +5,7 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 4, 2026-10-27 (1 and 2 on 2026-10-25, 3 earlier on 2026-10-27; see the Revision sections at the end)
+- **Revision**: 5, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27; see the Revision sections at the end). Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
 
 ## 1. The change
 
@@ -71,6 +71,8 @@ generates it as a union type with typed `As…`/`From…` accessors. The generat
 Go compiles (§6).
 
 ### `provider_domain_mismatch` is a 400, not a 403
+
+*Superseded in revision 5 by the owner decision of 2026-10-27 (spec §9 D-10): it is a 403. Kept as the record of revisions 1-4.*
 
 Spec §4.2 step 4 (decided 2026-10-22, AC-16b) makes a provider domain other
 than the org's a **400**. It replaces both today's suffix rule and its 403. The
@@ -1232,3 +1234,105 @@ make verify rc=0
 
 Not run: e2e. This branch carries no handler code, so it changes no runtime
 behaviour. The e2e gate belongs to #212 after its rebase.
+
+## Revision 5 — 2026-10-28 (finish ticket: owner decisions, migration 029, main merged)
+
+Base: `origin/main` at `69ffa92` merged into this branch as `9cc28cb` (a merge,
+not a rebase; the only conflict was the `MIGRATION.md` count, resolved to 122
+operations, 4 generated, 118 handwritten, which `openapi_migration_report.py
+--check` confirms). The owner answered two of this contract's open questions
+on 2026-10-27 (`.claude/factory/owner-decisions.md`); both are recorded in spec
+§9 as *owner, 2026-10-27* and replace the factory's assumptions.
+
+### What changed
+
+1. **`provider_domain_mismatch` is a 403** (spec §9 D-10). The owner chose
+   RFC 9110 §15.5.4: the server understood the request and the caller is not
+   permitted to configure that domain. On both writes the 400 response no
+   longer lists `provider_domain_mismatch` (on `deleteSsoProvider` the 400 is
+   gone entirely, since it had no other case), and `SsoWriteForbiddenResponse`
+   gains a fourth disjoint variant, `SsoWriteDomainMismatch`
+   (`error: const provider_domain_mismatch`). The gate order does not change:
+   membership, body shape, domain, then authorization. So the domain 403 still
+   comes before the grant is consumed, and AC-3c holds as before: a typo does
+   not burn a grant. `" acme.com "`, `sub.acme.com` and `other.com`, and the
+   `DELETE` forms `/%20acme.com`, `/sub.acme.com` and `/other.com`, are each
+   this 403 (AC-16b). This also brings the contract into line with the Linear
+   acceptance text ("Then 403"), so the revision-3 *Note* is withdrawn.
+2. **The step-up is optional and is explained before any redirect** (spec §9
+   D-11, owner answer to PAC-68 OQ-2 / PAC-50 OQ-2). `SsoWriteStepupRequired`
+   gains two required properties:
+   - `stepup_scopes: {google: string[], microsoft: string[]}` lists what the
+     step-up asks each provider for, beyond the identity scopes;
+   - `without_stepup: string[]`, an open enum, today only
+     `sso_configuration_writes`, says what the user cannot do if they
+     decline (only an operator on the break-glass list can write SSO
+     configuration without it).
+   `startSsoAdminStepup` now says that sign-in never requests these scopes,
+   that declining costs nothing else, and that the step-up can be started again
+   from Settings. AC-22 changes: the web client no longer navigates on its own.
+   It yields a typed step-up-required outcome, and the screen that made the
+   write explains it before any navigation. New AC-24 pins that the sign-in
+   authorize URLs carry no new scope.
+3. **Migration 029** (spec §9 D-7). `main` took 028 for
+   `028_credential_losses` (PAC-67, #232). `SsoProviderResponse.Domain` now
+   names `029_sso_admin_stepup`, and so do the manifest's `migration` and
+   AC-20a.
+4. **Order with PAC-22 reversed** (spec §9 D-12). PAC-22's implementation
+   (#237) is ready to merge before #212, so PAC-50 lands after it. Once PAC-22
+   is on `main`, `main` is merged into this branch and into #212, and a
+   revision 6 describes PAC-22's provider response on these operations. The
+   manifest condition "PAC-22 lands after PAC-50 and rebases onto it" is
+   replaced by that order.
+
+The `mergeConditions` are rewritten as the checklist stage 4 must meet and
+assert by test: PAC-21 bodies on all six 500s, including `listSsoProviders`;
+no TrimSpace on the domain paths; the `setCookie` helper for
+`sso_stepup_state`; `APP_URL` set in e2e compose and documented for release;
+`stepup_scopes`/`without_stepup` matching what the start requests; AC-24; web
+#119 regenerated against this `contractHash`; the PAC-22 order; and all three
+gates at rc=0.
+
+### Alternatives rejected
+
+- **A 422 for the domain mismatch.** The body is well-formed and the target
+  is understood. The owner chose 403 because the refusal is about permission,
+  and 422 would also have been a fourth status a client must map.
+- **The 403 with a free-text `error` (today's `can only configure SSO for your
+  own domain`).** A client could not tell it apart from the other three 403s
+  without matching on prose. A `const` keeps the oneOf disjoint on `error`.
+- **Putting the explanation text itself in the 403 (`message: "..."`).** It
+  would fix English prose in the API and make the server the copywriter. The
+  machine-readable lists let the client word and translate the explanation,
+  and a test can compare `stepup_scopes` to what the start really requests.
+- **Listing `verified_domain_org_membership` in `without_stepup` now.** The
+  owner gave automatic org membership as an example of what extended access
+  provides, but PAC-50's step-up discards its tokens after the admin check and
+  grants one write. It does not provide membership, and the contract describes
+  what is (factory §7 rule 2). The enum is open, so PAC-68 can add the value if
+  it reuses this step-up. Recorded as assumed, pending owner confirmation
+  (spec §9 D-11).
+- **Keeping AC-22's automatic navigation and explaining on the IdP side.** That
+  explanation would come after the redirect. The owner asked for it before.
+- **Waiting for PAC-22 to land before cutting this revision.** The owner
+  decisions and the 029 renumber do not depend on PAC-22. Holding them back
+  would leave #212's tests written against a 400 the owner has rejected.
+
+### Consumers affected (re-searched 2026-10-28)
+
+- `smart-calendar-flow`: only `src/api/generated/*` mention `/api/admin/sso`
+  or these schemas. #119 must be regenerated against this bundle. No
+  hand-written code reads `provider_domain_mismatch`, and `client.ts` has no
+  step-up handling yet (AC-22 is stage-4 web work).
+- `clockwise-like` #212: `backend/api/pac50_sso_gate_test.go`,
+  `backend/api/pac50_merge_conditions_test.go` and
+  `e2e/tests/sso-stepup.spec.ts` mention `provider_domain_mismatch`. Where
+  they assert a 400, stage 4 changes them to 403 (manifest
+  `consumersAffected`). The step-up 403 body in #212 must gain the two new
+  properties.
+- `mcp/`: no reference to `/api/admin/sso`.
+- PAC-22 (#237): its contract already answers `setSsoProviderState`'s domain
+  mismatch with 403 `provider_domain_mismatch` ("follows PAC-50 as merged on
+  rebase"), which is consistent with this revision. Its manifest's
+  `rebaseOntoPac50` describes the opposite order from spec §9 D-12, so its
+  contract-author has to reconcile it.
