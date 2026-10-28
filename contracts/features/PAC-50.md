@@ -5,25 +5,30 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 5, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27; see the Revision sections at the end). Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
+- **Revision**: 6, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27, 5 earlier on 2026-10-28; see the Revision sections at the end). Revision 6 answers the round-4 challenge: `without_stepup` is an open list of codes and `stepup_scopes` carries a key only for a configured provider. Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
 
 ## 1. The change
+
+*Sections 1 and 2 describe revisions 1-4. Where they differ from later revisions they are superseded, and each such place is marked: since revision 5 the 403 has four variants (`SsoWriteDomainMismatch`) and `provider_domain_mismatch` is a 403, not a 400; since revision 6 the step-up variant also carries `stepup_scopes` (a key per configured provider) and `without_stepup` (an open list). PAC-22 lands before PAC-50 (spec §9 D-12).*
 
 Two operations change and two are added. Nothing else in the contract moves.
 
 | Operation | Change |
 |---|---|
-| `createSsoProvider` `POST /api/admin/sso` | Documents the write gate of spec §4.2 in order. **400** gains `unknown property: <name>` and `provider_domain_mismatch`. **403** becomes `SsoWriteForbiddenResponse` (three variants, below). The domain rule becomes exact and case-insensitive: `sub.example.com` from org `example.com` is refused. |
-| `deleteSsoProvider` `DELETE /api/admin/sso/{domain}` | Same gate. The `{domain}` segment is lower-cased. **400** `provider_domain_mismatch` replaces the old 403. **403** becomes `SsoWriteForbiddenResponse`. **404** `sso provider not found` is new (API-067). **204** now means a row really was deleted. |
+| `createSsoProvider` `POST /api/admin/sso` | Documents the write gate of spec §4.2 in order. **400** gains `unknown property: <name>` and `provider_domain_mismatch` *(the latter a 403 since revision 5)*. **403** becomes `SsoWriteForbiddenResponse` (three variants, below; four since revision 5). The domain rule becomes exact and case-insensitive: `sub.example.com` from org `example.com` is refused. |
+| `deleteSsoProvider` `DELETE /api/admin/sso/{domain}` | Same gate. The `{domain}` segment is lower-cased. **400** `provider_domain_mismatch` replaces the old 403 *(a 403 `provider_domain_mismatch` since revision 5; the delete has no 400 left)*. **403** becomes `SsoWriteForbiddenResponse`. **404** `sso provider not found` is new (API-067). **204** now means a row really was deleted. |
 | `startSsoAdminStepup` `GET /api/admin/sso/stepup?provider=google\|microsoft` | **New.** Behind the session. Answers 302 to the IdP and sets the `sso_stepup_state` cookie. Errors: 400 (provider missing or unknown), 401, 403 (no org, D-1), 503 (provider not configured, D-2). |
 | `ssoAdminStepupCallback` `GET /api/admin/sso/stepup/callback` | **New.** Behind the session. Answers 302 to `<FRONTEND_URL>/settings?stepup=granted` or `?stepup=denied&reason=<enum>`; the `Location` header carries a `pattern` that admits exactly those nine forms. Errors: 401 (no session), 500 (storage, D-4). |
 
 Schemas:
 
-- `SsoWriteForbiddenResponse` = `oneOf` three disjoint objects:
+- `SsoWriteForbiddenResponse` = `oneOf` three disjoint objects (four since revision 5, with `SsoWriteDomainMismatch`, `error` const `provider_domain_mismatch`):
   - `SsoWriteMembershipRequired`: `error` ∈ {`org membership required`, `org not found`}.
   - `SsoWriteStepupRequired`: `error` = `sso_write_requires_admin_stepup`, plus
-    `stepup_url` = `/api/admin/sso/stepup` (required).
+    `stepup_url` = `/api/admin/sso/stepup` (required). Since revision 5 also
+    `stepup_scopes` and `without_stepup` (required); since revision 6 the
+    `stepup_scopes` keys are optional (present only for a configured provider)
+    and `without_stepup` items are non-empty strings, not an enum.
   - `SsoWriteFreshLoginRequired`: `error` = `sso_write_requires_fresh_login`.
   All three are `additionalProperties: false`, so `stepup_url` appears on the
   step-up variant and on no other.
@@ -36,11 +41,13 @@ Schemas:
   PAC-22.
 
 `listSsoProviders` is not touched. Read authorization and the secret projection
-belong to PAC-22, which lands after PAC-50 and rebases onto it (spec §4.9).
+belong to PAC-22, which lands after PAC-50 and rebases onto it (spec §4.9). *(Superseded by spec §9 D-12: PAC-22 lands first, and a later revision covers what it changes on these operations; see Revision 6, N2.)*
 
 ## 2. Why this shape
 
 ### The 403 is one status with three disjoint bodies
+
+*Four disjoint bodies since revision 5 (`SsoWriteDomainMismatch`). The reasoning below is unchanged by that.*
 
 The spec needs three different refusals at the same status code. The orgless
 caller has nothing to step up for. The member without a grant must be sent to
@@ -233,7 +240,7 @@ must list `<APP_URL>/api/admin/sso/stepup/callback` as a redirect URI.
   overlap at `DELETE /api/admin/sso/stepup`. OpenAPI matches the concrete path
   first, and it has no DELETE, so the request falls to `deleteSsoProvider`
   with `{domain}` = `stepup`. That is a 400 `provider_domain_mismatch` for
-  every org. Is that acceptable, or does the plan need a router test?
+  every org (a 403 since revision 5). Is that acceptable, or does the plan need a router test?
 - **Gate order leaks.** Membership → 400s → authorization means an
   unauthorized member learns whether a body is well-formed and whether the
   domain is their org's. Both facts are their own. Is there any request where
@@ -1264,7 +1271,8 @@ on 2026-10-27 (`.claude/factory/owner-decisions.md`); both are recorded in spec
    gains two required properties:
    - `stepup_scopes: {google: string[], microsoft: string[]}` lists what the
      step-up asks each provider for, beyond the identity scopes;
-   - `without_stepup: string[]`, an open enum, today only
+   - `without_stepup: string[]`, an open enum (it was not: the schema was a
+     closed enum; made a really open list in revision 6, B1), today only
      `sso_configuration_writes`, says what the user cannot do if they
      decline (only an operator on the break-glass list can write SSO
      configuration without it).
