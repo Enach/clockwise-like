@@ -149,24 +149,33 @@ type ParseResult struct {
 type NLPService struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	// Source is where the AI decision reads from; nil means DB (PAC-73
+	// Part 2: a test replaces it, P2-AC-37).
+	Source AISource
+}
+
+func (s *NLPService) source() AISource {
+	if s.Source != nil {
+		return s.Source
+	}
+	return DBSource{DB: s.DB}
 }
 
 const attendeeExtractionPrompt = `Extract email addresses from the user's text. Return ONLY JSON: {"attendees": ["email@example.com"]}. If none found, return {"attendees": []}.`
 
 func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, error) {
 	userID := auth.UserIDFromContext(ctx)
-	settings, err := storage.GetOrCreateSettingsByUser(s.DB, userID)
-	if err != nil {
-		return nil, fmt.Errorf("load settings: %w", err)
-	}
-	inOrg, err := storage.UserInOrganization(s.DB, userID)
+	st, err := LoadAIState(ctx, s.source(), userID)
 	if err != nil {
 		return nil, err
 	}
+	settings := st.Settings
 
 	// NEW-llm-bring-your-own: decide the configuration before anything is
-	// sent. Not configured is a 200 answer with not_configured (AC-13).
-	decision := DecideSaved(settings, inOrg)
+	// sent. Not configured is a 200 answer with not_configured (AC-13). The
+	// decision reads one consistent state (Part 2, P2-AC-37), and the client
+	// carries only that state's values.
+	decision := DecideState(st)
 	if nc := decision.NotConfigured; nc != nil {
 		return &ParseResult{Intent: "unknown", Error: nc.Message, NotConfigured: nc}, nil
 	}
@@ -176,11 +185,14 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 	// before.
 	var refusal *DestinationRefusal
 	if err := CheckDestination(ctx, client); errors.As(err, &refusal) {
+		if decision.Organization() {
+			refusal = OrganizationDestinationRefusal(refusal)
+		}
 		return &ParseResult{Intent: "unknown", Error: refusal.Message}, nil
 	}
 
 	// Pass 1: Extract attendee emails with a lightweight prompt
-	attendees := s.extractAttendees(ctx, client, text)
+	attendees := s.extractAttendees(ctx, client, text, decision.Redact)
 
 	// Resolve participant info (timezone, working hours)
 	participants := calendar.ResolveParticipants(attendees)
@@ -194,10 +206,13 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 
 	rawJSON, err := client.Complete(ctx, sysPrompt, text)
 	if err != nil {
-		return nil, fmt.Errorf("LLM error: %w", err)
+		// Part 2 (spec §3.1a): the provider text goes to the log and Sentry
+		// only (the handler's fixed 500), redacted of every key sent and the
+		// caller's own keys.
+		return nil, errors.New(decision.Redact("LLM error: " + err.Error()))
 	}
 
-	result := parseRawJSON(rawJSON)
+	result := parseRawJSON(decision.Redact(rawJSON))
 	result.ParticipantInfos = participants
 
 	if result.Intent == "schedule_meeting" && !result.RangeStart.IsZero() {
@@ -221,12 +236,12 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 	return result, nil
 }
 
-func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string) []string {
+func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string, redact func(string) string) []string {
 	rawJSON, err := client.Complete(ctx, attendeeExtractionPrompt, text)
 	if err != nil {
 		return nil
 	}
-	rawJSON = cleanJSON(rawJSON)
+	rawJSON = cleanJSON(redact(rawJSON))
 	var result struct {
 		Attendees []string `json:"attendees"`
 	}

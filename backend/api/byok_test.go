@@ -321,7 +321,9 @@ func TestBYOK_EveryNotConfiguredRowGivesOneReason(t *testing.T) { // AC-40 (Part
 	t.Run("row 6 new account in an organisation", func(t *testing.T) {
 		b := newBYOK(t, "row6org")
 		joinOrg(t, b.user, "row6org.byok.example")
-		b.allThree("nothing_configured", "", "user") // Part 1: no admin can act yet (spec rev. 2)
+		// PAC-73 Part 2 (spec §2.4, P2-AC-14, amended not deleted): an
+		// organisation with no configuration now names its admin too.
+		b.allThree("nothing_configured", "", "user", "organization_admin")
 		if st := b.aiStatus(); st["inOrganization"] != true {
 			t.Errorf("aiStatus.inOrganization = %v, want true", st["inOrganization"])
 		}
@@ -338,7 +340,9 @@ func TestBYOK_EveryNotConfiguredRowGivesOneReason(t *testing.T) { // AC-40 (Part
 		b := newBYOK(t, "row8org")
 		joinOrg(t, b.user, "row8org.byok.example")
 		b.sql(`llm_provider = 'ollama'`)
-		b.allThree("provider_removed", "", "user") // Part 1: no admin can act yet (spec rev. 2)
+		// PAC-73 Part 2 (spec §2.4, amended not deleted): row 8 in an
+		// organisation names its admin too.
+		b.allThree("provider_removed", "", "user", "organization_admin")
 	})
 	t.Run("row 2 configured", func(t *testing.T) {
 		b := newBYOK(t, "row2")

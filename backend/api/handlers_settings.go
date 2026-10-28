@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io"
@@ -50,6 +51,8 @@ var validTimeFormats = map[string]bool{"12h": true, "24h": true}
 
 type settingsHandlers struct {
 	db *sql.DB
+	// source is where the AI status reads from; nil means db (PAC-73 Part 2).
+	source nlp.AISource
 }
 
 // getSettings returns the caller's settings, creating their row on first read
@@ -57,7 +60,7 @@ type settingsHandlers struct {
 // llmUnboundApiKeySet say which are on file, and aiStatus whether AI works
 // for the caller (NEW-llm-bring-your-own).
 func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := h.readSettings(userIDFromCtx(r.Context()))
+	s, err := h.readSettings(r.Context(), userIDFromCtx(r.Context()))
 	if err != nil {
 		writeServerError(w, r, "getSettings", err, http.StatusInternalServerError)
 		return
@@ -66,18 +69,20 @@ func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s)
 }
 
-// readSettings is the caller's settings document with aiStatus filled in.
-func (h *settingsHandlers) readSettings(userID uuid.UUID) (*storage.Settings, error) {
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+// readSettings is the caller's settings document with aiStatus filled in,
+// decided from one consistent read of the caller's organisation, its AI
+// configuration and their confirmation (PAC-73 Part 2).
+func (h *settingsHandlers) readSettings(ctx context.Context, userID uuid.UUID) (*storage.Settings, error) {
+	src := h.source
+	if src == nil {
+		src = nlp.DBSource{DB: h.db}
+	}
+	st, err := nlp.LoadAIState(ctx, src, userID)
 	if err != nil {
 		return nil, err
 	}
-	inOrg, err := storage.UserInOrganization(h.db, userID)
-	if err != nil {
-		return nil, err
-	}
-	s.AIStatus = nlp.Status(s, inOrg)
-	return s, nil
+	st.Settings.AIStatus = nlp.StatusOf(st)
+	return st.Settings, nil
 }
 
 // settingsPatchProperties is every property PATCH /api/settings accepts: the
@@ -191,17 +196,43 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 	if removeUnbound {
 		s.LLMUnboundAPIKey = ""
 	}
+	// PAC-73 Part 2 (spec §3.4, P2-AC-36): storing "off" or one of the five
+	// providers ends the caller's organisation confirmation, whether or not
+	// the stored choice changes; storing "organization" records none. A
+	// side effect, never a refusal. It runs before the save, so a failure
+	// leaves at worst a deleted confirmation (the member is asked again),
+	// never a stored own choice with a live confirmation.
+	if endsOrgAIConfirmation(fields) {
+		if err := storage.DeleteOrgAIConfirmations(r.Context(), h.db, userID); err != nil {
+			writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
-	updated, err := h.readSettings(userID)
+	updated, err := h.readSettings(r.Context(), userID)
 	if err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
+}
+
+// endsOrgAIConfirmation reports whether a settings write stores "off" or one
+// of the five providers as llmProvider (PAC-73 Part 2, P2-AC-36).
+func endsOrgAIConfirmation(fields map[string]json.RawMessage) bool {
+	raw, ok := fields["llmProvider"]
+	if !ok {
+		return false
+	}
+	var v string
+	if json.Unmarshal(raw, &v) != nil {
+		return false
+	}
+	return v == storage.LLMChoiceOff || nlp.IsKeyProvider(v)
 }
 
 // settingsProblem is one validation failure and the properties it is about.
