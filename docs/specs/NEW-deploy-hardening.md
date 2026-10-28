@@ -1287,3 +1287,210 @@ follow-up tickets; they are not resolved in this spec.
 New owner question: **Q-O4** (whether booking confirmation emails must
 survive a restart before production; default no, logged plus a follow-up
 outbox). Q-O1..Q-O3 are unchanged.
+
+## Challenge, revision 1 — 2026-10-28
+
+**Verdict**: accept-with-changes. **Not ready for the contract/plan stage**:
+three blocking items remain. Each one needs a text change, not a redesign.
+
+I checked against `Enach/clockwise-like` `origin/main` = `bef4c31`. Since
+`67b7966` only dependency bumps have landed (PAC-76: `go.mod`, `docs/package*.json`),
+so every rev-1 citation still applies. Web: `Enach/smart-calendar-flow`
+`origin/main` = `6f641ae`. PAC-71 was read at `origin/impl/pac-71-identity-binding-backend`
+= `459bc02` (#242, open). Method: `git show`/`git grep`. One measurement was
+run: `docker compose config` (Compose v5.5.1) on a two-service file, for
+Blocking 3. Nothing else was built or run.
+
+**Revision-0 items.** I checked all 28 rows of the rev-1 table against the
+body text, and each one is in the text as the table says. That covers B1–B8,
+N1–N12, U1–U5, C1–C3 and the consumers row. Two of those fixes are
+incomplete:
+- N4: the team-availability fix is wrong (Blocking 1, Citations).
+- B4: the margin fix works for parse and brief but not for handlers that loop
+  over outbound calls (Blocking 1).
+
+**Specific questions, checked:**
+- **Parse makes exactly two LLM calls in sequence**
+  (`backend/nlp/parser.go:207` main, `:240` attendee extraction). That is
+  60 s at 30 s each. 90 − 60 = 30, so AC-A4's "≥ 30 s" margin holds exactly.
+  The brief has one LLM call (`engine/meeting_brief_service.go:105`) inside
+  its own 60 s deadline. Budget 90 s, backstop 120 s, nginx 130 s is a
+  consistent ladder.
+- **CSP vs real pages.** The web's only `<img>` with an external source is
+  `HostAvatars.tsx:58`. Notion/Slack icons, team logos, Gravatar and
+  `background-image` URLs are not used anywhere in `src/`. Fonts:
+  `index.html:18-20` is covered by D-8. Sentry has no replay or worker
+  (no `worker-src` need). `blob:` is used only for a download
+  (`PublicBooking.tsx:98`), and that is not an `img-src` load. The injected
+  API-base script is fixed at process start
+  (`docker/fileserver/main.go:21-24`). Either a start-time hash or a
+  separately served script can satisfy AC-B3(b) without a web-repo change, so
+  leaving Q-P2 to the plan is fine (Non-blocking 4).
+- **Removing the docs service.** Nothing depends on the prod `docs` service.
+  Only `docker-compose.dev.yml:28` and `docker-compose.yml:76` mention docs,
+  and both have their own service. No Makefile, e2e or deployment test refers
+  to it.
+- **Shutdown with net/http.** It can be built:
+  - serve with readiness flipped for the notice period;
+  - `Server.Shutdown` closes the listeners and waits for active connections;
+  - a cancellable `BaseContext` covers the cancel phase;
+  - tracked detached work is awaited separately.
+  A connection attempt after the listener closes is refused. AC-A6 and AC-A7
+  are observable at the stated points.
+- **Pool cap 20 with PAC-71.** `withGenerationTx` hands `fn` the transaction
+  (`storage/session.go:176-191` on #242). `beginOn` joins it rather than
+  taking a second connection. So PAC-71's guarded write fits a cap of 1 as
+  designed, and AC-A10 tests that the closures keep to it.
+- **Order A ∥ B → C → D.** It holds, with one shared file (Non-blocking 4).
+
+### Blocking
+
+1. **AC-A4 cannot pass for handlers that loop over outbound calls, and the
+   spec exempts only one of them, and only in prose.** AC-A4 requires every
+   handler's worst-case sum of sequential outbound limits on its success path
+   to be ≤ budget − 30 s = 60 s. A unit test asserts it for every handler
+   making more than one outbound call in sequence. These handlers make one
+   outbound call per item, in sequence, over a set with no size cap
+   (`git grep` finds no host or member limit):
+   - collective slot listing: per accepted host, token renewal plus
+     `ListEvents` (`engine/booking.go:92-93`, `:123-124`);
+   - public booking create: per accepted host, `CreateEvent`
+     (`engine/booking.go:244-273`);
+   - team availability: per member, token renewal plus `listEvents`
+     (`engine/team_availability.go:78-90`);
+   - personal-calendar sync: one create per event (F-A5).
+
+   At 15 s per call, three hosts or five members already exceed 60 s. D-4
+   accepts that sync "is cut by the budget", but AC-A4's text has no such
+   exception. F-A5 also says team availability is bounded "per query by the
+   5 s above". It is not (Citations). So AC-A4 fails by construction for at
+   least three handlers.
+
+   *Resolve*: AC-A4 must state the rule for per-item loops, for each loop it
+   names:
+   - either a stated maximum count (a product limit, then an owner question)
+     with the sum computed at that count;
+   - or an explicit exemption with the outcome required when the budget cuts
+     the loop (Blocking 2).
+
+   Also correct F-A5's team-availability and suggest claims.
+
+2. **Cutting a booking create mid-way now leaves a committed booking behind a
+   503. The spec does not say what must happen.**
+   - `ConfirmBooking` commits the booking row first
+     (`engine/booking.go:229-236`), then creates host events one by one
+     (`:244-273`). It starts the confirmation email only after the loop
+     (`:277`).
+   - Under AC-A2 (budget expiry → 503, "never a 2xx with partial data") or
+     AC-A7 (drain end → cancel), the booker gets an error. Yet the booking
+     row exists, some hosts have the event, and no confirmation email is
+     sent.
+   - The booker retries. `CreateBooking` has no idempotency, so that creates
+     a second booking and a second event on the hosts that already had one.
+   - Today there is no budget and no cancel at shutdown, so the request
+     either completes or dies under SIGKILL. This spec makes the
+     error-after-commit path routine at every deploy (a booking that arrives
+     in the last seconds of the drain). It is the same class of problem as
+     the personal blocker, which AC-A17 handles for blockers only.
+
+   *Resolve*: add an AC for public booking create stating the required
+   outcome when the budget or the drain cuts it. Either:
+   - the booker's response reflects the committed booking, so a retry does
+     not double-book; or
+   - an interrupted create leaves no booking and no host event.
+
+   It must also say what a re-submission produces (at most one booking per
+   booker and slot). The AC states the requirement; how to meet it is the
+   plan's job.
+
+3. **AC-C5 cannot pass with a compose profile.** AC-C4 puts MCP in "an opt-in
+   profile". AC-C5 requires that rendering the compose file fails without a
+   token when the profile is enabled and does not fail when it is disabled.
+   Measured with Docker Compose v5.5.1: a service under `profiles: ["mcp"]`
+   with `${MCP_AUTH_TOKEN:?…}` fails `docker compose config` **without**
+   `--profile mcp` too, with the same error, because interpolation covers
+   services in inactive profiles. Without `:?`, nothing fails at render time
+   with the profile enabled. With the profile enabled and no token, the MCP
+   binary already refuses to start (`mcp/main.go:29-31`). Under
+   `restart: unless-stopped` that refusal is today's crash loop (F-C4).
+
+   *Resolve*: restate AC-C4/AC-C5 as observable requirements that a compose
+   file can meet:
+   - an opt-in mechanism, not necessarily a profile;
+   - with MCP enabled and no token, the stack reports the missing token by
+     name and MCP does not crash-loop;
+   - with MCP not enabled, no token is required.
+
+### Non-blocking
+
+1. **The outbound table is incomplete for identity providers.** §3 says
+   "every outbound call has its own time limit", and AC-A4 sums limits along
+   the sign-in callbacks. The table and AC-A3 do not name:
+   - Google or Microsoft token exchange and userinfo;
+   - SSO OIDC discovery, token and JWKS;
+   - OAuth token renewal through the token sources (Google, Microsoft, Zoom;
+     `conference/zoom_oauth.go:64`).
+   For those calls the sum is undefined. Add a row, or say that they get the
+   provider-API limit.
+2. **Most database calls ignore the context.**
+   - 239 `Query`/`QueryRow`/`Exec`/`Begin` calls without a context, against
+     69 with one (`backend/storage`, `api`, `engine`, `auth`).
+   - A request waiting for a pooled connection through one of them waits
+     past its budget.
+   - AC-A9's 503 is therefore met only by answering independently of the
+     handler goroutine, and that goroutine keeps waiting.
+   - AC-A7 should count such goroutines as abandoned units. §3's "no server
+     resource is held indefinitely" should be read as "bounded by the pool's
+     turnover".
+3. **"The Sentry ingest host" in D-8 is not named.** The web DSN is a
+   build-time `VITE_SENTRY_DSN` with a hard-coded fallback (`src/lib/sentry.ts:55`).
+   State whether `connect-src` derives from the DSN the frontend image was
+   built with or only from AC-B4's extra origins.
+4. **Both Part A and Part B change `docker/fileserver/main.go`.** Part A adds
+   timeouts and a health mode (A1, A16). Part B needs the injected script
+   allowed by the CSP (AC-B3(b), Q-P2). "A ∥ B" stays true, but §11 should
+   name the shared file and which part owns the injection change.
+5. **The ICS cap is not measured.** 10 MiB / 15 s is "a few MiB
+   *(not measured)*". No AC says what the user sees when a real calendar
+   exceeds either limit. The fetch "fails", but the sync response and any
+   recorded state are not specified.
+6. **MCP documentation.**
+   - `README.md:56` says "running via docker-compose" and needs the opt-in
+     step, not only the bearer header (AC-C4).
+   - `docs/security.md:81` (finding 1: "`MCP_AUTH_TOKEN` is optional") is
+     also stale and is not in AC-B10's checklist.
+7. **AC-B3's negative control says "exactly one" `img-src` violation.** That
+   is fragile if the page renders the avatar in more than one element.
+   "At least one, all `img-src`, none other" proves the same thing.
+
+### Criteria I could not falsify
+
+None new. AC-A4 is falsifiable, but it fails as written (Blocking 1).
+
+### Citations I checked and found wrong
+
+- F-A5: "Schedule suggest (`routes.go:93`) and team availability
+  (`routes.go:240`) call the engine with free/busy, bounded per query by the
+  5 s above."
+  - Team availability lists each member's events one after another with the
+    request context and no 5 s cap (`engine/team_availability.go:78-90`).
+  - Suggest calls `getFreeBusy` on a calendar client directly
+    (`engine/smart_schedule.go:71`), not through `freebusy_service.go:133`.
+- I re-checked these rev-1 citations and they are correct:
+  - backend: `handlers_microsoft_auth.go:69`, `handlers_sso.go:155`,
+    `handlers_auth.go:64`, `booking.go:277,330`, `handlers_teams.go:214,650`,
+    `webcal_client.go:60-70`, `personal_blocker.go:19`,
+    `daily_recap.go:472,501`, `outlook_client.go:56`, `zoom.go:50`,
+    `teams.go:59`, `transport.go:93-98`, `handlers_analytics.go:93-94`,
+    `handlers_habits.go:382-383`, `handlers_manager.go:97-98`;
+  - e2e: `e2e/seed/seed.sql:70-78`;
+  - web: `client.ts:318,590-591,1230`, `schedulingLinks.ts:690-692`,
+    `sentry.ts:55`.
+
+### Consumers this breaks
+
+- Public bookers and hosts. A booking create cut by the budget or the drain
+  can double-book on retry (Blocking 2).
+- `README.md:56-63`. Its instructions stop working once MCP is opt-in
+  (Non-blocking 6).
+- None found for the docs-service removal.
