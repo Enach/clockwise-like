@@ -242,6 +242,57 @@ func TestDecideProbe(t *testing.T) {
 	}
 }
 
+// Spec challenge r2, non-blocking 2: a probe sentence names no organisation
+// and no admin in Part 1, whatever the caller's organisation, whatever is
+// probed. Before revision 2.1 a direct probe of "organization" said "Your
+// organisation has no AI set up in Paceday" or "there is no organisation AI
+// to test".
+func TestDecideProbe_SentencesNameNoOrganisation(t *testing.T) {
+	str := func(v string) *string { return &v }
+	stored := map[string]*configuredSettings{
+		"organization": (&settingsForTest{provider: "organization"}).settings(),
+		"off":          (&settingsForTest{provider: ""}).settings(),
+		"openai":       (&settingsForTest{provider: "openai"}).settings(),
+		"ollama":       (&settingsForTest{provider: "unsupported", stored: "ollama"}).settings(),
+	}
+	reqs := []ProbeRequest{
+		{},
+		{Key: str("")},
+		{Provider: str("organization")},
+		{Provider: str("organization"), Key: str("sk-x")},
+		{Provider: str("")},
+		{Provider: str("anthropic")},
+		{Provider: str("bedrock"), Key: str("")},
+	}
+	seen := map[string]bool{}
+	for name, s := range stored {
+		for _, inOrg := range []bool{true, false} {
+			for _, req := range reqs {
+				d, bad := DecideProbe(s, inOrg, req)
+				if bad != "" || d.NotConfigured == nil {
+					continue
+				}
+				seen[d.NotConfigured.Reason] = true
+				msg := strings.ToLower(d.NotConfigured.Message)
+				for _, word := range []string{"organisation", "organization", "admin"} {
+					if strings.Contains(msg, word) {
+						t.Errorf("%s, inOrg=%v, probe %+v: sentence %q says %q", name, inOrg, req, d.NotConfigured.Message, word)
+					}
+				}
+			}
+		}
+	}
+	for _, r := range []string{ReasonOff, ReasonNothingConfigured, ReasonNeedsKey, ReasonProviderRemoved} {
+		if !seen[r] {
+			t.Errorf("no probe answered %s; the sentence for it was not checked", r)
+		}
+	}
+	d, _ := DecideProbe(stored["openai"], true, ProbeRequest{Provider: str("organization")})
+	if want := "There is no AI provider to test. Choose a provider and add your key in Settings."; d.NotConfigured == nil || d.NotConfigured.Message != want {
+		t.Errorf("organization probe = %+v, want %q", d.NotConfigured, want)
+	}
+}
+
 // A stored value that is neither Ollama nor any known choice (a direct
 // database edit) is a removed provider too, named generically.
 func TestDecideSaved_UnknownStoredProviderIsRemoved(t *testing.T) {

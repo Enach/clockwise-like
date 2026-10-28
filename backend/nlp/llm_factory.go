@@ -41,8 +41,9 @@ type Decision struct {
 }
 
 // DecideSaved decides the caller's saved choice, as parse and brief refresh
-// use it. inOrg says whether the caller belongs to an organisation (it only
-// changes who can fix a not-configured answer).
+// use it. inOrg says whether the caller belongs to an organisation. In Part 1
+// it changes no decision and no sentence (no organisation can turn AI on
+// yet); it is reported as aiStatus.inOrganization and kept for Part 2.
 func DecideSaved(s *storage.Settings, inOrg bool) Decision {
 	return decide(s, inOrg, s.LLMProvider, nil, nil, true)
 }
@@ -100,21 +101,22 @@ func DecideProbe(s *storage.Settings, inOrg bool, req ProbeRequest) (d Decision,
 
 // decide applies the table to choice. key, when not nil, replaces the key
 // bound to the provider (a probe's submitted key, "" meaning none); model,
-// when not nil, is the openai/anthropic model.
+// when not nil, is the openai/anthropic model. inOrg changes nothing in
+// Part 1 (see DecideSaved).
 func decide(s *storage.Settings, inOrg bool, choice string, key, model *string, saved bool) Decision {
 	switch {
 	case choice == storage.LLMChoiceOff:
-		return notConfigured(ReasonOff, "", inOrg, saved, s)
+		return notConfigured(ReasonOff, "", saved, s)
 	case choice == storage.LLMChoiceOrganization:
 		// Part 1: no organisation configuration exists (row 6).
-		return notConfigured(ReasonNothingConfigured, "", inOrg, saved, s)
+		return notConfigured(ReasonNothingConfigured, "", saved, s)
 	case IsKeyProvider(choice):
 		k := s.LLMAPIKeys.For(choice)
 		if key != nil {
 			k = *key
 		}
 		if k == "" {
-			return notConfigured(ReasonNeedsKey, choice, inOrg, saved, s)
+			return notConfigured(ReasonNeedsKey, choice, saved, s)
 		}
 		m := ""
 		if model != nil {
@@ -122,7 +124,7 @@ func decide(s *storage.Settings, inOrg bool, choice string, key, model *string, 
 		}
 		return Decision{Provider: choice, Client: newProviderClient(choice, s, k, m)}
 	default:
-		return notConfigured(ReasonProviderRemoved, "", inOrg, saved, s)
+		return notConfigured(ReasonProviderRemoved, "", saved, s)
 	}
 }
 
@@ -156,17 +158,17 @@ func newProviderClient(provider string, s *storage.Settings, key, model string) 
 // configure it yet, so no answer names one, in an organisation or not (spec
 // revision 2; challenge of revision 1, Blocking 1). EnablerOrganizationAdmin
 // stays in the contract's set for Part 2.
-func notConfigured(reason, provider string, inOrg, saved bool, s *storage.Settings) Decision {
+func notConfigured(reason, provider string, saved bool, s *storage.Settings) Decision {
 	return Decision{Provider: provider, NotConfigured: &storage.AINotConfigured{
 		Reason: reason, Provider: provider, Enablers: []string{EnablerUser},
-		Message: notConfiguredMessage(reason, provider, inOrg, saved, s),
+		Message: notConfiguredMessage(reason, provider, saved, s),
 	}}
 }
 
 // notConfiguredMessage is the sentence for the user. For the saved choice it
 // says AI features are off; for another probed choice it describes only that
 // choice (contract AINotConfigured.message). It never carries a key.
-func notConfiguredMessage(reason, provider string, inOrg, saved bool, s *storage.Settings) string {
+func notConfiguredMessage(reason, provider string, saved bool, s *storage.Settings) string {
 	name := displayNames[provider]
 	if saved {
 		switch reason {
@@ -186,10 +188,9 @@ func notConfiguredMessage(reason, provider string, inOrg, saved bool, s *storage
 	case ReasonNeedsKey:
 		return fmt.Sprintf("%s needs an API key. Enter one to test it.", name)
 	case ReasonNothingConfigured:
-		if inOrg {
-			return "Your organisation has no AI set up in Paceday, so there is nothing to test. Choose a provider and enter your own key."
-		}
-		return "You do not belong to an organisation, so there is no organisation AI to test. Choose a provider and enter your own key."
+		// Part 1: no organisation can turn AI on yet, so the sentence names
+		// none, in an organisation or not (spec challenge r2, non-blocking 2).
+		return "There is no AI provider to test. Choose a provider and add your key in Settings."
 	default:
 		return removedName(s) + " is no longer supported, so it cannot be tested. Choose another provider."
 	}

@@ -468,7 +468,10 @@ paths:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
         '500':
           description: >-
-            Parse() returned an error. Body: `{"error":"internal error"}`. The detail is
+            Parse() returned an error, including (NEW-llm-bring-your-own) when the
+            caller's settings could not be loaded or the caller's organisation membership
+            could not be read, so which AI configuration applies could not be decided; in
+            that case nothing was sent. Body: `{"error":"internal error"}`. The detail is
             written to the server log and Sentry only (PAC-21). "AI not configured" is
             never a 500; it is the 200 with `not_configured`.
           content:
