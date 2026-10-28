@@ -477,11 +477,6 @@ const (
 	Apiadminssostepup SsoWriteStepupRequiredStepupUrl = "/api/admin/sso/stepup"
 )
 
-// Defines values for SsoWriteStepupRequiredWithoutStepup.
-const (
-	SsoConfigurationWrites SsoWriteStepupRequiredWithoutStepup = "sso_configuration_writes"
-)
-
 // Defines values for TeamInviteStatus.
 const (
 	Accepted TeamInviteStatus = "accepted"
@@ -2842,9 +2837,11 @@ type SsoWriteMembershipRequiredError string
 // anywhere, the client explains `without_stepup` and `stepup_scopes`
 // and lets the user decline, in which case nothing is navigated and the
 // app keeps working. If the user goes ahead, the client asks which
-// provider administers their organisation, appends `?provider=google`
-// or `?provider=microsoft` to `stepup_url` and navigates the browser
-// there.
+// provider administers their organisation, offering only the keys of
+// `stepup_scopes`, appends `?provider=google` or `?provider=microsoft`
+// to `stepup_url` and navigates the browser there. When
+// `stepup_scopes` is empty no step-up can be started on this
+// deployment, and the client offers none.
 type SsoWriteStepupRequired struct {
 	Error SsoWriteStepupRequiredError `json:"error"`
 
@@ -2852,16 +2849,28 @@ type SsoWriteStepupRequired struct {
 	// identity scopes (`openid`, `email`, `profile`, and Microsoft's
 	// `User.Read`, which sign-in already requests). Requested only by
 	// startSsoAdminStepup, never at sign-in; the tokens are discarded
-	// after the check. Google: the read-only Directory user scope
-	// (`https://www.googleapis.com/auth/admin.directory.user.readonly`).
-	// Microsoft: organisation and directory-role read scopes
+	// after the check.
+	//
+	// Normative rule: each list is exactly what startSsoAdminStepup
+	// requests from that provider beyond the identity scopes, so a
+	// client shows it as given and does not hard-code it. A provider's
+	// key is present if and only if that provider's step-up is
+	// configured on this deployment, that is, startSsoAdminStepup would
+	// not answer 503 for it (spec §9 D-2 and D-9: no OAuth client for
+	// the provider, or `APP_URL` unset). A deployment with only Google
+	// configured sends only `google`; an empty object means no step-up
+	// can be started on this deployment.
+	//
+	// Today's values, informative only (the exact Microsoft list is
+	// spec OQ-2's open technical sub-question and may narrow): Google,
+	// the read-only Directory user scope
+	// (`https://www.googleapis.com/auth/admin.directory.user.readonly`);
+	// Microsoft, organisation and directory-role read scopes
 	// (`Organization.Read.All`, `RoleManagement.Read.Directory`, which a
-	// tenant administrator may have to consent to). Each list is exactly
-	// what startSsoAdminStepup requests beyond those, so a client shows
-	// it as given.
+	// tenant administrator may have to consent to).
 	StepupScopes struct {
-		Google    []string `json:"google"`
-		Microsoft []string `json:"microsoft"`
+		Google    *[]string `json:"google,omitempty"`
+		Microsoft *[]string `json:"microsoft,omitempty"`
 	} `json:"stepup_scopes"`
 
 	// StepupUrl Path of startSsoAdminStepup on the API's origin, without the
@@ -2877,12 +2886,17 @@ type SsoWriteStepupRequired struct {
 	StepupUrl SsoWriteStepupRequiredStepupUrl `json:"stepup_url"`
 
 	// WithoutStepup What the caller cannot do without the step-up, for the client to
-	// explain before it navigates. `sso_configuration_writes`: no SSO
-	// configuration write (create, update or delete); only a deployment
-	// operator on the break-glass list can write without it. Nothing
-	// else the user already has is lost. Values may be added; a client
-	// ignores one it does not know.
-	WithoutStepup []SsoWriteStepupRequiredWithoutStepup `json:"without_stepup"`
+	// explain before it navigates. An open list of codes: the item
+	// schema is a non-empty string, not an enum, so a value added later
+	// (for example by PAC-68 if it reuses this step-up) does not make
+	// the body fail validation in a client generated from this
+	// revision. A client explains the codes it knows and ignores any
+	// other. The only value the server sends today is
+	// `sso_configuration_writes`: no SSO configuration write (create,
+	// update or delete); only a deployment operator on the break-glass
+	// list can write without it. Nothing else the user already has is
+	// lost.
+	WithoutStepup []string `json:"without_stepup"`
 }
 
 // SsoWriteStepupRequiredError defines model for SsoWriteStepupRequired.Error.
@@ -2899,9 +2913,6 @@ type SsoWriteStepupRequiredError string
 // (`VITE_API_BASE_URL`), and the session cookie is host-only on
 // the API host, so the page's origin can lack the session.
 type SsoWriteStepupRequiredStepupUrl string
-
-// SsoWriteStepupRequiredWithoutStepup defines model for SsoWriteStepupRequired.WithoutStepup.
-type SsoWriteStepupRequiredWithoutStepup string
 
 // SuggestedSlot engine.SuggestedSlot.
 type SuggestedSlot struct {
