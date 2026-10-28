@@ -263,7 +263,6 @@ const (
 // Defines values for LLMDestinationRefusalConfiguration.
 const (
 	LLMDestinationRefusalConfigurationOrganization LLMDestinationRefusalConfiguration = "organization"
-	LLMDestinationRefusalConfigurationOwn          LLMDestinationRefusalConfiguration = "own"
 )
 
 // Defines values for LLMDestinationRefusalProperty.
@@ -1763,7 +1762,7 @@ type LLMApiKeysSet struct {
 
 // LLMDestinationRefusal PAC-66 and PAC-66-B. Body of the 422 from POST /api/llm/test: the probe would have sent the caller's key to a destination not approved for that provider, so no request was sent. A superset of `SchedulingErrorResponse` (`error` is the same member, so a client that reads only `error` renders it unchanged). Never carries a key.
 type LLMDestinationRefusal struct {
-	// Configuration NEW-llm-bring-your-own Part 2, contract revision 2 (spec P2-AC-41). `organization` when the refused destination is the organisation's configuration's (row 4): `error` then says the organisation's AI destination is not approved on this deployment and that an administrator of the organisation can fix it, and never tells the caller to change their own Settings. Absent means the caller's own configuration (as before Part 2).
+	// Configuration NEW-llm-bring-your-own Part 2, contract revision 2 (spec P2-AC-41). `organization` when the refused destination is the organisation's configuration's (row 4): `error` then says the organisation's AI destination is not approved on this deployment and that an administrator of the organisation can fix it, and never tells the caller to change their own Settings. ABSENT for the caller's own configuration, exactly as before Part 2: the server never sends `own` here (contract revision 3, challenge revision 2 NB-1; the enum is narrowed so it cannot), so a 422 about the caller's own destination keeps Part 1's three keys (`backend/api/pac66_llm_destination_test.go` passes unchanged).
 	Configuration *LLMDestinationRefusalConfiguration `json:"configuration,omitempty"`
 
 	// Error A human-readable sentence saying what was refused and why.
@@ -1776,7 +1775,7 @@ type LLMDestinationRefusal struct {
 	Reason LLMDestinationRefusalReason `json:"reason"`
 }
 
-// LLMDestinationRefusalConfiguration NEW-llm-bring-your-own Part 2, contract revision 2 (spec P2-AC-41). `organization` when the refused destination is the organisation's configuration's (row 4): `error` then says the organisation's AI destination is not approved on this deployment and that an administrator of the organisation can fix it, and never tells the caller to change their own Settings. Absent means the caller's own configuration (as before Part 2).
+// LLMDestinationRefusalConfiguration NEW-llm-bring-your-own Part 2, contract revision 2 (spec P2-AC-41). `organization` when the refused destination is the organisation's configuration's (row 4): `error` then says the organisation's AI destination is not approved on this deployment and that an administrator of the organisation can fix it, and never tells the caller to change their own Settings. ABSENT for the caller's own configuration, exactly as before Part 2: the server never sends `own` here (contract revision 3, challenge revision 2 NB-1; the enum is narrowed so it cannot), so a 422 about the caller's own destination keeps Part 1's three keys (`backend/api/pac66_llm_destination_test.go` passes unchanged).
 type LLMDestinationRefusalConfiguration string
 
 // LLMDestinationRefusalProperty The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. When `configuration` is `organization`, it names the organisation's stored value (`llmBaseUrl` stands for the organisation's `baseUrl`). `gcpLocation`, `awsProfile` and `ollamaBaseUrl` are gone with the settings they named (NEW-llm-bring-your-own).
@@ -2283,7 +2282,7 @@ type OrganizationAIConfiguration struct {
 	// ChangeableBy Who can change this: an administrator of the organisation proven per change by PAC-50's step-up (purpose `llm_org_key_write`) or the deployment's break-glass list. Never names a person.
 	ChangeableBy OrganizationAIConfigurationChangeableBy `json:"changeableBy"`
 
-	// ConfigurationVersion `0` when no configuration was ever set. Advances by one on every change of `provider`, every write of `apiKey` (keys are never compared), and every change of a destination property (spec P2-D4), never otherwise. A member's confirmation is for one version (confirmOrganizationAI); an administrator's change names the version it was made from (patchOrganizationAI).
+	// ConfigurationVersion `0` when no configuration was ever set. Advances by one on every change of `provider` (including the removal, `provider: ""`), every write of `apiKey` (keys are never compared), and every change of a destination property (spec P2-D4), never otherwise. Never reused within an organisation: removal keeps the count, so a configuration set after a removal never has a version an earlier configuration had (contract revision 3, spec P2-D17, P2-AC-42). A version fixes `provider`, the key and the destination properties; `model` and `personalKeysAllowed` are not part of it, and a request in row 4 sends the model read together with the version. A member's confirmation is for one version (confirmOrganizationAI); an administrator's change names the version it was made from (patchOrganizationAI).
 	ConfigurationVersion int  `json:"configurationVersion"`
 	Configured           bool `json:"configured"`
 
@@ -2320,7 +2319,9 @@ type OrganizationAIConfigurationProvider string
 //   - `provider: ""` removes the whole configuration, key included. No
 //     other property may be sent with it (400), so the removal is
 //     unambiguous (`configurationVersion` excepted); the stored
-//     `personalKeysAllowed` is kept.
+//     `personalKeysAllowed` is kept, and so is the version count: the
+//     removal advances `configurationVersion` and the next setup names
+//     that version (never reused, contract revision 3).
 //   - `apiKey: ""` removes only the key (the configuration is then not
 //     complete; followers answer `nothing_configured`, P2-AC-13). A
 //     non-empty `apiKey` replaces the key for the provider after this
@@ -2341,10 +2342,12 @@ type OrganizationAIConfigurationUpdate struct {
 	AwsRegion       *string `json:"awsRegion,omitempty"`
 	AzureApiVersion *string `json:"azureApiVersion,omitempty"`
 	AzureDeployment *string `json:"azureDeployment,omitempty"`
-	AzureEndpoint   *string `json:"azureEndpoint,omitempty"`
-	BaseUrl         *string `json:"baseUrl,omitempty"`
 
-	// ConfigurationVersion Contract revision 2 (challenge B-1). The `configurationVersion` of the configuration the administrator was shown (getOrganizationAI; `0` for an organisation that never set one). Not equal to the current version: the 409, checked after the body 400s and before the proof is consumed.
+	// AzureEndpoint Contract revision 3 (spec P2-D18): for the organisation, `https://<host>` with at most one trailing `/` and no path, query, fragment or userinfo, because every member reads it; otherwise the 400 (shape). The host must be approved as for a user's (PAC-66).
+	AzureEndpoint *string `json:"azureEndpoint,omitempty"`
+	BaseUrl       *string `json:"baseUrl,omitempty"`
+
+	// ConfigurationVersion Contract revision 2 (challenge B-1). The `configurationVersion` of the configuration the administrator was shown (getOrganizationAI; `0` for an organisation that never set one). Required: an absent value is the 400, never read as `0` (contract revision 3). Not equal to the current version: the 409, checked early (step 2a) and decided by the atomic conditional write (step 4); a conflict never consumes the proof.
 	ConfigurationVersion int                                        `json:"configurationVersion"`
 	Model                *string                                    `json:"model,omitempty"`
 	PersonalKeysAllowed  *bool                                      `json:"personalKeysAllowed,omitempty"`

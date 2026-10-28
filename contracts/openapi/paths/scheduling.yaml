@@ -455,12 +455,18 @@ paths:
         (spec P2-AC-41). The MCP tool `clockwise_parse_command` receives the
         same body; no MCP tool confirms (spec P2-AC-33).
 
-        **No key in provider error text (spec §3.1a, P2-AC-39).** When the
-        provider call fails, the `error` sentence of the 200 and anything
-        logged or reported to Sentry have every occurrence of the
-        organisation's key and of the caller's keys replaced by `[redacted]`
-        before they leave the server, including when a gateway echoes the key
-        in its error body.
+        **No provider error text reaches the caller from the organisation's
+        configuration (spec §3.1a, P2-D16, P2-AC-39; contract revision 3).**
+        A provider or gateway failure of the parse is the 500 below with the
+        fixed `internal error`, in every row (as before Part 2), so no answer
+        carries provider or gateway error text. The provider text goes only
+        to the server log and Sentry, and before it does every occurrence of
+        every key sent with this request (the confirmed version's key in
+        row 4, even if an administrator has replaced it since) and of the
+        caller's own keys (stored and submitted) is replaced by
+        `[redacted]`. That replacement is of exact strings: an encoded or
+        partial echo of a key can still reach the server log or Sentry
+        (operator-only; spec §5), never an answer.
 
         API-080 is fixed here (spec AC-35, D-20): a result with no time range
         carries neither `range_start` nor `range_end`, never
@@ -706,14 +712,23 @@ paths:
         personal keys is row 10 (`[user]`) or 11 (`[organization_admin]`),
         decided as the saved choice. Row 9 is reserved and never answered.
 
-        **No key in provider error text (spec §3.1a, P2-AC-39).** The 502's
-        upstream error string is redacted of the organisation's key as well
-        as the caller's keys (stored and submitted) before it is logged or
-        reported to Sentry, including when a gateway echoes the key.
+        **No key in provider error text (spec §3.1a, P2-AC-39; contract
+        revision 3).** The 502's body is the fixed `upstream provider error`
+        in every row, so no answer carries provider or gateway error text.
+        The upstream error string goes only to the server log and Sentry,
+        after every occurrence of every key sent with this request (in row 4
+        the confirmed version's key, even if replaced since) and of the
+        caller's keys (stored and submitted) is replaced by `[redacted]`
+        (exact strings; an encoded echo can reach those operator-only
+        surfaces, spec §5).
 
         **Order of decisions.** (1) The body's shape: the 400. (1a, Part 2)
         Personal keys forbidden and the body names a provider or carries
-        `llmApiKey`: the 409. (2) Which configuration, as above: when there is
+        `llmApiKey`: the 409. Step 1a wins over every later step, so a
+        confirmed follower's `{"llmApiKey":"…"}` or
+        `{"llmProvider":"organization","llmApiKey":"…"}` while forbidden is
+        this 409, never the 400 of step 2a (spec §3.5, P2-AC-20; contract
+        revision 3). (2) Which configuration, as above: when there is
         none, the 409 and nothing is sent; (2a, Part 2) when it is the
         organisation's (row 4) and the body carries `llmModel` (or, with
         personal keys allowed, `llmApiKey`), the 400. (3) The destination check: the 422 and nothing
@@ -943,8 +958,9 @@ paths:
             the provider rejects, spec D-13), an unusable answer, or a redirect from an
             approved destination, which is never followed. Body:
             `{"error":"upstream provider error"}`. The upstream error string is NOT
-            returned: it is redacted of every key and written to the server log and
-            Sentry only (PAC-21). There is no credential acquisition step any more, so
+            returned: it is redacted of every key sent with the request and of the
+            caller's keys, and written to the server log and Sentry only (PAC-21;
+            Part 2 spec §3.1a). There is no credential acquisition step any more, so
             no 502 comes from loading a deployment credential. It is never used for a
             destination refusal (422) or for "AI not configured" (409).
           content:
@@ -976,8 +992,13 @@ paths:
         thing a reader learns about it. An organisation that never set a
         configuration answers `configured: false`, `keySet: false`,
         `personalKeysAllowed: true`, `configurationVersion: 0` and no
-        `provider`. A client keeps the `configurationVersion` it displayed:
-        patchOrganizationAI and confirmOrganizationAI both name it.
+        `provider`. An organisation whose configuration was removed
+        (`provider: ""`) answers the same except that `configurationVersion`
+        is the removal's version (never `0` again; versions are never reused
+        within an organisation, contract revision 3, spec P2-D17) and
+        `personalKeysAllowed` and `updatedAt` are as stored. A client keeps
+        the `configurationVersion` it displayed: patchOrganizationAI and
+        confirmOrganizationAI both name it.
 
         Checks: membership (403), then 200. Read-only: nothing is consumed,
         written or recorded.
@@ -1006,6 +1027,15 @@ paths:
                     keySet: false
                     personalKeysAllowed: true
                     configurationVersion: 0
+                    changeableBy: organization_admin
+                removed:
+                  summary: (contract revision 3) after provider "" removed a configuration at version 4
+                  value:
+                    configured: false
+                    keySet: false
+                    personalKeysAllowed: true
+                    configurationVersion: 5
+                    updatedAt: '2026-11-03T10:02:00Z'
                     changeableBy: organization_admin
         '401':
           description: No/invalid JWT (from requireAuth, text/plain).
@@ -1053,8 +1083,10 @@ paths:
            SsoWriteMembershipRequired, before anything else (break-glass
            included).
 
-        2. The body: every 400 below, before any proof is looked at, so a
-           refused body leaves a live grant unconsumed (P2-AC-4).
+        2. The body's shape: every 400 that can be decided from the body
+           alone (the "shape" list on the 400), before anything stored is
+           read and before any proof is looked at, so a refused body leaves
+           a live grant unconsumed (P2-AC-4).
 
         2a. The version (contract revision 2, challenge B-1; spec P2-D15,
             P2-AC-40). `configurationVersion` must equal the stored
@@ -1062,10 +1094,17 @@ paths:
             Otherwise the 409 OrganizationAIConsentConflict with `reason:
             configuration_changed` and `organization` the current read;
             nothing is stored, nothing is recorded, and no proof is looked at
-            or consumed, so a stale form costs no step-up. Checked after
-            every body 400 and before step 3.
+            or consumed, so a stale form costs no step-up. This is an early
+            answer for the common case; step 4 repeats the comparison
+            atomically, and step 4's is the one that decides.
 
-        3. Authorisation, the last step before the write: the caller's newest
+        2b. The body against what is stored (contract revision 3, challenge
+            revision 2 non-blocking 3): every 400 on the "state" list on the
+            400, decided against the configuration at the version just
+            checked. A stale form therefore gets the 409 of 2a, never a 400
+            that only the newer configuration explains.
+
+        3. Authorisation: the caller's newest
            live grant for (caller, caller's organisation) **whose purpose is
            `llm_org_key_write`** is consumed in one statement; a grant of any
            other purpose (`sso_write`) is never selected and stays live, and
@@ -1084,11 +1123,35 @@ paths:
            change is recorded with the session's issue time, and a further
            change by the same address with a session of the same issue time
            is the 403 OrganizationAIWriteFreshLoginRequired, even inside the
-           10 minutes. PAC-50's SSO write gate is unchanged (its break-glass
+           10 minutes. The check that no change was recorded for (address,
+           session issue time) and the recording of this one are one atomic
+           step (at most one record per pair, enforced by storage), so two
+           concurrent changes with one session cannot both pass (contract
+           revision 3, challenge revision 2 non-blocking 2). Sessions carry
+           no identifier besides `iat`, which has one-second resolution: two
+           sign-ins by the same address within one second share an issue
+           time and count as one session, so the second is refused. That
+           fails safe. PAC-50's SSO write gate is unchanged (its break-glass
            rule still allows several SSO writes per fresh session).
 
-        4. The write. A storage failure after step 3 is the 500, the
-           configuration is unchanged and the grant stays consumed (P2-AC-5).
+        4. The write (contract revision 3, challenge revision 2 B-1'; spec
+           P2-D15). Steps 3 and 4 run in ONE transaction: the grant
+           consumption (or the break-glass record) and one atomic
+           conditional write that stores the change only if the stored
+           version still equals `configurationVersion`. The conditional
+           write also covers the first setup: when the organisation has no
+           stored configuration, it inserts only if none was inserted
+           meanwhile, and `configurationVersion` must be `0`. When the
+           condition fails (another administrator's change was stored
+           between step 2a and here), the transaction is rolled back and the
+           answer is the 409 OrganizationAIConsentConflict
+           `configuration_changed` with the current read: nothing stored,
+           nothing recorded, the grant NOT consumed and a break-glass session
+           NOT marked used. When storage fails, the transaction is rolled
+           back the same way and the answer is the 500: the configuration is
+           unchanged and the grant is still live (P2-AC-5, revision 3;
+           revision 2 said the grant stayed consumed). So a grant is spent
+           exactly when a change is stored.
 
         Being a team owner, or having made the last change, proves nothing.
         Every successful change is recorded for operators (who, when,
@@ -1096,7 +1159,8 @@ paths:
         never the key; P2-AC-6). No API reads that record.
 
         **What a change does to members** (spec §3.1): `configurationVersion`
-        advances by one when the change alters `provider`, writes `apiKey`
+        advances by one when the change alters `provider` (including
+        `provider: ""`, the removal), writes `apiKey`
         (any present `apiKey`, including `""` and including a value equal to
         the stored key: the server never compares keys, so re-entering the
         same key re-asks members), or alters any destination property
@@ -1105,15 +1169,31 @@ paths:
         organisation must then confirm again before anything is sent to it
         (spec P2-D4, factory-assumed pending the owner, OQ-P2-1; P2-AC-23). A
         change of only `model` and/or `personalKeysAllowed` does not advance
-        it. Forbidding personal keys moves nobody onto this configuration:
+        it, so such a change is never a conflict for another administrator's
+        change and, for `model` and `personalKeysAllowed`, the later change
+        wins. Forbidding personal keys moves nobody onto this configuration:
         members on their own provider answer row 10 or 11 until they choose
         `llmProvider: organization` and confirm (spec P2-D2, current default).
+
+        **A version is never reused within an organisation** (contract
+        revision 3, spec P2-D17, P2-AC-42), including across `provider: ""`
+        and a later setup: the removal empties the configuration and keeps
+        its version count, so the next setup names the removal's version
+        and gets the next one. A confirmation of a removed configuration
+        therefore never matches a later configuration.
 
         Approved destinations: the organisation's `baseUrl`, `azureEndpoint`
         and `awsRegion` are checked on write with exactly the rules of
         patchSettings for a user's (PAC-66, PAC-66-B, owner O-10 path
         prefixes), for the organisation's provider, and again on every send
-        (`testLLMConnection`).
+        (`testLLMConnection`). Because every member reads them (spec
+        P2-D18, contract revision 3), the organisation's addresses are also
+        held to a stricter shape: `baseUrl` must be exactly an approved
+        origin plus that entry's path prefix with no query, fragment or
+        userinfo (the user rule, which leaves no room for a credential in
+        the path); `azureEndpoint` must be `https://<host>` with at most one
+        trailing `/` and no path, query, fragment or userinfo (stricter than
+        a user's, whose path is not checked on write).
       requestBody:
         required: true
         content:
@@ -1148,35 +1228,61 @@ paths:
         '400':
           description: >
             The body is refused and nothing is stored; a live grant is not
-            consumed (P2-AC-4). JSON error shape (writeError). Messages:
-            `invalid JSON` (unreadable, or not an object, or `null`);
-            `unknown property: <name>`;
-            `invalid JSON: <property> has the wrong type`;
-            `<property> must not be null`;
-            `configurationVersion is required: send the version you were shown`
-            (missing, or not an integer, or below 0);
-            `send at least one property to change` (only
+            consumed (P2-AC-4). JSON error shape (writeError). Exactly one
+            message per request: the first failing check in the order below.
+
+            Shape (step 2, decided from the body alone, before the version
+            check):
+            (1) `invalid JSON` (unreadable, or not an object, or `null`);
+            (2) `unknown property: <name>` (the first unknown name in body
+            order);
+            (3) `configurationVersion`, checked before every other property,
+            one message per case (contract revision 3, challenge revision 2
+            non-blocking 4): absent -
+            `configurationVersion is required: send the version you were shown`;
+            `null` - `configurationVersion must not be null`; not a JSON
+            number, or a number with a fraction -
+            `invalid JSON: configurationVersion has the wrong type`; below
+            0 - `configurationVersion must be 0 or more`. An absent
+            `configurationVersion` is never read as `0`: the server decodes
+            the raw body to tell absent from `0` (the generated `int` field
+            cannot), so a body without it for an organisation at version 0
+            is the 400, not a write (P2-AC-4);
+            (4) `<property> must not be null`, then
+            `invalid JSON: <property> has the wrong type` (other properties,
+            in body order);
+            (5) `send at least one property to change` (only
             `configurationVersion`);
-            `provider must be one of: "", openai, anthropic, azure_openai, bedrock, vertex`;
-            `apiKey is required when provider changes` (spec P2-D7: a key is
-            never carried from one provider to another);
-            `<property> requires a provider` for `apiKey` (non-empty), `model`
-            and every destination property (`baseUrl`, `azureEndpoint`,
-            `azureDeployment`, `azureApiVersion`, `awsRegion`) when no
-            provider is stored and the body sets none (contract revision 2,
-            challenge non-blocking 2);
-            `provider "" removes the whole configuration; send no other property with it`
+            (6) `provider must be one of: "", openai, anthropic, azure_openai, bedrock, vertex`;
+            (7) `provider "" removes the whole configuration; send no other property with it`
             (`configurationVersion` excepted);
-            `<property> does not apply to <provider>` (for example
+            (8) `azureEndpoint must be https://<host> with no path, query, fragment or credentials`
+            (a non-empty organisation `azureEndpoint`; spec P2-D18).
+
+            State (step 2b, decided against the stored configuration at the
+            named version, after the version check):
+            (9) `apiKey is required when provider changes` (spec P2-D7: a
+            key is never carried from one provider to another);
+            (10) `<property> requires a provider` for `apiKey` (non-empty),
+            `model` and every destination property (`baseUrl`,
+            `azureEndpoint`, `azureDeployment`, `azureApiVersion`,
+            `awsRegion`) when no provider is stored and the body sets none
+            (contract revision 2, challenge non-blocking 2);
+            (11) `<property> does not apply to <provider>` (for example
             `azureEndpoint` with `openai`, and `model does not apply to
             azure_openai`, whose deployment names the model; spec §3.2:
-            refused, not ignored);
-            and the destination messages of patchSettings for `baseUrl`,
-            `azureEndpoint` and `awsRegion`, naming this body's property.
-            Writes validate only what they change: a destination value equal to
-            the stored one is not re-checked. Every 400 is decided before the
-            version check (2a) and before any proof. The response never
-            contains the submitted or a stored key.
+            refused, not ignored), against the provider after this write;
+            (12) the destination messages of patchSettings for `baseUrl`,
+            `azureEndpoint` and `awsRegion`, naming this body's property
+            (for `baseUrl` this includes a query, fragment, userinfo or a
+            path other than an approved entry's prefix). Writes validate
+            only what they change: a destination value equal to the stored
+            one is not re-checked.
+
+            So a stale form gets the 409, never a state 400 (P2-AC-40), and
+            a shape error gets its 400 whatever version it names. No 400
+            looks at a proof. The response never contains the submitted or a
+            stored key.
           content:
             application/json:
               schema:
@@ -1208,15 +1314,19 @@ paths:
                 $ref: '#/components/schemas/OrganizationAIWriteForbiddenResponse'
         '409':
           description: >
-            Contract revision 2 (challenge B-1; spec P2-D15, P2-AC-40).
-            `configurationVersion` is not the stored configuration's current
-            version: another administrator changed it after this one was
-            shown it. `reason` is `configuration_changed` and `organization`
-            the current read (keyless), so the client shows what is true now.
-            Nothing is stored or recorded, and no grant is consumed: the
-            check runs after the body 400s and before the proof (step 2a).
-            Never `organization_not_configured` here: a change may be made to
-            an incomplete configuration.
+            Contract revision 2 (challenge B-1; spec P2-D15, P2-AC-40) and
+            revision 3 (challenge revision 2 B-1'). `configurationVersion` is
+            not the stored configuration's current version: another
+            administrator changed it after this one was shown it, either
+            before this request was checked (step 2a) or between that check
+            and the write (step 4's atomic conditional write, including two
+            concurrent first setups naming `0`). `reason` is
+            `configuration_changed` and `organization` the current read
+            (keyless), so the client shows what is true now. Nothing is
+            stored or recorded, no grant is consumed and no break-glass
+            session is marked used: at step 4 the whole transaction is rolled
+            back. Never `organization_not_configured` here: a change may be
+            made to an incomplete configuration.
           content:
             application/json:
               schema:
@@ -1225,9 +1335,11 @@ paths:
           description: >-
             The proof could not be checked, or the change could not be stored or
             re-read. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21). When it happens after the grant was
-            consumed, the grant stays consumed and the configuration is unchanged
-            (P2-AC-5).
+            server log and Sentry only (PAC-21). A failure inside step 4's
+            transaction rolls it back: the configuration is unchanged, the grant is
+            still live and a break-glass session is not marked used (P2-AC-5,
+            contract revision 3). A failure re-reading after a committed write is
+            the 500 with the change stored and the grant spent; the client re-reads.
           content:
             application/json:
               schema:
@@ -2455,15 +2567,19 @@ components:
             named (NEW-llm-bring-your-own).
         configuration:
           type: string
-          enum: [own, organization]
+          enum: [organization]
           description: >
             NEW-llm-bring-your-own Part 2, contract revision 2 (spec
             P2-AC-41). `organization` when the refused destination is the
             organisation's configuration's (row 4): `error` then says the
             organisation's AI destination is not approved on this deployment
             and that an administrator of the organisation can fix it, and
-            never tells the caller to change their own Settings. Absent means
-            the caller's own configuration (as before Part 2).
+            never tells the caller to change their own Settings. ABSENT for
+            the caller's own configuration, exactly as before Part 2: the
+            server never sends `own` here (contract revision 3, challenge
+            revision 2 NB-1; the enum is narrowed so it cannot), so a 422
+            about the caller's own destination keeps Part 1's three keys
+            (`backend/api/pac66_llm_destination_test.go` passes unchanged).
       required: [error, reason]
       additionalProperties: false
 
@@ -2721,11 +2837,18 @@ components:
           minimum: 0
           description: >
             `0` when no configuration was ever set. Advances by one on every
-            change of `provider`, every write of `apiKey` (keys are never
-            compared), and every change of a destination property (spec
-            P2-D4), never otherwise. A member's confirmation is for one
-            version (confirmOrganizationAI); an administrator's change names
-            the version it was made from (patchOrganizationAI).
+            change of `provider` (including the removal, `provider: ""`),
+            every write of `apiKey` (keys are never compared), and every
+            change of a destination property (spec P2-D4), never otherwise.
+            Never reused within an organisation: removal keeps the count, so
+            a configuration set after a removal never has a version an
+            earlier configuration had (contract revision 3, spec P2-D17,
+            P2-AC-42). A version fixes `provider`, the key and the
+            destination properties; `model` and `personalKeysAllowed` are not
+            part of it, and a request in row 4 sends the model read together
+            with the version. A member's confirmation is for one version
+            (confirmOrganizationAI); an administrator's change names the
+            version it was made from (patchOrganizationAI).
         updatedAt:
           type: string
           format: date-time
@@ -2755,7 +2878,9 @@ components:
         * `provider: ""` removes the whole configuration, key included. No
           other property may be sent with it (400), so the removal is
           unambiguous (`configurationVersion` excepted); the stored
-          `personalKeysAllowed` is kept.
+          `personalKeysAllowed` is kept, and so is the version count: the
+          removal advances `configurationVersion` and the next setup names
+          that version (never reused, contract revision 3).
         * `apiKey: ""` removes only the key (the configuration is then not
           complete; followers answer `nothing_configured`, P2-AC-13). A
           non-empty `apiKey` replaces the key for the provider after this
@@ -2780,8 +2905,10 @@ components:
             Contract revision 2 (challenge B-1). The `configurationVersion`
             of the configuration the administrator was shown
             (getOrganizationAI; `0` for an organisation that never set one).
-            Not equal to the current version: the 409, checked after the
-            body 400s and before the proof is consumed.
+            Required: an absent value is the 400, never read as `0`
+            (contract revision 3). Not equal to the current version: the
+            409, checked early (step 2a) and decided by the atomic
+            conditional write (step 4); a conflict never consumes the proof.
         provider:
           type: string
           enum: ['', openai, anthropic, azure_openai, bedrock, vertex]
@@ -2795,6 +2922,12 @@ components:
           type: string
         azureEndpoint:
           type: string
+          description: >
+            Contract revision 3 (spec P2-D18): for the organisation,
+            `https://<host>` with at most one trailing `/` and no path,
+            query, fragment or userinfo, because every member reads it;
+            otherwise the 400 (shape). The host must be approved as for a
+            user's (PAC-66).
         azureDeployment:
           type: string
         azureApiVersion:
