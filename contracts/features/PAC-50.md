@@ -1336,3 +1336,60 @@ gates at rc=0.
   rebase"), which is consistent with this revision. Its manifest's
   `rebaseOntoPac50` describes the opposite order from spec §9 D-12, so its
   contract-author has to reconcile it.
+
+### Gates run for revision 5
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `a7ce915` (host api checkout on this branch; script exit 0). The bundle and
+server code had already been regenerated and committed in `591a025`:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (101 paths)
+OK: MIGRATION.md covers all 122 operations (4 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 63.1% (floor 57%) [3753 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+`git show HEAD:contracts/openapi/openapi.yaml | sha256sum` on `591a025` printed
+`8b9321ae60fca5e73eaa4623ad672469d654a78d3eb21d7ac011e0b3ab9478ad`, which is the
+manifest's `contractHash`. The commits after `591a025` do not touch the bundle.
+
+Web: `origin/main` (`aa5c52e`) was merged into `chore/regen-types-pac-50`.
+Then `REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh chore/regen-types-pac-50 factory/pac-50-contract`
+regenerated `src/api/generated/{schemas.ts,schemas.types.d.ts,types.ts}`
+(+187/-83) and ended with `make verify rc=0`. The output was committed as
+`fdfb434` on https://github.com/Enach/smart-calendar-flow/pull/119. The gate
+was then rerun without REGEN on `fdfb434`:
+
+```
+      Tests  315 passed (315)
+lint           PASS
+typecheck      PASS
+design-check   PASS (impeccable, ratcheted)
+openapi-check  PASS
+test           PASS
+coverage       PASS (ratchet floor in vitest.config.ts, target 70%)
+make verify rc=0
+```
+
+Not run: e2e. This branch carries no handler code. e2e-gate, including
+`e2e/tests/sso-stepup.spec.ts`, is a merge condition on #212 once #212 has
+merged this revision and moved its tests to 403.
+
+## Challenge, revision 5
+
+*Pending.* A separate contract-challenger round reviews this final revision,
+covering the 403 `provider_domain_mismatch`, `stepup_scopes`/`without_stepup`,
+the 029 renumber and the PAC-22 order. It records here the requests and
+responses it tried to break, and its verdict. Until then the manifest's first
+`mergeConditions` item is open.
