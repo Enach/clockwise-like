@@ -6,8 +6,16 @@ therefore refused at sign-in with "Paceday could not sign you in with this accou
 an operator acts. This page is the interim procedure (spec `docs/specs/PAC-71.md` §3
 "Operator procedure"), until follow-up F2 gives users a product path.
 
-The steps run on the server with `backend/cmd/paceday-operator` (`DATABASE_URL` set). They
-have no API route, web page or MCP tool. Every run writes an `operator_audit` row (operator,
+The steps run on the server with the `paceday-operator` binary, which the backend image ships
+next to `/server` (`backend/Dockerfile`). It reads `DATABASE_URL` from the container's
+environment. On the production compose stack, every command below is run as:
+
+```
+docker compose -f docker-compose.prod.yml exec backend /paceday-operator <command> [flags]
+```
+
+(Outside a container: `DATABASE_URL=... go run ./cmd/paceday-operator <command> ...` from
+`backend/`.) The steps have no API route, web page or MCP tool. Every run writes an `operator_audit` row (operator,
 time, account, previous and new identity, evidence, what was removed, reason); a rollback of
 migration 032 keeps that table.
 

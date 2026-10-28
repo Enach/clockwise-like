@@ -328,6 +328,6 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 		return nil, err
 	}
 
-	storage.WriteAuditLog(e.DB, auth.UserIDFromContext(ctx), "meeting_scheduled", `{"event_id":"`+created.Id+`","title":"`+req.Title+`"}`)
+	storage.WriteAuditLogCtx(ctx, e.DB, auth.UserIDFromContext(ctx), "meeting_scheduled", `{"event_id":"`+created.Id+`","title":"`+req.Title+`"}`)
 	return created, nil
 }

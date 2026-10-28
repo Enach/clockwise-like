@@ -327,7 +327,7 @@ func TestPAC67_ZoomCallbackKeepsRefreshTokenAndStoresExpiry(t *testing.T) {
 // control does; the connect itself never changes the work calendar (D-15).
 // Every PAC-67 assertion is kept: refresh token kept, loss ended, Alice's
 // status Outlook-connected, Bob unaffected.
-func TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller(t *testing.T) {
+func TestPAC67_MicrosoftConnectKeepsRefreshAndChangesOnlyTheCaller(t *testing.T) {
 	w := newPAC67World(t)
 	alice := w.user("pac67-ms-callback-alice@example.com")
 	bob := w.user("pac67-ms-callback-bob@example.com")

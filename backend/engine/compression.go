@@ -189,7 +189,7 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 			continue
 		}
 
-		storage.WriteAuditLog(e.DB, subject, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
+		storage.WriteAuditLogCtx(ctx, e.DB, subject, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
 		applied = append(applied, p.EventID)
 	}
 

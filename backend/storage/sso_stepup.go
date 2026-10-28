@@ -123,7 +123,7 @@ func issueGrant(ctx context.Context, q queryRower, userID, orgID uuid.UUID, prov
 // statement selects and marks it, so of two concurrent callers exactly one
 // gets it. A grant of another purpose is never selected. ok is false when
 // there is no live grant; nothing is changed then.
-func ConsumeSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, purpose string, now time.Time) (id uuid.UUID, ok bool, err error) {
+func consumeSSOStepupGrant(ctx context.Context, db Querier, userID, orgID uuid.UUID, purpose string, now time.Time) (id uuid.UUID, ok bool, err error) {
 	err = db.QueryRowContext(ctx, `
 		UPDATE sso_stepup_grants SET consumed_at = $3
 		WHERE id = (
@@ -186,6 +186,13 @@ type SSOStepupOutcome struct {
 // nothing is issued (spec Decisions, D-4). A denied outcome returns a nil grant.
 func RecordSSOStepupOutcome(ctx context.Context, db *sql.DB, o SSOStepupOutcome) (*SSOStepupGrant, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -308,6 +315,13 @@ func UpsertSSOProviderRecorded(ctx context.Context, db *sql.DB, p *SSOProvider, 
 // stored lower-cased. via is "stepup" or "breakglass".
 func SaveOIDCProviderRecorded(ctx context.Context, db *sql.DB, w OIDCProviderWrite, actor, orgID uuid.UUID, via string) (*SSOProvider, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +349,13 @@ func SaveOIDCProviderRecorded(ctx context.Context, db *sql.DB, w OIDCProviderWri
 // nothing is recorded, when there was no row (API-067).
 func DeleteSSOProviderRecorded(ctx context.Context, db *sql.DB, domain string, actor, orgID uuid.UUID, via string) (bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return false, err
 	}

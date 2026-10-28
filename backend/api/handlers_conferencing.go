@@ -151,7 +151,7 @@ func (h *conferencingHandlers) zoomCallback(w http.ResponseWriter, r *http.Reque
 		expiry := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 		cred.Expiry = &expiry
 	}
-	if err := storage.SaveZoomCredential(h.db, userIDFromCtx(r.Context()), cred); err != nil {
+	if err := storage.SaveZoomCredentialCtx(r.Context(), h.db, userIDFromCtx(r.Context()), cred); err != nil {
 		writeServerError(w, r, "save zoom token", err, http.StatusInternalServerError)
 		return
 	}

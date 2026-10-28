@@ -109,7 +109,7 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 	for _, blocker := range existing {
 		if _, found := incoming[blocker.PersonalEventID]; !found {
 			_ = calOps.deleteEvent(ctx, blocker.WorkEventID)
-			_ = storage.DeletePersonalBlocker(b.DB, pc.ID, blocker.PersonalEventID)
+			_ = storage.DeletePersonalBlockerCtx(ctx, b.DB, pc.ID, blocker.PersonalEventID)
 		}
 	}
 
@@ -131,7 +131,7 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 			log.Printf("personal_blocker: create blocker for event %s: %v", e.ID, err)
 			continue
 		}
-		_ = storage.UpsertPersonalBlocker(b.DB, pc.ID, e.ID, created.Id)
+		_ = storage.UpsertPersonalBlockerCtx(ctx, b.DB, pc.ID, e.ID, created.Id)
 	}
 	return nil
 }

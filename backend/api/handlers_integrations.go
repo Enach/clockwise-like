@@ -88,7 +88,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 
 func (h *integrationsHandlers) slackDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnection(h.db, userID, "slack")
+	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -220,7 +220,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 
 func (h *integrationsHandlers) notionDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnection(h.db, userID, "notion")
+	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
 	w.WriteHeader(http.StatusNoContent)
 }
 

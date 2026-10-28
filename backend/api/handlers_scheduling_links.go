@@ -365,12 +365,12 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	link.OwnerUserID = userID
-	created, err := storage.CreateSchedulingLink(h.db, &link)
+	created, err := storage.CreateSchedulingLinkCtx(r.Context(), h.db, &link)
 	if err != nil {
 		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
-	if _, err = storage.AddLinkHost(h.db, created.ID, userID, "accepted"); err != nil {
+	if _, err = storage.AddLinkHostCtx(r.Context(), h.db, created.ID, userID, "accepted"); err != nil {
 		writeServerError(w, r, "owner host failed", err, http.StatusInternalServerError)
 		return
 	}
@@ -380,7 +380,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		if e != nil || !ok {
 			continue
 		}
-		_, _ = storage.AddLinkHost(h.db, created.ID, inviteeID, "pending")
+		_, _ = storage.AddLinkHostCtx(r.Context(), h.db, created.ID, inviteeID, "pending")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -540,7 +540,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	result, err := storage.UpdateSchedulingLink(h.db, id, &updated)
+	result, err := storage.UpdateSchedulingLinkCtx(r.Context(), h.db, id, &updated)
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
@@ -557,10 +557,10 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 			writeServerError(w, r, "co-host lookup failed", kerr, http.StatusInternalServerError)
 			return
 		}
-		_ = storage.RemoveLinkHostsExcept(h.db, id, userID, keep)
+		_ = storage.RemoveLinkHostsExceptCtx(r.Context(), h.db, id, userID, keep)
 		for _, email := range patch.CoHostEmails {
 			if uid, ok, e := storage.ConfirmedHolder(h.db, email); e == nil && ok && uid != userID {
-				_, _, _ = storage.InviteLinkHost(h.db, id, uid)
+				_, _, _ = storage.InviteLinkHostCtx(r.Context(), h.db, id, uid)
 			}
 		}
 	}
@@ -588,7 +588,7 @@ func (h *schedulingLinkHandlers) deleteLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := storage.DeleteSchedulingLink(h.db, id); err != nil {
+	if err := storage.DeleteSchedulingLinkCtx(r.Context(), h.db, id); err != nil {
 		writeServerError(w, r, "delete failed", err, http.StatusInternalServerError)
 		return
 	}
@@ -665,7 +665,7 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 	}
 	// An existing host keeps their status (PAC-61): 200 with their row as is;
 	// a new invitee gets a pending row and 201.
-	host, created, err := storage.InviteLinkHost(h.db, id, inviteeID)
+	host, created, err := storage.InviteLinkHostCtx(r.Context(), h.db, id, inviteeID)
 	if err != nil {
 		writeServerError(w, r, "invite failed", err, http.StatusInternalServerError)
 		return
@@ -751,7 +751,7 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 		writeError(w, "owner cannot leave link", http.StatusBadRequest)
 		return
 	}
-	removed, err := storage.RemoveLinkHost(h.db, id, userID)
+	removed, err := storage.RemoveLinkHostCtx(r.Context(), h.db, id, userID)
 	if err != nil {
 		writeServerError(w, r, "leave failed", err, http.StatusInternalServerError)
 		return

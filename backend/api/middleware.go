@@ -51,10 +51,10 @@ func sessionGenerationUnavailable(w http.ResponseWriter, r *http.Request, err er
 	writeServerError(w, r, "session generation", err, http.StatusInternalServerError)
 }
 
-// afterAuthLeaseHook is a deterministic test seam (PAC-71 AC-47, AC-50): it
-// runs after requireAuth has authenticated the request and taken its lease,
+// afterAuthHook is a deterministic test seam (PAC-71 AC-47, AC-50): it
+// runs after requireAuth has authenticated the request,
 // before the handler. Production leaves it nil.
-var afterAuthLeaseHook func(r *http.Request)
+var afterAuthHook func(r *http.Request)
 
 // requireAuth authenticates the session (PAC-39: an Authorization bearer token
 // wins over the auth_token cookie) and, since PAC-71, its session generation
@@ -63,9 +63,6 @@ var afterAuthLeaseHook func(r *http.Request)
 //   - the token's `gen` (absent = 0) must equal the account's current
 //     generation, read uncached; otherwise today's 401;
 //   - a generation that cannot be read is a JSON 500, never a 401 (AC-48);
-//   - the request holds the account's lease until the handler returns, so no
-//     generation advance (a binding, an operator step) can commit while it
-//     runs;
 //   - the request context carries the session guard for the in-request
 //     re-check, and a re-check that finds the session stale (or the
 //     generation unreadable) replaces whatever the handler answers with the
@@ -104,12 +101,13 @@ func requireAuth(db *sql.DB, jwtSecret string) func(http.Handler) http.Handler {
 				sessionUnauthorized(w)
 				return
 			}
-			lease, current, found, err := storage.BeginSessionLease(r.Context(), db, userID)
+			// One plain, uncached read: no transaction or connection is held
+			// while the handler runs.
+			current, found, err := storage.CurrentGeneration(db, userID)
 			if err != nil {
 				sessionGenerationUnavailable(w, r, err)
 				return
 			}
-			defer lease.Release()
 			if found && current != gen {
 				sessionUnauthorized(w)
 				return
@@ -125,8 +123,8 @@ func requireAuth(db *sql.DB, jwtSecret string) func(http.Handler) http.Handler {
 			guard := &storage.SessionGuard{UserID: userID, Gen: gen}
 			ctx = storage.WithSessionGuard(ctx, guard)
 			r = r.WithContext(ctx)
-			if afterAuthLeaseHook != nil {
-				afterAuthLeaseHook(r)
+			if afterAuthHook != nil {
+				afterAuthHook(r)
 			}
 			gw := &guardedResponseWriter{ResponseWriter: w, r: r, guard: guard}
 			next.ServeHTTP(gw, r)
@@ -226,4 +224,13 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
+}
+
+// guarded runs fn under PAC-71's in-request re-check: in one transaction whose
+// first statement confirms the session's generation is still the account's
+// (contract §5). Every request-path write of account data goes through it, so
+// a write never lands after a binding or an operator step advanced the
+// generation; on a mismatch nothing is stored and requireAuth answers 401.
+func guarded(ctx context.Context, db *sql.DB, fn func(q storage.Querier) error) error {
+	return storage.WithSessionGeneration(ctx, db, fn)
 }

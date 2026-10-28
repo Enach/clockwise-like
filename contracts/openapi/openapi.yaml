@@ -6019,64 +6019,67 @@ paths:
         \ in one statement; a grant of any\n   other purpose (`sso_write`) is never selected and stays\
         \ live, and\n   an SSO write never consumes an `llm_org_key_write` grant (PAC-50\n   AC-27, P2-AC-2).\
         \ Without such a grant: an address on the\n   deployment's break-glass list (`PACEDAY_ADMIN_EMAILS`,\
-        \ compared\n   case-insensitively) whose session JWT was issued less than 10\n   minutes ago,\
-        \ and not more than one minute in the future, is\n   authorised without a grant (PAC-50 AC-14a);\
-        \ the same address with\n   an older session is the 403\n   OrganizationAIWriteFreshLoginRequired;\
-        \ anyone else is the 403\n   OrganizationAIWriteStepupRequired. One grant authorises one\n   change,\
-        \ so a second change needs a new step-up (owner O-11).\n   **One break-glass session authorises\
-        \ one change** (spec P2-D13,\n   factory-assumed pending the owner; revision 2): a break-glass\n\
-        \   change is recorded with the session's issue time, and a further\n   change by the same address\
-        \ with a session of the same issue time\n   is the 403 OrganizationAIWriteFreshLoginRequired,\
-        \ even inside the\n   10 minutes. The check that no change was recorded for (address,\n   session\
-        \ issue time) and the recording of this one are one atomic\n   step (at most one record per pair,\
-        \ enforced by storage), so two\n   concurrent changes with one session cannot both pass (contract\n\
-        \   revision 3, challenge revision 2 non-blocking 2). Sessions carry\n   no identifier besides\
-        \ `iat`, which has one-second resolution: two\n   sign-ins by the same address within one second\
-        \ share an issue\n   time and count as one session, so the second is refused. That\n   fails safe.\
-        \ PAC-50's SSO write gate is unchanged (its break-glass\n   rule still allows several SSO writes\
-        \ per fresh session).\n\n4. The write (contract revision 3, challenge revision 2 B-1'; spec\n\
-        \   P2-D15). Steps 3 and 4 run in ONE transaction: the grant\n   consumption (or the break-glass\
-        \ record) and one atomic\n   conditional write that stores the change only if the stored\n   version\
-        \ still equals `configurationVersion`. The condition is\n   the stored version alone, and an organisation\
-        \ with no stored\n   configuration counts as version `0` (contract revision 3.1,\n   challenge\
-        \ revision 3 NB-C): so the first setup names `0`, and a\n   row that a `personalKeysAllowed`-only\
-        \ change left at version `0`\n   does not make a concurrent first setup naming `0` a conflict,\n\
-        \   while of two first setups naming `0` exactly one is stored (the\n   first advances the version).\
-        \ When the\n   condition fails (another administrator's change was stored\n   between step 2a\
-        \ and here), the transaction is rolled back and the\n   answer is the 409 OrganizationAIConsentConflict\n\
-        \   `configuration_changed` with the current read: nothing stored,\n   nothing recorded, the grant\
-        \ NOT consumed and a break-glass session\n   NOT marked used. When storage fails, the transaction\
-        \ is rolled\n   back the same way and the answer is the 500: the configuration is\n   unchanged\
-        \ and the grant is still live (P2-AC-5, revision 3;\n   revision 2 said the grant stayed consumed).\
-        \ So a grant is spent\n   exactly when a change is stored. The operator record of a\n   successful\
-        \ change is inserted in this same transaction (contract\n   revision 3.1, challenge revision 3\
-        \ NB-B), so a stored change is\n   never left unrecorded and a rolled-back one is never recorded.\n\
-        \nBeing a team owner, or having made the last change, proves nothing. Every successful change\
-        \ is recorded for operators, in the write's transaction (who, when, `stepup` or `breakglass`,\
-        \ the names of the properties that changed; never the key; P2-AC-6). No API reads that record.\n\
-        **What a change does to members** (spec §3.1): `configurationVersion` advances by one when the\
-        \ change alters `provider` (including `provider: \"\"`, the removal), writes `apiKey` (any present\
-        \ `apiKey`, including `\"\"` and including a value equal to the stored key: the server never compares\
-        \ keys, so re-entering the same key re-asks members), or alters any destination property (`baseUrl`,\
-        \ `azureEndpoint`, `azureDeployment`, `azureApiVersion`, `awsRegion`), including removing them;\
-        \ members who follow the organisation must then confirm again before anything is sent to it (spec\
-        \ P2-D4, factory-assumed pending the owner, OQ-P2-1; P2-AC-23). A change of only `model` and/or\
-        \ `personalKeysAllowed` does not advance it, so such a change is never a conflict for another\
-        \ administrator's change and, for `model` and `personalKeysAllowed`, the later change wins. Forbidding\
-        \ personal keys moves nobody onto this configuration: members on their own provider answer row\
-        \ 10 or 11 until they choose `llmProvider: organization` and confirm (spec P2-D2, current default).\n\
-        **A version is never reused within an organisation** (contract revision 3, spec P2-D17, P2-AC-42),\
-        \ including across `provider: \"\"` and a later setup: the removal empties the configuration and\
-        \ keeps its version count, so the next setup names the removal's version and gets the next one.\
-        \ A confirmation of a removed configuration therefore never matches a later configuration.\nApproved\
-        \ destinations: the organisation's `baseUrl`, `azureEndpoint` and `awsRegion` are checked on write\
-        \ with exactly the rules of patchSettings for a user's (PAC-66, PAC-66-B, owner O-10 path prefixes),\
-        \ for the organisation's provider, and again on every send (`testLLMConnection`). Because every\
-        \ member reads them (spec P2-D18, contract revision 3), the organisation's addresses are also\
-        \ held to a stricter shape: `baseUrl` must be exactly an approved origin plus that entry's path\
-        \ prefix with no query, fragment or userinfo (the user rule, which leaves no room for a credential\
-        \ in the path); `azureEndpoint` must be `https://<host>` with at most one trailing `/` and no\
-        \ path, query, fragment or userinfo (stricter than a user's, whose path is not checked on write).\n"
+        \ compared\n   case-insensitively), held by the caller's ACCOUNT\n   domain-confirmed (PAC-71:\
+        \ the account's stored address and\n   `addressStanding`, never the session's email claim; an\
+        \ account\n   that carries it unconfirmed, or no longer carries it, is not\n   break-glass), whose\
+        \ session JWT was issued less than 10\n   minutes ago, and not more than one minute in the future,\
+        \ is\n   authorised without a grant (PAC-50 AC-14a); the same address with\n   an older session\
+        \ is the 403\n   OrganizationAIWriteFreshLoginRequired; anyone else is the 403\n   OrganizationAIWriteStepupRequired.\
+        \ One grant authorises one\n   change, so a second change needs a new step-up (owner O-11).\n\
+        \   **One break-glass session authorises one change** (spec P2-D13,\n   factory-assumed pending\
+        \ the owner; revision 2): a break-glass\n   change is recorded with the session's issue time,\
+        \ and a further\n   change by the same address with a session of the same issue time\n   is the\
+        \ 403 OrganizationAIWriteFreshLoginRequired, even inside the\n   10 minutes. The check that no\
+        \ change was recorded for (address,\n   session issue time) and the recording of this one are\
+        \ one atomic\n   step (at most one record per pair, enforced by storage), so two\n   concurrent\
+        \ changes with one session cannot both pass (contract\n   revision 3, challenge revision 2 non-blocking\
+        \ 2). Sessions carry\n   no identifier besides `iat`, which has one-second resolution: two\n \
+        \  sign-ins by the same address within one second share an issue\n   time and count as one session,\
+        \ so the second is refused. That\n   fails safe. PAC-50's SSO write gate is unchanged (its break-glass\n\
+        \   rule still allows several SSO writes per fresh session).\n\n4. The write (contract revision\
+        \ 3, challenge revision 2 B-1'; spec\n   P2-D15). Steps 3 and 4 run in ONE transaction: the grant\n\
+        \   consumption (or the break-glass record) and one atomic\n   conditional write that stores the\
+        \ change only if the stored\n   version still equals `configurationVersion`. The condition is\n\
+        \   the stored version alone, and an organisation with no stored\n   configuration counts as version\
+        \ `0` (contract revision 3.1,\n   challenge revision 3 NB-C): so the first setup names `0`, and\
+        \ a\n   row that a `personalKeysAllowed`-only change left at version `0`\n   does not make a concurrent\
+        \ first setup naming `0` a conflict,\n   while of two first setups naming `0` exactly one is stored\
+        \ (the\n   first advances the version). When the\n   condition fails (another administrator's\
+        \ change was stored\n   between step 2a and here), the transaction is rolled back and the\n  \
+        \ answer is the 409 OrganizationAIConsentConflict\n   `configuration_changed` with the current\
+        \ read: nothing stored,\n   nothing recorded, the grant NOT consumed and a break-glass session\n\
+        \   NOT marked used. When storage fails, the transaction is rolled\n   back the same way and the\
+        \ answer is the 500: the configuration is\n   unchanged and the grant is still live (P2-AC-5,\
+        \ revision 3;\n   revision 2 said the grant stayed consumed). So a grant is spent\n   exactly\
+        \ when a change is stored. The operator record of a\n   successful change is inserted in this\
+        \ same transaction (contract\n   revision 3.1, challenge revision 3 NB-B), so a stored change\
+        \ is\n   never left unrecorded and a rolled-back one is never recorded.\n\nBeing a team owner,\
+        \ or having made the last change, proves nothing. Every successful change is recorded for operators,\
+        \ in the write's transaction (who, when, `stepup` or `breakglass`, the names of the properties\
+        \ that changed; never the key; P2-AC-6). No API reads that record.\n**What a change does to members**\
+        \ (spec §3.1): `configurationVersion` advances by one when the change alters `provider` (including\
+        \ `provider: \"\"`, the removal), writes `apiKey` (any present `apiKey`, including `\"\"` and\
+        \ including a value equal to the stored key: the server never compares keys, so re-entering the\
+        \ same key re-asks members), or alters any destination property (`baseUrl`, `azureEndpoint`, `azureDeployment`,\
+        \ `azureApiVersion`, `awsRegion`), including removing them; members who follow the organisation\
+        \ must then confirm again before anything is sent to it (spec P2-D4, factory-assumed pending the\
+        \ owner, OQ-P2-1; P2-AC-23). A change of only `model` and/or `personalKeysAllowed` does not advance\
+        \ it, so such a change is never a conflict for another administrator's change and, for `model`\
+        \ and `personalKeysAllowed`, the later change wins. Forbidding personal keys moves nobody onto\
+        \ this configuration: members on their own provider answer row 10 or 11 until they choose `llmProvider:\
+        \ organization` and confirm (spec P2-D2, current default).\n**A version is never reused within\
+        \ an organisation** (contract revision 3, spec P2-D17, P2-AC-42), including across `provider:\
+        \ \"\"` and a later setup: the removal empties the configuration and keeps its version count,\
+        \ so the next setup names the removal's version and gets the next one. A confirmation of a removed\
+        \ configuration therefore never matches a later configuration.\nApproved destinations: the organisation's\
+        \ `baseUrl`, `azureEndpoint` and `awsRegion` are checked on write with exactly the rules of patchSettings\
+        \ for a user's (PAC-66, PAC-66-B, owner O-10 path prefixes), for the organisation's provider,\
+        \ and again on every send (`testLLMConnection`). Because every member reads them (spec P2-D18,\
+        \ contract revision 3), the organisation's addresses are also held to a stricter shape: `baseUrl`\
+        \ must be exactly an approved origin plus that entry's path prefix with no query, fragment or\
+        \ userinfo (the user rule, which leaves no room for a credential in the path); `azureEndpoint`\
+        \ must be `https://<host>` with at most one trailing `/` and no path, query, fragment or userinfo\
+        \ (stricter than a user's, whose path is not checked on write).\n"
       requestBody:
         required: true
         content:

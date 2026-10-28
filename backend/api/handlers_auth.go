@@ -81,7 +81,7 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 
 	switch provider {
 	case "outlook":
-		// PAC-67: connected means usable â stored, renewable and not lost.
+		// PAC-67: connected means usable — stored, renewable and not lost.
 		msToken, _ := auth.LoadMicrosoftTokenCtx(r.Context(), h.db, userID)
 		lost, _ := storage.IsCredentialLost(h.db, userID, storage.CredentialOutlook)
 		connected := msToken != nil && msToken.RefreshToken != "" && !lost

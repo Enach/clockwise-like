@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,7 +56,7 @@ func GetWorkspaceConnection(db Querier, userID uuid.UUID, provider string) (*Wor
 	return &c, nil
 }
 
-func DeleteWorkspaceConnection(db *sql.DB, userID uuid.UUID, provider string) error {
+func DeleteWorkspaceConnection(db Querier, userID uuid.UUID, provider string) error {
 	_, err := db.Exec(`DELETE FROM workspace_connections WHERE user_id = $1 AND provider = $2`,
 		userID, provider)
 	return err

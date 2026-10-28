@@ -107,3 +107,21 @@ func RespondToHostInviteCtx(ctx context.Context, db *sql.DB, linkID, userID uuid
 	})
 	return matched, err
 }
+
+// ConsumeSSOStepupGrant spends a step-up grant (D14) under the re-check: an
+// older-generation session never spends a grant issued after a binding.
+func ConsumeSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, purpose string, now time.Time) (id uuid.UUID, ok bool, err error) {
+	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+		id, ok, err = consumeSSOStepupGrant(ctx, q, userID, orgID, purpose, now)
+		return err
+	})
+	return id, ok, err
+}
+
+// DeleteOrgAIConfirmations removes the account's org-AI confirmations under
+// the re-check.
+func DeleteOrgAIConfirmations(ctx context.Context, db *sql.DB, userID uuid.UUID) error {
+	return WithSessionGeneration(ctx, db, func(q Querier) error {
+		return deleteOrgAIConfirmations(ctx, q, userID)
+	})
+}

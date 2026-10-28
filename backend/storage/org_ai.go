@@ -340,6 +340,13 @@ type orgAIWrittenDetails struct {
 // is stored.
 func WriteOrgAIConfig(ctx context.Context, db *sql.DB, w OrgAIWrite) (OrgAIWriteOutcome, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return OrgAIWriteOutcome{}, err
 	}
@@ -488,6 +495,13 @@ const (
 // cannot land between them. It returns the current configuration.
 func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, version int64, now time.Time) (OrgAIConfirmStatus, OrgAIConfig, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return 0, OrgAIConfig{}, err
 	}
@@ -519,7 +533,7 @@ func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, vers
 // DeleteOrgAIConfirmations ends every stored confirmation of the user (a
 // settings write that stores "off" or one of the five providers, spec §3.4,
 // P2-AC-36).
-func DeleteOrgAIConfirmations(ctx context.Context, db *sql.DB, userID uuid.UUID) error {
+func deleteOrgAIConfirmations(ctx context.Context, db Querier, userID uuid.UUID) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM org_ai_confirmations WHERE user_id = $1`, userID)
 	return err
 }

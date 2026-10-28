@@ -63,7 +63,7 @@ func InsertPersonalCalendar(db Querier, c *PersonalCalendar) (int64, error) {
 	return id, err
 }
 
-func UpdatePersonalCalendar(db *sql.DB, id int64, userID uuid.UUID, name, url *string, enabled *bool) (*PersonalCalendar, error) {
+func UpdatePersonalCalendar(db Querier, id int64, userID uuid.UUID, name, url *string, enabled *bool) (*PersonalCalendar, error) {
 	row := db.QueryRow(`
 		UPDATE personal_calendars SET
 			name = COALESCE($3, name), url = COALESCE($4, url), enabled = COALESCE($5, enabled)
@@ -80,7 +80,7 @@ func UpdatePersonalCalendar(db *sql.DB, id int64, userID uuid.UUID, name, url *s
 	return &c, nil
 }
 
-func DeletePersonalCalendarForUser(db *sql.DB, id int64, userID uuid.UUID) (bool, error) {
+func DeletePersonalCalendarForUser(db Querier, id int64, userID uuid.UUID) (bool, error) {
 	result, err := db.Exec(`DELETE FROM personal_calendars WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return false, err
@@ -89,7 +89,7 @@ func DeletePersonalCalendarForUser(db *sql.DB, id int64, userID uuid.UUID) (bool
 	return n > 0, err
 }
 
-func MarkPersonalCalendarSynced(db *sql.DB, id int64, userID uuid.UUID) error {
+func MarkPersonalCalendarSynced(db Querier, id int64, userID uuid.UUID) error {
 	_, err := db.Exec(`UPDATE personal_calendars SET last_synced_at = NOW() WHERE id = $1 AND user_id = $2`, id, userID)
 	return err
 }
@@ -114,7 +114,7 @@ func GetPersonalBlocker(db *sql.DB, calID int64, eventID string) (*PersonalBlock
 	return &b, nil
 }
 
-func UpsertPersonalBlocker(db *sql.DB, calID int64, personalEventID, workEventID string) error {
+func UpsertPersonalBlocker(db Querier, calID int64, personalEventID, workEventID string) error {
 	_, err := db.Exec(
 		`INSERT INTO personal_blockers (personal_calendar_id, personal_event_id, work_event_id) VALUES ($1,$2,$3)
 		 ON CONFLICT (personal_calendar_id, personal_event_id) DO UPDATE SET work_event_id = EXCLUDED.work_event_id`,
@@ -143,7 +143,7 @@ func ListPersonalBlockers(db *sql.DB, calID int64) ([]PersonalBlocker, error) {
 	return blockers, rows.Err()
 }
 
-func DeletePersonalBlocker(db *sql.DB, calID int64, personalEventID string) error {
+func DeletePersonalBlocker(db Querier, calID int64, personalEventID string) error {
 	_, err := db.Exec(
 		`DELETE FROM personal_blockers WHERE personal_calendar_id = $1 AND personal_event_id = $2`,
 		calID, personalEventID,

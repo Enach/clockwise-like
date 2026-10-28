@@ -77,7 +77,7 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		GeneratedAt:     time.Now().UTC(),
 		Status:          "pending",
 	}
-	_ = storage.UpsertMeetingBrief(s.DB, brief)
+	_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 
 	terms := buildSearchTerms(event)
 
@@ -97,7 +97,7 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		if s.LLMUnavailable != "" {
 			brief.BriefText = s.LLMUnavailable
 		}
-		_ = storage.UpsertMeetingBrief(s.DB, brief)
+		_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 		return brief, nil
 	}
 
@@ -118,7 +118,7 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		brief.BriefText = s.redact(text)
 	}
 	brief.GeneratedAt = time.Now().UTC()
-	_ = storage.UpsertMeetingBrief(s.DB, brief)
+	_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 	return brief, nil
 }
 

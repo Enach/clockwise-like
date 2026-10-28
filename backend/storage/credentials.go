@@ -27,7 +27,7 @@ func validCredentialProvider(p string) bool {
 // itself is kept). started is true only for the refusal that starts a loss;
 // every later refusal in the same loss, from any request or process, reports
 // false, so a loss is announced once (AC-9, AC-25).
-func RecordCredentialLoss(db *sql.DB, userID uuid.UUID, provider string) (started bool, err error) {
+func RecordCredentialLoss(db Querier, userID uuid.UUID, provider string) (started bool, err error) {
 	if userID == uuid.Nil {
 		return false, fmt.Errorf("RecordCredentialLoss: userID is required")
 	}
@@ -120,15 +120,15 @@ func LoadZoomCredential(db Querier, userID uuid.UUID) (*ZoomCredential, error) {
 // SaveZoomCredential stores userID's Zoom credential from a (re)connect, makes
 // Zoom their conferencing provider and ends any recorded loss (PAC-67 AC-12).
 // A connect that returned no refresh token keeps the stored one (AC-11).
-func SaveZoomCredential(db *sql.DB, userID uuid.UUID, c ZoomCredential) error {
+func SaveZoomCredential(db Querier, userID uuid.UUID, c ZoomCredential) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveZoomCredential: userID is required")
 	}
-	tx, err := db.Begin()
+	tx, sc, err := beginOn(db)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() { _ = sc.Rollback() }()
 	if _, err := tx.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return err
 	}
@@ -151,13 +151,13 @@ func SaveZoomCredential(db *sql.DB, userID uuid.UUID, c ZoomCredential) error {
 	if _, err := tx.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, CredentialZoom); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return sc.Commit()
 }
 
 // UpdateZoomCredential writes a renewed credential back for its owner only,
 // and only while a credential is still stored: a renewal that finishes after a
 // disconnect never re-stores what the user removed.
-func UpdateZoomCredential(db *sql.DB, userID uuid.UUID, c ZoomCredential) error {
+func UpdateZoomCredential(db Querier, userID uuid.UUID, c ZoomCredential) error {
 	data, err := encodeZoomCredential(c)
 	if err != nil {
 		return err
@@ -168,7 +168,7 @@ func UpdateZoomCredential(db *sql.DB, userID uuid.UUID, c ZoomCredential) error 
 
 // UpdateMicrosoftCredential writes a renewed Microsoft record back for its
 // owner only, and only while a credential is still stored.
-func UpdateMicrosoftCredential(db *sql.DB, userID uuid.UUID, record string) error {
+func UpdateMicrosoftCredential(db Querier, userID uuid.UUID, record string) error {
 	_, err := db.Exec(`UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1 AND COALESCE(microsoft_tokens, '') <> ''`, userID, record)
 	return err
 }
@@ -177,7 +177,7 @@ func UpdateMicrosoftCredential(db *sql.DB, userID uuid.UUID, record string) erro
 // transaction it reads the stored value, removes it whether or not it decodes,
 // returns conferencing to Meet (D-9) and ends any recorded loss. It returns
 // the removed value ("" when nothing was stored). On error nothing changed.
-func RemoveZoomCredential(db *sql.DB, userID uuid.UUID) (string, error) {
+func RemoveZoomCredential(db Querier, userID uuid.UUID) (string, error) {
 	return removeCredential(db, userID, "zoom_tokens",
 		`UPDATE settings SET zoom_tokens = '', conferencing_provider = 'meet' WHERE user_id = $1`, CredentialZoom)
 }
@@ -187,22 +187,22 @@ func RemoveZoomCredential(db *sql.DB, userID uuid.UUID) (string, error) {
 // not it decodes, conferencing `teams` becomes `meet` (D-8), any recorded loss
 // ends, and the calendar provider is left alone (D-3). It returns the removed
 // value ("" when nothing was stored). On error nothing changed.
-func RemoveMicrosoftCredential(db *sql.DB, userID uuid.UUID) (string, error) {
+func RemoveMicrosoftCredential(db Querier, userID uuid.UUID) (string, error) {
 	return removeCredential(db, userID, "microsoft_tokens",
 		`UPDATE settings SET microsoft_tokens = '',
 			conferencing_provider = CASE WHEN conferencing_provider = 'teams' THEN 'meet' ELSE conferencing_provider END
 		 WHERE user_id = $1`, CredentialOutlook)
 }
 
-func removeCredential(db *sql.DB, userID uuid.UUID, column, update, provider string) (string, error) {
+func removeCredential(db Querier, userID uuid.UUID, column, update, provider string) (string, error) {
 	if userID == uuid.Nil {
 		return "", fmt.Errorf("remove %s: userID is required", provider)
 	}
-	tx, err := db.Begin()
+	tx, sc, err := beginOn(db)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() { _ = sc.Rollback() }()
 	var raw sql.NullString
 	err = tx.QueryRow(`SELECT `+column+` FROM settings WHERE user_id = $1 FOR UPDATE`, userID).Scan(&raw)
 	if err != nil && err != sql.ErrNoRows {
@@ -216,7 +216,7 @@ func removeCredential(db *sql.DB, userID uuid.UUID, column, update, provider str
 	if _, err := tx.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, provider); err != nil {
 		return "", err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := sc.Commit(); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(raw.String) == "" {

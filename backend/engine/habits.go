@@ -181,7 +181,7 @@ func (e *HabitsEngine) scheduleDay(
 			}
 			// Mark displaced and try to reschedule below.
 			existing.Status = "displaced"
-			_, _ = storage.UpsertHabitOccurrence(e.DB, existing)
+			_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, existing)
 		}
 
 		// Find a slot.
@@ -189,7 +189,7 @@ func (e *HabitsEngine) scheduleDay(
 		slot := findFirstSlot(windowStart, windowEnd, dur, merged)
 
 		if slot == nil {
-			_, _ = storage.UpsertHabitOccurrence(e.DB, &storage.HabitOccurrence{
+			_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
 				HabitID:       h.ID,
 				ScheduledDate: day,
 				StartTime:     windowStart,
@@ -204,7 +204,7 @@ func (e *HabitsEngine) scheduleDay(
 			calEventID = e.createHabitEvent(ctx, calOps, h, slot.start, slot.end)
 		}
 
-		_, _ = storage.UpsertHabitOccurrence(e.DB, &storage.HabitOccurrence{
+		_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
 			HabitID:         h.ID,
 			ScheduledDate:   day,
 			StartTime:       slot.start,

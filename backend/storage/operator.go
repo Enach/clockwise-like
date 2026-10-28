@@ -278,6 +278,14 @@ func AdvanceAllGenerations(ctx context.Context, db *sql.DB, run OperatorRun) (in
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Like every advance, lock the account rows FOR UPDATE first, so no
+	// in-request re-check is between its comparison and its read or write.
+	if _, err := tx.Exec(`SET LOCAL lock_timeout = '30s'`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`SELECT id FROM users FOR UPDATE`); err != nil {
+		return 0, err
+	}
 	res, err := tx.Exec(`UPDATE users SET session_generation = session_generation + 1`)
 	if err != nil {
 		return 0, err

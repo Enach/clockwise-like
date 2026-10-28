@@ -209,7 +209,7 @@ func (h *scheduleHandlers) createMeeting(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	storage.WriteAuditLog(h.db, userIDFromCtx(r.Context()), "meeting_created", `{"event_id":"`+created.Id+`","title":"`+body.Title+`"}`)
+	storage.WriteAuditLogCtx(r.Context(), h.db, userIDFromCtx(r.Context()), "meeting_created", `{"event_id":"`+created.Id+`","title":"`+body.Title+`"}`)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toCalendarEventDTO(created))

@@ -501,7 +501,11 @@ func (h *authHandlers) connectCallback(w http.ResponseWriter, r *http.Request, f
 		notCredited("invalid session")
 		return
 	}
-	sessGen, _ := claims.Generation()
+	sessGen, genErr := claims.Generation()
+	if genErr != nil {
+		notCredited("invalid gen claim")
+		return
+	}
 	if claims.UserID != st.User.String() || sessGen != st.Gen {
 		notCredited("the session is not the starting account's at the start's generation")
 		return

@@ -188,7 +188,7 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 		}
 	}
 
-	result, err := storage.UpsertAnalyticsWeek(e.DB, &storage.AnalyticsWeek{
+	result, err := storage.UpsertAnalyticsWeekCtx(ctx, e.DB, &storage.AnalyticsWeek{
 		UserID:                      userID,
 		WeekStart:                   weekStart,
 		TotalWorkingMinutes:         totalWorkingMinutes,

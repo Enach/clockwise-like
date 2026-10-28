@@ -440,7 +440,7 @@ func SaveSettingsForUserAt(db Querier, userID uuid.UUID, s *Settings, now time.T
 
 // SaveRecapSettingsForUser writes only the seven recap columns of userID's
 // row (PAC-24): the recap PATCH no longer rewrites the rest of the row.
-func SaveRecapSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+func SaveRecapSettingsForUser(db Querier, userID uuid.UUID, s *Settings) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveRecapSettingsForUser: userID is required")
 	}

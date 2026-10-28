@@ -21,8 +21,8 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// PAC-71 sessions: the generation, requireAuth, the request lease and the
-// in-request re-check (spec §3 "Sessions", "An older-generation request never
+// PAC-71 sessions: the generation, requireAuth and the in-request
+// re-check (spec §3 "Sessions", "An older-generation request never
 // reaches what a binding stored"; AC-42, AC-46 to AC-48, AC-50; contract §5,
 // CONTRACT-1, -6, -9, -12).
 
@@ -53,10 +53,9 @@ func assert401(t *testing.T, rec *httptest.ResponseRecorder) {
 	}
 }
 
-// serveGuarded runs h for a request authenticated at gen, WITHOUT the request
-// lease: the situation the literal in-request re-check exists for (a binding
-// that committed between authentication and the load). It applies the same
-// response guard requireAuth does.
+// serveGuarded runs h for a request authenticated at gen, without requireAuth, so that
+// the test can commit a binding between authentication and the handler's
+// load or write. It applies the same response guard requireAuth does.
 func serveGuarded(t *testing.T, h http.Handler, req *http.Request, user uuid.UUID, gen int64) *httptest.ResponseRecorder {
 	t.Helper()
 	g := &storage.SessionGuard{UserID: user, Gen: gen}
@@ -89,24 +88,6 @@ func commitBinding(t *testing.T, a uuid.UUID, googleAccess, msAccess string) {
 	}
 }
 
-// waitForAdvisoryWaiter blocks until some transaction waits on an advisory
-// lock (the binding queued behind a request lease): a deterministic seam,
-// not a sleep.
-func waitForAdvisoryWaiter(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		var n int
-		if err := openTestDB(t).QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("the binding never queued behind the request lease")
-}
 
 // ---- AC-42, AC-48, CONTRACT-6, CONTRACT-12 ----------------------------------
 
@@ -358,8 +339,8 @@ func TestPAC71_AC46_WriteInsideTheBindingWindowRefusesTheBinding(t *testing.T) {
 // AC-47 (writes), at the re-check: S0's request was authenticated before the
 // binding (its guard carries generation 0); the binding commits; the write
 // is attempted: refused, nothing stored, A stays bound with Henry's
-// credential. With the request lease this ordering cannot occur (next test);
-// the re-check is what refuses it if it ever did.
+// credential. The same order through the production routes is
+// TestPAC71_AC47_AC50_InterleavedThroughRequireAuth.
 func TestPAC71_AC47_OldGenerationWriteAfterTheBindingIsRefused(t *testing.T) {
 	handlers := map[string]func(t *testing.T, a uuid.UUID) (http.Handler, *http.Request){
 		"creates a team": func(t *testing.T, _ uuid.UUID) (http.Handler, *http.Request) {
@@ -409,47 +390,6 @@ func TestPAC71_AC47_OldGenerationWriteAfterTheBindingIsRefused(t *testing.T) {
 			t.Fatalf("status = %s", status)
 		}
 	})
-}
-
-// AC-47 / AC-50 with the request lease: a binding cannot commit while a
-// request authenticated under the old generation is running. It queues; the
-// request finishes on the account as it was (empty); the binding then re-checks
-// and decides; S0's next request is 401.
-func TestPAC71_AC47_AC50_TheBindingWaitsForOldGenerationRequests(t *testing.T) {
-	cal := newPAC67Calendar(t)
-	r := pac71Router(t, &oauth2.Config{Endpoint: oauth2.Endpoint{TokenURL: "http://127.0.0.1:1/token"}})
-	d := pac71Domain()
-	a := pac71Legacy(t, "henry@"+d, "google", "")
-	s0 := sessionCookie(t, a, 0)
-
-	var binding *httptest.ResponseRecorder
-	done := make(chan struct{})
-	afterAuthLeaseHook = func(*http.Request) {
-		afterAuthLeaseHook = nil
-		go func() {
-			defer close(done)
-			binding = pac71Google(t, googleProfile(pac71GoogleID(), "henry@"+d, true, d))
-		}()
-		waitForAdvisoryWaiter(t)
-		if st := readAccount(t, a); st.identity != "" {
-			t.Error("the binding committed while S0's request was in flight")
-		}
-	}
-	t.Cleanup(func() { afterAuthLeaseHook = nil })
-	rec := doAs(t, r, http.MethodGet, "/api/calendar/events?start=2030-01-07T00:00:00Z&end=2030-01-08T00:00:00Z", "", s0)
-	<-done
-	if strings.Contains(rec.Body.String(), "busy-1") {
-		t.Fatal("S0 received calendar data")
-	}
-	uid, _ := sessionOf(t, binding)
-	st := readAccount(t, a)
-	if uid != a || st.googleAccess == "" {
-		t.Fatalf("binding = %+v", st)
-	}
-	if cal.saw(st.googleAccess) {
-		t.Fatal("the provider received a call with Henry's credential")
-	}
-	assert401(t, doAs(t, r, http.MethodGet, "/api/calendar/events", "", s0))
 }
 
 // ---- AC-50 (reads and provider calls), at the re-check ---------------------

@@ -34,7 +34,7 @@ type MeetingBrief struct {
 	Status          string // pending | ready | failed
 }
 
-func UpsertMeetingBrief(db *sql.DB, b *MeetingBrief) error {
+func UpsertMeetingBrief(db Querier, b *MeetingBrief) error {
 	slack, err := json.Marshal(b.SlackResults)
 	if err != nil {
 		return err

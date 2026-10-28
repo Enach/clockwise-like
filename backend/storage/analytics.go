@@ -39,7 +39,7 @@ type AnalyticsWeek struct {
 }
 
 // UpsertAnalyticsWeek inserts or replaces an analytics row for (user, week_start).
-func UpsertAnalyticsWeek(db *sql.DB, a *AnalyticsWeek) (*AnalyticsWeek, error) {
+func UpsertAnalyticsWeek(db Querier, a *AnalyticsWeek) (*AnalyticsWeek, error) {
 	titlesJSON, err := json.Marshal(a.TopMeetingTitles)
 	if err != nil {
 		titlesJSON = []byte("[]")

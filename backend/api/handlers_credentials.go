@@ -102,7 +102,7 @@ func connectionLostSentence(err error) (string, bool) {
 
 func (s *generatedServer) DisconnectMicrosoft(ctx context.Context, _ gen.DisconnectMicrosoftRequestObject) (gen.DisconnectMicrosoftResponseObject, error) {
 	userID := auth.UserIDFromContext(ctx)
-	removed, err := storage.RemoveMicrosoftCredential(s.db, userID)
+	removed, err := storage.RemoveMicrosoftCredentialCtx(ctx, s.db, userID)
 	if err != nil {
 		return gen.DisconnectMicrosoft500JSONResponse{Error: serverFailure(ctx, "disconnect microsoft", err, http.StatusInternalServerError)}, nil
 	}
@@ -111,7 +111,7 @@ func (s *generatedServer) DisconnectMicrosoft(ctx context.Context, _ gen.Disconn
 	}
 	// Nothing is sent to Microsoft (OQ-1, spec D-5): no single-grant revocation
 	// exists that the user's own token may call.
-	storage.WriteAuditLog(s.db, userID, "provider_disconnected", disconnectDetails(storage.CredentialOutlook, gen.NotOffered))
+	storage.WriteAuditLogCtx(ctx, s.db, userID, "provider_disconnected", disconnectDetails(storage.CredentialOutlook, gen.NotOffered))
 	return gen.DisconnectMicrosoft200JSONResponse{Provider: gen.ProviderDisconnectResultProviderOutlook, Revocation: gen.NotOffered}, nil
 }
 
@@ -120,7 +120,7 @@ func (s *generatedServer) DisconnectMicrosoft(ctx context.Context, _ gen.Disconn
 func (s *generatedServer) DisconnectZoom(ctx context.Context, _ gen.DisconnectZoomRequestObject) (gen.DisconnectZoomResponseObject, error) {
 	userID := auth.UserIDFromContext(ctx)
 	// (1) Local removal, atomic: whatever happens next, the credential is gone (D-2).
-	removed, err := storage.RemoveZoomCredential(s.db, userID)
+	removed, err := storage.RemoveZoomCredentialCtx(ctx, s.db, userID)
 	if err != nil {
 		return gen.DisconnectZoom500JSONResponse{Error: serverFailure(ctx, "disconnect zoom", err, http.StatusInternalServerError)}, nil
 	}
@@ -133,9 +133,9 @@ func (s *generatedServer) DisconnectZoom(ctx context.Context, _ gen.DisconnectZo
 		outcome = gen.Confirmed
 	}
 	// (4) Entries, best-effort, after the outcome is known.
-	storage.WriteAuditLog(s.db, userID, "provider_disconnected", disconnectDetails(storage.CredentialZoom, outcome))
+	storage.WriteAuditLogCtx(ctx, s.db, userID, "provider_disconnected", disconnectDetails(storage.CredentialZoom, outcome))
 	if outcome == gen.Unconfirmed {
-		storage.WriteAuditLog(s.db, userID, "revocation_unconfirmed", providerOnlyDetails(storage.CredentialZoom))
+		storage.WriteAuditLogCtx(ctx, s.db, userID, "revocation_unconfirmed", providerOnlyDetails(storage.CredentialZoom))
 	}
 	return gen.DisconnectZoom200JSONResponse{Provider: gen.ProviderDisconnectResultProviderZoom, Revocation: outcome}, nil
 }

@@ -62,13 +62,13 @@ func IsPermanentRefusal(err error) bool {
 // (best effort, like every activity entry: spec D-16). The entry names only
 // the provider: never the requester, never token material.
 func RecordLoss(db *sql.DB, owner uuid.UUID, provider string) {
-	started, err := storage.RecordCredentialLoss(db, owner, provider)
+	started, err := storage.RecordCredentialLossCtx(context.Background(), db, owner, provider)
 	if err != nil {
 		log.Printf("credential: %s loss for user %s not recorded: %v", provider, owner, err)
 		return
 	}
 	if started {
-		storage.WriteAuditLog(db, owner, "connection_lost", providerDetails(provider))
+		storage.WriteAuditLogCtx(context.Background(), db, owner, "connection_lost", providerDetails(provider))
 	}
 }
 
@@ -227,7 +227,7 @@ func (m microsoftStore) save(t *oauth2.Token) error {
 	if err != nil {
 		return err
 	}
-	return storage.UpdateMicrosoftCredential(m.db, m.owner, string(data))
+	return storage.UpdateMicrosoftCredentialCtx(m.ctx, m.db, m.owner, string(data))
 }
 
 type zoomStore struct {
@@ -247,5 +247,5 @@ func (z zoomStore) save(t *oauth2.Token) error {
 		e := t.Expiry
 		c.Expiry = &e
 	}
-	return storage.UpdateZoomCredential(z.db, z.owner, c)
+	return storage.UpdateZoomCredentialCtx(z.ctx, z.db, z.owner, c)
 }

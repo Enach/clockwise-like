@@ -13,7 +13,7 @@
 ## 1. Order of work
 
 1. Migration `032_identity_binding` (next free number: main's latest is `031_llm_org_ai`, PAC-73 part 2).
-2. Session generation: JWT `gen` claim, `requireAuth` lease and uncached read, 401/500 split,
+2. Session generation: JWT `gen` claim, `requireAuth` uncached read, 401/500 split,
    the response guard that turns a stale in-request re-check into the 401.
 3. In-request re-check primitives (storage) and the D1–D14 load sites (§4).
 4. Identity resolution and binding (storage), then the three sign-in callbacks.
@@ -42,76 +42,84 @@ Down drops `user_identities`, the three `users` columns and the two indexes, and
 (`IF NOT EXISTS`), so up → down → up works. No row of any table is deleted or rewritten except
 the new columns (AC-18). The migration writes no binding.
 
-## 3. Sessions: `gen`, requireAuth, and the request lease
+## 3. Sessions: `gen`, requireAuth, and the in-request re-check
+
+Revised after the review of #242: the request lease of the first version (a transaction held
+open, with an advisory lock, for the whole request) is **removed**. It held one connection
+idle in transaction per authenticated request, through outbound Google, Graph, ICS and LLM
+calls, so a capped pool deadlocked and any user could exhaust Postgres's connections. No
+connection is held between authentication and the handler now
+(`TestPAC71_NoConnectionHeldWhileTheHandlerWaits`).
 
 - `auth.Claims` gains `gen` as a raw JSON value. Absent → 0. Present → must be a JSON integer
   literal `^[0-9]+$` within int64; anything else (`"0"`, `null`, `-1`, `1.5`) makes the token
   invalid (CONTRACT-4). `auth.GenerateToken` (3 args) keeps minting `gen` 0;
   `auth.GenerateSessionToken(id, email, gen, secret)` is what `issueJWT` uses.
-- `requireAuth(db, secret)`: after the signature, expiry and `sub` checks it opens the **request
-  lease** (`storage.BeginSessionLease`): a transaction on its own connection that takes
-  `pg_advisory_xact_lock_shared(<PAC-71 class>, hashtext(user_id))` and reads
-  `users.session_generation` uncached. Outcomes:
+- `requireAuth(db, secret)`: after the signature, expiry and `sub` checks it reads
+  `users.session_generation` with **one plain query**, uncached (`storage.CurrentGeneration`):
   - read error → 500 `application/json` `{"error":"internal error"}`, no Set-Cookie (AC-48);
   - row present, `gen` ≠ current → today's 401 bytes (AC-42);
-  - no row → the request proceeds as today (contract §5), with a guard that makes every
-    in-request re-check answer 401 (CONTRACT-12);
-  - otherwise the lease is held until the handler returns, then rolled back.
-  The lease uses `context.WithoutCancel`, so a client that disconnects cannot end it while the
-  handler still runs.
-- **Every generation advance** (binding, operator free/reassign) takes the same advisory lock
-  **exclusively**, then `SELECT … FOR UPDATE` on the account row. So no advance can commit while
-  a request authenticated under the previous generation is in flight, and a request that arrives
-  while an advance waits queues behind it and then sees the new generation (401). This is the
-  mechanism that makes "an older-generation request never reaches what a binding stored" hold
-  for **every** D1–D14 read and write and every provider call a request makes, including the
-  ones no primitive below covers (the whole handler runs inside the lease).
-- **In-request re-check (literal, contract §5).** `storage.SessionGuard` (user, `gen`, stale and
-  unavailable flags) rides on the request context. `storage.WithAccountGeneration(ctx, db, user, fn)`
-  runs `fn` in one transaction whose first statement is
-  `SELECT session_generation FROM users WHERE id = $1 FOR KEY SHARE`; a missing row or a different
-  value marks the guard stale and returns `storage.ErrStaleSession` without running `fn`; a read
-  error marks it unavailable. It uses a row lock, not the advisory lock, so it never queues behind
-  an advance that is itself waiting for this request's lease (no cross-connection deadlock).
-  When the context carries no guard for that user (scheduled jobs, other accounts' data, tests
-  that inject a user without requireAuth) it runs `fn` directly.
+  - no row → the request proceeds as today (contract §5); every in-request re-check then
+    answers 401 (CONTRACT-12).
+- **In-request re-check.** `storage.SessionGuard` (user, `gen`, stale and unavailable flags) rides
+  on the request context. `storage.WithSessionGeneration(ctx, db, fn)`, and the `…Ctx` storage
+  functions built on it, run `fn` in one transaction whose first statement is
+  `SELECT session_generation FROM users WHERE id = $1 FOR KEY SHARE`; a missing row or a
+  different value marks the guard stale and returns `storage.ErrStaleSession` without running
+  `fn`; a read error marks it unavailable. Storage functions that open their own transaction
+  join the caller's (`beginOn`), or call `storage.RecheckSessionGeneration(ctx, tx)` as their
+  first statement (the org-AI and SSO-write functions). Without a guard (scheduled jobs, public
+  pages, other accounts' data) `fn` runs directly.
+- **Every generation advance** (a migration binding, the operator's free/reassign, and
+  `advance-all`) locks the account row(s) `FOR UPDATE` before it re-checks and writes. `FOR
+  UPDATE` conflicts with the re-check's `FOR KEY SHARE`, so an advance can never commit between
+  a re-check's comparison and the read or write in the same transaction: either the read or
+  write commits first (and a binding's emptiness re-check then sees it, AC-46), or it waits and
+  finds the new generation (401, nothing stored, nothing returned: AC-47, AC-50).
 - **Response guard.** `requireAuth` wraps the `ResponseWriter`: at the first `WriteHeader`/`Write`,
   or when the handler returns without writing, a stale guard replaces the response with today's
   401 bytes and an unavailable one with the JSON 500, dropping every header the handler set
   (no Set-Cookie leaks). That is "the operation answers the same 401, whatever it had already
   decided" (contract `bearerAuth`).
-- **Why both mechanisms.** The lease alone already prevents the interleaving that AC-46/47/50
-  describe; the literal re-check is what the merge condition names for the listed loads, and it
-  is what answers a request whose account row is absent (CONTRACT-12). The seam tests (§6)
-  exercise both: with the lease (the binding waits; the request gets nothing of Henry's) and at
-  the primitive (a binding committed between authentication and the load: 401, no provider call).
-  **Deviation to review:** with the lease, the AC-47 write half ("authenticated before the
-  binding, write attempted after") cannot occur: the binding waits for the request, sees its
-  write in the re-check, and is refused (the AC-46 outcome). AC-47's stated end state (bound,
-  write refused) is proven at the primitive level for the listed write kinds instead. Both
-  orders are safe; the lease is strictly stronger. Flagged in the PR for the reviewer.
+- **Seams.** `afterAuthHook` runs between requireAuth and the handler: the AC-47/AC-50 tests
+  commit Henry's binding (or an operator step) there and assert the literal outcome (401,
+  nothing stored, no provider call with his credential). `serveGuarded` does the same at the
+  handler level.
 
-## 4. D1–D14 load sites (contract §5) and what guards each
+## 4. D1–D14 reads and writes on request paths, and what guards each
 
-All of them run inside the request lease. The ones below additionally carry the literal
-in-statement/in-transaction re-check (`…Ctx` variants), at every call site on a request path:
+Every one below runs under the in-request re-check (a `…Ctx` variant, or `guarded(ctx, db, fn)`).
 
-| Primitive (new `Ctx` variant) | Call sites switched |
+**Reads (contract §5 load sites)**
+
+| Primitive (`Ctx` variant) | Call sites |
 |---|---|
-| `auth.LoadUserTokenCtx` (D1) | `handlers_auth.go` status; `handlers_conferencing.go` addEventConference; `engine.LoadCalendarTokenCtx` (→ `handlers_calendar.go` listEvents/freeBusy, `handlers_events.go`, `engine/cal_iface.go newCalOps` = SmartScheduler suggest/create, NLP confirm, focus, compression; `engine/analytics.go`, `engine/manager.go` detect); `engine/habits.go`; `engine/freebusy_service.go` (requester's own); `engine/team_availability.go` requester's own row only |
-| `auth.LoadMicrosoftTokenCtx` (D2) | `handlers_auth.go` status; `handlers_conferencing.go` createConferenceLink/addEventConference (teams); `engine/freebusy_service.go` outlook path; `credential_lifecycle.go microsoftStore.load` |
-| `storage.LoadZoomCredential` via `credential_lifecycle.go zoomStore.load` (D2) | Zoom meeting creation, disconnectZoom (store carries the request context) |
-| `storage.GetWorkspaceConnectionCtx` (D6) | `handlers_daily_recap.go:159`, `handlers_integrations.go:98,230`, `engine/meeting_brief_service.go:66,71` |
-| `storage.ListPersonalCalendarsByUserCtx`, `GetPersonalCalendarCtx` (D7) | `handlers_personal.go:53,146,199`; `engine/personal_blocker.go:52,68,76` |
-| `storage.GetOrCreateSettingsByUserCtx` (D2–D5) | every request-path caller in `api/`, `engine/` and `nlp/parser.go` listed in contract §5 |
+| `auth.LoadUserTokenCtx` (D1) | `handlers_auth.go` status; `handlers_conferencing.go` addEventConference; `engine.LoadCalendarTokenCtx` (→ `handlers_calendar.go` listEvents/freeBusy, `handlers_events.go`, `engine/cal_iface.go newCalOps` = SmartScheduler suggest/create, NLP confirm, focus, compression; `engine/analytics.go`, `engine/manager.go` detect); `engine/habits.go`; `engine/freebusy_service.go`; `engine/team_availability.go`; the Google renewal store |
+| `auth.LoadMicrosoftTokenCtx` (D2) | `handlers_auth.go` status; `handlers_conferencing.go` (teams); `engine/freebusy_service.go` outlook path; `credential_lifecycle.go microsoftStore.load` |
+| `storage.LoadZoomCredentialCtx` (D2) | `credential_lifecycle.go zoomStore.load` (Zoom meeting creation, disconnectZoom) |
+| `storage.GetWorkspaceConnectionCtx` (D6) | `handlers_daily_recap.go`, `handlers_integrations.go`, `engine/meeting_brief_service.go` |
+| `storage.ListPersonalCalendarsByUserCtx`, `GetPersonalCalendarCtx` (D7) | `handlers_personal.go`; `engine/personal_blocker.go` |
+| `storage.GetOrCreateSettingsByUserCtx` (D2–D5) | every request-path caller in `api/`, `engine/` and `nlp/` |
 
-Writes with the literal re-check (the kinds AC-46/47 name, plus every credential store):
-settings save (`SaveSettingsForUserCtx`: AI keys, every preference), Slack/Notion connection
-save, team creation, co-host acceptance, Google/Microsoft credential store on connect and on
-sign-in. Every other D1–D14 write is covered by the lease only.
+**Writes (every kind rule (b) counts; spec §3 "Binding is one atomic step")**
 
-Not covered (no session account, contract §5): other members' credentials in team availability,
-the public booking pages, scheduled jobs.
+| Kind | Guarded writes on request paths |
+|---|---|
+| D1 Google credential | connect store (`WithGeneration`); sign-in store (inside the sign-in transaction); renewal store (`UpdateUserToken` only rewrites a row loaded under the re-check) |
+| D2 Microsoft, Zoom | `StoreMicrosoftCredential` (connect, sign-in), `UpdateMicrosoftCredentialCtx`, `RemoveMicrosoftCredentialCtx`, `SaveZoomCredentialCtx` (Zoom callback), `UpdateZoomCredentialCtx`, `RemoveZoomCredentialCtx` |
+| D3–D5 settings, AI keys | `SaveSettingsForUserCtx`, `SaveRecapSettingsForUserCtx`, `DeleteOrgAIConfirmations` |
+| D6 Slack, Notion | `UpsertWorkspaceConnectionCtx`, `DeleteWorkspaceConnectionCtx` |
+| D7 personal calendars | `InsertPersonalCalendarCtx`, `UpdatePersonalCalendarCtx`, `DeletePersonalCalendarForUserCtx`, `MarkPersonalCalendarSyncedCtx`, `UpsertPersonalBlockerCtx`, `DeletePersonalBlockerCtx` |
+| D9 teams | `CreateTeamCtx`, `RenameTeamCtx`, `DeleteTeamCtx`, `AddTeamMemberCtx` (team creation and invite acceptance), `AcceptTeamInviteCtx`, `CreateTeamInviteCtx`, `RemoveTeamMemberCtx`, `RemoveTeamMemberKeepingOwnerCtx`, no-meeting zones (`Create/Update/DeleteNoMeetingZoneCtx`), the manager's pending-invite delete |
+| D10 scheduling links | `CreateSchedulingLinkCtx`, `UpdateSchedulingLinkCtx`, `DeleteSchedulingLinkCtx`, `AddLinkHostCtx`, `InviteLinkHostCtx`, `RemoveLinkHostsExceptCtx`, `RemoveLinkHostCtx`, `RespondToHostInviteCtx` |
+| D12 manager | `UpsertUserProfileCtx`, `UpsertManagerTeamMemberCtx`, `UpsertManagerTeamMemberForTeamCtx`, `PatchManagerTeamMember(ForTeam)Ctx`, `ConfirmManagerTeamMembersCtx`, `DeleteManagerTeamMemberByEmailCtx`, `UnassignManagerTeamMemberCtx`, `UpsertOneOnOneOccurrenceCtx`, `UpsertTeamAnalyticsCtx` |
+| D13 stored data | `CreateHabitCtx`, `UpdateHabitCtx`, `DeactivateHabitCtx`, `UpdateHabitOccurrenceStatusCtx`, `UpsertHabitOccurrenceCtx`, `SaveFocusBlockCtx`, `DeleteFocusBlockCtx`, `UpsertAnalyticsWeekCtx`, `UpsertMeetingBriefCtx`, `WriteAuditLogCtx` |
+| D14 admin standing, org AI | `RecordSSOStepupOutcome` (grants), `ConsumeSSOStepupGrant`, `SaveOIDCProviderRecorded`, `DeleteSSOProviderRecorded`, `WriteOrgAIConfig`, `ConfirmOrgAI` (the re-check is the first statement of their own transaction) |
+
+Not covered (no session account, contract §5): other members' credentials in team availability;
+the public booking pages (bookings and booking events are written for the hosts); scheduled jobs
+(recap sends, auto-schedule, auto-decline); credential-loss records (written only for a
+credential the request loaded under the re-check).
 
 ## 5. Sign-in, binding and connect
 
@@ -129,7 +137,7 @@ contract's SIGN-IN step 4 for all three callbacks:
    case-insensitively — equal to the subject, evidence ≥ mailbox for Google, authoritative for
    Microsoft) or rule (b) (authoritative and **empty**). Neither → refused, the log names the
    account and the first non-empty kind. Then the **seam** (`SignInHooks.BeforeStore`), then the
-   binding transaction: advisory lock exclusive (with `lock_timeout`), row `FOR UPDATE`,
+   binding transaction: row `FOR UPDATE` (with `lock_timeout`),
    re-check everything (still the only carrier, still unbound, (a)'s record unchanged or (b)'s
    emptiness), insert the identity, set standing and `provider_id = subject`, advance the
    generation, store the credential (Microsoft: without touching `calendar_provider`), commit.
@@ -168,7 +176,7 @@ check and the store, AC-47). Every connect-branch response expires the connect c
 
 Every test below drives the real handlers with the existing fake-provider seams (offline).
 File names are in the PR body's table. Interleaving seams: `storage.SignInHooks.BeforeStore`
-(AC-7, AC-7b, AC-46), `api.afterAuthLeaseHook` (AC-47, AC-50 lease side),
+(AC-7, AC-7b, AC-46), `api.afterAuthHook` (AC-47, AC-50 through requireAuth),
 `api.connectBeforeStoreHook` (AC-47 connect), the primitive-level guard injection
 (AC-47/AC-50 literal side, CONTRACT-12), and a `getTeam` seam (CONTRACT-9).
 
@@ -211,7 +219,8 @@ is OQ-6, the owner's call. AC-32 and the web half of AC-19 belong to the web PR.
   replaces (or writes) the binding, standing from the evidence, `provider_id = subject`, removes
   every calendar credential (Google, Microsoft, personal calendars) unless kept, generation
   advanced; audited with previous and new identity, evidence and what was removed.
-- `advance-all -operator <name> -reason <text>`: every account's generation +1 (OQ-6); audited.
+- `advance-all -operator <name> -reason <text>`: locks every account row `FOR UPDATE`, then every
+  account's generation +1 (OQ-6); audited once. Nothing else changes.
 
 ## 9. Gates for this PR
 

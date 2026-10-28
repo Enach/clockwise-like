@@ -15,19 +15,17 @@ import (
 //
 // Every account has a session generation. A session carries the generation of
 // its account when it was issued; a request whose session generation is not
-// the account's current one is unauthenticated. Two mechanisms enforce it:
+// the account's current one is unauthenticated. Two checks enforce it:
 //
-//   - the request LEASE (BeginSessionLease): requireAuth holds a shared
-//     advisory lock on the account for the whole request, and every generation
-//     advance (a binding, an operator step) takes the same lock exclusively.
-//     So no advance can commit while a request authenticated under the
-//     previous generation is still running, and a request that arrives while
-//     an advance waits queues behind it and then reads the new generation;
-//   - the IN-REQUEST RE-CHECK (WithSessionGeneration): a load or write of the
-//     session account's data runs in one transaction whose first statement
-//     re-reads the generation under a row lock, so no advance can commit
-//     between the comparison and the load or write. A mismatch marks the
-//     request's guard stale; requireAuth then answers the 401.
+//   - requireAuth reads the generation, uncached, with one plain query (no
+//     transaction is held while the handler runs);
+//   - the IN-REQUEST RE-CHECK: every read or write of the session account's
+//     data (contract §5 D1–D14) runs in one transaction whose first statement
+//     re-reads the generation under a row lock (FOR KEY SHARE). Every
+//     generation advance (a binding, an operator step) locks the same row FOR
+//     UPDATE, so no advance can commit between the comparison and the read or
+//     write. A mismatch marks the request's guard stale; requireAuth then
+//     answers the 401.
 
 // Querier is what both a *sql.DB and a *sql.Tx offer, so a storage function
 // that takes one can run inside a caller's transaction.
@@ -35,6 +33,9 @@ type Querier interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	Query(query string, args ...any) (*sql.Rows, error)
 	QueryRow(query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // ErrStaleSession means the session's generation is no longer the account's
@@ -46,12 +47,6 @@ var ErrStaleSession = errors.New("session generation is not the account's curren
 // be read. It is a server error (500), never a 401: the web app treats a 401
 // as "signed out", and an outage must not look like one (spec AC-48).
 var ErrGenerationUnavailable = errors.New("session generation could not be read")
-
-// accountLockClass namespaces PAC-71's per-account advisory locks
-// (pg_advisory_xact_lock*(class, hashtext(user id))). A hash collision between
-// two accounts only makes one wait for the other; it never lets anything
-// through.
-const accountLockClass = 71071
 
 // SessionGuard is the request's session as requireAuth validated it: the
 // account and the generation its token carries. It records whether an
@@ -90,55 +85,17 @@ func SessionGuardFrom(ctx context.Context) *SessionGuard {
 	return g
 }
 
-// SessionLease is the request lease of the package comment. Release it when
-// the request ends.
-type SessionLease struct{ tx *sql.Tx }
-
-// Release ends the lease. It is safe on a nil lease and idempotent.
-func (l *SessionLease) Release() {
-	if l != nil && l.tx != nil {
-		_ = l.tx.Rollback()
-		l.tx = nil
-	}
-}
-
-// BeginSessionLease takes userID's lease and reads its current generation,
-// uncached. found is false when no account row exists (the lease is then
-// already released). Any failure wraps ErrGenerationUnavailable.
-//
-// The lease is not tied to ctx's cancellation: a client that disconnects must
-// not end it while the handler still runs, or an advance could commit in the
-// middle of the request.
-func BeginSessionLease(ctx context.Context, db *sql.DB, userID uuid.UUID) (*SessionLease, int64, bool, error) {
-	tx, err := db.BeginTx(context.WithoutCancel(ctx), nil)
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
-	}
-	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock_shared($1, hashtext($2))`, accountLockClass, userID.String()); err != nil {
-		_ = tx.Rollback()
-		return nil, 0, false, fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
-	}
-	var gen int64
-	err = tx.QueryRow(`SELECT session_generation FROM users WHERE id = $1`, userID).Scan(&gen)
-	if errors.Is(err, sql.ErrNoRows) {
-		_ = tx.Rollback()
-		return nil, 0, false, nil
-	}
-	if err != nil {
-		_ = tx.Rollback()
-		return nil, 0, false, fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
-	}
-	return &SessionLease{tx: tx}, gen, true, nil
-}
-
-// lockAccountExclusive is the first step of every generation advance: it waits
-// for every request lease on the account to end, then locks the account row.
-// It must be the first lock the transaction takes.
+// lockAccountExclusive is the first step of every generation advance: it
+// locks the account row FOR UPDATE (waiting at most lock_timeout for a
+// re-check or a write in progress on the account), so no in-request
+// re-check can pass between the advance's checks and its commit.
 func lockAccountExclusive(tx *sql.Tx, userID uuid.UUID) error {
 	if _, err := tx.Exec(`SET LOCAL lock_timeout = '10s'`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1, hashtext($2))`, accountLockClass, userID.String()); err != nil {
+	var id uuid.UUID
+	err := tx.QueryRow(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&id)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	return nil
@@ -157,18 +114,47 @@ func CurrentGeneration(q Querier, userID uuid.UUID) (gen int64, ok bool, err err
 	return gen, true, nil
 }
 
+// RecheckSessionGeneration is the in-request re-check run as a statement of
+// the caller's own transaction tx: when ctx carries a session guard, it locks
+// the guard's account row (FOR KEY SHARE) and confirms its generation is the
+// guard's. Storage functions that open their own transaction call it first.
+func RecheckSessionGeneration(ctx context.Context, tx Querier) error {
+	g := SessionGuardFrom(ctx)
+	if g == nil {
+		return nil
+	}
+	return recheck(ctx, tx, g.UserID, g.Gen, g)
+}
+
+func recheck(ctx context.Context, tx Querier, userID uuid.UUID, gen int64, g *SessionGuard) error {
+	var cur int64
+	err := tx.QueryRowContext(ctx, `SELECT session_generation FROM users WHERE id = $1 FOR KEY SHARE`, userID).Scan(&cur)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if g != nil {
+			g.MarkStale()
+		}
+		return ErrStaleSession
+	case err != nil:
+		if g != nil {
+			g.MarkUnavailable()
+		}
+		return fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
+	case cur != gen:
+		if g != nil {
+			g.MarkStale()
+		}
+		return ErrStaleSession
+	}
+	return nil
+}
+
 // WithSessionGeneration runs fn for the request in ctx. When ctx carries a
-// session guard, fn runs inside one transaction whose first statement
-// re-confirms, under a row lock, that the guard's account still exists and is
-// still at the guard's generation (the in-request re-check). On a mismatch fn
-// does not run, the guard is marked stale and ErrStaleSession is returned; if
-// the generation cannot be read the guard is marked unavailable. Without a
-// guard (no session: scheduled jobs, public pages, other accounts' data) fn
-// runs directly against db.
-//
-// The re-check uses a row lock (FOR KEY SHARE), not the advisory lock: it
-// runs while this request already holds its lease, and an advisory request
-// would queue behind an advance that is itself waiting for that lease.
+// session guard, fn runs inside one transaction whose first statement is the
+// re-check; on a mismatch fn does not run, the guard is marked stale and
+// ErrStaleSession is returned; if the generation cannot be read the guard is
+// marked unavailable. Without a guard (no session: scheduled jobs, public
+// pages, other accounts' data) fn runs directly against db.
 func WithSessionGeneration(ctx context.Context, db *sql.DB, fn func(q Querier) error) error {
 	g := SessionGuardFrom(ctx)
 	if g == nil {
@@ -193,27 +179,48 @@ func withGenerationTx(ctx context.Context, db *sql.DB, userID uuid.UUID, gen int
 		return fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var cur int64
-	err = tx.QueryRow(`SELECT session_generation FROM users WHERE id = $1 FOR KEY SHARE`, userID).Scan(&cur)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if g != nil {
-			g.MarkStale()
-		}
-		return ErrStaleSession
-	case err != nil:
-		if g != nil {
-			g.MarkUnavailable()
-		}
-		return fmt.Errorf("%w: %w", ErrGenerationUnavailable, err)
-	case cur != gen:
-		if g != nil {
-			g.MarkStale()
-		}
-		return ErrStaleSession
+	if err := recheck(ctx, tx, userID, gen, g); err != nil {
+		return err
 	}
 	if err := fn(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// txScope is a transaction a storage function either owns (it was given a
+// *sql.DB) or joins (it was given the caller's *sql.Tx, typically the
+// in-request re-check's): Commit and Rollback act only on an owned one.
+type txScope struct {
+	tx    *sql.Tx
+	owned bool
+}
+
+// beginOn starts a transaction on q, or joins q when it is one.
+func beginOn(q Querier) (*sql.Tx, *txScope, error) {
+	switch v := q.(type) {
+	case *sql.Tx:
+		return v, &txScope{tx: v}, nil
+	case *sql.DB:
+		tx, err := v.Begin()
+		if err != nil {
+			return nil, nil, err
+		}
+		return tx, &txScope{tx: tx, owned: true}, nil
+	}
+	return nil, nil, fmt.Errorf("beginOn: unsupported %T", q)
+}
+
+func (s *txScope) Commit() error {
+	if s.owned {
+		return s.tx.Commit()
+	}
+	return nil
+}
+
+func (s *txScope) Rollback() error {
+	if s.owned {
+		return s.tx.Rollback()
+	}
+	return nil
 }

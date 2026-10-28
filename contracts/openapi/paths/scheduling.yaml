@@ -1117,7 +1117,11 @@ paths:
            an SSO write never consumes an `llm_org_key_write` grant (PAC-50
            AC-27, P2-AC-2). Without such a grant: an address on the
            deployment's break-glass list (`PACEDAY_ADMIN_EMAILS`, compared
-           case-insensitively) whose session JWT was issued less than 10
+           case-insensitively), held by the caller's ACCOUNT
+           domain-confirmed (PAC-71: the account's stored address and
+           `addressStanding`, never the session's email claim; an account
+           that carries it unconfirmed, or no longer carries it, is not
+           break-glass), whose session JWT was issued less than 10
            minutes ago, and not more than one minute in the future, is
            authorised without a grant (PAC-50 AC-14a); the same address with
            an older session is the 403

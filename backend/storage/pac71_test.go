@@ -263,53 +263,11 @@ func TestPAC71_SessionGenerationPrimitives(t *testing.T) {
 	if err := WithSessionGeneration(WithSessionGuard(ctx, ug), closed, fn); !errors.Is(err, ErrGenerationUnavailable) || !ug.Unavailable() {
 		t.Fatal("unreadable generation must be unavailable")
 	}
-	if _, _, _, err := BeginSessionLease(ctx, closed, u); !errors.Is(err, ErrGenerationUnavailable) {
-		t.Fatal("lease on a closed db")
+	if _, _, err := CurrentGeneration(closed, u); err == nil {
+		t.Fatal("CurrentGeneration on a closed db")
 	}
 	if SessionGuardFrom(ctx) != nil || (*SessionGuard)(nil).Stale() || (*SessionGuard)(nil).Unavailable() {
 		t.Fatal("nil guard")
-	}
-}
-
-// The request lease makes every generation advance wait for the requests
-// authenticated under the previous generation (plan §3).
-func TestPAC71_LeaseHoldsOffEveryAdvance(t *testing.T) {
-	db := openTestDB(t)
-	u := pac71User(t, db, "lease@example.com", "")
-	lease, gen, found, err := BeginSessionLease(context.Background(), db, u)
-	if err != nil || !found || gen != 0 {
-		t.Fatalf("lease: %v %v %d", err, found, gen)
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := FreeAddress(context.Background(), db, u, false, OperatorRun{Operator: "op", Reason: "lease"})
-		done <- err
-	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var n int
-		_ = db.QueryRow(`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`).Scan(&n)
-		if n > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the advance did not wait")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if g, _, _ := CurrentGeneration(db, u); g != 0 {
-		t.Fatal("the advance committed during the lease")
-	}
-	lease.Release()
-	lease.Release() // idempotent
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if g, _, _ := CurrentGeneration(db, u); g != 1 {
-		t.Fatal("the advance did not commit after the lease")
-	}
-	if l, _, found, err := BeginSessionLease(context.Background(), db, uuid.New()); err != nil || found || l != nil {
-		t.Fatal("lease for a missing account")
 	}
 }
 

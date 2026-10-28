@@ -119,7 +119,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 		s.RecapIncludeHabits = *body.IncludeHabits
 	}
 
-	if err := storage.SaveRecapSettingsForUser(h.db, userID, s); err != nil {
+	if err := storage.SaveRecapSettingsForUserCtx(r.Context(), h.db, userID, s); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
