@@ -3152,9 +3152,13 @@ type SsoStepupOptions struct {
 	// the body fail validation in a client generated from this revision. A
 	// client explains the codes it knows and ignores any other. The only
 	// value the server sends today is `sso_configuration_writes`: no SSO
-	// configuration write (create, replace, delete, suspend or resume);
-	// only a deployment operator on the break-glass list can write without
-	// it. Nothing else the user already has is lost.
+	// configuration write (create, replace or delete); only a deployment
+	// operator on the break-glass list can write without it. Nothing else
+	// the user already has is lost. Suspend and resume
+	// (setSsoProviderState) are not served under PAC-50; they become SSO
+	// configuration writes covered by this code when PAC-22's follow-up
+	// serves them, and a client must not offer them before then (PAC-50
+	// contract revision 8.1, N6).
 	WithoutStepup SsoWithoutStepup `json:"without_stepup"`
 }
 
@@ -3209,9 +3213,13 @@ type SsoStepupUrl string
 // the body fail validation in a client generated from this revision. A
 // client explains the codes it knows and ignores any other. The only
 // value the server sends today is `sso_configuration_writes`: no SSO
-// configuration write (create, replace, delete, suspend or resume);
-// only a deployment operator on the break-glass list can write without
-// it. Nothing else the user already has is lost.
+// configuration write (create, replace or delete); only a deployment
+// operator on the break-glass list can write without it. Nothing else
+// the user already has is lost. Suspend and resume
+// (setSsoProviderState) are not served under PAC-50; they become SSO
+// configuration writes covered by this code when PAC-22's follow-up
+// serves them, and a client must not offer them before then (PAC-50
+// contract revision 8.1, N6).
 type SsoWithoutStepup = []string
 
 // SsoWriteDomainMismatch The provider domain (create body `domain`, or the `{domain}` segment
@@ -3255,7 +3263,9 @@ type SsoWriteFreshLoginRequiredError string
 
 // SsoWriteMembershipRequired The caller has no org (or its org row is gone). Checked before
 // anything else, including break-glass. No `stepup_url`: there is no org
-// to step up for. Also the 403 of getSsoStepupOptions.
+// to step up for. Also the 403 of getSsoStepupOptions and of
+// startSsoAdminStepup (the latter always with `org membership
+// required`).
 type SsoWriteMembershipRequired struct {
 	Error SsoWriteMembershipRequiredError `json:"error"`
 }
@@ -3323,9 +3333,13 @@ type SsoWriteStepupRequired struct {
 	// the body fail validation in a client generated from this revision. A
 	// client explains the codes it knows and ignores any other. The only
 	// value the server sends today is `sso_configuration_writes`: no SSO
-	// configuration write (create, replace, delete, suspend or resume);
-	// only a deployment operator on the break-glass list can write without
-	// it. Nothing else the user already has is lost.
+	// configuration write (create, replace or delete); only a deployment
+	// operator on the break-glass list can write without it. Nothing else
+	// the user already has is lost. Suspend and resume
+	// (setSsoProviderState) are not served under PAC-50; they become SSO
+	// configuration writes covered by this code when PAC-22's follow-up
+	// serves them, and a client must not offer them before then (PAC-50
+	// contract revision 8.1, N6).
 	WithoutStepup SsoWithoutStepup `json:"without_stepup"`
 }
 
@@ -11331,7 +11345,7 @@ func (response StartSsoAdminStepup401TextResponse) VisitStartSsoAdminStepupRespo
 	return err
 }
 
-type StartSsoAdminStepup403JSONResponse ErrorResponse
+type StartSsoAdminStepup403JSONResponse SsoWriteMembershipRequired
 
 func (response StartSsoAdminStepup403JSONResponse) VisitStartSsoAdminStepupResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")

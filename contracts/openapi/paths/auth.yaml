@@ -833,7 +833,13 @@ paths:
         2. Body, each refusal a 400 that stores nothing and consumes no grant.
            In this order:
            a. The body is a JSON object, and each declared property present
-              has its declared type (`invalid JSON`).
+              is `null` or a value of its declared type (`invalid JSON`).
+              `null` is not a type error: it counts as empty, so it is
+              decided by step d or f like a missing or `""` value
+              (`"domain":null` gives `domain, provider_name and
+              provider_type are required`; `"oidc_client_secret":null`
+              gives `oidc_client_secret must not be empty`), as `main`'s
+              PAC-22 decoder does (PAC-50 contract revision 8.1, N1).
            b. None of `saml_entry_point`, `saml_issuer`, `saml_cert` is
               present, whatever its value (including `""` and `null`). The
               first present, in that order, is named: `saml_entry_point is
@@ -885,12 +891,18 @@ paths:
            spec D-13, AC-24). Like every refusal above, decided before
            authorization: it consumes no grant.
         5. Authorization, one of:
-           a. a live admin step-up grant for (caller, caller's org), obtained
+           a. a live admin step-up grant for (caller, caller's org) whose
+              purpose is SSO configuration writes (`sso_write`), obtained
               through GET /api/admin/sso/stepup less than 10 minutes earlier.
               The request carries nothing that names it: the server selects
-              the caller's newest live grant and consumes it in the same
-              statement, so one grant authorizes exactly one write, and two
-              concurrent writes on one grant yield one success and one 403.
+              the caller's newest live `sso_write` grant and consumes it in
+              the same statement, so one grant authorizes exactly one write,
+              and two concurrent writes on one grant yield one success and
+              one 403. A grant issued for another purpose (a later feature
+              that reuses this admin proof, such as the organisation AI key)
+              is never consumed by an SSO write, and an `sso_write` grant is
+              never consumed by a write of another purpose (PAC-50 contract
+              revision 8.1, N5; spec §4.8).
               Every 400 and 403 above happens before this step and leaves
               the grant live; a failure after it (the store-time 400 of step
               6, the 500 below) leaves it consumed.
@@ -1442,11 +1454,16 @@ paths:
             is gone (this operation does not distinguish the second case as
             `org not found`), so there is no org domain to step up for. No
             state cookie is set. (Assumed by the factory at stage 2, pending
-            owner confirmation; spec "Decisions", D-1.)
+            owner confirmation; spec "Decisions", D-1.) The body is
+            SsoWriteMembershipRequired, the same schema as the membership 403
+            of getSsoStepupOptions and of the SSO writes, so a generated
+            client has one type for this refusal (PAC-50 contract revision
+            8.1, N4; the bytes are unchanged, `{"error":"org membership
+            required"}`).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
         '503':
           description: |
             `<provider> step-up not configured`: the deployment has no OAuth
@@ -1568,8 +1585,10 @@ paths:
            Microsoft `wids` (or, when absent, the directory-role lookup)
            containing a qualifying role template id (spec §4.4). Anything
            else, including a lookup error, gives `not_admin`.
-        5. A grant for (caller, caller's org, provider) is issued, valid for
-           10 minutes and good for one SSO write.
+        5. A grant for (caller, caller's org, provider) is issued with
+           purpose `sso_write`, valid for 10 minutes and good for one SSO
+           configuration write (spec §4.8; a write of another purpose cannot
+           spend it).
 
         Every outcome with a session, granted or denied, is recorded
         server-side for operators (spec §4.6) and clears the state cookie.
@@ -2213,7 +2232,9 @@ components:
       description: |
         The caller has no org (or its org row is gone). Checked before
         anything else, including break-glass. No `stepup_url`: there is no org
-        to step up for. Also the 403 of getSsoStepupOptions.
+        to step up for. Also the 403 of getSsoStepupOptions and of
+        startSsoAdminStepup (the latter always with `org membership
+        required`).
       required: [error]
       properties:
         error:
@@ -2372,9 +2393,13 @@ components:
         the body fail validation in a client generated from this revision. A
         client explains the codes it knows and ignores any other. The only
         value the server sends today is `sso_configuration_writes`: no SSO
-        configuration write (create, replace, delete, suspend or resume);
-        only a deployment operator on the break-glass list can write without
-        it. Nothing else the user already has is lost.
+        configuration write (create, replace or delete); only a deployment
+        operator on the break-glass list can write without it. Nothing else
+        the user already has is lost. Suspend and resume
+        (setSsoProviderState) are not served under PAC-50; they become SSO
+        configuration writes covered by this code when PAC-22's follow-up
+        serves them, and a client must not offer them before then (PAC-50
+        contract revision 8.1, N6).
       items:
         type: string
         minLength: 1

@@ -55,17 +55,21 @@ paths:
         \ 400, and\n   before the break-glass check, so a break-glass email with no org\n   gets this\
         \ same 403. It carries no `stepup_url`.\n2. Body, each refusal a 400 that stores nothing and consumes\
         \ no grant.\n   In this order:\n   a. The body is a JSON object, and each declared property present\n\
-        \      has its declared type (`invalid JSON`).\n   b. None of `saml_entry_point`, `saml_issuer`,\
-        \ `saml_cert` is\n      present, whatever its value (including `\"\"` and `null`). The\n     \
-        \ first present, in that order, is named: `saml_entry_point is\n      not supported`, `saml_issuer\
-        \ is not supported`, `saml_cert is\n      not supported` (PAC-22 spec D-8, AC-18). Such a value\
-        \ is\n      refused, never stored and never silently dropped.\n   c. No other property outside\
-        \ the schema (PAC-50, spec §4.2 step 3,\n      AC-16a): the first undeclared property, in byte\
-        \ order of the\n      property names, is refused with `unknown property: <name>`, the\n      PAC-24\
-        \ settings convention. Property names are case-sensitive,\n      so `OIDC_CLIENT_SECRET` or `org_id`\
-        \ is an undeclared property.\n      (Before PAC-50 an undeclared property was ignored, although\
-        \ the\n      schema said `additionalProperties: false`.)\n   d. `domain`, `provider_name` and\
-        \ `provider_type` are non-empty\n      (`domain, provider_name and provider_type are required`).\n\
+        \      is `null` or a value of its declared type (`invalid JSON`).\n      `null` is not a type\
+        \ error: it counts as empty, so it is\n      decided by step d or f like a missing or `\"\"` value\n\
+        \      (`\"domain\":null` gives `domain, provider_name and\n      provider_type are required`;\
+        \ `\"oidc_client_secret\":null`\n      gives `oidc_client_secret must not be empty`), as `main`'s\n\
+        \      PAC-22 decoder does (PAC-50 contract revision 8.1, N1).\n   b. None of `saml_entry_point`,\
+        \ `saml_issuer`, `saml_cert` is\n      present, whatever its value (including `\"\"` and `null`).\
+        \ The\n      first present, in that order, is named: `saml_entry_point is\n      not supported`,\
+        \ `saml_issuer is not supported`, `saml_cert is\n      not supported` (PAC-22 spec D-8, AC-18).\
+        \ Such a value is\n      refused, never stored and never silently dropped.\n   c. No other property\
+        \ outside the schema (PAC-50, spec §4.2 step 3,\n      AC-16a): the first undeclared property,\
+        \ in byte order of the\n      property names, is refused with `unknown property: <name>`, the\n\
+        \      PAC-24 settings convention. Property names are case-sensitive,\n      so `OIDC_CLIENT_SECRET`\
+        \ or `org_id` is an undeclared property.\n      (Before PAC-50 an undeclared property was ignored,\
+        \ although the\n      schema said `additionalProperties: false`.)\n   d. `domain`, `provider_name`\
+        \ and `provider_type` are non-empty\n      (`domain, provider_name and provider_type are required`).\n\
         \   e. `provider_type` is `oidc`. `saml` is refused with\n      `provider_type 'saml' is not supported`\
         \ (PAC-22 spec D-1, AC-8):\n      the product cannot complete a SAML sign-in. Any other value\
         \ is\n      refused with `provider_type must be 'oidc'`.\n   f. `oidc_issuer` and `oidc_client_id`\
@@ -90,18 +94,22 @@ paths:
         \ 400 `oidc_client_secret\n   is required when oidc_issuer or oidc_client_id changes` when the\n\
         \   submitted issuer or client id differs from the stored one (PAC-22\n   spec D-13, AC-24). Like\
         \ every refusal above, decided before\n   authorization: it consumes no grant.\n5. Authorization,\
-        \ one of:\n   a. a live admin step-up grant for (caller, caller's org), obtained\n      through\
-        \ GET /api/admin/sso/stepup less than 10 minutes earlier.\n      The request carries nothing that\
-        \ names it: the server selects\n      the caller's newest live grant and consumes it in the same\n\
-        \      statement, so one grant authorizes exactly one write, and two\n      concurrent writes\
-        \ on one grant yield one success and one 403.\n      Every 400 and 403 above happens before this\
-        \ step and leaves\n      the grant live; a failure after it (the store-time 400 of step\n    \
-        \  6, the 500 below) leaves it consumed.\n   b. break-glass: the caller's session email is listed\
-        \ in the\n      deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the\n      session\
-        \ JWT was issued less than 10 minutes ago and not more\n      than one minute in the future (a\
-        \ token stamped further ahead is\n      not fresh). Listed without such a session gives 403\n\
-        \      `sso_write_requires_fresh_login`.\n   (a) is tried first: a break-glass caller who also\
-        \ holds a live\n   grant consumes that grant on the write.\n   Neither gives 403 `sso_write_requires_admin_stepup`\
+        \ one of:\n   a. a live admin step-up grant for (caller, caller's org) whose\n      purpose is\
+        \ SSO configuration writes (`sso_write`), obtained\n      through GET /api/admin/sso/stepup less\
+        \ than 10 minutes earlier.\n      The request carries nothing that names it: the server selects\n\
+        \      the caller's newest live `sso_write` grant and consumes it in\n      the same statement,\
+        \ so one grant authorizes exactly one write,\n      and two concurrent writes on one grant yield\
+        \ one success and\n      one 403. A grant issued for another purpose (a later feature\n      that\
+        \ reuses this admin proof, such as the organisation AI key)\n      is never consumed by an SSO\
+        \ write, and an `sso_write` grant is\n      never consumed by a write of another purpose (PAC-50\
+        \ contract\n      revision 8.1, N5; spec §4.8).\n      Every 400 and 403 above happens before\
+        \ this step and leaves\n      the grant live; a failure after it (the store-time 400 of step\n\
+        \      6, the 500 below) leaves it consumed.\n   b. break-glass: the caller's session email is\
+        \ listed in the\n      deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the\n    \
+        \  session JWT was issued less than 10 minutes ago and not more\n      than one minute in the\
+        \ future (a token stamped further ahead is\n      not fresh). Listed without such a session gives\
+        \ 403\n      `sso_write_requires_fresh_login`.\n   (a) is tried first: a break-glass caller who\
+        \ also holds a live\n   grant consumes that grant on the write.\n   Neither gives 403 `sso_write_requires_admin_stepup`\
         \ with\n   `stepup_url`, `stepup_scopes` and `without_stepup`. A 403 rather\n   than a 401: the\
         \ session is valid, the privilege is not there.\n   Every 403 leaves the provider table unchanged.\n\
         6. Store: the domain is stored lower-cased, so `ACME.com` replaces the\n   existing `acme.com`\
@@ -482,13 +490,23 @@ paths:
 
             state cookie is set. (Assumed by the factory at stage 2, pending
 
-            owner confirmation; spec "Decisions", D-1.)
+            owner confirmation; spec "Decisions", D-1.) The body is
+
+            SsoWriteMembershipRequired, the same schema as the membership 403
+
+            of getSsoStepupOptions and of the SSO writes, so a generated
+
+            client has one type for this refusal (PAC-50 contract revision
+
+            8.1, N4; the bytes are unchanged, `{"error":"org membership
+
+            required"}`).
 
             '
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
         '503':
           description: '`<provider> step-up not configured`: the deployment has no OAuth
 
@@ -549,8 +567,9 @@ paths:
         \ is not true is also `email_mismatch`.\n4. Administrator: Google Directory `isAdmin` or `isDelegatedAdmin`;\n\
         \   Microsoft `wids` (or, when absent, the directory-role lookup)\n   containing a qualifying\
         \ role template id (spec §4.4). Anything\n   else, including a lookup error, gives `not_admin`.\n\
-        5. A grant for (caller, caller's org, provider) is issued, valid for\n   10 minutes and good for\
-        \ one SSO write.\n\nEvery outcome with a session, granted or denied, is recorded\nserver-side\
+        5. A grant for (caller, caller's org, provider) is issued with\n   purpose `sso_write`, valid\
+        \ for 10 minutes and good for one SSO\n   configuration write (spec §4.8; a write of another purpose\
+        \ cannot\n   spend it).\n\nEvery outcome with a session, granted or denied, is recorded\nserver-side\
         \ for operators (spec §4.6) and clears the state cookie.\nNo outcome touches the session, the\
         \ user's settings or token store.\nThe mapping of a provider `error`, a missing `code`, a failed\n\
         organisation lookup and an unverified Google email onto the enum is\nassumed by the factory at\
@@ -12229,11 +12248,19 @@ components:
 
         value the server sends today is `sso_configuration_writes`: no SSO
 
-        configuration write (create, replace, delete, suspend or resume);
+        configuration write (create, replace or delete); only a deployment
 
-        only a deployment operator on the break-glass list can write without
+        operator on the break-glass list can write without it. Nothing else
 
-        it. Nothing else the user already has is lost.
+        the user already has is lost. Suspend and resume
+
+        (setSsoProviderState) are not served under PAC-50; they become SSO
+
+        configuration writes covered by this code when PAC-22''s follow-up
+
+        serves them, and a client must not offer them before then (PAC-50
+
+        contract revision 8.1, N6).
 
         '
       items:
@@ -12314,7 +12341,11 @@ components:
 
         anything else, including break-glass. No `stepup_url`: there is no org
 
-        to step up for. Also the 403 of getSsoStepupOptions.
+        to step up for. Also the 403 of getSsoStepupOptions and of
+
+        startSsoAdminStepup (the latter always with `org membership
+
+        required`).
 
         '
       required:
