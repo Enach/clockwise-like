@@ -53,11 +53,11 @@ func (e *SmartScheduler) calClient(ctx context.Context) (calendarOps, error) {
 	if e.calOps != nil {
 		return e.calOps, nil
 	}
-	return newCalOps(ctx, e.DB, e.OAuthConfig)
+	return newCalOps(ctx, storage.Bind(ctx, e.DB), e.OAuthConfig)
 }
 
 func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*ScheduleSuggestions, error) {
-	s, err := storage.GetOrCreateSettingsByUser(e.DB, auth.UserIDFromContext(ctx))
+	s, err := storage.GetOrCreateSettingsByUser(storage.Bind(ctx, e.DB), auth.UserIDFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
@@ -90,7 +90,7 @@ func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*Sch
 	}
 
 	// The requester's own focus blocks; calClient uses the same user.
-	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(e.DB, auth.UserIDFromContext(ctx), req.RangeStart)
+	focusBlocks, _ := storage.ListFocusBlocksForUserWeek(storage.Bind(ctx, e.DB), auth.UserIDFromContext(ctx), req.RangeStart)
 	allowOutOfHours, err := canScheduleOutOfHours(ctx, client, s, req.RangeStart)
 	if err != nil {
 		return nil, fmt.Errorf("count out-of-hours meetings: %w", err)
@@ -291,7 +291,7 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 		return nil, err
 	}
 
-	settings, err := storage.GetOrCreateSettingsByUser(e.DB, auth.UserIDFromContext(ctx))
+	settings, err := storage.GetOrCreateSettingsByUser(storage.Bind(ctx, e.DB), auth.UserIDFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
@@ -38,6 +39,9 @@ func (h *authHandlers) startMicrosoftOAuth(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request) {
+	// PAC-81 AC-A2 / AC-A9: as the Google callback.
+	budget.OnExpiry(r.Context(), h.signInExpired)
+	db := storage.Bind(r.Context(), h.db)
 	stateCookie, err := r.Cookie("ms_oauth_state")
 	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
 		http.Error(w, "invalid state", http.StatusBadRequest)
@@ -66,16 +70,16 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		h.signInFailed(w, r, "could not read the Microsoft account", err)
 		return
 	}
-	user, err := storage.UpsertUser(h.db, info.Email, info.Name, "", "microsoft", info.ID)
+	user, err := storage.UpsertUser(db, info.Email, info.Name, "", "microsoft", info.ID)
 	if err != nil {
 		h.signInFailed(w, r, "save user failed", err)
 		return
 	}
-	if err := auth.SaveMicrosoftToken(h.db, user.ID, token); err != nil {
+	if err := auth.SaveMicrosoftToken(db, user.ID, token); err != nil {
 		writeServerError(w, r, "save token failed", err, http.StatusInternalServerError)
 		return
 	}
-	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
+	_ = storage.AssociateUserWithOrg(db, user.ID, info.Email)
 	if err := h.issueJWT(w, user); err != nil {
 		h.signInFailed(w, r, "issue session", err)
 		return

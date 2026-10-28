@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
 	"log"
@@ -532,6 +533,10 @@ func (h *teamHandlers) availability(w http.ResponseWriter, r *http.Request) {
 
 	eng := h.availabilityEngine
 	slots, err := eng.FindSlots(r.Context(), teamID, day, durationMinutes)
+	if budgetCut(err) {
+		budget.WriteExpired(w) // PAC-81 AC-A18: a member not read, never a partial 200
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "availability", err, http.StatusInternalServerError)
 		return

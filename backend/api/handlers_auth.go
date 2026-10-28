@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
@@ -40,6 +41,11 @@ func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
+	// PAC-81 AC-A2: at the budget this browser navigation ends on the
+	// sign-in failure state, not on JSON. AC-A9: the database calls wait for
+	// a pooled connection only until then.
+	budget.OnExpiry(r.Context(), h.signInExpired)
+	db := storage.Bind(r.Context(), h.db)
 	stateCookie, err := r.Cookie("oauth_state")
 	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
 		http.Error(w, "invalid state", http.StatusBadRequest)
@@ -61,20 +67,20 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upsert user row
-	user, err := storage.UpsertUser(h.db, info.Email, info.Name, info.Picture, "google", info.ID)
+	user, err := storage.UpsertUser(db, info.Email, info.Name, info.Picture, "google", info.ID)
 	if err != nil {
 		writeServerError(w, r, "upsert user failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Store OAuth token associated with user
-	if err := auth.UpsertUserToken(h.db, user.ID, token); err != nil {
+	if err := auth.UpsertUserToken(db, user.ID, token); err != nil {
 		writeServerError(w, r, "save token failed", err, http.StatusInternalServerError)
 		return
 	}
 
 	// Auto-associate with org based on email domain
-	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
+	_ = storage.AssociateUserWithOrg(db, user.ID, info.Email)
 
 	if err := h.issueJWT(w, user); err != nil {
 		h.signInFailed(w, r, "issue session", err)
@@ -95,6 +101,13 @@ var errNoSigningSecret = errors.New("session signing secret is empty")
 // nor expired, so a session the browser already holds is kept.
 func (h *authHandlers) signInFailed(w http.ResponseWriter, r *http.Request, op string, err error) {
 	logServerError(r, op, err, http.StatusFound)
+	http.Redirect(w, r, h.frontendURL+signInFailurePath, http.StatusFound)
+}
+
+// signInExpired is the sign-in callbacks' budget answer (PAC-81 AC-A2): the
+// existing failure redirect. Whatever was saved before is kept.
+func (h *authHandlers) signInExpired(w http.ResponseWriter, r *http.Request) {
+	logServerError(r, "sign-in callback", budget.ErrExpired, http.StatusFound)
 	http.Redirect(w, r, h.frontendURL+signInFailurePath, http.StatusFound)
 }
 
