@@ -1,12 +1,12 @@
-// Package nlptest is test support for the deployment-credential LLM providers
-// (PAC-66). It installs the spec's two shared Givens: a sentinel credential
-// that is always obtainable, and a recording transport that records every
-// inference request and lets none reach the network.
+// Package nlptest is test support for the LLM providers. It installs the
+// shared Givens: the operator's approved destinations, a recording transport
+// that records every inference request and lets none reach the network, and
+// (NEW-llm-bring-your-own) ambient cloud credentials in the environment that
+// must never be read for an AI request.
 package nlptest
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
 	"os"
@@ -17,25 +17,28 @@ import (
 
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/nlp"
-	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-// Sentinel credential values. AC-11 checks that none appears in a response.
+// Ambient credential values placed in the environment by Ambient. None may
+// appear in a request or a response (spec AC-2: no identity of the machine
+// Paceday runs on is used).
 const (
-	AzureToken   = "sentinel-azure-token-pac66"
-	VertexToken  = "sentinel-vertex-token-pac66"
-	AWSAccessKey = "AKIASENTINELPAC66XXXX"
-	AWSSecretKey = "sentinel-aws-secret-pac66"
+	AWSAccessKey      = "AKIASENTINELPAC66XXXX"
+	AWSSecretKey      = "sentinel-aws-secret-pac66"
+	AWSBearerToken    = "sentinel-aws-bearer-token-byok"
+	AzureClientSecret = "sentinel-azure-client-secret-byok"
 )
 
-// Sentinels lists every sentinel value, for leak checks.
-var Sentinels = []string{AzureToken, VertexToken, AWSAccessKey, AWSSecretKey}
+// Sentinels lists every ambient sentinel value, for leak checks.
+var Sentinels = []string{AWSAccessKey, AWSSecretKey, AWSBearerToken, AzureClientSecret}
 
-// SuccessBody answers an inference request successfully for all three
-// providers at once (spec shared Given "Successful answer").
+// SuccessBody answers an inference request successfully for every provider
+// at once (OpenAI and Azure choices, Vertex candidates, Anthropic content,
+// Bedrock Converse output).
 const SuccessBody = `{"choices":[{"message":{"content":"hello"}}],` +
 	`"candidates":[{"content":{"parts":[{"text":"hello"}]}}],` +
-	`"content":[{"text":"hello"}],"message":{"content":"hello"}}`
+	`"content":[{"text":"hello"}],"message":{"content":"hello"},` +
+	`"output":{"message":{"content":[{"text":"hello"}]}}}`
 
 // Request is one recorded outbound request.
 type Request struct {
@@ -43,6 +46,8 @@ type Request struct {
 	Scheme string
 	Host   string
 	Path   string
+	// EscapedPath is the path as sent on the wire.
+	EscapedPath string
 	// Query is the raw query (PAC-66-B AC-B18, AC-B19).
 	Query  string
 	Header http.Header
@@ -65,7 +70,7 @@ func (r *Recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.mu.Lock()
 	r.reqs = append(r.reqs, Request{
 		Method: req.Method, Scheme: req.URL.Scheme, Host: req.URL.Host,
-		Path: req.URL.Path, Query: req.URL.RawQuery, Header: req.Header.Clone(),
+		Path: req.URL.Path, EscapedPath: req.URL.EscapedPath(), Query: req.URL.RawQuery, Header: req.Header.Clone(),
 	})
 	answer := r.Answer
 	r.mu.Unlock()
@@ -99,9 +104,10 @@ func Response(req *http.Request, status int, body string, header http.Header) *h
 	}
 }
 
-// Ambient installs approved (provider -> hosts), the sentinel credential and a
-// fresh Recorder for the duration of t, and isolates the AWS SDK from the
-// machine's own configuration. It uses t.Setenv, so t must not be parallel.
+// Ambient installs approved (provider -> hosts) for the three cloud providers
+// and a fresh Recorder as their transport for the duration of t, and puts
+// ambient AWS, Azure and Google credentials into the environment, as a cloud
+// VM would have them. It uses t.Setenv, so t must not be parallel.
 func Ambient(t testing.TB, approved map[string][]string) *Recorder {
 	t.Helper()
 	hosts := config.LLMApprovedHosts{}
@@ -114,23 +120,18 @@ func Ambient(t testing.TB, approved map[string][]string) *Recorder {
 	}
 	rec := &Recorder{}
 	t.Cleanup(nlp.SetApprovedHosts(hosts))
-	t.Cleanup(nlp.SetAmbientDeps(nlp.AmbientDeps{
-		Transport:   rec,
-		AzureToken:  func(context.Context) (string, error) { return AzureToken, nil },
-		VertexToken: func(context.Context) (string, error) { return VertexToken, nil },
-		AWSCredentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-			return aws.Credentials{AccessKeyID: AWSAccessKey, SecretAccessKey: AWSSecretKey, Source: "nlptest"}, nil
-		}),
-	}))
+	t.Cleanup(nlp.SetCloudDeps(nlp.CloudDeps{Transport: rec}))
 	dir := t.TempDir()
-	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
-	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
-	for _, k := range []string{"AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "AWS_ENDPOINT_URL",
-		"AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_USE_FIPS_ENDPOINT", "AWS_USE_DUALSTACK_ENDPOINT"} {
-		t.Setenv(k, "")
-		_ = os.Unsetenv(k)
-	}
+	adc := filepath.Join(dir, "adc.json")
+	_ = os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"x","client_secret":"`+AzureClientSecret+`","refresh_token":"r"}`), 0o600)
+	t.Setenv("AWS_ACCESS_KEY_ID", AWSAccessKey)
+	t.Setenv("AWS_SECRET_ACCESS_KEY", AWSSecretKey)
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", AWSBearerToken)
+	t.Setenv("AWS_REGION", "eu-west-1")
+	t.Setenv("AZURE_CLIENT_ID", "sentinel-client")
+	t.Setenv("AZURE_TENANT_ID", "sentinel-tenant")
+	t.Setenv("AZURE_CLIENT_SECRET", AzureClientSecret)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
 	return rec
 }
 

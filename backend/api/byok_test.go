@@ -60,7 +60,7 @@ func newBYOK(t *testing.T, email string) *byok {
 	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "byok-ambient-bedrock-bearer")
 	t.Setenv("AZURE_CLIENT_SECRET", "byok-ambient-azure-secret")
 	b := &byok{pac66: &pac66{t: t, user: createTestUser(t, email+"@byok.example"), rec: nlptest.Ambient(t, byokApproved)}}
-	b.usr = nlptest.UserDestinations(t, "", "", "")
+	b.usr = nlptest.UserDestinations(t, "", "")
 	b.rec.Answer = func(r *http.Request) *http.Response {
 		b.mu.Lock()
 		b.escaped = append(b.escaped, r.URL.EscapedPath())
@@ -687,7 +687,7 @@ func TestBYOK_KeyedCloudProviderStillRefusesAnUnapprovedDestination(t *testing.T
 
 func TestBYOK_GatewayPathPrefix(t *testing.T) { // AC-18
 	b := newBYOK(t, "ac18")
-	b.usr = nlptest.UserDestinations(t, "https://gw.example/openai", "", "")
+	b.usr = nlptest.UserDestinations(t, "https://gw.example/openai", "")
 	b.mustPatch(`{"llmProvider":"openai","llmBaseUrl":"https://gw.example/openai","llmApiKey":"` + byokKey + `"}`)
 	if w := b.probe(`{}`); w.Code != http.StatusOK {
 		t.Fatalf("probe = %d %s", w.Code, w.Body.String())
@@ -745,5 +745,36 @@ func TestBYOK_ContractHasNoRemovedProviderOrSetting(t *testing.T) { // AC-7
 		if strings.Contains(line, "PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA") && !strings.Contains(line, "approves nothing") {
 			t.Errorf("bundle line %d documents the Ollama approval as live: %s", i+1, strings.TrimSpace(line))
 		}
+	}
+}
+
+// --------------------------------------------------------------- C-2
+
+func TestBYOK_BriefRefreshSettingsLoadFailureWritesNothing(t *testing.T) { // C-2
+	for _, state := range []string{"none", "ready"} {
+		t.Run(state, func(t *testing.T) {
+			b := newBYOK(t, "c2-"+state)
+			b.mustPatch(`{"llmProvider":"openai","llmApiKey":"` + byokKey + `"}`)
+			event := "evt-c2-" + state
+			if state != "none" {
+				if err := storage.UpsertMeetingBrief(openTestDB(t), &storage.MeetingBrief{
+					CalendarEventID: event, UserID: b.user, Status: state, BriefText: "stored " + state,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// A stored value the settings read cannot decode: the caller's AI
+			// configuration cannot be decided.
+			b.sql(`lunch_breaks = '"not a map"'::jsonb`)
+			before := b.brief(http.MethodGet, event).Body.String()
+			w := b.brief(http.MethodPost, event)
+			if w.Code != http.StatusInternalServerError || errorOf(w) != "internal error" {
+				t.Fatalf("refresh = %d %s, want 500 internal error", w.Code, w.Body.String())
+			}
+			if after := b.brief(http.MethodGet, event).Body.String(); after != before {
+				t.Errorf("brief changed: %s -> %s", before, after)
+			}
+			b.noRequests("settings load failure")
+		})
 	}
 }
