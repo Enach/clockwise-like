@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -521,4 +522,28 @@ func TestPAC71_AC50_OldGenerationRequestNeverUsesWhatTheBindingStored(t *testing
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// AC-49 (contract half): no API route or MCP tool can write a binding; the
+// operator step is the server-side command only.
+func TestPAC71_AC49_NoOperationOrMCPToolWritesABinding(t *testing.T) {
+	root := parseBundle(t, pac21Bundle)
+	for _, p := range root.get("paths").order {
+		lp := strings.ToLower(p)
+		for _, word := range []string{"identit", "binding", "reassign", "operator", "free-address", "generation"} {
+			if strings.Contains(lp, word) {
+				t.Errorf("path %s looks like an operator or binding operation", p)
+			}
+		}
+	}
+	src, err := os.ReadFile("../../mcp/tools.go")
+	if err != nil {
+		t.Fatalf("read the MCP tool list: %v", err)
+	}
+	lower := strings.ToLower(string(src))
+	for _, word := range []string{"user_identities", "reassign", "free_address", "session_generation", "bind_identity"} {
+		if strings.Contains(lower, word) {
+			t.Errorf("mcp/tools.go mentions %q", word)
+		}
+	}
 }
