@@ -149,6 +149,86 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
     expect(await (await api.get('/api/settings')).json()).toMatchObject({ llmProvider: 'anthropic', llmApiKeysSet: { anthropic: true } });
   });
 
+  // Contract challenge rev. 2.1, W-1: a key is bound to the provider it was
+  // removed or typed for. Removing the OpenAI key and then switching to
+  // Anthropic must not send an empty key for Anthropic (which would delete the
+  // Anthropic key and keep the OpenAI one), and a key typed for OpenAI must
+  // not be saved for Anthropic.
+  test('W-1: remove the OpenAI key, switch to Anthropic, save: the Anthropic key survives', async ({ browser, apiAs }) => {
+    const user = await freshUser('w1');
+    const api = apiAs(user);
+    expect((await api.patch('/api/settings', { llmProvider: 'anthropic', llmApiKey: `sk-e2e-${randomUUID()}` })).status()).toBe(200);
+    expect((await api.patch('/api/settings', { llmProvider: 'openai', llmApiKey: `sk-e2e-${randomUUID()}` })).status()).toBe(200);
+    expect(await (await api.get('/api/settings')).json()).toMatchObject({
+      llmProvider: 'openai',
+      llmApiKeysSet: { openai: true, anthropic: true },
+    });
+
+    const context = await browser.newContext({ storageState: storageStateFor(user) });
+    const page = await context.newPage();
+    const patches: Record<string, unknown>[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'PATCH' && new URL(req.url()).pathname.endsWith('/api/settings')) patches.push(req.postDataJSON());
+    });
+    try {
+      await page.goto('/settings');
+      const select = page.getByLabel('AI provider');
+      await expect(select).toHaveValue('openai');
+      await page.getByRole('button', { name: /remove saved key/i }).click();
+      await select.selectOption('anthropic');
+      // The Anthropic key is still shown as on file.
+      await expect(page.getByRole('button', { name: /remove saved key/i })).toBeVisible();
+      await page.getByRole('button', { name: /save changes/i }).click();
+      await expect(page.getByText(/settings saved/i)).toBeVisible();
+    } finally {
+      await context.close();
+    }
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({ llmProvider: 'anthropic' });
+    expect(patches[0]).not.toHaveProperty('llmApiKey');
+    expect(await (await api.get('/api/settings')).json()).toMatchObject({
+      llmProvider: 'anthropic',
+      llmApiKeysSet: { anthropic: true, openai: true },
+      aiStatus: { configured: true, provider: 'anthropic' },
+    });
+  });
+
+  test('W-1: a key typed for OpenAI is dropped when the user switches to Anthropic', async ({ browser, apiAs }) => {
+    const user = await freshUser('w1typed');
+    const api = apiAs(user);
+    expect((await api.patch('/api/settings', { llmProvider: 'openai' })).status()).toBe(200);
+    const typed = `sk-e2e-${randomUUID()}`;
+
+    const context = await browser.newContext({ storageState: storageStateFor(user) });
+    const page = await context.newPage();
+    const patches: Record<string, unknown>[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'PATCH' && new URL(req.url()).pathname.endsWith('/api/settings')) patches.push(req.postDataJSON());
+    });
+    try {
+      await page.goto('/settings');
+      await expect(page.getByLabel('AI provider')).toHaveValue('openai');
+      await page.getByRole('textbox', { name: /^API key/ }).fill(typed);
+      await page.getByLabel('AI provider').selectOption('anthropic');
+      await expect(page.getByRole('textbox', { name: /^API key/ })).toHaveValue('');
+      await page.getByRole('button', { name: /test connection/i }).click();
+      await expect(page.getByText('Anthropic needs an API key. Enter one to test it.')).toBeVisible();
+      await page.getByRole('button', { name: /save changes/i }).click();
+      await expect(page.getByText(/settings saved/i)).toBeVisible();
+    } finally {
+      await context.close();
+    }
+
+    expect(patches).toHaveLength(1);
+    expect(JSON.stringify(patches[0])).not.toContain(typed);
+    expect(patches[0]).not.toHaveProperty('llmApiKey');
+    expect(await (await api.get('/api/settings')).json()).toMatchObject({
+      llmProvider: 'anthropic',
+      llmApiKeysSet: { anthropic: false, openai: false },
+    });
+  });
+
   test('AC-21: Settings offers only off and the five key-based providers, with no removed field', async ({ browser, apiAs }) => {
     const user = await freshUser('list');
     expect((await apiAs(user).patch('/api/settings', { llmProvider: 'openai', llmBaseUrl: '' })).status()).toBe(200);
