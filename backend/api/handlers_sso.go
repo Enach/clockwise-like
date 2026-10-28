@@ -211,8 +211,8 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 			writeServerError(w, r, "read sso provider", err, http.StatusInternalServerError)
 			return
 		}
-		if err := storage.KeepableClientSecret(current, body.Issuer, body.ClientID); err != nil {
-			writeError(w, err.Error(), http.StatusBadRequest)
+		if refusal := ssoKeepRefusal(storage.KeepableClientSecret(current, body.Issuer, body.ClientID)); refusal != "" {
+			writeError(w, refusal, http.StatusBadRequest)
 			return
 		}
 	}
@@ -222,8 +222,8 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 	}
 
 	p, err := storage.SaveOIDCProvider(h.ah.db, body)
-	if errors.Is(err, storage.ErrSSOClientSecretRequired) || errors.Is(err, storage.ErrSSOClientSecretTargetChanged) {
-		writeError(w, err.Error(), http.StatusBadRequest)
+	if refusal := ssoKeepRefusal(err); refusal != "" {
+		writeError(w, refusal, http.StatusBadRequest)
 		return
 	}
 	if err != nil {
@@ -234,6 +234,18 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(ssoProviderView(p))
+}
+
+// ssoKeepRefusal maps a refusal to keep the client secret to its fixed 400
+// message (contract check 6), or "" for any other outcome.
+func ssoKeepRefusal(err error) string {
+	switch {
+	case errors.Is(err, storage.ErrSSOClientSecretTargetChanged):
+		return "oidc_client_secret is required when oidc_issuer or oidc_client_id changes"
+	case errors.Is(err, storage.ErrSSOClientSecretRequired):
+		return "oidc_client_secret is required"
+	}
+	return ""
 }
 
 // samlProperties are refused by name, in this order, whatever their value
