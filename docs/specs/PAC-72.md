@@ -391,3 +391,152 @@ change was live is altered by a revert.
   the most conservative choice about what a refusal discloses.
 - **D-6 — An unreadable host calendar is treated as today (free) in both
   paths.** Assumed by the factory, pending owner confirmation; see OQ-2.
+
+## Challenge — 2026-10-28
+
+Reviewed the committed spec at `c412eb1` (branch `factory/pac-72-spec`) against
+the code at the same commit (`backend/`, `e2e/`, `contracts/`), the web app at
+`smart-calendar-flow` `origin/main` `aa5c52e`, the Linear issue PAC-72 and
+`.claude/factory/owner-decisions.md` (no PAC-72 answer recorded there).
+
+**Verdict**: accept-with-changes
+
+### Blocking
+1. **AC-17 / §3 "fails closed" are not true of the rule the spec says is shared,
+   and §2 omits why.** `hostBusy` never returns an error
+   (`backend/engine/booking.go:114-169`, always `return busy, nil` at `:168`):
+   a failed focus-block read (`:153-154`, `if err == nil`) and a failed
+   cross-link booking read (`:161-162`, `if err == nil`) are silently dropped,
+   so the listing today offers a slot over a focus block or another link's
+   booking whenever those queries fail, and the "tolerate per-host errors"
+   branch at `:95` is unreachable. §2 lists only the calendar-client tolerance.
+   As written, a booking that reuses "the one rule" would write over a focus
+   block or another booking on a storage failure, which §3 and AC-17 forbid;
+   a booking that fails closed while the listing does not breaks AC-14's
+   "one rule" equivalence under failure. Resolve: §2 states the swallowed
+   storage errors with these citations; §3 says, per busy source (focus blocks,
+   bookings on other links, this link's bookings, host list), whether a storage
+   failure fails the booking closed (500, nothing written) and what the
+   listing does in the same case (both modes: the date-less listing also
+   skips a day silently on engine error, `handlers_booking.go:181-183`);
+   AC-17 names each source as a separate case.
+2. **§6 "the one existing assertion this spec changes" is false; named tests
+   break.** Links in the unit fixtures are Mon–Fri 09:00–17:00
+   (`backend/api/handlers_booking_test.go:74-77`), and
+   `futureBookingStart()` is now+72h at 10:00 UTC (`:92-95`), a Saturday or
+   Sunday on two days in seven. Under rules 2 and 3 of §3:
+   - `TestCreateBooking_RateLimited` (`backend/api/ratelimit_booking_test.go:276-305`)
+     books `start+0h … start+19h` and `start+21h` and asserts 201 for all 20
+     and for the post-window retry: from 10:00+8h the starts are past 17:00 or
+     on the next day(s), so these become 409.
+   - `TestCreateBooking_ConcurrentBurstCannotOvershoot` (`:458-490`) books
+     60 hourly starts; it keeps passing only because it counts 409 as "other".
+   - `TestPublicBookingCreateContract`, `TestPublicBookingPropagatesEngineFailure`
+     (`handlers_booking_test.go:151`, `:217`) and
+     `TestPAC67_PublicBookingWithARefusedHost`
+     (`backend/api/pac67_surfaces_test.go:300-355`, asserts 201 at 11:00 and
+     12:00 on `futureBookingStart()`'s day) become day-of-week dependent.
+   - All of the above drive `createBooking` through `fakeBookingFlow` /
+     `countingBookingFlow`, whose slot stubs return no or fixed slots.
+   Resolve: §6 lists these tests as amended (fixtures moved onto starts the
+   rule offers), and states that NEW-booking-rate-limit's acceptance criteria
+   (20 accepted then 429, every request counted, Retry-After) must still be
+   demonstrated after the change, not weakened to accept 409 as success.
+3. **§2's web claim is wrong, so §3's "what a visitor sees" is incomplete.**
+   §2 says the date picker "only enables dates the date-less listing returned
+   (`:411-417`)". The page never calls the date-less listing: the slots query
+   is `enabled: !!dateStr` and always sends `date`
+   (`smart-calendar-flow/src/pages/PublicBooking.tsx:138-145`); `available_dates`
+   is read from that explicit-date answer, which is always `[]`
+   (`handlers_booking.go:212`), so `availableDates.size === 0` and every future
+   day is selectable (`PublicBooking.tsx:411-418`). Consequence: under D-1 a
+   visitor who picks a date past D+59 now gets "No time available on this day"
+   where today they get slots; §3 names only the weekend change. Resolve:
+   correct the §2 citation; §3 names the beyond-horizon empty day as a visible
+   change, so that §5's "no web change" is a stated choice rather than a claim
+   resting on a wrong fact.
+
+### Non-blocking
+1. **The booked interval is not required to equal the slot.** With `end`
+   supplied, the duration is `int(end.Sub(start).Minutes())`
+   (`handlers_booking.go:272`), truncated: `end = start+30m30s` passes as 30
+   and the stored booking lasts 30m30s, overlapping the next offered slot. §3
+   says "start time and duration are exactly a slot"; it should say the booked
+   [start, end) equals the slot, with AC cases for an end with seconds, a start
+   with seconds, and a non-UTC offset denoting a grid instant (the last one
+   accepted as the same instant).
+2. **Two zones, not one.** Rule 5 says "the zone the link's hours are evaluated
+   in", but §2 shows the date-less listing uses the process zone and the
+   explicit-date listing UTC. Equal today (no `TZ` in `backend/Dockerfile` or
+   the compose files; e2e sets `TZ: UTC` at `e2e/docker-compose.e2e.yml:111`),
+   but the spec should require listing and booking to use one named zone, so an
+   operator-set `TZ` cannot make the two listing modes and the booking disagree.
+3. **Link with no accepted host.** `CollectiveSlots` with zero accepted hosts
+   offers the whole window (rule 3 is vacuously true); the owner is an
+   accepted host only because creation inserts it
+   (`handlers_scheduling_links.go:373`). The spec should state what is offered
+   and bookable on such a link (today: everything in the window, written to no
+   calendar).
+4. **Buffers at the window edge.** Events are listed only for
+   [window start, window end] (`engine/booking.go:93`, `:124`), so an event
+   ending just before the window with a buffer-after may not block the first
+   slot. The shared rule inherits this; say so in §5 next to the other buffer
+   exclusions, so a window-edge variant of AC-2b is not read as a defect.
+5. **AC-19 misses contract text that also documents 422.** Besides the
+   `createPublicBooking` responses, `contracts/openapi/paths/booking.yaml:63`
+   (429 description lists "409, 410, 422 or 500"), `:1653` (`start`: "else
+   422") and `:1628` (`available_dates` wording) need to change too.
+6. **Pending vs confirmed.** This link's overlap counts any non-cancelled
+   booking (`storage/scheduling_links.go:404-411`); other links count only
+   `confirmed` (`:442-467`). Equal today (nothing writes `pending`); rule 3
+   should name one status set for both.
+7. **API-051 deferral** is acceptable: NEW-booking-rate-limit set the precedent
+   (`contracts/features/NEW-booking-rate-limit.md` §6) and PAC-40's spec
+   branch owns it (`docs/specs/PAC-40.md` §2.4 on `origin/factory/pac-40-spec`).
+   The contract must keep describing it (factory §7 rule 2).
+8. **e2e consumers to keep green** (all on link days within the horizon today):
+   `e2e/tests/seam.spec.ts:283-296` (Thursday six weeks ahead, 16:00 on the
+   seam link; offered only if the stand-in reports no event then),
+   `e2e/tests/time-format.spec.ts:113-120`, `e2e/tests/scheduling-links.spec.ts:74-94`.
+   The `e2e/lib/dates.ts:34-37` comment ("ignores link.DaysOfWeek entirely")
+   becomes stale.
+9. OWNER: D-3 keeps 400 for an unoffered duration, but the issue's draft
+   acceptance lists "a duration that isn't offered" among the four cases
+   refused with a 409. Confirm 400 is acceptable.
+10. OWNER: D-1, a fixed 60-day horizon for booking and both listing modes (the
+    issue says "the link's booking horizon"; no such setting exists).
+11. OWNER: D-2, inside the minimum notice answers 409 instead of 422.
+12. OWNER: D-4, applying the link's days hides non-link days that listings show
+    today.
+13. OWNER: OQ-2 / D-6, a host whose calendar cannot be read stays "free" for
+    both listing and booking.
+
+### Criteria I could not falsify
+- AC-1, AC-6, AC-12, AC-18 pass on today's code: they are regression guards,
+  falsifiable only against a wrong implementation. Acceptable as guards.
+- AC-17 as written: today no storage failure in busy-time gathering is
+  observable (Blocking 1), so the test's precondition cannot be produced for
+  focus blocks or other-link bookings until the spec says those failures
+  surface.
+
+### Citations I checked and found wrong
+- "Its date picker only enables dates the date-less listing returned
+  (`PublicBooking.tsx:411-417`)": the page calls only the explicit-date
+  listing, `available_dates` is always empty, and every future date is enabled
+  (`PublicBooking.tsx:138-145`, `:411-418`).
+- "Per-host failures are tolerated … (`:95` "tolerate per-host errors")":
+  `:95` is unreachable (`hostBusy` never returns an error); the real tolerance
+  also swallows focus-block and booking read failures
+  (`engine/booking.go:153-166`).
+- §6 "This is the one existing assertion this spec changes": see Blocking 2.
+- Other §2 citations checked and correct: handler `:139-141`, `:163-213`,
+  `:216-314`; engine `:75-112`, `:114-169`, `:180-189`, `:216-281`; storage
+  `:395-411`, `:442-467`; migration 009 `:33`; `handlers_booking_test.go:198`;
+  `backend/Dockerfile:3`.
+
+### Consumers this breaks
+- clockwise-like/backend/api/ratelimit_booking_test.go:276-305: out-of-hours and next-day starts asserted 201.
+- clockwise-like/backend/api/handlers_booking_test.go:92-95 (`futureBookingStart`): a weekend on 2 days in 7; affects `:151`, `:180`, `:217`.
+- clockwise-like/backend/api/pac67_surfaces_test.go:300-355: 201 asserted on `futureBookingStart()`'s day.
+- clockwise-like/backend/api/handlers_booking_test.go:198: 422 becomes 409 (already named by the spec).
+- smart-calendar-flow/src/pages/PublicBooking.tsx:190-192: the 422 branch becomes dead (harmless; the 409 branch at `:186-189` takes over).
