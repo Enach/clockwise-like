@@ -3,9 +3,9 @@
 - **Linear**: PAC-81, https://linear.app/paceday/issue/PAC-81 (factory ticket
   id `NEW-deploy-hardening`; the file keeps that name). Nothing was posted to
   Linear by this stage.
-- **Status**: challenged (accept-with-changes, rev 0 and rev 1); **revision 2,
-  2026-10-28**. See "Revision 1" and "Revision 2" at the end.
-- **Author**: spec-author (rev 0, rev 1 and rev 2, 2026-10-28). Rev 2 citations
+- **Status**: challenged (accept-with-changes, rev 0, rev 1 and rev 2); **revision 3,
+  2026-10-28**. See "Revision 1", "Revision 2" and "Revision 3" at the end.
+- **Author**: spec-author (rev 0 to rev 3, 2026-10-28). Rev 2 citations
   were re-read on `origin/main` = `bef4c31`. Since `67b7966` only dependency
   bumps have landed, so earlier citations stand.
 - **Surveyed at**: `Enach/clockwise-like` `origin/main` = `67b7966` (rechecked
@@ -37,9 +37,12 @@
     First, the budget-expiry 503 (AC-A2) is documented as a shared response on
     every operation that can reach the budget: at least natural-language
     parse, collective slot listing, team availability, personal-calendar sync
-    and booking create. Second, `createPublicBooking`'s idempotent replay,
-    narrowed 409, interrupted-after-commit 503 and corrected 201 description
-    (AC-A19).
+    and booking create (before its booking row commits). Second, rev 3:
+    `createPublicBooking`'s 201 description no longer says host events are
+    written before the response (AC-A19; no new status). Slot listing and
+    team availability document that a host or member whose calendar call fails
+    or times out on its own limit is treated as free (AC-A18). The rev-2
+    replay semantics were dropped (F-12).
   - `/api/health` consumers that must keep working: `e2e/global-setup.ts:61-70`
     (polls it through nginx before any test) and
     `smart-calendar-flow:src/lib/api.ts:28-39` (`checkApiAvailability`, 2 s,
@@ -397,15 +400,19 @@ and get correct behaviour without editing code:
   response by the end of the budget, and every outbound call made with the
   request context is cancelled then. A database call made without a context is
   not interrupted. Its goroutine may outlive the response until the call
-  returns, which is bounded by the pool's turnover, not by the budget. Such
+  returns. While it waits for a connection, that is bounded by the pool's
+  turnover; once the query is running, only by the query's own duration (no
+  statement timeout is set). It is never bounded by the budget. Such
   goroutines count as abandoned units at shutdown (AC-A7). On the request
   paths named in AC-A9, the handler itself stops waiting at the budget.
 - Handlers that call out once per item (host, member, event) make those calls
   concurrently with a bounded number of workers. They stop starting new calls
   before the budget runs out. They never return a silently truncated success:
-  each route either completes or answers its documented error. Public booking
-  create becomes idempotent: a retry of the same booking finishes it instead of
-  double-booking, and returns the same booking.
+  each route either completes or answers its documented error. Rev 3: once a
+  public booking is saved, neither the budget nor a deploy cuts it short.
+  Its remaining calendar events and confirmation email finish in the
+  background and are logged if a shutdown abandons them, and the booker gets
+  the usual confirmation.
 - A deploy marks the backend unready first, keeps serving for a short notice
   period, then stops accepting connections and lets in-flight requests,
   background jobs and outgoing emails finish within a stated budget. Work
@@ -516,7 +523,8 @@ when the process receives SIGTERM (or SIGINT) at T0, then, in this order:
 3. in-flight requests complete with their normal responses, and every
    tracked background unit (cron runs, recap per-user goroutines, analytics
    recompute, habit re-optimisation, manager detection, team-invite and
-   booking emails) is awaited;
+   booking emails, and (rev 3) the post-commit booking completion unit of
+   AC-A19) is awaited;
 4. when all have returned before T0 + notice + drain, the process closes the
    pool, flushes error reports and exits 0.
 Observable: a readiness call at T0 + 1 s gets 503; a new request at T0 + 1 s
@@ -608,7 +616,11 @@ AC-A17 (F-A5, D-5; revised in rev 2). Personal-calendar sync.
 - A create starts only if its full outbound limit plus the stop margin remains
   before the budget or drain ends. A create is never cut short: unlike
   reads, a create is not given a shortened deadline.
-- A create the provider accepted is always recorded.
+- A create whose provider answer arrives is always recorded. *Residual (rev
+  3):* a create that fails on its own 15 s limit after the provider accepted
+  it is not recorded, so a re-run creates that blocker again. This is the one
+  case a duplicate can still occur. Preventing it needs provider-side
+  idempotency and is in the §10 follow-up.
 - When the sync stops early, it answers the budget's 503 (AC-A2; documented
   in stage 2) and does **not** stamp `last_synced_at`. A re-run finishes the
   remaining creates and creates no duplicates.
@@ -616,7 +628,8 @@ AC-A17 (F-A5, D-5; revised in rev 2). Personal-calendar sync.
 Tests use a stub provider at its per-call limit:
 - 6 events complete within the budget (2 waves);
 - 40 events are cut and answer 503, and a re-run completes them;
-- across both runs, there is at most one create per source event.
+- across both runs, there is at most one create per source event whose
+  provider answer arrived (the stub answers every create in time).
 
 *ICS limits:* an ICS feed over the time or size limit fails the sync with
 the existing documented 500 ("the personal feed could not be read",
@@ -632,7 +645,7 @@ team availability (per member).
 - No new call starts once the remaining budget is at or below the stop margin.
 - If any item was not started, or was cut short by the budget (as opposed to
   failing on its own limit or with a provider error, which keeps today's
-  documented "skipped/treated as free" behaviour), the response is 503 with
+  "skipped/treated as free" behaviour), the response is 503 with
   the JSON error shape, never a 200 that silently omits that item. Neither
   route has a documented partial shape.
 
@@ -641,41 +654,46 @@ Tests with stubs answering at their per-call limit:
 - 5 members, team availability: complete 200 in 2 waves;
 - 20 members: 503, and the stub sees no call started after the margin;
 - one host failing with a provider error: today's 200 without that host
-  (unchanged). [unit]
+  (unchanged).
 
-AC-A19 (F-A5, rev 2). Public booking create is idempotent per (link, slot
-start, booker email, case-insensitive).
-- (a) A request that matches an existing non-cancelled booking returns that
-  booking with 201 and the same id; it never creates a second booking.
-- (b) Host events are created at most once per (booking, host). A request
-  that matches an existing booking creates only the host events not yet
-  recorded, on up to 4 concurrent workers. As in AC-A17, a create starts only
-  with its full limit plus the margin remaining.
-- (c) The confirmation email is sent at most once per booking: after the host
-  event phase has attempted every host. It is recorded when sent and logged
-  when it fails (AC-A8).
-- (d) Two concurrent identical requests produce exactly one booking, both
-  answered 201 with the same id.
-- (e) A different booker email on an overlapping slot is still 409, as today.
-- (f) If the budget or the drain stops the request after the booking row is
-  committed but before every host was attempted, the response is 503 with the
-  JSON error shape, a message saying the booking is saved and the request
-  should be retried to finish it, and the booking id. The log line names the
-  booking id and the hosts done and not done. A retry of the same request
-  completes the remaining hosts and answers 201 with that id.
+Rev 3 notes:
+- The "treated as free" tolerance is documented today for team availability
+  only (`contracts/openapi/openapi.yaml:7481-7483`). Stage 2 documents it for
+  collective slot listing too, naming the new timeout case: a host whose
+  calendar answers too slowly now looks free, where today the request hangs.
+- If PAC-72 merges first, its per-host read loop before the booking insert is
+  a per-item read under this AC. A budget cut there answers the shared 503 and
+  writes no booking.
+[unit, contract]
+
+AC-A19 (F-A5; replaced in rev 3, F-12). A committed booking is never cut by
+the budget or the drain.
+- Once the booking row commits, the remaining host-event creation and the
+  confirmation email run as one detached unit. The unit is tracked by the
+  shutdown group (AC-A6, AC-A7) and uses its own per-call outbound limits
+  (AC-A3), independent of the request budget.
+- The handler waits for that unit only up to the remaining budget. Whether
+  the unit finishes in time or the budget expires first, the response is the
+  existing 201 with the saved booking. There is no new status and no replay.
+  A retry behaves exactly as today: 409 on overlap, 410 when the link is
+  exhausted.
+- If the drain abandons the unit, the log line (AC-A7, AC-A8) names the
+  booking id and the hosts done and not done.
+- If the budget expires before the commit, the response is the shared 503 and
+  no booking is written.
 
 Tests:
-- interrupted after commit (3 hosts, budget hit after 1), then a retry: one
-  booking, 3 host events, 1 email, same id;
-- two concurrent identical requests: one booking, one set of host events, one
-  email;
-- a different email on an overlapping slot: 409.
+- (a) Three hosts, the budget expires after commit with one host done: the
+  response is 201 with the booking. The remaining two host events and the
+  email complete afterwards, and the stub sees each exactly once.
+- (b) SIGTERM arrives after commit: the host events and the email complete
+  within the drain; or, with stubs slower than the drain, the unit is
+  abandoned and logged with the booking id and the hosts done and not done.
 
-This changes the documented behaviour of `createPublicBooking`: replay
-semantics, the 409 meaning, a new 503, and the 201 description. **Part A
-therefore goes through stage 2 for this operation.** Uniqueness under
-concurrency and the email record likely need a migration; that is the plan's
-choice (§7). [contract, unit, integration]
+Already true and unchanged: concurrent double-booking, retry idempotency, and
+duplicate host events when a create times out after the provider accepted it.
+These move to the §10 follow-up "booking completion and idempotency".
+[unit, integration]
 
 ### Part B — nginx edge (F-B1..F-B7, F-A11 CSP half)
 
@@ -890,8 +908,9 @@ goroutines), A8 (`_ =` on SendMail), A9 (no caps), A10 (no test — today's
 behaviour unknown), A11 (no readiness), A12 (no cap), A13 (no status/client),
 A14 (default DSN sends), A15 (no warning), A16 (no health mode), A17 (no
 deadline check between creates), A18 (sequential loops; failed hosts treated
-as free with no budget, so no 503 path exists), A19 (no idempotency; retry
-gets 409; concurrent duplicates possible); B1 is a regression guard (already passes for
+as free with no budget, so no 503 path exists), A19 (no budget yet, but today
+a SIGKILL after commit loses the remaining host events and the email
+silently); B1 is a regression guard (already passes for
 nginx); B2–B12 per F-B*; C1–C9 per F-C*; D1–D7 per F-D*.
 
 ## 5. Explicitly out of scope
@@ -944,11 +963,11 @@ nginx); B2–B12 per F-B*; C1–C9 per F-C*; D1–D7 per F-D*.
 ## 7. Rollback
 
 - Part A: revert the backend commit and its stage-2 contract changes (PAC-14
-  amendment, the shared 503, booking-create semantics). Rev 2: if the plan meets
-  AC-A19 with a migration (a uniqueness constraint or index on non-cancelled
-  bookings, an email-sent record), the down drops it and loses only the
-  email-sent records. Reverting re-opens concurrent double-booking and makes a
-  retry answer 409 again. Timeouts, caps, shutdown and the Sentry default revert together;
+  amendment, the shared 503, the createPublicBooking 201 description, the
+  "treated as free" wording). No migration: rev 3 dropped the uniqueness and
+  email-record migration along with idempotency (F-12). Reverting restores
+  today's booking behaviour exactly, including its pre-existing concurrent
+  double-booking, which this spec never closed. Timeouts, caps, shutdown and the Sentry default revert together;
   monitoring then turns on again with the hard-coded DSN.
 - Part B: revert nginx config. A configured trusted list is then ignored and
   limits key on the proxy again. Header lines can be reverted alone.
@@ -1046,12 +1065,19 @@ Factory-level decisions (coordinator, 2026-10-28, rev 2, recorded as such):
   route answers its documented error, or a documented partial shape where the
   API already defines one; none of the four does. Never a silently truncated
   200. AC-A17, AC-A18, AC-A19.
-- **F-10 Booking idempotency.** Booking create is idempotent per (link, slot
+- **F-10 Booking idempotency (superseded by F-12 in rev 3; kept for the
+  record).** Booking create is idempotent per (link, slot
   start, booker email). A retry returns the same booking with 201 and the same
   id. Host events are created at most once per (booking, host), with
   recorded ids skipped on retry. The email goes at most once, recorded and
   logged. An interruption after commit says what was completed, in the response
   and the log. Needs stage 2 (AC-A19).
+- **F-12 Booking idempotency dropped (orchestrator, 2026-10-28, rev 3;
+  supersedes F-10).** AC-A19 becomes "a committed booking is never cut": the
+  host events and the email after commit run as a detached, drain-tracked unit
+  with their own outbound limits; the response is the existing 201. Concurrent
+  double-booking, replay idempotency and at-most-once creates on timeout move
+  to the §10 follow-up, which comes after PAC-72.
 - **F-11 MCP opt-in.** Restated as observable compose behaviour; the
   mechanism is the plan's choice (AC-C4, AC-C5).
 
@@ -1153,12 +1179,23 @@ Factory-assumed (pending challenge):
 - **Credentials at rest.** Encrypt stored provider tokens and user LLM keys
   (F-D5).
 - **MCP over the public origin**, if Q-O1 answers (b).
+- **Booking completion and idempotency (rev 3, F-12).** Scope:
+  - concurrent double-booking of one slot, for any pair of emails (the
+    check-then-insert at `handlers_booking.go:299-304`; pre-existing);
+  - retry and replay idempotency of create. The challenge (rev 2) gives the
+    constraints: a replay must not reveal the stored name or notes; it must be
+    answered before the 410, 422, PAC-72 and 409 checks; and any uniqueness
+    migration must survive existing duplicate rows;
+  - host events and blockers at most once, even when a create times out after
+    the provider accepted it (AC-A17 and AC-A19 residual).
+  **Depends on PAC-72** (`origin/impl/pac-72-offerable-start-backend`), which
+  rewrites the same handler and pins one 409 body. This ticket comes after it.
 
 ## 11. Proposed split and true order
 
 | Part | Scope | ACs | Depends on |
 |---|---|---|---|
-| **A** | Server timeouts, outbound limits, handler budget, shutdown sequence with tracked background work, email failure logging, pool caps and single-connection paths, readiness, body cap, access log, Sentry default off, public-URL warning, binary health modes, blocker safety | 19 (A1–A19) | Stage 2 for A11 (readiness), A14 (PAC-14 §2), A2's shared 503 and A19 (booking create) |
+| **A** | Server timeouts, outbound limits, handler budget, shutdown sequence with tracked background work, email failure logging, pool caps and single-connection paths, readiness, body cap, access log, Sentry default off, public-URL warning, binary health modes, blocker safety | 19 (A1–A19) | Stage 2 for A11 (readiness), A14 (PAC-14 §2), A2's shared 503, the createPublicBooking 201 description (A19) and the "treated as free" wording (A18). Booking create has no new status |
 | **B** | nginx: HTTP-only guard, headers and CSP (with avatars), trusted proxy / real client and scheme, timeouts, JSON 413, upstream keep-alive, health path, no docs route, `docs/security.md` | 12 (B1–B12) | None: every B test uses a stub upstream. B3's e2e runs against whatever backend is on `main` |
 | **C** | Compose: no 443/certs, pinned versions, health checks, MCP opt-in loopback, grace period, log rotation, settings list, no docs service, nginx bind | 9 (C1–C9) | A (A16 health modes, A11 readiness, shutdown values, A14) and B (B11 health path) |
 | **D** | `.env.example` completeness test, proxy requirements, backup/restore, runbook, down migrations, doc link, env reference | 7 (D1–D7) | D1, D5, D6 any time; D2–D4, D7 after C |
@@ -1901,3 +1938,37 @@ and on the in-flight PAC-72 branch `origin/impl/pac-72-offerable-start-backend`
   `CollectiveSlots`' error handling (Blocking 2).
 - `smart-calendar-flow` booking page: a new 503 on create and on slot listing,
   covered by the stage-2 shared 503.
+
+## Revision 3 — 2026-10-28
+
+Author: spec-author. This revision answers "Challenge, revision 2" with the
+orchestrator's decision F-12 (§9). It is kept small: only AC-A19 and what the
+challenge named changed. Earlier challenge texts are unchanged. Verification:
+reading only; nothing was built or run.
+
+| # | Challenge item | Outcome | Where / why |
+|---|---|---|---|
+| B1 | A replay keyed on (link, start, email) leaks the stored name and notes | **Resolved by removal** (F-12) | Booking idempotency and replay are dropped from PAC-81. AC-A19 is now "a committed booking is never cut by the budget or the drain", and no request returns another request's booking. The leak constraint is recorded for the §10 follow-up. |
+| B2 | A retry never reaches the replay (410, 422, PAC-72 run first) | **Resolved by removal** (F-12) | Retries behave exactly as today (409 or 410). After commit, completion runs as a detached, drain-tracked unit with its own outbound limits, and the response is the existing 201. Tests: (a) the budget expires after commit, the response is 201 and the events finish later; (b) a drain after commit completes the unit or logs it as abandoned with the booking id and the hosts done and not done. The §10 follow-up "booking completion and idempotency" records the ordering constraint and its dependency on PAC-72. AC-A18 notes that PAC-72's pre-insert per-host read loop falls under it if PAC-72 merges first. |
+| N1 | "Treated as free" is documented for team availability only | **Applied** | AC-A18 drops "documented". Stage 2 documents the tolerance for collective slot listing, naming the new timeout case (a slow calendar now looks free). |
+| N2 | The uniqueness migration and existing duplicate rows | **Resolved by removal** | With idempotency dropped, there is no uniqueness or email-record migration. I checked the spec: §7 and AC-A19 were its only references, and both are updated. The constraint that such a migration must survive duplicate rows is recorded in the §10 follow-up. |
+| N3 | §7 overclaims that concurrent double-booking is closed | **Applied** | §7 now says it is pre-existing and never closed by this spec. The §10 follow-up covers it for any pair of emails. |
+| N4 | N2 wording: a running context-less query | **Applied** | §3: a goroutine waiting for a connection is bounded by pool turnover; a running query is bounded only by its own duration (no statement timeout); neither by the budget. |
+| N5 | "At most once" is too strong for creates that time out after the provider accepted them | **Applied** | AC-A17 states the residual: a blocker create that fails on its own limit after the provider accepted it is not recorded, so a re-run duplicates it. Its test is scoped to creates whose answer arrived. The same residual for host events is named under AC-A19. Prevention is in the §10 follow-up. |
+| N6 | The booking id in the 503 body | **Resolved by removal** | AC-A19 no longer has a 503 after commit. A 503 before commit writes no booking and carries no id. |
+| C | AC-A18 "documented" skip; §7 overclaim | **Applied** | See N1 and N3. |
+| X | Consumers: PAC-72 and the web booking page | **Applied** | PAC-72 is named in AC-A18 and in §10. The web sees no new status on create. The shared 503 (before commit, or slots with an unreached host) is unchanged from rev 2. |
+
+AC count is unchanged at 47 (A 19, B 12, C 9, D 7). AC-A6 lists the
+post-commit booking completion unit among the tracked units.
+
+**Contract (stage 2) needs, Part A only:**
+1. readiness (AC-A11);
+2. the PAC-14 §2 Sentry default (AC-A14);
+3. the shared budget-expiry 503 (AC-A2);
+4. the `createPublicBooking` **201 description only** (events may complete
+   after the response; no new status, AC-A19);
+5. the "provider error or own timeout → treated as free" wording for
+   collective slot listing and team availability (AC-A18).
+
+Parts B, C and D need no contract change. There are no new owner questions.
