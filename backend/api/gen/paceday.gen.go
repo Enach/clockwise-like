@@ -826,9 +826,9 @@ type CalendarNotConnectedError struct {
 // CalendarNotConnectedErrorError defines model for CalendarNotConnectedError.Error.
 type CalendarNotConnectedErrorError string
 
-// CalendarRoom calendar.Room — only two fields exist server-side.
+// CalendarRoom calendar.Room — only two fields exist server-side, and both are always emitted. There is no building, floor, capacity, email or availability field (API-041; PAC-41 D-1): a client that needs the room's bookable address reads `id`. This is the only room type; clients consume this generated shape rather than a hand-written one (PAC-41).
 type CalendarRoom struct {
-	// Id The Google resource calendar id, which is also the room's bookable email address (contains `resource.calendar.google.com`).
+	// Id The Google resource calendar id, which is also the room's bookable email address (contains `resource.calendar.google.com`). To book the room, send this value unchanged as EventPatchRequest.room_resource_email. The list keeps any id that contains that substring and does not itself check the stricter `^[^@\s]+@resource\.calendar\.google\.com$` that PATCH enforces; Google room resource ids have that form.
 	Id string `json:"id"`
 
 	// Name The calendar list entry's `summary`.
@@ -1223,7 +1223,7 @@ type FreeBusyLegacyResult struct {
 // FreeBusyLegacyResultCoverage defines model for FreeBusyLegacyResult.Coverage.
 type FreeBusyLegacyResultCoverage string
 
-// FreeBusyParticipant api.freeBusyParticipantDTO.
+// FreeBusyParticipant api.freeBusyParticipantDTO. Exactly three keys. There is no provider key (the answer does not say which calendar provider supplied the data) and no status saying whether the address belongs to a Paceday user; `status` has two values only (API-046; PAC-41 D-2).
 type FreeBusyParticipant struct {
 	// Busy Always present; `[]` when the participant is free or status is unknown.
 	Busy []FreeBusyWindow `json:"busy"`
