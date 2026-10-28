@@ -160,6 +160,9 @@ func WithSessionGeneration(ctx context.Context, db *sql.DB, fn func(q Querier) e
 	if g == nil {
 		return fn(db)
 	}
+	if GuardedCallHook != nil {
+		GuardedCallHook(ctx)
+	}
 	return withGenerationTx(ctx, db, g.UserID, g.Gen, g, fn)
 }
 
@@ -224,3 +227,9 @@ func (s *txScope) Rollback() error {
 	}
 	return nil
 }
+
+// GuardedCallHook is a deterministic test seam (PAC-71 review of #242): it
+// runs before every in-request re-check of a request with a session, so a
+// test can commit a binding between a handler's first and second storage
+// call, or after it spawned background work. Production leaves it nil.
+var GuardedCallHook func(ctx context.Context)

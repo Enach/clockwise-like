@@ -148,7 +148,10 @@ func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(calendarDisconnectUnsupported{Error: calendarDisconnectUnsupportedMessage, Provider: s.CalendarProvider})
 		return
 	}
-	if err := auth.DeleteUserToken(h.db, userID); err != nil {
+	// PAC-71: the delete (D1) and the end of a recorded loss (D8) run in the
+	// re-check's transaction, so a binding that commits after the settings
+	// read above cannot have its credential removed by this request.
+	if err := guarded(r.Context(), h.db, func(q storage.Querier) error { return auth.DeleteUserToken(q, userID) }); err != nil {
 		writeServerError(w, r, "disconnect", err, http.StatusInternalServerError)
 		return
 	}

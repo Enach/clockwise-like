@@ -94,8 +94,11 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 	if body.IsManager && p.DetectedAt == nil {
 		// Trigger detection async
 		eng := h.newEngine()
+		// PAC-71: keep the session guard (not cancellation) so detection's
+		// token load and roster writes are re-checked, as analytics and habits do.
+		bgCtx := context.WithoutCancel(r.Context())
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
 			defer cancel()
 			_, _ = eng.DetectTeam(ctx, userID)
 		}()

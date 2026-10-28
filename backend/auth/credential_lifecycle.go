@@ -61,14 +61,14 @@ func IsPermanentRefusal(err error) bool {
 // starts a loss, writes one connection_lost entry to the owner's own log
 // (best effort, like every activity entry: spec D-16). The entry names only
 // the provider: never the requester, never token material.
-func RecordLoss(db *sql.DB, owner uuid.UUID, provider string) {
-	started, err := storage.RecordCredentialLossCtx(context.Background(), db, owner, provider)
+func RecordLoss(ctx context.Context, db *sql.DB, owner uuid.UUID, provider string) {
+	started, err := storage.RecordCredentialLossCtx(ctx, db, owner, provider)
 	if err != nil {
 		log.Printf("credential: %s loss for user %s not recorded: %v", provider, owner, err)
 		return
 	}
 	if started {
-		storage.WriteAuditLogCtx(context.Background(), db, owner, "connection_lost", providerDetails(provider))
+		storage.WriteAuditLogCtx(ctx, db, owner, "connection_lost", providerDetails(provider))
 	}
 }
 
@@ -153,7 +153,7 @@ func (s *renewingSource) Token() (*oauth2.Token, error) {
 		// Only a refusal of the credential still stored is a loss: one that a
 		// reconnect replaced (or a disconnect removed) meanwhile is not.
 		if latest, lerr := s.store.load(); lerr == nil && latest != nil && latest.RefreshToken == refresh {
-			RecordLoss(s.db, s.owner, s.provider)
+			RecordLoss(s.ctx, s.db, s.owner, s.provider)
 			return nil, &LostError{Provider: s.provider, Recorded: true, Err: err}
 		}
 		return nil, &LostError{Provider: s.provider, Err: err}
@@ -213,7 +213,9 @@ type googleStore struct {
 }
 
 func (g googleStore) load() (*oauth2.Token, error) { return LoadUserTokenCtx(g.ctx, g.db, g.owner) }
-func (g googleStore) save(t *oauth2.Token) error   { return UpdateUserToken(g.db, g.owner, t) }
+func (g googleStore) save(t *oauth2.Token) error {
+	return storage.WithSessionGeneration(g.ctx, g.db, func(q storage.Querier) error { return UpdateUserToken(q, g.owner, t) })
+}
 
 type microsoftStore struct {
 	ctx   context.Context
@@ -221,7 +223,9 @@ type microsoftStore struct {
 	owner uuid.UUID
 }
 
-func (m microsoftStore) load() (*oauth2.Token, error) { return LoadMicrosoftTokenCtx(m.ctx, m.db, m.owner) }
+func (m microsoftStore) load() (*oauth2.Token, error) {
+	return LoadMicrosoftTokenCtx(m.ctx, m.db, m.owner)
+}
 func (m microsoftStore) save(t *oauth2.Token) error {
 	data, err := json.Marshal(microsoftTokenRecord{AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, Expiry: t.Expiry.UTC()})
 	if err != nil {

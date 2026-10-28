@@ -39,7 +39,7 @@ func UpsertUserToken(db storage.Querier, userID uuid.UUID, token *oauth2.Token) 
 // UpdateUserToken writes a renewed Google token back for its owner only, and
 // only while the owner still has a stored row: a renewal finishing after a
 // disconnect never re-stores what the user removed (PAC-67).
-func UpdateUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+func UpdateUserToken(db storage.Querier, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}
@@ -72,7 +72,7 @@ func LoadUserToken(db storage.Querier, userID uuid.UUID) (*oauth2.Token, error) 
 
 // DeleteUserToken removes the OAuth token for a specific user, and with it
 // any recorded loss of it (PAC-67: a disconnect ends a loss).
-func DeleteUserToken(db *sql.DB, userID uuid.UUID) error {
+func DeleteUserToken(db storage.Querier, userID uuid.UUID) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}

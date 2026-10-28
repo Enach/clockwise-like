@@ -84,7 +84,11 @@ connection is held between authentication and the handler now
 - **Seams.** `afterAuthHook` runs between requireAuth and the handler: the AC-47/AC-50 tests
   commit Henry's binding (or an operator step) there and assert the literal outcome (401,
   nothing stored, no provider call with his credential). `serveGuarded` does the same at the
-  handler level.
+  handler level. `storage.GuardedCallHook` runs before every re-check, so a test can commit
+  a binding MID-HANDLER: between a handler's first and second storage call (the Google
+  disconnect: settings read, then delete) or after it spawned background work (manager
+  detection). Background work started by a request keeps the request's session guard
+  (`context.WithoutCancel(r.Context())`), never `context.Background()`.
 
 ## 4. D1–D14 reads and writes on request paths, and what guards each
 
@@ -105,7 +109,7 @@ Every one below runs under the in-request re-check (a `…Ctx` variant, or `guar
 
 | Kind | Guarded writes on request paths |
 |---|---|
-| D1 Google credential | connect store (`WithGeneration`); sign-in store (inside the sign-in transaction); renewal store (`UpdateUserToken` only rewrites a row loaded under the re-check) |
+| D1 Google credential | connect store (`WithGeneration`); sign-in store (inside the sign-in transaction); renewal store (`UpdateUserToken` under the re-check); disconnect (`DeleteUserToken` and the end of a recorded loss, under the re-check) |
 | D2 Microsoft, Zoom | `StoreMicrosoftCredential` (connect, sign-in), `UpdateMicrosoftCredentialCtx`, `RemoveMicrosoftCredentialCtx`, `SaveZoomCredentialCtx` (Zoom callback), `UpdateZoomCredentialCtx`, `RemoveZoomCredentialCtx` |
 | D3–D5 settings, AI keys | `SaveSettingsForUserCtx`, `SaveRecapSettingsForUserCtx`, `DeleteOrgAIConfirmations` |
 | D6 Slack, Notion | `UpsertWorkspaceConnectionCtx`, `DeleteWorkspaceConnectionCtx` |
@@ -118,8 +122,8 @@ Every one below runs under the in-request re-check (a `…Ctx` variant, or `guar
 
 Not covered (no session account, contract §5): other members' credentials in team availability;
 the public booking pages (bookings and booking events are written for the hosts); scheduled jobs
-(recap sends, auto-schedule, auto-decline); credential-loss records (written only for a
-credential the request loaded under the re-check).
+(recap sends, auto-schedule, auto-decline). Credential-loss records
+found during a request (`RecordLoss`) carry the request's guard too.
 
 ## 5. Sign-in, binding and connect
 
