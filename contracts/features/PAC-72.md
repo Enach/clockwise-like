@@ -157,3 +157,234 @@ until the paired web PR regenerates types), `api-gate.sh`, `web-gate.sh` and
 No migration. Revert the backend PR first or last: the web handles 409 and 422.
 Reverting this contract restores the 422 documentation and the "API-094 open"
 text; the paired web type regeneration reverts with it.
+
+## Challenge — 2026-10-28
+
+Reviewed the committed state of `factory/pac-72-contract` at `d212afa`
+(fragment `contracts/openapi/paths/booking.yaml`, bundle, `backend/api/gen`,
+`contracts/features/PAC-72.yaml`/`.md`, `docs/factory/api-audit.md`) against the
+spec on the same branch (`docs/specs/PAC-72.md`, revision 1), the handlers,
+engine and storage at the same commit, `smart-calendar-flow` `origin/main`
+`aa5c52e`, `mcp/` and `e2e/`. `.claude/factory/owner-decisions.md` has no
+PAC-72 answer.
+
+**Verdict**: accept-with-changes (1 blocking)
+
+### Checks run (this review, worktree of `d212afa`)
+
+```
+python scripts/openapi_assemble.py --check          OK: bundle is in sync (99 paths)       rc=0
+python scripts/openapi_migration_report.py --check  OK: MIGRATION.md covers all 120 operations (4 generated)  rc=0
+bash scripts/openapi_gen_go.sh --check              OK: backend/api/gen matches the contract  rc=0
+cd backend && go build ./...                        rc=0
+git show HEAD:contracts/openapi/openapi.yaml | sha256sum
+                                                    7c528c7e...969629 = manifest contractHash
+CONTRACT=<this bundle> smart-calendar-flow/scripts/openapi-gen.sh --check
+                                                    rc=1: drift in src/api/generated (expected:
+                                                    the paired web regeneration is a build-stage PR;
+                                                    the diff is the new schema, the 409 type, the
+                                                    removed 422 and description text)
+go test ./api -run 'TestPAC21Every5xx|TestPAC21ContractCheck'
+                                                    NOT RUN: needs the test Postgres
+                                                    ("dial tcp 127.0.0.1:15432 ... refused");
+                                                    api-gate.sh not run (the host checkout is on
+                                                    another stage's branch and was left there)
+```
+
+### Blocking
+
+1. **Unrelated description of `SchedulingLink` corrupted.** The diff changes
+   `booking.yaml:1853` (and with it `openapi.yaml` and the comment in
+   `backend/api/gen/paceday.gen.go`) from
+   "`window_start` vs `window_start_time`" to
+   "`window_start_time` vs `window_start_time`". The sentence lists the DTO name
+   against the storage json tag. The DTO field is `window_start`
+   (`backend/api/handlers_scheduling_links.go:39`, and the schema's own
+   `required`/`properties` at `booking.yaml:1855`, `:1881`). The storage tag is
+   `window_start_time` (`backend/storage/scheduling_links.go:21`). The new text
+   now names a DTO field that does not exist. It is also outside PAC-72's
+   operations (`contract-author` must not change what the spec does not cover).
+   Fix: restore "`window_start` vs `window_start_time`" at `booking.yaml:1853`,
+   regenerate (`make openapi`), and update `contractHash` in
+   `contracts/features/PAC-72.yaml`.
+
+### Requests wrongly permitted
+
+None that block. Requests I constructed against the rule and the schema:
+
+- `POST /api/book/{slug}` with
+  `{"name":"A","email":"a@x","start":"2026-11-02T10:00:00Z","end":"2026-11-02T10:30:00Z","duration":0}`.
+  The new `end` text says the length must be exactly `duration` minutes "if
+  either was also sent (else 400 'duration does not match end time')". `0` is
+  sent. But the handler treats `0` (and `null`) as not sent
+  (`handlers_booking.go:259-277`, `requestedDuration != 0` at `:273`), so today this
+  answers 201. This existed before (the old text said the same). Non-blocking 1
+  proposes a description fix.
+- `{"...","start":"2026-11-02T10:00:00Z","duration":0}` with no `end`: the
+  handler books `durations[0]` (`:279-285`). The `duration_minutes` text says
+  the fallback applies "when neither is sent". This existed before too
+  (non-blocking 1).
+- `start` `"2026-11-02T10:00:00.500Z"` / `"…T10:00:30Z"`: the schema permits it
+  (`format: date-time`), and the contract answers 409 on purpose
+  (§2.6, AC-21a). Consistent.
+- `start` `"2026-11-02T11:00:00+01:00"`, `end` `"…T11:30:00+01:00"`: permitted,
+  and the contract says it is compared as an instant and stored as the UTC slot
+  (AC-21c). Consistent.
+- `end` = start + 30 min 30 s, with `duration:30` → 400 "duration does not match
+  end time"; without a duration → 400 "invalid duration". This matches AC-21b
+  and the manifest. Today's truncation (`:272`) is explicitly gone.
+
+### Responses the client cannot handle
+
+None found.
+- `createPublicBooking` 409 `{"error":"slot is no longer available"}` for every
+  cause, including the former 422. `smart-calendar-flow/src/pages/PublicBooking.tsx:186-189`
+  shows the server text, clears the slot and refetches. The visitor sees "slot
+  is no longer available" for a notice refusal or a never-offered start. That
+  is accepted wording (§2.2, D-5).
+- `getPublicBookingSlots` 200 `{"slots":[],"available_dates":[]}` for a date
+  past the horizon or a non-link day: the page renders "No time available on
+  this day" (`PublicBooking.tsx:451-457`). The new 500 for unreadable focus
+  blocks or bookings goes through `slotsErrorMessage` with a Retry button
+  (`:152-158`, `:432-443`).
+- The web's real request (`src/api/schedulingLinks.ts:718-726`) sends `start`
+  taken from the listing, `end = start + duration` via `toISOString()` (with a
+  `.000Z` fraction), and `duration`. That is a zero fraction and an exact
+  length, so it passes the exact-interval rule.
+
+### Consumers affected
+
+- `smart-calendar-flow/src/api/generated/*`: drift against this bundle confirmed
+  (above). No hand-written web code names `createPublicBooking`'s generated
+  response types (`git grep` on `aa5c52e`, outside `src/api/generated`), so
+  removing the 422 type breaks no import.
+- `smart-calendar-flow/src/api/schedulingLinks.ts:743-750` (demo-mode
+  `bookSlot`) still models 422 for the notice and accepts any start. This is
+  demo only and the spec rules out web changes (§5). Noted so nobody reads it
+  as the contract.
+- `backend/api/gen`: `CreatePublicBooking422JSONResponse` is removed. Nothing
+  outside `gen` references it (`go build ./...` rc=0).
+- `mcp/`: no reference to `/api/book` or bookings (grep). Not affected.
+- `e2e/`: `public-booking.spec.ts:177` asserts only the 409 status, not the
+  body, so it is unaffected. `e2e/lib/dates.ts:34-37`'s comment goes stale
+  (spec §6). The journeys post fixed starts (`atUtc(bookingDay(n), …)`) on
+  links of the same seeded owner. Under rule 3 a start now collides with that
+  owner's bookings on *other* links too. This was already true of the listing
+  since PAC-64, but it is new for the POST. The build stage should confirm
+  that no two specs book the same owner at the same instant (non-blocking 4).
+- Backend tests that pin 422 or off-rule starts: the spec's §6 list. The
+  manifest copies it correctly.
+
+### Contract/implementation divergences
+
+The contract describes the specified change, which the server does not do yet
+(stage 2 before stage 4). These lines will be false until the backend PR lands:
+`handlers_booking.go:295-298` (422 "booking is too soon"), `:299-305` (only
+this link's overlap), `engine/booking.go:168` (busy-time failures swallowed,
+so no 500), and `handlers_booking.go:174-190` (process zone, no days filter).
+See non-blocking 2 on landing order. Apart from the blocking item, I found no
+divergence in the parts the contract says are unchanged (400 messages and their
+order, 404/410/429, the 201 shape, the listing shape).
+
+### Uncertainties not actually resolved
+
+None claimed. No `x-uncertain` on `getPublicLinkInfo`, `createPublicBooking` or
+`getPublicBookingSlots` before or after (checked in the bundle). API-094 is
+"fix contracted, server pending" rather than Fixed, which is right while the
+server is unchanged. API-051 is still stated as open on the operation
+(`booking.yaml:111-113`).
+
+### Non-blocking
+
+1. Document `0`/`null` as "not sent" for `duration` and `duration_minutes` in
+   the `end`, `duration` and `duration_minutes` descriptions (for example "if
+   either was sent with a non-zero value"). The handler treats them that way
+   (`handlers_booking.go:259-285`), and this contract has just reworded those
+   sentences. If the spec intends `0` to be a 400, that is a behaviour change
+   and needs a spec amendment, not a description.
+2. **Landing order.** `mergeAfter` says "no other ordering constraint". If this
+   contract lands on `main` before the backend PR, `main` documents 409 for the
+   notice, a 500 for unreadable busy time and a link-day filter that the server
+   on `main` does not have. The regenerated web types also lose a 422 that the
+   server still sends. That is the gap factory §7 rule 2 warns about. Prefer
+   stating in `mergeAfter` that the contract lands with, or immediately before,
+   the PAC-72 backend PR, and that the audit row's "server pending" wording
+   covers only that window.
+3. AC-19 asks that 422 be documented "nowhere" on the booking operation. The
+   409 description still says "(formerly 422 "booking is too soon")"
+   (`booking.yaml:175`). It is history, not a documented status, but a literal
+   AC-19 contract test that greps the operation for `422` would fail on it.
+   Drop the parenthesis or make sure the AC-19 test checks response keys and
+   status lists rather than text.
+4. e2e: list in the manifest's e2e consumer entry that rule 3 now applies to
+   the POST across the seeded owner's links. AC-20 will add an offered and an
+   unoffered booking, and the existing journeys must not share an instant.
+5. The API-094 row in `api-audit.md` still says "No PAC issue yet; to be opened
+   at intake". It is PAC-72 now.
+6. The rule names link fields by their storage/create-request spelling
+   (`days_of_week`, `window_start_time`, `window_end_time`), while the owner's
+   `SchedulingLink` DTO calls them `days`, `window_start`, `window_end`. Name
+   both once, so a reader of the read model can find them.
+7. AC-19 in the spec says "API-094 is marked fixed in the audit register". The
+   manifest moves that to the backend PR, with a reason. That is fine, but the
+   backend PR must do it. The narrowing is recorded in the manifest's AC-19
+   line, not silently.
+8. OWNER: D-1, a fixed 60-day horizon for booking and both listing modes,
+   with an explicit date past it answering 200 with no slots (the issue says
+   "the link's booking horizon"; no such setting exists).
+9. OWNER: D-2, a start inside the minimum notice answers 409 instead of 422.
+10. OWNER: D-3, an unoffered duration stays 400, though the issue's draft lists
+    it among the 409 cases.
+11. OWNER: D-4, the link's days of the week now hide days the listing shows
+    today.
+12. OWNER: D-6 / OQ-2, a host whose external calendar cannot be read stays
+    "free" for both listing and booking.
+13. OWNER: D-7 to D-11 (spec OQ-6): fail closed on storage failures (500, or
+    the day omitted), exact interval, UTC as the one zone, a hostless link offers
+    nothing, and pending bookings count as busy.
+
+### Verified clean
+
+- **Schema/handler order**: 429 → 404/410 (`:219-234`) → 400 body, start, end,
+  duration (`:244-294`) → then the rule. The contract's "409 after 429, 404,
+  410 and 400" and "a 400 is never turned into a 409" are consistent with the
+  handler's existing order and with AC-18.
+- **One refusal body**: `BookingSlotUnavailableError` is
+  `{error: enum ['slot is no longer available']}` with
+  `additionalProperties: false`. That matches `writeError`'s
+  `map[string]string{"error": msg}` (`handlers_settings.go:398-402`) and
+  today's 409 text (`handlers_booking.go:303`). The 5xx envelope is unchanged
+  (`BookingError`), so `TestPAC21Every5xxInTheContractIsTheJSONEnvelope`'s
+  input is unchanged (test not run, see above).
+- **Busy-booking set**: "pending or confirmed on any link the host owns or
+  co-hosts, this link included" names the union of today's two reads
+  (`storage/scheduling_links.go:404-411` non-cancelled, this link;
+  `:442-467` owner or *accepted* co-host, any active or inactive link). This
+  link is always covered because every accepted host of it matches the second
+  read. A hostless link is refused by rule 6.
+- **Grid/window**: `CollectiveSlots` steps 15 minutes from the window start
+  while start + duration ≤ window end (`engine/booking.go:101-110`, loop at `:104`). The
+  contract's "counted from `window_start_time` … ends no later than
+  `window_end_time`" is the same rule. Windows are validated `start < end`
+  within a day (`handlers_scheduling_links.go:238-248`), so a slot never
+  crosses a UTC date and the per-date horizon is well defined.
+- **Buffers**: the contract says buffers widen calendar events only, and events
+  are read only for the window. This matches `hostBusy`
+  (`engine/booking.go:122-148`) and spec §5.
+- **Listing**: both keys are still always present and required. No status was
+  added or removed (the bundle lists 200/400/404/410/429/500). An explicit date
+  outside the horizon gives 200 `[]`, not a new 400. The 500 with a date and
+  the omitted day without one reuse the existing answers
+  (`handlers_booking.go:181-183`, `:200-204`).
+- **Responses list**: the bundle has `createPublicBooking` →
+  201/400/404/409/410/429/500 (422 gone), and the 429 description's status
+  list no longer names 422. The `start` field says "else 409".
+- **Manifest**: `acceptanceTests` cover every spec AC (AC-1 to AC-23, including
+  2b, 4b, 17a-d, 21a-c). The only rewording is the AC-19 register status
+  (non-blocking 7). `contractHash` matches the committed bundle.
+  `resolvesUncertain: []` is correct.
+- **Rejected alternatives** (§2.1, §2.2, §2.4, §2.6) were rejected for stated,
+  checkable reasons. One example: a seconds-forbidding `pattern` would split
+  AC-9/AC-21a across 400 and 409.
+- **Security conventions**: no `security` key changed on the public operations.
+  The refusal discloses no cause (D-5). No field reveals host calendar facts.
