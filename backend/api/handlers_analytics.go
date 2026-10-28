@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -90,10 +91,10 @@ func (h *analyticsHandlers) meetings(w http.ResponseWriter, r *http.Request) {
 // POST /api/analytics/recompute
 func (h *analyticsHandlers) recompute(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	bgCtx := context.WithoutCancel(r.Context())
-	go func() {
-		_, _ = h.eng.ForceCompute(bgCtx, userID, time.Now())
-	}()
+	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
+	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "analytics-recompute", ID: userID.String()}, func(ctx context.Context) {
+		_, _ = h.eng.ForceCompute(ctx, userID, time.Now())
+	})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "recompute accepted"})

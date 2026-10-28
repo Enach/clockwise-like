@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"golang.org/x/oauth2"
 
 	"github.com/Enach/paceday/backend/config"
@@ -93,6 +94,9 @@ func refuseRedirect(req *http.Request, _ []*http.Request) error {
 // shared base transport, and redirects are refused.
 func newHTTPClient(s *setup, ts oauth2.TokenSource) *http.Client {
 	return &http.Client{
+		// PAC-81 AC-A3: every calendar API call ends within the provider
+		// limit, whatever context the caller passes.
+		Timeout:       outbound.Current().Provider,
 		Transport:     &oauth2.Transport{Source: ts, Base: s.base},
 		CheckRedirect: refuseRedirect,
 	}

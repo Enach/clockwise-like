@@ -11,6 +11,10 @@ import (
 
 var sharedTestDB *sql.DB
 
+// sharedTestDSN is sharedTestDB's DSN (PAC-81: tests open a second pool on
+// the same database with a cap of 1).
+var sharedTestDSN string
+
 func TestMain(m *testing.M) {
 	dsn, cleanup, err := testdb.Create()
 	if err != nil {
@@ -24,6 +28,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	sharedTestDB = db
+	sharedTestDSN = dsn
 	code := m.Run()
 	db.Close()
 	if err := cleanup(); err != nil && code == 0 {

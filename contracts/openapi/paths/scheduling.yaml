@@ -526,11 +526,22 @@ paths:
             could not be read, so which AI configuration applies could not be decided; in
             that case nothing was sent. Body: `{"error":"internal error"}`. The detail is
             written to the server log and Sentry only (PAC-21). "AI not configured" is
-            never a 500; it is the 200 with `not_configured`.
+            never a 500; it is the 200 with `not_configured`. Since PAC-81 (spec
+            AC-A3) each LLM call has its own 30 s limit; a call that fails on that
+            limit is a provider failure and answers as one does today, not the 503.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '503':
+          description: >-
+            The request budget ran out (PAC-81, spec AC-A2), for example while
+            waiting for a pooled database connection. A parse stores nothing, so
+            a retry is safe. Shared body `{"error":"request timed out"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
 
   /api/nlp/confirm:
     post:

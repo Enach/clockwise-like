@@ -2,13 +2,13 @@ package engine
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -29,7 +29,7 @@ var ErrCredentialStore = errors.New("read stored calendar credential")
 // LoadCalendarToken loads the user's stored Google credential, telling a
 // missing one (ErrCalendarNotConnected) apart from a store that could not be
 // read (ErrCredentialStore, wrapping the cause for the server log).
-func LoadCalendarToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+func LoadCalendarToken(db storage.DBTX, userID uuid.UUID) (*oauth2.Token, error) {
 	token, err := auth.LoadUserToken(db, userID)
 	if errors.Is(err, auth.ErrNoUser) {
 		return nil, ErrCalendarNotConnected
@@ -81,7 +81,7 @@ func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax ti
 	return r.c.GetFreeBusy(ctx, emails, tMin, tMax)
 }
 
-func newCalOps(ctx context.Context, db *sql.DB, oauthConfig *oauth2.Config) (calendarOps, error) {
+func newCalOps(ctx context.Context, db storage.DBTX, oauthConfig *oauth2.Config) (calendarOps, error) {
 	userID := auth.UserIDFromContext(ctx)
 	token, err := LoadCalendarToken(db, userID)
 	if err != nil {

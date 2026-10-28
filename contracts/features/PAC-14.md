@@ -50,6 +50,18 @@ incidents are currently undiagnosable without reproduction.
   buffered events are delivered on shutdown. Init failure MUST NOT be fatal — a
   bad/empty DSN degrades to "monitoring off", the server still boots (unlike
   `DATABASE_URL`, which is fatal by design).
+- **Amended by PAC-81 Part A (2026-10-28, spec `docs/specs/NEW-deploy-hardening.md`
+  AC-A14, factory decision F-8; see `contracts/features/PAC-81-part-a.md`).**
+  The backend has **no default DSN**. With `SENTRY_DSN` unset or empty, backend
+  error monitoring is off: no event is sent to any host, and the backend logs
+  "monitoring disabled" at startup. With it set, events carry
+  `SENTRY_ENVIRONMENT` and `SENTRY_RELEASE`. `.env.example` ships an empty
+  `SENTRY_DSN`, and its "leave empty to disable monitoring" comment is then
+  true. The `cmp.Or(os.Getenv("SENTRY_DSN"), "<DSN>")` fallback in the
+  canonical init below is superseded for the backend (read it as
+  `Dsn: os.Getenv("SENTRY_DSN")`). The frontend's hard-coded fallback is not
+  changed by PAC-81; it is the web follow-up WEB-sentry-default (spec §10).
+  The text below is kept as PAC-14 approved it.
 - **DSN handling**: the DSN is read from env `SENTRY_DSN` (backend) with the
   PAC-14 value as the documented default; it is **not** a secret in the classic
   sense (Sentry ingest DSNs are client-side identifiers) but MUST still be

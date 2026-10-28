@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -102,10 +104,87 @@ func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 	}
 }
 
+// loggingMiddleware writes exactly one access-log line per request (PAC-81
+// AC-A13): method, path without the query string (it can carry codes and
+// tokens), the status actually sent on the wire, duration, and the client
+// address as the abuse limits resolve it (TRUSTED_PROXIES and X-Real-IP).
+// It sits outside every middleware that can write or replace a status, so a
+// replaced status and the budget's 503 are what it records.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		sw := &statusWriter{ResponseWriter: w}
+		defer func() {
+			status := sw.status
+			if status == 0 {
+				status = http.StatusOK // nothing written: net/http sends 200
+			}
+			if p := recover(); p != nil {
+				status = http.StatusInternalServerError
+				accessLogf("%s %s %d %s client=%s", r.Method, r.URL.Path, status, time.Since(start), clientIP(r, trustedProxies))
+				panic(p)
+			}
+			accessLogf("%s %s %d %s client=%s", r.Method, r.URL.Path, status, time.Since(start), clientIP(r, trustedProxies))
+		}()
+		next.ServeHTTP(sw, r)
 	})
+}
+
+// accessLogf is the access log's writer (a test seam).
+var accessLogf = log.Printf
+
+// statusWriter records the first status written to the client.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// maxRequestBody is the largest request body the backend accepts (PAC-81
+// AC-A12, D-7): 1 MiB, the same as nginx.
+const maxRequestBody = 1 << 20
+
+// bodyCapMiddleware answers 413 {"error":"request body too large"} before
+// the handler runs when the body is over the cap: a declared Content-Length
+// over it, or a body that reads past it. A body of exactly the cap is passed
+// on. Bodies are read here, bounded by the cap, so the handler sees the
+// whole body or never runs.
+func bodyCapMiddleware(limit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength > limit {
+				writeError(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if r.Body != nil && r.Body != http.NoBody {
+				b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+				if int64(len(b)) > limit {
+					writeError(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				if err != nil {
+					writeError(w, "invalid request body", http.StatusBadRequest)
+					return
+				}
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(bytes.NewReader(b))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

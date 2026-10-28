@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // runtimeConfigPath is the same-origin script that carries runtime settings to
@@ -18,11 +20,47 @@ import (
 const runtimeConfigPath = "/runtime-config.js"
 
 func main() {
+	// Health mode (PAC-81 Part A, AC-A16): `fileserver health` asks the
+	// running server for / on the local port; it reads no file and no setting.
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		os.Exit(healthMode("http://127.0.0.1:80/"))
+	}
 	h, err := newHandler("/srv", os.Getenv("API_BASE_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(http.ListenAndServe(":80", h))
+	log.Fatal(newServer(":80", h).ListenAndServe())
+}
+
+// newServer is the file server with the PAC-81 server timeouts (spec D-4).
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+// healthMode exits 0 only on a 200 from url within 2 s.
+func healthMode(url string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 1
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 // newHandler serves the SPA in root. When apiBase is non-empty, every HTML

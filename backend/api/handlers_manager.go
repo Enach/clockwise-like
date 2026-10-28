@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -94,11 +95,12 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 	if body.IsManager && p.DetectedAt == nil {
 		// Trigger detection async
 		eng := h.newEngine()
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// PAC-81 AC-A6: a tracked unit, awaited by the drain (own 30 s).
+		lifecycle.Go(lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) {
+			ctx, cancel := context.WithTimeout(work, 30*time.Second)
 			defer cancel()
 			_, _ = eng.DetectTeam(ctx, userID)
-		}()
+		})
 	}
 	_ = storage.UpsertUserProfile(h.db, p)
 

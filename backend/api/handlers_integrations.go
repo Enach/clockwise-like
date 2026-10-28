@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 )
 
@@ -114,6 +115,12 @@ type slackTokenResponse struct {
 	scope     string
 }
 
+// The Slack and Notion token endpoints (test seams, PAC-81 AC-A3).
+var (
+	slackTokenURL  = "https://slack.com/api/oauth.v2.access"
+	notionTokenURL = "https://api.notion.com/v1/oauth/token"
+)
+
 func slackExchangeCode(code, clientID, clientSecret, redirectURI string) (*slackTokenResponse, error) {
 	form := url.Values{}
 	form.Set("code", code)
@@ -122,12 +129,12 @@ func slackExchangeCode(code, clientID, clientSecret, redirectURI string) (*slack
 	form.Set("redirect_uri", redirectURI)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"https://slack.com/api/oauth.v2.access", strings.NewReader(form.Encode()))
+		slackTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.TokenExchangeClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -251,14 +258,14 @@ func notionExchangeCode(code, clientID, clientSecret, redirectURI string) (*noti
 		"redirect_uri": redirectURI,
 	}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.notion.com/v1/oauth/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, notionTokenURL, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
 	req.SetBasicAuth(clientID, clientSecret)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.TokenExchangeClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

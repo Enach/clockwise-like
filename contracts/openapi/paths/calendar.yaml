@@ -715,10 +715,30 @@ paths:
             reading the credential store failed), or the last_synced_at update
             failed. Body `{"error":"internal error"}`. Verified by
             TestPersonalCalendarSyncPropagatesBlockerError.
+            "The personal feed could not be read" includes, since PAC-81 (spec
+            AC-A17), a feed fetch over its 15 s limit or a feed over 10 MiB: no
+            blocker is created from a partial feed and `last_synced_at` is not
+            stamped; the log names which limit was hit.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            The request budget ran out before every blocker was created (PAC-81,
+            spec AC-A2, AC-A17). Creates run on at most 4 concurrent workers, and
+            a create starts only while its full 15 s limit plus the 10 s stop
+            margin remain, so no create is cut short. Every create whose provider
+            answer arrived is recorded and kept; `last_synced_at` is NOT stamped.
+            Running the sync again (or the next scheduled run) creates the
+            remaining blockers without duplicating recorded ones. Residual: a
+            create that fails on its own 15 s limit after the provider accepted
+            it is not recorded, so a re-run creates that blocker again. Shared
+            body `{"error":"request timed out"}`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestBudgetExpiredError"
 
   /api/org/members:
     get:

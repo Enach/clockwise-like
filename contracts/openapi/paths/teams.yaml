@@ -889,6 +889,16 @@ paths:
         it disrupts. A member whose calendar token is missing or whose calendar call fails
         contributes no busy intervals and is silently treated as fully free. `slots` is
         always an array, never null.
+        Members (PAC-81, spec AC-A18): each member's calendar is read on at most 4
+        concurrent reads per request, each limited to its own 15 s (shortened to the
+        budget left minus a 10 s stop margin). "Fails" includes, new with PAC-81, a read
+        that fails on its own time limit: a member whose calendar answers too slowly now
+        looks free, where before the request waited for it. A member who was not read
+        because the request budget ran out (a read not started at the stop margin, or
+        cut short by the budget) is never treated as free; a read that hits a deadline
+        shortened by the budget (budget left minus the margin was below 15 s) counts as
+        cut short by the budget, not as failing on its own limit: the answer is the 503, never
+        a 200 that silently omits that member. There is no partial shape.
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"
         - name: date
@@ -918,6 +928,8 @@ paths:
           $ref: "#/components/responses/JsonForbidden"
         "500":
           $ref: "#/components/responses/ServerError"
+        "503":
+          $ref: "#/components/responses/RequestBudgetExpired"
 
   /api/teams/{id}/analytics:
     get:

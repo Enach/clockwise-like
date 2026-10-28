@@ -9,6 +9,7 @@ import (
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
+	"github.com/Enach/paceday/backend/internal/peritem"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -73,13 +74,22 @@ func (b *PersonalBlocker) Preview(ctx context.Context, calID int64, start, end t
 }
 
 func (b *PersonalBlocker) Sync(ctx context.Context, calID int64) error {
-	pc, err := storage.GetPersonalCalendar(b.DB, calID)
+	pc, err := storage.GetPersonalCalendar(storage.Bind(ctx, b.DB), calID)
 	if err != nil {
 		return fmt.Errorf("get calendar: %w", err)
 	}
 	return b.syncOne(ctx, pc)
 }
 
+// syncOne mirrors one personal calendar into blockers on the work calendar.
+//
+// PAC-81 AC-A17: deletes of stale blockers and creates of new ones run on the
+// bounded per-item pool. A create starts only with its full limit plus the
+// stop margin left before the budget or the drain ends, is never cut short,
+// and is recorded whenever the provider's answer arrives (on a context the
+// budget does not cancel). When the budget stops the sync early, syncOne
+// returns budget.ErrExpired and the caller does not stamp last_synced_at; a
+// re-run finds the recorded blockers and creates only the missing ones.
 func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalendar) error {
 	start := b.now().Truncate(24 * time.Hour)
 	end := start.AddDate(0, 0, personalLookAheadDays)
@@ -89,39 +99,52 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 		return fmt.Errorf("read events: %w", err)
 	}
 
-	calOps, err := newCalOps(ctx, b.DB, b.OAuthConfig)
+	db := storage.Bind(ctx, b.DB)
+	record := storage.Bind(context.WithoutCancel(ctx), b.DB)
+	calOps, err := newCalOps(ctx, db, b.OAuthConfig)
 	if err != nil {
 		return fmt.Errorf("work calendar: %w", err)
 	}
 
-	s, _ := storage.GetOrCreateSettingsByUser(b.DB, pc.UserID)
+	s, _ := storage.GetOrCreateSettingsByUser(db, pc.UserID)
 
 	incoming := make(map[string]calendar.GenericEvent, len(events))
 	for _, e := range events {
 		incoming[e.ID] = e
 	}
 
-	existing, err := storage.ListPersonalBlockers(b.DB, pc.ID)
+	existing, err := storage.ListPersonalBlockers(db, pc.ID)
 	if err != nil {
 		return err
 	}
 
+	var stale []storage.PersonalBlocker
 	for _, blocker := range existing {
 		if _, found := incoming[blocker.PersonalEventID]; !found {
-			_ = calOps.deleteEvent(ctx, blocker.WorkEventID)
-			_ = storage.DeletePersonalBlocker(b.DB, pc.ID, blocker.PersonalEventID)
+			stale = append(stale, blocker)
 		}
 	}
+	limit := HostReadLimit()
+	if err := peritem.Run(ctx, len(stale), peritem.Read, limit, func(callCtx context.Context, i int) error {
+		_ = calOps.deleteEvent(callCtx, stale[i].WorkEventID)
+		return storage.DeletePersonalBlocker(record, pc.ID, stale[i].PersonalEventID)
+	}); err != nil {
+		return err
+	}
 
+	var missing []calendar.GenericEvent
 	for _, e := range events {
 		if !personalEventDuringWorkHours(e, s) {
 			continue
 		}
-		existing, _ := storage.GetPersonalBlocker(b.DB, pc.ID, e.ID)
-		if existing != nil {
+		if found, _ := storage.GetPersonalBlocker(db, pc.ID, e.ID); found != nil {
 			continue
 		}
-		created, err := calOps.createEvent(ctx, &googlecalendar.Event{
+		missing = append(missing, e)
+	}
+	return peritem.Run(ctx, len(missing), peritem.Create, limit, func(callCtx context.Context, i int) error {
+		e := missing[i]
+		created, err := calOps.createEvent(callCtx, &googlecalendar.Event{
 			Summary:     personalBlockerTitle,
 			Description: "Auto-created personal time blocker",
 			Start:       &googlecalendar.EventDateTime{DateTime: e.Start.UTC().Format(time.RFC3339)},
@@ -129,11 +152,10 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 		})
 		if err != nil {
 			log.Printf("personal_blocker: create blocker for event %s: %v", e.ID, err)
-			continue
+			return err
 		}
-		_ = storage.UpsertPersonalBlocker(b.DB, pc.ID, e.ID, created.Id)
-	}
-	return nil
+		return storage.UpsertPersonalBlocker(record, pc.ID, e.ID, created.Id)
+	})
 }
 
 func personalEventDuringWorkHours(e calendar.GenericEvent, s *storage.Settings) bool {

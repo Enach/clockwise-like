@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/lifecycle"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 )
@@ -126,9 +128,28 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 		log.Printf("daily recap: list users error: %v", err)
 		return
 	}
-	for _, u := range users {
-		go s.RunForUser(ctx, u.id, u.name)
-		time.Sleep(time.Second) // stagger sends to respect Slack rate limits
+	for i, u := range users {
+		if i > 0 {
+			// Stagger sends to respect Slack rate limits; stop at shutdown
+			// or when the run's own deadline ends (PAC-81 AC-A6).
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return
+			}
+		}
+		if lifecycle.Default().ShuttingDown() {
+			return
+		}
+		id, name := u.id, u.name
+		// Each per-user send is a tracked unit, awaited by the drain.
+		lifecycle.Go(lifecycle.Unit{Kind: "daily-recap", ID: id.String()}, func(work context.Context) {
+			runCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			stop := context.AfterFunc(work, cancel)
+			defer stop()
+			s.RunForUser(runCtx, id, name)
+		})
 	}
 }
 
@@ -469,7 +490,7 @@ func sendSlackMessage(ctx context.Context, botToken, sendTo, channelID, workspac
 	req.Header.Set("Authorization", "Bearer "+botToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.ProviderClient().Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -498,7 +519,7 @@ func resolveSlackUserID(ctx context.Context, botToken, _ string) (string, error)
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+botToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.ProviderClient().Do(req)
 	if err != nil {
 		return "", err
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"golang.org/x/oauth2"
 )
 
@@ -53,7 +54,7 @@ func RevokeZoomToken(ctx context.Context, clientID, clientSecret, accessToken st
 	}
 	req.SetBasicAuth(clientID, clientSecret)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.IdentityClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -97,7 +98,7 @@ func ZoomExchangeCode(ctx context.Context, clientID, clientSecret, redirectURL, 
 	req.SetBasicAuth(clientID, clientSecret)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.IdentityClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

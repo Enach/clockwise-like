@@ -1,0 +1,159 @@
+# Domain: ops
+# Added by PAC-81 Part A (spec docs/specs/NEW-deploy-hardening.md, revision 3,
+# AC-A2, AC-A6, AC-A11). Operational surface of the backend process: the
+# readiness probe, and the request-budget 503 shared by every operation that
+# can reach the server's handler budget.
+#
+# Why a fragment of its own: liveness (`getHealth`, /api/health) lives in
+# auth.yaml and is NOT moved or edited here, so its contract stays byte for
+# byte what it was (e2e/global-setup.ts and the web's checkApiAvailability
+# depend on it), and so this feature does not touch auth.yaml, which PAC-71
+# (#242) rewrites. See contracts/features/PAC-81-part-a.md.
+#
+# Source of truth after stage 4: backend/api/handlers_health.go (readiness),
+# the request-budget middleware and backend/main.go (shutdown sequence).
+paths:
+  /api/ready:
+    get:
+      operationId: getReadiness
+      tags: [ops]
+      summary: Readiness probe
+      description: |
+        Added by PAC-81 (spec AC-A11, AC-A6 step 1). Says whether this
+        backend process should receive traffic now. It is the probe for the
+        container health check (through the backend binary's health mode on
+        the local port, spec AC-A16, AC-C3) and for the operator's proxy
+        (through nginx, spec AC-D1). It is not authenticated and is outside
+        every abuse limit (it is not counted by any rate limiter).
+
+        The answer is 200 `{"status":"ready"}` when both hold:
+        - the process has not begun shutting down; and
+        - the database answers a ping within the readiness timeout (2 s).
+
+        Otherwise it is 503 `{"error":"not ready"}` (the PAC-21 JSON error
+        envelope, like every 5xx in this contract), answered within the
+        readiness timeout + 1 s: the database did not answer in time or
+        answered with an error, or shutdown has begun. From SIGTERM or SIGINT
+        the process answers this 503 for the whole unready notice (5 s) while
+        it still serves every other request normally; after the notice the
+        listener closes and connections are refused, so no later answer
+        exists from the backend itself.
+
+        Migrations run before the listener opens, so while they run the
+        backend is unreachable (connection refused), never 200: any answer
+        from the backend means migrations have finished. Through nginx (the
+        operator's proxy probe, spec AC-D1), the refused connection during
+        migrations or after the unready notice is nginx's own 502, not an
+        answer of this operation; a probe treats any non-200 as not ready.
+
+        **One database ping at a time (contract revision 2).** Concurrent
+        readiness calls share one database ping: at most one ping is in
+        flight per process, and a call that arrives while it runs waits for
+        and gets that ping's result (single flight). Readiness therefore
+        never holds more than one pooled connection, however many calls
+        arrive. The 2 s readiness timeout covers the whole check, including
+        the wait for a pooled connection: a ping that cannot get a
+        connection within 2 s counts as "did not answer in time" (503). A
+        call made after shutdown has begun answers 503 without pinging.
+
+        The body never names the cause. The cause (database error or timeout,
+        shutting down) goes to the server log only, never the database
+        error text in the response (PAC-21). No other property is ever
+        present.
+
+        Readiness is public: its answer and its latency reveal database
+        health and deploy timing to anyone who can reach it. That is
+        accepted for a probe; operators may restrict `/api/ready` to their
+        health checker at their proxy (`docs/security.md`).
+
+        How this differs from `getHealth` (/api/health), which is unchanged:
+        `getHealth` is liveness. It never touches the database, keeps its
+        status and body byte for byte, and answers 200 during the unready
+        notice too. Its consumers (e2e/global-setup.ts polling through
+        nginx before any test; the web app's `checkApiAvailability`, which
+        decides preview mode from `res.ok`) keep calling it, so a database
+        outage or a deploy does not switch the web app into preview mode.
+      security: []
+      responses:
+        '200':
+          description: Ready. Not shutting down, and the database answered within 2 s.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessReady'
+        '503':
+          description: |
+            Not ready: the database did not answer within 2 s or answered with
+            an error, or shutdown has begun (the unready notice). Sent within
+            the readiness timeout + 1 s. Exact body `{"error":"not ready"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessNotReady'
+
+components:
+  responses:
+    RequestBudgetExpired:
+      description: |
+        The request budget expired (PAC-81, spec AC-A2, AC-A9, AC-A17,
+        AC-A18, AC-A19). Every request has a server-side handler budget
+        (90 s, a server setting). When the handler has not finished by then,
+        including while it waits for a pooled database connection, or when a
+        per-item loop stops starting calendar calls at the stop margin (10 s
+        before the budget ends) with items left, or when a per-item read
+        hits a deadline the budget shortened, the answer is this 503 with
+        the exact body `{"error":"request timed out"}`. Exception:
+        `createPublicBooking` is never answered with this 503 once its
+        booking insert has been sent (see that operation). It is sent before
+        the server's write backstop (120 s), so through nginx (130 s) and a
+        correctly configured proxy (over 130 s) the client receives it, not
+        a 504 or a dropped connection. Never a 2xx with partial data in its
+        place.
+
+        The body names no step, host, member or item; the server log does.
+        No `Retry-After` header. What was done before the budget ran out is
+        stated per operation: a read (slot listing, team availability, parse)
+        stored nothing; `syncPersonalCalendar` keeps the blockers already
+        created and does not stamp `last_synced_at`; `createPublicBooking`
+        answers this 503 only before its booking insert is sent, so there
+        this 503 proves that no booking was saved for the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RequestBudgetExpiredError'
+
+  schemas:
+    ReadinessReady:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ready
+      additionalProperties: false
+
+    ReadinessNotReady:
+      type: object
+      description: |
+        The PAC-21 JSON error envelope (`{"error": ...}`) with its one
+        possible readiness message pinned. The cause is never in the body;
+        it is in the server log. Probes read only the status code.
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: ['not ready']
+      additionalProperties: false
+
+    RequestBudgetExpiredError:
+      type: object
+      description: |
+        The shared JSON error envelope (`{"error": ...}`, written by
+        writeError) with its one possible message for a request-budget
+        expiry pinned.
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: ['request timed out']
+      additionalProperties: false

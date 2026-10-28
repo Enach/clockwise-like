@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -34,7 +33,7 @@ type MeetingBrief struct {
 	Status          string // pending | ready | failed
 }
 
-func UpsertMeetingBrief(db *sql.DB, b *MeetingBrief) error {
+func UpsertMeetingBrief(db DBTX, b *MeetingBrief) error {
 	slack, err := json.Marshal(b.SlackResults)
 	if err != nil {
 		return err
@@ -59,7 +58,7 @@ func UpsertMeetingBrief(db *sql.DB, b *MeetingBrief) error {
 	return err
 }
 
-func GetMeetingBrief(db *sql.DB, userID uuid.UUID, calendarEventID string) (*MeetingBrief, error) {
+func GetMeetingBrief(db DBTX, userID uuid.UUID, calendarEventID string) (*MeetingBrief, error) {
 	row := db.QueryRow(`
 		SELECT id, calendar_event_id, user_id, generated_at,
 		       slack_results, notion_results, brief_text, status
@@ -81,7 +80,7 @@ func GetMeetingBrief(db *sql.DB, userID uuid.UUID, calendarEventID string) (*Mee
 	return &b, nil
 }
 
-func ListMeetingBriefsForUser(db *sql.DB, userID uuid.UUID) ([]*MeetingBrief, error) {
+func ListMeetingBriefsForUser(db DBTX, userID uuid.UUID) ([]*MeetingBrief, error) {
 	rows, err := db.Query(`
 		SELECT id, calendar_event_id, user_id, generated_at,
 		       slack_results, notion_results, brief_text, status

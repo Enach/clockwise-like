@@ -15,6 +15,7 @@ import (
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
@@ -96,7 +97,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 }
 
 func postJSON(ctx context.Context, url string, headers map[string]string, payload interface{}, extract func([]byte) (string, error)) (string, error) {
-	return postJSONWith(ctx, http.DefaultClient, url, headers, payload, extract)
+	return postJSONWith(ctx, outbound.LLMClient(), url, headers, payload, extract)
 }
 
 // postJSONWith is postJSON through client.
@@ -232,7 +233,8 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 		}
 	}
 
-	storage.WriteAuditLog(s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
+	auditDB := storage.Bind(ctx, s.DB) // PAC-81 AC-A9
+	storage.WriteAuditLog(auditDB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
 	return result, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -134,10 +135,10 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trigger background scheduling for the next 14 days.
-	bgCtx := context.WithoutCancel(r.Context())
-	go func() {
-		_ = h.eng.ReoptimizeAll(bgCtx, userID)
-	}()
+	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
+	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) {
+		_ = h.eng.ReoptimizeAll(ctx, userID)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -236,10 +237,10 @@ func (h *habitsHandlers) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bgCtx := context.WithoutCancel(r.Context())
-	go func() {
-		_ = h.eng.ReoptimizeAll(bgCtx, userID)
-	}()
+	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
+	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) {
+		_ = h.eng.ReoptimizeAll(ctx, userID)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
@@ -379,13 +380,10 @@ func (h *habitsHandlers) updateOccurrence(w http.ResponseWriter, r *http.Request
 // POST /api/habits/reoptimize
 func (h *habitsHandlers) reoptimize(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	bgCtx := context.WithoutCancel(r.Context())
-	go func() {
-		if err := h.eng.ReoptimizeAll(bgCtx, userID); err != nil {
-			// logged inside ReoptimizeAll
-			_ = err
-		}
-	}()
+	// PAC-81 AC-A6: a tracked unit, awaited by the drain.
+	lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "habit-reoptimize", ID: userID.String()}, func(ctx context.Context) {
+		_ = h.eng.ReoptimizeAll(ctx, userID)
+	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "reoptimization started"})
 }
