@@ -2,14 +2,16 @@
 
 - **Linear**: PAC-73 (https://linear.app/paceday/issue/PAC-73). Part 2 of the
   spec `docs/specs/NEW-llm-bring-your-own.md` (the "parent spec").
-- **Status**: challenged; revision 2 (2026-10-28) answers challenge
+- **Status**: accepted (spec challenge revision 2, 2026-10-28, verdict
+  accept); revision 2.1 (2026-10-28) applies that challenge's five
+  non-blocking findings. Revision 2 answers challenge
   revision 1. The text challenged at `a90ba5e` called itself "revision 1";
   the challenger recorded it as revision 0, and this file counts that way:
   revision 0 is the text challenged at `a90ba5e`, revision 1 the text
   challenged at `0c81d42`, revision 2 this one. Each challenge is recorded
   verbatim at the end of the file, followed by the revision table answering
-  every finding ("Revision 1", "Revision 2"). Sections 2 to 9 are the live
-  text.
+  every finding ("Revision 1", "Revision 2", "Revision 2.1"). Sections 2
+  to 9 are the live text.
 - **Author**: spec-author
 - **Supersedes**: the parent spec's "Part 2" acceptance criteria (AC-22 to
   AC-31, AC-36, AC-38, AC-41 and the Part 2 rows of AC-40) and the Part 2
@@ -210,7 +212,7 @@ are not part of it (§3.4, revision 2).
 |---|---|---|---|---|
 | 1 | Off | none | not configured: off by the user's choice | the user |
 | 9 | (reserved) | not reachable under P2-D2's current default. If the owner answers OQ-P2-2 the other way it becomes "own or removed provider; forbids; complete; confirmed → configured: the organisation's" | - | - |
-| 10 | Own provider, or a removed provider | organisation forbids; complete | not configured: **personal keys are forbidden by your organisation; your own provider and key are kept but not used; choose "Use my organisation's AI" in Settings** | the user, by choosing "Use my organisation's AI" (which shows the §3.4 notice and confirms) |
+| 10 | Own provider, or a removed provider | organisation forbids; complete | not configured: **personal keys are forbidden by your organisation; your own choice (and any key you saved for it) is kept but not used; choose "Use my organisation's AI" in Settings** (revision 2.1: worded so it holds for a member on a removed provider, who has no key) | the user, by choosing "Use my organisation's AI" (which shows the §3.4 notice and confirms) |
 | 11 | Own provider, or a removed provider | organisation forbids; not complete | not configured: **personal keys are forbidden by your organisation and it has not finished setting up AI** | the organisation's admin only |
 | 2 | Own provider | a key bound to it | **configured: the user's own** | n/a |
 | 3 | Own provider | no key bound to it | not configured: that provider needs a key | the user |
@@ -286,8 +288,10 @@ decision at factory level, P2-D16):
 
 - **What a member can see from a request on the organisation's
   configuration carries no provider or gateway error text at all.** When a
-  request in row 4 (a parse, a brief refresh, a probe) fails at the
-  provider or gateway, every member-visible text it produces (every answer,
+  request in row 4 (a parse, a brief refresh, a probe) fails, by any
+  failure of the call (an error answer from the provider or gateway, a
+  transport error, a timeout; revision 2.1), every member-visible text it
+  produces (every answer,
   in every status, and the stored brief text that the brief read returns
   afterwards) is a fixed sentence written by Paceday, such as "The
   organisation's AI provider returned an error.", and contains nothing the
@@ -310,9 +314,11 @@ residual is limited to operator-only surfaces (the server log and Sentry);
 it never reaches a member, an answer of any operation, a stored brief text,
 or an operator record.
 
-**Requests on the member's own key** (row 2) keep Part 1's behaviour: the
-brief's failed text still carries the provider's error text, with the
-member's own keys replaced by the marker, because the only key such a text
+**Requests on the member's own key** (row 2) keep Part 1's behaviour with
+one change: the brief's failed text still carries the provider's error
+text, and, which Part 1 did not do (§2.5), the member's own keys in it are
+now replaced by the marker before it is stored (revision 2.1; a small change
+named in §3.8). The text is kept because the only key such a text
 can contain is the member's own, so an encoded echo exposes nothing the
 member does not already hold, and it is the member's only diagnosis of a
 misconfigured key or gateway. Extending the fixed sentence to own-key
@@ -382,7 +388,13 @@ Rules for a change (factory-assumed, §9):
   emptied. A key is never carried from one provider to another.
 - A value that does not apply to the provider (an Azure endpoint for OpenAI)
   is refused, not ignored.
-- Removing the provider removes the whole configuration, key included.
+- The personal-keys setting is not part of what a provider change or a
+  removal replaces: it survives both, and changes only when a change names
+  it (revision 2.1, challenge revision 2 non-blocking 1). An organisation
+  that forbids personal keys still forbids them after its configuration is
+  removed or its provider changed.
+- Removing the provider removes the whole configuration, key included
+  (except the personal-keys setting, above).
   Removing only the key leaves the rest; members following the organisation
   then get "nothing configured" naming the admin. Removing does not reset
   the version: versions are never reused within an organisation (§3.4).
@@ -597,8 +609,10 @@ write (choosing "off" or one's own provider ends the confirmation); the
 step-up start, its options read and its landing (a purpose); provider error
 text (never shown to a member for a request on the organisation's
 configuration, and redacted of the keys sent and the caller's keys before it
-is logged or reported); the organisation's change refuses a destination
-address with a query, credentials or an unapproved path. The
+is logged or reported); a member's own failed brief text is redacted of
+the member's own keys before it is stored (revision 2.1: Part 1 stored it
+unredacted, §2.5); the organisation's change refuses a destination
+address with a query, a fragment, credentials or an unapproved path. The
 register of hand-written versus generated endpoints gains three rows,
 implemented on the generated server interface (factory README §4: new
 endpoints are generated). No audit finding is opened or closed; PAC-50 AC-27
@@ -675,7 +689,8 @@ that is refused on its own merits (not an object, an unknown or `null`
 property, no property at all, a provider change without a key, a value that
 does not apply to the provider, a destination the operator has not approved,
 a key with no provider, an organisation destination address with a query
-string, credentials or a path the operator did not approve), then the answer
+string, a fragment, credentials or a path the operator did not approve),
+then the answer
 names the problem, A's configuration is unchanged, and the grant is still
 live. Given A has never had a configuration (version 0), a change that
 does not name the version it was made from is refused as malformed and
@@ -1023,7 +1038,13 @@ the new configuration's version is greater than every version A ever had
 (in particular not V), M's next parse answers row 5 and nothing is sent to
 any host; after M confirms the new version, the parse is sent with the new
 configuration. The same holds when the new configuration repeats the
-removed one's provider and key exactly. [unit]
+removed one's provider and key exactly. (Revision 2.1, challenge revision 2
+non-blocking 1.) Given A forbids personal keys and member M2 is stored on
+OpenAI with a key, when an admin removes A's configuration, then A's read
+still says personal keys are not allowed and M2's next parse answers row
+11 and sends nothing; when an admin then sets a new complete configuration
+(a provider change), A still forbids personal keys and M2's next parse
+answers row 10 and sends nothing. [unit]
 
 ## 5. Explicitly out of scope
 
@@ -1631,3 +1652,19 @@ None. I looked specifically for each of the following and found none:
 
 ### Consumers this breaks
 - None beyond those §2.4 names.
+
+## Revision 2.1 — 2026-10-28 (applies challenge revision 2's non-blocking findings)
+
+Author: backend-implementer (stage 4), applying the accepted challenge's
+non-blocking findings before implementation, as the orchestrator
+instructed. Challenge revision 2's verdict is accept, with no blocking
+finding; nothing below changes a decision, a row's outcome or an owner
+question. The contract's revision 3.1 carries the matching contract text.
+
+| Finding | Resolution | Where |
+|---|---|---|
+| NB1 What a removal or a provider change does to "personal keys forbidden" | Applied. The personal-keys setting survives a removal and a provider change and changes only when a change names it. P2-AC-42 gains the case: forbid, remove (an own-key member answers row 11, nothing sent), set a new provider (row 10, nothing sent). The contract's OrganizationAIConfigurationUpdate says the same for a provider change. | §3.2 rules, P2-AC-42 |
+| NB2 §3.1a covers only a failure "at the provider or gateway" | Applied: "any failure of the call (an error answer from the provider or gateway, a transport error, a timeout)". | §3.1a |
+| NB3 P2-AC-4 leaves "fragment" out | Applied: P2-AC-4 lists a fragment among the refused organisation destination addresses, as §3.2 requires. | P2-AC-4 |
+| NB4 Row 10's sentence for a member on a removed provider (no key) | Applied: row 10 now says "your own choice (and any key you saved for it) is kept but not used", true for an own-provider member with or without a key and for one stored on a removed provider. | §3.1 row 10 |
+| NB5 Own-key brief redaction is a change, not "Part 1's" | Applied: §3.1a says the own-key failed brief keeps the provider text with one change (the member's own keys are now replaced by the marker before it is stored, which Part 1 did not do, §2.5), and §3.8 names it among the changes. | §3.1a, §3.8 |

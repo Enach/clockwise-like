@@ -1138,10 +1138,14 @@ paths:
            P2-D15). Steps 3 and 4 run in ONE transaction: the grant
            consumption (or the break-glass record) and one atomic
            conditional write that stores the change only if the stored
-           version still equals `configurationVersion`. The conditional
-           write also covers the first setup: when the organisation has no
-           stored configuration, it inserts only if none was inserted
-           meanwhile, and `configurationVersion` must be `0`. When the
+           version still equals `configurationVersion`. The condition is
+           the stored version alone, and an organisation with no stored
+           configuration counts as version `0` (contract revision 3.1,
+           challenge revision 3 NB-C): so the first setup names `0`, and a
+           row that a `personalKeysAllowed`-only change left at version `0`
+           does not make a concurrent first setup naming `0` a conflict,
+           while of two first setups naming `0` exactly one is stored (the
+           first advances the version). When the
            condition fails (another administrator's change was stored
            between step 2a and here), the transaction is rolled back and the
            answer is the 409 OrganizationAIConsentConflict
@@ -1151,10 +1155,14 @@ paths:
            back the same way and the answer is the 500: the configuration is
            unchanged and the grant is still live (P2-AC-5, revision 3;
            revision 2 said the grant stayed consumed). So a grant is spent
-           exactly when a change is stored.
+           exactly when a change is stored. The operator record of a
+           successful change is inserted in this same transaction (contract
+           revision 3.1, challenge revision 3 NB-B), so a stored change is
+           never left unrecorded and a rolled-back one is never recorded.
 
         Being a team owner, or having made the last change, proves nothing.
-        Every successful change is recorded for operators (who, when,
+        Every successful change is recorded for operators, in the write's
+        transaction (who, when,
         `stepup` or `breakglass`, the names of the properties that changed;
         never the key; P2-AC-6). No API reads that record.
 
@@ -1248,9 +1256,11 @@ paths:
             the raw body to tell absent from `0` (the generated `int` field
             cannot), so a body without it for an organisation at version 0
             is the 400, not a write (P2-AC-4);
-            (4) `<property> must not be null`, then
-            `invalid JSON: <property> has the wrong type` (other properties,
-            in body order);
+            (4) the other properties, one at a time in body order (contract
+            revision 3.1, challenge revision 3 NB-D: this is the one reading):
+            for each, `<property> must not be null` when it is `null`, else
+            `invalid JSON: <property> has the wrong type` when it has the
+            wrong type; the first property that fails decides;
             (5) `send at least one property to change` (only
             `configurationVersion`);
             (6) `provider must be one of: "", openai, anthropic, azure_openai, bedrock, vertex`;
@@ -1336,10 +1346,17 @@ paths:
             The proof could not be checked, or the change could not be stored or
             re-read. Body: `{"error":"internal error"}`. The detail is written to the
             server log and Sentry only (PAC-21). A failure inside step 4's
-            transaction rolls it back: the configuration is unchanged, the grant is
-            still live and a break-glass session is not marked used (P2-AC-5,
-            contract revision 3). A failure re-reading after a committed write is
-            the 500 with the change stored and the grant spent; the client re-reads.
+            transaction that the server knows rolled it back leaves the
+            configuration unchanged, the grant still live and a break-glass session
+            not marked used (P2-AC-5, contract revision 3). The server cannot always
+            know: when the connection fails during the COMMIT itself, the change and
+            the spent grant (or the break-glass record) may have been stored
+            together; and a failure re-reading after a committed write is the 500
+            with the change stored and the grant spent. So after any 500 the client
+            re-reads (getOrganizationAI) before retrying. A retry is safe either
+            way: if the change was stored, a retry naming the old version is the
+            409 `configuration_changed`; if not, the grant is still live (contract
+            revision 3.1, challenge revision 3 NB-A).
           content:
             application/json:
               schema:
@@ -2873,7 +2890,9 @@ components:
 
         * `provider` set to a provider DIFFERENT from the stored one replaces
           the whole configuration: `apiKey` (non-empty) is required, and every
-          property not in the body takes its default (`""`). A key is never
+          property not in the body takes its default (`""`), except
+          `personalKeysAllowed`, which is kept unless the body names it
+          (contract revision 3.1, spec revision 2.1). A key is never
           carried from one provider to another (spec P2-D7).
         * `provider: ""` removes the whole configuration, key included. No
           other property may be sent with it (400), so the removal is

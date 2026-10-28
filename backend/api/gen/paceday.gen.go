@@ -2314,7 +2314,9 @@ type OrganizationAIConfigurationProvider string
 //
 //   - `provider` set to a provider DIFFERENT from the stored one replaces
 //     the whole configuration: `apiKey` (non-empty) is required, and every
-//     property not in the body takes its default (`""`). A key is never
+//     property not in the body takes its default (`""`), except
+//     `personalKeysAllowed`, which is kept unless the body names it
+//     (contract revision 3.1, spec revision 2.1). A key is never
 //     carried from one provider to another (spec P2-D7).
 //   - `provider: ""` removes the whole configuration, key included. No
 //     other property may be sent with it (400), so the removal is

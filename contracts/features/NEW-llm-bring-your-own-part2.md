@@ -2,7 +2,10 @@
 
 - **Spec**: `docs/specs/NEW-llm-bring-your-own-part2.md` (revision 2, which
   answers spec challenge revision 1)
-- **Contract revision**: 3 (2026-10-28), answering contract challenge
+- **Contract revision**: 3.1 (2026-10-28). Revision 3 was accepted by
+  contract challenge revision 3 (recorded verbatim below); 3.1 applies that
+  challenge's non-blocking findings A to D and the spec's revision 2.1.
+  Revision 3 answered contract challenge
   revision 2 (recorded verbatim below) and the spec's revision 2. Revision 2
   answered contract challenge revision 1. Sections 1 to 5 are the live
   text; the "Revision 2" and "Revision 3" tables at the end map every
@@ -718,3 +721,21 @@ None claimed.
 ### Verified clean
 - Concurrent stale admin writes, one-grant double use, concurrent break-glass, missing version on v0, stale state-check body, removal then setup, row-4 member-visible text: all behave as the contract states.
 - Residual noted, not a finding: the row-4 parse 200 still carries model-generated fields (`parser.go:243-262`); that is a successful answer's content, outside §3.1a.
+
+## Revision 3.1 — 2026-10-28 (applies contract challenge revision 3's non-blocking findings)
+
+Author: backend-implementer (stage 4), applying the accepted challenge's
+non-blocking findings before implementation, as the orchestrator
+instructed. Contract challenge revision 3's verdict is accept, with no
+blocking finding. No schema, status, enum or operation changes: only
+description text, so the generated Go changes in doc comments only. The
+bundle was regenerated and the three `--check` scripts run (manifest
+`gates`); `contractHash` is recomputed on this revision.
+
+| Finding | Resolution | Where |
+|---|---|---|
+| NB-A "unchanged and grant still live" after any step-4 failure, though an unknown COMMIT outcome cannot be known | Applied. The 500 says the configuration is unchanged and the grant live only when the server knows the transaction rolled back; when the connection fails during the COMMIT the change and the spent grant (or the break-glass record) may be stored together. After any 500 the client re-reads before retrying, and a retry is safe either way (a stored change makes a retry naming the old version the 409). P2-AC-5 is the known-rollback case. | scheduling.yaml patchOrganizationAI 500; manifest operationsAdded, P2-AC-5 |
+| NB-B The operator record of a grant-authorised change should be in the write's transaction | Applied: every successful change's operator record is inserted in the same transaction as the conditional write (step 4), so a stored change is never unrecorded and a rolled-back one never recorded. | scheduling.yaml patchOrganizationAI step 4 and "recorded for operators"; manifest operationsAdded |
+| NB-C "Inserts only if none was inserted meanwhile" can give a racing first setup a 409 whose read still says 0 | Applied: the condition is the stored version alone, and an organisation with no stored configuration counts as version 0. A row a `personalKeysAllowed`-only change left at 0 is not a conflict for a first setup naming 0; of two first setups naming 0, exactly one is stored. | scheduling.yaml patchOrganizationAI step 4; manifest operationsAdded |
+| NB-D Shape order (4) ambiguous | Applied, one reading named: the other properties are checked one at a time in body order; for each, `must not be null` when it is `null`, else `has the wrong type`; the first that fails decides. | scheduling.yaml patchOrganizationAI 400 (4); manifest operationsAdded |
+| Spec revision 2.1 NB1 (personal-keys setting across a removal or provider change) | Carried: the provider-change bullet of OrganizationAIConfigurationUpdate now says `personalKeysAllowed` is kept unless the body names it (the removal bullet already kept it). | scheduling.yaml OrganizationAIConfigurationUpdate; manifest P2-AC-42 |

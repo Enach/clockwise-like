@@ -5527,22 +5527,27 @@ paths:
         \ per fresh session).\n\n4. The write (contract revision 3, challenge revision 2 B-1'; spec\n\
         \   P2-D15). Steps 3 and 4 run in ONE transaction: the grant\n   consumption (or the break-glass\
         \ record) and one atomic\n   conditional write that stores the change only if the stored\n   version\
-        \ still equals `configurationVersion`. The conditional\n   write also covers the first setup:\
-        \ when the organisation has no\n   stored configuration, it inserts only if none was inserted\n\
-        \   meanwhile, and `configurationVersion` must be `0`. When the\n   condition fails (another administrator's\
-        \ change was stored\n   between step 2a and here), the transaction is rolled back and the\n  \
-        \ answer is the 409 OrganizationAIConsentConflict\n   `configuration_changed` with the current\
-        \ read: nothing stored,\n   nothing recorded, the grant NOT consumed and a break-glass session\n\
-        \   NOT marked used. When storage fails, the transaction is rolled\n   back the same way and the\
-        \ answer is the 500: the configuration is\n   unchanged and the grant is still live (P2-AC-5,\
-        \ revision 3;\n   revision 2 said the grant stayed consumed). So a grant is spent\n   exactly\
-        \ when a change is stored.\n\nBeing a team owner, or having made the last change, proves nothing.\
-        \ Every successful change is recorded for operators (who, when, `stepup` or `breakglass`, the\
-        \ names of the properties that changed; never the key; P2-AC-6). No API reads that record.\n**What\
-        \ a change does to members** (spec §3.1): `configurationVersion` advances by one when the change\
-        \ alters `provider` (including `provider: \"\"`, the removal), writes `apiKey` (any present `apiKey`,\
-        \ including `\"\"` and including a value equal to the stored key: the server never compares keys,\
-        \ so re-entering the same key re-asks members), or alters any destination property (`baseUrl`,\
+        \ still equals `configurationVersion`. The condition is\n   the stored version alone, and an organisation\
+        \ with no stored\n   configuration counts as version `0` (contract revision 3.1,\n   challenge\
+        \ revision 3 NB-C): so the first setup names `0`, and a\n   row that a `personalKeysAllowed`-only\
+        \ change left at version `0`\n   does not make a concurrent first setup naming `0` a conflict,\n\
+        \   while of two first setups naming `0` exactly one is stored (the\n   first advances the version).\
+        \ When the\n   condition fails (another administrator's change was stored\n   between step 2a\
+        \ and here), the transaction is rolled back and the\n   answer is the 409 OrganizationAIConsentConflict\n\
+        \   `configuration_changed` with the current read: nothing stored,\n   nothing recorded, the grant\
+        \ NOT consumed and a break-glass session\n   NOT marked used. When storage fails, the transaction\
+        \ is rolled\n   back the same way and the answer is the 500: the configuration is\n   unchanged\
+        \ and the grant is still live (P2-AC-5, revision 3;\n   revision 2 said the grant stayed consumed).\
+        \ So a grant is spent\n   exactly when a change is stored. The operator record of a\n   successful\
+        \ change is inserted in this same transaction (contract\n   revision 3.1, challenge revision 3\
+        \ NB-B), so a stored change is\n   never left unrecorded and a rolled-back one is never recorded.\n\
+        \nBeing a team owner, or having made the last change, proves nothing. Every successful change\
+        \ is recorded for operators, in the write's transaction (who, when, `stepup` or `breakglass`,\
+        \ the names of the properties that changed; never the key; P2-AC-6). No API reads that record.\n\
+        **What a change does to members** (spec §3.1): `configurationVersion` advances by one when the\
+        \ change alters `provider` (including `provider: \"\"`, the removal), writes `apiKey` (any present\
+        \ `apiKey`, including `\"\"` and including a value equal to the stored key: the server never compares\
+        \ keys, so re-entering the same key re-asks members), or alters any destination property (`baseUrl`,\
         \ `azureEndpoint`, `azureDeployment`, `azureApiVersion`, `awsRegion`), including removing them;\
         \ members who follow the organisation must then confirm again before anything is sent to it (spec\
         \ P2-D4, factory-assumed pending the owner, OQ-P2-1; P2-AC-23). A change of only `model` and/or\
@@ -5607,8 +5612,10 @@ paths:
             has the wrong type`; below 0 - `configurationVersion must be 0 or more`. An absent `configurationVersion`
             is never read as `0`: the server decodes the raw body to tell absent from `0` (the generated
             `int` field cannot), so a body without it for an organisation at version 0 is the 400, not
-            a write (P2-AC-4); (4) `<property> must not be null`, then `invalid JSON: <property> has the
-            wrong type` (other properties, in body order); (5) `send at least one property to change`
+            a write (P2-AC-4); (4) the other properties, one at a time in body order (contract revision
+            3.1, challenge revision 3 NB-D: this is the one reading): for each, `<property> must not be
+            null` when it is `null`, else `invalid JSON: <property> has the wrong type` when it has the
+            wrong type; the first property that fails decides; (5) `send at least one property to change`
             (only `configurationVersion`); (6) `provider must be one of: "", openai, anthropic, azure_openai,
             bedrock, vertex`; (7) `provider "" removes the whole configuration; send no other property
             with it` (`configurationVersion` excepted); (8) `azureEndpoint must be https://<host> with
@@ -5675,10 +5682,15 @@ paths:
         '500':
           description: 'The proof could not be checked, or the change could not be stored or re-read.
             Body: `{"error":"internal error"}`. The detail is written to the server log and Sentry only
-            (PAC-21). A failure inside step 4''s transaction rolls it back: the configuration is unchanged,
-            the grant is still live and a break-glass session is not marked used (P2-AC-5, contract revision
-            3). A failure re-reading after a committed write is the 500 with the change stored and the
-            grant spent; the client re-reads.'
+            (PAC-21). A failure inside step 4''s transaction that the server knows rolled it back leaves
+            the configuration unchanged, the grant still live and a break-glass session not marked used
+            (P2-AC-5, contract revision 3). The server cannot always know: when the connection fails during
+            the COMMIT itself, the change and the spent grant (or the break-glass record) may have been
+            stored together; and a failure re-reading after a committed write is the 500 with the change
+            stored and the grant spent. So after any 500 the client re-reads (getOrganizationAI) before
+            retrying. A retry is safe either way: if the change was stored, a retry naming the old version
+            is the 409 `configuration_changed`; if not, the grant is still live (contract revision 3.1,
+            challenge revision 3 NB-A).'
           content:
             application/json:
               schema:
@@ -11147,20 +11159,21 @@ components:
         \ (required, contract\nrevision 2) names the version the change was made from, plus at\nleast\
         \ one property to change.\n\n* `provider` set to a provider DIFFERENT from the stored one replaces\n\
         \  the whole configuration: `apiKey` (non-empty) is required, and every\n  property not in the\
-        \ body takes its default (`\"\"`). A key is never\n  carried from one provider to another (spec\
-        \ P2-D7).\n* `provider: \"\"` removes the whole configuration, key included. No\n  other property\
-        \ may be sent with it (400), so the removal is\n  unambiguous (`configurationVersion` excepted);\
-        \ the stored\n  `personalKeysAllowed` is kept, and so is the version count: the\n  removal advances\
-        \ `configurationVersion` and the next setup names\n  that version (never reused, contract revision\
-        \ 3).\n* `apiKey: \"\"` removes only the key (the configuration is then not\n  complete; followers\
-        \ answer `nothing_configured`, P2-AC-13). A\n  non-empty `apiKey` replaces the key for the provider\
-        \ after this\n  write; with no provider stored or sent it is a 400. Because\n  `configurationVersion`\
-        \ must be current, a key typed against one\n  provider is never stored under another provider\
-        \ that a concurrent\n  change installed (challenge B-1).\n* `model` and every destination property\
-        \ with no provider stored\n  or sent is a 400 (`<property> requires a provider`).\n* A destination\
-        \ property that does not apply to the provider after\n  this write is a 400 (`<property> does\
-        \ not apply to <provider>`),\n  not ignored; so is `model` with `azure_openai`.\n* `personalKeysAllowed`\
-        \ may be changed whether or not the\n  configuration is complete (spec P2-D3).\n"
+        \ body takes its default (`\"\"`), except\n  `personalKeysAllowed`, which is kept unless the body\
+        \ names it\n  (contract revision 3.1, spec revision 2.1). A key is never\n  carried from one provider\
+        \ to another (spec P2-D7).\n* `provider: \"\"` removes the whole configuration, key included.\
+        \ No\n  other property may be sent with it (400), so the removal is\n  unambiguous (`configurationVersion`\
+        \ excepted); the stored\n  `personalKeysAllowed` is kept, and so is the version count: the\n \
+        \ removal advances `configurationVersion` and the next setup names\n  that version (never reused,\
+        \ contract revision 3).\n* `apiKey: \"\"` removes only the key (the configuration is then not\n\
+        \  complete; followers answer `nothing_configured`, P2-AC-13). A\n  non-empty `apiKey` replaces\
+        \ the key for the provider after this\n  write; with no provider stored or sent it is a 400. Because\n\
+        \  `configurationVersion` must be current, a key typed against one\n  provider is never stored\
+        \ under another provider that a concurrent\n  change installed (challenge B-1).\n* `model` and\
+        \ every destination property with no provider stored\n  or sent is a 400 (`<property> requires\
+        \ a provider`).\n* A destination property that does not apply to the provider after\n  this write\
+        \ is a 400 (`<property> does not apply to <provider>`),\n  not ignored; so is `model` with `azure_openai`.\n\
+        * `personalKeysAllowed` may be changed whether or not the\n  configuration is complete (spec P2-D3).\n"
       required:
       - configurationVersion
       minProperties: 2
