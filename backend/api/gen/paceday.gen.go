@@ -438,16 +438,21 @@ const (
 	SsoDetectResponseTypeSso       SsoDetectResponseType = "sso"
 )
 
+// Defines values for SsoProviderProviderType.
+const (
+	SsoProviderProviderTypeOidc SsoProviderProviderType = "oidc"
+	SsoProviderProviderTypeSaml SsoProviderProviderType = "saml"
+)
+
 // Defines values for SsoProviderCreateRequestProviderType.
 const (
 	SsoProviderCreateRequestProviderTypeOidc SsoProviderCreateRequestProviderType = "oidc"
-	SsoProviderCreateRequestProviderTypeSaml SsoProviderCreateRequestProviderType = "saml"
 )
 
-// Defines values for SsoProviderResponseProviderType.
+// Defines values for SsoProviderState.
 const (
-	SsoProviderResponseProviderTypeOidc SsoProviderResponseProviderType = "oidc"
-	SsoProviderResponseProviderTypeSaml SsoProviderResponseProviderType = "saml"
+	Active    SsoProviderState = "active"
+	Suspended SsoProviderState = "suspended"
 )
 
 // Defines values for TeamInviteStatus.
@@ -2686,61 +2691,173 @@ type SsoDetectResponse struct {
 	// needs to reach SSO; there is no `domain` field (API-010).
 	RedirectUrl *string `json:"redirect_url,omitempty"`
 
-	// Type "generic" for consumer/unparseable domains, "sso" when a provider row
-	// exists for the domain, "microsoft" from a live tenant probe against
+	// Type "generic" for consumer/unparseable domains, "sso" when an active
+	// provider row exists for the domain (a row suspended through
+	// setSsoProviderState is ignored, PAC-22), "microsoft" from a live tenant probe against
 	// login.microsoftonline.com (2s timeout, 1h cache), else "google".
 	Type SsoDetectResponseType `json:"type"`
 }
 
-// SsoDetectResponseType "generic" for consumer/unparseable domains, "sso" when a provider row
-// exists for the domain, "microsoft" from a live tenant probe against
+// SsoDetectResponseType "generic" for consumer/unparseable domains, "sso" when an active
+// provider row exists for the domain (a row suspended through
+// setSsoProviderState is ignored, PAC-22), "microsoft" from a live tenant probe against
 // login.microsoftonline.com (2s timeout, 1h cache), else "google".
 type SsoDetectResponseType string
 
-// SsoProviderCreateRequest Anonymous struct in ssoHandlers.createSSOProvider.
-type SsoProviderCreateRequest struct {
-	// Domain Must match the caller's org domain or the request is 403'd.
-	Domain           string  `json:"domain"`
-	OidcClientId     *string `json:"oidc_client_id,omitempty"`
-	OidcClientSecret *string `json:"oidc_client_secret,omitempty"`
-	OidcIssuer       *string `json:"oidc_issuer,omitempty"`
-	ProviderName     string  `json:"provider_name"`
+// SsoProvider An organisation's SSO configuration as it may leave the server (PAC-22,
+// resolves U-22, closes the disclosure half of API-001). Returned by
+// createSsoProvider, listSsoProviders and setSsoProviderState. It is a
+// projection written for the wire with explicit snake_case keys, not the
+// storage row: the client secret and the signing certificate are never
+// part of it under any name, for any caller. In their place are two
+// booleans that say only whether each secret is on file; each depends on
+// its own secret and on nothing else (spec §3.1, AC-3, AC-4).
+//
+// Rows stored before PAC-22 serialise with this same shape: a SAML row
+// reports `provider_type: saml` and its non-secret SAML values, and an
+// OIDC row with empty values reports them as `""` (spec AC-5). No row
+// writable since PAC-22 has a SAML value, so for those the SAML
+// properties are `""` and `has_saml_cert` is false.
+type SsoProvider struct {
+	CreatedAt time.Time `json:"created_at"`
+	Domain    string    `json:"domain"`
 
-	// ProviderType "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-	// with 501 — a SAML row can be created that can never be used to log in.
-	ProviderType   SsoProviderCreateRequestProviderType `json:"provider_type"`
-	SamlCert       *string                              `json:"saml_cert,omitempty"`
-	SamlEntryPoint *string                              `json:"saml_entry_point,omitempty"`
-	SamlIssuer     *string                              `json:"saml_issuer,omitempty"`
+	// HasOidcClientSecret True when a non-empty client secret is on file, false otherwise.
+	// The secret itself is never returned (spec AC-3). It depends on the
+	// stored secret and nothing else (AC-4). False only for a row stored
+	// before PAC-22: every write since either supplies a non-empty
+	// secret or keeps a non-empty one. A row of type `saml` stored
+	// before PAC-22 can read true here (the write path stored a client
+	// secret whatever the type); a replace of such a row that leaves the
+	// secret out is still refused, because a secret is kept only from an
+	// `oidc` row (spec §3.2, AC-25).
+	HasOidcClientSecret bool `json:"has_oidc_client_secret"`
+
+	// HasSamlCert True when a non-empty SAML signing certificate is on file, false
+	// otherwise. The certificate itself is never returned. Only a row
+	// stored before PAC-22 can be true (spec §3.1, D-8).
+	HasSamlCert bool               `json:"has_saml_cert"`
+	Id          openapi_types.UUID `json:"id"`
+
+	// OidcClientId `""` only for a row stored before PAC-22.
+	OidcClientId string `json:"oidc_client_id"`
+
+	// OidcIssuer `""` only for a row stored before PAC-22.
+	OidcIssuer   string `json:"oidc_issuer"`
+	ProviderName string `json:"provider_name"`
+
+	// ProviderType `saml` only for rows stored before PAC-22; createSsoProvider no
+	// longer accepts it. startSsoLogin still answers 501 for such a row.
+	ProviderType SsoProviderProviderType `json:"provider_type"`
+
+	// SamlEntryPoint Non-secret SAML sign-in address of a row stored before PAC-22; `""` otherwise.
+	SamlEntryPoint string `json:"saml_entry_point"`
+
+	// SamlIssuer Non-secret SAML issuer of a row stored before PAC-22; `""` otherwise.
+	SamlIssuer string `json:"saml_issuer"`
+
+	// State Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
+	// `active`: detection answers `sso` for the domain and startSsoLogin
+	// redirects to the provider. `suspended`: sign-in behaves as if no SSO
+	// were configured; the configuration is kept. Stored as the existing
+	// `enabled` column (true is `active`), so no migration.
+	State SsoProviderState `json:"state"`
+
+	// UpdatedAt Time of the last configuration write (createSsoProvider).
+	// setSsoProviderState does not change it.
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// SsoProviderCreateRequestProviderType "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-// with 501 — a SAML row can be created that can never be used to log in.
+// SsoProviderProviderType `saml` only for rows stored before PAC-22; createSsoProvider no
+// longer accepts it. startSsoLogin still answers 501 for such a row.
+type SsoProviderProviderType string
+
+// SsoProviderCreateRequest Body of createSsoProvider. Since PAC-22 (resolves U-21, API-060) it
+// describes an OIDC configuration and nothing else: every property but
+// the client secret is required and non-empty, and the SAML properties
+// are gone (spec D-1, D-2, D-8). The server enforces each of these with
+// the 400 messages listed on createSsoProvider, in the order given
+// there, including a named refusal of `saml_entry_point`, `saml_issuer`
+// and `saml_cert` when present. A replace supplies every value a reader
+// can see again; the client secret alone may be left out of a replace,
+// which keeps the stored one under the conditions stated on
+// createSsoProvider (spec §3.2, D-12, D-13, D-14). Whether SSO is
+// active is not part of this body (spec §3.3); see
+// setSsoProviderState.
+type SsoProviderCreateRequest struct {
+	// Domain Must match the caller's org domain or the request is 403'd (rule unchanged by PAC-22; PAC-50 replaces it).
+	Domain       string `json:"domain"`
+	OidcClientId string `json:"oidc_client_id"`
+
+	// OidcClientSecret Write-only. No response of any operation returns it, or anything
+	// derived from it; SsoProvider reports only whether one is on file
+	// (`has_oidc_client_secret`).
+	// - Supplied: a non-empty string that replaces the stored secret
+	//   (spec D-12, AC-23). `""` and `null` are refused with 400
+	//   `oidc_client_secret must not be empty` (AC-26): no write clears
+	//   the secret.
+	// - Absent: required on a create; on a replace, the stored secret
+	//   is kept when the stored configuration is `oidc`, holds a
+	//   non-empty secret, and has exactly the submitted `oidc_issuer`
+	//   and `oidc_client_id`, all decided at the moment the write is
+	//   stored; otherwise 400 (spec D-13, D-14, AC-22, AC-24, AC-25,
+	//   AC-27).
+	OidcClientSecret *string `json:"oidc_client_secret,omitempty"`
+
+	// OidcIssuer OIDC issuer used for discovery at sign-in. Stored as given.
+	OidcIssuer string `json:"oidc_issuer"`
+
+	// ProviderName Display name, returned as `provider_name` and shown by detectAuthProvider.
+	ProviderName string `json:"provider_name"`
+
+	// ProviderType The only kind the product can complete a sign-in with. `saml` is
+	// refused with 400 `provider_type 'saml' is not supported` (spec
+	// D-1); before PAC-22 it was accepted, stored, and refused only at
+	// sign-in with 501.
+	ProviderType SsoProviderCreateRequestProviderType `json:"provider_type"`
+}
+
+// SsoProviderCreateRequestProviderType The only kind the product can complete a sign-in with. `saml` is
+// refused with 400 `provider_type 'saml' is not supported` (spec
+// D-1); before PAC-22 it was accepted, stored, and refused only at
+// sign-in with 501.
 type SsoProviderCreateRequestProviderType string
 
-// SsoProviderResponse storage.SSOProvider (backend/storage/sso_providers.go) marshalled directly.
-// The struct has NO json tags, so encoding/json emits the exact Go field
-// names below — PascalCase, and including the client secret and SAML cert.
-type SsoProviderResponse struct {
-	CreatedAt    time.Time          `json:"CreatedAt"`
-	Domain       string             `json:"Domain"`
-	Enabled      bool               `json:"Enabled"`
-	ID           openapi_types.UUID `json:"ID"`
-	OIDCClientID string             `json:"OIDCClientID"`
-
-	// OIDCClientSecret Returned in plaintext to any org member by both POST and GET /api/admin/sso. Documented because it is what the code does, not because it is intended.
-	OIDCClientSecret string                          `json:"OIDCClientSecret"`
-	OIDCIssuer       string                          `json:"OIDCIssuer"`
-	ProviderName     string                          `json:"ProviderName"`
-	ProviderType     SsoProviderResponseProviderType `json:"ProviderType"`
-	SAMLCert         string                          `json:"SAMLCert"`
-	SAMLEntryPoint   string                          `json:"SAMLEntryPoint"`
-	SAMLIssuer       string                          `json:"SAMLIssuer"`
-	UpdatedAt        time.Time                       `json:"UpdatedAt"`
+// SsoProviderList listSsoProviders response (PAC-22). A named container rather than a
+// bare array so that a property added beside `providers` later does not
+// change the response's type for every consumer (spec §3.7). Most list
+// responses in this contract are bare arrays; this one is deliberately
+// not, and must not be "corrected" towards them.
+type SsoProviderList struct {
+	// Providers Ordered by `created_at`, oldest first. Empty when the org has none.
+	// At most one item today: a configuration is listed when its domain
+	// equals the org's domain exactly, and both `sso_providers.domain`
+	// and `organizations.domain` are unique. The array is kept so that
+	// the type does not change if an org can ever hold more than one.
+	Providers []SsoProvider `json:"providers"`
 }
 
-// SsoProviderResponseProviderType defines model for SsoProviderResponse.ProviderType.
-type SsoProviderResponseProviderType string
+// SsoProviderState Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
+// `active`: detection answers `sso` for the domain and startSsoLogin
+// redirects to the provider. `suspended`: sign-in behaves as if no SSO
+// were configured; the configuration is kept. Stored as the existing
+// `enabled` column (true is `active`), so no migration.
+type SsoProviderState string
+
+// SsoProviderStateRequest Body of setSsoProviderState: the state wanted, never a toggle, and
+// nothing else (spec AC-12). Any other property, including any
+// configuration value, is refused with 400 `unknown property: <name>`,
+// and `state` given twice is refused with 400 `duplicate property:
+// state`. A body that is not a JSON object (`[]`, `"active"`, `true`,
+// `null`) is refused with 400 `invalid JSON`.
+type SsoProviderStateRequest struct {
+	// State Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
+	// `active`: detection answers `sso` for the domain and startSsoLogin
+	// redirects to the provider. `suspended`: sign-in behaves as if no SSO
+	// were configured; the configuration is kept. Stored as the existing
+	// `enabled` column (true is `active`), so no migration.
+	State SsoProviderState `json:"state"`
+}
 
 // SuggestedSlot engine.SuggestedSlot.
 type SuggestedSlot struct {
@@ -3376,6 +3493,9 @@ type GetTeamAvailabilityParams struct {
 
 // CreateSsoProviderJSONRequestBody defines body for CreateSsoProvider for application/json ContentType.
 type CreateSsoProviderJSONRequestBody = SsoProviderCreateRequest
+
+// SetSsoProviderStateJSONRequestBody defines body for SetSsoProviderState for application/json ContentType.
+type SetSsoProviderStateJSONRequestBody = SsoProviderStateRequest
 
 // DetectAuthProviderJSONRequestBody defines body for DetectAuthProvider for application/json ContentType.
 type DetectAuthProviderJSONRequestBody = SsoDetectRequest
@@ -4925,15 +5045,18 @@ func (a TeamNameRequest) MarshalJSON() ([]byte, error) {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// List the SSO providers belonging to the caller's org
+	// List the SSO configurations belonging to the caller's org
 	// (GET /api/admin/sso)
 	ListSsoProviders(w http.ResponseWriter, r *http.Request)
-	// Create or update the SSO provider for a domain
+	// Create or replace the OIDC SSO configuration for a domain
 	// (POST /api/admin/sso)
 	CreateSsoProvider(w http.ResponseWriter, r *http.Request)
 	// Delete the SSO provider for a domain
 	// (DELETE /api/admin/sso/{domain})
 	DeleteSsoProvider(w http.ResponseWriter, r *http.Request, domain string)
+	// Suspend or resume the SSO configuration for a domain
+	// (PUT /api/admin/sso/{domain}/state)
+	SetSsoProviderState(w http.ResponseWriter, r *http.Request, domain string)
 	// Meetings in the week containing a date
 	// (GET /api/analytics/meetings)
 	ListAnalyticsMeetings(w http.ResponseWriter, r *http.Request, params ListAnalyticsMeetingsParams)
@@ -5291,13 +5414,13 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
-// List the SSO providers belonging to the caller's org
+// List the SSO configurations belonging to the caller's org
 // (GET /api/admin/sso)
 func (_ Unimplemented) ListSsoProviders(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Create or update the SSO provider for a domain
+// Create or replace the OIDC SSO configuration for a domain
 // (POST /api/admin/sso)
 func (_ Unimplemented) CreateSsoProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -5306,6 +5429,12 @@ func (_ Unimplemented) CreateSsoProvider(w http.ResponseWriter, r *http.Request)
 // Delete the SSO provider for a domain
 // (DELETE /api/admin/sso/{domain})
 func (_ Unimplemented) DeleteSsoProvider(w http.ResponseWriter, r *http.Request, domain string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Suspend or resume the SSO configuration for a domain
+// (PUT /api/admin/sso/{domain}/state)
+func (_ Unimplemented) SetSsoProviderState(w http.ResponseWriter, r *http.Request, domain string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6088,6 +6217,39 @@ func (siw *ServerInterfaceWrapper) DeleteSsoProvider(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.DeleteSsoProvider(w, r, domain)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetSsoProviderState operation middleware
+func (siw *ServerInterfaceWrapper) SetSsoProviderState(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "domain" -------------
+	var domain string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "domain", chi.URLParam(r, "domain"), &domain, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "domain", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetSsoProviderState(w, r, domain)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9862,6 +10024,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Delete(options.BaseURL+"/api/admin/sso/{domain}", wrapper.DeleteSsoProvider)
 	})
 	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/admin/sso/{domain}/state", wrapper.SetSsoProviderState)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/analytics/meetings", wrapper.ListAnalyticsMeetings)
 	})
 	r.Group(func(r chi.Router) {
@@ -10266,7 +10431,7 @@ type ListSsoProvidersResponseObject interface {
 	VisitListSsoProvidersResponse(w http.ResponseWriter) error
 }
 
-type ListSsoProviders200JSONResponse []SsoProviderResponse
+type ListSsoProviders200JSONResponse SsoProviderList
 
 func (response ListSsoProviders200JSONResponse) VisitListSsoProvidersResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -10311,7 +10476,7 @@ type CreateSsoProviderResponseObject interface {
 	VisitCreateSsoProviderResponse(w http.ResponseWriter) error
 }
 
-type CreateSsoProvider201JSONResponse SsoProviderResponse
+type CreateSsoProvider201JSONResponse SsoProvider
 
 func (response CreateSsoProvider201JSONResponse) VisitCreateSsoProviderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -10395,6 +10560,70 @@ func (response DeleteSsoProvider403JSONResponse) VisitDeleteSsoProviderResponse(
 type DeleteSsoProvider500JSONResponse ErrorResponse
 
 func (response DeleteSsoProvider500JSONResponse) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SetSsoProviderStateRequestObject struct {
+	Domain string `json:"domain"`
+	Body   *SetSsoProviderStateJSONRequestBody
+}
+
+type SetSsoProviderStateResponseObject interface {
+	VisitSetSsoProviderStateResponse(w http.ResponseWriter) error
+}
+
+type SetSsoProviderState200JSONResponse SsoProvider
+
+func (response SetSsoProviderState200JSONResponse) VisitSetSsoProviderStateResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SetSsoProviderState400JSONResponse ErrorResponse
+
+func (response SetSsoProviderState400JSONResponse) VisitSetSsoProviderStateResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SetSsoProviderState401TextResponse PlainTextError
+
+func (response SetSsoProviderState401TextResponse) VisitSetSsoProviderStateResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type SetSsoProviderState403JSONResponse ErrorResponse
+
+func (response SetSsoProviderState403JSONResponse) VisitSetSsoProviderStateResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SetSsoProviderState404JSONResponse ErrorResponse
+
+func (response SetSsoProviderState404JSONResponse) VisitSetSsoProviderStateResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SetSsoProviderState500JSONResponse ErrorResponse
+
+func (response SetSsoProviderState500JSONResponse) VisitSetSsoProviderStateResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
@@ -15824,15 +16053,18 @@ func (response UpdateNoMeetingZone500JSONResponse) VisitUpdateNoMeetingZoneRespo
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
-	// List the SSO providers belonging to the caller's org
+	// List the SSO configurations belonging to the caller's org
 	// (GET /api/admin/sso)
 	ListSsoProviders(ctx context.Context, request ListSsoProvidersRequestObject) (ListSsoProvidersResponseObject, error)
-	// Create or update the SSO provider for a domain
+	// Create or replace the OIDC SSO configuration for a domain
 	// (POST /api/admin/sso)
 	CreateSsoProvider(ctx context.Context, request CreateSsoProviderRequestObject) (CreateSsoProviderResponseObject, error)
 	// Delete the SSO provider for a domain
 	// (DELETE /api/admin/sso/{domain})
 	DeleteSsoProvider(ctx context.Context, request DeleteSsoProviderRequestObject) (DeleteSsoProviderResponseObject, error)
+	// Suspend or resume the SSO configuration for a domain
+	// (PUT /api/admin/sso/{domain}/state)
+	SetSsoProviderState(ctx context.Context, request SetSsoProviderStateRequestObject) (SetSsoProviderStateResponseObject, error)
 	// Meetings in the week containing a date
 	// (GET /api/analytics/meetings)
 	ListAnalyticsMeetings(ctx context.Context, request ListAnalyticsMeetingsRequestObject) (ListAnalyticsMeetingsResponseObject, error)
@@ -16289,6 +16521,39 @@ func (sh *strictHandler) DeleteSsoProvider(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeleteSsoProviderResponseObject); ok {
 		if err := validResponse.VisitDeleteSsoProviderResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetSsoProviderState operation middleware
+func (sh *strictHandler) SetSsoProviderState(w http.ResponseWriter, r *http.Request, domain string) {
+	var request SetSsoProviderStateRequestObject
+
+	request.Domain = domain
+
+	var body SetSsoProviderStateJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetSsoProviderState(ctx, request.(SetSsoProviderStateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetSsoProviderState")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetSsoProviderStateResponseObject); ok {
+		if err := validResponse.VisitSetSsoProviderStateResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
