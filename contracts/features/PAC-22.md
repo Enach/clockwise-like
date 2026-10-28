@@ -770,3 +770,216 @@ D-7) as factory assumptions pending owner confirmation; the owner-decisions reco
 each non-blocking with a recorded factory assumption; none changes this
 interface unless the owner disagrees (OQ-10 would remove check 6 and make the
 secret required again).
+
+## Challenge — 2026-10-28 (revision 1.2)
+
+Applies to contract revision 1.2, commit `f42411f` on `factory/pac-22-contract`
+(contract content `b3386cb`). Read against the committed artefacts only: this
+document, the manifest, `contracts/openapi/paths/auth.yaml`, spec v3.4
+(`docs/specs/PAC-22.md` on this branch), the handler and storage on this branch
+(`backend/api/handlers_sso.go`, `backend/storage/sso_providers.go`,
+`backend/domain/domain.go`, `backend/auth/sso_detect.go`), PAC-50's contract on
+`origin/impl/pac-50-sso-write-gate-backend` at `51aa70a`, and the factory's
+owner-decisions record (no PAC-22 entry). The challenger did not see the
+author's reasoning beyond these files.
+
+**Verdict**: accept-with-changes
+
+**Checks run by the challenger** (nothing else is claimed):
+
+- In the worktree on `f42411f` (`make` is not installed on this host, so the
+  three steps of `make openapi-check` were run directly):
+  `python3 scripts/openapi_assemble.py --check` → `OK: bundle is in sync (100
+  paths)`, rc=0; `python3 scripts/openapi_migration_report.py --check` → `OK:
+  MIGRATION.md covers all 121 operations (4 generated)`, rc=0; `bash
+  scripts/openapi_gen_go.sh --check` → `OK: backend/api/gen matches the
+  contract`, rc=0.
+- Web half: `bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh
+  factory/pac-22-contract-types factory/pac-22-contract` (no REGEN) on web
+  `5bfdefd`: lint, typecheck, design-check, openapi-check, test (315 passed),
+  coverage all PASS; `make verify rc=0`. Factory §2 gate 4 holds for
+  revision 1.2.
+- `sha256sum` of `contracts/openapi/openapi.yaml` at `b3386cb` and at `HEAD`:
+  both `0deb2efd…9c038c3`. Matches `contractHash`; `b3386cb..HEAD` touches only
+  `PAC-22.md` and `PAC-22.yaml`.
+- `x-uncertain:` keys: 8 in `origin/main`'s bundle, 6 here (matches the
+  manifest). None on any of the seven touched operations or on `SsoProvider`,
+  `SsoProviderList`, `SsoProviderCreateRequest`, `SsoProviderStateRequest`,
+  `SsoDetectResponse` (parsed with PyYAML).
+- Not run: api-gate (the host checkout is on `main` and this branch is held by
+  the `wt-pac22-contract` worktree, so the host cannot be switched to it),
+  `go build`, the backend and mcp tests, e2e.
+
+### Blocking
+
+1. **The byte-level non-disclosure guarantee is stated for every secret, and no
+   server can honour it.** `listSsoProviders` says "neither stored value occurs
+   anywhere in the body or the headers, raw or JSON-escaped, in any letter
+   case"; the `createSsoProvider` 201 says "The supplied secret … does not occur
+   in the body or the headers"; the manifest repeats it for `listSsoProviders`.
+   The schema puts no floor on the secret beyond `minLength: 1`, and the
+   response legitimately carries caller-chosen strings and fixed tokens.
+   - Request: `POST /api/admin/sso` with
+     `{"domain":"acme.com","provider_name":"Okta","provider_type":"oidc","oidc_issuer":"https://acme.okta.com","oidc_client_id":"0oa1","oidc_client_secret":"okta"}`.
+     The correct 201 contains `Okta` (`provider_name`) and `okta` (issuer), so a
+     case-insensitive search finds the "secret". `"oidc_client_secret":"true"`
+     is found in `"has_oidc_client_secret":true`; `"oidc"` in `provider_type`;
+     `"a"` anywhere.
+   - Spec AC-1 and AC-2 avoid this by choosing values that are "long, unique to
+     the test". The contract dropped that precondition and turned a test design
+     into a promise about every secret, which a contract test or a
+     property-based test generated from the bundle will falsify.
+   - **Fix** (description text only, three places: the `listSsoProviders`
+     description, the `createSsoProvider` 201, manifest `operationsChanged[0]`):
+     say that no property of the response carries either secret or anything
+     derived from it, and that the byte search (raw, JSON-escaped, any case,
+     body and headers) holds for secrets that do not occur in the response's
+     non-secret values, as AC-1 arranges. Do not add a `minLength` floor to the
+     secret: the spec does not ask for that behaviour.
+
+### Requests wrongly permitted
+
+None beyond the non-blocking items below. Attacked, each against the text of
+revision 1.2:
+
+- `POST /api/admin/sso`, stored `acme.com` I1/C/S1, body with I1, C and no
+  secret → check 6 passes, 201, secret kept (AC-22). Same with `oidc_issuer`
+  `"I1/"` → 400 `… when oidc_issuer or oidc_client_id changes` (byte
+  comparison, AC-24).
+- Same with `"oidc_client_secret": ""` and `null` → check 5, `must not be
+  empty`, before check 6 and before any authorization (AC-26, AC-17).
+- Stored pre-PAC-22 `saml` row with a non-empty client secret, OIDC body with
+  no secret → check 6 `oidc_client_secret is required` (row not `oidc`),
+  although `has_oidc_client_secret` reads true (AC-25). Stated on the schema.
+- No row, secret absent → check 6 `oidc_client_secret is required`, after the
+  domain match, so a caller targeting another org's domain gets the 403 first
+  and never learns whether a row exists there.
+- `{"provider_type":"saml","saml_cert":null, …}` → `saml_cert is not
+  supported` (check 2 before check 4).
+- `PUT /api/admin/sso/acme.com/state` with
+  `{"state":"suspended","oidc_client_secret":"x"}` → `unknown property:
+  oidc_client_secret`; `{"state":"bogus","x":1}` → `unknown property: x`
+  (property checks before the value check);
+  `{"state":"active","state":"suspended"}` → `duplicate property: state`;
+  `{}` and `{"state":null}` → `state must be …`.
+- `PUT /api/admin/sso/sub.acme.com/state`, `…/other.com/state`,
+  `…/stepup/state` → 403 `provider_domain_mismatch` at step 3, authorization
+  unspent (AC-21, D-15).
+
+### Responses the client cannot handle
+
+None. There is no hand-written consumer: on `origin/main` of
+smart-calendar-flow, `git grep "admin/sso\|SsoProvider\|has_oidc_client_secret"
+-- src ':!src/api/generated'` finds nothing. Every `SsoProvider` property is
+required and every column it projects is `NOT NULL`
+(`008_sso_providers.up.sql`), so no property can be absent or null.
+`created_at` and `updated_at` are Go `time.Time`, RFC 3339, matching
+`format: date-time`.
+
+### Consumers affected
+
+- smart-calendar-flow `src/api/generated/*`: regenerated on
+  `factory/pac-22-contract-types` `5bfdefd`, in sync with this bundle (web-gate
+  above).
+- clockwise-like `backend/api/gen`: in sync (`openapi_gen_go.sh --check`).
+- `mcp/`, `e2e/`: `grep -rn "admin/sso\|SsoProvider\|sso_provider"` finds
+  nothing.
+- `backend/**/*_test.go`: no test on this branch calls `/api/admin/sso` or
+  decodes the PascalCase keys (grep). PAC-50's tests on its branch are already
+  listed in §4.
+
+### Contract/implementation divergences
+
+None new. `SsoProviderCreateRequest` is `additionalProperties: false` while the
+handler ignores undeclared properties (`handlers_sso.go:174-185`). The
+description states this, PAC-50 closes it on rebase, and the previous challenge
+accepted it.
+
+### Uncertainties not actually resolved
+
+None. U-21 and U-22 stay resolved, as the 2026-10-27 challenge accepted. This
+revision adds no marker and removes none.
+
+### Verified clean
+
+- **Acceptance tests.** The manifest transcribes every spec v3.4 criterion
+  (AC-1 to AC-12, AC-14 to AC-28; AC-13 withdrawn). AC-22 to AC-28 match the
+  spec's text, including AC-27 not asserting the authorization on a store-time
+  refusal (D-14) and AC-17 covering AC-24, AC-25 and AC-26. No silent
+  narrowing.
+- **Check order vs. AC-17.** Checks 1-6 all precede PAC-50's authorization.
+  Check 6 follows the domain match, so it only ever reads the caller's own
+  organisation's row. Rebase item 1 places it between PAC-50's steps 3 and 4,
+  the same position (PAC-50's step 3 is the domain, step 4 the authorization,
+  read at `51aa70a`).
+- **The redirect D-13 closes.** No body can change `oidc_issuer` or
+  `oidc_client_id` while keeping the stored secret: check 6 refuses it at
+  check time and the store-time re-check refuses it in the race (AC-27). No
+  body can create a row with an empty secret: a create with the secret absent
+  is refused at check 6 and at the store.
+- **The transition carries no configuration value** (AC-12).
+  `SsoProviderStateRequest` has one property and `additionalProperties:
+  false`, and the server-side `unknown property` refusal is stated
+  independently of PAC-50's decoder change.
+- **Suspension semantics** are what the code does. `GetSSOProviderByDomain`
+  filters `enabled = true` (`sso_providers.go:51`), and detection
+  (`sso_detect.go:37`), start (`handlers_sso.go:51`) and callback (`:112`) all
+  use it. Step 5's "whatever its state" correctly requires a different lookup.
+- **Store-time decisions need no migration.** There is no trigger on
+  `sso_providers`, only the upsert sets `updated_at` (`sso_providers.go:73`),
+  and `enabled` is a plain column.
+- **Security conventions.** The new operation inherits `bearerAuth` (no
+  `security` key); the three public routes keep `security: []`. Both new
+  response schemas are `additionalProperties: false` and carry no
+  secret-derived property.
+- **Rejected alternatives in §2.9-§2.10** (sentinel value, rotate-secret
+  operation, keep-regardless, empty-clears, check-time-only, If-Match) are each
+  rejected against a spec decision (D-12, D-13, D-14), not on taste.
+
+### Non-blocking
+
+1. **Check 6 does not name the key it looks up.** "Against the stored
+   configuration for the domain" leaves open whether the submitted `domain` is
+   used as given or lower-cased. On `main` the upsert conflicts on the domain
+   as submitted (`sso_providers.go:63`), while `DomainMatchesOrg` trims and
+   folds case (`domain.go:45-48`). So `{"domain":"ACME.com", …}` with no secret
+   and a stored `acme.com` row could pass a lower-cased check 6 and then insert
+   a new `ACME.com` row. The store-time rule forbids an empty secret there but
+   does not say which row "the configuration" is. PAC-50 stores the domain
+   lower-cased (its step 5), so after the rebase the safe reading is "the row
+   the write would be stored under". Say that on check 6, and add it to §0
+   rebase item 1.
+2. **setSsoProviderState vs. a concurrent delete.** Steps 5-7 are not stated to
+   be atomic against `deleteSsoProvider`. A delete that lands between step 5
+   and step 6 lets an implementation answer 200, and record a transition, for
+   a row that no longer exists, which D-9 ("never success for a configuration
+   that does not exist") argues against. State that the lookup and the write
+   see the same row (or that a write that finds no row is the 404).
+3. **Non-object bodies on setSsoProviderState** (`[]`, `"active"`, `true`) are
+   valid JSON but are not assigned a message. Say which of `invalid JSON` or
+   `state must be …` they get.
+4. **Step 3's "as createSsoProvider answers on `main` today"** is true only for
+   a foreign domain: on `main`, createSsoProvider accepts a subdomain (suffix
+   rule). Reword to "as createSsoProvider answers a foreign domain on `main`".
+5. **§0 rebase item 1 says to keep PAC-50's "400 … `provider_domain_mismatch`"**
+   for createSsoProvider. The owner decided 403 (D-15), and setSsoProviderState
+   here already says 403. The rebase follows what merged, so this is only
+   wording, but the two sentences should agree.
+6. **Stale facts in this document.** The header still says the branch was cut
+   at `6d751f9` with spec `4a517e2` (the manifest says `69ffa92` and `4f3c609`).
+   §5 says the marker count went "from 12 to 10" (now 8 on `main`, 6 here).
+7. **Mixed-case rows stored on `main`** (createSsoProvider stores the domain as
+   given) are, like D-11's subdomain rows, not listed (exact join) and not
+   reachable by setSsoProviderState (step 5 lower-cases), yet
+   `GET /api/auth/sso/Acme.com` still uses them. D-11's release note should
+   cover any domain that is not exactly, byte for byte, an organisation's
+   domain, not only subdomains.
+8. **OWNER:** OQ-10 / D-12: "omitted means kept, never cleared" for the SSO
+   client secret extends the owner's PAC-24 decision for LLM keys. No owner
+   answer exists for PAC-22.
+9. **OWNER:** OQ-9 / D-13: a changed issuer or client id requires the secret
+   again.
+10. **OWNER:** OQ-5 (two writes to fix and resume), OQ-6 (no OIDC public
+    clients), OQ-7 (the kill switch may need the operator) and OQ-8 / D-11
+    (subdomain rows are operator-only) are still open, unchanged by revision
+    1.2.
