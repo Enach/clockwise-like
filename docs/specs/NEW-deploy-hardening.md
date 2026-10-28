@@ -838,3 +838,284 @@ this order of value; A and B have no dependency on each other.
 | **D** | Ops: env reference and its completeness test, proxy requirements, backup/restore runbook and rehearsal, deploy order and rollback, down migrations | 8 (D1–D8) | D3/D5/D8 describe A–C's values; land last or update with them |
 
 Total: 40 acceptance criteria.
+
+## Challenge, revision 0 — 2026-10-28
+
+**Verdict**: accept-with-changes
+
+Checked against `Enach/clockwise-like` `origin/main` = `67b7966` (unchanged
+since the survey) and `Enach/smart-calendar-flow` `origin/main` = `9ceff3b`;
+PAC-71 read at `origin/impl/pac-71-identity-binding-backend` (PR #242, open).
+Read with `git show` / `git grep` only; nothing was built or run. Most of §2
+holds up (see "Citations"). The blocking items below are places where an AC
+contradicts another AC or the chosen values, a test level cannot work, or
+the spec's reasoning rests on a client that does not behave as assumed.
+
+### Blocking
+
+1. **The CSP blocks user avatars, and the e2e proof cannot notice** (D-8,
+   line 810; AC-B3, lines 475-481). `img-src 'self' data:` refuses the
+   provider picture URLs the backend stores (`backend/api/handlers_auth.go:64`
+   stores Google `info.Picture`; PAC-71 keeps writing `avatar_url` from the
+   sign-in). They are rendered as `<img src={h.avatar_url}>`
+   (`smart-calendar-flow:src/components/links/HostAvatars.tsx:58`, public
+   booking page included) and via `AvatarImage` (`src/components/ui/avatar.tsx`).
+   The e2e seed sets every `avatar_url` to `''` (`e2e/seed/seed.sql:70-76`),
+   so AC-B3's "zero violations on every e2e test" passes while production
+   avatars break. Scenario: a Google user opens their booking link and their
+   host picture is blocked. *Resolve*: §3/D-8 must say which image origins
+   are allowed (or that avatars are served same-origin), and AC-B3 must
+   include a journey whose user has a non-empty third-party avatar URL.
+
+2. **The docs site cannot live under this CSP** (AC-C8, lines 562-564, option
+   "routes the docs service through nginx"; AC-B2, lines 468-473, "any
+   response served through nginx"; D-8 "no inline script"). The docs are
+   Starlight (`docs/package.json`, `docs/astro.config.mjs`), whose
+   `ThemeProvider`, `ThemeSelect`, `Search` and `SidebarPersister` components
+   use `<script is:inline>` (seen in the installed
+   `@astrojs/starlight/components/*.astro`), and its search uses Pagefind
+   (WebAssembly). No e2e journey touches the docs, so AC-B3 cannot catch it.
+   Scenario: the plan picks "route through nginx", the docs render without
+   theme and search, nothing fails. *Resolve*: state which CSP the docs get
+   (or that the docs are not run) and add an AC with zero violations on a
+   docs page if they are routed.
+
+3. **The timeout ladder is built for a client that does not exist** (§3,
+   lines 334-337; D-4, lines 773-785; AC-A3/AC-A4). The web client aborts
+   **every** `requestApi` call after 4 s and treats it as "unreachable",
+   switching to preview data
+   (`smart-calendar-flow:src/api/client.ts:318`, `:590-591`, comment at
+   `:1230`). Natural-language parse (`:1494`), personal-calendar sync
+   (`:1622`) and schedule suggest (`:1441`) all go through it. The 60 s
+   meeting-brief refresh that anchors the handler budget
+   (`POST /api/meetings/{event_id}/brief/refresh`, `routes.go:200`) has no
+   caller in the web repo or in `mcp/`. So "the backend's own error, not a
+   proxy's cut, is what a client sees when an AI call runs out of time" is
+   false for every real browser call: the browser gives up at 4 s, whatever
+   the server bounds are. *Resolve*: record the 4 s client bound as current
+   behaviour in F-A5. Then either add a web-repo requirement (per-operation
+   client timeouts at least as long as the server budget for AI/sync calls,
+   under factory README §1 cross-repo ordering), or restate §3 and AC-A3/A4
+   as server-resource protection only and justify the 60 s budget without
+   the brief endpoint.
+
+4. **AC-A4 fails by construction with the chosen values** (AC-A4, lines
+   398-402; D-4, lines 776-778). The handler budget equals the brief's own
+   deadline (60 s = 60 s). The brief's deadline is
+   `context.WithTimeout(r.Context(), 60*time.Second)`
+   (`handlers_meeting_briefs.go:80`), set *after* the budget started, so the
+   effective deadline is always the budget's. The budget fires first, which
+   contradicts "the client gets the brief or the handler's own error".
+   *Resolve*: make the budget strictly longer than the longest handler
+   deadline plus the work before it, or restate AC-A4.
+
+5. **AC-A6 and AC-A9 contradict each other on shutdown** (AC-A6, lines
+   407-412: "stops accepting new connections at once; readiness reports not
+   ready from that moment"; AC-A9, lines 428-431: "or the process is shutting
+   down, it answers 503"). Once new connections are refused, the readiness
+   probe gets a refused connection, not a 503. The 503 is only observable on
+   a request already in flight. *Resolve*: specify the order (e.g. readiness
+   503 while connections are still accepted for a stated period, then stop
+   accepting), or drop the 503-while-shutting-down clause.
+
+6. **Detached work is outside the drain, and AC-A7 closes the pool under
+   it** (F-A2/F-A3, lines 85-101; AC-A6/AC-A7, lines 407-418). Handlers start
+   goroutines that outlive the request on `context.WithoutCancel` /
+   `context.Background()`: analytics recompute
+   (`handlers_analytics.go:93-96`), habit re-optimisation
+   (`handlers_habits.go:137-140`, `:239-242`, `:383`), manager detection
+   (`handlers_manager.go:97-101`), the team-invite email
+   (`handlers_teams.go:214`) and the **booking confirmation email**
+   (`engine/booking.go:277`). Both emails use `smtp.SendMail`, which has no
+   timeout (`handlers_teams.go:650`, `engine/booking.go:330`). The recap cron
+   returns after launching one goroutine per user (`engine/daily_recap.go:130`),
+   so "the running job is allowed to finish" never sees those goroutines.
+   Scenario: a booker books 1 s before a deploy; the confirmation email
+   goroutine is abandoned (or its DB writes fail after the pool closes) and
+   nothing is logged. *Resolve*: list these in F-A2/F-A3, and make AC-A6/A7
+   say what happens to them: awaited within the drain, or abandoned and
+   logged by name. The pool must close only after they have returned or been
+   abandoned.
+
+7. **AC-B5/AC-B6 cannot run as `[e2e]`, and the split's dependencies are
+   wrong** (AC-B5/B6, lines 488-498; §6, lines 679-682; split, lines
+   830-838). The e2e backend has no `TRUSTED_PROXIES`
+   (`e2e/docker-compose.e2e.yml:136-137`), so it keys on nginx's address and
+   cannot "see C". §6 requires that to stay true, and trust is set at stack
+   start, so "unless a test configures otherwise" is not possible per test.
+   The "access log sees C" half needs AC-A11 (Part A), so "A and B have no
+   dependency" is false. AC-C7 needs Part D's environment reference
+   ("listed as production-relevant in the environment reference (Part D)"),
+   but D is ordered last and the table says C depends only on A. *Resolve*:
+   give B5/B6 a test level that works (e.g. `[integration]` with its own
+   nginx and backend, or a named second e2e profile), and fix the dependency
+   column (B5/B6 → A11; C7 → D1, or move the list into C).
+
+8. **AC-D2 cannot hold without a backend change no AC makes** (AC-D2, lines
+   580-581: "monitoring is off until the operator sets it"). `initSentry`
+   uses `cmp.Or(os.Getenv("SENTRY_DSN"), defaultBackendDSN)`
+   (`backend/sentry.go:16`, `:106`), so an empty DSN sends to the hard-coded
+   project. `.env.example:118` ("Leave empty to disable monitoring") is
+   already false. The web does the same (`src/lib/sentry.ts:55`). The PAC-14
+   contract §2 requires a default DSN. *Resolve*: either add an AC that
+   changes the backend default (through stage 2, amending PAC-14 §2), or
+   reword AC-D2 to cover only the `.env.example` text, and correct
+   `.env.example:118`.
+
+### Non-blocking
+
+1. **PAC-71 (#242) impact.**
+   - Every authenticated request adds one uncached read,
+     `storage.CurrentGeneration` (in `requireAuth`).
+   - Guarded writes hold one connection for a transaction around the
+     handler's write (`storage/session.go` `withGenerationTx`).
+     `lockAccountExclusive` waits up to `lock_timeout = '10s'`.
+   - The sampled sign-in, org-AI and SSO step-up transactions commit before
+     touching `db` again (e.g. `signin.go:181-209`). That was not
+     exhaustive. Under a cap of 20, any path that holds a transaction while
+     acquiring a second connection deadlocks at ≥ 20 concurrent requests.
+     AC-A8 should exercise cap-level concurrency on the guarded-write and
+     sign-in paths.
+   - `guardedResponseWriter` replaces the handler's status, so AC-A11 must
+     log the status actually sent. The handler-budget writer must compose
+     with it (it exposes `Unwrap`).
+   - The backend image gains `/paceday-operator` (run by
+     `docker compose exec`, its own pool; count it in D-6's headroom).
+     `docs/operator/PAC-71-account-recovery.md` should be linked from the
+     runbook (AC-D5/AC-D7).
+2. **Background fan-out shares the 20-connection cap.** The recap starts a
+   goroutine per user every minute and focus ticks run per user, so a burst
+   makes user requests wait (AC-A8 "wait rather than fail") with no bound.
+   State whether that is acceptable.
+3. **D-5's idempotency claim, checked as requested.**
+   - Auto-decline is idempotent: a re-scan finds nothing pending
+     (`engine/auto_decline.go` `RunForUser`).
+   - The personal blocker is **not**. `syncOne` creates the work-calendar
+     event, then records it (`engine/personal_blocker.go`, `createEvent` then
+     `UpsertPersonalBlocker`). If cancellation lands after the provider
+     accepted the create, the next run creates a duplicate blocker.
+   - This already happens under SIGKILL today. But the spec uses
+     idempotency to justify cancelling at 30 s: either accept duplicates
+     explicitly (§7, runbook) or require that a create/record pair is never
+     split by the drain.
+4. **F-A5's inventory of long requests is incomplete.**
+   - Personal-calendar sync (`handlers_personal.go:191`) fetches an ICS with
+     `http.DefaultClient`, with no size or time limit
+     (`calendar/webcal_client.go:64`), then makes one provider create per
+     event over 14 days (`personal_blocker.go:19`).
+   - Schedule suggest and team availability are not listed.
+   - The 60-day slot listing is never called by the web, which always sends
+     a date (`smart-calendar-flow:src/api/schedulingLinks.ts:692`), so Q-P1
+     is an abuse case, not a legitimate one.
+   - On a deadline, the listing loop's `continue`
+     (`handlers_booking.go:181-183`) turns cancellation into a truncated
+     **200**. AC-A2 should say a budget expiry never yields a partial 200.
+5. **AC-A2 on browser-navigation callbacks.** Sign-in callbacks end in a
+   redirect to the failure state (`handlers_auth.go:96-99`, PAC-35/API-011).
+   A JSON 5xx at budget expiry would show raw JSON in the browser. The AC
+   should define the behaviour for redirect-style routes.
+6. **Health checks are new code in three binaries.** None of `backend/`,
+   `mcp/main.go` or `docker/fileserver/main.go` has a health mode; only the
+   e2e stand-ins do. AC-C3 should say so explicitly, plus:
+   - Health mode opens no database connection, runs no migrations and needs
+     no secrets.
+   - `start_period` covers startup migrations, which run before the
+     listener (`storage/db.go:25`). Otherwise `docker compose up` fails on
+     nginx's `service_healthy` dependency during a long migration.
+   - nginx has no health path today; Part B must add one.
+7. **MCP.**
+   - AC-C5 makes every operator set an MCP token even if they never use
+     MCP; consider Q-O1 (c), or making the service optional.
+   - `README.md:56-63` (`http://localhost:3001/sse`) still works with a
+     loopback publish but shows no bearer header.
+   - `docs/security.md:56` (B5 row: "HTTP only on loopback", token
+     optional) is also false and is not in AC-B10.
+   - The MCP client sends no `Authorization` to the backend
+     (`mcp/client.go:77`). This is out of scope, but it is why loopback-only
+     loses nothing today.
+8. **AC-D6 runs all 26 existing down files** on the way down to 005
+   (017…031, plus PAC-71's 032). Any broken one becomes in scope; say so.
+   006's down also drops `user_id` from `oauth_tokens`, `settings`,
+   `focus_blocks` and `personal_calendars`, not only `users`.
+9. **AC-D4.** A dump alone does not restore a working stack: `JWT_SECRET`
+   (sessions), OAuth client secrets and `POSTGRES_PASSWORD` live in `.env`.
+   The procedure should name what to keep alongside the dump.
+10. **Proxy on the same host (AC-D3).** When the TLS proxy runs on the host
+    and connects to the published port, Docker's userland proxy presents the
+    bridge gateway (not `127.0.0.1`) as the peer. The proxy requirements
+    should say what to trust in that topology, and AC-C9's "restrict to the
+    proxy's network" should account for it.
+11. **e2e wiring.**
+    - The e2e mounts `nginx.conf` directly as `conf.d/default.conf`
+      (`e2e/docker-compose.e2e.yml:229`); any templating (Q-P3) changes that
+      mount.
+    - AC-B3's "with the runtime API-base injection active" needs an e2e
+      variant: e2e sets `API_BASE_URL: ""` (`:219`), so no inline script is
+      injected today.
+12. **nginx's own 413 is an HTML page**, while AC-A10 promises the JSON shape
+    from the backend; the web client parses JSON. State which one the client
+    gets through nginx.
+
+### Criteria I could not falsify
+- AC-B5 (scheme half) and AC-B6 ("the backend sees … the scheme as `http`"):
+  the backend reads no scheme (F-A9, D-3), so nothing observable
+  distinguishes pass from fail. Name the observation point (e.g. the header
+  value received upstream).
+- AC-A9 "shutting down → 503": unobservable given AC-A6 (Blocking 5).
+- AC-A6 "the running job is allowed to finish" for the recap: the cron job
+  returns while its per-user goroutines run (Blocking 6).
+- AC-D4 "row counts for users, events-linked tables and bookings":
+  "events-linked tables" is not a list.
+- AC-B10, AC-D3, AC-D5, AC-D8 are `[review]`. This is acceptable only if the
+  reviewer gets a checklist of the exact sentences required; as written they
+  pass on any wording.
+
+### Citations I checked and found wrong
+- `backend/api/handlers_booking.go:172-185` (60-day loop): the loop is at
+  `:176-188`; `:172` is the end of duration validation.
+- `docker-compose.yml:68-71` "the base compose already pins the frontend":
+  it defaults to `latest` (`${FRONTEND_IMAGE_TAG:-latest}`, `:71`).
+- §6 "`/api/health` … none was identified": `e2e/global-setup.ts:61-70`
+  polls it through nginx, and `smart-calendar-flow:src/lib/api.ts:28-39`
+  (`checkApiAvailability`, 2 s, `res.ok`) decides the web's preview mode
+  from it.
+- Correct as cited:
+  - `main.go:29,112,123,149,167,180,202,215-216` and `scheduler/cron.go:59,83-93`.
+  - `storage/db.go:17-28,44`.
+  - `handlers_meeting_briefs.go:80`, `handlers_daily_recap.go:172`,
+    `handlers_manager.go:119`.
+  - `handlers_nlp.go:28`, `parser.go:166,239`,
+    `user_destination.go:145-148`, `destination.go:202-205`.
+  - `handlers_integrations.go:124,130,254,261`.
+  - `guard.go:52`, `freebusy_service.go:133`, the four `DefaultClient`
+    sites, `zoom_oauth.go:64`, `booking.go:304`.
+  - `handlers_health.go:8-14`, `routes.go:17-21`, `middleware.go:105-111`,
+    `ratelimit_detect.go:12-18,33,94-114`, `ratelimit_booking.go:15-18`.
+  - `config/cookies.go:19-29`, `api/cookies.go:9-21`, `sentry.go:16,106-111`.
+  - `handlers_sso.go:67,124`, `handlers_sso_stepup.go:174`,
+    `handlers_teams.go:627-636`.
+  - `fileserver/main.go:19-25,47`, `mcp/main.go:29-31,38,40`,
+    `nginx.conf:1-17`.
+  - Every prod compose line, `.env.example:7,109-114,121`,
+    `e2e/docker-compose.e2e.yml:135,179,199,222-229`.
+  - The five migrations without a down file, `testdb.go:20`,
+    `docs/security.md:52,53,85`, `docs/contributing.md:26`,
+    `adr/0001-tech-stack.md:17`.
+  - Web: `index.html:18-20`, `sentry.ts:19-20`, `api.ts:16-22`.
+  - The F-D1 variable lists (re-derived by `git grep`).
+
+### Consumers this breaks
+- `smart-calendar-flow/src/components/links/HostAvatars.tsx:58`,
+  `src/components/ui/avatar.tsx`: provider avatars blocked by `img-src`
+  (Blocking 1).
+- `clockwise-like/docs` (Starlight inline scripts, Pagefind) if routed
+  through nginx (Blocking 2).
+- `clockwise-like/e2e/docker-compose.e2e.yml:229`: nginx config mount, if
+  the config becomes a template.
+- `clockwise-like/e2e/global-setup.ts:61-70` and
+  `smart-calendar-flow/src/lib/api.ts:28-39`: depend on `/api/health`
+  staying unauthenticated, unlimited and 200 (AC-A9 keeps this; name these
+  as its guards in §6).
+- PR #242 (PAC-71), `backend/api/middleware.go`: its response writer and
+  per-request query must compose with the budget, access-log and pool
+  changes (Non-blocking 1).
