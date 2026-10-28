@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -137,6 +138,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
 		defer func() {
 			if p := recover(); p != nil {
+				st.mu.Lock()
+				answered := st.expired
+				st.mu.Unlock()
+				if answered {
+					// Nobody is left to re-raise it to: log it.
+					log.Printf("budget: %s %s panicked after the budget answered: %v", r.Method, r.URL.Path, p)
+					return
+				}
 				panicked <- p
 			}
 		}()
