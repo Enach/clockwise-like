@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **127**
+- operations: **128**
 - generated: **9**
-- handwritten: **118**
+- handwritten: **119**
 
 ## Register
 
@@ -137,6 +137,7 @@ from the contract and any edit is reported as drift.
 | refreshMeetingBrief               | POST   | /api/meetings/{event_id}/brief/refresh          | meeting-briefs   | handwritten | |
 | confirmNaturalLanguage            | POST   | /api/nlp/confirm                                | nlp              | handwritten | |
 | parseNaturalLanguage              | POST   | /api/nlp/parse                                  | nlp              | handwritten | |
+| getReadiness                      | GET    | /api/ready                                      | ops              | handwritten | PAC-81 Part A: new. Stage 4 implements it as generatedServer.GetReadiness on the generated strict wrapper (factory README section 4) and flips this row to generated. |
 | getOrganizationAI                 | GET    | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
 | patchOrganizationAI               | PATCH  | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
 | confirmOrganizationAI             | POST   | /api/organization/ai/consent                    | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |

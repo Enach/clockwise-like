@@ -15,7 +15,21 @@ info:
 
 
     Going forward the direction reverses: this file is edited first, code is generated and verified against
-    it, and `make verify` fails on drift.'
+    it, and `make verify` fails on drift.
+
+
+    **Server bounds that apply to every operation (PAC-81 Part A).** Every request has a server-side handler
+    budget (90 s). A request still running when it ends (for example one waiting for a pooled database
+    connection) answers the shared `RequestBudgetExpired` 503, body `{"error":"request timed out"}`. It
+    is listed on the operations that can reach the budget in normal use (`parseNaturalLanguage`, `getPublicBookingSlots`,
+    `getTeamAvailability`, `syncPersonalCalendar`, `createPublicBooking` before its booking is saved);
+    on any other JSON operation it can occur only under database pool exhaustion and is the same response.
+    Exceptions: the sign-in callbacks that already end in a failure redirect (`googleOAuthCallback`, `microsoftOAuthCallback`,
+    `ssoOidcCallback`: Location `<FRONTEND_URL>/?error=auth_failed`, no `auth_token` cookie set) answer
+    that redirect on budget expiry, never JSON; `ssoAdminStepupCallback` answers its denied redirect with
+    the reason of the check that was running; and a `createPublicBooking` whose booking was saved answers
+    201. A request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before the
+    handler runs, by the backend and by nginx alike.'
 servers:
 - url: http://localhost:8080
   description: backend, direct
@@ -2650,25 +2664,25 @@ paths:
         request and is not extended by refused requests. The limit is checked and the request counted
         atomically, as the very first step of the handler: before the link lookup, before the body is
         read and before any validation, so every request counts whatever it would otherwise have answered
-        (201, 400, 404, 409, 410, 422 or 500), and a refused request answers 429 even for an unknown slug
-        and never writes a booking. Concurrent requests cannot exceed the limit. The count is per client
-        across all links, not per link or per host, and is separate from the slot-listing budget of `getPublicBookingSlots`.
-        A client is identified exactly as for `detectAuthProvider` (PAC-39): the socket peer address,
-        or the `X-Real-IP` header only when the socket peer is inside `TRUSTED_PROXIES` (comma-separated
-        IPs or CIDRs; empty or unset trusts nobody; an unparseable entry trusts less, never more). `X-Forwarded-For`
-        is never read. A client is one exact IPv4 or IPv6 address, with no prefix grouping. Counts live
-        in process memory: the limit is per backend process (20 per replica, as API-062''s residue), and
-        a restart clears them. Clients whose window has ended are forgotten by a sweep that runs on a
-        request, at most once per window, so memory stays bounded. CORS preflight (`OPTIONS`) is answered
-        by the CORS middleware and is not counted. Not checked (API-094, open): the requested time is
-        never checked against the hosts'' availability, the link''s days or hours, or any upper date bound.
-        The only time checks are the minimum notice (422) and overlap with this link''s own non-cancelled
-        bookings (409); any other start is accepted. The booking row is saved, then a calendar event (with
-        the booker email as a guest) is attempted on each accepted host''s calendar, best effort: a host
-        whose user record or calendar client cannot be loaded is skipped and a failed event creation is
-        ignored, so a 201 does not mean any host''s calendar was written. Operation-level `security: []`
-        is kept: this operation is public and is registered outside requireAuth; the rate limit is not
-        authentication.'
+        (201, 400, 404, 409, 410, 422, 500 or 503), and a refused request answers 429 even for an unknown
+        slug and never writes a booking. Concurrent requests cannot exceed the limit. The count is per
+        client across all links, not per link or per host, and is separate from the slot-listing budget
+        of `getPublicBookingSlots`. A client is identified exactly as for `detectAuthProvider` (PAC-39):
+        the socket peer address, or the `X-Real-IP` header only when the socket peer is inside `TRUSTED_PROXIES`
+        (comma-separated IPs or CIDRs; empty or unset trusts nobody; an unparseable entry trusts less,
+        never more). `X-Forwarded-For` is never read. A client is one exact IPv4 or IPv6 address, with
+        no prefix grouping. Counts live in process memory: the limit is per backend process (20 per replica,
+        as API-062''s residue), and a restart clears them. Clients whose window has ended are forgotten
+        by a sweep that runs on a request, at most once per window, so memory stays bounded. CORS preflight
+        (`OPTIONS`) is answered by the CORS middleware and is not counted. Not checked (API-094, open):
+        the requested time is never checked against the hosts'' availability, the link''s days or hours,
+        or any upper date bound. The only time checks are the minimum notice (422) and overlap with this
+        link''s own non-cancelled bookings (409); any other start is accepted. The booking row is saved,
+        then a calendar event (with the booker email as a guest) is attempted on each accepted host''s
+        calendar, best effort: a host whose user record or calendar client cannot be loaded is skipped
+        and a failed event creation is ignored, so a 201 does not mean any host''s calendar was written.
+        Operation-level `security: []` is kept: this operation is public and is registered outside requireAuth;
+        the rate limit is not authentication.'
       requestBody:
         required: true
         content:
@@ -2677,7 +2691,15 @@ paths:
               $ref: '#/components/schemas/CreatePublicBookingRequest'
       responses:
         '201':
-          description: Booking confirmed and host calendar events written.
+          description: 'Booking saved (PAC-81, spec AC-A19). Once the booking row is saved, the host calendar
+            events (best effort, as described above) and the confirmation email are completed as one unit
+            that does not depend on this request: it has its own per-call time limits, and a deploy waits
+            for it within the drain (an abandoned unit is logged with the booking id and the hosts done
+            and not done). The server waits for that unit only until the request budget runs out, then
+            answers this 201 anyway, so a host''s calendar event may be written after the response. The
+            body is the same either way and carries no event data. With responsive calendars every host
+            event exists when the 201 is sent, as before. A retry behaves as before PAC-81: 409 on overlap,
+            410 when the link is exhausted; no request returns another request''s booking.'
           content:
             application/json:
               schema:
@@ -2728,6 +2750,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          description: 'The request budget ran out BEFORE the booking row was saved (PAC-81, spec AC-A2,
+            AC-A19). Answered only when no booking was saved for this request, so a client may retry it:
+            nothing was written, no calendar event and no email. Once the row is saved the answer is the
+            201, never this 503. Shared body `{"error":"request timed out"}`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
   /api/book/{slug}/slots:
     get:
       operationId: getPublicBookingSlots
@@ -2737,15 +2768,22 @@ paths:
       description: 'Two distinct modes. With `date`: `slots` is populated and `available_dates` is always
         the empty array. Without `date`: the handler probes the next 60 calendar days from `time.Now()`
         and returns those day strings in `available_dates`, with `slots` always the empty array. Both
-        keys are always present in both modes. Rate limited per client (NEW-booking-rate-limit), separately
-        from and more loosely than `createPublicBooking`: at most 120 requests per client per fixed 1-minute
-        window, with or without `date`. The limit is checked and the request counted atomically as the
-        handler''s first step, before the link lookup and before the query is validated, so every request
-        counts whatever it would otherwise have answered, and a refused request answers 429 even for an
-        unknown slug. Booking requests do not consume this budget and slot requests do not consume the
-        booking budget. Client identification, the per-process caveat, the sweep and the CORS preflight
-        exemption are exactly as described on `createPublicBooking`; this limiter has its own counts and
-        its own sweep.'
+        keys are always present in both modes. Hosts (PAC-81, spec AC-A18): each accepted host''s calendar
+        is read on at most 4 concurrent reads per request, each limited to its own 15 s (shortened to
+        the budget left minus a 10 s stop margin). A host whose calendar cannot be read is treated as
+        free: not connected, a provider error, or (new with PAC-81) a read that fails on its own time
+        limit, so a host whose calendar answers too slowly now looks free where before the request waited
+        for it. A host that was not read because the request budget ran out (a read not started at the
+        stop margin, or cut short by the budget) is never treated as free: the answer is the 503, never
+        a 200 that silently omits that host or, without `date`, a day. Neither mode has a partial shape.
+        Rate limited per client (NEW-booking-rate-limit), separately from and more loosely than `createPublicBooking`:
+        at most 120 requests per client per fixed 1-minute window, with or without `date`. The limit is
+        checked and the request counted atomically as the handler''s first step, before the link lookup
+        and before the query is validated, so every request counts whatever it would otherwise have answered,
+        and a refused request answers 429 even for an unknown slug. Booking requests do not consume this
+        budget and slot requests do not consume the booking budget. Client identification, the per-process
+        caveat, the sweep and the CORS preflight exemption are exactly as described on `createPublicBooking`;
+        this limiter has its own counts and its own sweep.'
       security: []
       parameters:
       - name: slug
@@ -2805,6 +2843,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          $ref: '#/components/responses/RequestBudgetExpired'
   /api/calendar/events:
     get:
       operationId: listCalendarEvents
@@ -5352,11 +5392,21 @@ paths:
             settings could not be loaded or the caller''s organisation membership could not be read, so
             which AI configuration applies could not be decided; in that case nothing was sent. Body:
             `{"error":"internal error"}`. The detail is written to the server log and Sentry only (PAC-21).
-            "AI not configured" is never a 500; it is the 200 with `not_configured`.'
+            "AI not configured" is never a 500; it is the 200 with `not_configured`. Since PAC-81 (spec
+            AC-A3) each LLM call has its own 30 s limit; a call that fails on that limit is a provider
+            failure and answers as one does today, not the 503.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SchedulingErrorResponse'
+        '503':
+          description: The request budget ran out (PAC-81, spec AC-A2), for example while waiting for
+            a pooled database connection. A parse stores nothing, so a retry is safe. Shared body `{"error":"request
+            timed out"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
   /api/org/members:
     get:
       operationId: listOrgMembers
@@ -6044,13 +6094,121 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: The blocker's Sync returned an error other than "no stored Google credential" (for
-            example the personal feed could not be read, or reading the credential store failed), or the
-            last_synced_at update failed. Body `{"error":"internal error"}`. Verified by TestPersonalCalendarSyncPropagatesBlockerError.
+          description: 'The blocker''s Sync returned an error other than "no stored Google credential"
+            (for example the personal feed could not be read, or reading the credential store failed),
+            or the last_synced_at update failed. Body `{"error":"internal error"}`. Verified by TestPersonalCalendarSyncPropagatesBlockerError.
+            "The personal feed could not be read" includes, since PAC-81 (spec AC-A17), a feed fetch over
+            its 15 s limit or a feed over 10 MiB: no blocker is created from a partial feed and `last_synced_at`
+            is not stamped; the log names which limit was hit.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: 'The request budget ran out before every blocker was created (PAC-81, spec AC-A2,
+            AC-A17). Creates run on at most 4 concurrent workers, and a create starts only while its full
+            15 s limit plus the 10 s stop margin remain, so no create is cut short. Every create whose
+            provider answer arrived is recorded and kept; `last_synced_at` is NOT stamped. Running the
+            sync again (or the next scheduled run) creates the remaining blockers without duplicating
+            recorded ones. Residual: a create that fails on its own 15 s limit after the provider accepted
+            it is not recorded, so a re-run creates that blocker again. Shared body `{"error":"request
+            timed out"}`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
+  /api/ready:
+    get:
+      operationId: getReadiness
+      tags:
+      - ops
+      summary: Readiness probe
+      description: 'Added by PAC-81 (spec AC-A11, AC-A6 step 1). Says whether this
+
+        backend process should receive traffic now. It is the probe for the
+
+        container health check (through the backend binary''s health mode on
+
+        the local port, spec AC-A16, AC-C3) and for the operator''s proxy
+
+        (through nginx, spec AC-D1). It is not authenticated and is outside
+
+        every abuse limit (it is not counted by any rate limiter).
+
+
+        The answer is 200 `{"status":"ready"}` when both hold:
+
+        - the process has not begun shutting down; and
+
+        - the database answers a ping within the readiness timeout (2 s).
+
+
+        Otherwise it is 503 `{"status":"not_ready"}`, answered within the
+
+        readiness timeout + 1 s: the database did not answer in time or
+
+        answered with an error, or shutdown has begun. From SIGTERM or SIGINT
+
+        the process answers this 503 for the whole unready notice (5 s) while
+
+        it still serves every other request normally; after the notice the
+
+        listener closes and connections are refused, so no later answer
+
+        exists.
+
+
+        Migrations run before the listener opens, so while they run the
+
+        endpoint is unreachable (connection refused), never 200: any answer
+
+        means migrations have finished.
+
+
+        The body never names the cause. The cause (database error or timeout,
+
+        shutting down) goes to the server log only, never the database
+
+        error text in the response (PAC-21). No other property is ever
+
+        present.
+
+
+        How this differs from `getHealth` (/api/health), which is unchanged:
+
+        `getHealth` is liveness. It never touches the database, keeps its
+
+        status and body byte for byte, and answers 200 during the unready
+
+        notice too. Its consumers (e2e/global-setup.ts polling through
+
+        nginx before any test; the web app''s `checkApiAvailability`, which
+
+        decides preview mode from `res.ok`) keep calling it, so a database
+
+        outage or a deploy does not switch the web app into preview mode.
+
+        '
+      security: []
+      responses:
+        '200':
+          description: Ready. Not shutting down, and the database answered within 2 s.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessReady'
+        '503':
+          description: 'Not ready: the database did not answer within 2 s or answered with
+
+            an error, or shutdown has begun (the unready notice). Sent within
+
+            the readiness timeout + 1 s. Exact body `{"status":"not_ready"}`.
+
+            '
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessNotReady'
   /api/rooms:
     get:
       operationId: listRooms
@@ -7480,7 +7638,14 @@ paths:
         steps the cursor in 15-minute increments, treats no-meeting zones and busy calendar events as
         hard blocks, and scores each slot 0-100 by how few members'' focus blocks it disrupts. A member
         whose calendar token is missing or whose calendar call fails contributes no busy intervals and
-        is silently treated as fully free. `slots` is always an array, never null.
+        is silently treated as fully free. `slots` is always an array, never null. Members (PAC-81, spec
+        AC-A18): each member''s calendar is read on at most 4 concurrent reads per request, each limited
+        to its own 15 s (shortened to the budget left minus a 10 s stop margin). "Fails" includes, new
+        with PAC-81, a read that fails on its own time limit: a member whose calendar answers too slowly
+        now looks free, where before the request waited for it. A member who was not read because the
+        request budget ran out (a read not started at the stop margin, or cut short by the budget) is
+        never treated as free: the answer is the 503, never a 200 that silently omits that member. There
+        is no partial shape.
 
         '
       parameters:
@@ -7521,6 +7686,8 @@ paths:
           $ref: '#/components/responses/JsonForbidden'
         '500':
           $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/RequestBudgetExpired'
   /api/teams/{id}/members/invite:
     post:
       operationId: inviteTeamMember
@@ -11712,6 +11879,42 @@ components:
         type: array
         items:
           $ref: '#/components/schemas/RawGoogleBusyWindow'
+    ReadinessNotReady:
+      type: object
+      description: The cause is never in the body; it is in the server log.
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          const: not_ready
+      additionalProperties: false
+    ReadinessReady:
+      type: object
+      required:
+      - status
+      properties:
+        status:
+          type: string
+          const: ready
+      additionalProperties: false
+    RequestBudgetExpiredError:
+      type: object
+      description: 'The shared JSON error envelope (`{"error": ...}`, written by
+
+        writeError) with its one possible message for a request-budget
+
+        expiry pinned.
+
+        '
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          enum:
+          - request timed out
+      additionalProperties: false
     ScanCandidate:
       type: object
       properties:
@@ -14067,6 +14270,47 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    RequestBudgetExpired:
+      description: 'The request budget expired (PAC-81, spec AC-A2, AC-A9, AC-A17,
+
+        AC-A18, AC-A19). Every request has a server-side handler budget
+
+        (90 s, a server setting). When the handler has not finished by then,
+
+        including while it waits for a pooled database connection, or when a
+
+        per-item loop stops starting calendar calls at the stop margin (10 s
+
+        before the budget ends) with items left, the answer is this 503 with
+
+        the exact body `{"error":"request timed out"}`. It is sent before
+
+        the server''s write backstop (120 s), so through nginx (130 s) and a
+
+        correctly configured proxy (over 130 s) the client receives it, not
+
+        a 504 or a dropped connection. Never a 2xx with partial data in its
+
+        place.
+
+
+        The body names no step, host, member or item; the server log does.
+
+        No `Retry-After` header. What was done before the budget ran out is
+
+        stated per operation: a read (slot listing, team availability, parse)
+
+        stored nothing; `syncPersonalCalendar` keeps the blockers already
+
+        created and does not stamp `last_synced_at`; `createPublicBooking`
+
+        answers this 503 only when no booking was saved for the request.
+
+        '
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RequestBudgetExpiredError'
     SchedulingLinkValidationError:
       description: 'Validation failure from validateSchedulingLink / parseClock. Messages: "title is required";
         "at least one duration is required"; "durations must be positive integers"; "at least one day

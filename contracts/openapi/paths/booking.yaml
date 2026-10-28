@@ -60,7 +60,7 @@ paths:
         atomically, as the very first step of the handler: before the link
         lookup, before the body is read and before any validation, so every
         request counts whatever it would otherwise have answered (201, 400, 404,
-        409, 410, 422 or 500), and a refused request answers 429 even for an
+        409, 410, 422, 500 or 503), and a refused request answers 429 even for an
         unknown slug and never writes a booking. Concurrent requests cannot
         exceed the limit. The count is per client across all links, not per
         link or per host, and is separate from the slot-listing budget of
@@ -94,7 +94,19 @@ paths:
               $ref: '#/components/schemas/CreatePublicBookingRequest'
       responses:
         '201':
-          description: Booking confirmed and host calendar events written.
+          description: >-
+            Booking saved (PAC-81, spec AC-A19). Once the booking row is saved,
+            the host calendar events (best effort, as described above) and the
+            confirmation email are completed as one unit that does not depend on
+            this request: it has its own per-call time limits, and a deploy waits
+            for it within the drain (an abandoned unit is logged with the booking
+            id and the hosts done and not done). The server waits for that unit
+            only until the request budget runs out, then answers this 201 anyway,
+            so a host's calendar event may be written after the response. The
+            body is the same either way and carries no event data. With
+            responsive calendars every host event exists when the 201 is sent, as
+            before. A retry behaves as before PAC-81: 409 on overlap, 410 when the
+            link is exhausted; no request returns another request's booking.
           content:
             application/json:
               schema:
@@ -148,6 +160,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          description: >-
+            The request budget ran out BEFORE the booking row was saved (PAC-81,
+            spec AC-A2, AC-A19). Answered only when no booking was saved for this
+            request, so a client may retry it: nothing was written, no calendar
+            event and no email. Once the row is saved the answer is the 201, never
+            this 503. Shared body `{"error":"request timed out"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
 
   /api/book/{slug}/slots:
     get:
@@ -159,6 +182,16 @@ paths:
         always the empty array. Without `date`: the handler probes the next 60 calendar
         days from `time.Now()` and returns those day strings in `available_dates`, with
         `slots` always the empty array. Both keys are always present in both modes.
+        Hosts (PAC-81, spec AC-A18): each accepted host's calendar is read on at
+        most 4 concurrent reads per request, each limited to its own 15 s (shortened
+        to the budget left minus a 10 s stop margin). A host whose calendar cannot be
+        read is treated as free: not connected, a provider error, or (new with
+        PAC-81) a read that fails on its own time limit, so a host whose calendar
+        answers too slowly now looks free where before the request waited for it. A
+        host that was not read because the request budget ran out (a read not
+        started at the stop margin, or cut short by the budget) is never treated as
+        free: the answer is the 503, never a 200 that silently omits that host or,
+        without `date`, a day. Neither mode has a partial shape.
         Rate limited per client (NEW-booking-rate-limit), separately from and more
         loosely than `createPublicBooking`: at most 120 requests per client per
         fixed 1-minute window, with or without `date`. The limit is checked and the
@@ -230,6 +263,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          $ref: '#/components/responses/RequestBudgetExpired'
 
   # ---------------------------------------------------------------------------
   # PUBLIC Zoom OAuth (routes.go:37-38, inside /api/auth but OUTSIDE the

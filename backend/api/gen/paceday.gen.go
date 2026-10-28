@@ -386,6 +386,21 @@ const (
 	PublicLinkInfoUsageTypeSingleUse PublicLinkInfoUsageType = "single_use"
 )
 
+// Defines values for ReadinessNotReadyStatus.
+const (
+	NotReady ReadinessNotReadyStatus = "not_ready"
+)
+
+// Defines values for ReadinessReadyStatus.
+const (
+	Ready ReadinessReadyStatus = "ready"
+)
+
+// Defines values for RequestBudgetExpiredErrorError.
+const (
+	RequestTimedOut RequestBudgetExpiredErrorError = "request timed out"
+)
+
 // Defines values for ScanPreviewAssigned.
 const (
 	N0 ScanPreviewAssigned = 0
@@ -2727,6 +2742,32 @@ type RawGoogleBusyWindow struct {
 // RawGoogleFreeBusyMap Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot` keyed by the calendar id Google echoed back (normally the attendee email).
 type RawGoogleFreeBusyMap map[string][]RawGoogleBusyWindow
 
+// ReadinessNotReady The cause is never in the body; it is in the server log.
+type ReadinessNotReady struct {
+	Status ReadinessNotReadyStatus `json:"status"`
+}
+
+// ReadinessNotReadyStatus defines model for ReadinessNotReady.Status.
+type ReadinessNotReadyStatus string
+
+// ReadinessReady defines model for ReadinessReady.
+type ReadinessReady struct {
+	Status ReadinessReadyStatus `json:"status"`
+}
+
+// ReadinessReadyStatus defines model for ReadinessReady.Status.
+type ReadinessReadyStatus string
+
+// RequestBudgetExpiredError The shared JSON error envelope (`{"error": ...}`, written by
+// writeError) with its one possible message for a request-budget
+// expiry pinned.
+type RequestBudgetExpiredError struct {
+	Error RequestBudgetExpiredErrorError `json:"error"`
+}
+
+// RequestBudgetExpiredErrorError defines model for RequestBudgetExpiredError.Error.
+type RequestBudgetExpiredErrorError string
+
 // ScanCandidate defines model for ScanCandidate.
 type ScanCandidate struct {
 	// AlreadyAssigned True when this email already has an assignment on the selected team.
@@ -4084,6 +4125,11 @@ type JsonUnauthorized = ErrorResponse
 // `error` is a server-chosen message, never the text of a Go, driver or
 // provider error; every 5xx in this document uses this envelope (PAC-21).
 type NotFound = ErrorResponse
+
+// RequestBudgetExpired The shared JSON error envelope (`{"error": ...}`, written by
+// writeError) with its one possible message for a request-budget
+// expiry pinned.
+type RequestBudgetExpired = RequestBudgetExpiredError
 
 // SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type SchedulingLinkValidationError = BookingError
@@ -6510,6 +6556,9 @@ type ServerInterface interface {
 	// Run a personal-calendar sync now
 	// (POST /api/personal-calendars/{id}/sync)
 	SyncPersonalCalendar(w http.ResponseWriter, r *http.Request, id int64)
+	// Readiness probe
+	// (GET /api/ready)
+	GetReadiness(w http.ResponseWriter, r *http.Request)
 	// List Google Workspace room resources
 	// (GET /api/rooms)
 	ListRooms(w http.ResponseWriter, r *http.Request, params ListRoomsParams)
@@ -7155,6 +7204,12 @@ func (_ Unimplemented) PreviewPersonalCalendar(w http.ResponseWriter, r *http.Re
 // Run a personal-calendar sync now
 // (POST /api/personal-calendars/{id}/sync)
 func (_ Unimplemented) SyncPersonalCalendar(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Readiness probe
+// (GET /api/ready)
+func (_ Unimplemented) GetReadiness(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -10151,6 +10206,20 @@ func (siw *ServerInterfaceWrapper) SyncPersonalCalendar(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// GetReadiness operation middleware
+func (siw *ServerInterfaceWrapper) GetReadiness(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetReadiness(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListRooms operation middleware
 func (siw *ServerInterfaceWrapper) ListRooms(w http.ResponseWriter, r *http.Request) {
 
@@ -11736,6 +11805,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/personal-calendars/{id}/sync", wrapper.SyncPersonalCalendar)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/ready", wrapper.GetReadiness)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/rooms", wrapper.ListRooms)
 	})
 	r.Group(func(r chi.Router) {
@@ -11893,6 +11965,8 @@ type JsonForbiddenJSONResponse ErrorResponse
 type JsonUnauthorizedJSONResponse ErrorResponse
 
 type NotFoundJSONResponse ErrorResponse
+
+type RequestBudgetExpiredJSONResponse RequestBudgetExpiredError
 
 type SchedulingLinkValidationErrorJSONResponse BookingError
 
@@ -13220,6 +13294,15 @@ func (response CreatePublicBooking500JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreatePublicBooking503JSONResponse RequestBudgetExpiredError
+
+func (response CreatePublicBooking503JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetPublicBookingSlotsRequestObject struct {
 	Slug   string `json:"slug"`
 	Params GetPublicBookingSlotsParams
@@ -13282,6 +13365,17 @@ type GetPublicBookingSlots500JSONResponse BookingError
 func (response GetPublicBookingSlots500JSONResponse) VisitGetPublicBookingSlotsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPublicBookingSlots503JSONResponse struct {
+	RequestBudgetExpiredJSONResponse
+}
+
+func (response GetPublicBookingSlots503JSONResponse) VisitGetPublicBookingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -15448,6 +15542,15 @@ func (response ParseNaturalLanguage500JSONResponse) VisitParseNaturalLanguageRes
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ParseNaturalLanguage503JSONResponse RequestBudgetExpiredError
+
+func (response ParseNaturalLanguage503JSONResponse) VisitParseNaturalLanguageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListOrgMembersRequestObject struct {
 }
 
@@ -15954,6 +16057,40 @@ type SyncPersonalCalendar500JSONResponse ErrorResponse
 func (response SyncPersonalCalendar500JSONResponse) VisitSyncPersonalCalendarResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SyncPersonalCalendar503JSONResponse RequestBudgetExpiredError
+
+func (response SyncPersonalCalendar503JSONResponse) VisitSyncPersonalCalendarResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetReadinessRequestObject struct {
+}
+
+type GetReadinessResponseObject interface {
+	VisitGetReadinessResponse(w http.ResponseWriter) error
+}
+
+type GetReadiness200JSONResponse ReadinessReady
+
+func (response GetReadiness200JSONResponse) VisitGetReadinessResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetReadiness503JSONResponse ReadinessNotReady
+
+func (response GetReadiness503JSONResponse) VisitGetReadinessResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -17599,6 +17736,17 @@ func (response GetTeamAvailability500JSONResponse) VisitGetTeamAvailabilityRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetTeamAvailability503JSONResponse struct {
+	RequestBudgetExpiredJSONResponse
+}
+
+func (response GetTeamAvailability503JSONResponse) VisitGetTeamAvailabilityResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type InviteTeamMemberRequestObject struct {
 	Id   TeamIdPath `json:"id"`
 	Body *InviteTeamMemberJSONRequestBody
@@ -18175,6 +18323,9 @@ type StrictServerInterface interface {
 	// Run a personal-calendar sync now
 	// (POST /api/personal-calendars/{id}/sync)
 	SyncPersonalCalendar(ctx context.Context, request SyncPersonalCalendarRequestObject) (SyncPersonalCalendarResponseObject, error)
+	// Readiness probe
+	// (GET /api/ready)
+	GetReadiness(ctx context.Context, request GetReadinessRequestObject) (GetReadinessResponseObject, error)
 	// List Google Workspace room resources
 	// (GET /api/rooms)
 	ListRooms(ctx context.Context, request ListRoomsRequestObject) (ListRoomsResponseObject, error)
@@ -20689,6 +20840,30 @@ func (sh *strictHandler) SyncPersonalCalendar(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SyncPersonalCalendarResponseObject); ok {
 		if err := validResponse.VisitSyncPersonalCalendarResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetReadiness operation middleware
+func (sh *strictHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
+	var request GetReadinessRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetReadiness(ctx, request.(GetReadinessRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetReadiness")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetReadinessResponseObject); ok {
+		if err := validResponse.VisitGetReadinessResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
