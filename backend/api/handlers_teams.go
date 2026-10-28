@@ -91,6 +91,9 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if getTeamAfterMembershipHook != nil {
+		getTeamAfterMembershipHook()
+	}
 
 	team, err := storage.GetTeam(h.db, teamID)
 	if err == sql.ErrNoRows {
@@ -659,3 +662,8 @@ func (h *teamHandlers) holdsConfirmed(userID uuid.UUID, email string) bool {
 	ok, err := storage.HoldsConfirmed(h.db, userID, email)
 	return err == nil && ok
 }
+
+// getTeamAfterMembershipHook is a test seam (PAC-71 CONTRACT-9): it runs
+// between getTeam's membership read and its team read, where a concurrent
+// delete makes the documented 404 reachable. Production leaves it nil.
+var getTeamAfterMembershipHook func()
