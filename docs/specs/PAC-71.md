@@ -1458,3 +1458,79 @@ Answers every finding of "Challenge, revision 2" inside revision 2's narrowed sc
 - **OQ-6 (unchanged, needed before release):** end every existing session at deploy? Factory recommendation: yes (AC-44).
 - **OQ-8 (new, not blocking):** a Microsoft tenant-lookup outage refuses Microsoft sign-in (fail closed, D-23). Factory default: accept.
 - **OQ-1 and OQ-2 (unchanged, matter from F1)** and **OQ-3 item 4 (conditional)**, as in revision 2.
+
+## Challenge, revision 3 — 2026-10-28
+
+**Verdict**: accept-with-changes. One blocking finding, and it is narrow. **Ready for the contract stage: not yet.** It is ready once Blocking 1 is resolved: one requirement sentence in §3, matching text in D-20, and one interleaved AC. That fix extends a rule revision 3 already states, so it needs no new scope or follow-up. After it, I see no remaining path to takeover, cross-account exposure or a misattached credential inside the narrowed scope.
+
+What I checked:
+- this spec at `38d5350`;
+- `clockwise-like` `origin/main` `ae5c2cf`, `origin/factory/pac-68-spec` `ec76099`, `origin/factory/pac-47-spec` `24e0833`;
+- every migration `001` to `030` at `ae5c2cf`, for tables that refer to `users`.
+
+I ran no code and called no provider endpoint. Line numbers are this file at `38d5350`.
+
+Per the factory's instruction for this round, I looked only for blocking-grade problems beyond verifying revision 3's fixes. That means takeover, another person's data exposed, a credential on the wrong account, a contradiction a reviewer could not resolve, or an unfalsifiable security AC. Lock-out cases that the operator procedure covers are non-blocking by definition.
+
+**Challenge revision 2's blocking findings:**
+
+| # | Status in revision 3 | Judgement |
+|---|---|---|
+| B1 (rule (b) ignores relationships; "SSO subject" undecidable) | Resolved | §2's inventory (lines 127-153) matches every table that refers to `users` in migrations 001-030. My grep of `REFERENCES users` and `user_id` finds nothing it omits. The one join table not named, `no_meeting_zones`, hangs off `teams`, which is counted. Rule (b) (lines 280-295) counts every kind, fails closed on unclassified future kinds, and no longer uses the recorded identifier. AC-45 has one case per relationship kind. The two channels I named in round 2 are both counted: team availability (`engine/team_availability.go:78-84`) and the public link's host credential read (`handlers_booking.go:80-88`). The manager's per-member reads go through `member_user_id` plus `OwnsTeamWithMember` (`engine/manager.go:437-472`), which are also counted. |
+| B2 (in-flight connects and old-session writes) | Resolved for writes and connects; **open for reads** | The connect is bound to (account, generation) and refused after an advance (line 261, AC-14 (c)). Binding locks the account, re-checks, binds and advances (lines 303-309). Writes of every counted kind are also checked against the generation when stored (line 309, D-20). AC-46 and AC-47 use the interleaving seam. The same window still exists for a request that *reads or uses* the account's credential, and only writes are guarded. See Blocking 1. |
+| B3 (PAC-68 AC-9 / AC-15 / D-4 contradiction) | Resolved | The tenant fails closed in all three cases (lines 208-213, AC-11b (i)-(iii)). §6 "Must change, in PAC-68" names AC-9 (`PAC-68.md:95`), AC-15's second clause (`:115`) and D-4 (`:157`), with replacement text. I checked `:95` and `:157` at `ec76099`: they say what §6 says they do. D-23 and OQ-8 record it. A reviewer building either spec second now has one consistent outcome. |
+
+**The author's stated interpretations:**
+- *An empty account binds whatever its recorded identifier (AC-41).* Agreed. An empty account holds nothing that the binder could gain and has no relationship through which the new holder's data could leave. Whoever recorded the identifier loses only a sign-in method on an empty account. That is lock-out, and the operator procedure covers it.
+- *`users.org_id` is not counted.* Agreed. Organisations are unique by domain (`007_organizations.up.sql`, `domain ... UNIQUE`), and association is by the address's domain (`storage/orgs.go:42-52`). So a legacy account's `org_id` can only be the organisation the binding sign-in's own domain maps to. Membership is read only for the member list (`storage/orgs.go:55-58`) and for an "is in an organisation" flag (`storage/settings_ai.go:144`). Neither exposes the member's calendar.
+- *Any changed preference makes the account non-empty.* Agreed as fail-closed. The cost is lock-out only (Non-blocking 3).
+- *AC-11b ends on the refusal state, not the generic failure.* Agreed. This is consistent with §3 "Refusal" (line 338) and orchestrator decision 3, and the "Refused" convention makes it testable.
+- *The extra write-time generation check.* It is sound and needed: the per-request check alone leaves a window between authentication and storage. It is also exactly the reasoning that Blocking 1 extends to reads.
+
+### Blocking
+
+1. **A request from an old-generation session that was authenticated just before a rule (b) binding can still read, or act through, the credential the binding stores. The rightful holder's calendar then reaches the squatter.**
+   - Line 309 guards only "a write of any kind that (b) counts". Every other request is checked only "when it is authenticated" (line 309; §3 "Sessions", line 322).
+   - The handlers authenticate first and load the credential afterwards. For example, `GET /api/calendar/events` passes `requireAuth`, then calls `getCalendarClient(r)` (`handlers_calendar.go:162`), then lists the provider's events (`:168`).
+   - Under (b) the account is empty, so it has no credential before the binding. Any credential such a request loads after the binding commits is the new holder's.
+
+   *Attack (needs only what revision 3 already concedes):*
+   - A squatter keeps a pre-deploy session S0 on an empty legacy account A for `henry@acme.com`. Revision 2 Blocking 1's SSO squat, or §1 case 7 before the change, are examples.
+   - The squatter keeps sending requests that read the calendar or act on it: list events, free/busy, compress, suggest, create a meeting, NLP confirm.
+   - Henry signs in with acme's Workspace. (b) binds A and stores his Google credential.
+   - A request of S0 authenticated before the binding commits, and loads the credential after it. The squatter receives Henry's events, or creates a meeting on Henry's calendar in his name.
+   - Creating a provider-side event is not "a write of any kind that (b) counts", because nothing is stored in Paceday. The write-time check therefore does not cover it either.
+   - The window per request is short. But the squatter chooses how many requests to keep in flight, and Henry's first sign-in is the trigger.
+   - The attack needs a pre-deploy session to survive deployment, which is the OQ-6 "no" branch. OQ-6 has no default and the spec must be safe in both branches. §5's "Pre-deploy sessions" residual describes the risk as "stays valid ... on an account that does not bind". This case is an account that *does* bind.
+
+   *Resolve:* either of these.
+   - (i) State in §3 and D-20 that a request of a session whose generation is older than the account's current one never obtains, uses or returns a credential or any data stored on the account after its generation advanced. The rule covers provider calls made with that credential. Add an interleaved AC on the AC-47 pattern: S0's calendar-read request authenticated before G1's binding, with its credential load after it, returns none of Henry's events and makes no provider call with Henry's credential. A second case does the same for a meeting-create request.
+   - (ii) Or make rule (b) bind only when no session of an older generation can still be valid for the account, for example only after the deploy-time step. Then state that (b) depends on the OQ-6 answer.
+
+   Either way the stated property must cover reads and provider-side actions, not only Paceday-stored writes.
+
+### Non-blocking
+
+1. **AC-46 and AC-47's first case cannot occur.** "S0 accepts a team invitation from B" needs team-invite acceptance, which is a granting site (lines 169, 234). An unbound legacy account's address is unconfirmed, so the acceptance answers "invite is for a different address" (AC-28) and nothing is written. AC-46 then expects "the binding is refused ... S0's write is kept", which cannot happen. Replace it with a team write that an unconfirmed account can make: create a team, or send an invite. Co-host acceptance is fine, because co-host invitations are stored by user id (`handlers_scheduling_links.go:382`).
+2. **Round 2's Attack A has only a sequential AC.** AC-14 (c) runs the connect completion after the advance. Line 309's write-time check covers the interleaved order: the completion's generation check passes, the binding commits, then the connect stores. No AC exercises that order. Add the Google and Microsoft connect completion to AC-47's interleaved cases.
+3. **"Changed from its default" needs a reference set.** `settings` rows are created on demand from column defaults (`storage/settings.go:271`, `storage/credentials.go:132`), but some code writes non-default values on its own. For example, `SaveMicrosoftToken` sets `calendar_provider = 'outlook'` (`auth/microsoft_oauth.go:90`), although that row also has a credential. The contract should name the default for each preference. Otherwise an automatic write can make every legacy account non-empty. That is lock-out, not exposure.
+4. **AC-14 (d) needs the request model stated.** The test can only show that "another site" starts nothing if the contract says what a cross-site request may carry: a top-level GET, or a form POST with the `SameSite=Lax` session cookie, and nothing the app itself issued. Today's GET start (`routes.go:33`, `:35`) fails that model, so the AC can be falsified once the model is written down.
+5. **Operator reassign and the old calendar credential.** Step 3 (line 377) removes credentials only when the verified person disowns them. If GA's own calendar credential stays on A and Henry's next sign-in is at another provider, Paceday keeps writing Henry's meetings into GA's calendar. Consider making "remove every calendar credential not issued to the new identity" the default in the procedure. Either way it is operator documentation, not product behaviour.
+
+### Criteria I could not falsify
+
+None for a security property. AC-46/AC-47's team-invite case is unsatisfiable rather than unfalsifiable (Non-blocking 1). AC-23 stays conditional on OQ-4, as before.
+
+### Citations I checked and found wrong
+
+None. Checked and correct at `ae5c2cf` / `ec76099`:
+- migrations `003:2-4`, `005:2`, `006:3-17`, `007:8`, `009:1-44`, `010`, `011`, `013:1-26`, `014:1-25`, `015:4-19`, `016:1-46`, `022:1-9`, `026:8`, `028:8-13`, `029:16-20`, `030:20-46`;
+- `storage/manager.go:21-29`, `storage/settings.go:271`, `storage/credentials.go:132`, `auth/microsoft_oauth.go:87,90`, `storage/orgs.go:42-58`;
+- `engine/team_availability.go:78-84`, `handlers_booking.go:80-88`, `handlers_teams.go:300-305`;
+- `PAC-22.md:682` (AC-27), `PAC-68.md:95` (AC-9), `:157` (D-4).
+
+Routes: the Slack, Notion and Zoom callbacks sit behind `requireAuth` (`routes.go:38-39`, `:183-190`). So the generation check reaches them, as AC-46 and AC-47 assume.
+
+### Consumers this breaks
+
+No new consumers beyond those revision 3 lists. If Blocking 1 is resolved by option (i), the guard reaches every handler that loads a credential after authentication: `handlers_calendar.go`, `handlers_schedule.go`, `handlers_nlp.go`, `handlers_events.go`, `handlers_focus.go` and `handlers_personal.go`. The plan should name them.
