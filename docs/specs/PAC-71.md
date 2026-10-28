@@ -1590,3 +1590,61 @@ Answers "Challenge, revision 3" only. Nothing the challenge did not raise is cha
 - **Unchanged:** every other criterion.
 
 **Questions left for the owner.** Unchanged from revision 3 (OQ-6, OQ-8, OQ-1, OQ-2, OQ-3 item 4). Blocking 1 was resolved without depending on OQ-6.
+
+## Challenge, revision 4 — 2026-10-28
+
+Confirming re-check of revision 4 only (`git diff 86835b8 2abdc49 -- docs/specs/PAC-71.md`). Citations checked against `origin/main` `ae5c2cf`.
+
+**Verdict**: accept. The spec is ready for the contract stage.
+
+### Blocking
+
+None. Revision 3's Blocking 1 is closed:
+- §3 "An older-generation request never reaches what a binding stored" covers obtaining, using and returning a credential, and provider calls made with it. The generation is re-confirmed **in the same read** as the load, so no binding can commit between the comparison and the load. That closes the window between `requireAuth` and the credential load that revision 3 found.
+- A load made before the binding finds an empty account, because rule (b) binds only empty accounts. A load made after it is refused. No ordering is left in which an old-generation request reads Henry's credential or calls the provider with it.
+- There are no per-user API or MCP tokens (§2 line 124, `mcp/main.go:29`), so the session generation still covers every way in.
+- The revision opens no new path to takeover, data exposure, or a credential on the wrong account. Each change is a refusal (in-read check; per-preference "changed" with an unnamed preference counting as changed) or a removal (operator step 3 now removes calendar credentials by default).
+
+### Revision 4 resolutions checked
+
+| # | Status |
+|---|---|
+| B1 | Closed (see above). D-20, §5 "Pre-deploy sessions" and the seam list agree with the new rule. |
+| N1 | Closed. Creating a team is not a granting site, so an unconfirmed account can do it (§3 line 247 lists the granting sites). Rule (b) counts it (line 309). |
+| N2 | Closed. AC-47 has interleaved connect-completion cases at Google and at Microsoft, with byte-for-byte and "credited to nobody" outcomes. |
+| N3 | Closed. Each preference is compared with its own default in the normal form, and an unnamed preference counts as changed. This is decidable from stored data, which "changed through an endpoint" was not. |
+| N4 | Closed. The cross-site model is explicit and fails closed: the cookie is always assumed present. AC-14 (d) has one case per request kind (navigation, GET form, POST form, subresource). Each fails today, because the starts are plain GETs. |
+| N5 | Closed. Calendar credentials are removed by default unless the operator confirms them. Operator documentation only, as stated. |
+
+### AC-50 is falsifiable offline
+
+AC-50 is a unit test with a fake provider that records each call and the credential it carries. The seam commits the binding between the request's authentication and its credential load.
+- **Today** the test fails. No generation exists, so `getCalendarClient` (`handlers_calendar.go:137-144`) loads Henry's token and `ListEvents` (`:168`) calls the fake with it. Case (b) behaves the same way through `CreateMeeting` → `calClient` (`smart_schedule.go:288-289`).
+- **A check at authentication only** passes the two sequential orders but fails the interleaved cases. So the criterion separates the required in-read check from a weaker one.
+
+### Non-blocking
+
+1. **AC-50 tests only the Google calendar credential.** Rule (b) also binds on Microsoft tenant evidence. That binding stores a Microsoft credential, which old-generation requests could use through the Outlook paths. The §3 rule covers it, but no criterion would catch a plan that guards only `LoadCalendarToken`. The contract should list every load site the rule covers: the six handlers from the revision 3 challenge, plus the Microsoft and personal-calendar loads. It should also give AC-50 a case bound by Microsoft. "Account data" is unbounded as written, so the contract must name exactly which loads carry the in-read check. At minimum: every credential, connection and key column, and every field rule (b) counts.
+2. **Citation nit.** `storage/credentials.go:192` is cited for "teams becomes meet". The `CASE` expression is at `:193`, in the statement at `:191-194`. The substance is correct.
+3. **§2 normal form is incomplete.** `normalizeSchedules` runs on every read (`storage/settings.go:304`) and on copies (`:116`, `:138`), not only on save (`:327`). This supports the "compare in normal form" rule and needs no spec change. The contract's normal form should be the one `normalizeSchedules` produces.
+
+### Criteria I could not falsify
+
+None among the revised and new criteria (AC-14, AC-46, AC-47, AC-50).
+
+### Citations I checked and found wrong
+
+- `storage/credentials.go:192`: one line off (see Non-blocking 2).
+
+All other revision 4 citations match `ae5c2cf`:
+- `auth/microsoft_oauth.go:87,90`
+- `storage/credentials.go:132,148,179-182,184-194`
+- `storage/settings.go:93-108,271,327,543-556`
+- `005_conferencing.up.sql:1`, `020_schedule_preferences.up.sql:3-4`
+- `api/handlers_calendar.go:137-144,162,168`, `engine/cal_iface.go:32`
+- `api/handlers_schedule.go:206`, `engine/smart_schedule.go:288-289`
+- `api/handlers_events.go:27-29`, `api/handlers_nlp.go:63`
+
+### Consumers this breaks
+
+None beyond those revision 3 lists. The in-read generation check reaches every handler that loads a credential after authentication. The plan must name them (Non-blocking 1).
