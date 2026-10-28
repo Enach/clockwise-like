@@ -3,9 +3,11 @@
 - **Linear**: PAC-81, https://linear.app/paceday/issue/PAC-81 (factory ticket
   id `NEW-deploy-hardening`; the file keeps that name). Nothing was posted to
   Linear by this stage.
-- **Status**: challenged (accept-with-changes, rev 0); **revision 1,
-  2026-10-28** — see "Revision 1" at the end.
-- **Author**: spec-author (rev 0 and rev 1, 2026-10-28)
+- **Status**: challenged (accept-with-changes, rev 0 and rev 1); **revision 2,
+  2026-10-28**. See "Revision 1" and "Revision 2" at the end.
+- **Author**: spec-author (rev 0, rev 1 and rev 2, 2026-10-28). Rev 2 citations
+  were re-read on `origin/main` = `bef4c31`. Since `67b7966` only dependency
+  bumps have landed, so earlier citations stand.
 - **Surveyed at**: `Enach/clockwise-like` `origin/main` = `67b7966` (rechecked
   for rev 1: unchanged); `Enach/smart-calendar-flow` `origin/main` = `9ceff3b`.
   PAC-71 is open as PR #242 (`origin/impl/pac-71-identity-binding-backend`);
@@ -30,7 +32,14 @@
   - PAC-14 contract §2 (`contracts/features/PAC-14.md:53-58`) makes the
     hard-coded Sentry DSN the documented default. AC-A14 removes that default,
     so Part A goes through stage 2 to amend PAC-14 §2 (factory decision F-8).
-  - Readiness (AC-A9) is a new HTTP operation: stage 2 for Part A.
+  - Readiness (AC-A11; rev-0 numbering AC-A9) is a new HTTP operation, so
+    Part A goes through stage 2. Rev 2 adds two more stage-2 items for Part A.
+    First, the budget-expiry 503 (AC-A2) is documented as a shared response on
+    every operation that can reach the budget: at least natural-language
+    parse, collective slot listing, team availability, personal-calendar sync
+    and booking create. Second, `createPublicBooking`'s idempotent replay,
+    narrowed 409, interrupted-after-commit 503 and corrected 201 description
+    (AC-A19).
   - `/api/health` consumers that must keep working: `e2e/global-setup.ts:61-70`
     (polls it through nginx before any test) and
     `smart-calendar-flow:src/lib/api.ts:28-39` (`checkApiAvailability`, 2 s,
@@ -144,8 +153,41 @@ fix (§10).
     has a 30 s dial timeout (`backend/calendar/guard.go:52`) but no overall
     timeout (`backend/calendar/transport.go:93-98`). Free/busy queries are
     capped at 5 s (`backend/engine/freebusy_service.go:133`).
-  - Schedule suggest (`routes.go:93`) and team availability (`routes.go:240`)
-    call the engine with free/busy, bounded per query by the 5 s above.
+  - *(Corrected in rev 2.)* The 5 s free/busy cap applies only to calls made
+    through `freebusy_service.go`. Schedule suggest (`routes.go:93`) calls
+    `getFreeBusy` on a calendar client directly
+    (`backend/engine/smart_schedule.go:71`), so the 5 s cap does not apply.
+    Team availability (`routes.go:240`) lists each member's events **one after
+    another**, using the request context with no per-call cap
+    (`backend/engine/team_availability.go:78-90`). A member whose call fails
+    is silently treated as free; the contract documents this.
+  - **Per-item loops (rev 2).** These handlers make one or two outbound calls
+    per item, in sequence, over a set with no size limit:
+    - collective slot listing: token renewal plus `ListEvents` per accepted
+      host (`backend/engine/booking.go:92-93`, `:123-124`); a failing host is
+      skipped (`:94-96`);
+    - public booking create: `CreateEvent` per accepted host
+      (`backend/engine/booking.go:244-273`), after the booking row is committed
+      (`:229-236`), with the event id recorded per host (`:272`) and the
+      confirmation email started after the loop (`:277`);
+    - team availability: token renewal plus `listEvents` per member (above);
+    - personal-calendar sync: one create per event (above).
+
+    No booking-create idempotency exists. A retry of the same slot is refused
+    with 409 "slot is no longer available" by the overlap check
+    (`backend/api/handlers_booking.go:299-304`), so the hosts that were not
+    reached never get their event. Two **concurrent** identical requests can
+    both pass that check-then-insert, so a slot can be double-booked.
+  - **Database calls mostly ignore the request context.** About 239
+    `Query`/`QueryRow`/`Exec`/`Begin` calls take no context, against 69 that do,
+    across `backend/storage`, `api`, `engine` and `auth` (challenge rev 1,
+    Non-blocking 2). A handler goroutine blocked in one of them, including
+    while waiting for a pooled connection, does not see its deadline.
+  - Identity-provider calls also have no overall limit: Google and Microsoft
+    token exchange and userinfo, SSO OIDC discovery, token and JWKS, and OAuth
+    token renewal through token sources (Google, Microsoft, Zoom,
+    `backend/conference/zoom_oauth.go:56`, `:100`). The step-up client already
+    has 15 s (`backend/auth/stepup.go:139-141`).
   - The 60-day slot listing (`backend/api/handlers_booking.go:176-188`) is never
     called by the web, which always sends a date
     (`smart-calendar-flow:src/api/schedulingLinks.ts:690-692`); it is an abuse
@@ -351,7 +393,19 @@ and get correct behaviour without editing code:
   piece of work inside it, and the outer bounds (write, nginx, proxy) are each
   longer than the one inside, so the backend's own error ends a too-long
   request. (This protects the server; it does not change what the browser does
-  — F-W1.)
+  — F-W1.) *Rev 2, what the budget actually guarantees:* the client gets its
+  response by the end of the budget, and every outbound call made with the
+  request context is cancelled then. A database call made without a context is
+  not interrupted. Its goroutine may outlive the response until the call
+  returns, which is bounded by the pool's turnover, not by the budget. Such
+  goroutines count as abandoned units at shutdown (AC-A7). On the request
+  paths named in AC-A9, the handler itself stops waiting at the budget.
+- Handlers that call out once per item (host, member, event) make those calls
+  concurrently with a bounded number of workers. They stop starting new calls
+  before the budget runs out. They never return a silently truncated success:
+  each route either completes or answers its documented error. Public booking
+  create becomes idempotent: a retry of the same booking finishes it instead of
+  double-booking, and returns the same booking.
 - A deploy marks the backend unready first, keeps serving for a short notice
   period, then stops accepting connections and lets in-flight requests,
   background jobs and outgoing emails finish within a stated budget. Work
@@ -376,6 +430,9 @@ and get correct behaviour without editing code:
 | Outbound: LLM call (each) | 30 s |
 | Outbound: calendar, conferencing, Slack, Notion API call (each) | 15 s |
 | Outbound: OAuth token exchange (Slack, Notion) | 10 s |
+| Outbound: identity-provider call (Google/Microsoft token exchange and userinfo; SSO OIDC discovery, token, JWKS; OAuth token renewal for Google, Microsoft, Zoom) (each) — rev 2 | 10 s (the step-up client keeps its existing 15 s) |
+| Per-item loops: concurrent workers per request — rev 2 | 4 |
+| Per-item loops: stop margin before the budget ends — rev 2 | 10 s |
 | Outbound: ICS fetch | 15 s, body ≤ 10 MiB |
 | Outbound: SMTP send (dial to QUIT) | 15 s |
 | Server: time to receive request headers | 10 s |
@@ -424,7 +481,9 @@ route's existing failure redirect, not JSON. [unit]
 AC-A3 (F-A5, F-A3b). Given each outbound dependency stubbed to accept the
 connection and never answer — LLM provider, Google calendar, Outlook, Zoom,
 Teams, Slack API, Notion API, Slack/Notion token endpoint, ICS server, SMTP
-server — when the backend calls it, then the call fails within its outbound
+server, and (rev 2) the Google and Microsoft token and userinfo endpoints, an
+SSO provider's OIDC discovery, token and JWKS endpoints, and the token-renewal
+endpoints for Google, Microsoft and Zoom — when the backend calls it, then the call fails within its outbound
 limit (table, §3) + 1 s, independently of any request context, and no
 connection to the stub remains open afterwards. Given an ICS response larger
 than the ICS body cap, the fetch fails without reading past the cap. [unit]
@@ -434,9 +493,14 @@ reached, when it is reached, then the client gets the handler's own error
 response, not the budget's 503. Generally: the handler budget exceeds every
 deadline a handler sets itself, and every handler's worst-case sum of
 sequential outbound limits on its success path (natural-language parse: two
-LLM calls, 60 s), by at least 30 s; a unit test asserts this for each handler
-that sets a deadline or makes more than one outbound call in sequence (the
-plan lists them). [unit]
+LLM calls, 60 s; Google sign-in callback: exchange plus userinfo, 20 s; SSO
+callback: discovery, token and JWKS, 30 s), by at least 30 s. A unit test
+asserts this for each handler that sets a deadline or makes more than one
+outbound call in sequence; the plan lists them. *Rev 2 exemption:* the four
+per-item loops (collective slot listing, booking create, team availability,
+personal-calendar sync) are not held to the sum rule, because their item count
+has no limit. They are bound instead by AC-A18, AC-A19 and AC-A17, which state
+the outcome when the budget cuts them. [unit]
 
 AC-A5 (F-A1). Given an idle keep-alive connection, when the idle bound elapses
 with no request, then the server closes it. [integration]
@@ -463,7 +527,9 @@ AC-A7 (F-A2, F-A3, F-A3b, F-A10). Given tracked work still running at T0 +
 notice + drain, when that moment passes, then the process cancels it, waits
 at most the cancel grace for it to return, logs one line per abandoned unit
 naming its kind and identifier (request method+path, job name, booking id,
-invite id — never an email address), closes the pool only after every unit
+invite id — never an email address; rev 2: a handler goroutine still blocked
+in a database call made without a context, after its response was sent, is
+such a unit), closes the pool only after every unit
 has returned or been abandoned, flushes error reports, and exits non-zero
 within notice + drain + cancel grace + 3 s of T0. [integration]
 
@@ -479,7 +545,13 @@ need the database than the open-connection cap, then Postgres sees at most the
 cap of connections from one backend (`pg_stat_activity`), excess requests wait,
 and a request that cannot get a connection before its handler budget ends with
 AC-A2's 503. Caps are operator settings with the stated defaults; a
-non-positive or unparseable value is ignored with a startup warning. [integration]
+non-positive or unparseable value is ignored with a startup warning. *Rev 2:*
+on public booking create, slot listing with a date, natural-language parse,
+personal-calendar sync and the sign-in callbacks, the handler goroutine
+itself stops waiting for a pooled connection at the budget. The test holds
+the only connection (cap 1) elsewhere and asserts that the goroutine returns
+within budget + 1 s, not only that the response does. On other paths only
+the response is bounded (§3). [integration]
 
 AC-A10 (F-A4). Given the pool cap set to **1**, when each of these runs to
 completion — Google and Microsoft sign-in callbacks, public booking create,
@@ -531,12 +603,79 @@ readiness) on the local port, and exits 0 only on a success answer within 2 s,
 the connection is closed within the header bound + 1 s; an open, idle MCP SSE
 stream is not closed by any write bound. [unit, integration]
 
-AC-A17 (F-A5, D-5). Given personal-calendar sync creating blockers, when the
-handler budget or the shutdown drain is about to end, then the sync starts no
-new provider create unless at least one outbound limit remains, and a create
-that the provider accepted is always recorded; so a sync interrupted by a
-deadline or shutdown and re-run creates no duplicate blocker (stub provider
-counts creates per source event: at most one). [unit]
+AC-A17 (F-A5, D-5; revised in rev 2). Personal-calendar sync.
+- Blocker creates run on at most 4 concurrent workers.
+- A create starts only if its full outbound limit plus the stop margin remains
+  before the budget or drain ends. A create is never cut short: unlike
+  reads, a create is not given a shortened deadline.
+- A create the provider accepted is always recorded.
+- When the sync stops early, it answers the budget's 503 (AC-A2; documented
+  in stage 2) and does **not** stamp `last_synced_at`. A re-run finishes the
+  remaining creates and creates no duplicates.
+
+Tests use a stub provider at its per-call limit:
+- 6 events complete within the budget (2 waves);
+- 40 events are cut and answer 503, and a re-run completes them;
+- across both runs, there is at most one create per source event.
+
+*ICS limits:* an ICS feed over the time or size limit fails the sync with
+the existing documented 500 ("the personal feed could not be read",
+`{"error":"internal error"}`). The log names which limit was hit. No blocker is created from a
+partial feed (the parse is all-or-nothing), and `last_synced_at` is not
+stamped. [unit]
+
+AC-A18 (F-A5, rev 2). Per-item reads: collective slot listing (per host) and
+team availability (per member).
+- Each request runs its per-item calls on at most 4 concurrent workers.
+- Each call gets min(its outbound limit, remaining budget − stop margin) as its
+  deadline.
+- No new call starts once the remaining budget is at or below the stop margin.
+- If any item was not started, or was cut short by the budget (as opposed to
+  failing on its own limit or with a provider error, which keeps today's
+  documented "skipped/treated as free" behaviour), the response is 503 with
+  the JSON error shape, never a 200 that silently omits that item. Neither
+  route has a documented partial shape.
+
+Tests with stubs answering at their per-call limit:
+- 3 hosts, slot listing with a date: complete 200;
+- 5 members, team availability: complete 200 in 2 waves;
+- 20 members: 503, and the stub sees no call started after the margin;
+- one host failing with a provider error: today's 200 without that host
+  (unchanged). [unit]
+
+AC-A19 (F-A5, rev 2). Public booking create is idempotent per (link, slot
+start, booker email, case-insensitive).
+- (a) A request that matches an existing non-cancelled booking returns that
+  booking with 201 and the same id; it never creates a second booking.
+- (b) Host events are created at most once per (booking, host). A request
+  that matches an existing booking creates only the host events not yet
+  recorded, on up to 4 concurrent workers. As in AC-A17, a create starts only
+  with its full limit plus the margin remaining.
+- (c) The confirmation email is sent at most once per booking: after the host
+  event phase has attempted every host. It is recorded when sent and logged
+  when it fails (AC-A8).
+- (d) Two concurrent identical requests produce exactly one booking, both
+  answered 201 with the same id.
+- (e) A different booker email on an overlapping slot is still 409, as today.
+- (f) If the budget or the drain stops the request after the booking row is
+  committed but before every host was attempted, the response is 503 with the
+  JSON error shape, a message saying the booking is saved and the request
+  should be retried to finish it, and the booking id. The log line names the
+  booking id and the hosts done and not done. A retry of the same request
+  completes the remaining hosts and answers 201 with that id.
+
+Tests:
+- interrupted after commit (3 hosts, budget hit after 1), then a retry: one
+  booking, 3 host events, 1 email, same id;
+- two concurrent identical requests: one booking, one set of host events, one
+  email;
+- a different email on an overlapping slot: 409.
+
+This changes the documented behaviour of `createPublicBooking`: replay
+semantics, the 409 meaning, a new 503, and the 201 description. **Part A
+therefore goes through stage 2 for this operation.** Uniqueness under
+concurrency and the email record likely need a migration; that is the plan's
+choice (§7). [contract, unit, integration]
 
 ### Part B — nginx edge (F-B1..F-B7, F-A11 CSP half)
 
@@ -559,12 +698,23 @@ only. Given the e2e suite with (a) one seeded user whose avatar is a
 booking page (the test serves the image locally by intercepting the request,
 so no internet is needed), and (b) an e2e variant in which the API-base
 injection is active, then the browser reports zero CSP violations on every
-test. Negative control: a seeded avatar on a non-allowed origin produces
-exactly one reported `img-src` violation, proving the collector works. [e2e]
+test. Negative control: a seeded avatar on a non-allowed origin produces at
+least one reported violation, every one of them `img-src`, and no other
+directive (rev 2: "exactly one" was fragile if the avatar renders twice). [e2e]
 
 AC-B4 (F-B2). Given the operator configures a cross-origin API address or
 extra connect origins, when nginx starts, then the CSP allows connections to
-exactly those origins plus the defaults (site, Sentry ingest). [integration]
+exactly those origins plus the defaults. The defaults are the site and the
+frontend's Sentry ingest origin (rev 2). nginx cannot see the DSN the
+frontend image was built with (`VITE_SENTRY_DSN`, falling back to
+`smart-calendar-flow:src/lib/sentry.ts:19-20,55`), so the ingest origin is
+its own operator setting. Its default is the origin of that hard-coded DSN,
+with no wildcard. The env reference says it must match the frontend build.
+Tests:
+- with the default, the CSP's `connect-src` contains exactly that origin;
+- with the setting changed, it contains the new origin instead;
+- an unset setting does not remove it.
+[integration]
 
 AC-B5 (F-B3). Given nginx with the shipped config, a trusted-proxy list
 containing address P, and a stub upstream in place of the backend that records
@@ -602,7 +752,9 @@ only; (4) B2 row: access log records status and client address; (5) B5 row:
 MCP is opt-in, loopback-only, and requires its token; (6) finding 3 rewritten:
 TLS/HSTS out of scope by owner decision 2026-10-27, headers done, nginx-level
 rate limiting not used because abuse protection is application-level;
-(7) the backup-contains-credentials risk of F-D5 is listed as an open finding.
+(7) the backup-contains-credentials risk of F-D5 is listed as an open finding;
+(8) rev 2: finding 1 (`docs/security.md:81`, "`MCP_AUTH_TOKEN` is optional")
+says the token is required whenever MCP is enabled, and that MCP is opt-in.
 
 AC-B11 (F-B7, F-C2). Given nginx, when a request is made to its own health
 path, then nginx answers 200 without contacting any upstream and without an
@@ -630,13 +782,28 @@ backend and frontend are healthy; given a stopped backend, its check turns
 unhealthy within 3 intervals; given a 90 s startup migration (simulated), the
 stack still comes up. [integration]
 
-AC-C4 (F-C3, Q-O1). Given the production compose file, then the MCP service
-belongs to an opt-in profile and, when enabled, publishes only on `127.0.0.1`.
-`README.md`'s SSE example shows the bearer header. [unit]
+AC-C4 (F-C3, Q-O1; restated in rev 2). MCP is opt-in through one documented
+mechanism, chosen by the plan: profiles plus an override file, a separate
+compose file, or similar. A required-variable expression on a profiled service
+does **not** qualify; it fails rendering even when the profile is inactive
+(measured by the rev-1 challenge).
+- When MCP is not enabled, `docker compose config` and
+  `docker compose up -d` on the production file succeed with
+  `MCP_AUTH_TOKEN` unset, and no MCP container runs.
+- When MCP is enabled, it publishes only on `127.0.0.1`.
+- `README.md:56-63` shows the opt-in step and the bearer header.
+Tested with Docker Compose v2 (the version is recorded in the test output).
+[integration]
 
-AC-C5 (F-C4). Given the MCP profile enabled and no token, rendering the
-compose file fails naming the token; with the profile disabled, no token is
-required. `.env.example` says required-when-enabled. [unit]
+AC-C5 (F-C4; restated in rev 2). When MCP is enabled with `MCP_AUTH_TOKEN`
+unset or empty:
+- the stack fails fast, at `docker compose config`/`up`, or by the MCP
+  container exiting once, with output that names `MCP_AUTH_TOKEN`;
+- the MCP container does not restart in a loop: after 60 s it has restarted
+  0 times (`docker inspect` restart count);
+- with the token set, MCP starts and stays up.
+`.env.example` says the token is required when MCP is enabled. Tested with
+Docker Compose v2. [integration]
 
 AC-C6 (F-C5). Given the production compose file, then every Paceday service has
 a stop grace period ≥ notice + drain + cancel grace + 10 s (50 s), and every
@@ -722,7 +889,9 @@ budget; inner deadlines unchecked), A6/A7 (no signal handling, untracked
 goroutines), A8 (`_ =` on SendMail), A9 (no caps), A10 (no test — today's
 behaviour unknown), A11 (no readiness), A12 (no cap), A13 (no status/client),
 A14 (default DSN sends), A15 (no warning), A16 (no health mode), A17 (no
-deadline check between creates); B1 is a regression guard (already passes for
+deadline check between creates), A18 (sequential loops; failed hosts treated
+as free with no budget, so no 503 path exists), A19 (no idempotency; retry
+gets 409; concurrent duplicates possible); B1 is a regression guard (already passes for
 nginx); B2–B12 per F-B*; C1–C9 per F-C*; D1–D7 per F-D*.
 
 ## 5. Explicitly out of scope
@@ -774,8 +943,12 @@ nginx); B2–B12 per F-B*; C1–C9 per F-C*; D1–D7 per F-D*.
 
 ## 7. Rollback
 
-- Part A: revert the backend commit (and PAC-14 contract amendment). No
-  migration. Timeouts, caps, shutdown and the Sentry default revert together;
+- Part A: revert the backend commit and its stage-2 contract changes (PAC-14
+  amendment, the shared 503, booking-create semantics). Rev 2: if the plan meets
+  AC-A19 with a migration (a uniqueness constraint or index on non-cancelled
+  bookings, an email-sent record), the down drops it and loses only the
+  email-sent records. Reverting re-opens concurrent double-booking and makes a
+  retry answer 409 again. Timeouts, caps, shutdown and the Sentry default revert together;
   monitoring then turns on again with the hard-coded DSN.
 - Part B: revert nginx config. A configured trusted list is then ignored and
   limits key on the proxy again. Header lines can be reverted alone.
@@ -820,6 +993,11 @@ AC-B4/B5/B7 constrain behaviour only. The e2e mount changes with it (§6).
 Q-P4. Whether the backend's `TRUSTED_PROXIES` default
 (`docker-compose.prod.yml:47`) should narrow to the compose network.
 
+Q-P5 (rev 2). Whether real collective links or teams exceed about 12 items.
+If they do, collective slot listing or team availability would answer 503
+with every provider at its limit (D-4). If so, the plan proposes a product
+limit, which then goes to the owner, or more workers.
+
 (Q-P1 from rev 0 is closed: the 60-day listing is not legitimate load —
 F-A5.)
 
@@ -857,6 +1035,26 @@ Factory-level decisions (coordinator, 2026-10-28, recorded as such):
 - **F-8 Sentry**: remove the backend DSN fallback; AC-A14; PAC-14 §2 amended
   in stage 2.
 
+Factory-level decisions (coordinator, 2026-10-28, rev 2, recorded as such):
+
+- **F-9 Per-item loops.** Collective slot listing (per host), booking create
+  (per host), team availability (per member) and personal sync (per event) run
+  their outbound calls on a bounded pool of 4 concurrent workers. Each call
+  gets min(its limit, remaining budget − 10 s margin), except creates, which
+  start only with their full limit plus the margin remaining (a cut create
+  risks duplicates). No new call starts at the margin. On a partial result the
+  route answers its documented error, or a documented partial shape where the
+  API already defines one; none of the four does. Never a silently truncated
+  200. AC-A17, AC-A18, AC-A19.
+- **F-10 Booking idempotency.** Booking create is idempotent per (link, slot
+  start, booker email). A retry returns the same booking with 201 and the same
+  id. Host events are created at most once per (booking, host), with
+  recorded ids skipped on retry. The email goes at most once, recorded and
+  logged. An interruption after commit says what was completed, in the response
+  and the log. Needs stage 2 (AC-A19).
+- **F-11 MCP opt-in.** Restated as observable compose behaviour; the
+  mechanism is the plan's choice (AC-C4, AC-C5).
+
 Factory-assumed (pending challenge):
 
 - **D-3. The backend does not read `X-Forwarded-Proto`.** Absolute URLs and
@@ -877,7 +1075,16 @@ Factory-assumed (pending challenge):
   backstop 120 s > budget + time to write an error. nginx 130 s > backstop.
   Proxy > 130 s (AC-D2). Header 10 s, whole request 30 s (1 MiB at ~35 KB/s),
   idle 120 s (above common proxy keep-alives of 60–75 s). These bounds do not
-  change the browser's 4 s abort (F-W1).
+  change the browser's 4 s abort (F-W1). *Rev 2:* identity-provider calls get
+  10 s each; the existing 15 s step-up client is kept, since it is under the
+  budget either way. Per-item loops are exempt from the sum rule (AC-A4) and
+  bounded by F-9. With 4 workers and a 25 s per-item worst case (10 s renewal
+  plus 15 s call), 3 hosts take 25 s and 5 members 50 s, both under budget
+  minus margin (80 s). 13 or more items at their limits are cut by the budget
+  and answer 503. That is accepted for now; Q-P5 asks the plan whether
+  real member counts make it bite. Worker count 4: enough for typical
+  collective links (1–3 hosts) and small teams in one or two waves, without
+  multiplying load on provider rate limits per request.
 - **D-5. Shutdown phases.** Unready notice 5 s: long enough for a health check
   polling every 1–2 s to see 503 before connections are refused, short enough
   not to lengthen deploys. Drain 30 s: covers every outbound limit (≤ 30 s), so
@@ -901,7 +1108,9 @@ Factory-assumed (pending challenge):
   'self' 'unsafe-inline' https://fonts.googleapis.com` (inline styles needed by
   the chart component); `font-src 'self' https://fonts.gstatic.com`; `img-src
   'self' data: https://*.googleusercontent.com` (F-1); `connect-src 'self'` +
-  the Sentry ingest host + operator-configured origins; `object-src 'none'`;
+  the frontend's Sentry ingest origin (an operator setting, default the origin
+  of the web's hard-coded DSN, `smart-calendar-flow:src/lib/sentry.ts:19-20`;
+  no wildcard; AC-B4) + operator-configured origins; `object-src 'none'`;
   `base-uri 'self'`; `form-action 'self'`; `frame-ancestors 'none'`. Enforced,
   because AC-B3 proves zero violations with a positive and negative control.
 - **D-9. Real client in nginx**: right-most address not in the trusted list,
@@ -910,8 +1119,9 @@ Factory-assumed (pending challenge):
 - **D-10. Health checks call the binaries**; backend start period 120 s
   because migrations run before the listener.
 - **D-11. Image versions required, no default.**
-- **D-12. MCP opt-in profile, loopback only** (Q-O1 (a)); its token is
-  required only when enabled.
+- **D-12. MCP opt-in, loopback only** (Q-O1 (a)); its token is required only
+  when enabled. Rev 2: "profile" is no longer prescribed. The mechanism is the
+  plan's choice, held to AC-C4 and AC-C5's observable behaviour (F-11).
 - **D-13. Every migration gets a down file**; production rollback is
   restore-from-backup.
 - **D-14. Backups: daily `pg_dump`, 14 days** (Q-O3), stored with the `.env`
@@ -948,13 +1158,20 @@ Factory-assumed (pending challenge):
 
 | Part | Scope | ACs | Depends on |
 |---|---|---|---|
-| **A** | Server timeouts, outbound limits, handler budget, shutdown sequence with tracked background work, email failure logging, pool caps and single-connection paths, readiness, body cap, access log, Sentry default off, public-URL warning, binary health modes, blocker safety | 17 (A1–A17) | Stage 2 for A11 (readiness) and A14 (PAC-14 §2) |
+| **A** | Server timeouts, outbound limits, handler budget, shutdown sequence with tracked background work, email failure logging, pool caps and single-connection paths, readiness, body cap, access log, Sentry default off, public-URL warning, binary health modes, blocker safety | 19 (A1–A19) | Stage 2 for A11 (readiness), A14 (PAC-14 §2), A2's shared 503 and A19 (booking create) |
 | **B** | nginx: HTTP-only guard, headers and CSP (with avatars), trusted proxy / real client and scheme, timeouts, JSON 413, upstream keep-alive, health path, no docs route, `docs/security.md` | 12 (B1–B12) | None: every B test uses a stub upstream. B3's e2e runs against whatever backend is on `main` |
 | **C** | Compose: no 443/certs, pinned versions, health checks, MCP opt-in loopback, grace period, log rotation, settings list, no docs service, nginx bind | 9 (C1–C9) | A (A16 health modes, A11 readiness, shutdown values, A14) and B (B11 health path) |
 | **D** | `.env.example` completeness test, proxy requirements, backup/restore, runbook, down migrations, doc link, env reference | 7 (D1–D7) | D1, D5, D6 any time; D2–D4, D7 after C |
 
 True order: **A and B in parallel → C → D (D1/D5/D6 may land earlier)**.
-Total: 45 acceptance criteria.
+Total: 47 acceptance criteria.
+
+*Shared file (rev 2):* both A and B change `docker/fileserver/main.go`.
+- Part A owns its server timeouts and health mode (A1, A16).
+- Part B owns the API-base injection change needed by the CSP (AC-B3(b),
+  Q-P2).
+Whichever part merges second rebases onto the first. Neither part may edit
+the other's half.
 
 ## Challenge, revision 0 — 2026-10-28
 
@@ -1494,3 +1711,43 @@ None new. AC-A4 is falsifiable, but it fails as written (Blocking 1).
 - `README.md:56-63`. Its instructions stop working once MCP is opt-in
   (Non-blocking 6).
 - None found for the docs-service removal.
+
+## Revision 2 — 2026-10-28
+
+Author: spec-author. This revision answers "Challenge, revision 1" and records
+the coordinator's rev-2 factory decisions (§9, F-9..F-11). Only what the
+challenge raised was changed. The challenge texts above are unchanged.
+Verification: `git show`, `git grep` and `sed` on `bef4c31` (backend
+citations, contract) and web `9ceff3b`/`6f641ae` (no web file cited in rev 2
+changed). Nothing was built or run, including `docker compose`.
+
+New ACs: A18 (per-item reads) and A19 (booking create idempotency). Total 47
+(A 19, B 12, C 9, D 7).
+
+| # | Challenge item | Outcome | Where / why |
+|---|---|---|---|
+| B1 | AC-A4 fails for per-item loops; F-A5 team-availability/suggest claim wrong | **Applied** (F-9) | F-A5 corrected: suggest calls `getFreeBusy` directly (`smart_schedule.go:71`); team availability loops members with no cap (`team_availability.go:78-90`). F-A5 now lists the four loops with citations. AC-A4 exempts them explicitly. AC-A18 covers slots and team availability: 4 workers, per-call min(limit, remaining − 10 s), no new call at the margin, 503 when an item was not reached, never a truncated 200. Tests: 3 hosts, 5 members, 20 members, provider-error unchanged. AC-A17 now puts personal sync in the AC with the same rule (creates need their full limit) and tests for 6 and 40 events. D-4 gives the arithmetic (25 s per item, 3 hosts 25 s, 5 members 50 s). Q-P5 asks the plan whether real counts exceed ~12. No product limit was imposed, so no owner question. |
+| B2 | Booking cut after commit; retry double-books | **Applied** (F-10) | New AC-A19: idempotent per (link, start, booker email); a replay returns 201 with the same id; host events at most once per (booking, host), with recorded ids skipped; the email at most once, recorded and logged; concurrent identical requests produce one booking; a different email on the slot still gets 409; an interruption after commit answers 503 with the booking id and a "saved, retry to finish" message, and the log lists hosts done and not done. Tests: interrupted then retried, and concurrent. Survey finding: a retry today gets 409 from the overlap check (`handlers_booking.go:299-304`), not a second booking, but unreached hosts never get their event and concurrent requests can double-book (F-A5). **This needs a contract change.** `createPublicBooking`'s replay semantics, 409 meaning, new 503 and 201 description all change, so Part A goes through stage 2 (Inherited scope, AC-A19, §11). §7 notes a likely migration and its down. |
+| B3 | AC-C5 impossible with a compose profile | **Applied** (F-11) | AC-C4 and AC-C5 are restated as observable behaviour; the mechanism is the plan's choice, and `:?` on a profiled service is explicitly excluded. Not enabled: `config` and `up -d` succeed with no token and no MCP container runs. Enabled with no token: fails fast naming `MCP_AUTH_TOKEN`, and the container restart count is 0 after 60 s. Tested with Compose v2 (`[integration]`). D-12 no longer says "profile". |
+| N1 | Identity-provider calls missing from the outbound table | **Applied** | Table row: 10 s each for Google/Microsoft exchange and userinfo, SSO discovery/token/JWKS, and Google/Microsoft/Zoom renewal; the step-up client keeps its existing 15 s. Added to AC-A3. AC-A4 sums the Google (20 s) and SSO (30 s) callbacks. F-A5 records the gap. |
+| N2 | 239 DB calls ignore the context | **Applied** | §3 states the budget's actual guarantee: the response by the budget and outbound calls cancelled. Context-free DB calls are not interrupted; their goroutines are bounded by pool turnover. AC-A7 counts them as abandoned units. AC-A9 adds that on booking create, slot listing, parse, personal sync and the sign-in callbacks, the handler goroutine itself returns within budget + 1 s while the only connection is held. F-A5 records the counts as the challenge's figures. |
+| N3 | Sentry ingest host in `connect-src` unnamed | **Applied** | D-8 and AC-B4: nginx cannot see the frontend's build-time DSN, so the ingest origin is its own operator setting. Its default is the origin of the web's hard-coded DSN (`sentry.ts:19-20`), with no wildcard, and the env reference says it must match the frontend build. Testable. |
+| N4 | A and B both edit `docker/fileserver/main.go` | **Applied** | §11: A owns timeouts and health mode, B owns the injection change; whichever merges second rebases, and neither edits the other's half. |
+| N5 | ICS cap unmeasured; user-visible outcome unspecified | **Applied (outcome); not applied (measurement)** | AC-A17: over the time or size limit, the sync answers the documented 500, the log names the limit, no blocker comes from a partial feed, and `last_synced_at` is not stamped. The 10 MiB value stays a factory assumption marked "not measured" (D-4). Measuring real feeds needs real calendars, which a spec stage cannot do; the plan may revisit it. |
+| N6 | `README.md:56` and `docs/security.md:81` | **Applied** | AC-C4 requires the README to show the opt-in step and the bearer header. AC-B10 checklist item (8) fixes `docs/security.md:81`. |
+| N7 | AC-B3 negative control "exactly one" | **Applied** | Now "at least one, all `img-src`, none other". |
+| C1 | F-A5 citation wrong (suggest, team availability) | **Applied** | See B1. |
+| X | Consumers: bookers and hosts; README | **Applied** | See B2 and N6. |
+
+Stage-2 (contract) needs after rev 2, all in **Part A**:
+1. readiness (AC-A11);
+2. the PAC-14 §2 Sentry default (AC-A14);
+3. the budget-expiry 503 as a shared documented response on the operations
+   that can reach the budget (AC-A2);
+4. `createPublicBooking` semantics (AC-A19).
+
+Parts B, C and D need no contract change.
+
+New owner questions: none. Q-O1..Q-O4 are unchanged. Q-P5 is a plan question;
+it becomes an owner question only if the plan proposes a product limit on
+hosts or members.
