@@ -860,8 +860,17 @@ paths:
            `oidc_client_secret must not be empty` (spec D-12, AC-26). Its
            absence is not decided here (check 6). Values are stored as given
            (not trimmed).
-        6. Only when `oidc_client_secret` is absent, against the stored
-           configuration for the domain: `oidc_client_secret is required` when
+        6. Only when `oidc_client_secret` is absent, against the row this
+           write would be stored under, that is the row the upsert would
+           conflict with: on `main`, the row whose `domain` is byte-for-byte
+           the submitted `domain` (the upsert conflicts on the domain as
+           submitted, not trimmed or case-folded, although the domain match
+           above trims and folds case); after PAC-50, which stores the domain
+           lower-cased, the row under the lower-cased domain. A row under
+           another casing of the same domain is never the one consulted, so
+           `{"domain":"ACME.com", ...}` with the secret absent is checked
+           against a row stored as `ACME.com` (refused when there is none),
+           never against `acme.com`. `oidc_client_secret is required` when
            there is no configuration, or it is not of type `oidc`, or its
            stored client secret is empty (spec AC-7, AC-25); `oidc_client_secret
            is required when oidc_issuer or oidc_client_id changes` when the
@@ -879,7 +888,9 @@ paths:
         Interleaved writes (spec D-14, AC-27, AC-28). Another write to the
         same domain can be stored between this request's checks and its
         store. What a replace keeps is therefore decided again, atomically
-        with the store, against the configuration as it is at that moment:
+        with the store, against the configuration as it is at that moment
+        and under the same key as check 6 (the row the write is stored
+        under):
         - when the secret is left out, the store keeps the stored secret only
           if the conditions of check 6 still hold at that moment; if they do
           not (the issuer or client id now differs, there is no secret to
@@ -920,8 +931,15 @@ paths:
             The stored configuration, for a create and for a replace alike,
             as an SsoProvider: it never carries the client secret or a signing
             certificate under any name, nor anything derived from either
-            (API-001 disclosure half, spec AC-1, AC-2). The supplied secret,
-            when one was supplied, does not occur in the body or the headers.
+            (API-001 disclosure half, spec AC-1, AC-2). No property carries
+            the supplied or the stored secret. The byte-level form (the
+            secret does not occur in the body or the headers, raw or
+            JSON-escaped, in any letter case) holds for a secret that does
+            not itself occur in the response's non-secret values, as spec
+            AC-1 and AC-2 arrange with long, test-unique values: a secret of
+            `okta` or `true` can coincide with `provider_name`,
+            `oidc_issuer` or `has_oidc_client_secret: true`, which is not a
+            disclosure.
             After a replace that left the secret out, `has_oidc_client_secret`
             is true (the kept secret, spec AC-22).
           content:
@@ -973,9 +991,15 @@ paths:
         response is an SsoProviderList: a named container, not a bare array
         (spec §3.7), whose items never carry the client secret or a signing
         certificate under any name, nor anything derived from either, whoever
-        the caller is (API-001 disclosure half, spec AC-1): neither stored
-        value occurs anywhere in the body or the headers, raw or
-        JSON-escaped, in any letter case. Suspended configurations are listed,
+        the caller is (API-001 disclosure half, spec AC-1): no property of
+        the response carries either stored secret, or anything derived from
+        either, under any name. The byte-level form of that guarantee (neither
+        stored value occurs in the body or the headers, raw or JSON-escaped,
+        in any letter case) holds for a secret that does not itself occur in
+        the response's non-secret values, as spec AC-1 arranges with long,
+        test-unique values; a secret such as `okta` or `true` can coincide
+        with a provider name, an issuer or a fixed token, and that is not a
+        disclosure. Suspended configurations are listed,
         with `state: suspended`; so are configurations stored before PAC-22
         that could not be written today (a SAML row, an incomplete OIDC row).
         A configuration is listed when its domain equals the org's domain
@@ -1077,7 +1101,10 @@ paths:
 
         1. Membership: the caller belongs to an org, else 403
            `org membership required` (or `org not found`).
-        2. Body: JSON (`invalid JSON`); then its properties in body order:
+        2. Body: a JSON object, else `invalid JSON`. A body that is not
+           JSON, and a body that is valid JSON but not an object (`[]`,
+           `"active"`, `true`, `1`, `null`), all get `invalid JSON`; then the
+           object's properties in body order:
            the first property other than `state` is refused
            (`unknown property: <name>`), so no configuration value can ride
            along, and a second `state` is refused (`duplicate property:
@@ -1091,7 +1118,9 @@ paths:
            another org's domain, are both refused (spec AC-21). The status is
            the one a configuration write to such a domain gets: 403, as the
            owner decided for PAC-50 on 2026-10-27 (spec D-15), and as
-           createSsoProvider answers on `main` today. PAC-50's branch at
+           createSsoProvider answers a foreign domain on `main` today
+           (`main`'s createSsoProvider still accepts a subdomain under its
+           suffix rule; this operation never does). PAC-50's branch at
            `51aa70a` still answers 400 there; if PAC-50 merges with another
            status, revision 2 (the rebase) follows what merged (spec D-15).
         4. Authorization: the write authorization of createSsoProvider
@@ -1119,6 +1148,16 @@ paths:
            provider (spec D-10, AC-16). No operation exposes that record.
            The state write and its record are one transaction, as PAC-50's
            configuration writes are: either both happen or neither does.
+
+        Steps 5 to 7 see one and the same row: the state write and its
+        record apply to the row the lookup found, and to nothing else. A
+        configuration removed (deleteSsoProvider) after
+        this request's lookup and before its write is stored is answered
+        exactly as one that was never there: 404 `sso provider not found`,
+        nothing written, nothing recorded, the authorization spent (spec
+        D-9: never success for a configuration that does not exist). A
+        removal stored after this request's write is an ordinary later
+        removal.
 
         This operation acts on configurations stored before PAC-22 that
         createSsoProvider would refuse today (a SAML row, an incomplete OIDC
@@ -1154,7 +1193,8 @@ paths:
         '400':
           description: |
             JSON error; nothing changes and no authorization is spent. One
-            of: `invalid JSON`; `unknown property: <name>`; `duplicate
+            of: `invalid JSON` (also for valid JSON that is not an object);
+            `unknown property: <name>`; `duplicate
             property: state`; `state must be 'active' or 'suspended'`.
           content:
             application/json:
@@ -1183,8 +1223,10 @@ paths:
         '404':
           description: |
             `sso provider not found`: the caller is permitted, but no
-            configuration exists for the domain. Nothing is created or
-            recorded; the authorization is spent (spec D-9, AC-19).
+            configuration exists for the domain, including one removed
+            after the lookup and before the state write would be stored.
+            Nothing is created, written or recorded; the authorization is
+            spent (spec D-9, AC-19).
           content:
             application/json:
               schema:
@@ -1723,7 +1765,8 @@ components:
         nothing else (spec AC-12). Any other property, including any
         configuration value, is refused with 400 `unknown property: <name>`,
         and `state` given twice is refused with 400 `duplicate property:
-        state`.
+        state`. A body that is not a JSON object (`[]`, `"active"`, `true`,
+        `null`) is refused with 400 `invalid JSON`.
       required: [state]
       properties:
         state:

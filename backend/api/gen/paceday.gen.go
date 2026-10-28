@@ -2835,7 +2835,8 @@ type SsoProviderState string
 // nothing else (spec AC-12). Any other property, including any
 // configuration value, is refused with 400 `unknown property: <name>`,
 // and `state` given twice is refused with 400 `duplicate property:
-// state`.
+// state`. A body that is not a JSON object (`[]`, `"active"`, `true`,
+// `null`) is refused with 400 `invalid JSON`.
 type SsoProviderStateRequest struct {
 	// State Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
 	// `active`: detection answers `sso` for the domain and startSsoLogin
