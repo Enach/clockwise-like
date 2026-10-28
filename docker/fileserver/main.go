@@ -6,9 +6,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func main() {
+	// Health mode (PAC-81 AC-A16): `fileserver health` asks the running
+	// server for / on the local port; it reads no file and no setting.
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		os.Exit(healthMode("http://127.0.0.1:80/"))
+	}
 	const root = "/srv"
 
 	raw, err := os.ReadFile(filepath.Join(root, "index.html"))
@@ -44,5 +50,31 @@ func main() {
 		fs.ServeHTTP(w, r)
 	})
 
-	log.Fatal(http.ListenAndServe(":80", nil))
+	log.Fatal(newServer(":80", nil).ListenAndServe())
+}
+
+// newServer is the file server with the PAC-81 server timeouts (spec D-4).
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
+// healthMode exits 0 only on a 200 from url within 2 s.
+func healthMode(url string) int {
+	c := &http.Client{Timeout: 2 * time.Second}
+	resp, err := c.Get(url)
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
