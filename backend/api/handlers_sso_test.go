@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ type fakeIdP struct {
 	key      *rsa.PrivateKey
 	clientID string
 	email    string
+	// acceptSecret, when set, makes the token endpoint refuse any client
+	// secret but this one (PAC-22: proves which stored secret a sign-in used).
+	acceptSecret string
 }
 
 func newFakeIdP(t *testing.T, clientID string) *fakeIdP {
@@ -54,7 +58,13 @@ func newFakeIdP(t *testing.T, clientID string) *fakeIdP {
 			}},
 		})
 	})
-	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if idp.acceptSecret != "" && clientSecretOf(r) != idp.acceptSecret {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "at",
@@ -91,6 +101,19 @@ func (idp *fakeIdP) signIDToken(t *testing.T) string {
 }
 
 func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+// clientSecretOf reads the client secret a token request authenticates with,
+// whether sent as HTTP Basic credentials or in the form body.
+func clientSecretOf(r *http.Request) string {
+	if _, secret, ok := r.BasicAuth(); ok {
+		if dec, err := url.QueryUnescape(secret); err == nil {
+			return dec
+		}
+		return secret
+	}
+	_ = r.ParseForm()
+	return r.PostForm.Get("client_secret")
+}
 
 // runOIDCCallback configures an SSO provider for providerDomain backed by a
 // fake IdP asserting assertedEmail, then drives the callback as the browser
