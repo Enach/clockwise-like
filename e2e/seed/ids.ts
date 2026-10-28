@@ -210,6 +210,26 @@ export const AVATAR_HOSTS = {
   },
 } as const;
 
+/**
+ * Every user and every scheduling link seed.sql inserts, derived from the
+ * fixture objects above. seed.ts verify() compares the database against these
+ * exact sets, so adding a fixture here (and to seed.sql) needs no count to be
+ * kept in step by hand, and a row seed.sql adds without an entry here — or the
+ * reverse — fails seeding.
+ */
+export const SEEDED_USER_IDS: readonly string[] = [
+  ...Object.values(USERS).map((u) => u.id),
+  ...Object.values(CONNECTED).map((u) => u.id),
+  DISCONNECTING.id,
+  ...Object.values(AVATAR_HOSTS).map((u) => u.id),
+];
+
+export const SEEDED_LINK_IDS: readonly string[] = [
+  ...Object.values(LINKS).map((l) => l.id),
+  SEAM_LINK.id,
+  ...Object.values(AVATAR_HOSTS).map((u) => u.link.id),
+];
+
 /** Exact analytics values seed.sql writes, for the manager roster assertions. */
 export const ANALYTICS = {
   alphaReport: { thisWeekFocusMinutes: 615, priorWeekFocusMinutes: 410 },
