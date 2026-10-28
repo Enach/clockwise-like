@@ -40,21 +40,22 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **120**
-- generated: **4**
+- operations: **121**
+- generated: **5**
 - handwritten: **116**
 
 ## Register
 
 | operationId                       | method | path                                            | tag              | status      | notes |
-|-----------------------------------|--------|-------------------------------------------------|------------------|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|-----------------------------------|--------|-------------------------------------------------|------------------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | listAnalyticsMeetings             | GET    | /api/analytics/meetings                         | analytics        | handwritten | |
 | recomputeAnalytics                | POST   | /api/analytics/recompute                        | analytics        | handwritten | |
 | listAnalyticsTrends               | GET    | /api/analytics/trends                           | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `weeks` with 400, which this operation does not declare, where the handler falls back (to 8 outside 1..52, spec PAC-42 section 6). |
 | getAnalyticsWeek                  | GET    | /api/analytics/week                             | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `date` with 400, which this operation does not declare, where the handler falls back (to today). |
-| listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | handwritten | |
-| createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | |
+| listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | generated   | PAC-22: response modified; implemented as generatedServer.ListSsoProviders (backend/api/handlers_sso.go), mounted through the generated strict wrapper. |
+| createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | PAC-22: request and response modified, kept handwritten. Moving it is a contract change: the generated binder cannot tell an absent `oidc_client_secret` from a `null` one (both decode to nil; the contract keeps the first and refuses the second), never sees the SAML properties the contract refuses by name, and answers an undecodable body with its own message instead of `invalid JSON`. |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
+| setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | PAC-22: a new operation, so its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
 | googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | |
 | ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | |
 | detectAuthProvider                | POST   | /api/auth/detect                                | auth             | handwritten | |
