@@ -21,7 +21,8 @@ Owner: security-engineer skill (see workspace `AGENT_TEAM.md`).
 
 ```mermaid
 graph LR
-    Browser((User browser)) -->|TLS| Nginx[Nginx reverse proxy]
+    Browser((User browser)) -->|TLS| Proxy[Operator's TLS proxy / load balancer]
+    Proxy -->|HTTP| Nginx[Nginx edge - HTTP only]
     Nginx -->|HTTP loopback| Backend[Paceday API]
     Nginx -->|HTTP loopback| Frontend[Static SPA - nginx-unprivileged]
     Backend -->|TLS| Google[Google Calendar API]
@@ -32,12 +33,12 @@ graph LR
     Backend -->|Postgres wire| DB[(Postgres 16)]
     MCP[MCP server :3001] -->|HTTP| Backend
     Claude((Claude Desktop / Cursor)) -->|stdio| MCP
-    Public((Public booking flow)) -->|HTTPS / TLS| Nginx
+    Public((Public booking flow)) -->|HTTPS / TLS| Proxy
 ```
 
 Trust boundaries (numbered for STRIDE table below):
 
-1. **B1 — Browser → Edge**: TLS at nginx. Termination point for all user HTTPS traffic.
+1. **B1 — Browser → Edge**: TLS is terminated by the operator's proxy or load balancer in front of nginx, which also sets HSTS (owner decision 2026-10-27). nginx speaks plain HTTP only and never redirects to HTTPS. It believes `X-Forwarded-For` / `X-Forwarded-Proto` only from the addresses in `NGINX_TRUSTED_PROXIES` (empty by default: nothing trusted) and sets the browser security headers (PAC-81 Part B).
 2. **B2 — Edge → Backend / Frontend**: Loopback HTTP inside docker-compose network.
 3. **B3 — Backend → Postgres**: SQL on the compose network. No TLS at rest in dev; production should enable.
 4. **B4 — Backend → 3rd-party APIs**: Google, MS, Zoom, Slack, LLM — TLS, OAuth or API-key auth.
@@ -50,11 +51,11 @@ Trust boundaries (numbered for STRIDE table below):
 
 | Boundary | Spoofing | Tampering | Repudiation | Information disclosure | Denial of service | Elevation of privilege |
 |---|---|---|---|---|---|---|
-| **B1 (Browser→Edge)** | Phishing of paceday.* domain (out of scope; rely on registrar + HSTS — note `docs/security.md` follow-up: nginx HSTS still missing per arch review §7). | TLS at edge. | HTTP access logs at nginx. | TLS prevents passive sniff. | Rate-limit at nginx (not yet configured; arch review §7). | n/a |
-| **B2 (Edge→Backend)** | Compose-network isolation — only nginx exposes ports. | Loopback only. | Backend `loggingMiddleware` logs method+path+latency (status not captured; tracked as a follow-up). | n/a | Per-process timeouts. | n/a |
+| **B1 (Browser→Edge)** | Phishing of paceday.* domain (out of scope; rely on registrar + HSTS). **TLS and HSTS are the proxy's responsibility**, not Paceday's: recommended `Strict-Transport-Security: max-age=31536000; includeSubDomains` (no `preload` unless the operator chooses it). nginx never sends HSTS. Forwarded client address and scheme are believed only from `NGINX_TRUSTED_PROXIES`. | TLS at the proxy. nginx sets `Content-Security-Policy` (no inline script, no eval, no framing, images only from the site, `data:` and `*.googleusercontent.com`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin` on every response (PAC-81 Part B). | nginx access log: real client address, method, path without query string, status. | TLS prevents passive sniff. | No nginx-level rate limit by design: abuse protection is application-level (B7). nginx caps bodies at 1 MiB and upstream waits at 130 s. | n/a |
+| **B2 (Edge→Backend)** | Compose-network isolation. The only published ports must be nginx's HTTP port and, when MCP is enabled, MCP on loopback (`127.0.0.1`) only. *Not yet enforced:* until PAC-81 Part C lands, `docker-compose.prod.yml` still publishes `443` and MCP's `3001` on all interfaces. | Loopback only. | nginx's access log records the status and the real client address (PAC-81 Part B). Backend `loggingMiddleware` logs method+path+latency (status not captured until PAC-81 Part A, AC-A13). | n/a | Per-process timeouts. | n/a |
 | **B3 (Backend→DB)** | DB password in compose env; rotated via secret-store in prod (out of scope for the agent team; documented as a follow-up). | Parameterized queries throughout — verified by arch review (§5 of the report). | DB-level audit log via `audit_log` table (`storage.WriteAuditLog`). | At-rest encryption is left to the host. | Postgres `max_connections` + pool config in `storage.Open`. | Single DB role used by the app; not least-privileged. Tracked. |
 | **B4 (Backend→3rd-party)** | OAuth flow with state cookie; every state cookie is `HttpOnly`, `SameSite=Lax` and `Secure` (PAC-20). | TLS + JWT/OAuth bearer at each provider. | Calls logged but not centralized. | Tokens never logged at info+; logging redaction utility to be added (arch review item §12 — structured logging). | Per-provider rate-limit per-user; aggressive retries currently absent. | Tokens scoped per user since migration 017 + PR #35. |
-| **B5 (MCP→Backend)** | **No authentication.** `MCP_AUTH_TOKEN` env var exists but is optional. *This is the largest open gap.* See §6. | HTTP only on loopback. | Backend logs all access. | Same as B2. | Same as B2. | MCP carries full backend privileges — a compromised MCP client = full account. |
+| **B5 (MCP→Backend)** | MCP must be opt-in, reachable on loopback only, and must require `MCP_AUTH_TOKEN` whenever it is enabled (PAC-81 decision D-12). *Not yet enforced:* until PAC-81 Part C lands, the production compose runs MCP by default, publishes it on all interfaces, and an empty token disables auth. See §6. | HTTP only. | Backend logs all access. | Same as B2. | Same as B2. | MCP carries full backend privileges — a compromised MCP client = full account. |
 | **B6 (Claude→MCP)** | Stdio under the user's local account — trusted by definition. | n/a | n/a | n/a | n/a | n/a |
 | **B7 (Anon→Booking)** | None possible (anonymous); the booker email is unverified and attacker-chosen. | Only minimum notice and overlap with the link's own bookings are checked; **no validation of booking time vs availability, link hours or a date bound** (API-094, open). | Booking creates a calendar event carrying the (unverified) booker email. | Slugs are random base32; can't be enumerated. The link-info read is unlimited, so 404 vs 200 is free to probe. | Per-client limits: 20 bookings / 10 min, 120 slot listings / min, per process (NEW-booking-rate-limit). A distributed flood (many addresses) is not stopped. | Booking can write to host's calendar at any time past minimum notice — **not** bounded by the per-link window (API-094). |
 
@@ -79,23 +80,25 @@ Trust boundaries (numbered for STRIDE table below):
 
 ## 6. Top open risks (ranked by severity × exposure)
 
-1. **🔴 MCP server has no built-in auth** (B5). `MCP_AUTH_TOKEN` is optional. Any process on the docker-compose network can call any MCP tool. Mitigation: require `MCP_AUTH_TOKEN` to start the server (fatal on empty, mirror of JWT_SECRET fix in PR #7). Anytype task to be filed.
+1. **🔴 MCP server auth** (B5). MCP is opt-in, and whenever it is enabled `MCP_AUTH_TOKEN` is required: the server must not start without it (PAC-81 D-12, AC-C4/C5). Open until PAC-81 Part C lands: today the token is optional and an empty token lets any process that reaches port 3001 call any MCP tool.
 
 2. ~~**🟠 oauth_state cookie missing `Secure: true`** (B4).~~ Fixed by PAC-20: every cookie carries `Secure` unless `PACEDAY_INSECURE_COOKIES=true` (plain-HTTP dev/e2e only).
 
-3. **🟠 nginx production config lacks TLS / HSTS / CSP / rate-limit** (B1, B7). Tracked in arch review §7; deferred by user.
+3. ~~**🟠 nginx production config lacks TLS / HSTS / CSP / rate-limit** (B1, B7).~~ Resolved by PAC-81 Part B. TLS and HSTS are out of scope for Paceday by owner decision 2026-10-27: the proxy in front terminates TLS and sets HSTS (B1). nginx now sets CSP, `X-Frame-Options`, `nosniff` and `Referrer-Policy`. nginx-level rate limiting is deliberately not used: abuse protection is application-level (B7, NEW-booking-rate-limit).
 
 4. **🟠 LLM provider API keys + SMTP creds in plaintext `settings` columns** (asset). Tracked for at-rest encryption with libsodium/age or `pgcrypto`.
 
-5. ~~**🟡 No rate limit on `/api/book/{slug}` slot fetch + booking POST** (B7).~~ Partly fixed by NEW-booking-rate-limit: per-client limits of 20 bookings per 10 minutes and 120 slot listings per minute (`backend/api/ratelimit_booking.go`). Still open: limits are per process, a client is one exact address (no IPv6 prefix grouping), distributed floods are not stopped, and the release stage must confirm nginx sees real client addresses (spec Q4) or every booker shares one budget.
+5. ~~**🟡 No rate limit on `/api/book/{slug}` slot fetch + booking POST** (B7).~~ Partly fixed by NEW-booking-rate-limit: per-client limits of 20 bookings per 10 minutes and 120 slot listings per minute (`backend/api/ratelimit_booking.go`). Still open: limits are per process, a client is one exact address (no IPv6 prefix grouping), and distributed floods are not stopped. nginx forwards the real client address only when the operator sets `NGINX_TRUSTED_PROXIES` to the proxy's address (PAC-81 Part B); left empty, every booker behind the proxy shares one budget.
 
 6. **🟡 Single DB role for the app — not least-privileged**. Reads + writes use the same credentials. Read-only replica role would harden analytics/recap paths.
 
 7. **🟡 `loggingMiddleware` doesn't capture status code** (B2). Limits incident response — can't tell 200 from 500 in the access log.
 
-8. **🟡 No `Secure` flag on the demo / mock-mode flags in `sessionStorage`** (frontend). Low impact (booleans, not secrets) but documented.
-
-9. **🟠 Public booking time is never validated against availability** (B7, API-094). Any start past the link's minimum notice that does not overlap the link's own bookings is accepted and written to the hosts' calendars, including over busy time, outside the link's hours and arbitrarily far ahead. Open; needs its own spec and PAC issue.
+8. **🟡 No `Secure` flag on the demo / mock-mode flags in `sessionStorage`** (frontend). Low impact (booleans, not secrets) but documented.
+
+9. **🟠 Public booking time is never validated against availability** (B7, API-094). Any start past the link's minimum notice that does not overlap the link's own bookings is accepted and written to the hosts' calendars, including over busy time, outside the link's hours and arbitrarily far ahead. Open; needs its own spec and PAC issue.
+
+10. **🟠 Database backups contain users' provider credentials** (asset, PAC-81 F-D5). OAuth refresh tokens and user LLM keys are stored unencrypted, so every `pg_dump` is as sensitive as the live database: store backups with the `.env` secrets, as secrets. Open; encryption at rest is a follow-up ticket.
 
 ## 7. Out of scope (and why)
 

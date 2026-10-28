@@ -6,8 +6,10 @@
   e550327), bundle sha256 `ffcc55cc0a8fa14179f506e929749bff936cf10f208b94fdc350713ad035e70e`.
 - **Stage**: backend-implementer (plan + implementation), branch
   `impl/pac-81-part-a-backend`.
-- **Where this file lives**: `docs/factory/` (the contract's `allowedPaths`
-  list `docs/factory`, not `docs/plans`, and earlier plans live here).
+- **Where this file lives**: `docs/plans/`, beside Part B's plan
+  (`docs/plans/PAC-81-part-b.md`, on `main` with #245) and as the coordinator
+  asked. The contract's `allowedPaths` list `docs/factory`, not `docs/plans`;
+  this is the one path outside that list, recorded in the PR.
 
 PAC-71 (#242) has not merged on `main`, so AC-A10's "guarded write and the
 PAC-71 sign-in path" and the callback CONNECT branch are out of this PR (the
@@ -120,7 +122,9 @@ is not on `main`, so `.env.example` gets a plain addition.
   noted in the PR).
 - `docker/fileserver/main.go`: server timeouts and `fileserver health` mode
   only (`GET /` on the local port). The API-base injection is untouched (Part B
-  owns it), so Part B rebases onto a small diff.
+  owns it). Part B (#245) merged first; this branch merged `main` and
+  re-applied its half on top of Part B's handler (`newServer`, `healthMode`,
+  the `health` argument), leaving the injection untouched.
 
 ## 2. AC → test (level)
 
