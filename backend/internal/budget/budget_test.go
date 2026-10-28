@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,4 +182,59 @@ func TestHelpersWithoutBudget(t *testing.T) {
 	if Commit(c) {
 		t.Fatal("a done context without a budget must not commit")
 	}
+}
+
+// A handler whose work fails because the budget cancelled it never beats the
+// budget's own answer (the cancellation follows the answer).
+func TestCancelledWorkDoesNotRaceTheAnswer(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		rec := serve(t, 5*time.Millisecond, func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("iteration %d: %d, want the budget's 503", i, rec.Code)
+		}
+	}
+}
+
+// A panic after the budget answered is logged, not lost and not re-raised.
+func TestPanicAfterExpiryIsLogged(t *testing.T) {
+	logged := &syncBuf{}
+	prev := log.Writer()
+	log.SetOutput(logged)
+	defer log.SetOutput(prev)
+	done := make(chan struct{})
+	rec := serve(t, 10*time.Millisecond, func(_ http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		<-r.Context().Done()
+		for !Expired(r.Context()) {
+			time.Sleep(time.Millisecond)
+		}
+		panic("late")
+	})
+	<-done
+	for i := 0; i < 100 && !strings.Contains(logged.String(), "late"); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(logged.String(), "panicked after the budget answered: late") {
+		t.Fatalf("%d %q", rec.Code, logged.String())
+	}
+}
+
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

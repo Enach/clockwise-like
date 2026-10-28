@@ -30,6 +30,10 @@ const Default = 90 * time.Second
 // Message is the fixed error of the budget 503 (contract RequestBudgetExpiredError).
 const Message = "request timed out"
 
+// expiryGrace is how much later than the budget the handler's context
+// reports its deadline; the budget cancels it as soon as it has answered.
+const expiryGrace = 100 * time.Millisecond
+
 // ErrExpired is returned by work that stopped because the budget ran out, or
 // would run out before the work could finish (per-item loops, AC-A17/A18).
 var ErrExpired = errors.New("request budget expired")
@@ -116,7 +120,13 @@ type handler struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), h.budget)
+	// The handler's context ends a little after the budget (expiryGrace), and
+	// is cancelled as soon as the budget has claimed the answer: a database
+	// call cut by the budget then cannot race the budget's own answer with
+	// an error of its own.
+	timer := time.NewTimer(h.budget)
+	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(r.Context(), h.budget+expiryGrace)
 	defer cancel()
 	st := &state{}
 	ctx = context.WithValue(ctx, ctxKey{}, st)
@@ -169,21 +179,30 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 		return
+	case <-timer.C:
 	case <-ctx.Done():
 	}
+	// The client went away (or the server is cancelling requests at the end
+	// of the drain) when the context ended before the budget's own timer.
+	gone := ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
 
 	st.mu.Lock()
-	if st.wrote || st.committed {
+	if st.wrote {
 		st.mu.Unlock()
+		waitHandler()
+		return
+	}
+	if st.committed {
+		st.mu.Unlock()
+		cancel() // the committed work runs detached; stop waiting for the rest
 		waitHandler()
 		return
 	}
 	st.expired = true
 	respond := st.onExpire
 	st.mu.Unlock()
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		// The client went away (or the server is cancelling requests at the
-		// end of the drain): nobody is waiting for an answer.
+	cancel()
+	if gone {
 		return
 	}
 	if respond != nil {
