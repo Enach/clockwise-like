@@ -1,12 +1,23 @@
 # Spec — PAC-71: Sign-in matches accounts by email alone — bind accounts to the provider identity
 
 - **Linear**: https://linear.app/paceday/issue/PAC-71/sign-in-matches-accounts-by-email-alone-anyone-who-controls-an-address
-- **Status**: draft, revision 1 (answers "Challenge, revision 0"; see "Revision 1" at the end)
+- **Status**: draft, revision 2. It answers "Challenge, revision 1" by **narrowing** the ticket to a secure core that can ship. The rest moves to named follow-up tickets (§10 Split). See "Revision 2" at the end.
 - **Author**: spec-author
 - **Priority**: Urgent (security)
-- **Inherited scope**: none blocking. `contracts/openapi/paths/auth.yaml` carries no `x-uncertain` marker on the three sign-in callbacks. Related audit rows: API-092 (auth handlers without Go tests; partly fixed, `docs/factory/api-audit.md:350`): every new callback outcome this spec adds gets a Go assertion. API-026 (`api-audit.md:284`): a connect flow that depends on the session cookie surviving the provider's redirect. This spec's linking step depends on the same thing, so the plan must say how it does (§8 OQ-5).
+- **Inherited scope**: none blocking. `contracts/openapi/paths/auth.yaml` carries no `x-uncertain` marker on the three sign-in callbacks. Related audit rows:
+  - API-092 (auth handlers without Go tests; partly fixed, `docs/factory/api-audit.md:350`): every new callback outcome this spec adds gets a Go assertion.
+  - API-026 (`api-audit.md:284`): a connect flow depends on the session cookie surviving the provider's redirect. The connect step here depends on the same thing (§8 OQ-5).
 - **Origin**: PAC-68 spec OQ-1 (`origin/factory/pac-68-spec`, `docs/specs/PAC-68.md:144`), filed as PAC-71 at the owner's request (owner-decisions, PAC-68 OQ-1).
-- **Verified against**: `clockwise-like` `origin/main` at `ae5c2cf` (2026-10-28); `smart-calendar-flow` `origin/main` at `eea0cf6`. Revision 1 re-read every new citation at those commits. No code was run and no provider endpoint was called.
+- **Verified against**: `clockwise-like` `origin/main` at `ae5c2cf` (still the tip on 2026-10-28); `smart-calendar-flow` `origin/main` at `eea0cf6`; `origin/factory/pac-47-spec` at `24e0833`; `origin/factory/pac-68-spec` at `ec76099`. Revision 2 re-read every citation it adds or changes at those commits. No code was run and no provider endpoint was called.
+- **Orchestrator guidance (factory-level, 2026-10-28)**: revision 2 follows a scope instruction from the factory orchestrator, after two challenge rounds each found six blocking problems because the scope kept growing. The instruction is recorded here as factory guidance, not as an owner decision:
+  1. narrow the ticket to the identity core;
+  2. add per-account session revocation;
+  3. make migration refuse rather than bind where another party may hold the account;
+  4. drop the address-confirmation state machine;
+  5. drop user-facing linking and removal of sign-in methods;
+  6. align the signed-in connect controls with PAC-47.
+
+  Each item is applied below and mapped in "Revision 2".
 
 ## 1. Problem
 
@@ -20,19 +31,23 @@ Concrete account-takeover scenarios against an existing user Henry (`henry@acme.
 4. **Microsoft personal account vs work account.** A personal Microsoft account and a work account can carry the same address. They are different people as far as Microsoft is concerned, but Paceday treats them as one.
 5. **Organisation single sign-on (PAC-22, PAC-50).** An organisation's SSO configuration names an arbitrary OIDC issuer. Members can write that configuration, gated since PAC-50 by an admin step-up or the operator's break-glass list. Any identity that issuer asserts with an `@acme.com` address lands in the existing account for that address, even if the account was created through Google or Microsoft. Swapping the issuer for a different IdP therefore hands every member's account to whoever controls the new IdP.
 6. **Email change or reuse at the provider.** If Henry's address changes at his provider, today's matching sends him to a different (new) account. If the provider later gives `henry@acme.com` to someone else, that person gets Henry's account.
-7. **Squatting, the reverse direction.** A mailbox holder (case 1) or a foreign tenant (case 2) creates the account *before* Henry first uses Paceday. When Henry arrives, he is matched into the attacker's account, or, once accounts are bound to identities, locked out of his own address. Meanwhile the product treats the address as a person in several places: team invitations, scheduling-link co-hosts, a manager's team roster, and the operator's break-glass list (§2 "Address-as-person"). So a squatted account receives what is meant for the address's owner.
+7. **Squatting, the reverse direction.** A mailbox holder (case 1) or a foreign tenant (case 2) creates the account *before* Henry first uses Paceday. When Henry arrives, he is matched into the attacker's account. Meanwhile the product treats the address as a person in several places: team invitations, scheduling-link co-hosts, a manager's team roster, and the operator's break-glass list (§2 "Address-as-person"). So a squatted account receives what is meant for the address's owner.
 
 PAC-68 stops an unverified sign-in from being *granted* organisation membership. It does not stop anyone from reaching an existing member's account, and with it that membership (PAC-68 §3 "Limit"). The cost of the defect is full account takeover: calendar read/write through the stored credential, the user's organisation data, and admin standing where the user has it.
+
+**What this ticket closes, and what it leaves to follow-ups (revision 2).** This ticket closes takeover: cases 1 to 6, and case 7's "matched into the attacker's account" together with the grants a squatter would receive. It does **not** give the address's rightful owner a product path to evict a squatter or to reclaim an address that a departed holder still carries. Those cases are refused safely, and an operator resolves them by a documented procedure (§3 "Operator procedure") until follow-up F2 (§10) ships. Adding, listing and removing sign-in methods moves to follow-up F1.
 
 ## 2. Current behaviour
 
 **One conflict key: the email.** `users.email` is `NOT NULL UNIQUE` (`backend/storage/migrations/006_auth.up.sql:5`), plain text, so the uniqueness is case-sensitive. `provider` and `provider_id` are plain columns with defaults (`006_auth.up.sql:8-9`). `UpsertUser` inserts with `ON CONFLICT (email) DO UPDATE`. On conflict it overwrites `name`, `avatar_url` and **`provider_id`**, but not `provider` (`backend/storage/users.go:21-31`). So:
 - `provider` records the provider of the row's *first* sign-in. The contract says so (`backend/api/gen/paceday.gen.go:1186-1197`).
 - `provider_id` records the identifier of the *most recent* sign-in, from whichever provider it came (`users.go:28`). Nothing records which provider that identifier belongs to. For Microsoft it is Graph `/me`'s `id`; for SSO it is the issuer's `sub`, a string the configured IdP chooses.
-- No code reads `provider_id`. Grep of `backend` outside tests and generated code finds it only in `users.go:23,28`.
-- No callback lowercases the address before the upsert (`handlers_auth.go:64`, `handlers_microsoft_auth.go:69`, `handlers_sso.go:155`). `GetUserByEmail` compares exactly (`backend/storage/users.go:37-40`); its scheduling-link callers lowercase the input first (`handlers_scheduling_links.go:378`), so a stored mixed-case address is not found by them.
+- No code reads `provider_id`. Grep of `backend` outside tests and generated code finds it only in `users.go:23,28` (and the JSON tag of an unrelated struct, `storage/sso_stepup.go:70`).
+- No callback lowercases the address before the upsert (`handlers_auth.go:64`, `handlers_microsoft_auth.go:69`, `handlers_sso.go:155`). `GetUserByEmail` compares exactly (`backend/storage/users.go:37-40`). Its scheduling-link callers lowercase the input first (`handlers_scheduling_links.go:378`, `:553`), so they do not find a stored mixed-case address.
 
-**Routes.** The `/api/auth` group is at `backend/api/routes.go:32-50`. Public: Google start `:33`, Google callback `GET /api/auth/callback` `:34`, Microsoft start `:35`, Microsoft callback `:36`, SSO start `:41`, OIDC callback `:42`. Behind `requireAuth`: status `:47`, Google disconnect `:48`, Microsoft disconnect `:49`.
+**Routes.** The `/api/auth` group is at `backend/api/routes.go:32-50`.
+- Public: Google start `:33`, Google callback `GET /api/auth/callback` `:34`, Microsoft start `:35`, Microsoft callback `:36`, detect `:40`, SSO start `:41`, OIDC callback `:42`.
+- Behind `requireAuth`: Zoom start and callback `:38-39` (per-route, PAC-24), status `:47`, Google disconnect `:48`, Microsoft disconnect `:49`.
 
 **Google callback** (`routes.go:34`; `backend/api/handlers_auth.go:42-84`):
 - It checks the state cookie (`:43-48`), exchanges the code (`:50`) and reads the v2 userinfo endpoint (`:57`, URL at `:232`).
@@ -43,12 +58,12 @@ PAC-68 stops an unverified sign-in from being *granted* organisation membership.
 **Microsoft callback** (`routes.go:36`; `backend/api/handlers_microsoft_auth.go:40-84`):
 - It uses Microsoft's `/common` endpoint, so any tenant and personal accounts can reach it (`backend/auth/microsoft_oauth.go:17-18`).
 - Scopes are exactly `Calendars.ReadWrite`, `User.Read`, `offline_access`, without `openid` (`microsoft_oauth.go:40`). So no ID token is issued and the tenant id is never seen.
-- The profile is Graph `/me?$select=id,mail,displayName` (`handlers_microsoft_auth.go:90`, struct `:93-97`). `mail` is the directory attribute that tenant administrators set. A sign-in without it fails (`:65`).
-- It upserts by `mail` (`:69`) and saves the Microsoft token on the returned row (`:74`). `SaveMicrosoftToken` also sets that row's `calendar_provider = 'outlook'` (`microsoft_oauth.go:90`). This is the work-calendar reset that the owner ruled must go (PAC-47 vs PAC-67 OQ-13); PAC-47 removes it.
+- The profile is Graph `/me?$select=id,mail,displayName` (`handlers_microsoft_auth.go:90`, struct `:93-97`). It carries no tenant. `mail` is the directory attribute that tenant administrators set. A sign-in without it fails (`:65`).
+- It upserts by `mail` (`:69`) and saves the Microsoft token on the returned row (`:74`). `SaveMicrosoftToken` also sets that row's `calendar_provider = 'outlook'` (`microsoft_oauth.go:90`). This is the work-calendar reset that the owner ruled must go (PAC-47 vs PAC-67 OQ-13); PAC-47 removes it (PAC-47 D-17).
 - It then associates the org (`handlers_microsoft_auth.go:78`), issues the session (`:79`) and redirects with `?provider=outlook` (`:83`).
 
 **OIDC SSO callback** (`routes.go:42`; `backend/api/handlers_sso.go:103-167`):
-- The issuer, client id and secret come from the SSO provider row for `{domain}` (`:118-131`). An org member writes that row behind PAC-50's step-up or the break-glass list (`handlers_sso.go:183-247`, `handlers_sso_stepup.go:228-252`).
+- The issuer, client id and secret come from the SSO provider row for `{domain}` (`:118-131`). An org member writes that row behind PAC-50's step-up or the break-glass list (`handlers_sso.go:183-247`, `handlers_sso_stepup.go:228-252`). Before PAC-50 any member could write it.
 - The ID token is verified against that issuer and client id (`backend/auth/oidc.go:79-83`). The claims kept are `sub`, `email`, `name` (`oidc.go:19-23`). `email_verified` is not read.
 - The only identity check is that the email belongs to `{domain}` (`handlers_sso.go:150-153`, PAC-45). The callback then upserts by email (`:155`), with provider `"sso"` and `provider_id` = `sub`, associates the org (`:160`) and issues the session (`:162`).
 - SAML is refused with 501 (`:62-65`).
@@ -62,69 +77,94 @@ PAC-68 stops an unverified sign-in from being *granted* organisation membership.
 | Dashboard "Connect calendar" banner | `src/pages/Dashboard.tsx:475` | Connects Google (no provider argument). |
 | Onboarding calendar step | `src/pages/Onboarding.tsx:80` | Navigates to the start for the provider chosen in the step. |
 
-The public sign-in dialog uses the same start routes (`src/components/auth/AuthDialog.tsx:79` by button, `:98` Google with a login hint, `:102` Microsoft with a login hint). `git grep authConnectUrl` on `origin/main` finds no other caller outside tests and generated code. Both callbacks are public (`routes.go:34`, `:36`) and never look at the session the browser already holds. A signed-in user who connects Outlook therefore:
+`git grep authConnectUrl` on `eea0cf6` finds no other caller outside tests and generated code. The public sign-in dialog has four starts (`src/components/auth/AuthDialog.tsx`):
+- `:79`, by button (Google or Microsoft);
+- `:98`, Google with a login hint;
+- `:102`, Microsoft with a login hint;
+- `:108`, the SSO start, following the `redirect_url` that `/api/auth/detect` returns.
+
+Both OAuth callbacks are public (`routes.go:34`, `:36`) and never look at the session the browser already holds. A signed-in user who connects Outlook therefore:
 - lands in their own row only when the Microsoft `mail` equals their Paceday address;
 - otherwise lands in, or creates, *another* account and is switched to it, because the callback issues a new session for whatever row the upsert returned (`handlers_microsoft_auth.go:69-79`).
 
 The web app recognises only one failure state, `?error=auth_failed` (`src/pages/AuthCallback.tsx:8`, `src/pages/Index.tsx:568`, `src/components/auth/SignInFailedNotice.tsx:8`).
 
-**A test pins today's email matching.** `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller` (`backend/api/pac67_conferencing_test.go:322-358`) creates `alice` with no provider identity (`createTestUser`, `backend/api/handlers_teams_test.go:53-60`). It then runs the Microsoft callback with **no session** and a Graph answer `id: ms-alice`, `mail: alice's address` (`pac67_conferencing_test.go:333-341`), and asserts that the token lands on alice (`:346-349`). Under this spec that callback is a sign-in against an account with no binding (§3 "Accounts created before this change"), so the test must be rewritten.
+**PAC-47 already defines the connect for Outlook** (`docs/specs/PAC-47.md:377-411` on `origin/factory/pac-47-spec` `24e0833`, revision 5; not yet on `main`):
+- An Outlook connection started by the signed-in user from one of the same four controls attaches the Microsoft credential to the account that started it, whatever email the Microsoft account has. It does not sign the browser in as anyone else, creates no account, and changes no other account.
+- It is credited only while that account is still the one signed in when the Microsoft step completes; otherwise it is credited to nobody and changes no session (PAC-47 AC-3e, AC-3f).
+- A Microsoft flow that no connect action started is a sign-in, wherever it was started, and a session being present does not make it a connect (PAC-47 D-18, AC-3h, AC-3i).
+- A sign-in sets a work calendar only for the account it creates (PAC-47 D-17, AC-3j to AC-3l).
 
-**A test pins today's sign-in scopes.** `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` (`backend/auth/pac50_signin_scopes_test.go:19-69`, PAC-50 AC-24, owner decision 2026-10-27) asserts that each sign-in's scope parameter is **exactly** today's set: Google `{calendar, userinfo.email}`, Microsoft `{Calendars.ReadWrite, User.Read, offline_access}`, OIDC `{openid, profile, email}`; and that none carries a step-up or admin-consent scope.
+**Tests pin today's email matching.**
+- `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller` (`backend/api/pac67_conferencing_test.go:322-358`) creates `alice` with no provider identity (`createTestUser`, `backend/api/handlers_teams_test.go:53-60`). It runs the Microsoft callback with **no session** and a Graph answer `id: ms-alice`, `mail: alice's address` (`pac67_conferencing_test.go:333-341`), and asserts that the token lands on alice (`:346-349`).
+- PAC-47's AC-3i (a) and (b), AC-3k and AC-3l (`PAC-47.md:650-695` at `24e0833`) expect a Microsoft sign-in to reach an existing user whose address equals the Microsoft account's, including a user who signed up with Google.
 
-**Sessions** are 7-day HS256 JWTs carrying the user id, the email and an issue time (`backend/auth/jwt.go:17-27`). There is no server-side session store (`e2e/auth.ts:13-15`). The issue time is already read for break-glass freshness (`backend/api/middleware.go:18-24`; `breakGlassFreshness = 10 * time.Minute`, `handlers_sso_stepup.go:43`). A session obtained through email matching before this change stays valid until it expires.
+**A test pins today's sign-in scopes.** `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` (`backend/auth/pac50_signin_scopes_test.go:19-69`, PAC-50 AC-24, owner decision 2026-10-27) asserts that each sign-in's scope parameter is **exactly** today's set:
+- Google `{calendar, userinfo.email}`;
+- Microsoft `{Calendars.ReadWrite, User.Read, offline_access}`;
+- OIDC `{openid, profile, email}`.
+
+It also asserts that none carries a step-up or admin-consent scope. PAC-68 (accepted, `ec76099`) allows the plan to add "sign-in identity scopes that need no tenant-admin consent", including `openid` (`PAC-68.md:115` AC-15, `:158` D-5).
+
+**Sessions.**
+- Sessions are 7-day HS256 JWTs carrying the user id, the email and an issue time (`backend/auth/jwt.go:11-27`).
+- There is no server-side session store (`e2e/auth.ts:13-15`). The only validation site is `requireAuth` (`backend/api/middleware.go:39`, `ValidateToken` at `:57`), which reads no server state.
+- Logout only expires the browser's cookie (`backend/api/handlers_me.go:31-42`). Nothing can end a session held by another browser before it expires.
+- The issue time is already read for break-glass freshness (`middleware.go:18-24`, `:71-73`; `breakGlassFreshness = 10 * time.Minute`, `handlers_sso_stepup.go:43`).
 
 **PAC-50 step-up and break-glass compare email, not identity.**
 - The step-up identity carries email, verified flag, `hd`, `tid`, `preferred_username` and roles, but no subject or object id (`backend/auth/stepup.go:172-182`).
 - Google step-up requires `hd` equal to the org domain, a verified email equal to the session's email, and admin status (`backend/api/handlers_sso_stepup.go:494-508`).
-- Microsoft step-up requires the tenant's verified domains to contain the org domain and the `/organization` tenant id to equal the token's `tid` (`:511-513`; `/organization?$select=id,verifiedDomains` at `stepup.go:290`, read with the step-up's own wider scopes), the tenant pin to hold, the username or email to equal the session's email, and a qualifying role (`:514-533`).
+- Microsoft step-up requires:
+  - the tenant's verified domains to contain the org domain, and the `/organization` tenant id to equal the token's `tid` (`:511-513`; `/organization?$select=id,verifiedDomains` at `stepup.go:290`, read with the step-up's own wider scopes);
+  - the tenant pin to hold;
+  - the username or email to equal the session's email;
+  - a qualifying role (`:514-533`).
 - Break-glass passes when the lowercased **session email claim** is on the operator's list and the session is under 10 minutes old (`handlers_sso_stepup.go:238-244`).
 
-**Address-as-person.** These sites treat an address as a Paceday person:
+**Address-as-person.** These sites treat an address as a Paceday person. Revision 2 sorts them into two kinds. A **granting** site gives the address's holder something new. A **revoking or keeping** site takes something away, or decides what is kept.
 
-| Site | Lookup |
-|---|---|
-| Team-invite acceptance | `backend/api/handlers_teams.go:300-305`: accepted when the session user's stored address equals the invitee address (case-insensitive). The invite is also mailed to the address with its token (`:214`, sender `:621-651`, only when `SMTP_HOST` and `SMTP_FROM` are set). |
-| Scheduling-link co-host on create | `handlers_scheduling_links.go:377-382` |
-| Scheduling-link co-host list patch | `handlers_scheduling_links.go:553` |
-| Scheduling-link add co-host | `handlers_scheduling_links.go:656-660` |
-| Manager adds a team member | `backend/api/handlers_manager.go:319` (exact match) |
-| Manager removes a team member | `handlers_manager.go:356` (`lower(email)`) |
-| Manager roster import | `backend/engine/manager.go:244` (exact match) |
-| Break-glass | `handlers_sso_stepup.go:238` (session email claim) |
-| Organisation association by domain | `storage/orgs.go:42-52`, owned by PAC-68 |
+| Site | Kind | Lookup today |
+|---|---|---|
+| Team-invite acceptance | granting | `backend/api/handlers_teams.go:300-305`: accepted when the session user's stored address equals the invitee address (case-insensitive). The invite is also mailed to the address with its token (`:214`, sender `:621-651`, only when `SMTP_HOST` and `SMTP_FROM` are set). |
+| Scheduling-link co-host on create | granting | `handlers_scheduling_links.go:377-382` (input lowercased, exact match; invite stored against the user id, `:382`) |
+| Scheduling-link add co-host | granting | `handlers_scheduling_links.go:656-660` |
+| Scheduling-link co-host list patch, new entries | granting | `handlers_scheduling_links.go:547-562`: every listed address found is invited (`:558-561`) |
+| Scheduling-link co-host list patch, keep set | keeping | `handlers_scheduling_links.go:550-557`: hosts whose address is not found are removed (`:557`). A stored mixed-case address is never found (lowercased input, exact match), so an accepted co-host stored that way is removed silently. |
+| Manager adds a team member | granting | `backend/api/handlers_manager.go:319` (exact match) |
+| Manager roster import | granting | `backend/engine/manager.go:244` (exact match) |
+| Manager removes a team member | revoking | `handlers_manager.go:345-369`: `lower(email)` lookup with a single-row read (`:356`). If no account is found, the team membership is not touched, but the call still removes the manager assignment and pending invites and answers 204 (`:364-368`). If two accounts differ only in letter case, only one is read. |
+| Break-glass | granting | `handlers_sso_stepup.go:238` (session email claim) |
+| Organisation association by domain | — | `storage/orgs.go:42-52`, owned by PAC-68 |
 
 **Deployments.** Production had zero users on 2026-10-21; other deployments may have some (`docs/specs/PAC-22.md:80`, citing PAC-49 §2 item 1).
 
 **Test coverage today:**
-- Callback success and failure redirects: `backend/api/pac35_auth_flows_test.go:142-246` (Google and Microsoft) and `:286` (OIDC every documented status).
+- Callback success and failure redirects: `backend/api/pac35_auth_flows_test.go:142-246` (Google and Microsoft) and `:286` (OIDC, every documented status). Their fixtures carry no Google verified flag (`:145`, `:163`, `:169`). The Microsoft runner fakes only the `/me` answer (`:183`), with no organisation answer (`:196`, `:211`, `:241`).
 - The SSO email-domain binding: `backend/api/handlers_sso_test.go:161-195`.
 - The sign-in scope sets: `pac50_signin_scopes_test.go:19-69`.
 - No test asserts anything about *which* account a sign-in reaches when two identities share an address.
+- No test covers the manager's removal of an address no account carries, or the co-host keep set with a mixed-case stored address.
 - e2e cannot reach any sign-in callback. It mints the session directly and names that gap (`e2e/auth.ts:17-25`).
 
 ## 3. Desired behaviour
 
 ### Identities
 
-An account belongs to the identities bound to it, not to an address. An identity is the provider authority together with the subject that authority issues:
+An account belongs to the identity bound to it, not to an address. An identity is the provider authority together with the subject that authority issues:
 
 - **Google**: Google's stable account identifier.
 - **Microsoft work or school account**: the pair of tenant and object id, both taken from Microsoft's answers for the same access token. The same object id from another tenant is a different identity.
-- **Microsoft personal account**: its own authority, distinct from every work tenant, with Microsoft's identifier for the personal account. An account is classified personal only on a positive signal in Microsoft's answer; an answer that cannot be classified fails the sign-in (generic failure, nothing written).
+- **Microsoft personal account**: its own authority, distinct from every work tenant, with Microsoft's identifier for the personal account. An account is classified personal only on a positive signal in Microsoft's answer. An answer that cannot be classified fails the sign-in (generic failure, nothing written).
 - **Organisation SSO**: the issuer the ID token was verified against, together with that issuer's subject. Two different issuers are different identities even if one asserts the other's subjects.
 
 Identifiers are only ever compared together with their authority. An identifier from one authority never matches an identifier from another, even when the strings are equal.
 
-All identity evidence comes from the answers today's sign-in permissions already return. Sign-in requests exactly today's permissions (owner, PAC-68 OQ-2; PAC-50 AC-24). Where a part of the *identity* (for example the Microsoft tenant) cannot be obtained for a sign-in, the sign-in fails with the generic failure state and nothing is written.
+All identity evidence comes from the answers that today's sign-in permissions already return. Sign-in requests exactly today's permissions (owner, PAC-68 OQ-2; PAC-50 AC-24). Where a part of the *identity* (for example the Microsoft tenant) cannot be obtained for a sign-in, the sign-in fails with the generic failure state and nothing is written.
 
-### Address standing
+In this ticket an account has **at most one** bound identity. Binding a second identity is follow-up F1.
 
-An account's address has one of three standings. The standing, not the mere presence of the address, decides what the address may do.
-
-- **Domain-confirmed**: a sign-in through one of the account's bound identities carried *authoritative* evidence for the address (below). At most one account holds an address domain-confirmed.
-- **Email-confirmed**: the signed-in user proved current control of the mailbox with a Paceday confirmation message sent to the address (below). At most one account holds an address email-confirmed, and only while no account holds it domain-confirmed.
-- **Unconfirmed**: everything else.
+### Evidence and address standing
 
 **Evidence a sign-in carries for its reported address:**
 
@@ -134,106 +174,158 @@ An account's address has one of three standings. The standing, not the mere pres
 | Mailbox | email verified, any other domain | — | only if OQ-3 names an answer that says Microsoft verified the address; otherwise none | — |
 | None | email not verified, or flag absent | the tenant does not verify the domain, or the lookup fails | as above | — |
 
-Mailbox evidence is weaker than a Paceday confirmation: Google's flag records that a mail reached the address at some past time and stays set after the mailbox is lost (§1 case 1). Authoritative evidence comes from the party that controls the address's domain.
+Mailbox evidence is weaker than authoritative evidence. Google's flag records that a mail reached the address at some past time, and it stays set after the mailbox is lost (§1 case 1). Authoritative evidence comes from the party that controls the address's domain.
+
+**An account's address has one of two standings:**
+- **Domain-confirmed**: the sign-in that bound the account's identity carried authoritative evidence for the account's address.
+- **Unconfirmed**: everything else. That covers an account bound with mailbox evidence, and an account created before this change that has not bound yet.
 
 **What standing allows:**
-- Only a domain-confirmed or email-confirmed address is a person. Every address-as-person site in §2 (team-invite acceptance, scheduling-link co-hosts in all three places, the manager's member add, remove and roster import) resolves an address only to the account that holds it confirmed, preferring the domain-confirmed holder. An unconfirmed address resolves to nobody. Organisation membership remains PAC-68's rule.
-- An account whose address is unconfirmed works fully for its own user (calendar, scheduling, settings). Settings shows the address as unconfirmed and offers to confirm it by email.
-- **Paceday email confirmation.** A signed-in user whose address is unconfirmed may ask for a confirmation message. It is sent to the account's address, carries a single-use code that expires, and confirms the address only when opened in a browser holding a session for that same account. It is refused while another account holds the address confirmed. Where the deployment has no mail sender configured, confirmation is unavailable and Settings says so.
-- **Authority wins.** When a sign-in with authoritative evidence arrives for an address that another account holds only email-confirmed or unconfirmed, the authoritative sign-in is not refused because of it (unless rule 3 applies to a bound account it would otherwise reach). It reaches or creates its own account, which holds the address domain-confirmed. The other account loses the address standing (it becomes unconfirmed), keeps its binding, data and sessions, and is not deleted. Address-based grants it has already accepted stay accepted (D-9); pending ones resolve to the new holder from then on.
-- Addresses are compared case-insensitively. Two addresses that differ only in letter case are the same address everywhere this spec says "address".
+- **Granting sites** (§2 table: team-invite acceptance; scheduling-link co-host on create, on add, and the new entries of a list patch; the manager's member add and roster import; break-glass) resolve an address only to an account that holds it **domain-confirmed**. An unconfirmed address resolves to nobody there. Team-invite acceptance answers that the invite is for a different address, as it does today for a mismatch.
+- **Revoking and keeping sites** (the manager's member removal; the keep set of a co-host list patch) act on **every** account that carries the address, at any standing, compared case-insensitively. A removal of an address that some account carries is never a silent no-op. A keep never drops an accepted co-host whose address is listed.
+- An account whose address is unconfirmed works fully for its own user (calendar, scheduling, settings). Settings shows that the address is not confirmed and that invitations addressed to it cannot be accepted yet.
+- Organisation membership remains PAC-68's rule.
+- Addresses are compared case-insensitively. Two addresses that differ only in letter case are the same address everywhere this spec says "address". No new account may carry an address that an existing account carries in any letter case.
+
+There is no Paceday email confirmation in this ticket, and no way for an authoritative sign-in to take an address from an account that carries it. Both are follow-up F2.
 
 ### The sign-in rule
 
-1. **A sign-in reaches an account only through a bound identity.** If the identity is bound, the sign-in reaches that account, whatever address the provider now reports.
+1. **A sign-in reaches an account only through its bound identity.** If the identity is bound, the sign-in reaches that account, whatever address the provider now reports.
 2. **Bound identities are found only by authority and subject.** The address is never consulted to choose the account for a bound identity.
-3. **The address never links a sign-in to an account that already has a bound identity.** This holds whatever the provider says about the address, including authoritative evidence.
-4. **A new identity creates an account** as follows:
-   - with authoritative evidence: created, bound, and its address domain-confirmed, unless an account already holds the address domain-confirmed (refused, D-12), or an unbound account created before this change carries the address (then migration rule (b) applies instead);
-   - with mailbox evidence: created, bound, and its address unconfirmed, unless any account carries the address at any standing (refused);
+3. **The address never links a sign-in to an account that has a bound identity.** This holds whatever the provider says about the address, including authoritative evidence.
+4. **An unknown identity whose address an existing account carries** (any standing, any letter case) is refused with the single refusal message (§3 "Refusal"). The one exception is an account created before this change, which the migration rules below decide.
+5. **An unknown identity whose address no account carries creates an account** as follows:
+   - with authoritative evidence: created, bound, address domain-confirmed;
+   - with mailbox evidence: created, bound, address unconfirmed;
    - with no evidence: refused.
-5. **A second identity is added to an account only through the link step** (below). It is never added by a sign-in, by the presence of a session cookie, by the organisation's "extended access" step (owner, PAC-68 OQ-2), or by any other provider round trip.
+6. **No sign-in, connect, step-up or "extended access" round trip adds an identity to an account that already has one** (owner, PAC-68 OQ-2 for "extended access"). Adding a sign-in method is follow-up F1.
 
-### The link step (adding a sign-in method)
+### Connecting a calendar from inside the product (the connect step)
 
-The link step is distinct from sign-in. It is started only from a signed-in surface, by the signed-in user, and is tied to that session and to a single-use state. The provider's answer is attached to that same account. Before the browser leaves for the provider, the app states that the provider account will also become a way to sign in to Paceday.
+This follows PAC-47 §3 item 3 (`PAC-47.md:377-411`) and extends it to Google.
 
-- **Fresh proof.** Adding a *new* identity requires that the session holding the link step was issued, by a sign-in made under this change's rules, no more than 10 minutes before the link callback completes (the same freshness PAC-50 uses for break-glass). A session issued by the code before this change never qualifies, however recent. Otherwise the link is refused with a distinct "confirm it's you" outcome: nothing is written, the session is kept, and the app asks the user to sign in again with a method they already have, then retry.
-- **Reconnecting an identity already bound to this account** only replaces its stored credential. It adds no sign-in method, so it needs no fresh proof.
-- **An identity bound to another account** is refused (D-3); both accounts are unchanged.
-- **Address standing.** If the linked identity carries authoritative evidence for the account's own address, the account's address becomes domain-confirmed (subject to "authority wins"). A linked identity reporting a different address changes nothing about the account's address (D-7).
-- **Work calendar.** The link step changes the account's work calendar only when the user chose that provider as the work calendar in the control that started it (Settings work-calendar control, onboarding's calendar step). Every other link step, and every sign-in through an identity added by a link step, leaves the work calendar unchanged. In particular, the success path of a Microsoft sign-in through a link-added identity never sets the work calendar to Outlook.
+- The four signed-in controls (§2 table: Settings work-calendar control, connection status control, Dashboard "Connect calendar" banner, onboarding calendar step) start a **connect**, never the public sign-in start. The public sign-in dialog's four starts (§2) keep the public sign-in start.
+- A connect attaches the provider's calendar credential to the account that started it, whatever identity and address the provider account has. It **does not bind that identity and adds no sign-in method.** It creates no account, issues no new session, and changes no other account.
+- It is credited only while the account that started it is still the one signed in when the provider step completes. Otherwise it is credited to nobody and changes no session (PAC-47 AC-3f).
+- A connect is recognised only by something that a connect action of the signed-in user produces and another site cannot. A flow that no connect action started is a sign-in, wherever it was started. A session being present does not make it a connect (PAC-47 D-18).
+- A connect never changes the work calendar. The Settings work-calendar control and the onboarding step change the work calendar by the user's explicit choice in that control before the connect starts, as today (§2).
+- The provider identity used by a connect stays unknown for sign-in. If that provider account later signs in, rules 1 to 5 apply to it as to any other identity. For example, a Google account connected to Henry, Microsoft-bound, that reports `henry@acme.com` is refused at sign-in (rule 4).
 
-**Signed-in connect surfaces become link steps.** Each of these starts the link step, never the public sign-in start: the Settings work-calendar control, the connection status control, the Dashboard "Connect calendar" banner, and the onboarding calendar step (§2 table). The public sign-in dialog keeps the public sign-in start. With today's scopes, linking Google or Microsoft also stores that provider's calendar credential; that is unchanged.
-
-**Sign-in methods in Settings.** Settings lists every identity bound to the account: the provider (and, for SSO, the organisation), the address the provider reported when it was bound, when and how it was added (created the account, migration, link step). The user can:
-- add a method (the link step), including the organisation's SSO when the organisation has one configured;
-- remove any method that is not the last one. Removal requires the same fresh session as adding. After removal, that identity no longer reaches the account, and every other session of the account ends. The calendar credential of that provider is not touched by the removal; it is disconnected separately.
-
-**Disconnecting a calendar** (Google or Microsoft) does not remove the sign-in method. The disconnect result tells the user, in the same message, that the provider account is still a way to sign in and where to remove it. Removing it silently could remove the user's only sign-in method; keeping it silently would leave a sign-in path the user has not seen. Showing it does neither.
+This answers OQ-1 **"no" for this ticket** (factory guidance, §8): connecting a calendar never adds a sign-in method. Whether the product should later offer to add one, and how, belongs to follow-up F1.
 
 ### Accounts created before this change (migration)
 
-Existing accounts carry no binding (§2). Until one binds, its address keeps resolving as today (it is treated as email-confirmed), so co-host and team invitations to existing users keep working. An existing account is bound **lazily, on its first sign-in after this change** that meets one of these conditions:
+Existing accounts carry no binding (§2). Until one binds, its address is unconfirmed: granting sites resolve it to nobody and revoking and keeping sites act on it. An existing account is bound **lazily, on its first sign-in after this change**, under one of two rules. Anything else that matches an unbound existing account only by address is refused (rule 4).
 
-- **(a) The identifier matches, same authority.** The incoming identity is a Google or Microsoft identity, the account's recorded identifier equals that identity's subject in the same field the code recorded (Google: the userinfo identifier; Microsoft: Graph's user `id`), and the recorded value has the format that provider issues (the contract names the formats; a value that fits more than one provider's format never matches). An SSO subject never qualifies under (a): the configured IdP chooses it. The provider must report the account's address with at least mailbox evidence.
-- **(b) Authoritative evidence, Google and Microsoft only.** The sign-in carries authoritative evidence for the account's address (Google hosted domain or Google consumer domain; Microsoft work tenant that verifies the domain). An SSO issuer is **not** authoritative over an existing account, bound or not (D-10, OQ-2's default).
+- **(a) Same identity as recorded.** The incoming identity is a Google or Microsoft identity, and the account's recorded last-sign-in identifier equals that identity's subject:
+  - in the same field the code recorded (Google: the userinfo identifier; Microsoft: Graph's user `id`);
+  - in the format that provider issues. The contract names the formats; a value that fits more than one provider's format never matches.
 
-On binding, the account's address standing is set from the sign-in's evidence (domain-confirmed for authoritative, unconfirmed for mailbox). Any other sign-in that matches an unbound existing account only by address is refused. Binding happens once and atomically: when two qualifying identities race for the same unbound account (a domain verified in both Google Workspace and Microsoft Entra), exactly one binds and the other is refused. After binding, the account follows the rules above.
+  The provider must report the account's address with at least mailbox evidence. An SSO subject never qualifies under (a), because the configured IdP chooses it. The standing is set from the evidence: domain-confirmed for authoritative, unconfirmed for mailbox.
+- **(b) Authoritative evidence, and no other party on the account.** A Google or Microsoft sign-in carrying authoritative evidence for the account's address binds the account only when both hold:
+  - the account has **no recorded last-sign-in identifier** from Google or Microsoft (the recorded value is empty, or is an SSO subject);
+  - the account carries **no stored provider credential and no third-party connection or key of any kind** (calendar credentials, conferencing, Slack, Notion, personal AI key, and any other the plan enumerates).
 
-- A user who used both Google and Microsoft before this change gets one of them bound by (a) or (b). They add the other through the link step.
-- **Existing members and SSO.** An existing member starts using SSO by adding it from Settings' sign-in methods through the link step (fresh session required). If the organisation's issuer changes, the old SSO identity no longer matches and each member adds the new one the same way.
-- **Case collisions.** If two existing accounts carry addresses that differ only in letter case, the deployment neither merges nor deletes them. Every address match against that address (sign-in, migration, address-as-person) is refused or resolves to nobody until an operator resolves it, and the server log names the collision.
+  Otherwise the sign-in is **refused**: the account stays unbound, nothing is stored on it, the single refusal message is shown, and the server log names the account and the cause for the operator (§3 "Operator procedure"). An SSO issuer is never authoritative over an existing account, bound or not (D-10, OQ-2's default).
+
+  *Why (b) is this narrow.* An account carrying a different recorded identifier, or a credential or connection, was used by someone, and that someone may not be the person now presenting. Example (revision 1 Blocking 1):
+  - Before deployment, a mailbox holder at `henry@acme.com` created account A with a consumer Google account GA, connected Slack and set an AI key.
+  - Henry first signs in after deployment with acme's Workspace G1 (`hd=acme.com`).
+  - Revision 1 bound G1 to A and stored Henry's calendar credential on A, which the squatter's sessions and integrations could still reach.
+  - Under (b) here, A's recorded identifier GA differs from G1, so Henry is refused. His credential never reaches A, and an operator resolves the address.
+
+  A genuine user who used both providers before this change and last signed in with the other one gets the same message. It tells them to sign in the way they did before, which binds under (a). That costs one extra sign-in.
+- **Every binding ends every other session of the account** (§3 "Sessions"). The session issued by the binding sign-in is the only valid one afterwards. Any session from before the binding, including one obtained by email matching before the change, stops working at its next request.
+- Binding happens once and atomically. When two qualifying identities race for the same unbound account (for example a domain verified in both Google Workspace and Microsoft Entra, on an account with no recorded identifier), exactly one binds and the other is refused.
+- A user who used both Google and Microsoft before this change gets one of them bound. Signing in with the other one is refused (rule 3). They can still connect the other provider's calendar from inside the product (the connect step). Adding it as a sign-in method is follow-up F1.
+- **Existing members and SSO.** An existing member's account is never reached through SSO in this ticket (D-10). Until follow-up F1 lets a member add SSO as a sign-in method, existing members keep signing in with Google or Microsoft. New members whose address no account carries can sign up through SSO (rule 5).
+- **Case collisions.** If two existing accounts carry addresses that differ only in letter case, the deployment neither merges nor deletes them:
+  - every sign-in or migration match against that address is refused, even when rule (a)'s identifier matches;
+  - granting sites resolve the address to nobody;
+  - revoking and keeping sites act on both accounts;
+  - the server log names the collision.
 - Nothing is deleted. No account, membership, credential or setting is removed by the migration or by a refusal (D-9).
+
+### Sessions
+
+- Every account has a **session generation**. Every session carries the generation of its account at the moment the session was issued. Every authenticated request is refused as unauthenticated (today's 401) when the session's generation is not the account's current one.
+- A session issued before this change carries no generation. It is valid only while its account's generation is still the initial value.
+- The generation advances whenever a binding is written or changed for the account. In this ticket that means a migration binding (a) or (b), or an operator's step under the operator procedure. The session that the same sign-in issues carries the new generation.
+- **Deploy-time step (OQ-6, the owner decides).** The factory recommends advancing every account's generation once at deployment, which signs every user out once. It closes every session obtained through email matching before the change, including on accounts that never sign in again. Without it, such a session stays valid until it expires (at most 7 days), on any account that does not bind in that time.
+- Logout is unchanged: it expires the browser's cookie. A user-facing "sign out everywhere" is follow-up F3.
 
 ### Refusal
 
-When a sign-in cannot reach an account under these rules, the user is told so plainly on the web app's sign-in page. Examples are an address that belongs to an account bound to another identity, an unbound account without (a) or (b), or a new identity without evidence. The message says that Paceday could not sign them in with this account. It also says that if they already use Paceday, they should sign in the way they did before and add this sign-in method from Settings.
+When a sign-in cannot reach an account under these rules, the user is told so plainly on the web app's sign-in page. Examples are:
+- an address that belongs to an account bound to another identity;
+- an unbound pre-existing account where neither (a) nor (b) applies;
+- an address that an account carries while the incoming identity is unknown;
+- a new identity without evidence.
+
+The message has two parts. It says that Paceday could not sign them in with this account. It says that if they already use Paceday, they should sign in the way they did before, and otherwise contact their workspace administrator or the Paceday operator.
 
 The message is the same for every refusal cause, so it does not reveal whether an account exists for the address (D-6). It is distinct from today's generic "sign-in did not complete" state.
 
 A refusal:
 - creates no account and binds nothing;
 - stores no provider credential;
-- changes no organisation membership, no work calendar and no address standing;
+- changes no organisation membership, no work calendar, no address standing and no session generation;
 - issues no session, and leaves any session the browser already holds untouched (as PAC-35's failure state does today).
 
-The server log records the cause. Link-step refusals (identity bound elsewhere, "confirm it's you") return to the signed-in surface with their own messages; they are not sign-in refusals and keep the session.
+The server log records the cause, and for causes involving an existing account it names that account, so the operator procedure can act on it.
 
 ### Address changes and reuse at the provider
 
 - A bound identity whose provider now reports a different address still reaches its account.
 - The account's stored address does **not** change on sign-in (D-7). If the new address belongs to another account, that account is not touched.
-- A provider that gives an address to a new subject (a recycled mailbox) does not reach the old holder's account. With authoritative evidence, the new subject is refused while the old account holds the address domain-confirmed; an operator resolves it (D-12).
+- A provider that gives an address to a new subject (a recycled mailbox) does not reach the old holder's account. The new subject is refused while any account carries the address (rule 4). An operator resolves it (D-12) until follow-up F2.
+
+### Operator procedure (interim, until follow-up F2)
+
+The release ships a written operator procedure (in the operator documentation, not in the product) for the refusals that lock a rightful owner out of an address:
+- an address carried by a mailbox-only account (a squatter);
+- an address held by a departed holder (a recycled mailbox);
+- an unbound legacy account refused under (b);
+- a case collision.
+
+For each, the procedure gives four steps:
+1. Find the account named in the server log.
+2. Verify the person presenting through a channel outside Paceday, for example the domain's administrator.
+3. Free the address on the account that carries it. The account is never deleted. Its address is replaced by a non-deliverable placeholder, its stored credentials and third-party connections are removed when it is a squatter's, and its session generation is advanced.
+4. Ask the person to sign in again. The sign-in then follows rule 5 or migration (b).
+
+The procedure states that freeing an address removes that account from every address-based grant it has not yet accepted.
 
 ### Organisation membership (PAC-68)
 
-Membership is still decided by PAC-68's rule on the provider's answer for the sign-in. This spec only makes sure that rule is evaluated for the account the identity is bound to, and never for an account reached through an address. A refused sign-in evaluates membership for nobody.
+Membership is still decided by PAC-68's rule on the provider's answer for the sign-in. This spec only makes sure that rule is evaluated for the account the identity is bound to, and never for an account reached through an address. A refused sign-in, and a connect, evaluate membership for nobody.
 
 ### PAC-50 admin step-up and break-glass
 
-- **Step-up.** When the account has a bound identity at the authority the step-up uses (Google, or the same Microsoft tenant), the step-up's identity must be that bound identity, in addition to today's checks. A step-up by another Google account or another object id with the same address fails as an identity mismatch. When the account has no binding at that authority, today's checks apply unchanged. The step-up adds no new consent beyond its own (owner, PAC-68 OQ-2).
-- **Break-glass.** The operator's list still names addresses. A listed address authorises the account that holds that address **domain-confirmed**, identified by the session's account, not by the email claim the session carries. A session whose account holds the address only email-confirmed or unconfirmed, or no longer holds it, is not break-glass. The 10-minute freshness stays.
+- **Step-up.** When the account's bound identity is at the authority the step-up uses (Google, or the same Microsoft tenant), the step-up's identity must be that bound identity, in addition to today's checks. A step-up by another Google account or another object id with the same address fails as an identity mismatch. When the account's binding is at another authority, or it has none, today's checks apply unchanged. The step-up adds no new consent beyond its own (owner, PAC-68 OQ-2).
+- **Break-glass.** The operator's list still names addresses. A listed address authorises the account that holds that address **domain-confirmed**, identified by the session's account, not by the email claim the session carries. A session whose account carries the address unconfirmed, or no longer carries it, is not break-glass. The 10-minute freshness stays.
 
 ### Constraints from owner decisions
 
-- Sign-in keeps exactly today's permissions and never requires a new admin consent (owner, PAC-68 OQ-2; PAC-50 AC-24). The Microsoft tenant and its verified domains, Google's verified flag and hosted domain are read from answers today's permissions return (OQ-3 records what stage 2 must verify). Where authoritative or mailbox evidence cannot be obtained, the sign-in is treated as having less evidence; a bound identity still signs in.
-- A Microsoft sign-in must not reset an existing user's work calendar (owner, PAC-47 vs PAC-67 OQ-13). Today's reset on the plain Microsoft sign-in path is PAC-47's to remove. This spec adds no path that resets it: a sign-in through a link-added identity, a refusal, a link step not started from the work-calendar choice, and a migration binding never change the work calendar.
+- Sign-in keeps exactly today's permissions and never requires a new admin consent (owner, PAC-68 OQ-2; PAC-50 AC-24). No identity scope (`openid`, `profile`, `email`) is added to the Google or Microsoft sign-in. Where authoritative or mailbox evidence cannot be obtained under today's permissions, the sign-in is treated as having less evidence; a bound identity still signs in. **This overrides PAC-68's allowance of `openid` (PAC-68 AC-15, D-5) for sign-in scopes; PAC-68 must amend AC-15 and D-5 to "exactly today's set"** (owner decision on sign-in scopes; PAC-50 AC-24's test).
+- A Microsoft sign-in must not reset an existing user's work calendar (owner, PAC-47 vs PAC-67 OQ-13). Today's reset on the plain Microsoft sign-in path is PAC-47's to remove (PAC-47 D-17). This spec adds no path that resets it: a connect, a refusal and a migration binding never change the work calendar.
 
 ## 4. Acceptance criteria
 
 Conventions:
 - **"Henry"** is an existing account for `henry@acme.com`.
-- **"Bound to X"** means X is among the account's bound identities. Unless stated, Henry's address is domain-confirmed.
+- **"Bound to X"** means X is the account's bound identity. Unless stated, Henry's address is domain-confirmed.
 - **"Refused"** means all of the following:
   - the callback ends on the refusal state of §3 (one fixed outcome, the same for every cause, distinct from the generic failure state);
   - no session is issued and an existing session cookie is neither replaced nor expired;
   - no account is created; no binding is written; no provider credential is stored on any account;
-  - no account's organisation, work calendar or address standing changes.
+  - no account's organisation, work calendar, address standing or session generation changes.
 - **"Reaches Henry"** means the session issued identifies Henry's account and the provider credential is stored on Henry's account.
-- **"Fresh session"** means a session issued under this change no more than 10 minutes before the callback.
+- **"Connect"** means the flow started by one of the four signed-in controls (§3 "Connecting a calendar").
 - Provider answers (including Microsoft's organisation answer) are injected with the existing fake-provider seams (`pac35_auth_flows_test.go` pattern), so every [unit] criterion is offline. The tests for AC-1 to AC-7b drive the real callback handlers, not a storage helper, because AC-23 may be dropped and they are then the only proof.
 - **Today's scope sets** are those of §2 ("A test pins today's sign-in scopes").
+- A criterion marked **(revised r2)** keeps its number with a changed meaning; "Revision 2" says how. Numbers moved to a follow-up are listed in §10 and are not reused.
 
 **Takeover scenarios (§1)**
 
@@ -249,17 +341,22 @@ AC-5. Given Henry bound to Microsoft work account (T1, O1), when a personal Micr
 
 AC-6. Given Henry bound to Google G1 and an OIDC SSO configuration for `acme.com` with issuer I1, when I1 asserts subject S1 with `henry@acme.com`, then it is refused. Given instead Henry bound to (I1, S1), when the configuration's issuer is changed to I2 and I2 asserts subject S1 with `henry@acme.com`, then it is refused.  [unit]
 
-AC-7. Given no account for `new@acme.com`, when two different identities with authoritative evidence for that address complete sign-in concurrently, then exactly one account exists afterwards, bound to exactly one of them, and the other sign-in is refused. Given an identity already bound to account A, no operation binds it to a second account B: a link attempt from B is refused and A is unchanged.  [unit]
+AC-7 (revised r2). Given no account for `new@acme.com`, when two different identities with authoritative evidence for that address complete sign-in concurrently, then exactly one account exists afterwards, bound to exactly one of them, and the other sign-in is refused. The same holds when one reports `Zoe@acme.com` and the other `zoe@acme.com`: exactly one account exists for that address in any letter case. Given an identity X already bound to account A, when signed-in user B connects a calendar and the provider answers with X, then B holds the calendar credential, X is still bound only to A, A is unchanged, and a later sign-in by X reaches A.  [unit]
 
-AC-7b. Given an unbound pre-existing account for `henry@acme.com`, when Google G2 (hosted domain `acme.com`, verified) and Microsoft (T1, O3) (tenant verifies `acme.com`) sign in concurrently, then exactly one identity is bound to the account, the other sign-in is refused, and no second account is created.  [unit]
+AC-7b (revised r2). Given an unbound pre-existing account for `henry@acme.com` with no recorded identifier and no stored credential or connection, when Google G2 (hosted domain `acme.com`, verified) and Microsoft (T1, O3) (tenant verifies `acme.com`) sign in concurrently, then exactly one identity is bound to the account, the other sign-in is refused, and no second account is created.  [unit]
 
-AC-24 (pre-emptive squat). Given no account for `henry@acme.com`, when consumer Google identity GA signs in first with `henry@acme.com`, email verified, no hosted domain, then an account A is created bound to GA with the address unconfirmed. When Henry then signs in with Google G1, hosted domain `acme.com`, verified, then a new account H is created bound to G1 with the address domain-confirmed, A is no longer a holder of the address (unconfirmed), and A's binding and data are unchanged. Before H exists, a team invite, a scheduling-link co-host invitation and a manager's member add for `henry@acme.com` resolve to nobody; after H exists, they resolve to H, and A cannot accept the team invite.  [unit]
+AC-25. Given account A carries `alice@example.org` (any standing, any letter case), when another identity with only mailbox evidence for that address signs in, then it is refused.  [unit]
 
-AC-25. Given account A carries `alice@example.org` (any standing), when another identity with only mailbox evidence for that address signs in, then it is refused.  [unit]
+AC-40 (pre-emptive squat, replaces AC-24). Given no account for `henry@acme.com`, when consumer Google identity GA signs in first with `henry@acme.com`, email verified, no hosted domain, then an account A is created bound to GA with the address unconfirmed. Afterwards:
+- a team invite, a scheduling-link co-host invitation on create and on add, a co-host list patch adding the address, a manager's member add and a roster import for `henry@acme.com` each resolve to nobody, and A cannot accept the team invite;
+- break-glass with `henry@acme.com` on the operator's list does not authorise A;
+- when Henry then signs in with Google G1, hosted domain `acme.com`, verified, he is refused; A's binding, data and sessions are unchanged; the server log names A and the cause.  [unit]
 
 **Ordinary sign-in keeps working**
 
-AC-8. Given Henry bound to an identity at Google, at Microsoft, or at SSO issuer I1 (three cases), when that identity signs in, then it reaches Henry with the same redirect target as today's success path. Today's success tests (`pac35_auth_flows_test.go:167`, `:239`, `:286`) keep passing with the binding in place.  [unit]
+AC-8 (revised r2). Given Henry bound to an identity at Google, at Microsoft, or at SSO issuer I1 (three cases), when that identity signs in, then it reaches Henry with the same redirect target as today's success path. Today's PAC-35 callback tests (`pac35_auth_flows_test.go:142-246`, `:286`) keep every assertion about redirects, the session cookie and what is kept on the failure path. Only their fixtures change, so that the sign-in carries evidence:
+- the Google fixtures add a verified flag;
+- the Microsoft runner adds an organisation answer whose verified domains list the fixture's domain.  [unit]
 
 AC-9. Given Henry bound to Google G1, when G1 signs in reporting `henry.new@acme.com`, then it reaches Henry, and Henry's stored address and its standing are unchanged. If another account holds `henry.new@acme.com`, that account's session, credential, address, standing and binding are unchanged.  [unit]
 
@@ -269,87 +366,89 @@ AC-10. Given no account for `alice@example.org`:
 - when Google identity G5 signs in with that address, email verified, no hosted domain, then an account is created and bound to G5 with the address unconfirmed, and a second sign-in of G5 reaches it;
 - the same with the flag false or absent is refused, and no account exists for the address afterwards.  [unit]
 
-AC-10b. Given no account for the address, when Google identity G6 signs in (a) with `bob@gmail.com`, verified, or (b) with `carol@acme.com`, verified, hosted domain `acme.com`, then an account is created bound to G6 with the address domain-confirmed. With (c) `carol@sub.acme.com` and hosted domain `acme.com`, the address is unconfirmed.  [unit]
+AC-10b. Given no account for the address, when Google identity G6 signs in with either of these, then an account is created bound to G6 with the address domain-confirmed:
+- (a) `bob@gmail.com`, verified;
+- (b) `carol@acme.com`, verified, hosted domain `acme.com`.
+
+With (c) `carol@sub.acme.com` and hosted domain `acme.com`, the address is unconfirmed.  [unit]
 
 AC-11. Given no account for `dave@acme.com`, when a Microsoft work account (T1, O7) signs in with that mail, then:
 - if tenant T1's verified-domain answer contains `acme.com`, an account is created, bound to (T1, O7), with the address domain-confirmed;
 - if the answer does not contain it, or the lookup errors or times out, the sign-in is refused;
 - the sign-in's authorize request carries exactly today's Microsoft scope set, and `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` passes unchanged.  [unit]
 
-AC-11b. Given a Microsoft sign-in whose answers do not let the server determine the tenant (no tenant answer for a work account, or an answer that cannot be classified as work or personal), then the sign-in ends on the generic failure state, and nothing is created, bound or stored. The tenant identifier and object identifier used for the binding come from Microsoft's answers for the same access token; a fake whose two answers disagree on the tenant fails the sign-in.  [unit]
+AC-11b (revised r2). Given a Microsoft sign-in whose answers do not let the server determine the tenant, then the sign-in ends on the generic failure state, and nothing is created, bound or stored. Two cases:
+- no organisation answer for what would be a work account;
+- an answer that cannot be classified as work or personal.
+
+(Revision 1's second sentence, about two answers disagreeing on the tenant, is dropped: under today's Microsoft scopes only the organisation answer carries the tenant, so there is no second source to disagree with.)  [unit]
 
 AC-11c. Given no account for `erin@acme.com`, when a personal Microsoft account signs in with that address, then it is refused, unless OQ-3 has recorded an answer that gives mailbox or authoritative evidence for personal accounts, in which case the outcome follows the §3 evidence table.  [unit]
 
 **Address standing and address-as-person**
 
-AC-26. Given account A (address `alice@example.org`, unconfirmed) and a configured mail sender:
-- when A's user asks for confirmation, then one message with a single-use, expiring code is sent to `alice@example.org`;
-- opening it with A's session makes A's address email-confirmed; opening it with no session or with another account's session, after expiry, or a second time, changes nothing;
-- the request is refused while another account holds the address confirmed;
-- with no mail sender configured, the request is refused and Settings says confirmation is unavailable.  [unit]
+AC-28 (revised r2). For each site in the §2 address-as-person table, given account U carries the address:
+- **Granting sites** (team-invite acceptance; co-host on create, on add, and new entries of a list patch; manager member add; roster import): if U's address is unconfirmed, the site resolves the address to nobody, and team-invite acceptance answers that the invite is for a different address. If it is domain-confirmed, the site resolves it to U as today.
+- **Revoking and keeping sites** (manager member removal; the keep set of a co-host list patch): the site acts on U at either standing.  [unit]
 
-AC-27. Given account E holds `henry@acme.com` email-confirmed and has a pending co-host invitation for it, when Google G1 signs in with hosted domain `acme.com`, verified, then a new account H holds the address domain-confirmed, E's address becomes unconfirmed, E's accepted grants stay accepted, and the pending invitation resolves to H.  [unit]
+AC-43 (removal is never silent). Given account E is a member of the manager's team and carries `henry@acme.com` unconfirmed (an unbound legacy account, or bound with mailbox evidence), when the manager removes `henry@acme.com`, then E is no longer a team member. Given instead two pre-existing accounts carrying `x@acme.com` and `X@acme.com`, both members, the removal of `x@acme.com` removes both. Given a scheduling link with an accepted co-host whose stored address is `Pat@Acme.com` (or unconfirmed), when the owner patches the co-host list to a list containing `pat@acme.com`, then that co-host is kept with status accepted. Today the mixed-case case removes the co-host (§2).  [unit]
 
-AC-28. For each address-as-person site in §2 (team-invite acceptance; scheduling-link co-host on create, on list patch, on add; manager member add, remove, roster import): given account U carries the address unconfirmed, the site resolves the address to nobody (team-invite acceptance answers that the invite is for a different address); given U holds it email-confirmed or domain-confirmed, the site resolves it to U as today.  [unit]
-
-AC-29 (letter case). Given Henry holds `henry@acme.com`:
+AC-29 (letter case, revised r2). Given Henry holds `henry@acme.com`:
 - Google G2 signing in with `HENRY@Acme.com`, verified, no hosted domain, is refused (it is Henry's address);
-- each address-as-person site resolves `Henry@ACME.com` to Henry;
+- each granting site resolves `Henry@ACME.com` to Henry;
 - a new account created from `Zoe@Example.org` is found by `zoe@example.org` at every site.
-Given two pre-existing accounts carrying `x@acme.com` and `X@acme.com`, the deployment changes neither; a sign-in matching that address only by address is refused, address-as-person sites resolve it to nobody, and the server log names the collision.  [unit]
 
-**The link step (rule 5)**
+Given two pre-existing accounts carrying `x@acme.com` and `X@acme.com`, the deployment changes neither. A sign-in matching that address is refused, including one whose identifier matches one account's recorded identifier under migration (a). Granting sites resolve the address to nobody, revoking sites act on both (AC-43), and the server log names the collision.  [unit]
 
-AC-12. Given Henry signed in with a fresh session (bound to Google G1, work calendar Google), when Henry starts the link step from the Settings work-calendar control choosing Outlook, and Microsoft answers with (T1, O1) and mail `h.work@other.org`, then:
+**Connecting a calendar (aligned with PAC-47)**
+
+AC-12 (revised r2). Given Henry signed in, bound to Google G1, work calendar Google, when Henry chooses Outlook in the Settings work-calendar control and the connect completes with Microsoft (T1, O1), mail `h.work@other.org`, then:
 - Henry's session still identifies Henry;
 - the Microsoft credential is stored on Henry's account;
-- Henry's work calendar is Outlook (his explicit choice in that control);
-- no account for `h.work@other.org` is created, and Henry's address and standing are unchanged;
-- a later sign-in by (T1, O1) with no session reaches Henry.
+- Henry's work calendar is Outlook, set by his choice in the control before the connect;
+- no account for `h.work@other.org` is created; (T1, O1) is not bound to anyone; Henry's address, standing and session generation are unchanged;
+- a later sign-in by (T1, O1) with no session does not reach Henry.
+
 Today the same flow creates or switches to another account (§2).  [unit]
 
-AC-12b. Given Henry signed in with a fresh session, bound to Microsoft (T1, O1), work calendar Outlook, when Henry starts the link step from the connection status control (Google) and Google answers with G7 and `henry@acme.com`, then G7 is bound to Henry, the Google credential is stored on Henry, Henry's work calendar is still Outlook, and a later sign-in by G7 with no session reaches Henry.  [unit]
+AC-12b (revised r2). Given Henry signed in, bound to Microsoft (T1, O1), work calendar Outlook, when Henry connects Google from the connection status control and Google answers with G7 and `henry@acme.com`, then:
+- the Google credential is stored on Henry;
+- G7 is not bound;
+- Henry's work calendar is still Outlook;
+- a later sign-in by G7 with no session is refused (rule 4).  [unit]
 
-AC-13. Given (T1, O1) is already bound to account A, when signed-in user B starts the link step and Microsoft answers with (T1, O1), then the link is refused: B's session is kept, and A and B are unchanged.  [unit]
+AC-13 (revised r2). Given (T1, O1) bound to account A, when signed-in user B connects Outlook from any of the four controls and Microsoft answers with (T1, O1), then B holds the Microsoft credential, B's session is kept, A's binding, credential and sessions are unchanged, and no account is created.  [unit]
 
-AC-14. Given user A starts the link step, when the callback arrives carrying (a) no session or (b) a session for user B, then no identity is linked to A or to B. Given a browser holding A's session that completes an ordinary sign-in (not started as a link step) with identity X whose address is not A's, then X is not linked to A. The presence of a session cookie alone never links.  [unit]
+AC-14. Given user A starts a connect, when the callback arrives carrying (a) no session or (b) a session for user B, then no credential is stored on A or B, no identity is bound, no session is issued and none changes (PAC-47 AC-3f). Given a browser holding A's session that completes an ordinary sign-in (not started as a connect) with identity X whose address is not A's, then X is not bound to A and no credential is stored on A. The presence of a session cookie alone never makes a flow a connect.  [unit]
 
-AC-30 (fresh proof). Given Henry bound to Google G1:
-- with a session issued 11 minutes before the link callback, a link step answered by a new identity (T1, O1) ends on the "confirm it's you" outcome; nothing is bound or stored and the session is kept;
-- with a session issued 2 minutes before the callback by the code before this change (a token minted the old way), the same outcome;
-- after Henry signs in again with G1, the same link step binds (T1, O1);
-- with an 11-minute-old session, a link step answered by G1 itself (already bound to Henry) stores the new Google credential and succeeds.  [unit]
+AC-31 (work calendar, no new reset; revised r2). Given Henry bound to Google G1, work calendar Google:
+- when Henry connects Outlook from the connection status control, the Dashboard banner or the onboarding step without choosing Outlook as the work calendar, then the work calendar is still Google;
+- a refusal and a migration binding (AC-15, AC-41) never change the work calendar.  [unit]
 
-AC-31 (work calendar, no new reset). Given Henry bound to Google G1 and to Microsoft (T1, O1) added by a link step, with work calendar Google, when (T1, O1) signs in with no session, then it reaches Henry, the Microsoft credential is stored, and Henry's work calendar is still Google. The same holds after a link step for Outlook started from the connection status control or the Dashboard banner: the work calendar is unchanged.  [unit]
+AC-32 (connect surfaces, revised r2). In the web app, each of these starts a connect and never navigates to a public sign-in start: the Settings work-calendar control (Google and Outlook), the connection status control, the Dashboard "Connect calendar" banner, and the onboarding calendar step. The public sign-in dialog's four starts (button, Google with a hint, Microsoft with a hint, SSO via detect) still navigate to the public sign-in start. Revision 1's last sentence, about a disclosure before leaving, is dropped: a connect no longer adds a sign-in method.  [unit] web app
 
-AC-32 (connect surfaces). In the web app, the Settings work-calendar control (Google and Outlook), the connection status control, the Dashboard "Connect calendar" banner and the onboarding calendar step each start the link step, never the public sign-in start; the public sign-in dialog's three starts (button, Google with a hint, Microsoft with a hint) still use the public sign-in start. Each link-starting surface shows, before leaving, that the provider account will also become a way to sign in.  [unit] web app
+AC-35 (extended access). Given the owner's optional "extended access" step (PAC-68 OQ-2) completed by an identity not bound to the signed-in account, then no identity is bound or changed, no address standing changes and no session generation changes.  [unit]
 
-AC-33 (sign-in methods). Given Henry bound to G1 and (T1, O1):
-- Settings lists both, each with its provider, the address reported when bound, and how and when it was added;
-- with a fresh session, removing (T1, O1) unbinds it; a later sign-in by (T1, O1) with mail `henry@acme.com` is refused; the Microsoft calendar credential is still stored; every other session of Henry's account ends and the current one is kept;
-- with a non-fresh session, removal ends on "confirm it's you" and nothing changes;
-- removing G1 when it is the only method is refused.  [unit] backend; [unit] web app
+**Sessions**
 
-AC-34 (disconnect is visible). Given Henry bound to G1 and (T1, O1), when Henry disconnects the Outlook calendar, then (T1, O1) is still bound, and the disconnect result in the web app says that the Microsoft account is still a way to sign in and where to remove it.  [unit] backend; [unit] web app
+AC-42 (session generation). Given Henry with two sessions S1 and S2:
+- when the operator procedure advances Henry's session generation, then the next authenticated request with S1 or S2 gets today's 401, and a new sign-in by Henry's bound identity issues a session that works;
+- given an unbound pre-existing account with a session S0 issued by the code before this change, when the account binds under (a), then S0 gets 401 on its next request and the session issued by the binding sign-in works;
+- a refusal, a connect and an ordinary bound sign-in do not change the generation, so S1 and S2 keep working.  [unit]
 
-AC-35 (extended access). Given the owner's optional "extended access" step (PAC-68 OQ-2) completed by an identity not bound to the signed-in account, then no identity is bound or removed and no address standing changes.  [unit]
+AC-44 (deploy-time step, conditional on OQ-6). If the owner answers OQ-6 "yes", then given sessions issued before the deployment for any accounts, after the deployment's migration every one of them gets 401 on its next request, and no account, credential or setting changes. If the owner answers "no", this criterion is dropped and §5 records the residual.  [unit] (migration test)
 
 **Organisation SSO**
-
-AC-36. Given Henry bound to Google G1, a member of `acme.com`, whose SSO is configured with issuer I1:
-- I1 asserting (S1, `henry@acme.com`) at sign-in is refused (AC-6);
-- with a fresh session, Henry adds SSO from Settings' sign-in methods, I1 answers (S1, `henry@acme.com`), and (I1, S1) is bound to Henry; a later SSO sign-in by (I1, S1) reaches Henry;
-- after the configured issuer becomes I2, I2 asserting (S1, `henry@acme.com`) is refused, and Henry can add (I2, S1) the same way.  [unit]
 
 AC-37. Given an unbound pre-existing account for `henry@acme.com` whose recorded identifier is the string X:
 - the configured `acme.com` issuer asserting a subject with `henry@acme.com` is refused, and the account stays unbound;
 - the same issuer asserting subject X is refused;
 - a Microsoft identity whose Graph user id is the string X is not matched under migration (a) unless X has the Microsoft format and the recorded value cannot be a Google identifier.  [unit]
 
-AC-38 (break-glass). Given `henry@acme.com` on the operator's break-glass list and a session under 10 minutes old:
+AC-38 (break-glass, revised r2). Given `henry@acme.com` on the operator's break-glass list and a session under 10 minutes old:
 - for an account that holds `henry@acme.com` domain-confirmed, an SSO write is authorised as break-glass, as today;
-- for an account that carries it unconfirmed or email-confirmed, it is not;
-- for a session whose email claim is `henry@acme.com` but whose account no longer holds the address (AC-27), it is not.  [unit]
+- for an account that carries it unconfirmed, including an unbound pre-existing account, it is not;
+- for a session whose email claim is `henry@acme.com` but whose account no longer carries that address (freed by the operator procedure), it is not.  [unit]
 
 **Accounts created before this change**
 
@@ -357,84 +456,118 @@ AC-15. Given an unbound pre-existing account for `henry@acme.com` whose recorded
 - when Google G1 signs in with that address verified, then it reaches the account and binds G1;
 - a later Google G2 with `henry@acme.com` verified and no hosted domain is refused.  [unit]
 
-AC-16. Given an unbound pre-existing account for `henry@acme.com` whose recorded identifier is G1:
-- (a) Google G2 with `henry@acme.com` verified and no hosted domain is refused, and the account stays unbound;
-- (b) Google G2 with hosted domain `acme.com` and email verified reaches the account, binds G2, and the address is domain-confirmed;
-- (c) a Microsoft work account (T1, O3) whose tenant verifies `acme.com` reaches the account and binds (T1, O3);
-- (d) a Microsoft work account whose tenant does not verify `acme.com` is refused.
-None of (b) and (c) changes the account's work calendar.  [unit]
+AC-16 (revised r2). Given an unbound pre-existing account for `henry@acme.com` whose recorded identifier is G1, each of these is refused and the account stays unbound with no credential stored on it:
+- (a) Google G2 with `henry@acme.com` verified and no hosted domain;
+- (b) Google G2 with hosted domain `acme.com` and email verified;
+- (c) a Microsoft work account (T1, O3) whose tenant verifies `acme.com`;
+- (d) a Microsoft work account whose tenant does not verify `acme.com`.
+
+For (b) and (c), the server log names the account and the cause "recorded identity differs".  [unit]
+
+AC-41 (migration rule (b) and pre-account hijack). Given an unbound pre-existing account A for `henry@acme.com`:
+- with no recorded identifier and no stored credential or connection, and two sessions from before the change: when Google G1 (hosted domain `acme.com`, verified) signs in, then it reaches A, binds G1 with the address domain-confirmed, the two old sessions get 401 on their next request, and A's work calendar is unchanged;
+- with no recorded identifier but a stored Slack connection (and, separately, a personal AI key, a Zoom connection, a Google calendar credential): the same sign-in is refused, A stays unbound, and Henry's Google credential is not stored on A;
+- with recorded identifier GA (a consumer Google account) and a Slack connection: the same sign-in is refused (AC-16 (b)).  [unit]
 
 AC-17. Given an unbound pre-existing account for `bob@example.org` (non-Google consumer domain) whose recorded identifier is X, when the Google answer for G1 has a verified email but G1 ≠ X, then it is refused.  [unit]
 
-AC-39. Given an unbound pre-existing account for `bob@gmail.com` whose recorded identifier is X, when Google G1 ≠ X signs in with `bob@gmail.com` verified, then it reaches the account, binds G1, and the address is domain-confirmed.  [unit]
+AC-39 (revised r2). Given an unbound pre-existing account for `bob@gmail.com`:
+- with no recorded identifier and no stored credential or connection, when Google G1 signs in with `bob@gmail.com` verified, then it reaches the account, binds G1, and the address is domain-confirmed;
+- with recorded identifier X ≠ G1, the same sign-in is refused.  [unit]
 
-AC-18. Given the change is deployed, then no account, membership, credential or setting row is deleted, and the count of accounts is unchanged. Binding is written only by a sign-in, not by the deployment. Before an existing account binds, the address-as-person sites resolve its address as today.  [unit] (migration test)
+AC-18 (revised r2). Given the change is deployed:
+- no account, membership, credential or setting row is deleted, and the count of accounts is unchanged;
+- a binding is written only by a sign-in, never by the deployment;
+- before an existing account binds, granting sites resolve its address to nobody, and revoking and keeping sites act on it.  [unit] (migration test)
 
 **Refusal, membership, work calendar, step-up, contract**
 
-AC-19. Given any refusal in AC-1 to AC-39, the callback's redirect is the same for every refusal cause and differs from the generic `auth_failed` state. The web app, on that state, shows the §3 refusal message (it names neither the address nor whether an account exists) and a control that opens the sign-in dialog.  [unit] backend; [unit] web app (`smart-calendar-flow`)
+AC-19. Given any refusal in AC-1 to AC-44, the callback's redirect is the same for every refusal cause and differs from the generic `auth_failed` state. The web app, on that state, shows the §3 refusal message and a control that opens the sign-in dialog. The message names neither the address nor whether an account exists.  [unit] backend; [unit] web app (`smart-calendar-flow`)
 
 AC-20. Given Henry is an organisation member with work calendar set to Google, when any Microsoft sign-in matching Henry only by address is refused, then Henry's organisation and work calendar are unchanged.  [unit]
 
 AC-21. Given Henry bound to Google G1 and an organisation `acme.com` where PAC-50 step-up is required, when Henry's session completes a Google step-up whose identity is G2 (also `henry@acme.com`, verified, hosted domain `acme.com`, admin), then the step-up fails as an identity mismatch and no grant is issued. With G1 it succeeds as today. The Microsoft analogue holds for Henry bound to (T1, O1) and a step-up identity (T1, O2).  [unit]
 
-AC-22. Given the contract, then the three sign-in callbacks document the refusal outcome as a distinct, fixed redirect, alongside today's documented outcomes; the link step documents its success, "identity bound elsewhere" and "confirm it's you" outcomes; and the sign-in methods list, removal and email confirmation are documented operations.  [contract]
+AC-22 (revised r2). Given the contract, then:
+- the three sign-in callbacks document the refusal outcome as a distinct, fixed redirect, alongside today's documented outcomes;
+- the connect start and its callback are documented as distinct from the sign-in start, with their outcomes (credited, credited to nobody);
+- every authenticated operation's 401 covers a session whose generation is no longer current.  [contract]
 
 AC-23. Given the full stack with a sign-in stand-in, when a second identity carrying Henry's address signs in, then the API's current-user response for any session the browser holds is not Henry's. If the plan does not add a sign-in stand-in, it drops this criterion with that reason (OQ-4), and AC-1 to AC-7b at unit level are the proof.  [e2e]
 
 ## 5. Explicitly out of scope
 
-- **Removing today's work-calendar reset on the plain Microsoft sign-in path.** PAC-47 owns it (owner, PAC-47 vs PAC-67 OQ-13). This spec adds no new reset path (AC-31).
+- **Everything listed in §10 Split.** In short:
+  - adding, listing and removing sign-in methods, including SSO for existing members (F1);
+  - Paceday email confirmation, "authority wins", and evicting a squatter or reclaiming a recycled address in the product (F2);
+  - "sign out everywhere" and security notifications for the user (F3).
+- **Removing today's work-calendar reset on the plain Microsoft sign-in path.** PAC-47 owns it (owner, PAC-47 vs PAC-67 OQ-13; PAC-47 D-17). This spec adds no new reset path (AC-31).
 - **Organisation membership rules.** PAC-68 owns them. This spec changes only *which account* the rule is applied to.
-- **Revoking sessions issued before deployment.** Sessions are self-contained 7-day tokens. A session obtained through address matching before the change stays valid until it expires, but it cannot add a sign-in method (AC-30), so the exposure ends with its expiry. Rotating the signing secret at deploy is an operator choice (OQ-6).
-- **Notifying the user by mail when a sign-in method is added or removed.** Useful, not required to close the findings: adding needs fresh proof and is listed in Settings. Candidate follow-up.
-- **Merging two existing accounts**, or administrator tools to rebind an account. A recycled address and a letter-case collision are resolved by an operator outside the product.
+- **Merging two existing accounts**, or administrator tools in the product to rebind an account. The operator procedure (§3) is documentation, not a product feature.
 - **SAML.** Not implemented today. When it is, it must follow the §3 rules; recorded here so its spec inherits it.
-- **Residual mailbox risk on domains without an authority.** On a domain that has no Google Workspace, no Microsoft tenant verifying it and no configured SSO, nobody can bring authoritative evidence. There, whoever controls the mailbox can confirm the address by email and receive what is addressed to it. That is the same trust a mailed invitation already places in the mailbox, and authority still wins the moment the domain's owner signs in with it.
+- **Residuals this ticket accepts, release-noted:**
+  - *Lock-out by a squatter.* An address carried by a mailbox-only account, by a departed holder, or by a legacy account refused under (b) cannot be taken by its rightful owner until an operator frees it (§3 "Operator procedure"; F2). The squatter gains nothing from it: the address resolves to nobody at granting sites.
+  - *Unconfirmed addresses.* A user whose only evidence is mailbox evidence (a consumer Google account on a custom domain, or a Google Workspace user on a secondary domain) cannot accept address-based invitations until F2. That includes legacy users who bind under (a) with mailbox evidence.
+  - *Break-glass.* An operator's break-glass needs an account holding the listed address domain-confirmed. Until the operator's account binds with authoritative evidence, and for good on a domain with no authority, break-glass does not work for them. The operator should list an address on a domain with an authority.
+  - *Existing members and SSO.* Existing members cannot sign in through SSO until F1 (D-10, OQ-2).
+  - *Legacy users of two providers* can sign in only with the bound one until F1.
+  - *Personal Microsoft accounts* may be unable to sign in at all if OQ-3 item 2 finds no positive signal.
+  - *Pre-gate SSO configurations.* An SSO configuration written before PAC-50's gate, when any member could write it, still gives authoritative evidence for new accounts at its domain. It cannot reach an existing account. The release notes ask operators to review every configured issuer at deployment.
+  - *A stolen session* can connect the attacker's own calendar to the victim's account (PAC-47's model), but cannot add a sign-in method, so it ends with the session (expiry, or the operator advancing the generation).
+  - *Pre-deploy sessions.* If the owner answers OQ-6 "no", a session obtained by email matching before the change stays valid up to 7 days on an account that does not bind in that time.
+  - *Provider evidence.* The OQ-3 item 4 residual on unmanaged Microsoft directories, and reported past flaws that let Workspace accounts exist on unverified domains (`hd`).
 
 ## 6. What must not change
 
-- **An existing user's next ordinary sign-in through the provider they used last still works.** Migration rule (a) covers it. Today's success tests protect the redirect and session issuance (`pac35_auth_flows_test.go:167`, `:239`, `:286`). No existing test protects *which account* is reached. That is a finding, and AC-8 and AC-15 are the new protection.
+- **An existing user's next ordinary sign-in through the provider they used last still works.** Migration rule (a) covers it. Today's success tests protect the redirect and session issuance (`pac35_auth_flows_test.go:167`, `:239`, `:286`); their fixtures change as AC-8 states. No existing test protects *which account* is reached. That is a finding, and AC-8 and AC-15 are the new protection.
 - **Sign-in requests exactly today's scopes** (owner, PAC-68 OQ-2; PAC-50 AC-24). `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` (`backend/auth/pac50_signin_scopes_test.go:19-69`) protects it and must pass **unchanged**; AC-11 restates it for Microsoft. No identity scope (`openid`, `profile`, `email`) is added to the Google or Microsoft sign-in.
-- **The session cookie is untouched on failure** (PAC-35, API-011). Protected by `pac35_auth_flows_test.go:142-165`, `:193-237`. The refusal state and the link-step refusals keep this property.
+- **The session cookie is untouched on failure** (PAC-35, API-011). Protected by `pac35_auth_flows_test.go:142-165` and `:193-237`, whose failure assertions are kept. The refusal state and a connect credited to nobody keep this property.
 - **The current-user response's `provider` still means "provider of the first sign-in"** (`paceday.gen.go:1186-1197`).
 - **The SSO email-domain binding** (PAC-45) stays, protected by `handlers_sso_test.go:161-195`.
-- **PAC-50 step-up's existing refusals** (`pac50_sso_stepup_test.go`) keep their reasons. AC-21 adds an identity check on top of them; it does not replace them. Break-glass freshness (10 minutes) is unchanged; AC-38 narrows who qualifies.
-- **PAC-67 credential lifecycle**: reconnecting refreshes the credential and clears a recorded loss; disconnecting revokes it. AC-30's reconnect case and AC-34 keep both.
-- **Must change.** `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller` (`pac67_conferencing_test.go:322-358`) asserts that a session-less Microsoft callback lands on an account matched by address. Under this spec it must become a signed-in link step (AC-12) or a bound-identity sign-in (AC-8), keeping its PAC-67 assertions: refresh token kept, loss cleared, the other user unaffected. The owner already expects this test to be amended for PAC-47.
+- **PAC-50 step-up's existing refusals** (`pac50_sso_stepup_test.go`) keep their reasons. AC-21 adds an identity check on top of them; it does not replace them. Break-glass freshness (10 minutes) is unchanged; AC-38 narrows who qualifies (§5 residual).
+- **PAC-67 credential lifecycle**: reconnecting refreshes the credential and clears a recorded loss; disconnecting revokes it. A connect from inside the product keeps both.
+- **The manager's removal of an address no account carries** still removes the manager assignment and pending invites and answers 204 (`handlers_manager.go:364-368`).
+- **Must change.** `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller` (`pac67_conferencing_test.go:322-358`) asserts that a session-less Microsoft callback lands on an account matched by address. Under this spec it must become a connect (AC-12) or a bound-identity sign-in (AC-8), keeping its PAC-67 assertions: refresh token kept, loss cleared, the other user unaffected. The owner already expects this test to be amended for PAC-47.
 - **Must change.** The web app's signed-in connect surfaces (§2 table) stop using the public sign-in start (AC-32); their tests follow.
+- **Must change, in PAC-47** (`origin/factory/pac-47-spec`, not yet built). These ACs presuppose email matching: AC-3i (a) and (b), AC-3k and AC-3l (`PAC-47.md:650-695`). Their Given must say that the Microsoft identity is the user's bound identity, or their recorded identifier under migration (a). Otherwise PAC-71 refuses them. Their work-calendar assertions (D-17) are unaffected. AC-3j's new account needs a tenant that verifies `z` (rule 5). AC-3e and AC-3f already match the connect step and do not change.
+- **Must change, in PAC-68** (`origin/factory/pac-68-spec` `ec76099`). AC-15 and D-5 must say "exactly today's set", without the `openid` allowance (§3 constraints).
 
 ## 7. Rollback
 
 - **Reverting the code** restores matching by address on every callback. That re-opens every §1 scenario, so a revert is a security regression and is release-noted as one.
-- **Down migration.** Dropping the binding and standing records loses the bindings, the sign-in method list, address standings and pending email confirmations. Accounts, credentials and memberships are untouched. On a later re-apply, every account is "pre-existing" again and re-binds lazily under §3 (a)/(b); identities added by link steps must be added again.
-- **Identities linked by the link step** whose address differs from the account's would, after a revert, again sign in to (or create) an account matched by *their own* address. Accounts that lost an address to "authority wins" would again collide on that address. Release-note both.
+- **Down migration.** Dropping the binding, standing and session-generation records loses the bindings, the address standings and the generations. Accounts, credentials and memberships are untouched. Sessions issued after the change keep working under the reverted code, which ignores the generation they carry. A session ended by a generation advance becomes valid again until it expires: the down migration re-opens every session that the deploy-time step (OQ-6) or a binding closed. Release-note it; rotating the signing secret on revert closes them.
+- **Re-applying.** Every account is "pre-existing" again and re-binds lazily under (a)/(b). An account bound by (b) has no recorded identifier of the bound identity unless the plan records it on binding. The plan must record the bound identity's subject in today's recorded-identifier field as well, so that a re-apply re-binds it under (a).
+- **Operator procedure.** An address freed by an operator stays freed after a revert. The placeholder address is not restored.
 
 ## 8. Open questions
 
-- **OQ-1: does connecting a work calendar also add that provider account as a sign-in method? (owner, product).** Narrowed in revision 1. The security parts are now decided by the factory and are not open: adding a method needs fresh proof, every method is listed in Settings and can be removed, and a calendar disconnect says the method remains (§3; Revision 1, Blocking 2). What remains is product:
-  - **Factory default:** yes. Connecting Google or Microsoft from a signed-in surface is the link step and adds the sign-in method, with the disclosure before leaving. Settings also offers "add a sign-in method" (needed for SSO).
-  - **Alternative:** a calendar connection never adds a sign-in method; only "add a sign-in method" does. Users whose two providers share an address then need both steps.
-  - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before stage 4. Not blocking stage 2: both options have the same contract shape.
-- **OQ-2: when an organisation enables SSO or changes its IdP, may existing members' accounts be reached through SSO without each member adding it? (owner, product).**
-  - **Factory default:** no (D-10). An existing member adds SSO from Settings' sign-in methods (AC-36). If the issuer changes, each member adds the new one.
+- **OQ-1: does connecting a work calendar also add that provider account as a sign-in method? (owner, product).**
+  - **For this ticket: no**, on factory guidance, aligned with PAC-47 (`PAC-47.md:377-411`). A connect attaches the calendar credential only (§3). This removes revision 1's Blocking 5 and 6 and the fresh-proof machinery.
+  - **Still open for follow-up F1**: whether the product should offer, after a connect, to also add that account as a sign-in method, or only through an explicit "add a sign-in method" step. Factory default for F1: only through the explicit step.
+  - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before F1's spec. Not blocking this ticket.
+- **OQ-2: when an organisation enables SSO or changes its IdP, may existing members' accounts be reached through SSO without each adding it? (owner, product).**
+  - **Factory default:** no (D-10). In this ticket existing members cannot use SSO at all. In F1 they add it as a sign-in method.
   - **Alternative:** the org's configured issuer counts as authoritative for its own domain even on existing accounts. That reopens §1 case 5 for whoever can change the configuration (PAC-50 admin step-up or break-glass).
-  - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before stage 4. Not blocking stage 2: production has zero users (`docs/specs/PAC-22.md:80`).
+  - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before F1's stage 4. Not blocking this ticket: production has zero users (`docs/specs/PAC-22.md:80`).
 - **OQ-3: what stage 2 must verify about provider answers within today's scopes (contract-author / plan-author, technical).** No call was made for this spec. Stage 2 records the answer for each item, with the documentation or a recorded call:
-  1. **Microsoft tenant.** Graph `GET /organization` (fields `id`, `verifiedDomains`) is documented with `User.Read` as its least-privileged delegated permission (known from documentation, not called). Stage 2 confirms it answers under exactly today's Microsoft scopes for a work account. `id` is the tenant; Graph `/me`'s `id` is the object id for a work account. Both are read with the same access token. The step-up already reads the same resource with wider scopes (`stepup.go:290`).
-  2. **Personal-account classification.** Which answer, under today's scopes, positively marks a personal Microsoft account (for example `/organization` refusing or answering empty for it), and which identifier is its stable subject. If no positive signal exists, a Microsoft sign-in that is not classified as work fails (AC-11b) and the limit is release-noted.
-  3. **Personal-account address evidence.** Whether any answer under today's scopes says Microsoft verified the personal account's address, or reports it as the account's own sign-in name on a Microsoft consumer domain. Default if none: personal accounts carry no evidence (AC-11c) and can only be added by the link step.
+  1. **Microsoft tenant.** Graph `GET /organization` (fields `id`, `verifiedDomains`) is documented with `User.Read` as its least-privileged delegated permission (known from documentation, not called). Stage 2 confirms that it answers under exactly today's Microsoft scopes for a work account. `id` is the tenant; Graph `/me`'s `id` is the object id for a work account. Both are read with the same access token. The step-up already reads the same resource with wider scopes (`stepup.go:290`).
+  2. **Personal-account classification.** Which answer, under today's scopes, positively marks a personal Microsoft account, and which identifier is its stable subject. `/organization` refusing personal accounts would not, on its own, tell "personal" apart from a transient error. If no positive signal exists, a Microsoft sign-in that is not classified as work fails (AC-11b) and the limit is release-noted (§5).
+  3. **Personal-account address evidence.** Whether any answer under today's scopes says Microsoft verified the personal account's address, or reports it as the account's own sign-in name on a Microsoft consumer domain. Default if none: personal accounts carry no evidence (AC-11c).
   4. **Unmanaged ("viral") Microsoft directories.** Whether a self-service directory created by email verification can still list a domain in `verifiedDomains`, and whether today's answers can tell such a directory apart. If it can list the domain and cannot be told apart, Microsoft tenant evidence is no better than mailbox evidence. That would also weaken PAC-68 and PAC-50's step-up, which rely on the same evidence, and it becomes an owner question (product trade-off: Microsoft-only sign-up versus that residual). Until then the factory treats it as authoritative and release-notes the residual.
   5. **Google.** That v2 userinfo under `userinfo.email` returns `verified_email` and, for Workspace accounts, `hd`, and that its `id` is the stable subject (known from documentation, not called).
-  6. **Identifier formats** for migration (a): the formats Google's userinfo `id` and Graph's user `id` (work and personal) take, so that a recorded value matching more than one never matches.
+  6. **Identifier formats** for migration (a): the formats that Google's userinfo `id` and Graph's user `id` (work and personal) take, so that a recorded value matching more than one never matches.
   - **Resolve by:** the contract naming fields and formats. A human decision is needed only under item 4, or if any item would require a new permission, which the owner has already ruled out.
 - **OQ-4: can e2e reach the callbacks? (e2e-author / plan-author).** Not today (`e2e/auth.ts:17-25`), the same as PAC-68 OQ-4. **Resolve by:** the plan, which either adds a sign-in stand-in or drops AC-23 with that reason.
-- **OQ-5: link-step mechanics and ordering (plan-author / orchestrator).**
-  - The link step depends on the browser carrying its session across the provider's redirect, the same fragility as API-026.
-  - PAC-68 and PAC-47 change the same three callbacks.
-  - **Resolve by:** the plan stating the order. Suggested: PAC-71 first, because PAC-68's membership guarantee (§3 "Limit") depends on it. AC-31 holds whatever the order.
-- **OQ-6: rotate the session signing secret at deploy? (orchestrator / operator).** No longer required for safety (AC-30 stops old sessions adding a method). It still closes sessions obtained through address matching before the change, at the cost of signing every user out once. **Resolve by:** release note. Production has zero users.
-- **OQ-7: deliver email confirmation in this ticket or a follow-up? (orchestrator).** It is the only part of this spec that needs a mail sender. If split out, every rule here still holds with "email-confirmed" never reached: unconfirmed addresses receive no address-based grants until the follow-up lands (safe, with the product cost that consumer-Google users on custom domains cannot accept team invites meanwhile). **Resolve by:** the plan.
+- **OQ-5: connect mechanics and ordering (plan-author / orchestrator).**
+  - The connect depends on the browser carrying its session across the provider's redirect, the same fragility as API-026.
+  - PAC-47 defines the Outlook connect (§2). This spec extends the same semantics to Google. Whichever of PAC-47 and PAC-71 is built first implements the connect start and callback for both providers. The second reuses it. Neither redefines it.
+  - PAC-68 and PAC-47 change the same three callbacks. Suggested order: PAC-71 first, because PAC-68's membership guarantee (§3 "Limit") depends on it. AC-31 holds whatever the order.
+  - **Resolve by:** the plan stating the order.
+- **OQ-6: end every existing session when PAC-71 deploys? (owner; no default).**
+  - **Factory recommendation: yes**, by advancing every account's session generation once at deployment (§3 "Sessions", AC-44). Every user signs in once more. The step closes every session obtained through email matching before the change, including on accounts that never sign in again. Production has zero users (`docs/specs/PAC-22.md:80`), so the cost there is nil.
+  - **Alternative:** no deploy-time step. Pre-deploy sessions end when their account binds (AC-42) or when they expire (at most 7 days).
+  - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before release (stage 7). Not blocking stages 2 to 6: AC-44 is conditional.
+- **OQ-7: deliver email confirmation in this ticket or a follow-up?** Resolved in revision 2: follow-up F2 (§10).
 
 ## 9. Decisions
 
@@ -443,22 +576,42 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
 | D-1 | Identity = Google account id; Microsoft (tenant, object id) from the same token's answers; Microsoft personal account as its own authority; SSO (verified issuer, subject). Identifiers compared only with their authority. | **Owner** for Google and Microsoft (PAC-68 OQ-1, "Google sub, Microsoft oid+tid"). **Factory-assumed** for SSO, personal accounts, and same-token sourcing. |
 | D-2 | The address never links a sign-in to an account that has a bound identity, even with authoritative evidence. | Issue direction, filed at the owner's request ("A matching email address alone never links"). **Factory-assumed** that it holds even for authoritative evidence. |
 | D-3 | Mismatch is refused; never a silent merge. | Issue direction; **factory-assumed** specifics (§3 Refusal). |
-| D-4 | The link step is the only way to add an identity. Signed-in connect surfaces start it. Connecting a calendar adds the sign-in method, disclosed. | **Factory-assumed**; product aspect open as OQ-1. |
-| D-5 | Three evidence levels (authoritative, mailbox, none) and three address standings (domain-confirmed, email-confirmed, unconfirmed). Only confirmed addresses act as a person. Authority wins over lower standing. | **Factory-assumed** (revision 1, Blocking 1). Closes the pre-emptive squat: Google's verified flag no longer makes an address a person. |
+| D-4 | (revised r2) A connect from inside the product attaches a calendar credential to the signed-in account and never binds an identity or adds a sign-in method. In this ticket an account has one bound identity; adding one is F1. | **Factory guidance** (orchestrator, 2026-10-28), aligned with PAC-47 §3 item 3 (`PAC-47.md:377-411`). Answers OQ-1 "no" for this ticket. |
+| D-5 | (revised r2) Three evidence levels (authoritative, mailbox, none) and two address standings (domain-confirmed, unconfirmed). Only domain-confirmed addresses act as a person at granting sites; revoking and keeping sites act on every carrier. | **Factory-assumed** (revision 1 Blocking 1; narrowed in revision 2 by factory guidance). |
 | D-6 | One refusal message for every cause, so it does not reveal whether an account exists. | **Factory-assumed**. A foreign-tenant admin can set any address, so a distinct message would let anyone enumerate accounts. |
 | D-7 | The account's address does not change when the provider reports a new one. | **Factory-assumed**. |
-| D-8 | Pre-existing accounts bind lazily on the first post-deployment sign-in meeting (a) (same-authority identifier, Google/Microsoft only) or (b) (Google/Microsoft authoritative evidence); everything else is refused. Binding is atomic. | **Factory-assumed**, following the issue ("records the current provider identity on the next verified sign-in"). Revision 1 removes SSO from (b) and from (a). |
+| D-8 | (revised r2) Pre-existing accounts bind lazily on the first post-deployment sign-in meeting (a) (same recorded identifier, Google/Microsoft only) or (b) (Google/Microsoft authoritative evidence, **and** no recorded Google/Microsoft identifier and no stored credential, connection or key on the account). Everything else is refused. Binding is atomic and ends every other session. | **Factory guidance** (orchestrator, 2026-10-28, item 3; the narrower rule is the factory's "equally safe rule", justified in §3). |
 | D-9 | Nothing is deleted: accounts, memberships, credentials, settings, accepted grants. | Factory rule; issue body. |
-| D-10 | SSO is never authoritative over an existing account, bound or not; existing members add SSO by the link step; an issuer change requires adding the new one. | **Factory-assumed**; OQ-2. |
-| D-11 | Disconnecting a calendar does not remove the sign-in method, and says so to the user. Removal is in Settings' sign-in methods. | **Factory-assumed** (revision 1, Blocking 2). Silent removal could remove the last method; silent retention hides a sign-in path. |
-| D-12 | A recycled address at the provider (new subject) is refused while the old account holds it domain-confirmed; an operator resolves it. | **Factory-assumed**. |
-| D-13 | PAC-50 step-up also requires the bound identity when the account has one at that authority. Break-glass authorises the account holding the listed address domain-confirmed, not a session email claim. | **Factory-assumed**. |
-| D-14 | Sign-in requests exactly today's scopes; identity evidence comes from today's answers. | **Owner** (PAC-68 OQ-2, "offer both"; PAC-50 AC-24). |
-| D-15 | A Microsoft sign-in must not reset an existing user's work calendar. This spec adds no reset path: link-added identities, link steps not started from the work-calendar choice, migration binding and refusals never change it. | **Owner** (PAC-47 vs PAC-67 OQ-13). |
-| D-16 | Adding or removing a sign-in method requires a session issued under this change within 10 minutes; otherwise re-sign-in with an existing method. Reconnecting an already-bound identity does not. Removal ends the account's other sessions. | **Factory-assumed security decision** (revision 1, Blocking 2). Overrides revision 0's OQ-1 default ("nothing else added") for its security part; the product part stays with the owner (OQ-1). |
-| D-17 | Addresses are compared case-insensitively everywhere; existing case collisions are left untouched and refused until an operator resolves them. | **Factory-assumed** (revision 1, Non-blocking 5). |
-| D-18 | Paceday email confirmation proves current mailbox control; it makes an address act as a person only while no domain-confirmed holder exists. | **Factory-assumed** (revision 1, Blocking 1). Google's flag is a past, third-party check (§1 case 1). |
-| D-19 | The organisation's "extended access" step never binds, links or removes an identity. | **Factory-assumed** (revision 1, Non-blocking 7). |
+| D-10 | SSO is never authoritative over an existing account, bound or not. Existing members cannot use SSO until F1. | **Factory-assumed**; OQ-2. |
+| D-11 | (withdrawn r2) Disconnect and sign-in methods. | Moved to F1 with sign-in-method management. |
+| D-12 | (revised r2) A recycled address at the provider (new subject) is refused while any account carries it; an operator resolves it until F2. | **Factory-assumed**. |
+| D-13 | PAC-50 step-up also requires the bound identity when the account's binding is at that authority. Break-glass authorises the account holding the listed address domain-confirmed, not a session email claim. | **Factory-assumed**. |
+| D-14 | Sign-in requests exactly today's scopes; identity evidence comes from today's answers. PAC-68's `openid` allowance (AC-15, D-5) is overridden for sign-in scopes and PAC-68 must amend. | **Owner** (PAC-68 OQ-2, "offer both"; PAC-50 AC-24). |
+| D-15 | A Microsoft sign-in must not reset an existing user's work calendar. This spec adds no reset path: a connect, a migration binding and a refusal never change it. | **Owner** (PAC-47 vs PAC-67 OQ-13). |
+| D-16 | (withdrawn r2) Fresh proof for adding or removing a sign-in method. | Moved to F1. |
+| D-17 | Addresses are compared case-insensitively everywhere; no new account may carry an address another carries in any case; existing case collisions are left untouched, refused at sign-in and granting sites, and acted on in full at revoking sites. | **Factory-assumed** (revision 1, Non-blocking 5; revision 2 for revoking sites). |
+| D-18 | (withdrawn r2) Paceday email confirmation. | Moved to F2. |
+| D-19 | The organisation's "extended access" step never binds or changes an identity. | **Factory-assumed** (revision 1, Non-blocking 7). |
+| D-20 | Every account has a session generation carried by its sessions and checked on every authenticated request; it advances on every binding write and on the operator procedure. | **Factory guidance** (orchestrator, 2026-10-28, item 2). |
+| D-21 | A one-time advance of every account's generation at deployment is the factory's recommendation; the owner decides (OQ-6). | **Factory recommendation**, owner pending. |
+| D-22 | Lock-out of a rightful owner by an account that carries the address is refused safely and resolved by a written operator procedure until F2. | **Factory guidance** (orchestrator, 2026-10-28, item 4). |
+
+## 10. Split
+
+Revision 2 narrows PAC-71 to the identity core. The rest goes to the follow-up tickets below, which the orchestrator files. No Linear issue is created by this spec. Each follow-up inherits §3's identity model, the evidence table, the refusal rule and the session generation, and must not weaken them. Criteria and decisions retired here are listed with the follow-up that takes them over, and their numbers are not reused.
+
+- **F1 — Sign-in methods: add, list and remove (including SSO for existing members).** Lets a signed-in user add a second identity to their account through an explicit link step, tied to the session and a single-use state. Adding needs fresh proof of the existing identity (revision 1's 10-minute rule, sessions issued before PAC-71 never qualifying). Settings lists every bound identity, and the user can remove one. The removal rule counts only methods that can sign in now: an SSO identity counts only for the issuer currently configured for its domain, and a Microsoft identity only while it can still be classified. Removal is atomic against a concurrent removal, so an account never ends with zero usable methods. Adding or removing a method advances the session generation, ending the account's other sessions. The account holder is told through a channel the session does not control (revision 1 Non-blocking 3). F1 answers OQ-1's remaining product part (whether a connect may offer to add the method) and OQ-2's mechanism. Through F1, existing members add their organisation's SSO, including after an issuer change, under PAC-45's rule that the SSO email belongs to `{domain}`. F1 states what a calendar disconnect says about a remaining sign-in method. Takes over: revision 1 §3 "The link step" and "Sign-in methods in Settings", AC-30, AC-33, AC-34, AC-36, D-11, D-16, revision 1 Blocking 5, Non-blocking 3 and 10.
+- **F2 — Address re-verification and recovery.** Gives the person who controls an address now a product path to it, replacing the interim operator procedure:
+  - Paceday email confirmation (single-use, expiring, opened in a browser holding the same account's session) and an "email-confirmed" standing;
+  - "authority wins": an authoritative sign-in takes the address standing from an account that holds it only by mailbox evidence or email confirmation;
+  - the rule under which an address held only unconfirmed never stops another identity from creating its own account and confirming the address;
+  - when domain-confirmed standing lapses or moves (an authoritative sign-in from a different subject of the same authority, i.e. the domain owner reassigned the address), so a departed holder stops acting as the address;
+  - what happens to pending address-based grants when standing moves, for team invites (stored by address) and co-host invitations (stored by user id);
+  - resolution of letter-case collisions.
+
+  Granting and revoking sites keep the split defined here, and break-glass checks the standing at the time of use. Takes over: AC-24, AC-26, AC-27, D-18, revision 1 Blocking 2 and 3, Non-blocking 6 and 9, and the lock-out residual of §5.
+- **F3 — Session management and security notices for users.** Builds on the session generation added here. It offers a user-facing "sign out of all other sessions" in Settings, and states whether logout should also advance the generation. It notifies the account holder by mail, when a sender is configured, of security events: a migration binding, an operator freeing an address, and, once F1 exists, a method added or removed. Takes over: revision 1 §5 "notifying the user", the user-facing part of revision 1 Blocking 5's session-revocation requirement.
+- **F4 (conditional) — Sign-in with a personal Microsoft account.** Filed only if stage 2 finds (OQ-3 items 2 and 3) that today's Microsoft answers give no positive personal-account signal or no address evidence, so that personal accounts cannot sign in or create accounts under PAC-71. It decides, as an owner question, whether to obtain that signal through a permission that needs no admin consent, or to accept the limit. Takes over: the personal-Microsoft residual of §5.
 
 ## Challenge, revision 0 — 2026-10-28
 
@@ -895,3 +1048,98 @@ I called nothing. From memory, unverified:
 - Google Workspace `hd` is the primary domain only.
 
 Whether unmanaged Entra directories still list a domain in `verifiedDomains` stays OQ-3 item 4. Google has had at least one reported flaw that let Workspace accounts exist on domains their creator did not verify. So `hd` evidence carries a residual of the same kind; release-note it next to item 4.
+
+## Revision 2 — 2026-10-28
+
+Answers every finding of "Challenge, revision 1" by **narrowing** the ticket, on the orchestrator's factory-level guidance (header). §1–§9 are rewritten in place and §10 Split is new. The challenge texts and the Revision 1 record above are kept unchanged. Their line numbers refer to revision 1 (`ea39bbf`), not to this file.
+
+**The core that ships:**
+- An identity is (authority, subject), and an account has at most one bound identity.
+- An address never links to a bound account.
+- An unknown identity whose address an account carries is refused with the single message.
+- A new account needs authoritative evidence, or mailbox evidence when no account carries the address.
+- A connect from inside the product attaches a calendar credential and never adds a sign-in method (PAC-47).
+- A per-account session generation lets a binding or an operator end other sessions.
+- Migration binds only where no other party can be on the account.
+- Granting sites resolve only domain-confirmed holders, and revoking and keeping sites act on every carrier.
+
+### Blocking (Challenge, revision 1)
+
+| # | Finding | Resolution |
+|---|---|---|
+| B1 | Migration (b) hands a real user's credential to an account that others may hold sessions or integrations on; OQ-6 "no longer required" false | **Resolved.** Rule (b) now binds only when the account has no recorded Google/Microsoft identifier **and** carries no stored credential, connection or key. Otherwise it refuses, leaves the account unbound, shows the single message and logs the account for the operator (§3 "Accounts created before this change", D-8). Justified by the challenge's own scenario: Henry's credential never reaches A. Every binding advances the session generation, ending sessions from before the binding (§3 "Sessions", D-20). OQ-6 is no longer described as unnecessary. It is an owner question with the factory recommending a one-time global advance at deploy (D-21, AC-44). ACs: AC-16 (revised), AC-41, AC-42, AC-44. |
+| B2 | Mailbox squatter permanently locks out the current mailbox holder; contradicts §5 residual | **Moved to follow-up F2** (address re-verification and recovery). In this ticket the lock-out is refused safely: the squatter gains nothing, because the address resolves to nobody at granting sites (AC-40). The rightful owner is unlocked by the interim operator procedure (§3, D-22). §5's false claim ("whoever controls the mailbox can confirm the address by email") is removed and replaced by the stated lock-out residual. |
+| B3 | Domain-confirmed standing never lapses; departed employee keeps the address; new hire refused | **Partly resolved, rest moved to F2.** The attack used a link-added personal Gmail to keep signing in after the Workspace account was suspended. With linking gone (F1), a departed holder has only their suspended identity and sessions that expire, or end when the operator advances the generation. The remaining part is still open: the address stays carried by the old account, so the new hire is refused. The operator procedure resolves it until F2 defines lapse and reassignment. Break-glass is keyed on the session's account (AC-38), so a freed address stops authorising the old account. |
+| B4 | AC-28 turns member removal into a silent no-op; co-host keep set drops accepted unconfirmed co-hosts | **Resolved.** The §2 table classifies each site as granting or revoking/keeping. Granting sites resolve only domain-confirmed holders. Revoking and keeping sites act on every account carrying the address, case-insensitively, at any standing (§3, D-5, D-17). AC-28 is revised, and AC-43 is new: the manager removes an unconfirmed member, a case-collided pair are both removed, and a mixed-case accepted co-host is kept. This also pins today's mixed-case bug at `handlers_scheduling_links.go:553`. `handlers_manager.go:356-366`'s single-row read must cover every carrier. |
+| B5 | Last-method rule not airtight; concurrent removal; "end other sessions" needs revocation | **Moved to follow-up F1** with sign-in-method management. This ticket has no user-facing linking or removal, so no account can lose its last method and no race exists. F1's scope carries the "usable now" counting rule and atomic removal. The revocation primitive is delivered **here** (session generation, D-20, AC-42), with its down-migration consequence in §7. |
+| B6 | PAC-47 defines the four connect controls differently | **Resolved.** The connect step now follows PAC-47 §3 item 3 (`PAC-47.md:377-411`, `24e0833`) and extends it to Google. It attaches the credential to the starting account, credited only while that account is signed in, never binds and adds no sign-in method (§3, D-4). This answers OQ-1 "no" for this ticket (factory guidance). The "add a sign-in method" product question moves to F1. AC-12, AC-12b, AC-13, AC-14, AC-31 and AC-32 are revised to match PAC-47 AC-3e, AC-3f and D-18. The PAC-47 ACs that presuppose email matching (AC-3i (a)/(b), AC-3k, AC-3l, and AC-3j's evidence) are named in §6 "Must change, in PAC-47". OQ-5 says whichever spec is built first implements the connect for both providers. |
+
+### Non-blocking (Challenge, revision 1)
+
+| # | Finding | Resolution |
+|---|---|---|
+| N1 | PAC-35 success tests will not keep passing; fixtures lack verified flag and organisation answer | **Resolved.** §2 cites the fixture lines (`:145`, `:163`, `:169`, `:183`, `:196`, `:211`, `:241`). AC-8 (revised) and §6 say that only the fixtures change (Google verified flag; a Microsoft organisation answer listing the fixture domain) and that every redirect, cookie and kept-on-failure assertion stays. |
+| N2 | SSO configurations written before PAC-50's gate count as authoritative | **Not applied as a rule; release-noted** (§5 residuals). An SSO issuer can no longer reach or take any existing account: rule 4 refuses, D-10 applies, and "authority wins" is gone. The residual is limited to new accounts at that domain. The release notes ask operators to review configured issuers at deployment. Rejected alternative: tracking whether each configuration was written under the gate needs provenance that today's rows may not carry. Proving it is more work than the reduced residual justifies. |
+| N3 | A stolen fresh session is a complete, silent takeover | **Resolved by removal of the cause.** A session can no longer add or remove a sign-in method, so a stolen session ends with the session. The remaining residual, connecting the attacker's own calendar, follows PAC-47 and is stated in §5. Notifications move to F3, and F1 must notify on method changes. |
+| N4 | Break-glass narrows more than §6 says | **Not changed; release-noted** (§5 residuals, §6). Break-glass still requires domain-confirmed standing, so an unbound or mailbox-evidence operator account is not break-glass. The reason: keying break-glass on an unconfirmed address would make break-glass squattable. The operator lists an address on a domain with an authority. |
+| N5 | Letter case: migration (a) on collided accounts; AC-7 case race; `UNIQUE` vs two carriers | **Resolved.** A collision refuses every sign-in or migration match, including (a) (§3, AC-29). AC-7 now covers `Zoe@`/`zoe@` racing. Uniqueness: under revision 2 no two accounts can carry one address (rule 4 refuses), except grandfathered case collisions, so uniqueness stays on "carries", case-insensitively, for new accounts (§3 "Evidence and address standing", D-17). AC-24, which needed two carriers, is retired (moved to F2) and replaced by AC-40. |
+| N6 | Deferring email confirmation costs more than stated | **Resolved by deciding the deferral.** Email confirmation moves to F2 (OQ-7 resolved). The costs are stated in §5 residuals: legacy users bound under (a) with mailbox evidence lose address-based invitations until F2, and the lock-out has only the operator procedure meanwhile. AC-26, AC-27 and D-18 move to F2. |
+| N7 | PAC-68 AC-15 allows `openid`; PAC-71 forbids | **Resolved.** PAC-71 wins for sign-in scopes, per the owner's "keeps today's permissions" and PAC-50 AC-24 (§3 constraints, D-14). §6 records that PAC-68 must amend AC-15 and D-5. |
+| N8 | Graph `/organization` under `User.Read` unverified; personal accounts may all fail | **Resolved as release note and conditional follow-up.** OQ-3 item 2 notes that a refusal alone does not classify an account as personal. §5 states the residual. F4 is filed only if stage 2 confirms it. |
+| N9 | AC-27: pending co-host rows stored by user id | **Moved to F2.** AC-27 ("authority wins") leaves this ticket. In the core no standing moves between accounts, and granting sites never create a pending co-host row for an unconfirmed carrier. F2 must decide how pending rows move when standing moves. |
+| N10 | Does PAC-45's domain rule apply to a linked SSO identity? | **Moved to F1**, whose scope states that it does. |
+
+### Criteria the challenger could not falsify
+
+| Criterion | Resolution |
+|---|---|
+| AC-11b, second sentence (two tenant sources) | **Dropped.** Under today's Microsoft scopes only the organisation answer carries the tenant: `/me?$select=id,mail,displayName` carries none and no ID token is issued without `openid`. So no second source exists. AC-11b says so. |
+| AC-32, last sentence (disclosure before leaving) | **Dropped.** A connect no longer adds a sign-in method, so there is nothing to disclose. The rest of AC-32 is observable: which start each control navigates to. |
+| AC-11c (two outcomes until OQ-3) | **Kept**, as the challenger accepted, with the contract recording the answer. |
+
+### Citations the challenger found wrong
+
+| Citation | Resolution |
+|---|---|
+| Revision 1 record, "public routes are `:33-42`" | **Fixed in §2.** `routes.go:38-39` (Zoom) are behind `requireAuth`. §2 now lists public and authenticated routes one by one, including detect `:40`. The revision 1 record is left as written, because it is history. |
+| AuthDialog "three starts" | **Fixed.** §2 and AC-32 list four starts, including the SSO start at `AuthDialog.tsx:108` (which follows `/api/auth/detect`'s `redirect_url`; the challenger's `:105-108` is the block, `:108` the navigation). |
+| AC-8 / §6 "today's success tests keep passing" | **Fixed** (N1). |
+
+### Consumers the challenger listed
+
+| Consumer | Resolution |
+|---|---|
+| `pac35_auth_flows_test.go:142,160,167,193,208,239` | Fixtures change, assertions kept (AC-8, §6). |
+| `pac67_conferencing_test.go:322-358` | Unchanged requirement (§6 "Must change"); now becomes a connect or a bound sign-in. |
+| `handlers_manager.go:356-366` | Must act on every carrier (B4, AC-43). |
+| `PAC-47.md:377-411` | Aligned (B6); PAC-47 ACs to amend named in §6. |
+| PAC-68 AC-15 / D-5 | Must amend (N7, §6). |
+| `Index.tsx:568`, `AuthCallback.tsx:8` | Unchanged: AC-19 covers the refusal reader. |
+
+### Acceptance-criterion ledger
+
+- **Kept unchanged:** AC-1 to AC-6, AC-9, AC-10, AC-10b, AC-11, AC-11c, AC-14 (wording aligned to "connect"), AC-15, AC-17, AC-19, AC-20, AC-21, AC-23, AC-25, AC-35, AC-37.
+- **Revised (same number, changed meaning, marked "revised r2"):**
+  - AC-7 (connect instead of link; case race);
+  - AC-7b (account with no recorded identifier);
+  - AC-8 (fixtures);
+  - AC-11b (second sentence dropped);
+  - AC-12, AC-12b, AC-13 (connect, no binding);
+  - AC-16 (b) and (c) now refused;
+  - AC-18 (unbound legacy addresses resolve to nobody at granting sites);
+  - AC-22 (contract outcomes);
+  - AC-28 (granting vs revoking);
+  - AC-29 (collisions at revoking sites);
+  - AC-31 (no link-added identity);
+  - AC-32 (four starts, disclosure dropped);
+  - AC-38 (no email-confirmed);
+  - AC-39 (requires no recorded identifier).
+- **New:** AC-40 (squat in the core, replaces AC-24), AC-41 (migration (b) and pre-account hijack), AC-42 (session generation), AC-43 (removal never silent), AC-44 (deploy-time step, conditional on OQ-6).
+- **Moved to follow-ups, numbers retired:** AC-24, AC-26 and AC-27 (F2); AC-30, AC-33, AC-34 and AC-36 (F1).
+
+### Questions left for the owner
+
+- **OQ-6 (needs an answer before release):** end every existing session at deploy? **Factory recommendation: yes**, by a one-time advance of every account's session generation (AC-44).
+- **OQ-1 (for F1 only):** this ticket answers "no" on factory guidance, aligned with PAC-47. Open for F1: may a connect offer to add the sign-in method? Factory default for F1: only through an explicit "add a sign-in method" step.
+- **OQ-2 (unchanged, matters from F1):** may SSO reach existing members without each adding it? Factory default: no.
+- **OQ-3 item 4 (conditional):** becomes an owner question only if stage 2 finds that unmanaged Microsoft directories defeat tenant evidence. Items 2 and 3 may trigger F4.
