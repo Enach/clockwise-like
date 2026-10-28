@@ -124,8 +124,10 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 
 	switch provider {
 	case "outlook":
+		// PAC-67: connected means usable — stored, renewable and not lost.
 		msToken, _ := auth.LoadMicrosoftToken(h.db, userID)
-		connected := msToken != nil && msToken.RefreshToken != ""
+		lost, _ := storage.IsCredentialLost(h.db, userID, storage.CredentialOutlook)
+		connected := msToken != nil && msToken.RefreshToken != "" && !lost
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"connected": connected,
 			"provider":  "outlook",
@@ -139,7 +141,9 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 		})
 	default: // google
 		token, err := auth.LoadUserToken(h.db, userID)
-		if err != nil || token == nil {
+		// PAC-67: a credential recorded as lost is kept (D-1) but not connected.
+		lost, lostErr := storage.IsCredentialLost(h.db, userID, storage.CredentialGoogle)
+		if err != nil || token == nil || lostErr != nil || lost {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 			return
 		}
@@ -192,6 +196,13 @@ func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// disconnectMicrosoft removes the caller's Outlook (Microsoft) credential
+// (PAC-67). It is implemented through the generated interface: see
+// generatedServer.DisconnectMicrosoft.
+func (h *authHandlers) disconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+	newGeneratedHandler(h.db, nil).DisconnectMicrosoft(w, r)
 }
 
 // issueJWT sets the auth_token session cookie for user. It returns an error,

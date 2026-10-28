@@ -5,25 +5,30 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 4, 2026-10-27 (1 and 2 on 2026-10-25, 3 earlier on 2026-10-27; see the Revision sections at the end)
+- **Revision**: 6, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27, 5 earlier on 2026-10-28; see the Revision sections at the end). Revision 6 answers the round-4 challenge: `without_stepup` is an open list of codes and `stepup_scopes` carries a key only for a configured provider. Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
 
 ## 1. The change
+
+*Sections 1 and 2 describe revisions 1-4. Where they differ from later revisions they are superseded, and each such place is marked: since revision 5 the 403 has four variants (`SsoWriteDomainMismatch`) and `provider_domain_mismatch` is a 403, not a 400; since revision 6 the step-up variant also carries `stepup_scopes` (a key per configured provider) and `without_stepup` (an open list). PAC-22 lands before PAC-50 (spec §9 D-12).*
 
 Two operations change and two are added. Nothing else in the contract moves.
 
 | Operation | Change |
 |---|---|
-| `createSsoProvider` `POST /api/admin/sso` | Documents the write gate of spec §4.2 in order. **400** gains `unknown property: <name>` and `provider_domain_mismatch`. **403** becomes `SsoWriteForbiddenResponse` (three variants, below). The domain rule becomes exact and case-insensitive: `sub.example.com` from org `example.com` is refused. |
-| `deleteSsoProvider` `DELETE /api/admin/sso/{domain}` | Same gate. The `{domain}` segment is lower-cased. **400** `provider_domain_mismatch` replaces the old 403. **403** becomes `SsoWriteForbiddenResponse`. **404** `sso provider not found` is new (API-067). **204** now means a row really was deleted. |
+| `createSsoProvider` `POST /api/admin/sso` | Documents the write gate of spec §4.2 in order. **400** gains `unknown property: <name>` and `provider_domain_mismatch` *(the latter a 403 since revision 5)*. **403** becomes `SsoWriteForbiddenResponse` (three variants, below; four since revision 5). The domain rule becomes exact and case-insensitive: `sub.example.com` from org `example.com` is refused. |
+| `deleteSsoProvider` `DELETE /api/admin/sso/{domain}` | Same gate. The `{domain}` segment is lower-cased. **400** `provider_domain_mismatch` replaces the old 403 *(a 403 `provider_domain_mismatch` since revision 5; the delete has no 400 left)*. **403** becomes `SsoWriteForbiddenResponse`. **404** `sso provider not found` is new (API-067). **204** now means a row really was deleted. |
 | `startSsoAdminStepup` `GET /api/admin/sso/stepup?provider=google\|microsoft` | **New.** Behind the session. Answers 302 to the IdP and sets the `sso_stepup_state` cookie. Errors: 400 (provider missing or unknown), 401, 403 (no org, D-1), 503 (provider not configured, D-2). |
 | `ssoAdminStepupCallback` `GET /api/admin/sso/stepup/callback` | **New.** Behind the session. Answers 302 to `<FRONTEND_URL>/settings?stepup=granted` or `?stepup=denied&reason=<enum>`; the `Location` header carries a `pattern` that admits exactly those nine forms. Errors: 401 (no session), 500 (storage, D-4). |
 
 Schemas:
 
-- `SsoWriteForbiddenResponse` = `oneOf` three disjoint objects:
+- `SsoWriteForbiddenResponse` = `oneOf` three disjoint objects (four since revision 5, with `SsoWriteDomainMismatch`, `error` const `provider_domain_mismatch`):
   - `SsoWriteMembershipRequired`: `error` ∈ {`org membership required`, `org not found`}.
   - `SsoWriteStepupRequired`: `error` = `sso_write_requires_admin_stepup`, plus
-    `stepup_url` = `/api/admin/sso/stepup` (required).
+    `stepup_url` = `/api/admin/sso/stepup` (required). Since revision 5 also
+    `stepup_scopes` and `without_stepup` (required); since revision 6 the
+    `stepup_scopes` keys are optional (present only for a configured provider)
+    and `without_stepup` items are non-empty strings, not an enum.
   - `SsoWriteFreshLoginRequired`: `error` = `sso_write_requires_fresh_login`.
   All three are `additionalProperties: false`, so `stepup_url` appears on the
   step-up variant and on no other.
@@ -36,11 +41,13 @@ Schemas:
   PAC-22.
 
 `listSsoProviders` is not touched. Read authorization and the secret projection
-belong to PAC-22, which lands after PAC-50 and rebases onto it (spec §4.9).
+belong to PAC-22, which lands after PAC-50 and rebases onto it (spec §4.9). *(Superseded by spec §9 D-12: PAC-22 lands first, and a later revision covers what it changes on these operations; see Revision 6, N2.)*
 
 ## 2. Why this shape
 
 ### The 403 is one status with three disjoint bodies
+
+*Four disjoint bodies since revision 5 (`SsoWriteDomainMismatch`). The reasoning below is unchanged by that.*
 
 The spec needs three different refusals at the same status code. The orgless
 caller has nothing to step up for. The member without a grant must be sent to
@@ -71,6 +78,8 @@ generates it as a union type with typed `As…`/`From…` accessors. The generat
 Go compiles (§6).
 
 ### `provider_domain_mismatch` is a 400, not a 403
+
+*Superseded in revision 5 by the owner decision of 2026-10-27 (spec §9 D-10): it is a 403. Kept as the record of revisions 1-4.*
 
 Spec §4.2 step 4 (decided 2026-10-22, AC-16b) makes a provider domain other
 than the org's a **400**. It replaces both today's suffix rule and its 403. The
@@ -231,7 +240,7 @@ must list `<APP_URL>/api/admin/sso/stepup/callback` as a redirect URI.
   overlap at `DELETE /api/admin/sso/stepup`. OpenAPI matches the concrete path
   first, and it has no DELETE, so the request falls to `deleteSsoProvider`
   with `{domain}` = `stepup`. That is a 400 `provider_domain_mismatch` for
-  every org. Is that acceptable, or does the plan need a router test?
+  every org (a 403 since revision 5). Is that acceptable, or does the plan need a router test?
 - **Gate order leaks.** Membership → 400s → authorization means an
   unauthorized member learns whether a body is well-formed and whether the
   domain is their org's. Both facts are their own. Is there any request where
@@ -1232,3 +1241,619 @@ make verify rc=0
 
 Not run: e2e. This branch carries no handler code, so it changes no runtime
 behaviour. The e2e gate belongs to #212 after its rebase.
+
+## Revision 5 — 2026-10-28 (finish ticket: owner decisions, migration 029, main merged)
+
+Base: `origin/main` at `69ffa92` merged into this branch as `9cc28cb` (a merge,
+not a rebase; the only conflict was the `MIGRATION.md` count, resolved to 122
+operations, 4 generated, 118 handwritten, which `openapi_migration_report.py
+--check` confirms). The owner answered two of this contract's open questions
+on 2026-10-27 (`.claude/factory/owner-decisions.md`); both are recorded in spec
+§9 as *owner, 2026-10-27* and replace the factory's assumptions.
+
+### What changed
+
+1. **`provider_domain_mismatch` is a 403** (spec §9 D-10). The owner chose
+   RFC 9110 §15.5.4: the server understood the request and the caller is not
+   permitted to configure that domain. On both writes the 400 response no
+   longer lists `provider_domain_mismatch` (on `deleteSsoProvider` the 400 is
+   gone entirely, since it had no other case), and `SsoWriteForbiddenResponse`
+   gains a fourth disjoint variant, `SsoWriteDomainMismatch`
+   (`error: const provider_domain_mismatch`). The gate order does not change:
+   membership, body shape, domain, then authorization. So the domain 403 still
+   comes before the grant is consumed, and AC-3c holds as before: a typo does
+   not burn a grant. `" acme.com "`, `sub.acme.com` and `other.com`, and the
+   `DELETE` forms `/%20acme.com`, `/sub.acme.com` and `/other.com`, are each
+   this 403 (AC-16b). This also brings the contract into line with the Linear
+   acceptance text ("Then 403"), so the revision-3 *Note* is withdrawn.
+2. **The step-up is optional and is explained before any redirect** (spec §9
+   D-11, owner answer to PAC-68 OQ-2 / PAC-50 OQ-2). `SsoWriteStepupRequired`
+   gains two required properties:
+   - `stepup_scopes: {google: string[], microsoft: string[]}` lists what the
+     step-up asks each provider for, beyond the identity scopes;
+   - `without_stepup: string[]`, an open enum (it was not: the schema was a
+     closed enum; made a really open list in revision 6, B1), today only
+     `sso_configuration_writes`, says what the user cannot do if they
+     decline (only an operator on the break-glass list can write SSO
+     configuration without it).
+   `startSsoAdminStepup` now says that sign-in never requests these scopes,
+   that declining costs nothing else, and that the step-up can be started again
+   from Settings. AC-22 changes: the web client no longer navigates on its own.
+   It yields a typed step-up-required outcome, and the screen that made the
+   write explains it before any navigation. New AC-24 pins that the sign-in
+   authorize URLs carry no new scope.
+3. **Migration 029** (spec §9 D-7). `main` took 028 for
+   `028_credential_losses` (PAC-67, #232). `SsoProviderResponse.Domain` now
+   names `029_sso_admin_stepup`, and so do the manifest's `migration` and
+   AC-20a.
+4. **Order with PAC-22 reversed** (spec §9 D-12). PAC-22's implementation
+   (#237) is ready to merge before #212, so PAC-50 lands after it. Once PAC-22
+   is on `main`, `main` is merged into this branch and into #212, and a
+   revision 6 describes PAC-22's provider response on these operations. The
+   manifest condition "PAC-22 lands after PAC-50 and rebases onto it" is
+   replaced by that order.
+
+The `mergeConditions` are rewritten as the checklist stage 4 must meet and
+assert by test: PAC-21 bodies on all six 500s, including `listSsoProviders`;
+no TrimSpace on the domain paths; the `setCookie` helper for
+`sso_stepup_state`; `APP_URL` set in e2e compose and documented for release;
+`stepup_scopes`/`without_stepup` matching what the start requests; AC-24; web
+#119 regenerated against this `contractHash`; the PAC-22 order; and all three
+gates at rc=0.
+
+### Alternatives rejected
+
+- **A 422 for the domain mismatch.** The body is well-formed and the target
+  is understood. The owner chose 403 because the refusal is about permission,
+  and 422 would also have been a fourth status a client must map.
+- **The 403 with a free-text `error` (today's `can only configure SSO for your
+  own domain`).** A client could not tell it apart from the other three 403s
+  without matching on prose. A `const` keeps the oneOf disjoint on `error`.
+- **Putting the explanation text itself in the 403 (`message: "..."`).** It
+  would fix English prose in the API and make the server the copywriter. The
+  machine-readable lists let the client word and translate the explanation,
+  and a test can compare `stepup_scopes` to what the start really requests.
+- **Listing `verified_domain_org_membership` in `without_stepup` now.** The
+  owner gave automatic org membership as an example of what extended access
+  provides, but PAC-50's step-up discards its tokens after the admin check and
+  grants one write. It does not provide membership, and the contract describes
+  what is (factory §7 rule 2). The enum is open, so PAC-68 can add the value if
+  it reuses this step-up. Recorded as assumed, pending owner confirmation
+  (spec §9 D-11).
+- **Keeping AC-22's automatic navigation and explaining on the IdP side.** That
+  explanation would come after the redirect. The owner asked for it before.
+- **Waiting for PAC-22 to land before cutting this revision.** The owner
+  decisions and the 029 renumber do not depend on PAC-22. Holding them back
+  would leave #212's tests written against a 400 the owner has rejected.
+
+### Consumers affected (re-searched 2026-10-28)
+
+- `smart-calendar-flow`: only `src/api/generated/*` mention `/api/admin/sso`
+  or these schemas. #119 must be regenerated against this bundle. No
+  hand-written code reads `provider_domain_mismatch`, and `client.ts` has no
+  step-up handling yet (AC-22 is stage-4 web work).
+- `clockwise-like` #212: `backend/api/pac50_sso_gate_test.go`,
+  `backend/api/pac50_merge_conditions_test.go` and
+  `e2e/tests/sso-stepup.spec.ts` mention `provider_domain_mismatch`. Where
+  they assert a 400, stage 4 changes them to 403 (manifest
+  `consumersAffected`). The step-up 403 body in #212 must gain the two new
+  properties.
+- `mcp/`: no reference to `/api/admin/sso`.
+- PAC-22 (#237): its contract already answers `setSsoProviderState`'s domain
+  mismatch with 403 `provider_domain_mismatch` ("follows PAC-50 as merged on
+  rebase"), which is consistent with this revision. Its manifest's
+  `rebaseOntoPac50` describes the opposite order from spec §9 D-12, so its
+  contract-author has to reconcile it.
+
+### Gates run for revision 5
+
+`bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract`
+on `a7ce915` (host api checkout on this branch; script exit 0). The bundle and
+server code had already been regenerated and committed in `591a025`:
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (101 paths)
+OK: MIGRATION.md covers all 122 operations (4 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 63.1% (floor 57%) [3753 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+`git show HEAD:contracts/openapi/openapi.yaml | sha256sum` on `591a025` printed
+`8b9321ae60fca5e73eaa4623ad672469d654a78d3eb21d7ac011e0b3ab9478ad`, which is the
+manifest's `contractHash`. The commits after `591a025` do not touch the bundle.
+
+Web: `origin/main` (`aa5c52e`) was merged into `chore/regen-types-pac-50`.
+Then `REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh chore/regen-types-pac-50 factory/pac-50-contract`
+regenerated `src/api/generated/{schemas.ts,schemas.types.d.ts,types.ts}`
+(+187/-83) and ended with `make verify rc=0`. The output was committed as
+`fdfb434` on https://github.com/Enach/smart-calendar-flow/pull/119. The gate
+was then rerun without REGEN on `fdfb434`:
+
+```
+      Tests  315 passed (315)
+lint           PASS
+typecheck      PASS
+design-check   PASS (impeccable, ratcheted)
+openapi-check  PASS
+test           PASS
+coverage       PASS (ratchet floor in vitest.config.ts, target 70%)
+make verify rc=0
+```
+
+Not run: e2e. This branch carries no handler code. e2e-gate, including
+`e2e/tests/sso-stepup.spec.ts`, is a merge condition on #212 once #212 has
+merged this revision and moved its tests to 403.
+
+## Challenge, revision 5 — 2026-10-28
+
+Reviewed by `contract-challenger` (round 4) in a local session, against the
+committed state of `factory/pac-50-contract` at `405b8d8`. Inputs: the
+fragment `contracts/openapi/paths/auth.yaml`, the bundle, this manifest and
+document, spec `docs/specs/PAC-50.md` and its §9. I did not read the author's
+reasoning beyond these files.
+
+**Verdict**: accept-with-changes (2 blocking, both in `SsoWriteStepupRequired`)
+
+### Checks run (outputs as printed)
+
+- `python scripts/openapi_assemble.py --check`: `OK: bundle is in sync (101 paths)`, rc=0.
+- `python scripts/openapi_migration_report.py --check`: `OK: MIGRATION.md covers all 122 operations (4 generated)`, rc=0.
+- `bash scripts/openapi_gen_go.sh --check`: `OK: backend/api/gen matches the contract`, rc=0.
+- `go build ./...` in `backend/`: rc=0. The union has `As`/`From` accessors for all four variants (`paceday.gen.go:5106-5191`).
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`: `8b9321ae…78ad`, the manifest's `contractHash`.
+- Web `make openapi-check CONTRACT=<this bundle>` on smart-calendar-flow `chore/regen-types-pac-50` at `fdfb434` (#119), in a separate `node:24-bookworm` container (not the shared `paceday-gate` one): `OK: src/api/generated matches the contract`, rc=0.
+- A zod probe (`npx tsx`) run against #119's generated `schemas.ts` at `fdfb434`. The rows below give each payload and its result.
+- Not run: `api-gate.sh`, `web-gate.sh` and `e2e-gate.sh`. The host api checkout is on `impl/pac-22-sso-secrets-backend`, which another stage owns, and `web-gate.sh` clears the shared container's `/work`. The checks above cover this stage's gate items 1, 2 and 4. For item 3 I parsed the bundle: no `x-uncertain` on any of the four `/api/admin/sso*` paths or on any of the eight SSO schemas.
+
+| Payload (403 body) | `SsoWriteStepupRequired.safeParse` | `SsoWriteForbiddenResponse.safeParse` |
+|---|---|---|
+| A: today's step-up body, `without_stepup: ["sso_configuration_writes"]`, both scope lists filled | true | true |
+| B: A with `without_stepup: ["sso_configuration_writes","verified_domain_org_membership"]` | **false** | **false** |
+| C: A with `stepup_scopes.microsoft: []` | **false** | **false** |
+| D: A with no `microsoft` key | **false** | **false** |
+| E: `{"error":"provider_domain_mismatch","stepup_url":"/api/admin/sso/stepup"}` | false | false |
+| F: `{"error":"provider_domain_mismatch"}` | false | true |
+| G: `{"error":"sso_write_requires_fresh_login","without_stepup":[…]}` | false | false |
+| H: `{"error":"sso_write_requires_admin_stepup","stepup_url":"/api/admin/sso/stepup"}` (#212's body today) | false | false |
+
+### Requests wrongly permitted
+
+None found. See "Verified clean".
+
+### Responses the client cannot handle / contract contradicts itself (blocking)
+
+1. **B1: `without_stepup` is documented as open but generated as closed.**
+   `SsoWriteStepupRequired.without_stepup` description: "Values may be
+   added; a client ignores one it does not know". Revision 5 §2 calls it "an
+   open enum", and spec §9 D-11 says PAC-68 "adds the value to the open
+   `without_stepup` enum". The schema is `items: {type: string, enum:
+   [sso_configuration_writes]}`, which is a closed enum. typed-openapi
+   generates it as `z.array(z.literal("sso_configuration_writes"))` inside a
+   `z.strictObject` (#119 `src/api/generated/schemas.ts:422`), and
+   openapi-typescript as `"sso_configuration_writes"[]`. Payload B, the exact
+   addition D-11 anticipates, fails both `SsoWriteStepupRequired` and
+   `SsoWriteForbiddenResponse` (probe row B). So the day PAC-68 adds the
+   value, a client that recognizes the 403 by schema (the way `client.ts`
+   already recognizes `CalendarDisconnectUnsupported` with `safeParse`) stops
+   recognizing the step-up. It then falls back to the generic 403 text,
+   which is the prompt-swallowing this `oneOf` exists to prevent (§2, "The
+   403 is one status with three disjoint bodies"). AC-22's typed outcome is
+   built on exactly this schema.
+   **Fix, pick one:**
+   (a) Make it really open: `items: {type: string, minLength: 1}`. Name the
+   known value in the description (`sso_configuration_writes`, and say a
+   client ignores any other), and drop the `enum`.
+   (b) Make it really closed: keep the `enum` and delete "Values may be
+   added; a client ignores one it does not know" from the description. Also
+   change "open enum" in §2 / Revision 5 and in spec D-11. A new value then
+   becomes a contract revision with a web regeneration.
+   Either fix is consistent. The contract must not state both.
+
+2. **B2: `stepup_scopes` requires a Microsoft list on deployments with no Microsoft step-up.**
+   `stepup_scopes` has `required: [google, microsoft]` and `minItems: 1` on
+   each list. Its description says "Each list is exactly what
+   startSsoAdminStepup requests beyond those". Microsoft is optional per
+   deployment: `docker-compose.prod.yml:69` has `MICROSOFT_CLIENT_ID:
+   ${MICROSOFT_CLIENT_ID:-}`, and `e2e/docker-compose.e2e.yml` sets only
+   `GOOGLE_CLIENT_ID`. On such a deployment the start answers 503
+   `microsoft step-up not configured` (D-2, which the contract states), so
+   it requests nothing from Microsoft. The schema then forbids the honest
+   answer: payloads C and D both fail (probe rows C and D). The server is
+   forced to advertise scopes for a provider whose step-up cannot start. A
+   client following the description explains Microsoft's admin-consent
+   scopes, lets the user choose Microsoft, and navigates to a 503 JSON
+   page. The mergeCondition "a test asserts both against the configured
+   step-up providers" cannot be met on the e2e stack, where only Google is
+   configured. The same applies to both keys when `APP_URL` is unset (D-9:
+   503 for every provider).
+   **Fix:** remove `google` and `microsoft` from `stepup_scopes.required`
+   and keep `minItems: 1` on each list that is present. Add to the
+   description: "a provider's key is present if and only if that provider's
+   step-up is configured on this deployment, that is, startSsoAdminStepup
+   would not answer 503 for it; an empty object means no step-up can be
+   started here". Extend the scopes mergeCondition and AC-24 to cover a
+   Google-only configuration (the e2e stack). AC-22's typed outcome then
+   carries only the providers the user can actually pick.
+
+### Consumers affected
+
+- `clockwise-like` #212, `e2e/tests/sso-stepup.spec.ts:64`
+  (`origin/impl/pac-50-sso-write-gate-backend` at `51aa70a`): `expect(refusal).toEqual({ error:
+  'sso_write_requires_admin_stepup', stepup_url: '/api/admin/sso/stepup' })`.
+  This is an exact-equality assertion on the step-up body, and the two new
+  required properties break it (probe row H: that body no longer validates
+  either). Lines 114-115 also assert `400` + `provider_domain_mismatch`. The
+  manifest's `consumersAffected` names only the two Go test files. This
+  document's "Consumers affected (re-searched 2026-10-28)" names the e2e
+  file for the 400 only. Non-blocking, because e2e-gate on #212 is already a
+  merge condition, but the list should be complete: add
+  `e2e/tests/sso-stepup.spec.ts:64` and `:114-115`.
+- `clockwise-like` #212 `backend/api/handlers_sso.go:179` and `:298` write
+  `provider_domain_mismatch` with `http.StatusBadRequest`. This is covered by
+  the "No 400 provider_domain_mismatch remains" mergeCondition.
+- `smart-calendar-flow`: on `main`, no hand-written code references
+  `/api/admin/sso`, `provider_domain_mismatch`, `SsoWrite*` or `stepup`
+  (`git grep` outside `src/api/generated`). #119 regenerates cleanly against
+  this bundle (above).
+- `mcp/`: no reference (`grep -rl 'admin/sso\|provider_domain_mismatch\|SsoWrite' mcp`).
+- PAC-22, `origin/factory/pac-22-contract` at `4901b83`: see non-blocking N2.
+
+### Contract/implementation divergences
+
+1. The bundle describes the post-PAC-50 gate. `main`'s `handlers_sso.go`
+   still applies the suffix rule with a free-text 403. This is a
+   contract-leads-stage-4 situation that every earlier round accepted. It
+   is recorded here so nobody reads it as an oversight. #212 diverges as
+   listed under "Consumers affected" until it merges this revision.
+
+### Uncertainties not actually resolved
+
+None new in revision 5. U-21 and U-22 are unchanged since rounds 1-3. The
+revision-5 change touches no `x-uncertain`. Under N2, U-21's determination
+stops being true once PAC-22's request schema lands first.
+
+### Non-blocking
+
+- **N1.** `stepup_scopes` description names `Organization.Read.All` as
+  what Microsoft is asked for, while spec OQ-2's technical half is open
+  (`User.Read` may suffice). Mark the named scopes as "today's", and leave
+  the normative rule as "exactly what startSsoAdminStepup requests", so
+  resolving OQ-2 at stage 4 does not contradict the description.
+- **N2. D-12 understates what revision 6 must cover.** PAC-22's contract
+  (`origin/factory/pac-22-contract` `4901b83`) does more than change the
+  provider response:
+  - It adds `PUT /api/admin/sso/{domain}/state` (`setSsoProviderState`). This
+    is another SSO configuration write. It answers createSsoProvider's 403
+    body, refuses a non-exact domain with 403 `provider_domain_mismatch`,
+    and is recorded as `sso_provider_written` with `op` `suspend`/`resume`.
+  - It replaces `SsoProviderCreateRequest`: OIDC only, `oidc_client_secret`
+    optional, nine ordered 400 messages, and a stored-row check after the
+    domain check.
+
+  Revision 6 therefore has to revisit the following, not just "PAC-22's
+  provider response":
+  - `without_stepup`'s "(create, update or delete)";
+  - the spec §4.6 `op` enum;
+  - U-21's "only the three required fields are validated";
+  - this contract's 400 list on create;
+  - which operations `SsoWriteForbiddenResponse` documents.
+
+  Today `setSsoProviderState` is not routed on #237
+  (`backend/api/routes.go` has no `/state`), so nothing is ungated in the
+  meantime. Widen the D-12 mergeCondition to name these items.
+- **N3.** `startSsoAdminStepup` says "the step-up can be started again at
+  any time (from Settings, where the callback lands)". No Settings entry
+  for it exists. Spec §3 puts the SSO admin UI out of scope, and the
+  manifest forbids `src/pages`. A grant is also single-use and lasts 10
+  minutes, so starting from Settings with no pending write produces a
+  grant that expires unused. Reword to "can be started again at any time
+  by navigating to `stepup_url`". See the OWNER question below.
+- **N4.** Spec header (Status line, inherited-scope U-22 line) and §3
+  ("PAC-22, which lands after PAC-50 and rebases") still state the old
+  order. Only §4.9 is marked superseded by D-12. §1-§2 of this document
+  still describe three variants and a 400, with only the header note
+  marking them as superseded.
+- **N5.** `client.ts` shows a 403's `error` text as the message. A future
+  SSO page must map `provider_domain_mismatch` to wording, or the raw code
+  is shown. This is outside PAC-50's web scope (only `client.ts` is
+  allowed), so it is noted for the SSO-page follow-up issue.
+- **OWNER:** D-1 to D-5 (start for an orgless caller is 403; unconfigured
+  provider is 503; the callback reason mapping; the callback 500; a 404
+  delete consumes the grant) are still *assumed by the factory, pending
+  owner confirmation*.
+- **OWNER:** D-11 (part): `without_stepup` deliberately omits "automatic
+  org membership from a verified domain", because PAC-50's step-up does
+  not grant it. Confirm this reading of the 2026-10-27 answer.
+- **OWNER:** the 2026-10-27 answer says the choice "can be revisited later
+  in Settings". Does PAC-50 have to ship a Settings entry point for the
+  step-up, or is "navigate to `stepup_url` when you next write" enough until
+  the SSO admin page exists (spec §3 follow-up)?
+- **OWNER:** D-12 (PAC-22 lands before PAC-50) is sequencing that is
+  assumed by the factory.
+
+### Verified clean
+
+- **Disjointness of the four-variant `oneOf`.**
+  - F `{"error":"provider_domain_mismatch"}` matches exactly one variant.
+  - E (mismatch plus `stepup_url`) and G (fresh-login plus
+    `without_stepup`) match none, because every variant is
+    `additionalProperties: false` / `strictObject`.
+  - `SsoWriteMembershipRequired`'s `enum` and the three `const`s share no
+    value.
+- **Domain 403 before consume.** `POST /api/admin/sso`
+  `{"domain":"sub.acme.com","provider_name":"x","provider_type":"oidc"}`,
+  `{"domain":" acme.com ",…}` and `{"domain":"other.com",…}` from a
+  grant-holder of `acme.com` are each 403 `provider_domain_mismatch`. The
+  fragment orders domain (step 3) before authorization (step 4) and says
+  "Every 400 and 403 above … leaves the grant live". This matches AC-3c,
+  AC-16b and spec §4.2 steps 4-5a.
+- **Orgless callers.** An orgless caller sending `{"domain":"other.com",…}`
+  gets the membership 403 first (step 1), not the mismatch, as AC-1b
+  requires.
+- **`DELETE`.**
+  - The bundle's `deleteSsoProvider` has no `400` left. I could construct
+    no handwritten-handler path that answers one: an invalid percent-escape
+    is refused by `net/http` before routing. I checked this with a raw
+    request: `DELETE /api/admin/sso/%zz` got `HTTP/1.1 400 Bad Request`
+    from the server and never reached the handler. That 400 is
+    transport-level and outside the operation, like any malformed request
+    line.
+  - `DELETE /api/admin/sso/stepup` is documented as 403
+    `provider_domain_mismatch` with nothing consumed.
+- **AC-18.** On neither write operation does the bundle document
+  `provider_domain_mismatch` as a 400. The create `400` lists four
+  messages, none of them that code.
+- **Linear relayed acceptance** "sub.example.com → 403" now matches the
+  contract. The revision-3 Note is correctly withdrawn, and D-10 is recorded
+  as *owner, 2026-10-27* in spec §9, as owner-decisions.md requires.
+- **Migration 029.** `grep '028_sso\|migration 028'` over the fragment and
+  the bundle finds nothing. `SsoProviderResponse.Domain`, the manifest's
+  `migration`, AC-20a and spec D-7 all say `029_sso_admin_stepup`.
+- **Manifest `acceptanceTests` and spec §5.** AC-1a…AC-24 correspond one to
+  one. AC-3c, AC-16b, AC-18, AC-20a, AC-22 and AC-24 carry the revision-5
+  wording in both. No AC was narrowed silently.
+- **Sign-in is not widened (AC-24).** The `startSsoAdminStepup`
+  description and spec §4.3 both say sign-in requests none of the step-up
+  scopes. That matches the owner's PAC-68 OQ-2 answer.
+
+## Revision 6 — 2026-10-28 (response to the round-4 challenge)
+
+Written by `contract-author` in a local session, against "Challenge, revision
+5" above. Contract revision 6; the bundle hashes to
+`7696ff3f99fe136c8fa42818daebee1a5539dc3dae27a8903c0015517593852a`
+(`git show 76ffa0c:contracts/openapi/openapi.yaml | sha256sum`), recorded in
+the manifest. Two schema changes, both in `SsoWriteStepupRequired`, and
+description changes. No operation, status code or other schema changes.
+
+### B1 — accepted, fix (a): `without_stepup` is really open
+
+`without_stepup.items` is now `{type: string, minLength: 1}`; the `enum` is
+gone. The description names the one value the server sends today
+(`sso_configuration_writes`), says the list is open, and says a client
+explains the codes it knows and ignores any other. Fix (b) was rejected
+because D-11 expects PAC-68 to add a value. Under (b), that value would make
+every client generated before it stop recognising the step-up 403, and that
+is the failure B1 describes. With (a) a later value is a description change
+for the server and no regeneration is forced on the web. Revision 5's
+"open enum" (above) and spec §9 D-11 now say "open list". The Revision 5
+text is annotated, not rewritten.
+
+typed-openapi now emits `without_stepup: z.array(z.string().min(1)).min(1)`
+(#119 `src/api/generated/schemas.ts:422`). The gen.go constant
+`SsoConfigurationWrites` and the type `SsoWriteStepupRequiredWithoutStepup`
+are gone from `backend/api/gen/paceday.gen.go`. Nothing on this branch or on
+#212 (`origin/impl/pac-50-sso-write-gate-backend` `51aa70a`) references
+either (`git grep`).
+
+### B2 — accepted, fixed as proposed
+
+`stepup_scopes` no longer has a `required` list. `minItems: 1` stays on each
+list that is present, and `additionalProperties: false` stays, so the only
+keys are `google` and `microsoft`. The description's normative rule: a
+provider's key is present if and only if that provider's step-up is
+configured on the deployment, that is, if `startSsoAdminStepup` would not
+answer 503 for it (D-2 for a missing OAuth client, D-9 for `APP_URL` unset).
+A Google-only deployment sends `{google: [...]}`, and an empty object means
+no step-up can be started. An unconfigured provider is shown by an absent
+key, not by an empty list, so `microsoft: []` stays invalid: a client never
+has to tell "configured, asks for nothing extra" apart from "not
+configured". `SsoWriteStepupRequired` and `startSsoAdminStepup` tell the
+client to offer only the providers that are keys of `stepup_scopes`, and to
+offer no step-up when it is empty.
+
+AC-24 (spec and manifest) now covers three cases: Google only (the e2e
+stack, no `microsoft` key), both providers, and neither (empty object).
+AC-22's typed outcome offers only the listed providers. The scopes
+mergeCondition requires tests for the same three configurations.
+
+### Consumers (non-blocking): accepted
+
+The manifest's `consumersAffected` now names #212
+`e2e/tests/sso-stepup.spec.ts:64` (exact `toEqual({error, stepup_url})`;
+stage 4 asserts the full body for the Google-only e2e stack) and `:114-115`
+(400 to 403).
+
+### N1 — accepted
+
+The `stepup_scopes` description puts the normative rule first ("each list is
+exactly what startSsoAdminStepup requests from that provider beyond the
+identity scopes") and then gives the Google and Microsoft scope names as
+"today's values, informative only", noting that OQ-2 may narrow Microsoft's.
+
+### N2 — accepted
+
+Spec §9 D-12, the manifest's `decisionsAssumed` D-12 and the "Order with
+PAC-22" mergeCondition now list what the revision after PAC-22 lands must
+cover:
+
+1. `setSsoProviderState` behind this gate, and listed among the operations
+   that answer `SsoWriteForbiddenResponse`.
+2. `without_stepup`'s "(create, update or delete)" extended with suspend and
+   resume.
+3. The §4.6 `op` enum extended with suspend and resume.
+4. U-21's determination redone against PAC-22's replaced request.
+5. The create 400 list replaced (PAC-22's nine messages plus
+   `unknown property`, with the stored-row check placed relative to the
+   gate).
+
+`setSsoProviderState` is not routed on #237, so nothing is ungated in the
+meantime. This revision does not make those changes. PAC-22 is not on
+`main`, and describing its operations here would describe code that does
+not exist (factory §7 rule 2).
+
+### N3 — accepted, with a recorded assumption
+
+`startSsoAdminStepup` now says the step-up "can be started again at any time
+by navigating to `stepup_url`". Every SSO write made without a live grant
+answers the step-up 403 again, so the choice comes back at the next write.
+It also says a grant is single-use and lasts 10 minutes, so the step-up is
+meant for a write the user is about to make. Spec §4.3 says the same. The
+owner's words in D-11 ("revisitable from Settings") are kept as given. How
+PAC-50 meets them is the new spec §9 **D-13**: no Settings entry point in
+PAC-50; the SSO admin page follow-up (spec §3) owns one. This is *assumed by
+the factory, pending owner confirmation* (the OWNER question below). It is
+the conservative reading: it adds no surface and the manifest's
+`src/pages` prohibition stands.
+
+### N4 — accepted
+
+The spec header (Status line and the U-22 inherited-scope line) and §3 now
+carry "*Superseded by §9 D-12*" next to the old order, as §4.9 already did.
+In this document, §1 opens with a note that §1 and §2 describe revisions
+1-4. Each place that later revisions changed is marked inline: three
+variants (four since revision 5), the 400 (a 403 since revision 5), the
+step-up variant's new properties, the PAC-22 order, and §5's `DELETE
+/stepup` 400.
+
+### N5 — accepted as a follow-up input
+
+Nothing changes in PAC-50, whose web scope is `client.ts` and its test. The
+SSO-page follow-up issue (spec §3) must map `provider_domain_mismatch`, and
+the other `SsoWriteForbiddenResponse` codes, to user-facing wording rather
+than show the code. This is recorded here for whoever files that issue.
+
+### OWNER questions: still open, recorded
+
+`owner-decisions.md` (read on 2026-10-28) answers none of the four, so each
+stays *assumed by the factory, pending owner confirmation* in spec §9:
+
+- D-1 to D-5 (start for an orgless caller is 403; an unconfigured provider is
+  503; the callback reason mapping; the callback 500; a 404 delete consumes
+  the grant).
+- D-11 (part): `without_stepup` omits "automatic org membership from a
+  verified domain", because PAC-50's step-up does not grant membership.
+- D-13: no Settings entry point in PAC-50; navigating to `stepup_url` at the
+  next write is enough until the SSO admin page exists.
+- D-12: PAC-22 lands before PAC-50 (sequencing).
+
+None of these deletes user data or widens who can see data.
+
+### Alternatives rejected
+
+- **B1 fix (b), a closed enum.** Rejected for the reason given under B1.
+- **`stepup_scopes` keeps both keys, and an unconfigured provider gets an
+  empty list.** A client cannot tell "configured, nothing extra" from "not
+  configured", and an empty list breaks the `minItems: 1` that keeps a
+  configured provider honest.
+- **A separate `stepup_providers: [google]` array next to `stepup_scopes`.**
+  It states the same fact twice, and the two could disagree. The keys of
+  `stepup_scopes` already carry it.
+- **Adding a Settings entry point now (N3).** It is outside the manifest's
+  web scope and spec §3. With single-use 10-minute grants it would mostly
+  produce grants that expire unused. That is left to the owner (D-13).
+- **Doing PAC-22's revision now (N2).** Rejected for the reason given under
+  N2.
+
+### Gates run for revision 6
+
+API. `api-gate.sh` itself was **not** run. It requires the host api checkout
+(`C:\Users\jouzu\paceday\clockwise-like`) to be on this branch, and that
+checkout is on `impl/pac-22-sso-secrets-backend`, which another stage owns.
+Switching it under that stage was not acceptable. Instead, the same script
+was run from a scratch copy with one difference: the host-side steps (tests,
+coverage, the Makefile floors) point at this branch's worktree
+(`C:\Users\jouzu\paceday\wt-pac50-challenge`) instead of the host checkout,
+and the test database uses port 15457 (`PACEDAY_TEST_DB_PORT`). The
+container step clones `factory/pac-50-contract` exactly as the gate does.
+Run on `0e7beca` (script exit 0):
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (101 paths)
+OK: MIGRATION.md covers all 122 operations (4 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 63.1% (floor 57%) [3753 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+An earlier run of the container step alone, on `8c36c52` (the fragment
+change), regenerated `backend/api/gen/paceday.gen.go` and
+`contracts/openapi/openapi.yaml`. Both were committed as `76ffa0c`.
+
+Web. `REGEN=1 web-gate.sh` was **not** run either. It copies regenerated
+files into the host web checkout, which is on
+`impl/pac-22-sso-secrets-frontend` (another stage). The regeneration was done
+the way the gate does it, in the `paceday-gate` container: a clone of
+`chore/regen-types-pac-50` (in a separate `/work50` directory), `make
+openapi` against this branch's bundle at `76ffa0c`, and the changed files
+copied into a worktree of `chore/regen-types-pac-50`
+(`C:\Users\jouzu\paceday\wt-pac50-web`). It changed
+`src/api/generated/{schemas.ts,schemas.types.d.ts,types.ts}` (+90/-42),
+committed as `ffefc22` on https://github.com/Enach/smart-calendar-flow/pull/119.
+Then
+`bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh chore/regen-types-pac-50 factory/pac-50-contract`
+(unchanged, no REGEN; script exit 0):
+
+```
+      Tests  315 passed (315)
+lint           PASS
+typecheck      PASS
+design-check   PASS (impeccable, ratcheted)
+openapi-check  PASS
+test           PASS
+coverage       PASS (ratchet floor in vitest.config.ts, target 70%)
+make verify rc=0
+```
+
+Zod probe (`npx tsx`) against the regenerated `schemas.ts`, using the
+round-4 rows plus four new ones (`Stepup` = `SsoWriteStepupRequired`,
+`Forbidden` = `SsoWriteForbiddenResponse`):
+
+```
+A both lists: Stepup=true Forbidden=true
+B extra without_stepup value: Stepup=true Forbidden=true
+C microsoft: []: Stepup=false Forbidden=false
+D no microsoft key (Google only): Stepup=true Forbidden=true
+D2 empty stepup_scopes: Stepup=true Forbidden=true
+D3 unknown provider key: Stepup=false Forbidden=false
+D4 without_stepup empty string: Stepup=false Forbidden=false
+D5 without_stepup []: Stepup=false Forbidden=false
+E mismatch+stepup_url: Stepup=false Forbidden=false
+F mismatch: Stepup=false Forbidden=true
+G fresh-login+without_stepup: Stepup=false Forbidden=false
+H #212 body today: Stepup=false Forbidden=false
+```
+
+B and D now validate (B1, B2). C stays invalid on purpose (see B2). E, F
+and G keep the `oneOf` disjoint.
+
+Not run: e2e-gate. This branch carries no handler code. e2e-gate, including
+`e2e/tests/sso-stepup.spec.ts`, remains a merge condition on #212.

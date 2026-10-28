@@ -26,7 +26,7 @@ VERIFY_DIR := $(ROOT)/.verify
 # These are RATCHETS. Raise one when coverage rises; never lower one to turn a
 # red run green. Closing the backend's gap to 75% is tracked as work, not as a
 # number in this file.
-BACKEND_COVERAGE_MIN ?= 45
+BACKEND_COVERAGE_MIN ?= 57
 MCP_COVERAGE_MIN ?= 75
 
 # Versions are pinned in one place so an agent that hits a missing tool is told

@@ -39,18 +39,29 @@ var (
 	errUnsupportedConferenceProvider = errors.New("unsupported conference provider")
 )
 
+// ProviderForRequest builds the caller's Zoom or Teams provider over their
+// stored credential. The provider takes its access token from a renewing
+// token source (PAC-67): an expired token is renewed with the caller's own
+// refresh token and stored for them, and a permanent refusal is recorded as
+// their loss and surfaces from CreateMeeting as an *auth.LostError.
 func (f defaultConferenceProviderFactory) ProviderForRequest(ctx context.Context, providerName string, settings *storage.Settings) (conference.Provider, error) {
+	userID := auth.UserIDFromContext(ctx)
 	switch providerName {
 	case "zoom":
-		copy := *settings
-		copy.ConferencingProvider = "zoom"
-		return conference.NewProvider(&copy)
+		if strings.TrimSpace(settings.ZoomTokens) == "" {
+			return nil, conference.ErrZoomNotConnected
+		}
+		cred, err := storage.DecodeZoomCredential(settings.ZoomTokens)
+		if err != nil {
+			return nil, conference.ErrZoomInvalidCredential
+		}
+		return &conference.ZoomProvider{Tokens: auth.ZoomTokenSource(ctx, f.db, conference.ZoomOAuthConfigFromEnv(), userID, cred)}, nil
 	case "teams":
-		msToken, tokenErr := auth.LoadMicrosoftToken(f.db, auth.UserIDFromContext(ctx))
+		msToken, tokenErr := auth.LoadMicrosoftToken(f.db, userID)
 		if tokenErr != nil || msToken == nil {
 			return nil, errTeamsNotConnected
 		}
-		return conference.NewTeamsProvider(msToken.AccessToken), nil
+		return &conference.TeamsProvider{Tokens: auth.MicrosoftTokenSource(ctx, f.db, microsoftConfig(), userID, msToken)}, nil
 	default:
 		return nil, errUnsupportedConferenceProvider
 	}
@@ -135,60 +146,27 @@ func (h *conferencingHandlers) zoomCallback(w http.ResponseWriter, r *http.Reque
 		writeServerError(w, r, "zoom token exchange", err, http.StatusInternalServerError)
 		return
 	}
-	if err := storage.SaveZoomTokens(h.db, userIDFromCtx(r.Context()), tok.AccessToken, tok.RefreshToken); err != nil {
+	cred := storage.ZoomCredential{AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken}
+	if tok.ExpiresIn > 0 {
+		expiry := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+		cred.Expiry = &expiry
+	}
+	if err := storage.SaveZoomCredential(h.db, userIDFromCtx(r.Context()), cred); err != nil {
 		writeServerError(w, r, "save zoom token", err, http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/?connected=true&provider=zoom", http.StatusFound)
 }
 
-// POST /api/conference/create
+// POST /api/conference/create — implemented through the generated interface
+// (PAC-67, factory section 4): see generatedServer.CreateConferenceLink.
 func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Title string    `json:"title"`
-		Start time.Time `json:"start"`
-		End   time.Time `json:"end"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
-	if err != nil {
-		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
-		return
-	}
-
-	var provider conference.Provider
-	if s.ConferencingProvider == "teams" {
-		msTok, _ := auth.LoadMicrosoftToken(h.db, userID)
-		if msTok == nil {
-			writeError(w, "teams: not connected — visit /api/auth/microsoft to authenticate", http.StatusBadRequest)
-			return
-		}
-		provider = conference.NewTeamsProvider(msTok.AccessToken)
-	} else {
-		provider, err = conference.NewProvider(s)
-		if err != nil {
-			msg, ok := conferenceRefusal(err, s.ConferencingProvider)
-			if !ok {
-				writeServerError(w, r, "conference provider", err, http.StatusInternalServerError)
-				return
-			}
-			writeError(w, msg, http.StatusBadRequest)
-			return
-		}
-	}
-	details, err := provider.CreateMeeting(r.Context(), req.Title, req.Start, req.End)
-	if err != nil {
-		writeServerError(w, r, "create meeting", err, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(details)
+	newGeneratedHandler(h.db, h).CreateConferenceLink(w, r)
 }
 
+// providers lists the caller's conferencing rows. Since PAC-67 `connected`
+// means usable: stored, renewable (a refresh token, for Zoom and Teams), and
+// not recorded as lost; Teams' `enabled` follows it exactly.
 func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	settings, err := storage.GetOrCreateSettingsByUser(h.db, userID)
@@ -196,30 +174,41 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
 		return
 	}
+	losses, err := storage.CredentialLosses(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "credential losses", err, http.StatusInternalServerError)
+		return
+	}
 	googleToken, _ := auth.LoadUserToken(h.db, userID)
 	microsoftToken, _ := auth.LoadMicrosoftToken(h.db, userID)
+	googleUsable := googleToken != nil && !losses[storage.CredentialGoogle]
+	zoomUsable := false
+	if strings.TrimSpace(settings.ZoomTokens) != "" {
+		if c, err := storage.DecodeZoomCredential(settings.ZoomTokens); err == nil {
+			zoomUsable = c.RefreshToken != "" && !losses[storage.CredentialZoom]
+		}
+	}
+	teamsUsable := microsoftToken != nil && microsoftToken.RefreshToken != "" && !losses[storage.CredentialOutlook]
 	configured := integrationAvailabilitySnapshot()
 	out := make([]conferenceProviderStatus, 0, 4)
 	if configured["google"].Available {
-		out = append(out, conferenceProviderStatus{Provider: "google_meet", Connected: googleToken != nil, Email: settings.CalendarEmail, AutoWith: "google"})
+		out = append(out, conferenceProviderStatus{Provider: "google_meet", Connected: googleUsable, Email: settings.CalendarEmail, AutoWith: "google"})
 	}
 	if configured["zoom"].Available {
-		out = append(out, conferenceProviderStatus{Provider: "zoom", Connected: strings.TrimSpace(settings.ZoomTokens) != ""})
+		out = append(out, conferenceProviderStatus{Provider: "zoom", Connected: zoomUsable})
 	}
 	if configured["microsoft"].Available {
-		out = append(out, conferenceProviderStatus{Provider: "teams", Connected: microsoftToken != nil, Enabled: microsoftToken != nil, AutoWith: "outlook"})
+		out = append(out, conferenceProviderStatus{Provider: "teams", Connected: teamsUsable, Enabled: teamsUsable, AutoWith: "outlook"})
 	}
 	out = append(out, conferenceProviderStatus{Provider: "custom", Connected: true})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }
 
+// disconnectZoom is implemented through the generated interface (PAC-67):
+// see generatedServer.DisconnectZoom.
 func (h *conferencingHandlers) disconnectZoom(w http.ResponseWriter, r *http.Request) {
-	if err := storage.ClearZoomTokens(h.db, userIDFromCtx(r.Context())); err != nil {
-		writeServerError(w, r, "disconnect zoom", err, http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	newGeneratedHandler(h.db, h).DisconnectZoom(w, r)
 }
 
 // errEventHasNoTime is the one error eventTime returns: the event has no
@@ -290,114 +279,10 @@ func removeExternalConference(event *googlecalendar.Event) bool {
 	return hadProvider || hadURL
 }
 
+// addEventConference is implemented through the generated interface
+// (PAC-67): see generatedServer.AddEventConference.
 func (h *conferencingHandlers) addEventConference(w http.ResponseWriter, r *http.Request) {
-	eventID := chi.URLParam(r, "id")
-	var req struct {
-		Provider string `json:"provider"`
-		URL      string `json:"url"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	req.Provider = strings.ToLower(strings.TrimSpace(req.Provider))
-	if req.Provider == "" {
-		writeError(w, "provider is required", http.StatusBadRequest)
-		return
-	}
-
-	client, err := h.loadEventClient(r.Context())
-	if err != nil {
-		writeCalendarFailure(w, r, "addEventConference", err)
-		return
-	}
-	event, err := client.GetEvent(r.Context(), client.CurrentCalendarID(), eventID)
-	if err != nil {
-		writeError(w, "event not found", http.StatusNotFound)
-		return
-	}
-	if provider, url := conferenceFromEvent(event); url != "" {
-		if provider == req.Provider || req.Provider == "custom" {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(conferenceLinkResponse{Provider: provider, URL: url, Label: provider})
-			return
-		}
-		writeError(w, "event already has a conference", http.StatusConflict)
-		return
-	}
-
-	if req.Provider == "custom" {
-		req.URL = strings.TrimSpace(req.URL)
-		if req.URL == "" {
-			writeError(w, "url is required for custom conferences", http.StatusBadRequest)
-			return
-		}
-		setExternalConference(event, req.Provider, req.URL)
-		if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
-			writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(conferenceLinkResponse{Provider: req.Provider, URL: req.URL, Label: "Custom link"})
-		return
-	}
-
-	if req.Provider == "google_meet" {
-		updated, err := client.AddGoogleMeet(r.Context(), client.CurrentCalendarID(), eventID, event)
-		if err != nil {
-			writeServerError(w, r, "create Google Meet", err, http.StatusInternalServerError)
-			return
-		}
-		url := updated.HangoutLink
-		if url == "" {
-			url = calendar.ConferenceEntryURL(updated)
-		}
-		if url == "" {
-			writeError(w, "Google Meet creation is still pending", http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(conferenceLinkResponse{Provider: req.Provider, URL: url, Label: "Google Meet"})
-		return
-	}
-
-	settings, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
-	if err != nil {
-		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
-		return
-	}
-	start, startErr := eventTime(event.Start)
-	end, endErr := eventTime(event.End)
-	if startErr != nil || endErr != nil {
-		writeError(w, "event has no time", http.StatusBadRequest)
-		return
-	}
-	provider, err := h.providerFactory.ProviderForRequest(r.Context(), req.Provider, settings)
-	if err != nil {
-		msg, ok := conferenceRefusal(err, req.Provider)
-		if !ok {
-			writeServerError(w, r, "conference provider", err, http.StatusInternalServerError)
-		return
-	}
-		writeError(w, msg, http.StatusBadRequest)
-		return
-	}
-	details, err := provider.CreateMeeting(r.Context(), event.Summary, start, end)
-	if err != nil {
-		writeServerError(w, r, "create meeting", err, http.StatusBadGateway)
-		return
-	}
-	if details == nil || details.JoinURL == "" {
-		writeError(w, "conference provider returned no join URL", http.StatusBadGateway)
-		return
-	}
-	setExternalConference(event, req.Provider, details.JoinURL)
-	if _, err := client.UpdateEvent(r.Context(), client.CurrentCalendarID(), eventID, event); err != nil {
-		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(conferenceLinkResponse{Provider: req.Provider, URL: details.JoinURL, Label: strings.ToUpper(req.Provider)})
+	newGeneratedHandler(h.db, h).AddEventConference(w, r, chi.URLParam(r, "id"))
 }
 
 func (h *conferencingHandlers) removeEventConference(w http.ResponseWriter, r *http.Request) {

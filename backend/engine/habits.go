@@ -251,7 +251,7 @@ func (e *HabitsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (cal
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("no token for user %s", userID)
 	}
-	ts := e.OAuthConfig.TokenSource(ctx, token)
+	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, userID, token)
 	client, err := calendar.NewClient(ctx, ts)
 	if err != nil {
 		return nil, err

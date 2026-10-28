@@ -181,9 +181,12 @@ in `contracts/features/PAC-50.md`; the decisions it records are in
 
 - `createSsoProvider` and `deleteSsoProvider` document the write gate: membership
   (403), body shape with undeclared properties rejected (400, create only),
-  exact case-insensitive domain (400 `provider_domain_mismatch`, replacing the
-  suffix rule and its 403), then a consumed step-up grant or break-glass with a
-  fresh session (403 `SsoWriteForbiddenResponse`). Delete of an absent row is a
+  exact case-insensitive domain (403 `provider_domain_mismatch`, owner decision
+  2026-10-27, replacing the suffix rule and its free-text 403), then a consumed
+  step-up grant or break-glass with a fresh session (403
+  `SsoWriteForbiddenResponse`, whose step-up variant also carries
+  `stepup_scopes` and `without_stepup` so the client can explain the optional
+  step-up before navigating). Delete of an absent row is a
   404 (settles (b)(11), API-067).
 - Two operations added: `startSsoAdminStepup` (`GET /api/admin/sso/stepup`) and
   `ssoAdminStepupCallback` (`GET /api/admin/sso/stepup/callback`). The operation

@@ -1,7 +1,6 @@
 package conference
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -23,8 +22,8 @@ func NewProvider(s *storage.Settings) (Provider, error) {
 		if s.ZoomTokens == "" {
 			return nil, ErrZoomNotConnected
 		}
-		var tok ZoomTokens
-		if err := json.Unmarshal([]byte(s.ZoomTokens), &tok); err != nil {
+		tok, err := storage.DecodeZoomCredential(s.ZoomTokens)
+		if err != nil {
 			return nil, ErrZoomInvalidCredential
 		}
 		return &ZoomProvider{AccessToken: tok.AccessToken}, nil

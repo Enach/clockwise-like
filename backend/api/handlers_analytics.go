@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 )
 
@@ -31,12 +33,13 @@ func (h *analyticsHandlers) week(w http.ResponseWriter, r *http.Request) {
 	date := parseDateParam(r, "date", time.Now())
 
 	result, err := h.eng.ComputeWeek(r.Context(), userID, date)
+	if err == nil && result == nil {
+		// Unreachable (PAC-42, audit U-01): the upsert's RETURNING always yields a row.
+		// Kept as a guard against a nil dereference; the contract documents it as this 500.
+		err = errors.New("analytics: compute returned no week")
+	}
 	if err != nil {
 		writeServerError(w, r, "compute failed", err, http.StatusInternalServerError)
-		return
-	}
-	if result == nil {
-		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -59,11 +62,12 @@ func (h *analyticsHandlers) trends(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if rows == nil {
-		rows = []*storage.AnalyticsWeek{}
+	out := make([]analyticsWeekResponse, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, newAnalyticsWeekResponse(a))
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(rows)
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // GET /api/analytics/meetings?date=YYYY-MM-DD
@@ -116,7 +120,68 @@ type breakdownEntry struct {
 	Color      string  `json:"color"`
 }
 
-func weekWithBreakdown(a *storage.AnalyticsWeek) map[string]any {
+// analyticsWeekResponse is one analytics week as both reads answer it (PAC-42):
+// GET /api/analytics/trends items (AnalyticsWeekRow) and, with `breakdown` added,
+// GET /api/analytics/week (AnalyticsWeekWithBreakdown). Building both from one type
+// keeps their formats and scales equal:
+//   - week_start is the calendar date of the Monday, "2006-01-02", never a timestamp;
+//   - habit_completion_rate is a percentage (0..100), the scale of focus_score and
+//     breakdown[].percentage. Storage keeps the 0..1 fraction (spec D-3), so the
+//     ×100 happens here, on read only, and a code revert restores every row.
+type analyticsWeekResponse struct {
+	ID                          uuid.UUID              `json:"id"`
+	UserID                      uuid.UUID              `json:"user_id"`
+	WeekStart                   string                 `json:"week_start"`
+	TotalWorkingMinutes         int                    `json:"total_working_minutes"`
+	MeetingMinutes              int                    `json:"meeting_minutes"`
+	FocusMinutes                int                    `json:"focus_minutes"`
+	HabitMinutes                int                    `json:"habit_minutes"`
+	BufferMinutes               int                    `json:"buffer_minutes"`
+	PersonalMinutes             int                    `json:"personal_minutes"`
+	FreeMinutes                 int                    `json:"free_minutes"`
+	MeetingCount                int                    `json:"meeting_count"`
+	FocusBlockCount             int                    `json:"focus_block_count"`
+	HabitCompletionRate         float64                `json:"habit_completion_rate"`
+	LargestFocusBlockMinutes    int                    `json:"largest_focus_block_minutes"`
+	TopMeetingTitles            []storage.MeetingTitle `json:"top_meeting_titles"`
+	FocusScore                  int                    `json:"focus_score"`
+	EstimatedMeetingCostMinutes int                    `json:"estimated_meeting_cost_minutes"`
+	ComputedAt                  time.Time              `json:"computed_at"`
+}
+
+type analyticsWeekWithBreakdownResponse struct {
+	analyticsWeekResponse
+	Breakdown []breakdownEntry `json:"breakdown"`
+}
+
+func newAnalyticsWeekResponse(a *storage.AnalyticsWeek) analyticsWeekResponse {
+	titles := a.TopMeetingTitles
+	if titles == nil {
+		titles = make([]storage.MeetingTitle, 0)
+	}
+	return analyticsWeekResponse{
+		ID:                          a.ID,
+		UserID:                      a.UserID,
+		WeekStart:                   a.WeekStart.Format("2006-01-02"),
+		TotalWorkingMinutes:         a.TotalWorkingMinutes,
+		MeetingMinutes:              a.MeetingMinutes,
+		FocusMinutes:                a.FocusMinutes,
+		HabitMinutes:                a.HabitMinutes,
+		BufferMinutes:               a.BufferMinutes,
+		PersonalMinutes:             a.PersonalMinutes,
+		FreeMinutes:                 a.FreeMinutes,
+		MeetingCount:                a.MeetingCount,
+		FocusBlockCount:             a.FocusBlockCount,
+		HabitCompletionRate:         a.HabitCompletionRate * 100,
+		LargestFocusBlockMinutes:    a.LargestFocusBlockMinutes,
+		TopMeetingTitles:            titles,
+		FocusScore:                  a.FocusScore,
+		EstimatedMeetingCostMinutes: a.EstimatedMeetingCostMinutes,
+		ComputedAt:                  a.ComputedAt,
+	}
+}
+
+func weekWithBreakdown(a *storage.AnalyticsWeek) analyticsWeekWithBreakdownResponse {
 	total := float64(a.TotalWorkingMinutes)
 	pct := func(m int) float64 {
 		if total == 0 {
@@ -124,32 +189,14 @@ func weekWithBreakdown(a *storage.AnalyticsWeek) map[string]any {
 		}
 		return float64(m) / total * 100
 	}
-	breakdown := []breakdownEntry{
-		{"meeting", a.MeetingMinutes, pct(a.MeetingMinutes), "#FF6B6B"},
-		{"focus", a.FocusMinutes, pct(a.FocusMinutes), "#5B7FFF"},
-		{"habit", a.HabitMinutes, pct(a.HabitMinutes), "#9B7AE0"},
-		{"personal", a.PersonalMinutes, pct(a.PersonalMinutes), "#E9B949"},
-		{"free", a.FreeMinutes, pct(a.FreeMinutes), "#B0BEC5"},
-	}
-	return map[string]any{
-		"id":                              a.ID,
-		"user_id":                         a.UserID,
-		"week_start":                      a.WeekStart.Format("2006-01-02"),
-		"total_working_minutes":           a.TotalWorkingMinutes,
-		"meeting_minutes":                 a.MeetingMinutes,
-		"focus_minutes":                   a.FocusMinutes,
-		"habit_minutes":                   a.HabitMinutes,
-		"buffer_minutes":                  a.BufferMinutes,
-		"personal_minutes":                a.PersonalMinutes,
-		"free_minutes":                    a.FreeMinutes,
-		"meeting_count":                   a.MeetingCount,
-		"focus_block_count":               a.FocusBlockCount,
-		"habit_completion_rate":           a.HabitCompletionRate,
-		"largest_focus_block_minutes":     a.LargestFocusBlockMinutes,
-		"top_meeting_titles":              a.TopMeetingTitles,
-		"focus_score":                     a.FocusScore,
-		"estimated_meeting_cost_minutes":  a.EstimatedMeetingCostMinutes,
-		"computed_at":                     a.ComputedAt,
-		"breakdown":                       breakdown,
+	return analyticsWeekWithBreakdownResponse{
+		analyticsWeekResponse: newAnalyticsWeekResponse(a),
+		Breakdown: []breakdownEntry{
+			{"meeting", a.MeetingMinutes, pct(a.MeetingMinutes), "#FF6B6B"},
+			{"focus", a.FocusMinutes, pct(a.FocusMinutes), "#5B7FFF"},
+			{"habit", a.HabitMinutes, pct(a.HabitMinutes), "#9B7AE0"},
+			{"personal", a.PersonalMinutes, pct(a.PersonalMinutes), "#E9B949"},
+			{"free", a.FreeMinutes, pct(a.FreeMinutes), "#B0BEC5"},
+		},
 	}
 }

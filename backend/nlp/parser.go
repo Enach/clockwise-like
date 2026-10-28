@@ -30,9 +30,10 @@ type OpenAIClient struct {
 }
 
 func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
-	base := c.BaseURL
-	if base == "" {
-		base = "https://api.openai.com"
+	// PAC-66-B: only the chat operation of an approved destination.
+	target, refusal := c.requestURL()
+	if refusal != nil {
+		return "", refusal
 	}
 	payload := map[string]interface{}{
 		"model": c.Model,
@@ -41,7 +42,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (strin
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, base+"/v1/chat/completions",
+	return postJSONWith(ctx, userHTTPClient(ProviderOpenAI), target,
 		map[string]string{"Authorization": "Bearer " + c.APIKey}, payload,
 		func(body []byte) (string, error) {
 			var resp struct {
@@ -63,9 +64,10 @@ type AnthropicClient struct {
 }
 
 func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (string, error) {
-	base := c.BaseURL
-	if base == "" {
-		base = "https://api.anthropic.com"
+	// PAC-66-B: only the chat operation of an approved destination.
+	target, refusal := c.requestURL()
+	if refusal != nil {
+		return "", refusal
 	}
 	payload := map[string]interface{}{
 		"model":      c.Model,
@@ -75,7 +77,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, base+"/v1/messages",
+	return postJSONWith(ctx, userHTTPClient(ProviderAnthropic), target,
 		map[string]string{
 			"x-api-key":         c.APIKey,
 			"anthropic-version": "2023-06-01",
@@ -96,12 +98,16 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 type OllamaClient struct {
 	BaseURL string
 	Model   string
+	// baseURLProperty is the stored setting BaseURL came from, named in a
+	// refusal (PAC-66-B); "" means ollamaBaseUrl.
+	baseURLProperty string
 }
 
 func (c *OllamaClient) Complete(ctx context.Context, system, user string) (string, error) {
-	base := c.BaseURL
-	if base == "" {
-		base = "http://host.docker.internal:11434"
+	// PAC-66-B: only the chat operation of an approved origin.
+	target, refusal := c.requestURL()
+	if refusal != nil {
+		return "", refusal
 	}
 	payload := map[string]interface{}{
 		"model":  c.Model,
@@ -111,7 +117,7 @@ func (c *OllamaClient) Complete(ctx context.Context, system, user string) (strin
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, base+"/api/chat", nil, payload,
+	return postJSONWith(ctx, userHTTPClient(ProviderOllama), target, nil, payload,
 		func(body []byte) (string, error) {
 			var resp struct {
 				Message struct{ Content string } `json:"message"`
