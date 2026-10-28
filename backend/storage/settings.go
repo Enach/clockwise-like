@@ -144,53 +144,76 @@ func (s *Settings) LunchWindow(day time.Time) (start, end string, enabled bool) 
 }
 
 type Settings struct {
-	ID                      int64                `json:"-"`
-	WorkStart               string               `json:"workStart"`
-	WorkEnd                 string               `json:"workEnd"`
-	Timezone                string               `json:"timezone"`
-	FocusMinBlockMinutes    int                  `json:"focusMinBlockMinutes"`
-	FocusMaxBlockMinutes    int                  `json:"focusMaxBlockMinutes"`
-	FocusDailyTargetMinutes int                  `json:"focusDailyTargetMinutes"`
-	OutOfHoursMeetingsPerWeek int                `json:"outOfHoursMeetingsPerWeek"`
-	AutoDeclineOutsideWorkingHours bool           `json:"autoDeclineOutsideWorkingHours"`
-	FocusLabel              string               `json:"focusLabel"`
-	FocusColor              string               `json:"focusColor"`
-	LunchStart              string               `json:"lunchStart"`
-	LunchEnd                string               `json:"lunchEnd"`
-	ProtectLunch            bool                 `json:"protectLunch"`
-	BufferBeforeMinutes     int                  `json:"bufferBeforeMinutes"`
-	BufferAfterMinutes      int                  `json:"bufferAfterMinutes"`
-	BufferEnabled           bool                 `json:"bufferEnabled"`
-	BufferMinMeetingMinutes int                  `json:"bufferMinMeetingMinutes"`
-	BufferSkipBackToBack    bool                 `json:"bufferSkipBackToBack"`
-	WorkingHours            WorkingHoursSchedule `json:"workingHours"`
-	LunchBreaks             LunchBreakSchedule   `json:"lunchBreaks"`
-	CompressionEnabled      bool                 `json:"compressionEnabled"`
-	AutoScheduleEnabled     bool                 `json:"autoScheduleEnabled"`
-	AutoScheduleCron        string               `json:"autoScheduleCron"`
-	LLMProvider             string               `json:"llmProvider"`
-	LLMModel                string               `json:"llmModel"`
-	// LLMAPIKey is write-only (PAC-24): never encoded in a response. Writes go
-	// through the settings handler, which reads it from the request itself.
-	LLMAPIKey               string               `json:"-"`
-	// LLMAPIKeySet reports whether a key is on file. Read-only; never stored.
-	LLMAPIKeySet            bool                 `json:"llmApiKeySet"`
-	LLMBaseURL              string               `json:"llmBaseUrl"`
+	ID                             int64                `json:"-"`
+	WorkStart                      string               `json:"workStart"`
+	WorkEnd                        string               `json:"workEnd"`
+	Timezone                       string               `json:"timezone"`
+	FocusMinBlockMinutes           int                  `json:"focusMinBlockMinutes"`
+	FocusMaxBlockMinutes           int                  `json:"focusMaxBlockMinutes"`
+	FocusDailyTargetMinutes        int                  `json:"focusDailyTargetMinutes"`
+	OutOfHoursMeetingsPerWeek      int                  `json:"outOfHoursMeetingsPerWeek"`
+	AutoDeclineOutsideWorkingHours bool                 `json:"autoDeclineOutsideWorkingHours"`
+	FocusLabel                     string               `json:"focusLabel"`
+	FocusColor                     string               `json:"focusColor"`
+	LunchStart                     string               `json:"lunchStart"`
+	LunchEnd                       string               `json:"lunchEnd"`
+	ProtectLunch                   bool                 `json:"protectLunch"`
+	BufferBeforeMinutes            int                  `json:"bufferBeforeMinutes"`
+	BufferAfterMinutes             int                  `json:"bufferAfterMinutes"`
+	BufferEnabled                  bool                 `json:"bufferEnabled"`
+	BufferMinMeetingMinutes        int                  `json:"bufferMinMeetingMinutes"`
+	BufferSkipBackToBack           bool                 `json:"bufferSkipBackToBack"`
+	WorkingHours                   WorkingHoursSchedule `json:"workingHours"`
+	LunchBreaks                    LunchBreakSchedule   `json:"lunchBreaks"`
+	CompressionEnabled             bool                 `json:"compressionEnabled"`
+	AutoScheduleEnabled            bool                 `json:"autoScheduleEnabled"`
+	AutoScheduleCron               string               `json:"autoScheduleCron"`
+	// LLMProvider is the caller's AI choice as the contract reads it: "" (off),
+	// "organization", one of the five key-based providers, or "unsupported"
+	// for a stored value Paceday no longer supports (ollama). The stored value
+	// itself is StoredLLMProvider and is never rewritten by a read
+	// (NEW-llm-bring-your-own, contract §4).
+	LLMProvider string `json:"llmProvider"`
+	// StoredLLMProvider is llm_provider exactly as stored. A save of a
+	// document whose LLMProvider is "unsupported" writes it back unchanged.
+	StoredLLMProvider string `json:"-"`
+	LLMModel          string `json:"llmModel"`
+	// LLMAPIKeys holds one key per provider, each bound to the provider it was
+	// entered for (spec D-5). Write-only (PAC-24): never encoded in a response.
+	LLMAPIKeys LLMAPIKeys `json:"-"`
+	// LLMUnboundAPIKey is a key stored before keys were bound to providers,
+	// on an account whose provider at upgrade was not openai or anthropic. It
+	// is never sent and never deleted implicitly (spec D-5, AC-16).
+	LLMUnboundAPIKey string `json:"-"`
+	// LLMAPIKeySet reports whether a key bound to the selected provider is on
+	// file. Read-only; never stored.
+	LLMAPIKeySet bool `json:"llmApiKeySet"`
+	// LLMAPIKeysSet reports, per provider, whether a key bound to it is on
+	// file. Read-only; never stored.
+	LLMAPIKeysSet LLMAPIKeysSet `json:"llmApiKeysSet"`
+	// LLMUnboundAPIKeySet reports whether LLMUnboundAPIKey is set. Read-only.
+	LLMUnboundAPIKeySet bool `json:"llmUnboundApiKeySet"`
+	// AIStatus is computed by the API layer for the caller (it needs the
+	// caller's organisation). Read-only; never stored.
+	AIStatus   AIStatus `json:"aiStatus"`
+	LLMBaseURL string   `json:"llmBaseUrl"`
 	// AWS Bedrock
 	AWSRegion    string `json:"awsRegion"`
-	AWSProfile   string `json:"awsProfile"`
 	BedrockModel string `json:"bedrockModel"`
 	// Azure OpenAI
 	AzureEndpoint   string `json:"azureEndpoint"`
 	AzureDeployment string `json:"azureDeployment"`
 	AzureAPIVersion string `json:"azureApiVersion"`
 	// Google Vertex AI
-	GCPProject  string `json:"gcpProject"`
-	GCPLocation string `json:"gcpLocation"`
 	VertexModel string `json:"vertexModel"`
-	// Ollama
-	OllamaBaseURL string `json:"ollamaBaseUrl"`
-	OllamaModel   string `json:"ollamaModel"`
+	// Retired by NEW-llm-bring-your-own (spec D-10): no longer read for any
+	// request, validated or returned, but kept in storage and written back
+	// unchanged for one release so that a rollback restores them.
+	AWSProfile    string `json:"-"`
+	GCPProject    string `json:"-"`
+	GCPLocation   string `json:"-"`
+	OllamaBaseURL string `json:"-"`
+	OllamaModel   string `json:"-"`
 	// Calendar providers
 	CalendarProvider string `json:"calendarProvider"`
 	MicrosoftTokens  string `json:"-"` // JSON blob, not exposed in API
@@ -200,16 +223,16 @@ type Settings struct {
 	ConferencingProvider string `json:"conferencingProvider"`
 	ZoomTokens           string `json:"-"` // JSON blob, not exposed in API
 	// Daily recap
-	RecapEnabled       bool      `json:"recapEnabled"`
-	RecapSendTime      string    `json:"recapSendTime"` // "HH:MM"
-	RecapSendTo        string    `json:"recapSendTo"`   // "dm" or "channel"
-	RecapChannelID     string    `json:"recapChannelId"`
-	RecapIncludeBriefs bool      `json:"recapIncludeBriefs"`
-	RecapIncludeFocus  bool      `json:"recapIncludeFocus"`
-	RecapIncludeHabits bool      `json:"recapIncludeHabits"`
+	RecapEnabled       bool   `json:"recapEnabled"`
+	RecapSendTime      string `json:"recapSendTime"` // "HH:MM"
+	RecapSendTo        string `json:"recapSendTo"`   // "dm" or "channel"
+	RecapChannelID     string `json:"recapChannelId"`
+	RecapIncludeBriefs bool   `json:"recapIncludeBriefs"`
+	RecapIncludeFocus  bool   `json:"recapIncludeFocus"`
+	RecapIncludeHabits bool   `json:"recapIncludeHabits"`
 	// TimeFormat is the user's time-of-day display: "12h" (default) or "24h" (PAC-55).
-	TimeFormat         string    `json:"timeFormat"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	TimeFormat string    `json:"timeFormat"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 // settingsColumns is the one column list every settings read uses.
@@ -223,6 +246,8 @@ const settingsColumns = `
 		buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
 		compression_enabled, auto_schedule_enabled, auto_schedule_cron,
 		llm_provider, llm_model, llm_api_key, llm_base_url,
+		llm_api_key_openai, llm_api_key_anthropic, llm_api_key_azure_openai,
+		llm_api_key_bedrock, llm_api_key_vertex,
 		aws_region, aws_profile, bedrock_model,
 		azure_endpoint, azure_deployment, azure_api_version,
 		gcp_project, gcp_location, vertex_model,
@@ -255,7 +280,9 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
 		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,
 		&s.CompressionEnabled, &s.AutoScheduleEnabled, &s.AutoScheduleCron,
-		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL,
+		&s.StoredLLMProvider, &s.LLMModel, &s.LLMUnboundAPIKey, &s.LLMBaseURL,
+		&s.LLMAPIKeys.OpenAI, &s.LLMAPIKeys.Anthropic, &s.LLMAPIKeys.AzureOpenAI,
+		&s.LLMAPIKeys.Bedrock, &s.LLMAPIKeys.Vertex,
 		&s.AWSRegion, &s.AWSProfile, &s.BedrockModel,
 		&s.AzureEndpoint, &s.AzureDeployment, &s.AzureAPIVersion,
 		&s.GCPProject, &s.GCPLocation, &s.VertexModel,
@@ -271,7 +298,8 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 	if err != nil {
 		return nil, err
 	}
-	s.LLMAPIKeySet = s.LLMAPIKey != ""
+	s.LLMProvider = ReadLLMProvider(s.StoredLLMProvider)
+	s.RefreshKeyFlags()
 	s.UpdatedAt = s.UpdatedAt.UTC()
 	s.normalizeSchedules()
 	return s, nil
@@ -318,12 +346,15 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 			working_hours, lunch_breaks,
 			time_format,
 			auto_schedule_last_run,
+			llm_api_key_openai, llm_api_key_anthropic, llm_api_key_azure_openai,
+			llm_api_key_bedrock, llm_api_key_vertex,
 			updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
 			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
 			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,
 			CASE WHEN $19::boolean THEN $52::timestamptz END,
+			$53,$54,$55,$56,$57,
 			NOW()
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
@@ -367,6 +398,11 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 			working_hours=EXCLUDED.working_hours,
 			lunch_breaks=EXCLUDED.lunch_breaks,
 			time_format=EXCLUDED.time_format,
+			llm_api_key_openai=EXCLUDED.llm_api_key_openai,
+			llm_api_key_anthropic=EXCLUDED.llm_api_key_anthropic,
+			llm_api_key_azure_openai=EXCLUDED.llm_api_key_azure_openai,
+			llm_api_key_bedrock=EXCLUDED.llm_api_key_bedrock,
+			llm_api_key_vertex=EXCLUDED.llm_api_key_vertex,
 			auto_schedule_last_run = CASE
 				WHEN EXCLUDED.auto_schedule_enabled AND (
 					NOT settings.auto_schedule_enabled
@@ -383,7 +419,7 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 		s.BufferBeforeMinutes, s.BufferAfterMinutes,
 		s.BufferEnabled, s.BufferMinMeetingMinutes, s.BufferSkipBackToBack,
 		s.CompressionEnabled, s.AutoScheduleEnabled, s.AutoScheduleCron,
-		s.LLMProvider, s.LLMModel, s.LLMAPIKey, s.LLMBaseURL,
+		s.storedProvider(), s.LLMModel, s.LLMUnboundAPIKey, s.LLMBaseURL,
 		s.AWSRegion, s.AWSProfile, s.BedrockModel,
 		s.AzureEndpoint, s.AzureDeployment, s.AzureAPIVersion,
 		s.GCPProject, s.GCPLocation, s.VertexModel,
@@ -396,6 +432,8 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 		s.WorkingHours, s.LunchBreaks,
 		timeFormatOrDefault(s.TimeFormat),
 		now,
+		s.LLMAPIKeys.OpenAI, s.LLMAPIKeys.Anthropic, s.LLMAPIKeys.AzureOpenAI,
+		s.LLMAPIKeys.Bedrock, s.LLMAPIKeys.Vertex,
 	)
 	return err
 }

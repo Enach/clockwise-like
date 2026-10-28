@@ -10,43 +10,28 @@ import (
 	"github.com/Enach/paceday/backend/config"
 )
 
-// PAC-66-B: a user-set base URL for openai, anthropic (which carry the user's
-// own key) or ollama (which carries none) is sent to only if it names a
-// destination approved for the provider in use, and only that provider's chat
-// operation is called on it, with no query and no redirect followed. The
-// check is made on every send by every path (probe, parse, meeting briefs),
-// and again by the transport at the moment of sending.
+// PAC-66-B, as changed by NEW-llm-bring-your-own: a user-set base URL for
+// openai or anthropic is sent to only if it names a destination approved for
+// the provider in use (optionally with an operator-approved path prefix,
+// owner decision O-10), and only that provider's chat operation is called on
+// it, with no query and no redirect followed. The check is made on every send
+// by every path (probe, parse, meeting briefs), and again by the transport at
+// the moment of sending. Ollama is removed (owner decision O-4).
 
-// The user-key and keyless providers.
-const (
-	ProviderOpenAI    = "openai"
-	ProviderAnthropic = "anthropic"
-	ProviderOllama    = "ollama"
-)
+// MsgLLMBaseURLNotApproved is the settings-write message for a changed
+// llmBaseUrl approved for neither provider, as catalogued in the contract's
+// SettingsValidationError.
+const MsgLLMBaseURLNotApproved = "llmBaseUrl must be an OpenAI or Anthropic destination approved on this deployment"
 
-// Settings-write messages, as catalogued in the contract's
-// SettingsValidationError. Each names the property first.
-const (
-	MsgLLMBaseURLNotApproved    = "llmBaseUrl must be the scheme, host and port of an OpenAI, Anthropic or Ollama destination approved on this deployment"
-	MsgOllamaBaseURLNotApproved = "ollamaBaseUrl must be the scheme, host and port of an Ollama server approved on this deployment"
-	MsgOllamaBaseURLNotEnabled  = "ollamaBaseUrl cannot be set: ollama is not enabled on this deployment"
-)
-
-// ollamaDefaultBaseURL is Ollama's built-in fallback when both base URLs are
-// empty (spec §B4; fallback order unchanged, D-B9).
-const ollamaDefaultBaseURL = "http://localhost:11434"
-
-// chatPaths is the one operation each provider may call (spec D-B8).
+// chatPaths is the one operation each provider may call.
 var chatPaths = map[string]string{
 	ProviderOpenAI:    "/v1/chat/completions",
 	ProviderAnthropic: "/v1/messages",
-	ProviderOllama:    "/api/chat",
 }
 
-var userProviderNames = map[string]string{
-	ProviderOpenAI:    "OpenAI",
-	ProviderAnthropic: "Anthropic",
-	ProviderOllama:    "Ollama",
+var publicHosts = map[string]string{
+	ProviderOpenAI:    config.OpenAIPublicHost,
+	ProviderAnthropic: config.AnthropicPublicHost,
 }
 
 var (
@@ -55,9 +40,9 @@ var (
 )
 
 // SetUserDestinations installs the operator's approved destinations for
-// openai, anthropic and ollama and returns a function restoring the previous
-// set. main calls it once at startup; until then only the vendors' public
-// hosts are approved and ollama is not enabled (fail closed, D-B1).
+// openai and anthropic and returns a function restoring the previous set.
+// main calls it once at startup; until then only the vendors' public hosts
+// are approved.
 func SetUserDestinations(d config.LLMUserDestinations) (restore func()) {
 	policyMu.Lock()
 	prev := userDestinations
@@ -66,10 +51,9 @@ func SetUserDestinations(d config.LLMUserDestinations) (restore func()) {
 	return func() { SetUserDestinations(prev) }
 }
 
-// SetUserTransport installs the transport that carries openai, anthropic and
-// ollama requests (nil means http.DefaultTransport) and returns a function
-// restoring the previous one. It is a test seam, separate from the ambient
-// providers' transport.
+// SetUserTransport installs the transport that carries openai and anthropic
+// requests (nil means http.DefaultTransport) and returns a function restoring
+// the previous one. It is a test seam, separate from the cloud providers'.
 func SetUserTransport(rt http.RoundTripper) (restore func()) {
 	policyMu.Lock()
 	prev := userTransport
@@ -90,84 +74,44 @@ func currentUserTransport() http.RoundTripper {
 	return userTransport
 }
 
-// userOriginApproved is the matching rule (contract operatorConfiguration):
-// openai and anthropic over https on the default port to an approved host;
-// ollama to an approved origin.
-func userOriginApproved(provider string, o config.Origin) bool {
-	d := currentUserDestinations()
-	switch provider {
-	case ProviderOpenAI, ProviderAnthropic:
-		return o.Scheme == "https" && (o.Port == "" || o.Port == "443") && d.HostApproved(provider, o.Host)
-	case ProviderOllama:
-		return (o.Scheme == "http" || o.Scheme == "https") && d.OllamaApproved(o)
-	}
-	return false
+// baseURLApproved is the matching rule: https on the default port, and a host
+// and path prefix approved for provider.
+func baseURLApproved(provider string, b config.BaseURL) bool {
+	return b.Scheme == "https" && (b.Port == "" || b.Port == "443") &&
+		currentUserDestinations().Approved(provider, config.Gateway{Host: b.Host, Prefix: b.Prefix})
 }
 
-func refuseOllamaNotEnabled() *DestinationRefusal {
+func refuseBaseURL(provider string) *DestinationRefusal {
 	return &DestinationRefusal{
-		Provider: ProviderOllama, Reason: ReasonProviderNotEnabled,
-		Message: "ollama is not enabled on this deployment; ask your administrator to approve an Ollama server",
+		Provider: provider, Reason: ReasonDestinationNotApproved, Property: "llmBaseUrl",
+		Message: fmt.Sprintf("llmBaseUrl is not an approved %s destination on this deployment; clear it in Settings to use %s",
+			displayNames[provider], publicHosts[provider]),
 	}
-}
-
-func refuseBaseURL(provider, property string) *DestinationRefusal {
-	msg := fmt.Sprintf("%s is not an approved Ollama server on this deployment; use only the scheme, host and port of a server your administrator approved", property)
-	switch provider {
-	case ProviderOpenAI:
-		msg = property + " is not an approved OpenAI destination on this deployment; use only the scheme, host and port of an approved server, or leave it empty for " + config.OpenAIPublicHost
-	case ProviderAnthropic:
-		msg = property + " is not an approved Anthropic destination on this deployment; use only the scheme, host and port of an approved server, or leave it empty for " + config.AnthropicPublicHost
-	}
-	return &DestinationRefusal{Provider: provider, Reason: ReasonDestinationNotApproved, Property: property, Message: msg}
 }
 
 // userRequestURL returns the one URL a request for provider may go to, given
-// its effective base URL and the stored property that base came from, or the
-// refusal. It sends nothing.
-func userRequestURL(provider, base, property string) (string, *DestinationRefusal) {
-	if provider == ProviderOllama && !currentUserDestinations().OllamaEnabled() {
-		return "", refuseOllamaNotEnabled()
+// its stored base URL ("" means the vendor's public host), or the refusal.
+// It sends nothing.
+func userRequestURL(provider, base string) (string, *DestinationRefusal) {
+	if base == "" {
+		base = "https://" + publicHosts[provider]
 	}
-	o, ok := config.ParseOrigin(base)
-	if !ok || !userOriginApproved(provider, o) {
-		return "", refuseBaseURL(provider, property)
+	b, ok := config.ParseBaseURL(base)
+	if !ok || !baseURLApproved(provider, b) {
+		return "", refuseBaseURL(provider)
 	}
-	if c := (config.Origin{Scheme: o.Scheme}).Canonical(); o.Port == c.Port {
-		o.Port = "" // an explicit default port is sent as the plain origin
-	}
-	return o.URL() + chatPaths[provider], nil
+	return "https://" + b.Host + b.Prefix + chatPaths[provider], nil
 }
 
 func (c *OpenAIClient) requestURL() (string, *DestinationRefusal) {
-	base := c.BaseURL
-	if base == "" {
-		base = "https://" + config.OpenAIPublicHost
-	}
-	return userRequestURL(ProviderOpenAI, base, "llmBaseUrl")
+	return userRequestURL(ProviderOpenAI, c.BaseURL)
 }
 
 func (c *AnthropicClient) requestURL() (string, *DestinationRefusal) {
-	base := c.BaseURL
-	if base == "" {
-		base = "https://" + config.AnthropicPublicHost
-	}
-	return userRequestURL(ProviderAnthropic, base, "llmBaseUrl")
+	return userRequestURL(ProviderAnthropic, c.BaseURL)
 }
 
-func (c *OllamaClient) requestURL() (string, *DestinationRefusal) {
-	base := c.BaseURL
-	if base == "" {
-		base = "http://host.docker.internal:11434"
-	}
-	property := c.baseURLProperty
-	if property == "" {
-		property = "ollamaBaseUrl"
-	}
-	return userRequestURL(ProviderOllama, base, property)
-}
-
-// CheckDestination is the OpenAI send-time check (spec AC-B1, AC-B5, AC-B6).
+// CheckDestination is the OpenAI send-time check.
 func (c *OpenAIClient) CheckDestination(context.Context) error {
 	if _, r := c.requestURL(); r != nil {
 		return r
@@ -175,7 +119,7 @@ func (c *OpenAIClient) CheckDestination(context.Context) error {
 	return nil
 }
 
-// CheckDestination is the Anthropic send-time check (spec AC-B2).
+// CheckDestination is the Anthropic send-time check.
 func (c *AnthropicClient) CheckDestination(context.Context) error {
 	if _, r := c.requestURL(); r != nil {
 		return r
@@ -183,23 +127,15 @@ func (c *AnthropicClient) CheckDestination(context.Context) error {
 	return nil
 }
 
-// CheckDestination is the Ollama send-time check (spec AC-B8 to AC-B10).
-func (c *OllamaClient) CheckDestination(context.Context) error {
-	if _, r := c.requestURL(); r != nil {
-		return r
-	}
-	return nil
-}
-
-// errUserRedirect is why a redirect is never followed for these providers
-// (spec D-B6): the request that drew it counts as failed.
+// errUserRedirect is why a redirect is never followed for these providers:
+// the request that drew it counts as failed.
 var errUserRedirect = errors.New("the provider answered with a redirect; redirects are never followed for this provider")
 
-// userHTTPClient is the HTTP client of openai, anthropic and ollama. It
-// follows no redirect (AC-B7), and its transport refuses any request that is
-// not exactly the provider's chat operation on a destination approved for
-// that provider, so the rule holds at the moment of sending whatever built
-// the URL.
+// userHTTPClient is the HTTP client of openai and anthropic. It follows no
+// redirect, and its transport refuses any request that is not exactly the
+// provider's chat operation under an approved prefix on a destination
+// approved for that provider, so the rule holds at the moment of sending
+// whatever built the URL.
 func userHTTPClient(provider string) *http.Client {
 	inner := currentUserTransport()
 	if inner == nil {
@@ -218,12 +154,14 @@ type userOnlyTransport struct {
 
 func (t *userOnlyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	u := req.URL
-	ok := u != nil && u.User == nil && u.Opaque == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" &&
-		u.Path == chatPaths[t.provider] && (u.RawPath == "" || u.RawPath == u.Path) &&
+	chat := chatPaths[t.provider]
+	ok := u != nil && chat != "" && u.User == nil && u.Opaque == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" &&
+		strings.HasSuffix(u.Path, chat) && (u.RawPath == "" || u.RawPath == u.Path) &&
 		(req.Host == "" || strings.EqualFold(req.Host, u.Host))
 	if ok {
-		o := config.Origin{Scheme: strings.ToLower(u.Scheme), Host: strings.ToLower(u.Hostname()), Port: u.Port()}
-		ok = o.Host != "" && userOriginApproved(t.provider, o)
+		b := config.BaseURL{Scheme: strings.ToLower(u.Scheme), Host: strings.ToLower(u.Hostname()), Port: u.Port(),
+			Prefix: strings.TrimSuffix(u.Path, chat)}
+		ok = b.Host != "" && baseURLApproved(t.provider, b)
 	}
 	if !ok {
 		if req.Body != nil {
@@ -231,7 +169,7 @@ func (t *userOnlyTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		}
 		return nil, &DestinationRefusal{
 			Provider: t.provider, Reason: ReasonDestinationNotApproved,
-			Message: fmt.Sprintf("refused to send a %s request to a destination this deployment has not approved", userProviderNames[t.provider]),
+			Message: fmt.Sprintf("refused to send a %s request to a destination this deployment has not approved", displayNames[t.provider]),
 		}
 	}
 	return t.inner.RoundTrip(req)
@@ -239,33 +177,18 @@ func (t *userOnlyTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 // LLMBaseURLWriteProblem is the settings-write check for a CHANGED
 // llmBaseUrl: "" when acceptable, otherwise the catalogue message. The value
-// is read by openai, anthropic and ollama, so it must be approved for at least
-// one of them (D-B5); "" is always acceptable (AC-B14).
+// is read by openai and anthropic, so it must be approved for at least one of
+// them; "" is always acceptable.
 func LLMBaseURLWriteProblem(v string) string {
 	if v == "" {
 		return ""
 	}
-	if o, ok := config.ParseOrigin(v); ok {
-		for _, p := range []string{ProviderOpenAI, ProviderAnthropic, ProviderOllama} {
-			if userOriginApproved(p, o) {
+	if b, ok := config.ParseBaseURL(v); ok {
+		for _, p := range []string{ProviderOpenAI, ProviderAnthropic} {
+			if baseURLApproved(p, b) {
 				return ""
 			}
 		}
 	}
 	return MsgLLMBaseURLNotApproved
-}
-
-// OllamaBaseURLWriteProblem is the settings-write check for a CHANGED
-// ollamaBaseUrl (see LLMBaseURLWriteProblem).
-func OllamaBaseURLWriteProblem(v string) string {
-	if v == "" {
-		return ""
-	}
-	if !currentUserDestinations().OllamaEnabled() {
-		return MsgOllamaBaseURLNotEnabled
-	}
-	if o, ok := config.ParseOrigin(v); ok && userOriginApproved(ProviderOllama, o) {
-		return ""
-	}
-	return MsgOllamaBaseURLNotApproved
 }

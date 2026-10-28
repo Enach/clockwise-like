@@ -18,23 +18,27 @@ type llmHandlers struct {
 	db *sql.DB
 }
 
-// llmTestRequest is the optional body of POST /api/llm/test (PAC-24). It names
-// a provider, a model and a key to try. It cannot carry an endpoint: every
-// value that reaches a URL comes from the caller's own stored settings, so a
-// credential is never sent to a destination the caller chose.
+// llmTestRequest is the body of POST /api/llm/test (PAC-24). It names a
+// choice, a model and a key to try. It cannot carry an endpoint: every value
+// that reaches a URL comes from the caller's own stored settings, so a key is
+// never sent to a destination the caller chose.
 type llmTestRequest struct {
 	LLMProvider *string `json:"llmProvider"`
 	LLMModel    *string `json:"llmModel"`
 	LLMAPIKey   *string `json:"llmApiKey"`
 }
 
+// testLLM probes one AI configuration. Order of decisions
+// (NEW-llm-bring-your-own, contract testLLMConnection): the body's shape
+// (400), which configuration and whether it has a key (409, nothing sent),
+// the destination (422, nothing sent), then the request (200 or 502).
 func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	// The body is required; {} probes the stored configuration (PAC-24).
+	// The body is required; {} probes the saved choice (PAC-24).
 	var body llmTestRequest
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -43,28 +47,24 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
+	userID := userIDFromCtx(r.Context())
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
 	if err != nil {
 		writeServerError(w, r, "testLLM", err, http.StatusInternalServerError)
 		return
 	}
-	storedKey := s.LLMAPIKey
-	if body.LLMProvider != nil {
-		if !validLLMProviders[*body.LLMProvider] {
-			writeError(w, "llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex", http.StatusBadRequest)
-			return
-		}
-		s.LLMProvider = *body.LLMProvider
+	inOrg, err := storage.UserInOrganization(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "testLLM", err, http.StatusInternalServerError)
+		return
 	}
-	if body.LLMModel != nil {
-		s.LLMModel = *body.LLMModel
-	}
+	// No status's body may carry the submitted key or any stored key (AC-14).
+	keys := append(s.LLMAPIKeys.All(), s.LLMUnboundAPIKey)
 	if body.LLMAPIKey != nil {
-		s.LLMAPIKey = *body.LLMAPIKey
+		keys = append(keys, *body.LLMAPIKey)
 	}
-	// No status's body may carry the submitted or the stored key (AC-14).
 	redact := func(msg string) string {
-		for _, key := range []string{s.LLMAPIKey, storedKey} {
+		for _, key := range keys {
 			if key != "" {
 				msg = strings.ReplaceAll(msg, key, "[redacted]")
 			}
@@ -72,28 +72,23 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 		return msg
 	}
 
-	client, err := nlp.NewLLMClientFromSettings(s)
-	var refusal *nlp.DestinationRefusal
-	if errors.As(err, &refusal) {
-		// PAC-66-B: a refused openai/anthropic destination is the 422 even
-		// when no key is on file or submitted (spec §B4).
-		writeProviderFailure(w, r, err, redact)
+	d, bad := nlp.DecideProbe(s, inOrg, nlp.ProbeRequest{Provider: body.LLMProvider, Model: body.LLMModel, Key: body.LLMAPIKey})
+	if bad != "" {
+		writeError(w, bad, http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		// The detail is logged with both keys redacted (AC-14); the body is generic (PAC-21).
-		writeServerError(w, r, "build LLM client", errors.New(redact(err.Error())), http.StatusInternalServerError)
+	if d.NotConfigured != nil {
+		writeNotConfigured(w, d.NotConfigured)
 		return
 	}
 
-	// PAC-66 / PAC-66-B: the provider the probe uses (named in the body or
-	// stored) sends nothing to a destination not approved for it. The check
-	// needs no credential, so the refusal is reported even where none exists.
-	if err := nlp.CheckDestination(r.Context(), client); err != nil {
+	// PAC-66 / PAC-66-B: the provider the probe uses sends nothing to a
+	// destination not approved for it.
+	if err := nlp.CheckDestination(r.Context(), d.Client); err != nil {
 		writeProviderFailure(w, r, err, redact)
 		return
 	}
-	response, err := client.Complete(r.Context(), "You are a helpful assistant.", "Say hello")
+	response, err := d.Client.Complete(r.Context(), "You are a helpful assistant.", "Say hello")
 	if err != nil {
 		writeProviderFailure(w, r, err, redact)
 		return
@@ -103,8 +98,19 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"ok":       true,
 		"response": redact(response),
-		"provider": s.LLMProvider,
+		"provider": d.Provider,
 	})
+}
+
+// writeNotConfigured answers the 409 LLMNotConfiguredResponse
+// (NEW-llm-bring-your-own): AI is not configured and nothing was sent.
+func writeNotConfigured(w http.ResponseWriter, nc *storage.AINotConfigured) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error         string                   `json:"error"`
+		NotConfigured *storage.AINotConfigured `json:"notConfigured"`
+	}{nc.Message, nc})
 }
 
 // writeProviderFailure answers a failed provider call: a PAC-66 destination

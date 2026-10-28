@@ -143,7 +143,7 @@ func TestPatchSettings_ChangesOnlyWhatIsSent(t *testing.T) {
 	after.Timezone, after.UpdatedAt = before.Timezone, before.UpdatedAt
 	a, _ := json.Marshal(after)
 	b, _ := json.Marshal(before)
-	if string(a) != string(b) || after.LLMAPIKey != "kept" {
+	if string(a) != string(b) || after.LLMAPIKeys.OpenAI != "kept" {
 		t.Errorf("properties not sent were changed:\nbefore %s\nafter  %s", b, a)
 	}
 }
@@ -152,14 +152,14 @@ func TestPatchSettings_EmptyValueClears(t *testing.T) {
 	db := openTestDB(t)
 	h := &settingsHandlers{db: db}
 	user := createTestUser(t, "pac24-clear@example.com")
-	if w := settingsRequest(t, h, http.MethodPatch, user, `{"llmApiKey":"to-clear","bufferBeforeMinutes":10,"compressionEnabled":true}`); w.Code != http.StatusOK {
+	if w := settingsRequest(t, h, http.MethodPatch, user, `{"llmProvider":"openai","llmApiKey":"to-clear","bufferBeforeMinutes":10,"compressionEnabled":true}`); w.Code != http.StatusOK {
 		t.Fatalf("setup: %d %s", w.Code, w.Body.String())
 	}
 	if w := settingsRequest(t, h, http.MethodPatch, user, `{"llmApiKey":"","bufferBeforeMinutes":0,"compressionEnabled":false}`); w.Code != http.StatusOK {
 		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
 	}
 	got, _ := storage.GetOrCreateSettingsByUser(db, user)
-	if got.LLMAPIKey != "" || got.BufferBeforeMinutes != 0 || got.CompressionEnabled {
+	if got.LLMAPIKeys.OpenAI != "" || got.BufferBeforeMinutes != 0 || got.CompressionEnabled {
 		t.Errorf(`"", 0 and false must clear: %+v`, got)
 	}
 }
@@ -224,7 +224,7 @@ func TestPatchSettings_RoundTripKeepsKeyAndIgnoresReadOnly(t *testing.T) {
 	db := openTestDB(t)
 	h := &settingsHandlers{db: db}
 	user := createTestUser(t, "pac24-roundtrip@example.com")
-	if w := settingsRequest(t, h, http.MethodPatch, user, `{"llmApiKey":"round-trip-key"}`); w.Code != http.StatusOK {
+	if w := settingsRequest(t, h, http.MethodPatch, user, `{"llmProvider":"openai","llmApiKey":"round-trip-key"}`); w.Code != http.StatusOK {
 		t.Fatalf("setup: %d %s", w.Code, w.Body.String())
 	}
 	// A client submits back exactly the document it read, readOnly properties included.
@@ -237,7 +237,7 @@ func TestPatchSettings_RoundTripKeepsKeyAndIgnoresReadOnly(t *testing.T) {
 		t.Fatalf("round trip: %d %s (read %s)", w.Code, w.Body.String(), read)
 	}
 	got, _ := storage.GetOrCreateSettingsByUser(db, user)
-	if got.LLMAPIKey != "round-trip-key" || !got.LLMAPIKeySet {
+	if got.LLMAPIKeys.OpenAI != "round-trip-key" || !got.LLMAPIKeySet {
 		t.Errorf("round trip lost the key: set=%v", got.LLMAPIKeySet)
 	}
 	if got.UpdatedAt.Year() == 2000 {
@@ -303,14 +303,18 @@ func TestValidateSettings_ValidCron(t *testing.T) {
 }
 
 func TestValidateSettings_InvalidLLMProvider(t *testing.T) {
-	s := &storage.Settings{LLMProvider: "unknown_provider"}
-	if err := validateSettings(completeSettings(*s)); err == nil {
-		t.Error("expected error for unknown LLM provider")
+	// NEW-llm-bring-your-own AC-6: ollama is no longer a choice; "unsupported"
+	// is only ever accepted unchanged (validateSettings checks everything).
+	for _, p := range []string{"unknown_provider", "ollama", "unsupported"} {
+		s := &storage.Settings{LLMProvider: p}
+		if err := validateSettings(completeSettings(*s)); err == nil {
+			t.Errorf("expected error for LLM provider %q", p)
+		}
 	}
 }
 
 func TestValidateSettings_ValidLLMProvider(t *testing.T) {
-	for _, p := range []string{"openai", "anthropic", "ollama", ""} {
+	for _, p := range []string{"openai", "anthropic", "azure_openai", "bedrock", "vertex", "organization", ""} {
 		s := &storage.Settings{LLMProvider: p}
 		if err := validateSettings(completeSettings(*s)); err != nil {
 			t.Errorf("valid LLM provider %q should not error: %v", p, err)

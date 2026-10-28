@@ -89,7 +89,8 @@ func TestLLMTest_BodyRulesAndNoKeyEcho(t *testing.T) {
 	// destination the rule sees is api.openai.com (approved, D-B2); the test's
 	// transport delivers the request to the in-process provider instead.
 	t.Cleanup(nlp.SetUserTransport(nlptest.ForwardTo(provider)))
-	s.LLMProvider, s.LLMModel, s.LLMBaseURL, s.LLMAPIKey = "openai", "gpt-test", "", "sk-stored-secret-1"
+	s.LLMProvider, s.LLMModel, s.LLMBaseURL = "openai", "gpt-test", ""
+	s.LLMAPIKeys.Set("openai", "sk-stored-secret-1")
 	if err := storage.SaveSettingsForUser(db, user, s); err != nil {
 		t.Fatal(err)
 	}

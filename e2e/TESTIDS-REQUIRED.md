@@ -83,6 +83,12 @@ breaks those selectors without breaking the feature.
 | `focus-run-button` | whatever triggers `POST /api/focus/run` in `QuickActions` |
 | `focus-block-<date>-<HH:MM>` | a rendered focus block, distinguishable from a meeting |
 
+## 4b. AI features off — `src/components/AINotConfiguredNotice.tsx` (NEW-llm-bring-your-own)
+
+| Test id | Element | Why |
+|---|---|---|
+| `ai-off-notice` | the "AI features are off" notice shown by the dashboard's scheduling bar and the AI section of Settings | `tests/llm-bring-your-own.spec.ts` (spec AC-21, AC-34) asserts the notice, not an error, appears for a user with no AI configuration. Provided by smart-calendar-flow in the NEW-llm-bring-your-own PR. |
+
 ## 5. Demo / mock state markers — `src/components/MockBanner.tsx`, `DemoBanner.tsx`
 
 | Test id | Element | Why |

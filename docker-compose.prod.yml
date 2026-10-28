@@ -86,17 +86,16 @@ services:
       NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET:-}
       NOTION_REDIRECT_URI:  ${NOTION_REDIRECT_URI:-}
 
-      # LLM provider choice, models and OpenAI/Anthropic keys are configured
-      # per-user in the Settings page and stored in the database. The
-      # destinations they may reach are NOT: they are approved by the operator
-      # (see .env.example). PAC-66-B: the public OpenAI and Anthropic APIs are
-      # built in; Ollama is not enabled unless an origin is listed.
+      # AI provider, model and API key are chosen per user in the Settings
+      # page and stored in the database: Paceday supplies no LLM credential
+      # (NEW-llm-bring-your-own). The destinations those keys may reach are
+      # NOT chosen by users: they are approved by the operator (see
+      # .env.example). The public OpenAI and Anthropic APIs are built in.
       PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI: ${PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI:-}
       PACEDAY_LLM_APPROVED_HOSTS_VERTEX:       ${PACEDAY_LLM_APPROVED_HOSTS_VERTEX:-}
       PACEDAY_LLM_APPROVED_HOSTS_BEDROCK:      ${PACEDAY_LLM_APPROVED_HOSTS_BEDROCK:-}
       PACEDAY_LLM_APPROVED_HOSTS_OPENAI:    ${PACEDAY_LLM_APPROVED_HOSTS_OPENAI:-}
       PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC: ${PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC:-}
-      PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA:  ${PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA:-}
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
