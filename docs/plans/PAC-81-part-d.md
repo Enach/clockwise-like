@@ -68,3 +68,22 @@ Concretely, the marked dependencies are:
   the same commit, because no image pipeline exists (F-C1, out of scope).
 - Off-host backup storage, encryption of dumps at rest, PITR: operator choices
   named in the runbook (spec §5).
+
+## Review round 1 (request-changes on `d65a5bd`)
+
+- Blocking: the runbook's rollback assumed an empty volume. Added "Rollback on
+  the same host" (stop, set the failed volume aside with
+  `scripts/ops/set-aside-volume.sh` or the listed commands, `up -d postgres`,
+  `restore.sh`, previous version) and rehearsed it in part 2 of
+  `rehearse-backup-restore.sh` (dirty database at 32).
+- Env test: any `func(string) string` / `func(string) (string, bool)`
+  parameter is a getter, whatever its name (two reviewed non-getters:
+  `redact`); every variable a compose file interpolates must be documented
+  (the compose-only allowlist is gone).
+- `backup.sh` needs a dedicated directory, and retention deletes only complete
+  sets it wrote; `restore.sh` refuses a dump without its `.sha256` unless
+  `--allow-missing-checksum`.
+- Docs: down-file labels worded truthfully; proxy health checks split into
+  backend readiness (Part A) and `/nginx-health` (Part B); Part B's
+  `NGINX_TRUSTED_PROXIES` named; `.env.example` says plainly that the
+  production stack always reports to the built-in Sentry project today.

@@ -61,10 +61,13 @@ Always in this order. `compose` below means
 
 - **The backend is not ready after a migration** (it exited, or never
   listens): **restore the backup taken in step 1 and deploy the previous
-  version** ([Restore](#restore), with the previous image). Never edit the
-  `schema_migrations` table by hand, and **never migrate down in production**:
-  several down files destroy data — `006_auth.down.sql` deletes every user
-  account — and each says what it destroys on its first line. Down files
+  version**. On the same host this means setting the failed database aside
+  first: follow [Rollback on the same host](#rollback-on-the-same-host). Never
+  edit the `schema_migrations` table by hand, and **never migrate down in
+  production**: down files drop tables and columns with their data —
+  `006_auth.down.sql` deletes every user account. The five down files added by
+  PAC-81 (006, 007, 014, 015, 016) say what they destroy on their first line;
+  the older ones do not, so read any down file as destructive. Down files
   exist for development and for tests, not for rollback.
 - **Image-only change** (the release has no new migration): roll back by
   deploying the previous version — the previous pinned version once Part C
@@ -74,6 +77,71 @@ Always in this order. `compose` below means
   without losing the data written since the backup. Prefer a fix-forward
   release; if you must go back, restore the pre-deploy backup and accept that
   loss explicitly.
+
+### Rollback on the same host
+
+After a failed migration the database is half-migrated, or marked dirty
+(`Dirty database version N` in `compose logs backend`). The backend refuses to
+start on it, so it restarts in a loop, and `restore.sh` refuses to restore over
+it. Do not delete it: set it aside, restore into a fresh volume, deploy the
+previous version. Run every command from the directory holding
+`docker-compose.prod.yml` and `.env`.
+
+1. **Stop the stack** (keeps the volumes — never add `-v`):
+
+   ```bash
+   docker compose -f docker-compose.prod.yml down
+   ```
+
+2. **Set the failed database aside.** Docker cannot rename a volume, so it is
+   copied to a new volume and the original is removed:
+
+   ```bash
+   scripts/ops/set-aside-volume.sh --compose-file docker-compose.prod.yml
+   # prints e.g. paceday_postgres_data-failed-20261028T191605Z
+   ```
+
+   What the script does, if you need to do it by hand. The volume is
+   `<project>_postgres_data`. The project name is the directory holding the
+   compose file, unless `-p` or `COMPOSE_PROJECT_NAME` set it;
+   `docker compose -f docker-compose.prod.yml config | grep '^name:'` prints it.
+
+   ```bash
+   project="$(docker compose -f docker-compose.prod.yml config | awk '/^name:/ {print $2; exit}')"
+   vol="${project}_postgres_data"
+   copy="${vol}-failed-$(date -u +%Y%m%dT%H%M%SZ)"
+   docker ps -a --filter "volume=$vol"          # must list nothing (step 1)
+   docker volume create "$copy"
+   docker run --rm -v "$vol:/from:ro" -v "$copy:/to" postgres:16-alpine sh -c 'cp -a /from/. /to/'
+   # compare before removing: same entry count and content on both sides
+   for v in "$vol" "$copy"; do
+     docker run --rm -v "$v:/v:ro" postgres:16-alpine sh -c \
+       'cd /v && echo "$(find . | wc -l) $(find . -type f -exec md5sum {} + | sort -k2 | md5sum)"'
+   done
+   docker volume rm "$vol"
+   ```
+
+   The copy holds the same secrets as a dump; delete it
+   (`docker volume rm <copy>`) once the failure is understood.
+
+3. **Restore the pre-deploy backup** into a new, empty volume:
+
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d postgres   # creates an empty postgres_data
+   scripts/ops/restore.sh --compose-file docker-compose.prod.yml \
+     --dump /var/backups/paceday/paceday-<T>.dump               # the step-1 backup
+   ```
+
+4. **Deploy the previous version**: set the previous image version (Part C's
+   version setting; today, the digests recorded in deploy step 2), then
+   `docker compose -f docker-compose.prod.yml up -d backend`, wait for
+   readiness, and `up -d` the rest (deploy steps 4–6).
+5. **Verify** as in [Restore](#restore) step 6: row counts equal the pre-deploy
+   backup's, an existing session still works, health through the proxy.
+
+`scripts/ops/rehearse-backup-restore.sh` rehearses this path (its part 2): a
+dirty database at version 32, the backend refusing it, `restore.sh` refusing
+it, then the steps above.
 
 ## Expected interruption during a deploy
 
@@ -108,6 +176,15 @@ scripts/ops/backup.sh --out /var/backups/paceday --env-file /opt/paceday/.env
 # options: --compose-file FILE | --container NAME, --keep-days N (default 14)
 ```
 
+- **`--out` must be a directory dedicated to these backups.** The script
+  creates it if missing, refuses one that holds anything other than its own
+  `paceday-<T>.dump/.env/.sha256` files, and makes it mode 700.
+- **Retention only touches complete sets the script wrote**: a
+  `paceday-<T>.sha256` that lists exactly `paceday-<T>.dump` and
+  `paceday-<T>.env`, older than the retention, is deleted with those two
+  files. Any other file is left alone (a stray old dump is kept and must be
+  removed by hand).
+
 Schedule it daily, e.g. in root's crontab on the Docker host:
 
 ```cron
@@ -134,7 +211,9 @@ Schedule it daily, e.g. in root's crontab on the Docker host:
 
 ## Restore
 
-On a fresh host (or after the volume was lost):
+On a fresh host, or after the volume was lost. To roll back on a host whose
+failed database still exists, see
+[Rollback on the same host](#rollback-on-the-same-host).
 
 1. Install the repository at the **same version** that was running (the same
    image version; once Part C ships, the same pinned version setting).
@@ -144,8 +223,10 @@ On a fresh host (or after the volume was lost):
    `healthy`.
 4. Restore:
    `scripts/ops/restore.sh --dump /var/backups/paceday/paceday-<T>.dump`.
-   It verifies the checksum, refuses a database that already has tables, and
-   restores in one transaction.
+   It verifies the checksum from `paceday-<T>.sha256`, refuses a database that
+   already has tables, and restores in one transaction. Without the `.sha256`
+   it refuses; `--allow-missing-checksum` restores anyway after a warning —
+   use it only for a dump whose integrity you have checked another way.
 5. Start the backend and wait for readiness (deploy steps 4–6). The restored
    `schema_migrations` matches the image, so no migration runs.
 6. Verify:
@@ -158,15 +239,29 @@ On a fresh host (or after the volume was lost):
 
 ### Rehearsing a restore
 
-`scripts/ops/rehearse-backup-restore.sh` runs the whole procedure against
-throwaway containers (Docker, Go, curl and openssl needed; ports 15492, 15493,
-18091–18093 by default): it builds the backend from the checkout, seeds data
-and issues a session before the backup, backs up while the backend runs,
-restores onto a second Postgres, starts a backend with the saved `.env`, and
-checks health, equal row counts for every public table and that the old
-session is accepted. Negative controls: the same session against a backend
-with another `JWT_SECRET` must get 401; a row added after the backup must make
-the counts differ; a 15-day-old backup set must be deleted by retention.
+`scripts/ops/rehearse-backup-restore.sh` runs both procedures against
+throwaway containers (Docker with Compose v2, Go, curl and openssl needed;
+ports 15494, 15495 and 18091–18094 by default). It builds the backend from the
+checkout, and runs the source database as a compose project on a named volume,
+as in production.
+
+- **Fresh host:** seeds users, an organization and a stored provider
+  credential (`oauth_tokens`), issues a session before the backup, backs up
+  while the backend runs, restores onto a second Postgres, starts a backend
+  with the saved `.env`, and checks health, equal row counts for every public
+  table, the credential intact and the old session accepted.
+- **Same host:** takes a pre-deploy backup, simulates a failed migration
+  (half-created table, `schema_migrations` dirty at 32), checks that the
+  backend and `restore.sh` both refuse it, then runs
+  [Rollback on the same host](#rollback-on-the-same-host) and checks health,
+  counts, the session, and that the set-aside volume still holds the failed
+  database.
+- **Negative controls:** another `JWT_SECRET` gets 401; a row added after the
+  backup makes the counts differ; `restore.sh` refuses a dump without its
+  `.sha256` (and `--allow-missing-checksum` warns); `backup.sh` refuses a
+  shared directory; retention deletes a 15-day-old set it wrote and keeps a
+  file it did not write.
+
 Rehearse once per quarter and after any change to the scripts or to Postgres'
 major version, and record it below.
 
@@ -175,6 +270,7 @@ major version, and record it below.
 | Date (UTC) | Who | Where | Outcome |
 |---|---|---|---|
 | 2026-10-28 | factory implementer (PAC-81 Part D) | `rehearse-backup-restore.sh` at `bef4c31` + this branch, Docker 29.8.2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed.** 34 public tables, counts equal; restored backend `/api/health` 200; pre-backup session `/api/auth/me` 200; other `JWT_SECRET` 401; post-backup row detected; 15-day-old set removed. Not checked on this host: the mode-600 assertion (Windows has no POSIX modes; the script checks it on Linux). Rehearsed with a binary built from the commit, not a published image (no image pipeline, spec F-C1). |
+| 2026-10-28 | factory implementer (PAC-81 Part D, review round 1) | `rehearse-backup-restore.sh` on this branch after `d65a5bd`, Docker 29.8.2 / Compose v2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed** (19:16 UTC). Fresh host: 34 tables equal, `oauth_tokens` credential intact, health 200, old session 200. Same host: the backend refused the dirty database (`Dirty database version 32`), `restore.sh` refused it, the volume was set aside (1487 entries, content checksums equal), restored, health 200, counts equal to the pre-deploy backup, session 200, the set-aside copy still dirty at 32. Negative controls all as expected. Mode-600 check not run (Windows). |
 
 ## Account recovery
 

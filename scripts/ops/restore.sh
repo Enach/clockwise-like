@@ -15,12 +15,13 @@
 #                          [--db NAME] [--user NAME]
 #
 # Defaults: --compose-file docker-compose.prod.yml (its postgres service),
-# --db clockwise, --user clockwise. When FILE's .sha256 sits beside it, the
-# checksum is verified first.
+# --db clockwise, --user clockwise. The checksum in FILE's .sha256 (written by
+# backup.sh beside it) is verified first. Without that file the script
+# refuses; --allow-missing-checksum restores anyway, after a warning.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1 # Git Bash: do not rewrite /paths passed to docker
 
-dump="" compose_file="docker-compose.prod.yml" container="" db=clockwise user=clockwise
+dump="" compose_file="docker-compose.prod.yml" container="" db=clockwise user=clockwise allow_missing_checksum=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dump) dump="$2"; shift 2 ;;
@@ -28,7 +29,8 @@ while [ $# -gt 0 ]; do
     --container) container="$2"; shift 2 ;;
     --db) db="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --allow-missing-checksum) allow_missing_checksum=1; shift ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "restore: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -38,6 +40,12 @@ sums="${dump%.dump}.sha256"
 if [ -f "$sums" ]; then
   ( cd "$(dirname "$dump")" && grep -E "[ *]$(basename "$dump")$" "$(basename "$sums")" | sha256sum -c --quiet - ) \
     || { echo "restore: checksum mismatch for $dump" >&2; exit 1; }
+elif [ "$allow_missing_checksum" = 1 ]; then
+  echo "restore: WARNING: $sums is missing; the dump's integrity is NOT verified (--allow-missing-checksum given)" >&2
+else
+  echo "restore: REFUSED: $sums is missing, so the dump cannot be verified." >&2
+  echo "restore: find the .sha256 written beside it by backup.sh, or rerun with --allow-missing-checksum to restore unverified." >&2
+  exit 1
 fi
 
 if [ -z "$container" ]; then

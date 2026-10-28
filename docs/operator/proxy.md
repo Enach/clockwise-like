@@ -50,16 +50,18 @@ backend believes Paceday's nginx and nothing else.
 Paceday's nginx must learn the real client from your proxy's
 `X-Forwarded-For`, and believe it only when the request comes from your proxy.
 
-- **Added by Part B** (AC-B5..B7): an nginx setting holding the trusted proxy
-  addresses (empty by default: nothing is trusted). nginx then takes the
-  right-most address in `X-Forwarded-For` that is not in the list, and passes
-  it to the backend as `X-Real-IP`.
+- **Added by Part B** (AC-B5..B7, PR #245): `NGINX_TRUSTED_PROXIES`, the
+  IPs/CIDRs (comma or space separated) whose `X-Forwarded-For` and
+  `X-Forwarded-Proto` nginx believes; empty by default, so nothing is trusted.
+  nginx then takes the right-most address in `X-Forwarded-For` that is not in
+  the list, and passes it to the backend as `X-Real-IP`. Part B documents it
+  in `.env.example` when it merges.
 - **Today**, nginx sends `X-Real-IP: $remote_addr`, i.e. your proxy's address.
   Every visitor therefore shares one rate-limit bucket (the public booking
   limits count per client). This is safe (nothing can be spoofed) but means
   one busy visitor can exhaust the limit for everyone until Part B ships.
 
-What to put in the list:
+What to put in `NGINX_TRUSTED_PROXIES`:
 
 | Topology | nginx sees requests coming from | Trust |
 |---|---|---|
@@ -121,24 +123,31 @@ reaches it directly skips TLS, HSTS and your proxy's own protections.
 Configure the proxy's (or load balancer's) health check **through nginx**, so
 it checks the whole path:
 
-- **Readiness** — `GET /api/ready` style endpoint through nginx, answering
-  503 while the backend is starting (migrations) or shutting down: **added by
-  Part A and Part B** (AC-A11, AC-B11). Once present, use it: during a deploy
-  it turns 503 a few seconds before the backend stops, so the proxy stops
-  sending traffic first.
-- **Today**, use `GET /api/health` through nginx: it answers `200
-  {"status":"ok",…}` whenever the backend process is up (liveness only; it does
-  not check the database). Interval 5–10 s, 2–3 failures to mark down.
+- **Backend readiness** — **added by Part A** (AC-A11; its path is set by
+  Part A's contract). It answers 503 while the database is unreachable or
+  shutdown has begun, and success otherwise. Check it through nginx, so that
+  the check covers the whole path: during a deploy it turns 503 a few seconds
+  before the backend stops accepting connections, so the proxy stops sending
+  traffic first. This is the check that should take the stack out of rotation.
+- **Edge liveness** — `GET /nginx-health`: **added by Part B** (AC-B11). nginx
+  answers 200 itself, without calling any upstream, so it says only that nginx
+  is up. Use it for the proxy's check of the nginx container (or for Part C's
+  container health check), not as the stack's readiness.
+- **Today**, neither exists: use `GET /api/health` through nginx. It answers
+  `200 {"status":"ok",…}` whenever the backend process is up (backend liveness
+  only; it does not check the database). Interval 5–10 s, 2–3 failures to mark
+  down.
 
 ## Checklist
 
 1. TLS at the proxy; HSTS `max-age=31536000; includeSubDomains` (no `preload`
    unless chosen); HTTP→HTTPS redirect at the proxy.
 2. `X-Forwarded-For` appended and `X-Forwarded-Proto: https` sent.
-3. nginx's trusted list = your proxy's address — the bridge gateway when the
-   proxy is on the same host (setting added by Part B).
+3. `NGINX_TRUSTED_PROXIES` = your proxy's address — the bridge gateway when
+   the proxy is on the same host (setting added by Part B).
 4. Proxy idle/read timeout > 130 s.
 5. nginx's port reachable only from the proxy (`127.0.0.1` bind on the same
    host); MCP's 3001 not exposed.
-6. Proxy health check through nginx: readiness (Part A/B), `/api/health` until
-   then.
+6. Proxy health check through nginx: backend readiness (Part A) to take the
+   stack out of rotation, `/nginx-health` (Part B) for nginx itself;
+   `/api/health` until then.

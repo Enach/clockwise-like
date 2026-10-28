@@ -19,6 +19,13 @@
 # Defaults: --compose-file docker-compose.prod.yml (its postgres service),
 # --keep-days 14, --db clockwise, --user clockwise.
 #
+# DIR must be dedicated to these backups: the script refuses a directory that
+# holds anything other than its own paceday-<T>.* files, then makes it mode
+# 700. Retention deletes only complete sets this script wrote: a
+# paceday-<T>.sha256 listing exactly paceday-<T>.dump and paceday-<T>.env,
+# older than --keep-days, together with those two files. Nothing else in DIR
+# is ever deleted.
+#
 # Writes, for one UTC timestamp T:
 #   DIR/paceday-T.dump    pg_dump custom format (restore with restore.sh)
 #   DIR/paceday-T.env     the .env file as it was
@@ -53,7 +60,19 @@ if [ -z "$container" ]; then
   [ -n "$container" ] || { echo "backup: no running postgres service in $compose_file" >&2; exit 1; }
 fi
 
-mkdir -p "$out"
+own_file='^paceday-[0-9]{8}T[0-9]{6}Z\.(dump|env|sha256|dump\.partial)$'
+if [ -e "$out" ]; then
+  [ -d "$out" ] || { echo "backup: $out exists and is not a directory" >&2; exit 2; }
+  foreign="$(ls -A "$out" | grep -Ev "$own_file" || true)"
+  if [ -n "$foreign" ]; then
+    echo "backup: $out is not a dedicated backup directory; it holds:" >&2
+    printf '%s\n' "$foreign" | sed 's/^/  /' >&2
+    echo "backup: use an empty or backup-only directory (the script chmods it 700 and applies retention in it)" >&2
+    exit 2
+  fi
+else
+  mkdir -p "$out"
+fi
 chmod 700 "$out" 2>/dev/null || true
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 base="$out/paceday-$stamp"
@@ -69,8 +88,17 @@ chmod 600 "$base.dump" "$base.env"
 ( cd "$out" && sha256sum "paceday-$stamp.dump" "paceday-$stamp.env" > "paceday-$stamp.sha256" )
 chmod 600 "$base.sha256"
 
-# Retention: delete backups whose files are older than keep_days days. The set
+# Retention: delete complete sets this script wrote (a .sha256 naming exactly
+# its own .dump and .env) whose .sha256 is older than keep_days days. The set
 # just written is never older than a minute, so it is never deleted.
-find "$out" -maxdepth 1 -type f -name 'paceday-*' -mtime +"$((keep_days - 1))" -print -delete | sed 's/^/backup: retention removed /' >&2
+find "$out" -maxdepth 1 -type f -name 'paceday-*.sha256' -mtime +"$((keep_days - 1))" | while IFS= read -r sums; do
+  set_base="${sums%.sha256}"
+  name="$(basename "$set_base")"
+  [[ "$name" =~ ^paceday-[0-9]{8}T[0-9]{6}Z$ ]] || continue
+  listed="$(sed -E 's/^[0-9a-f]{64} [ *]//' "$sums" | sort | tr '\n' ' ')"
+  [ "$listed" = "$name.dump $name.env " ] || { echo "backup: retention skipped $sums (not a set this script wrote)" >&2; continue; }
+  rm -f -- "$set_base.dump" "$set_base.env" "$sums"
+  echo "backup: retention removed set $name" >&2
+done
 
 echo "$base.dump"

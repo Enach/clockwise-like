@@ -45,13 +45,6 @@ var envNotInReference = map[string]string{
 	"PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA": "retired: read only to warn at startup",
 }
 
-// composeOnlyVars are variables no service reads but that a compose file uses
-// for something other than handing them to a service under the same name.
-// A variable a compose file only passes through, unread, must be deprecated.
-var composeOnlyVars = map[string]string{
-	"POSTGRES_PASSWORD": "postgres container password and the backend's DATABASE_URL",
-}
-
 // dynamicEnvReaders are the functions allowed to read a variable whose name
 // is not a literal or an Env* constant at the call. Their callers pass string
 // literals (counted below) or Env* constants (always counted).
@@ -59,6 +52,14 @@ var dynamicEnvReaders = map[string]bool{
 	"oauthProviderAvailability": true, // backend/api/integration_availability.go
 	"DecideLLMApprovedHosts":    true, // backend/config/llm_hosts.go, over llmApprovedHostsVars
 	"DecideLLMUserDestinations": true, // backend/config/llm_user_destinations.go, over Env* consts
+}
+
+// notEnvGetters are parameters shaped like os.Getenv that are not
+// environment getters, as "Function.param", each with what it is. Any other
+// func(string) string parameter is treated as an environment read.
+var notEnvGetters = map[string]string{
+	"writeProviderFailure.redact": "backend/api/handlers_llm.go: removes secrets from provider error text",
+	"extractAttendees.redact":     "backend/nlp/parser.go: removes secrets from model output",
 }
 
 var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
@@ -69,7 +70,8 @@ type envReads struct {
 }
 
 // collectEnvReads parses Go source files and returns every environment
-// variable they read: os.Getenv / os.LookupEnv / a getenv func parameter with
+// variable they read: os.Getenv / os.LookupEnv / any func(string) string (or
+// func(string) (string, bool)) parameter, whatever its name, with
 // a literal or an Env* constant argument, every Env* string constant, and the
 // string-literal arguments of calls to the dynamicEnvReaders.
 func collectEnvReads(fset *token.FileSet, files []*ast.File) envReads {
@@ -102,10 +104,15 @@ func collectEnvReads(fset *token.FileSet, files []*ast.File) envReads {
 		}
 	}
 	for _, f := range files {
-		var enclosing []string
+		fnName := ""
+		getters := map[string]bool{} // func(string) string parameters in the current declaration
 		ast.Inspect(f, func(n ast.Node) bool {
-			if fd, ok := n.(*ast.FuncDecl); ok {
-				enclosing = append(enclosing[:0], fd.Name.Name)
+			switch d := n.(type) {
+			case *ast.FuncDecl:
+				fnName, getters = d.Name.Name, map[string]bool{}
+				addGetterParams(getters, d.Type)
+			case *ast.FuncLit:
+				addGetterParams(getters, d.Type)
 			}
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -121,13 +128,18 @@ func collectEnvReads(fset *token.FileSet, files []*ast.File) envReads {
 					}
 				}
 			}
-			if !isEnvRead(call.Fun) || len(call.Args) != 1 {
+			viaOS := isOSEnvRead(call.Fun)
+			ident, isIdent := call.Fun.(*ast.Ident)
+			viaGetter := isIdent && getters[ident.Name] && notEnvGetters[fnName+"."+ident.Name] == ""
+			if (!viaOS && !viaGetter) || len(call.Args) != 1 {
 				return true
 			}
 			switch a := call.Args[0].(type) {
 			case *ast.BasicLit:
 				if v, err := strconv.Unquote(a.Value); err == nil {
-					add(v, a.Pos())
+					if viaOS || envNamePattern.MatchString(v) {
+						add(v, a.Pos())
+					}
 					return true
 				}
 			case *ast.Ident:
@@ -140,10 +152,6 @@ func collectEnvReads(fset *token.FileSet, files []*ast.File) envReads {
 					add(v, a.Pos())
 					return true
 				}
-			}
-			fnName := ""
-			if len(enclosing) > 0 {
-				fnName = enclosing[0]
 			}
 			if !dynamicEnvReaders[fnName] {
 				out.dynamic = append(out.dynamic, fmt.Sprintf("%s (in %s)", fset.Position(call.Pos()), fnName))
@@ -164,15 +172,59 @@ func calleeName(e ast.Expr) string {
 	return ""
 }
 
-func isEnvRead(e ast.Expr) bool {
-	switch f := e.(type) {
-	case *ast.Ident:
-		return f.Name == "getenv"
-	case *ast.SelectorExpr:
-		pkg, ok := f.X.(*ast.Ident)
-		return ok && pkg.Name == "os" && (f.Sel.Name == "Getenv" || f.Sel.Name == "LookupEnv")
+func isOSEnvRead(e ast.Expr) bool {
+	f, ok := e.(*ast.SelectorExpr)
+	if !ok {
+		return false
 	}
-	return false
+	pkg, ok := f.X.(*ast.Ident)
+	return ok && pkg.Name == "os" && (f.Sel.Name == "Getenv" || f.Sel.Name == "LookupEnv")
+}
+
+// addGetterParams records the parameters shaped like os.Getenv or
+// os.LookupEnv — func(string) string or func(string) (string, bool) —
+// whatever they are named: a call through one is an environment read.
+func addGetterParams(getters map[string]bool, ft *ast.FuncType) {
+	if ft == nil || ft.Params == nil {
+		return
+	}
+	for _, field := range ft.Params.List {
+		fnType, ok := field.Type.(*ast.FuncType)
+		if !ok || !isGetterShape(fnType) {
+			continue
+		}
+		for _, name := range field.Names {
+			getters[name.Name] = true
+		}
+	}
+}
+
+func isGetterShape(ft *ast.FuncType) bool {
+	isIdent := func(e ast.Expr, name string) bool {
+		id, ok := e.(*ast.Ident)
+		return ok && id.Name == name
+	}
+	types := func(fl *ast.FieldList) []ast.Expr {
+		var out []ast.Expr
+		if fl == nil {
+			return out
+		}
+		for _, f := range fl.List {
+			n := len(f.Names)
+			if n == 0 {
+				n = 1
+			}
+			for i := 0; i < n; i++ {
+				out = append(out, f.Type)
+			}
+		}
+		return out
+	}
+	in, res := types(ft.Params), types(ft.Results)
+	if len(in) != 1 || !isIdent(in[0], "string") || len(res) == 0 || !isIdent(res[0], "string") {
+		return false
+	}
+	return len(res) == 1 || (len(res) == 2 && isIdent(res[1], "bool"))
 }
 
 // parseServiceSources parses every non-test .go file under the service dirs.
@@ -352,9 +404,8 @@ func TestEnvReferenceIsComplete(t *testing.T) {
 			}
 		case readByService:
 		case composeOther[name]:
-			if _, ok := composeOnlyVars[name]; !ok {
-				t.Errorf(".env.example:%d %s is read by no service; a compose file uses it, but it is not in composeOnlyVars", d.line, name)
-			}
+			// Used by a compose file itself (a container setting, a URL it
+			// builds, an image tag): documented, which is what is required.
 		case composePassOnly[name]:
 			t.Errorf(".env.example:%d %s is passed to a service by a compose file but no service reads it: mark it deprecated or remove it", d.line, name)
 		default:
@@ -364,9 +415,12 @@ func TestEnvReferenceIsComplete(t *testing.T) {
 			t.Errorf(".env.example:%d %s needs a default and a purpose", d.line, name)
 		}
 	}
-	for _, name := range keys(composeOnlyVars) {
-		if reads.vars[name] != nil || !composeUsed[name] {
-			t.Errorf("composeOnlyVars lists %s, which is no longer compose-only; remove it", name)
+	// Reverse direction for the compose files: every variable they
+	// interpolate is documented, so an operator reading .env.example sees
+	// every knob the stack has.
+	for _, name := range keys(composeUsed) {
+		if _, ok := docs[name]; !ok {
+			t.Errorf("%s is interpolated by a compose file (%v) but not documented in .env.example", name, composeFiles)
 		}
 	}
 }
@@ -436,6 +490,13 @@ func TestCollectEnvReadsFindsEveryForm(t *testing.T) {
 import "os"
 const EnvFoo = "FOO_VAR"
 const NotEnv = "IGNORED_VAR"
+func c(lookup func(string) string, find func(string) (string, bool), redactLike func(int) string) {
+	_ = lookup("LOOKUP_PARAM_VAR")
+	_, _ = find("FIND_PARAM_VAR")
+	_ = redactLike(1)
+}
+func writeProviderFailure(redact func(string) string, e string) { _ = redact(e) }
+func d(transform func(string) string, k string) { _ = transform(k) }
 func a(getenv func(string) string) {
 	_ = os.Getenv("LITERAL_VAR")
 	_, _ = os.LookupEnv("LOOKUP_VAR")
@@ -453,7 +514,7 @@ func b() { oauthProviderAvailability("VIA_READER_VAR") }
 		t.Fatal(err)
 	}
 	got := collectEnvReads(fset, []*ast.File{f})
-	for _, want := range []string{"FOO_VAR", "LITERAL_VAR", "LOOKUP_VAR", "PARAM_VAR", "VIA_READER_VAR"} {
+	for _, want := range []string{"FOO_VAR", "LITERAL_VAR", "LOOKUP_VAR", "PARAM_VAR", "VIA_READER_VAR", "LOOKUP_PARAM_VAR", "FIND_PARAM_VAR"} {
 		if got.vars[want] == nil {
 			t.Errorf("collector missed %s; got %v", want, keys(got.vars))
 		}
@@ -463,8 +524,8 @@ func b() { oauthProviderAvailability("VIA_READER_VAR") }
 			t.Errorf("collector reported %s", unwanted)
 		}
 	}
-	if len(got.dynamic) != 1 || !strings.Contains(got.dynamic[0], "(in a)") {
-		t.Errorf("dynamic reads = %v, want exactly the one in a (the reviewed reader is allowed)", got.dynamic)
+	if all := strings.Join(got.dynamic, ";"); len(got.dynamic) != 2 || !strings.Contains(all, "(in a)") || !strings.Contains(all, "(in d)") {
+		t.Errorf("dynamic reads = %v, want the ones in a and d (a getter-shaped parameter of any name; the reviewed reader and notEnvGetters are allowed)", got.dynamic)
 	}
 }
 
