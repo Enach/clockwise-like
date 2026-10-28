@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -22,8 +24,11 @@ func wantStepupRequired(t *testing.T, rec interface {
 	if code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (%v)", code, body)
 	}
-	if body["error"] != "sso_write_requires_admin_stepup" || body["stepup_url"] != "/api/admin/sso/stepup" || len(body) != 2 {
-		t.Fatalf("body = %v, want exactly {error: sso_write_requires_admin_stepup, stepup_url: /api/admin/sso/stepup}", body)
+	// newSSOEnv configures both providers, so both keys are present
+	// (contract revision 6, AC-24).
+	got, _ := json.Marshal(body)
+	if string(got) != bothProvidersStepupBody {
+		t.Fatalf("body = %s, want exactly %s", got, bothProvidersStepupBody)
 	}
 }
 
@@ -191,31 +196,45 @@ func TestSSOWrite_ConcurrentWritesOnOneGrant(t *testing.T) {
 	}
 }
 
-// AC-3c, AC-16b and the second Linear acceptance item: a foreign domain or a
-// subdomain is a 400 before the grant is touched.
+// AC-3c, AC-16b and the second Linear acceptance item: a foreign domain, a
+// subdomain or a padded domain is a 403 provider_domain_mismatch (owner,
+// 2026-10-27, spec §9 D-10) before the grant is touched; nothing is written
+// or deleted.
 func TestSSOWrite_DomainMismatchLeavesGrantLive(t *testing.T) {
 	e := newSSOEnv(t)
 	u, org := e.member(t, "ac3c")
 	g := issueGrant(t, e, u.ID, org.ID, e.clock.Now())
 	sess := session(t, u, time.Now())
-	for _, d := range []string{"other.test", "sub." + org.Domain, "evil-" + org.Domain} {
+	// A row for a foreign domain exists, so a mismatched delete that slipped
+	// through would remove it.
+	if _, err := e.db.Exec(`INSERT INTO sso_providers (domain, provider_name, provider_type) VALUES ('other.com', 'Theirs', 'oidc') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatalf("seed foreign row: %v", err)
+	}
+	for _, d := range []string{"other.com", "other.test", "sub." + org.Domain, "evil-" + org.Domain, " " + org.Domain + " "} {
 		rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(d), sess)
-		if rec.Code != http.StatusBadRequest || errorBody(t, rec)["error"] != "provider_domain_mismatch" {
-			t.Fatalf("create %s = %d %s; want 400 provider_domain_mismatch", d, rec.Code, rec.Body.String())
+		wantDomainMismatch(t, "create "+d, rec)
+		if d != "other.com" {
+			if n, _ := e.providerRow(t, d); n != 0 {
+				t.Fatalf("a row was written for %s", d)
+			}
 		}
-		if n, _ := e.providerRow(t, d); n != 0 {
-			t.Fatalf("a row was written for %s", d)
-		}
-		rec = e.do(t, http.MethodDelete, "/api/admin/sso/"+d, "", sess)
-		if rec.Code != http.StatusBadRequest || errorBody(t, rec)["error"] != "provider_domain_mismatch" {
-			t.Fatalf("delete %s = %d %s; want 400 provider_domain_mismatch", d, rec.Code, rec.Body.String())
-		}
+		rec = e.do(t, http.MethodDelete, "/api/admin/sso/"+url.PathEscape(d), "", sess)
+		wantDomainMismatch(t, "delete "+d, rec)
+	}
+	if n, _ := e.providerRow(t, "other.com"); n != 1 {
+		t.Fatalf("foreign row count = %d after mismatched writes, want 1 (untouched)", n)
+	}
+	if n, _ := e.providerRow(t, org.Domain); n != 0 {
+		t.Fatal("a mismatched write created the org's row")
+	}
+	if ev := e.events(t, u.ID); len(ev) != 0 {
+		t.Fatalf("%d write events after mismatches, want 0", len(ev))
 	}
 	if grantConsumed(t, e, g.ID) {
-		t.Fatal("a 400 consumed the grant")
+		t.Fatal("a domain mismatch consumed the grant")
 	}
 	if rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(org.Domain), sess); rec.Code != http.StatusCreated {
-		t.Fatalf("valid write after the 400s = %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("valid write after the mismatches = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -91,9 +91,9 @@ func TestPAC50_EveryServerErrorIsTheGenericBody(t *testing.T) {
 	})
 }
 
-// D-9: the exact-domain rule compares the value as sent. Surrounding
-// whitespace is a different domain: 400 provider_domain_mismatch, nothing
-// written, no grant consumed.
+// D-9 / D-10 (owner, 2026-10-27): the exact-domain rule compares the value
+// as sent. Surrounding whitespace is a different domain: 403
+// provider_domain_mismatch, nothing written, no grant consumed.
 func TestPAC50_DomainIsNotTrimmed(t *testing.T) {
 	e := newSSOEnv(t)
 	u, org := e.member(t, "r4trim")
@@ -101,18 +101,14 @@ func TestPAC50_DomainIsNotTrimmed(t *testing.T) {
 	sess := session(t, u, time.Now())
 
 	rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(" "+org.Domain+" "), sess)
-	if rec.Code != http.StatusBadRequest || errorBody(t, rec)["error"] != "provider_domain_mismatch" {
-		t.Fatalf("create ' domain ' = %d %s, want 400 provider_domain_mismatch", rec.Code, rec.Body.String())
-	}
+	wantDomainMismatch(t, "create ' domain '", rec)
 	rec = e.do(t, http.MethodDelete, "/api/admin/sso/%20"+org.Domain, "", sess)
-	if rec.Code != http.StatusBadRequest || errorBody(t, rec)["error"] != "provider_domain_mismatch" {
-		t.Fatalf("delete '%%20domain' = %d %s, want 400 provider_domain_mismatch", rec.Code, rec.Body.String())
-	}
+	wantDomainMismatch(t, "delete '%20domain'", rec)
 	if n, _ := e.providerRow(t, org.Domain); n != 0 {
 		t.Fatal("a padded domain wrote a row")
 	}
 	if grantConsumed(t, e, g.ID) {
-		t.Fatal("a 400 consumed the grant")
+		t.Fatal("a domain mismatch consumed the grant")
 	}
 }
 

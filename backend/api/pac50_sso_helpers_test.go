@@ -393,3 +393,20 @@ func errorBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	}
 	return m
 }
+
+// bothProvidersStepupBody is the step-up 403 when Google and Microsoft are
+// both configured (newSSOEnv), keys in encoding/json's sorted order.
+const bothProvidersStepupBody = `{"error":"sso_write_requires_admin_stepup",` +
+	`"stepup_scopes":{"google":["https://www.googleapis.com/auth/admin.directory.user.readonly"],` +
+	`"microsoft":["Organization.Read.All","RoleManagement.Read.Directory"]},` +
+	`"stepup_url":"/api/admin/sso/stepup","without_stepup":["sso_configuration_writes"]}`
+
+// wantDomainMismatch asserts the owner's 403 for a provider domain that is
+// not exactly the caller's org domain (spec §9 D-10): status 403 and the
+// body exactly {"error":"provider_domain_mismatch"}.
+func wantDomainMismatch(t *testing.T, what string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != `{"error":"provider_domain_mismatch"}` {
+		t.Fatalf("%s = %d %s, want 403 {\"error\":\"provider_domain_mismatch\"}", what, rec.Code, rec.Body.String())
+	}
+}

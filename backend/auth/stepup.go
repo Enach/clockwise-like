@@ -79,6 +79,10 @@ func NewMicrosoftStepup(clientID, clientSecret, redirectURL string, ep config.Id
 		[]string{gooidc.ScopeOpenID, "profile", "email", "User.Read", "Organization.Read.All", "RoleManagement.Read.Directory"})
 }
 
+// ExtraScopes is the seam for the step-up 403's stepup_scopes (PAC-50 AC-24).
+// Not implemented yet.
+func (p *StepupProvider) ExtraScopes() []string { return nil }
+
 func newStepup(name, clientID, clientSecret, redirectURL string, ep config.IdPEndpoint, scopes []string) *StepupProvider {
 	client := newIdPHTTPClient(ep.Guard)
 	keys := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), ep.JWKSURL)

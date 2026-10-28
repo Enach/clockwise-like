@@ -21,6 +21,10 @@ import { BASE_URL, storageStateFor, type SessionUser } from '../auth';
 import { query } from '../db';
 import { FAKE_GOOGLE_URL } from '../fake';
 
+// The scope Google's step-up requests beyond the identity scopes (contract
+// SsoWriteStepupRequired.stepup_scopes; requested only by the step-up, AC-24).
+const DIRECTORY_SCOPE = 'https://www.googleapis.com/auth/admin.directory.user.readonly';
+
 async function orgMember(): Promise<{ user: SessionUser; domain: string }> {
   const id = randomUUID();
   const domain = `pac50-${id.slice(0, 8)}.test`;
@@ -57,11 +61,19 @@ test.describe('PAC-50 — SSO admin step-up', () => {
       const rows = async () =>
         (await query<{ n: string }>('SELECT count(*) AS n FROM sso_providers WHERE domain = $1', [domain]))[0]?.n;
 
-      // 1. No grant: 403 with the step-up URL, nothing written.
+      // 1. No grant: 403 with the step-up URL, what the optional step-up would
+      //    request and what is lost without it (owner 2026-10-27, spec §9 D-11;
+      //    the e2e stack configures Google only, so there is no microsoft key),
+      //    nothing written.
       const refused = await ctx.post('/api/admin/sso', { data: body });
       expect(refused.status()).toBe(403);
       const refusal = await refused.json();
-      expect(refusal).toEqual({ error: 'sso_write_requires_admin_stepup', stepup_url: '/api/admin/sso/stepup' });
+      expect(refusal).toEqual({
+        error: 'sso_write_requires_admin_stepup',
+        stepup_url: '/api/admin/sso/stepup',
+        stepup_scopes: { google: [DIRECTORY_SCOPE] },
+        without_stepup: ['sso_configuration_writes'],
+      });
       expect(await rows()).toBe('0');
 
       // 2. The start, resolved against the API base (not the page), with the provider.
@@ -71,6 +83,8 @@ test.describe('PAC-50 — SSO admin step-up', () => {
       expect(`${toIdP.origin}${toIdP.pathname}`).toBe('http://fake-google:8080/o/oauth2/v2/auth');
       expect(toIdP.searchParams.get('redirect_uri')).toBe(`${BASE_URL}/api/admin/sso/stepup/callback`);
       expect(toIdP.searchParams.get('login_hint')).toBe(user.email);
+      // The start requests exactly what the 403 announced, beyond identity scopes.
+      expect(toIdP.searchParams.get('scope')?.split(' ')).toContain(DIRECTORY_SCOPE);
 
       // 3. The browser at the provider (the stand-in's published port).
       const atIdP = await ctx.get(`${FAKE_GOOGLE_URL}${toIdP.pathname}${toIdP.search}`, { maxRedirects: 0 });
@@ -104,19 +118,38 @@ test.describe('PAC-50 — SSO admin step-up', () => {
     }
   });
 
-  test('a subdomain of the org is refused and nothing is written (exact domain rule)', async ({ playwright }) => {
+  test('a subdomain, foreign or padded domain is 403 and nothing is written (exact domain rule, owner 2026-10-27)', async ({
+    playwright,
+  }) => {
     const { user, domain } = await orgMember();
     const ctx = await playwright.request.newContext({ baseURL: BASE_URL, storageState: storageStateFor(user) });
     try {
-      const res = await ctx.post('/api/admin/sso', {
-        data: { domain: `sub.${domain}`, provider_name: 'X', provider_type: 'oidc' },
-      });
-      expect(res.status()).toBe(400);
-      expect(await res.json()).toEqual({ error: 'provider_domain_mismatch' });
-      const counted = await query<{ n: string }>('SELECT count(*) AS n FROM sso_providers WHERE domain = $1', [
-        `sub.${domain}`,
-      ]);
-      expect(counted[0]?.n).toBe('0');
+      for (const d of [`sub.${domain}`, `other-${domain}`, ` ${domain} `]) {
+        const res = await ctx.post('/api/admin/sso', {
+          data: { domain: d, provider_name: 'X', provider_type: 'oidc' },
+        });
+        expect(res.status()).toBe(403);
+        expect(await res.json()).toEqual({ error: 'provider_domain_mismatch' });
+        const counted = await query<{ n: string }>(
+          'SELECT count(*) AS n FROM sso_providers WHERE lower(domain) = lower($1)',
+          [d],
+        );
+        expect(counted[0]?.n).toBe('0');
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  test('AC-24: Google sign-in requests no step-up or admin-consent scope', async ({ playwright }) => {
+    const ctx = await playwright.request.newContext({ baseURL: BASE_URL });
+    try {
+      const start = await ctx.get('/api/auth/google', { maxRedirects: 0 });
+      expect(start.status()).toBe(302);
+      const scopes = new URL(start.headers()['location'] ?? '').searchParams.get('scope')?.split(' ') ?? [];
+      expect(scopes.length).toBeGreaterThan(0);
+      expect(scopes).not.toContain(DIRECTORY_SCOPE);
+      expect(scopes.filter((s) => s.includes('admin.directory'))).toEqual([]);
     } finally {
       await ctx.dispose();
     }
