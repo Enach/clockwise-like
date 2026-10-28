@@ -718,3 +718,222 @@ any factory assumption.
   provider failure, not "not configured".** The user did configure AI; the
   provider refused it. Assumed by the factory, pending owner confirmation
   (OQ-4).
+
+## Challenge — 2026-10-28
+
+Challenger: `spec-challenger`, on the committed spec at `8204c9c`
+(branch `factory/new-llm-bring-your-own-spec`). No Linear issue exists for this
+spec (header), so no Linear comment was posted; this section is the only copy.
+
+**Verdict**: accept-with-changes
+
+The direction is sound and most of §2 checks out against the code. Six findings
+block the contract stage because they leave a request the spec permits that
+leaks a key, two statements the spec itself contradicts, a web consumer that
+strands users, and an open audit row on a touched operation.
+
+### Blocking
+
+1. **The organisation key can be sent to a destination the member chose.**
+   §3 and AC-23 say the organisation configuration is "provider, model and key".
+   Azure OpenAI needs an endpoint, deployment and API version, Bedrock needs a
+   region, and an OpenAI/Anthropic gateway needs a base URL. Today every one of
+   those values is read from the caller's own settings row
+   (`backend/nlp/llm_factory.go:17-35`). The spec never says where a follower's
+   destination comes from. Read literally, a member who follows the
+   organisation and has a stored `llmBaseUrl` or `azureEndpoint` sends the
+   organisation's key there. The operator's approval lists are
+   deployment-wide (`backend/config/llm_hosts.go:16-18`,
+   `backend/nlp/user_destination.go:99-104`), so "approved" can mean another
+   organisation's gateway. That widens who can see a secret.
+   **Resolve:** state that the organisation configuration holds every
+   destination value its provider needs. State that a follower's request uses
+   only the organisation's values, and that no value from a member's own row is
+   ever combined with the organisation key. Add an AC: given A is configured
+   for Azure and follower M1 has a different approved `azureEndpoint` stored,
+   when M1 parses, the request goes to A's endpoint and M1's endpoint gets
+   nothing.
+
+2. **The probe still sends a stored key to a provider it was not entered for.**
+   D-5 and AC-15 bind a key to its provider only when the user "changes
+   provider". `POST /api/llm/test` accepts `llmProvider` in the body and then
+   uses the single stored key for it (`backend/api/handlers_llm.go:51-63`).
+   The web always sends the draft's provider (`smart-calendar-flow`
+   `src/api/client.ts:836`). Under this spec, a user with an OpenAI key who
+   picks "Anthropic" in the dropdown and presses "Test connection" before
+   saving still sends the OpenAI key to Anthropic. The same question applies
+   to a follower: can a probe that names a provider carry the organisation key
+   to a different provider?
+   **Resolve:** add an AC that a probe naming provider X uses only a key bound
+   to X or a key submitted in the body. Without one, the probe answers "needs
+   a key" and sends nothing. Also state what a follower's probe may use.
+
+3. **One account gets three different reasons.** For an account stored on
+   `bedrock`, `azure_openai` or `vertex` with no key, the spec says three
+   things:
+   - §3 "Existing accounts" and the reason list: the removed-mode reason
+     ("previous provider no longer supported").
+   - AC-2 and the second sentence of AC-8: "needs a key".
+   - AC-10, which covers "the user of AC-8": the removed-provider reason.
+
+   Once Part 2 lands and the organisation is configured, AC-29 gives the same
+   account a fourth reason. The stored value `bedrock` is the same before and
+   after the upgrade, so no test can tell which reason is right.
+   **Resolve:** give each stored state exactly one reason, with an order of
+   precedence (off, then removed mode or needs a key, then organisation
+   available but not chosen, then nothing configured). Then make §3, AC-2,
+   AC-8, AC-10 and AC-29 agree with it.
+
+4. **Nothing on a read can recognise an "organisation admin", and §3
+   contradicts D-7.** D-6 defines the admin as the holder of PAC-50's proof.
+   That proof is a 10-minute, single-use grant consumed by a write
+   (`docs/specs/PAC-50.md` §4.1, "Grant"). There is no stored admin role
+   (§2.3). Two ACs still need a read to tell admin from member:
+   - AC-24: "the admin sees whether a key is set", and a member does not.
+   - AC-31: Settings is editable "when an organisation admin opens it" and
+     read-only for a member.
+
+   Separately, §3 says a member can read "whether a key is set", and D-7 and
+   AC-24 say only the admin can.
+   **Resolve:** either make the read the same for every member of the
+   organisation, with editing starting the PAC-50 proof, or define how a read
+   recognises an admin without a stored role. Then make §3, D-7, AC-24 and
+   AC-31 agree.
+
+5. **Former Ollama users on the web are left with a base URL they cannot see
+   or clear.** The web's Ollama "base URL" field writes `llmBaseUrl`, not
+   `ollamaBaseUrl` (`smart-calendar-flow` `src/pages/Settings.tsx:742-747`).
+   The Ollama branch falls back to `llmBaseUrl` (`llm_factory.go:52-53`). So
+   web users who set up Ollama have an Ollama origin in `llmBaseUrl`. §3 and
+   D-10 retire only `ollamaBaseUrl`, and `llmBaseUrl` stays read for OpenAI and
+   Anthropic. Such a user who picks OpenAI and pastes a key is refused at send,
+   because the stored value is an `http://…:11434` origin. The web shows a base
+   URL field only for Ollama (`Settings.tsx:742`), so after this change the
+   user cannot see or clear the value causing the refusal. Write validation
+   accepts `llmBaseUrl` only if it is approved for at least one of
+   openai/anthropic/ollama (`backend/api/handlers_settings.go:271-278`). Once
+   Ollama is removed, such a value is approved for no provider.
+   **Resolve:** state what happens to a stored `llmBaseUrl` that was approved
+   only as an Ollama origin. Add an AC that a former Ollama user who set a
+   base URL in the web app can reach a working OpenAI or Anthropic
+   configuration from the web Settings page alone.
+
+6. **Inherited scope leaves out API-080 on a touched operation.** API-080
+   (`docs/factory/api-audit.md:338`, status Reported) is on
+   `POST /api/nlp/parse`: `range_start` and `range_end` are `time.Time` with
+   `omitempty`, so a missing range serialises as `0001-01-01T00:00:00Z`
+   (`backend/nlp/parser.go:167-168`, still true). This spec changes the parse
+   response (AC-13). The "AI not configured" parse answer is exactly an
+   `intent: "unknown"` response with no range, so the new documented outcome
+   would carry the bogus zero date. README §7 rule 1 makes the row this spec's
+   scope.
+   **Resolve:** list API-080 under Inherited scope, and either fix it here or
+   say how the contract documents it under rule 2.
+
+### Non-blocking
+
+1. Inherited scope cites the owner answers as "Decisions (D-1, D-9)". There is
+   no D-1, and D-9 is "Off cannot be overridden". The owner answers are O-9
+   (OQ-B2) and O-10 (OQ-B6).
+2. §2.5 and D-11 list only backend tests. Other files also pin Ollama and need
+   the same replace-not-skip treatment:
+   - `e2e/tests/llm-base-url.spec.ts:48-56` (Ollama probe case);
+   - `e2e/docker-compose.e2e.yml:121-123` (Ollama comment);
+   - `smart-calendar-flow` `src/api/settingsAdapter.test.ts:85,102,198`
+     (`llmProvider: "ollama"`).
+3. AC-20 says "the compose files". It should name
+   `e2e/docker-compose.e2e.yml`, which also mentions Ollama.
+4. The web stores the Bedrock model in `llmModel` (`Settings.tsx:618-622`) and
+   has no `bedrockModel` mapping (`src/api/client.ts:713-728`). The backend
+   reads `bedrockModel` (`llm_factory.go:17`). §3's "the Bedrock … model a user
+   entered [is] kept and reused" is therefore not true for web users. The spec
+   should say which property holds the Bedrock model.
+5. AC-23 says "one proof authorises one write, as in PAC-50". That does not
+   hold for PAC-50's break-glass path, which authorises by session freshness
+   with no grant (PAC-50 AC-14a). PAC-50's step-up is also started
+   "specifically for an SSO write" (`/api/admin/sso/stepup`). D-6's
+   "purpose-bound to this write" therefore needs PAC-50's grant to carry a
+   purpose. Say that this is a change to PAC-50's design, not reuse.
+6. §7 Part 1 rollback does not say what happens to keys entered after the
+   upgrade for Azure, Bedrock or Vertex, or to a second key for another
+   provider (AC-15 implies more than one key per user). Say whether the down
+   migration loses them.
+7. AC-21 offers "Use my organisation's AI" to every user. A user with no
+   organisation (generic domain, §2.3) should not be offered it.
+8. AC-28 and AC-29 say "the upgrade" without saying Part 1's or Part 2's.
+   Accounts created between the two are new under one reading and existing
+   under the other.
+9. AC-14 covers only an existing *ready* brief. Say what a not-configured
+   refresh stores when there is no earlier brief. Note too that the service
+   writes a `pending` brief before it checks the LLM
+   (`backend/engine/meeting_brief_service.go:60-62`), so the overwrite happens
+   before the not-configured check.
+10. AC-33 is a process requirement (gates in the same PR pair), not a
+    behaviour a test can falsify. It belongs in the plan, or should be
+    reworded as an observable property of the generated types.
+11. OWNER: When the organisation's key is used, the organisation's provider
+    account receives members' text and meeting context: titles, attendee
+    emails, and Slack/Notion excerpts in briefs. Provider consoles and logging
+    can show that content to whoever administers the account, outside
+    Paceday. §6 only says nothing is visible "through Paceday". Should a new
+    account that follows the organisation by default be told this, or asked,
+    before its first AI request?
+12. OWNER: D-8. Should pre-existing accounts that never chose a provider (the
+    default Ollama accounts) stay unenrolled, while new accounts follow the
+    organisation by default?
+13. OWNER: OQ-1 (PAC-50's proof as the admin gate) and OQ-7 (whether an admin
+    may forbid personal keys).
+14. OWNER: D-4, Vertex in express mode only (Preview). Also D-13, whether to
+    warn in Settings about Bedrock short-term keys.
+
+### Criteria I could not falsify
+
+- AC-24 and AC-31: no request distinguishes "an organisation admin reads"
+  from "a member reads" (Blocking 4), so no test can tell pass from fail.
+- AC-33: no observable behaviour (Non-blocking 10).
+- AC-2, AC-8, AC-10 and AC-29, for a stored `bedrock`, `azure_openai` or
+  `vertex` account with no key: a test cannot pass both readings (Blocking 3).
+
+### Citations I checked and found wrong
+
+- Inherited scope, "recorded in Decisions (D-1, D-9)": actually O-9 and O-10.
+  D-1 does not exist, and D-9 is the "Off" decision.
+- AC-10, "the probe answers 422 or 500" for an Ollama user today: wrong.
+  `ollama` always builds a client (`llm_factory.go:48-65`). An unapproved
+  origin is a 422 at `handlers_llm.go:92-94`, and an approved but unreachable
+  one is a 502 at `:96-99` (`writeProviderFailure`, `:113-117`). It is never a
+  500.
+- §2.4, "an Ollama base URL field": the field exists but writes `llmBaseUrl`
+  (`Settings.tsx:742-747`), not `ollamaBaseUrl`, which §3 and D-10 assume
+  (Blocking 5).
+
+Checked and found correct: the `llm_factory.go:14-69` branches; Azure
+`DefaultAzureCredential` and the bearer header (`llm_azure_openai.go:39`,
+`:69-70`); Bedrock `LoadDefaultConfig` and profile (`llm_bedrock.go:44-51`);
+Vertex `FindDefaultCredentials` (`llm_vertex.go:44`); `OllamaClient` at
+`parser.go:98`; parse at `:191-201`; the probe's 500 at
+`handlers_llm.go:83-86`; refresh at `handlers_meeting_briefs.go:74-91`; the
+migration 002 default; the provider allow-list at `handlers_settings.go:22-30`;
+`Settings.tsx:58-66`; `Dashboard.tsx:184-185`; `handlers_sso.go:166-171`; the
+compose line ranges; the 26 backend test functions named for the removed
+modes; API-039 at `:297`, API-093 at `:351`; the `x-uncertain` locations; and
+the ambient test seams (`backend/nlp/destination.go:55-64`).
+
+### Consumers this breaks
+
+- smart-calendar-flow/src/pages/Settings.tsx:742-747: the only UI that edits
+  `llmBaseUrl` is removed with Ollama, which strands former Ollama users
+  (Blocking 5).
+- smart-calendar-flow/src/api/client.ts:836 (`llmTestBody`): always sends the
+  draft provider, so it carries the stored key to an unsaved provider unless
+  the probe binds keys (Blocking 2).
+- smart-calendar-flow/src/api/client.ts:1431-1437: the mock fallback of
+  `llmTest` still branches on `ollama` and `aws_region`. It must follow the new
+  provider set.
+- smart-calendar-flow/src/api/settingsAdapter.test.ts:85,102,198 and
+  src/api/types.ts:13: pin `ollama` as a provider value.
+- e2e/tests/llm-base-url.spec.ts:48-56: asserts the Ollama probe 422 and
+  "not enabled on this deployment".
+- mcp/tools.go:195-203 (`clockwise_parse_command`): passes the parse body
+  through. It keeps working only if AC-13's "existing fields still let the MCP
+  tool show a sentence" holds. Named here so the contract stage checks it.
