@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -53,7 +54,8 @@ func TestHealthMode(t *testing.T) {
 		t.Fatalf("no server: exit %d", code)
 	}
 	// /health is open; everything else still needs the token.
-	resp, err := http.Get("http://" + addr + "/message")
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/message", nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +117,7 @@ func TestSSEStreamSurvivesWriteTimeout(t *testing.T) {
 		endpoint = "http://" + addr + endpoint
 	}
 	time.Sleep(4 * tm.write) // idle past both bounds
-	req, _ := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"ping"}`))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"ping"}`))
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)

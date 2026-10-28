@@ -301,8 +301,14 @@ func (g *Group) Shutdown(srv Server, ph Phases, stopScheduling func(), cancelReq
 // Probe is a health mode's single request (AC-A16): GET url, success only
 // on a 200 within timeout.
 func Probe(url string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
 	c := &http.Client{Timeout: timeout}
-	resp, err := c.Get(url)
+	resp, err := c.Do(req)
 	if err != nil {
 		return false
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"log"
@@ -109,8 +110,13 @@ func healthMode(getenv func(string) string) int {
 	if port == "" {
 		port = "3001"
 	}
-	c := &http.Client{Timeout: 2 * time.Second}
-	resp, err := c.Get("http://127.0.0.1:" + port + "/health")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+port+"/health", nil)
+	if err != nil {
+		return 1
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 1
 	}

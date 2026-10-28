@@ -174,7 +174,7 @@ func TestShutdownSequence(t *testing.T) {
 
 	slow := make(chan string, 1)
 	go func() {
-		resp, err := http.Get(url + "/slow")
+		resp, err := getURL(http.DefaultClient, url+"/slow")
 		if err != nil {
 			slow <- err.Error()
 			return
@@ -203,12 +203,12 @@ func TestShutdownSequence(t *testing.T) {
 		t.Fatal("crons were not told to stop scheduling at T0")
 	}
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
-	resp, err := client.Get(url + "/ready")
+	resp, err := getURL(client, url+"/ready")
 	if err != nil || resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("readiness at T0+100ms: %v %v", resp, err)
 	}
 	resp.Body.Close()
-	resp, err = client.Get(url + "/fast")
+	resp, err = getURL(client, url+"/fast")
 	if err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("new request during the notice: %v %v", resp, err)
 	}
@@ -356,4 +356,12 @@ func TestGoFromKeepsValuesAndDetaches(t *testing.T) {
 	GoFrom(context.Background(), Unit{Kind: "k"}, func(ctx context.Context) { <-ctx.Done(); close(stopped) })
 	g.cancel()
 	<-stopped
+}
+
+func getURL(c *http.Client, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.Do(req)
 }
