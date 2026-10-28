@@ -9,10 +9,11 @@
   of which is this change. The factory ticket id stays `NEW-llm-bring-your-own`
   (file names). The challenges and revisions were not posted to Linear; the
   sections at the end of this file are the record.
-- **Status**: revision 2 (2026-10-28). The `spec-challenger` re-check of
+- **Status**: revision 2.1 (2026-10-28). The `spec-challenger` re-check of
   revision 1 ("Challenge, revision 1", verdict accept-with-changes, two
-  blocking findings) is answered in "Revision 2" at the end. Revision 2 has not
-  been re-checked.
+  blocking findings) is answered in "Revision 2". The re-check of revision 2
+  ("Challenge, revision 2", verdict accept, no blocking finding) is answered
+  in "Revision 2.1" at the end. Revision 2.1 has not been re-checked.
 - **Author**: spec-author
 - **Inherited scope**:
   - No `x-uncertain` marker sits on the operations whose behaviour this spec
@@ -301,6 +302,15 @@ submitted, the same account gets the destination refusal. The probe's 400 for a
 malformed body comes before both. This order changes PAC-66-B's answer for
 keyless accounts (§6).
 
+**A failed membership read is a server error.** Deciding the row reads the
+caller's settings and whether the caller belongs to an organisation. In Part 1
+the membership changes no row and no sentence (no organisation can turn AI on
+yet), but it is still read, and reported as `inOrganization`. If either read
+fails, which row applies cannot be decided, so parse, brief refresh and the
+probe answer 500 (generic body, detail in the server log and Sentry only,
+PAC-21), with nothing written, fetched or sent. This is a failure of the
+server, not "AI not configured", which is never a 500.
+
 Consequences of the table, stated so no reader has to derive them:
 
 - A stored Bedrock, Azure OpenAI or Vertex choice is a **supported** provider
@@ -395,8 +405,9 @@ member who cannot give it is refused and told who can change the configuration.
   its organisation is configured. It is **not** enrolled in the organisation's
   configuration automatically, because that would send the user's text and
   meeting context to a destination they never chose (D-8). Settings offers
-  "use my organisation's AI" (when the user has an organisation) and "use my
-  own key" in one step.
+  "use my own key" in one step, and from Part 2 also "use my organisation's
+  AI" (when the user has an organisation; in Part 1 no organisation can turn
+  AI on, so it is not offered).
 - The settings that only meant something in the removed modes (Ollama base URL
   and model, AWS profile, GCP project and location) are no longer read or
   returned. They are left in storage untouched until a later release, so
@@ -821,8 +832,11 @@ user who belongs to an organisation (Part 1). [e2e]
   submitted); the Ollama and ambient cases are replaced by AC-1, AC-2 and
   AC-6, not deleted silently (D-11). Because the row is decided before the
   destination (§3), the answer changes for a caller with **no** key, from the
-  destination refusal (422) to "AI not configured" with "needs a key" (409 on
-  the probe and brief refresh, the not-configured parse answer). The tests
+  destination refusal to "AI not configured" with "needs a key" (409 on the
+  probe and brief refresh, the not-configured parse answer). The old
+  destination refusal was a 422 only on the probe; parse answered 200 with the
+  refusal sentence in `error`, and brief refresh answered 200 with a `failed`
+  brief. The tests
   whose keyless case changes, each replaced under D-11 and each still
   asserting the 422 once a key is on file or submitted:
   `TestPAC66B_RefusalDoesNotDependOnTheKey` (`pac66b_base_url_test.go:119`,
@@ -835,7 +849,16 @@ user who belongs to an organisation (Part 1). [e2e]
   `pac66_llm_destination_test.go`, which now bind a key first (a keyless case
   there is AC-2's "needs a key"); and the Azure case of
   `e2e/tests/llm-destination.spec.ts` (keyless 409, then 422 once an Azure key
-  is saved). The same holds
+  is saved). Two unit tests of the same rule are replaced too:
+  `TestUserKey_RefusalDoesNotDependOnTheKey` (`nlp/user_destination_test.go`,
+  keyless OpenAI and Anthropic users with an unapproved base URL; replaced by
+  `TestUserKey_NoKeyIsNotConfiguredBeforeTheDestination`, with
+  `TestUserKey_UnapprovedBaseURLSendsNothing` keeping the refusal with a key)
+  and `TestRefusalDoesNotDependOnTheCredential`
+  (`nlp/destination_internal_test.go`, a refusal before any credential was
+  acquired; there is no credential acquisition step any more, and it is
+  replaced by `TestDecideSaved_OneStateOneReason`, which decides "needs a key"
+  before any destination is looked at). The same holds
   for the e2e and web files listed in §2.5: the Ollama probe case of
   `e2e/tests/llm-base-url.spec.ts` is replaced by AC-10's case, and the web
   adapter tests' `ollama` fixtures by a supported provider. The organisation's
@@ -1107,7 +1130,8 @@ any factory assumption. All three concern Part 2, which is not built yet.
   New accounts follow the organisation by default (O-5), subject to D-15.
   Accounts that existed before the upgrade keep their choice: "off" stays off,
   a working own key stays, and accounts on a removed mode report "not
-  configured" and are offered the organisation's AI in one step. Enrolling them
+  configured" and are offered their own key in one step, and from Part 2 the
+  organisation's AI (in Part 1 no organisation can turn AI on). Enrolling them
   silently would send their text and meeting context (including Slack and
   Notion excerpts used for briefs) to a destination they never chose, which
   widens who can see their data. Assumed by the factory, pending owner
@@ -1806,3 +1830,23 @@ None. AC-21's organisation half is now covered by
 ### Consumers this breaks
 
 None new. Two replaced tests are not listed in §6 (Non-blocking 4).
+
+## Revision 2.1 — 2026-10-28
+
+Answers "Challenge, revision 2" above (verdict accept, no blocking finding)
+and the web finding W-1 of the contract challenge of revision 2.1, on
+`impl/new-llm-bring-your-own-backend` after `14ee5e3`.
+
+| Finding | Fix |
+|---|---|
+| Non-blocking 1, "Existing accounts" and D-8 | Both now offer the user's own key, and the organisation's AI only "from Part 2". |
+| Non-blocking 2, probe sentences naming the organisation | **Code changed:** the probe's "nothing configured" sentence is "There is no AI provider to test. Choose a provider and add your key in Settings.", in or out of an organisation (`backend/nlp/llm_factory.go`). New test `TestDecideProbe_SentencesNameNoOrganisation` checks every probe sentence (off, nothing configured, needs a key, removed provider; in and out of an organisation) for "organisation", "organization" and "admin". No contract example carried the old sentences. |
+| Non-blocking 3, §6 "destination refusal (422)" | §6 now says the old refusal was a 422 only on the probe; parse answered 200 with the sentence in `error`, refresh 200 with a `failed` brief. |
+| Non-blocking 4, two replaced tests not listed | §6 lists `TestUserKey_RefusalDoesNotDependOnTheKey` and `TestRefusalDoesNotDependOnTheCredential` and their replacements. |
+| Non-blocking 5, the 500 on a failed membership read | §3 new paragraph "A failed membership read is a server error": parse, refresh and probe answer 500 in Part 1, nothing written, fetched or sent. The contract's probe and refresh 500 descriptions already said so; the parse 500 description now says the same (description only; bundle and `contractHash` regenerated, recorded in the manifest). |
+| Non-blocking 6, post to Linear | Not done by this revision; left to the factory run. |
+| Contract challenge rev. 2.1, W-1 (web) | **Web code changed** (smart-calendar-flow#131): a provider switch in Settings drops the unsaved key and restores the "key on file" flags from the saved settings, so "Remove saved key" followed by a switch sends no `llmApiKey` for the other provider, and a key typed for one provider is never tested against or saved for another. Unit tests in `src/api/settingsAdapter.test.ts` and `src/lib/aiProviders.test.ts`; e2e cases "W-1: ..." in `e2e/tests/llm-bring-your-own.spec.ts`. |
+
+Checks run for this revision are listed in the PR bodies of
+Enach/clockwise-like#239 and Enach/smart-calendar-flow#131 (gate logs); this
+section claims none.
