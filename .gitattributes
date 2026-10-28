@@ -5,3 +5,6 @@ contracts/openapi/** text eol=lf
 # Same for the generated Go client: openapi_gen_go.sh writes LF and diffs the
 # result byte-for-byte against this file.
 backend/api/gen/*.gen.go text eol=lf
+
+# Operator scripts run under bash; CRLF breaks them (PAC-81 Part D).
+scripts/ops/*.sh text eol=lf

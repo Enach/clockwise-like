@@ -28,7 +28,8 @@
 #      (a half-created table, schema_migrations marked dirty at version 32).
 #   8. The backend refuses to start on it, and restore.sh refuses it.
 #   9. compose down; set-aside-volume.sh copies the volume aside and removes
-#      it; compose up -d postgres; restore.sh; the backend (the "previous
+#      it (after refusing to write into an existing volume); compose up -d
+#      --wait postgres; restore.sh; the backend (the "previous
 #      version": the same build) starts.
 #  10. Asserts: health 200; counts equal the pre-deploy backup's; the cookie
 #      still works; the set-aside copy still holds the dirty database.
@@ -100,12 +101,16 @@ services:
       - "127.0.0.1:$src_port:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:                       # the production compose file's
+      test: ["CMD-SHELL", "pg_isready -U clockwise -d clockwise"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 volumes:
   postgres_data:
 EOF
-docker compose -f "$compose_file" up -d postgres >/dev/null 2>&1
-docker run -d --name "$dst" -e POSTGRES_DB=clockwise -e POSTGRES_USER=clockwise \
-  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -p "127.0.0.1:$dst_port:5432" "$pg_image" >/dev/null
+# Deploy step 3 of the runbook.
+docker compose -f "$compose_file" up -d --wait postgres >/dev/null 2>&1
 src_container() { docker compose -f "$compose_file" ps -q postgres; }
 wait_pg() {
   for _ in $(seq 1 60); do
@@ -114,7 +119,6 @@ wait_pg() {
   done
   fail "postgres $1 not ready"
 }
-wait_pg "$(src_container)"; wait_pg "$dst"
 
 step "build the backend from this tree ($(git -C "$root" rev-parse --short HEAD))"
 exe="$work/paceday-backend"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe="$exe.exe" ;; esac
@@ -185,7 +189,16 @@ echo "source row counts ($(wc -l < "$work/source.counts") public tables):"; cat 
 
 step "the source host is lost; restore on the fresh host with the saved .env"
 kill "$source_pid"; wait "$source_pid" 2>/dev/null || true
-"$here/restore.sh" --dump "$dump" --container "$dst"
+# The fresh host's Postgres is started right now and restore.sh runs at once,
+# with no wait of ours: it must wait for initialisation itself (the race a
+# plain `up -d` leaves).
+docker run -d --name "$dst" -e POSTGRES_DB=clockwise -e POSTGRES_USER=clockwise \
+  -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" -p "127.0.0.1:$dst_port:5432" "$pg_image" >/dev/null
+restore_log="$("$here/restore.sh" --dump "$dump" --container "$dst" 2>&1)" || { echo "$restore_log" >&2; fail "restore onto a just-started Postgres failed"; }
+echo "$restore_log"
+if echo "$restore_log" | grep -q "waiting for Postgres to finish starting"; then
+  echo "OK restore.sh waited for the just-started Postgres to finish initialising"
+fi
 saved_env="${dump%.dump}.env"
 jwt_saved="$(grep '^JWT_SECRET=' "$saved_env" | cut -d= -f2-)"
 start_backend restored "$((api_base + 1))" "$dst_port" "$jwt_saved"
@@ -236,13 +249,15 @@ old="$backups/paceday-20000101T000000Z"
 : > "$old.dump"; : > "$old.env"
 ( cd "$backups" && sha256sum "$(basename "$old").dump" "$(basename "$old").env" > "$(basename "$old").sha256" )
 orphan="$backups/paceday-20000102T000000Z.dump"; : > "$orphan" # no .sha256: not a set the script wrote
-for f in "$old.dump" "$old.env" "$old.sha256" "$orphan"; do touch -d '15 days ago' "$f"; done
+partial="$backups/paceday-20000103T000000Z.dump.partial"; : > "$partial" # left by an interrupted run
+for f in "$old.dump" "$old.env" "$old.sha256" "$orphan" "$partial"; do touch -d '15 days ago' "$f"; done
 sleep 1 # a new timestamp for the next backup set
 "$here/backup.sh" --out "$backups" --env-file "$work/.env" --compose-file "$compose_file" > /dev/null
 [ ! -e "$old.dump" ] && [ ! -e "$old.env" ] && [ ! -e "$old.sha256" ] || fail "retention kept a complete set older than 14 days"
 [ -f "$orphan" ] || fail "retention deleted a file that is not part of a set it wrote"
+[ ! -e "$partial" ] || fail "retention kept an interrupted dump older than 14 days"
 [ -f "$dump" ] || fail "retention deleted the fresh backup"
-echo "OK retention removed a 15-day-old set it wrote, kept an old file it did not write, kept today's"
+echo "OK retention removed a 15-day-old set it wrote and a 15-day-old interrupted dump, kept an old file it did not write, kept today's"
 
 # ── Part 2 ────────────────────────────────────────────────────────────────────
 step "same host: pre-deploy backup, then a failed migration"
@@ -269,10 +284,15 @@ echo "OK restore.sh refuses the half-migrated database (the volume must be set a
 
 step "runbook: stop the stack, set the volume aside, restore, deploy the previous version"
 docker compose -f "$compose_file" down >/dev/null 2>&1
+decoy="${project}_postgres_data-decoy"
+docker volume create --label "paceday.set-aside-from=${project}_postgres_data" "$decoy" >/dev/null
+if "$here/set-aside-volume.sh" --compose-file "$compose_file" --copy-name "$decoy" 2>/dev/null; then fail "set-aside wrote into an existing volume"; fi
+docker volume inspect "${project}_postgres_data" >/dev/null 2>&1 || fail "set-aside removed the original after refusing"
+[ "$(docker run --rm -v "$decoy:/v:ro" "$pg_image" sh -c 'ls -A /v | wc -l')" = 0 ] || fail "set-aside wrote into the existing volume"
+echo "OK set-aside-volume.sh refuses a copy name that already exists, and leaves both volumes untouched"
 set_aside="$("$here/set-aside-volume.sh" --compose-file "$compose_file")"
 docker volume inspect "${project}_postgres_data" >/dev/null 2>&1 && fail "the original volume still exists"
-docker compose -f "$compose_file" up -d postgres >/dev/null 2>&1
-wait_pg "$(src_container)"
+docker compose -f "$compose_file" up -d --wait postgres >/dev/null 2>&1
 "$here/restore.sh" --dump "$predeploy" --compose-file "$compose_file"
 start_backend previous-version "$api_base" "$src_port" "$JWT_SECRET"
 

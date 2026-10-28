@@ -24,7 +24,8 @@
 # 700. Retention deletes only complete sets this script wrote: a
 # paceday-<T>.sha256 listing exactly paceday-<T>.dump and paceday-<T>.env,
 # older than --keep-days, together with those two files. Nothing else in DIR
-# is ever deleted.
+# is ever deleted, except a paceday-<T>.dump.partial left by an interrupted
+# run, once it is older than --keep-days.
 #
 # Writes, for one UTC timestamp T:
 #   DIR/paceday-T.dump    pg_dump custom format (restore with restore.sh)
@@ -99,6 +100,13 @@ find "$out" -maxdepth 1 -type f -name 'paceday-*.sha256' -mtime +"$((keep_days -
   [ "$listed" = "$name.dump $name.env " ] || { echo "backup: retention skipped $sums (not a set this script wrote)" >&2; continue; }
   rm -f -- "$set_base.dump" "$set_base.env" "$sums"
   echo "backup: retention removed set $name" >&2
+done
+
+# An interrupted run leaves paceday-<T>.dump.partial; same name rule, same age.
+find "$out" -maxdepth 1 -type f -name 'paceday-*.dump.partial' -mtime +"$((keep_days - 1))" | while IFS= read -r partial; do
+  [[ "$(basename "$partial")" =~ ^paceday-[0-9]{8}T[0-9]{6}Z\.dump\.partial$ ]] || continue
+  rm -f -- "$partial"
+  echo "backup: retention removed interrupted dump $(basename "$partial")" >&2
 done
 
 echo "$base.dump"

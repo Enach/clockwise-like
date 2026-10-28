@@ -19,22 +19,25 @@
 # (docker volume rm <name>) — it holds the same secrets as a dump.
 #
 # Usage:
-#   scripts/ops/set-aside-volume.sh [--compose-file FILE] [--volume KEY]
+#   scripts/ops/set-aside-volume.sh [--compose-file FILE] [--volume KEY] [--copy-name NAME]
 #
 # Defaults: --compose-file docker-compose.prod.yml, --volume postgres_data
 # (the key under `volumes:`). The Docker volume is <project>_<KEY>, where
 # <project> is the compose project name (`docker compose -f FILE config`
 # prints it as `name:`; by default the directory holding FILE). Prints the
-# name of the copy on stdout.
+# name of the copy on stdout. The copy's name defaults to
+# <volume>-failed-<UTC timestamp>; the script refuses if a volume with that
+# name already exists, so it never writes into a volume it did not create.
 set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
-compose_file="docker-compose.prod.yml" key="postgres_data"
+compose_file="docker-compose.prod.yml" key="postgres_data" copy=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --compose-file) compose_file="$2"; shift 2 ;;
     --volume) key="$2"; shift 2 ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    --copy-name) copy="$2"; shift 2 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "set-aside: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -51,7 +54,11 @@ if [ -n "$users" ]; then
   exit 1
 fi
 
-copy="${volume}-failed-$(date -u +%Y%m%dT%H%M%SZ)"
+[ -n "$copy" ] || copy="${volume}-failed-$(date -u +%Y%m%dT%H%M%SZ)"
+if docker volume inspect "$copy" >/dev/null 2>&1; then
+  echo "set-aside: volume $copy already exists; refusing to write into it ($volume left untouched)" >&2
+  exit 1
+fi
 image="${SET_ASIDE_IMAGE:-postgres:16-alpine}" # any image with sh, cp, find, md5sum; the stack already has this one
 docker volume create --label "paceday.set-aside-from=$volume" "$copy" >/dev/null
 docker run --rm -v "$volume:/from:ro" -v "$copy:/to" "$image" sh -c 'cp -a /from/. /to/'

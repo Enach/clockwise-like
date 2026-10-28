@@ -87,3 +87,18 @@ Concretely, the marked dependencies are:
   backend readiness (Part A) and `/nginx-health` (Part B); Part B's
   `NGINX_TRUSTED_PROXIES` named; `.env.example` says plainly that the
   production stack always reports to the built-in Sentry project today.
+
+## Review round 2 (request-changes on `67b8876`)
+
+- Blocking: `up -d postgres` returns while initdb runs, so a verbatim
+  same-host rollback failed at `restore.sh`'s first `psql`. The runbook now uses
+  `up -d --wait postgres` everywhere. `restore.sh` waits (`--wait-seconds`,
+  default 120) until Postgres accepts TCP inside the container, which only the
+  final server does. The rehearsal runs the runbook's commands with no extra
+  waits, and starts the fresh-host Postgres immediately before `restore.sh`.
+- `set-aside-volume.sh` refuses an existing copy name (`--copy-name` added),
+  and the rehearsal checks that. `backup.sh` retention also removes stale
+  `paceday-<T>.dump.partial` files.
+- `.gitattributes`: `scripts/ops/*.sh` checked out with LF. A CRLF checkout on
+  Windows breaks the scripts under bash.
+

@@ -44,8 +44,8 @@ Always in this order. `compose` below means
    compose file uses `:latest`, so before pulling, record the running images'
    digests to be able to go back:
    `docker inspect --format '{{.Config.Image}} {{.Image}}' $(compose ps -q) > deployed-$(date -u +%F).txt`.
-3. **Start Postgres** — `compose up -d postgres`; wait until
-   `compose ps postgres` shows `healthy`.
+3. **Start Postgres** — `compose up -d --wait postgres`: it returns once the
+   service's `pg_isready` health check passes.
 4. **Start the backend** — `compose up -d backend`. It runs every pending
    migration (up only) **before** it starts listening.
 5. **Wait for readiness** — the backend's readiness check and container
@@ -111,6 +111,7 @@ previous version. Run every command from the directory holding
    vol="${project}_postgres_data"
    copy="${vol}-failed-$(date -u +%Y%m%dT%H%M%SZ)"
    docker ps -a --filter "volume=$vol"          # must list nothing (step 1)
+   docker volume inspect "$copy" >/dev/null 2>&1 && echo "$copy exists: stop"   # must not exist
    docker volume create "$copy"
    docker run --rm -v "$vol:/from:ro" -v "$copy:/to" postgres:16-alpine sh -c 'cp -a /from/. /to/'
    # compare before removing: same entry count and content on both sides
@@ -121,13 +122,15 @@ previous version. Run every command from the directory holding
    docker volume rm "$vol"
    ```
 
-   The copy holds the same secrets as a dump; delete it
+   The script refuses if a volume with the copy's name already exists, so it
+   never writes into a volume it did not create (`--copy-name NAME` chooses
+   the name). The copy holds the same secrets as a dump; delete it
    (`docker volume rm <copy>`) once the failure is understood.
 
 3. **Restore the pre-deploy backup** into a new, empty volume:
 
    ```bash
-   docker compose -f docker-compose.prod.yml up -d postgres   # creates an empty postgres_data
+   docker compose -f docker-compose.prod.yml up -d --wait postgres   # creates an empty postgres_data
    scripts/ops/restore.sh --compose-file docker-compose.prod.yml \
      --dump /var/backups/paceday/paceday-<T>.dump               # the step-1 backup
    ```
@@ -182,8 +185,9 @@ scripts/ops/backup.sh --out /var/backups/paceday --env-file /opt/paceday/.env
 - **Retention only touches complete sets the script wrote**: a
   `paceday-<T>.sha256` that lists exactly `paceday-<T>.dump` and
   `paceday-<T>.env`, older than the retention, is deleted with those two
-  files. Any other file is left alone (a stray old dump is kept and must be
-  removed by hand).
+  files; so is a `paceday-<T>.dump.partial` left by an interrupted run once it
+  is older than the retention. Any other file is left alone (a stray old dump
+  is kept and must be removed by hand).
 
 Schedule it daily, e.g. in root's crontab on the Docker host:
 
@@ -219,11 +223,16 @@ failed database still exists, see
    image version; once Part C ships, the same pinned version setting).
 2. Put the `paceday-<T>.env` saved with the dump in place as `.env`
    (`chmod 600`).
-3. Start only Postgres on an empty volume: `compose up -d postgres`; wait for
-   `healthy`.
+3. Start only Postgres on an empty volume: `compose up -d --wait postgres`.
+   Without `--wait` the command returns while Postgres is still initialising
+   the new volume. `restore.sh` also waits (up to 120 s, `--wait-seconds`) until
+   Postgres accepts TCP connections, which happens only after initialisation:
+   the health check alone can pass on the temporary server that initialisation
+   runs.
 4. Restore:
    `scripts/ops/restore.sh --dump /var/backups/paceday/paceday-<T>.dump`.
-   It verifies the checksum from `paceday-<T>.sha256`, refuses a database that
+   It verifies the checksum from `paceday-<T>.sha256`, waits for Postgres to
+   finish starting, refuses a database that
    already has tables, and restores in one transaction. Without the `.sha256`
    it refuses; `--allow-missing-checksum` restores anyway after a warning —
    use it only for a dump whose integrity you have checked another way.
@@ -271,6 +280,7 @@ major version, and record it below.
 |---|---|---|---|
 | 2026-10-28 | factory implementer (PAC-81 Part D) | `rehearse-backup-restore.sh` at `bef4c31` + this branch, Docker 29.8.2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed.** 34 public tables, counts equal; restored backend `/api/health` 200; pre-backup session `/api/auth/me` 200; other `JWT_SECRET` 401; post-backup row detected; 15-day-old set removed. Not checked on this host: the mode-600 assertion (Windows has no POSIX modes; the script checks it on Linux). Rehearsed with a binary built from the commit, not a published image (no image pipeline, spec F-C1). |
 | 2026-10-28 | factory implementer (PAC-81 Part D, review round 1) | `rehearse-backup-restore.sh` on this branch after `d65a5bd`, Docker 29.8.2 / Compose v2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed** (19:16 UTC). Fresh host: 34 tables equal, `oauth_tokens` credential intact, health 200, old session 200. Same host: the backend refused the dirty database (`Dirty database version 32`), `restore.sh` refused it, the volume was set aside (1487 entries, content checksums equal), restored, health 200, counts equal to the pre-deploy backup, session 200, the set-aside copy still dirty at 32. Negative controls all as expected. Mode-600 check not run (Windows). |
+| 2026-10-28 | factory implementer (PAC-81 Part D, review round 2) | `rehearse-backup-restore.sh` on this branch after `67b8876`, same host setup | **Passed** (19:29 UTC). The rehearsal now runs the runbook's commands only: `up -d --wait postgres` (with the production health check), no extra waits. `restore.sh` onto a Postgres started a moment earlier waited for it to finish initialising, then restored. `set-aside-volume.sh` refused an existing copy name and left both volumes untouched. Retention removed a 15-day-old `.dump.partial`. All earlier assertions passed. |
 
 ## Account recovery
 
