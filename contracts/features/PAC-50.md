@@ -5,7 +5,7 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 6, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27, 5 earlier on 2026-10-28; see the Revision sections at the end). Revision 6 answers the round-4 challenge: `without_stepup` is an open list of codes and `stepup_scopes` carries a key only for a configured provider. Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
+- **Revision**: 7, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27, 5 and 6 earlier on 2026-10-28; see the Revision sections at the end). Revision 7 changes no operation or schema (the bundle is revision 6's): it replaces spec §9 D-13 with the owner's answer (a Settings entry point for the step-up, AC-25) and corrects stale lines in the manifest and in section 2. Revision 6 answers the round-4 challenge: `without_stepup` is an open list of codes and `stepup_scopes` carries a key only for a configured provider. Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
 
 ## 1. The change
 
@@ -197,7 +197,7 @@ proven by the spec's `[unit]` ACs:
 - the state cookie's binding to user, org, provider and nonce (AC-13b, AC-21a);
 - the SSO event table (AC-12). It is not exposed by any operation, by spec
   §4.6. The contract mentions it only to say no operation exposes it;
-- migration 028 (027 before revision 3; spec §9 D-7) and the `lower(domain)` uniqueness (AC-20);
+- migration 029, `029_sso_admin_stepup` (027 before revision 3, 028 in revisions 3 and 4; spec §9 D-7), and the `lower(domain)` uniqueness (AC-20);
 - "no settings or token row changes" (AC-17).
 
 ## 3. What this resolves, and what it does not
@@ -1857,3 +1857,94 @@ and G keep the `oneOf` disjoint.
 
 Not run: e2e-gate. This branch carries no handler code. e2e-gate, including
 `e2e/tests/sso-stepup.spec.ts`, remains a merge condition on #212.
+
+## Revision 7 — 2026-10-28 (response to the review of #212)
+
+Artifacts only. No fragment, schema or operation changes, so the bundle and
+`contractHash` (`7696ff3f…852a`) are revision 6's, and the web types on
+https://github.com/Enach/smart-calendar-flow/pull/119 need no regeneration.
+This revision answers the four blocking findings of the #212 review that
+concern the contract artifacts. It is **not challenged yet**: author and
+challenger must be different agents, so the round owed on revision 6 now
+covers revision 7 (manifest mergeConditions, first item).
+
+### Finding 3 — D-13 withdrew an owner answer: accepted, fixed
+
+`owner-decisions.md` (PAC-68 OQ-2 / PAC-50 OQ-2) says the choice "can be
+revisited later in Settings". Revision 6 recorded, as a factory assumption,
+that PAC-50 ships no Settings entry point. A factory assumption cannot
+override an owner answer. Spec §9 D-13 now records the owner's answer and
+the factory assumption is withdrawn:
+
+- new spec AC-25 `[unit — web]` (manifest AC-25): Settings carries an entry
+  point that explains the step-up's scopes and what is lost without it,
+  says a grant lasts 10 minutes and covers one SSO write, offers only the
+  configured providers, navigates to `stepup_url` only on go-ahead, and
+  states the `stepup=granted|denied&reason=` outcome on return;
+- the manifest's frontend `allowedPaths` gain `src/pages/Settings.tsx` and
+  `src/components/settings` (with tests); `src/pages` stays forbidden
+  otherwise, because the SSO admin page is still out of scope (spec §3);
+- spec §3 and §4.3 say so.
+
+**What this leaves open, stated rather than decided.** The contract gives
+`stepup_scopes` and `without_stepup` only inside a refused write's 403.
+Settings has no write to make, and making one to obtain them is not
+acceptable (a caller holding a live grant would spend it; a `DELETE` would
+delete). So the contract must also give a signed-in org member the step-up
+URL, `stepup_scopes` and `without_stepup` without a write, by the 403's
+rules (a key per configured provider; an orgless caller refused as at the
+start, D-1). That is an operation-level change. The stage that wrote this
+revision may not edit `contracts/openapi/paths/*.yaml`, so it is a new
+mergeCondition owed by `contract-author`, challenged with the rest, then
+implemented on #212 and used by the web stage for AC-25. Until then AC-25
+cannot be implemented.
+
+### Finding 2 — the PAC-22 / PAC-50 order: PAC-50's side fixed, PAC-22's side named
+
+PAC-50's artifacts now state one order everywhere they are current: PAC-22
+lands first (spec §9 D-12). The manifest's `operationsUnchanged` line, which
+still said "lands after PAC-50", is rewritten. The remaining statements of
+the old order are in revision-history text and are marked superseded.
+
+PAC-22's own record agrees on the substance. Its D-16 (PR #237, *assumed by
+the factory, pending owner confirmation*) lands PAC-22's projection and
+validation half before PAC-50, and leaves `setSsoProviderState` unserved
+until PAC-50 is on `main`. Only `contracts/features/PAC-22.yaml` on #237
+(`contractBase`, `gates.contractApproval`, `followUps.rebaseOntoPac50`)
+still says PAC-22 is rebased after PAC-50 merges. Three reviews of #237
+have asked for it to be corrected. That file is on PAC-22's branch, not
+PAC-50's, so this revision does not edit it; the D-12 mergeCondition now
+names those keys, and the correction on #237 is a condition for landing
+PAC-50.
+
+Two descriptions in the fragment still say PAC-22 "lands after PAC-50":
+`contracts/openapi/paths/auth.yaml` on `createSsoProvider`'s 201 (around line
+853) and on `SsoProviderResponse` (around line 1633). The stage that wrote
+this revision may not edit the fragment, so they are left as they are and
+handed to `contract-author`: the revision written after PAC-22 lands
+replaces both, because it replaces the provider response they describe
+(D-12). They change no shape, status or generated type.
+
+### Finding 4 — stale lines: accepted, fixed
+
+- Manifest `operationsChanged` `createSsoProvider` and `deleteSsoProvider`:
+  the `change` text now states the current behaviour first (403
+  `provider_domain_mismatch`, no 400 for a domain mismatch on either
+  operation), with the 400 of revisions 1-4 only in a closing "History"
+  clause.
+- Section 2 of this document names migration 029 (`029_sso_admin_stepup`).
+- Manifest `consumersAffected`: the #212 test lines that asserted the 400
+  are in the past tense; they assert 403 since `308a59a`.
+
+### Finding 1 — no challenge on the final revision: not answerable here
+
+A contract-challenger round on the final revision (now 7) is still owed and
+is still the first mergeCondition. This revision changes nothing about that.
+It also adds an item the challenger must weigh: the operation-level change
+for AC-25 above.
+
+### Gates
+
+The gates were run on #212 after it merged this revision. They are in the
+#212 PR body, not repeated here, because this branch carries no change a
+gate can see: no Go, no fragment, no bundle.
