@@ -4,7 +4,9 @@
 - **Spec**: `docs/specs/NEW-deploy-hardening.md`, revision 3, challenge
   revision 3 verdict **accept** (branch `factory/deploy-hardening-spec` at
   `beeedc7`, merged into this branch).
-- **Stage**: contract-author, revision 1, 2026-10-28. Next: contract-challenger.
+- **Stage**: contract-author, revision 2, 2026-10-28 (answers "Challenge,
+  revision 1", verdict reject; see "Revision 2" at the end). Next:
+  contract-challenger.
 - **Manifest**: `contracts/features/PAC-81-part-a.yaml`.
 - **Scope**: the five Part A stage-2 items the spec lists in "Revision 3"
   (readiness AC-A11, PAC-14 §2 Sentry default AC-A14, shared budget 503 AC-A2,
@@ -22,7 +24,7 @@ the server after PAC-81 is what stage 4 must build.
 
 | Operation | Change |
 |---|---|
-| `getReadiness` `GET /api/ready` | **New**, in a new fragment `paths/ops.yaml`. 200 `{"status":"ready"}` / 503 `{"status":"not_ready"}` |
+| `getReadiness` `GET /api/ready` | **New**, in a new fragment `paths/ops.yaml`. 200 `{"status":"ready"}` / 503 `{"error":"not ready"}` (rev 2), single-flight database ping |
 | `createPublicBooking` | 201 description (AC-A19); 503 only before the booking is saved |
 | `getPublicBookingSlots` | per-host read rule, own-limit timeout treated as free; 503 |
 | `getTeamAvailability` | per-member read rule, own-limit timeout treated as free; 503 |
@@ -60,6 +62,16 @@ The body is a fixed `status` with no cause. The endpoint is public. Saying
 database-exhausting attack has worked, and no consumer branches on the
 cause: a health check needs only the status code. The cause goes to the log.
 
+*Rev 2.* The 503 body is the PAC-21 error envelope `{"error":"not ready"}`,
+because every 5xx in the contract must be that envelope (PAC-21 AC-3, checked
+by `TestPAC21Every5xxInTheContractIsTheJSONEnvelope`). A probe reads only the
+status code, so nothing depends on the 503's body. Readiness is public and
+outside every limit, so a flood of probes must not be able to drain the
+database pool: concurrent calls share one ping (single flight), the 2 s
+includes waiting for a pooled connection, and readiness never holds more than
+one connection. `docs/security.md` (B8) tells operators they may restrict
+`/api/ready` at their proxy.
+
 ### One shared 503 with one fixed message
 
 AC-A2 asks for "a complete JSON error response with status 503". The
@@ -86,10 +98,13 @@ for no reason.
 
 The challenge (rev 3, non-blocking 1 and 2) asked for one sentence the
 implementation can be held to: a booking request answers 503 only when no
-booking was saved for it. That sentence is now on the 503. It covers the
-commit-in-flight edge: if the budget fires while the insert is committing,
-the server must find out whether the row exists and answer 201 if it does.
-The plan has to show how (manifest `acceptanceTests`, AC-A19).
+booking was saved for it. *Rev 2* makes that testable at the one point where
+the outcome changes, the sending of the insert. Before the insert is sent,
+budget expiry answers 503 and nothing was saved. Once it is sent, the
+handler waits for the insert's own result, which the budget does not bound.
+It then answers 201 if the row was saved, or 500 if the insert failed. A lost
+database connection leaves the outcome unknown, so the 500 says it does not
+prove that nothing was saved. Only the 503 proves it.
 
 The 201 description says what is actually guaranteed: the row is saved,
 and host events and the email belong to a unit that may finish after the
@@ -115,13 +130,21 @@ Through the pool wait (AC-A9), any operation that uses the database can in
 principle answer the budget 503. The spec names the five operations that
 reach it in normal use, and those carry the 503 explicitly. For the rest,
 one paragraph in `info.description` states the rule and its exceptions:
-- the sign-in callbacks keep their failure redirect
-  (`<FRONTEND_URL>/?error=auth_failed`);
-- step-up answers its denied redirect with the reason of the check that was
-  running;
-- a saved booking answers 201;
-- the backend's 413 for bodies over 1 MiB, with the same body as the Part B
-  plan's nginx 413.
+- the sign-in branches of the Google, Microsoft and SSO callbacks keep
+  their failure redirect (`<FRONTEND_URL>/?error=auth_failed`);
+- (rev 2) a Google or Microsoft callback carrying a PAC-71 calendar-connect
+  state answers that branch's NOT CREDITED redirect
+  (`<FRONTEND_URL>/?connect=not_credited`) with the connect state cookie
+  expired. Budget expiry never answers `?error=signin_refused`, which would
+  claim a refusal that did not happen;
+- step-up answers its denied redirect: `state_mismatch` when the budget runs
+  out before check 0 completes, otherwise the reason of the check that was
+  running. Step 5 (issuing the grant), once started, is waited for like the
+  booking insert, so the answer is granted or the existing 500;
+- a booking whose insert was sent answers 201 or 500, never 503;
+- the backend answers 413 `{"error":"request body too large"}` for bodies
+  over 1 MiB. Part B's nginx 413 is bound to the same body by a merge
+  condition. No Part B plan or branch exists on the remote yet.
 
 That paragraph is generated from `scripts/openapi_assemble.py` (`INFO`),
 which is where the bundle's info text is defined.
@@ -160,11 +183,22 @@ history readable. The frontend's fallback is out of scope (WEB-sentry-default).
 
 ## 4. Merge interplay
 
-- **PAC-71 (#242)**: no `auth.yaml` change here. In `teams.yaml` and
-  `scheduling.yaml`, PAC-71 adds a 401 at the top of the responses and this
-  contract adds a 503 at the end, so the two should merge cleanly. The
-  generated files (bundle, `MIGRATION.md`, `paceday.gen.go`) conflict
-  whichever lands second. Regenerate them, never merge them by hand.
+- **PAC-71 (#242)**: no textual conflict in `auth.yaml`, because this
+  contract does not edit it. There is a semantic one (challenge B4).
+  PAC-71's connect branch allows only `connect=credited` or
+  `connect=not_credited` and requires the connect state cookie to be
+  expired. Rev 2 states the budget answer on that branch to fit:
+  `/?connect=not_credited`, cookie expired.
+  - If PAC-71 lands first: this branch rebuilds the bundle on top of it,
+    and the info paragraph already matches.
+  - If this lands first: PAC-71's stage-4 PR implements and tests the
+    budget answer on the connect branch, and the prose follow-up folds the
+    rule into the four 302 descriptions.
+
+  In `teams.yaml` and `scheduling.yaml`, PAC-71 adds a 401 at the top of the
+  responses and this contract adds a 503 at the end, so those should merge
+  cleanly. The generated files (bundle, `MIGRATION.md`, `paceday.gen.go`)
+  conflict whichever lands second. Regenerate them, never merge them by hand.
 - **PAC-72**: rewrites `createPublicBooking`'s description, its 201 and its
   429 status list, and `getPublicBookingSlots`' description. A hand merge is
   unavoidable: keep both texts (manifest `mergeInterplay`). If PAC-72 lands
@@ -172,7 +206,8 @@ history readable. The frontend's fallback is out of scope (WEB-sentry-default).
 
 ## 5. Challenge record
 
-None yet.
+Revision 1 was rejected ("Challenge, revision 1" below). Revision 2 answers it
+("Revision 2" at the end).
 
 ## Challenge, revision 1 — 2026-10-28
 
@@ -363,3 +398,38 @@ None claimed (`resolvesUncertain` and `resolvesFindings` are empty).
 - MIGRATION.md has the `getReadiness` row (handwritten, stage-4 flip
   stated); the register check passes.
 - PAC-14 §2 amendment is an additive block; the approved text is kept.
+
+## Revision 2 — 2026-10-28
+
+Author: contract-author. Answers "Challenge, revision 1" with the
+coordinator's decisions. The bundle sha256 is
+`ffcc55cc0a8fa14179f506e929749bff936cf10f208b94fdc350713ad035e70e` (commit
+`5a25c59`).
+
+Checks run, all rc 0:
+- `py -3 scripts/openapi_assemble.py --check`
+- `py -3 scripts/openapi_migration_report.py --check`
+- `bash scripts/openapi_gen_go.sh --check`
+- `go build ./...` and `go vet ./...`
+- the PAC-21 bundle walk. The test file was copied into a scratch module
+  next to the new bundle: `TestPAC21Every5xxInTheContractIsTheJSONEnvelope`
+  and `TestPAC21ContractCheckCatchesBadShapes` both PASS.
+
+| # | Finding | Outcome | Where / why |
+|---|---|---|---|
+| B1 | Readiness 503 breaks the PAC-21 envelope rule | **Applied** (preferred fix a) | `ReadinessNotReady` is now `{error: enum ['not ready']}`, required, `additionalProperties: false`. The manifest records the AC-A11 body change. The PAC-21 walk passes on this bundle (rc 0). |
+| B2 | A readiness flood holds pooled connections | **Applied** | `getReadiness`: single flight (at most one ping in flight per process, concurrent calls share its result); the 2 s includes the pool wait; readiness never holds more than one connection; shutting down answers without a ping. Manifest: a 50-concurrent-calls test in `acceptanceTests` and `mergeConditions`. |
+| B3 | Booking insert in flight at the budget | **Applied** | `createPublicBooking` 503: never answered once the insert is sent. The handler waits for the insert's own result: 201 if saved, 500 if failed. 500: does not prove that nothing was saved (lost connection). Only the 503 proves it. Same rule in `RequestBudgetExpired` and the info paragraph. Test: insert held past the budget answers 201, never 503. |
+| B4 | Callback exception contradicts PAC-71's connect branch | **Applied** | Info paragraph: connect-state callbacks answer `/?connect=not_credited` with the connect cookie expired; never `signin_refused`; sign-in branches keep `/?error=auth_failed`. `mergeInterplay` now states the semantic conflict and how the PR that lands second reconciles it. |
+| Wrongly permitted 1 | Create with the insert in flight | **Applied** | See B3. |
+| Client cannot handle 1 | Readiness 503 body | **Applied** | See B1. |
+| Client cannot handle 2 | The web never sees the 503 (4 s abort) | **Applied** | The web entry in `consumersAffected` says the 503 is not visible to the web until PAC-83 (WEB-timeouts) ships. It names today's preview fallback and the "unreachable" result on a booking that may be saved, and says `apiErrorMessage` would show `request timed out`. |
+| Divergence 1 | False "Part B plan already does" 413 claim | **Applied** | Claim removed from the manifest and §2. The merge condition binding Part B to `{"error":"request body too large"}` is kept. |
+| NB1 | A budget-shortened deadline: free or 503? | **Applied** | Slot listing and team availability: a read that hits a deadline shortened by the budget counts as cut by the budget (503). Also in `RequestBudgetExpired`. Test line added. |
+| NB2 | Step-up reason before check 0 or during step 5 | **Applied** | Before check 0 completes: `state_mismatch`. Step 5, once started, is waited for: granted, or the existing 500. |
+| NB3 | nginx 502 instead of connection refused | **Applied** | `getReadiness`: through nginx, migrations or the period after the notice give nginx's 502; a probe treats any non-200 as not ready. |
+| NB4 | Readiness reveals database health and deploy timing | **Applied** | `docs/security.md` §2, new boundary B8: public by design, single flight, operators may restrict `/api/ready` at their proxy. Also stated on `getReadiness`. |
+| NB5 | "any other JSON operation" | **Applied** | Now "any other operation". |
+
+Nothing in "Uncertainties not actually resolved" needed action: none were
+claimed.
