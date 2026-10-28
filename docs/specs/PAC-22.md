@@ -1257,6 +1257,30 @@ pending owner confirmation** (2026-10-27).
   that is PAC-50's defect against the owner's decision, and PAC-22 still follows
   PAC-50 rather than diverging from it.
 
+- **D-16 (stage 4, 2026-10-28): the projection-and-validation half does not
+  wait for PAC-50; the transition does.** Narrows D-5.
+  - **Why.** D-5's ordering was set on 2026-10-22 by the orchestrator (PAC-50
+    §4.9), not by the owner, to save PAC-22 a rebase. On 2026-10-28 PAC-50's
+    implementation PR #212 is open and conflicting with `main`. Holding the
+    read-side fix of a critical disclosure (API-001) behind it keeps every
+    member able to read the organisation's identity-provider secret for no
+    product reason. The spec's own Scope section says this half "adds no
+    privilege model and needs no migration" (challenge of v3.4, non-blocking 1).
+  - **What lands now.** AC-1 to AC-8, AC-11, AC-14, AC-18 and AC-22 to AC-28 on
+    `main`'s write rule ("a permitted caller" is any org member whose domain
+    matches, as `main` decides today). A suspended configuration is arranged
+    through storage where a criterion needs one (AC-11, AC-28).
+  - **What waits for PAC-50.** `setSsoProviderState` (the contract says it is
+    not implementable before PAC-50; D-6 forbids authorizing it by membership),
+    and with it AC-9, AC-10, AC-12's server half, AC-15, AC-16, AC-17 and AC-19
+    to AC-21. Until then the bundle describes that operation and the server
+    does not route it (404); the contract's description says so.
+  - **Cost.** PAC-50's PR, not this one, takes the rebase (its test pinning
+    the thirteen PascalCase keys changes with this spec, §2.8).
+  - **Never widens anything.** Nobody gains read or write access; secrets stop
+    leaving the server sooner.
+  - Assumed by the factory, pending owner confirmation.
+
 ## Revision v3.4 — 2026-10-28
 
 This revision answers the challenge of v3.3 (History, "Challenge — 2026-10-28",
