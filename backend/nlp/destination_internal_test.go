@@ -101,9 +101,9 @@ func TestDecideSaved_OneStateOneReason(t *testing.T) {
 		{"off", &settingsForTest{provider: ""}, true, ReasonOff, "", "user"},
 		{"openai no key", &settingsForTest{provider: "openai"}, true, ReasonNeedsKey, "openai", "user"},
 		{"bedrock no key, unbound key", &settingsForTest{provider: "bedrock", unbound: "k"}, true, ReasonNeedsKey, "bedrock", "user"},
-		{"organization, member", &settingsForTest{provider: "organization"}, true, ReasonNothingConfigured, "", "user,organization_admin"},
+		{"organization, member", &settingsForTest{provider: "organization"}, true, ReasonNothingConfigured, "", "user"},
 		{"organization, no org", &settingsForTest{provider: "organization"}, false, ReasonNothingConfigured, "", "user"},
-		{"ollama, member", &settingsForTest{provider: "unsupported", stored: "ollama"}, true, ReasonProviderRemoved, "", "user,organization_admin"},
+		{"ollama, member", &settingsForTest{provider: "unsupported", stored: "ollama"}, true, ReasonProviderRemoved, "", "user"},
 		{"ollama, no org", &settingsForTest{provider: "unsupported", stored: "ollama"}, false, ReasonProviderRemoved, "", "user"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,8 +121,10 @@ func TestDecideSaved_OneStateOneReason(t *testing.T) {
 			if tc.s.stored == "ollama" && !strings.Contains(nc.Message, "Ollama is no longer supported") {
 				t.Errorf("message %q does not name Ollama", nc.Message)
 			}
-			if tc.inOrg != strings.Contains(nc.Message, "admin") && (tc.reason == ReasonNothingConfigured || tc.reason == ReasonProviderRemoved) {
-				t.Errorf("message %q: organisation admin named = %v, want %v", nc.Message, !tc.inOrg, tc.inOrg)
+			// Spec revision 2 (Blocking 1): until Part 2 no admin can configure
+			// AI, so no Part 1 answer names one, in or out of an organisation.
+			if strings.Contains(nc.Message, "admin") {
+				t.Errorf("message %q names an organisation admin; in Part 1 only the user can fix it", nc.Message)
 			}
 			st := Status(tc.s.settings(), tc.inOrg)
 			if st.Configured || st.Provider != "" || st.NotConfigured == nil || st.NotConfigured.Reason != tc.reason || st.InOrganization != tc.inOrg {

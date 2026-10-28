@@ -1,17 +1,18 @@
 # Spec — NEW-llm-bring-your-own: AI features run only on a provider account the organisation or the user brings
 
-- **Linear**: none yet. Searches of the PAC team for "Ollama" and "LLM"
-  (2026-10-28) found PAC-24 (Done), PAC-66 (In Progress, part A: approved hosts
-  for the ambient-identity providers), PAC-70 (Done, PAC-66-B: approved user
-  base URLs), PAC-31 (Done, enum alignment), PAC-56 (Backlog, "Settings shows
-  operator configuration to every user") and PAC-22/PAC-23/PAC-27, none of which
-  is this change. The factory ticket id is `NEW-llm-bring-your-own`; a PAC issue
-  should be opened at intake (parent, with the two PR-pair sub-issues of §0)
-  and this file linked from it. Because there is no issue, nothing was posted
-  to Linear.
-- **Status**: revised after challenge (revision 1, 2026-10-28; awaiting
-  `spec-challenger` re-check). The changes and the answer to each finding are
-  in "Revision 1" at the end.
+- **Linear**: PAC-73 (https://linear.app/paceday/issue/PAC-73), opened after
+  revision 1. Before it existed, searches of the PAC team for "Ollama" and
+  "LLM" (2026-10-28) found PAC-24 (Done), PAC-66 (In Progress, part A: approved
+  hosts for the ambient-identity providers), PAC-70 (Done, PAC-66-B: approved
+  user base URLs), PAC-31 (Done, enum alignment), PAC-56 (Backlog, "Settings
+  shows operator configuration to every user") and PAC-22/PAC-23/PAC-27, none
+  of which is this change. The factory ticket id stays `NEW-llm-bring-your-own`
+  (file names). The challenges and revisions were not posted to Linear; the
+  sections at the end of this file are the record.
+- **Status**: revision 2 (2026-10-28). The `spec-challenger` re-check of
+  revision 1 ("Challenge, revision 1", verdict accept-with-changes, two
+  blocking findings) is answered in "Revision 2" at the end. Revision 2 has not
+  been re-checked.
 - **Author**: spec-author
 - **Inherited scope**:
   - No `x-uncertain` marker sits on the operations whose behaviour this spec
@@ -69,7 +70,7 @@ needs Part 1 and PAC-50.
   turn it on. Stored accounts on a removed mode report "not configured" with
   the reason. An operator-approved OpenAI or Anthropic destination may carry a
   path prefix. The parse response stops sending a zero date (API-080).
-  ACs 1–21, 32–35, 37, 39 and 40 (the Part 1 rows of its table).
+  ACs 1–21, 32–35, 37, 39, 42 and 40 (the Part 1 rows of its table).
 - **Part 2 — organisation-wide provider and key.** An organisation admin (D-6)
   sets one provider and key for the organisation. A member's own key takes
   precedence for that member only. A follower's requests use only the
@@ -276,9 +277,29 @@ reason, and the three operations give the same reason for the same state.
 | 3 | A supported provider of their own | no key bound to that provider | not configured: **that provider needs a key** (naming it) | the user |
 | 4 | Follow the organisation (Part 2) | the user's organisation has a complete configuration and the user has confirmed it (D-15) | **configured**: the organisation's provider, model, destination values and key, and nothing else | n/a |
 | 5 | Follow the organisation (Part 2) | the organisation has a complete configuration and the user has not confirmed it | not configured: **your organisation provides AI; confirm to use it** | the user, in one step |
-| 6 | Follow the organisation | the user has no organisation, or it has no complete configuration | not configured: **nothing configured** | the user (own key) and, when the user has an organisation, its admin |
+| 6 | Follow the organisation | the user has no organisation, or it has no complete configuration | not configured: **nothing configured** | the user (own key); from Part 2, also the organisation's admin when the user has an organisation |
 | 7 | A removed provider (Ollama) | the user's organisation has a complete configuration (Part 2) | not configured: **Ollama is no longer supported; your organisation provides AI, choose it in Settings** | the user |
-| 8 | A removed provider (Ollama) | otherwise | not configured: **Ollama is no longer supported** | the user and, when the user has an organisation, its admin |
+| 8 | A removed provider (Ollama) | otherwise | not configured: **Ollama is no longer supported** | the user; from Part 2, also the organisation's admin when the user has an organisation |
+
+**Part 1: only the user can fix it.** Until Part 2 is deployed, no
+organisation admin has any way to configure AI (that needs PAC-50, D-6). So in
+Part 1 the "who can fix it" of every row is the user alone: no answer, notice
+or Settings text in Part 1 names an organisation admin or says an organisation
+can turn AI on, whether or not the user belongs to an organisation. Part 2 adds
+the organisation's admin to rows 6 and 8 as shown, and O-12 (personal keys
+forbidden) adds a case where the user cannot fix it alone; that is Part 2
+scope.
+
+**The row is decided before any destination check.** The table is applied to
+the stored choice and the keys on file (or, for a probe, the submitted key)
+first. Only a row that sends something (2, and 4 from Part 2) goes on to the
+operator's destination approval (§6); there, an unapproved destination is
+refused before anything is sent, naming the setting. So a keyless OpenAI or
+Anthropic account whose stored base URL is approved for no provider answers
+row 3 ("needs a key"), not the destination refusal; once a key is on file or
+submitted, the same account gets the destination refusal. The probe's 400 for a
+malformed body comes before both. This order changes PAC-66-B's answer for
+keyless accounts (§6).
 
 Consequences of the table, stated so no reader has to derive them:
 
@@ -344,8 +365,8 @@ ready or failed) exactly as it was (D-12).
 **The web app** shows only the supported providers. When AI is not configured
 for the user, the natural-language bar and Settings say that AI features are
 off, why (the row's reason), and who can turn them on, instead of an error.
-"Use my organisation's AI" is offered only to a user who belongs to an
-organisation. For OpenAI and Anthropic, Settings shows the optional base URL
+"Use my organisation's AI" is offered only from Part 2, and only to a user who
+belongs to an organisation; in Part 1 it is offered to nobody (AC-21). For OpenAI and Anthropic, Settings shows the optional base URL
 (gateway) field with its stored value and lets the user clear it, so a value
 stored under an earlier provider is visible and removable. The Bedrock model
 picker reads and writes the model the server uses for Bedrock (D-16).
@@ -385,13 +406,16 @@ member who cannot give it is refused and told who can change the configuration.
   rewritten or deleted, and it is sent nowhere: a base URL is used only toward a
   destination the operator approved for the selected provider (§6), and an
   origin approved only for Ollama is approved for no remaining provider. So a
-  request on OpenAI or Anthropic with such a value is refused before anything
-  is sent, naming the base URL, as PAC-66-B does today. Settings shows the value
+  request on OpenAI or Anthropic with such a value and a key (on file or
+  submitted) is refused before anything is sent, naming the base URL, as
+  PAC-66-B does today; without a key it is row 3 ("needs a key"), because the
+  row is decided before the destination (above). Settings shows the value
   in the OpenAI / Anthropic base URL field, where the user can clear it.
   Clearing it is always accepted, and writing it back unchanged is accepted
   (writes validate only what they change). D-14.
 - A key stored on an account whose provider at upgrade is not OpenAI or
-  Anthropic is not bound to any provider and is never sent. Settings reports
+  Anthropic (Ollama, Bedrock, Azure OpenAI, Vertex, or "off") is not bound to
+  any provider and is never sent. Settings reports
   that a key is on file that does not match the selected provider and offers
   to replace or remove it. It is not deleted.
 
@@ -401,8 +425,9 @@ organisation or it has no complete configuration, that is row 6. Once the
 organisation is configured, the user's first AI action shows, once, that their
 text and meeting context (event titles, attendees, and the Slack and Notion
 excerpts used for briefs) will go to the organisation's provider account,
-which the people who run that account can see outside Paceday, and asks them to
-confirm. Until they confirm nothing is sent (row 5); after they confirm, AI
+which that account's administrators can access outside Paceday (O-13: "access",
+never "read" or "see"), and asks them to confirm. Until they confirm nothing is
+sent (row 5); after they confirm, AI
 works without opening Settings (row 4). Choosing "use my organisation's AI" in
 Settings shows the same notice and counts as confirming. D-15.
 
@@ -429,12 +454,23 @@ any use of the Azure default credential chain, the AWS default configuration
 loader, or Google Application Default Credentials, then it finds none. The test
 fails today (three uses). [unit]
 
-AC-2. Given a deployment whose host has working AWS, Azure and Google ambient
-credentials (simulated by the test seams that exist today), and a user on
-Bedrock, Azure OpenAI or Vertex with no key, when the user parses a sentence,
-refreshes a brief or runs the probe, then no request reaches any provider, no
-token is minted, and each answers "AI not configured" with reason "needs a key"
-for that provider (row 3). Today a request is made with the ambient token.
+AC-2. Given a server process whose environment carries working-looking AWS,
+Azure and Google ambient credentials (`AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` /
+`AZURE_CLIENT_SECRET`, `GOOGLE_APPLICATION_CREDENTIALS` pointing at a
+credentials file), as a cloud VM's environment or metadata would supply them,
+and a user on Bedrock, Azure OpenAI or Vertex with no key, when the user parses
+a sentence, refreshes a brief or runs the probe, then no request reaches any
+provider, no token is minted, no response carries any of those values, and each
+answers "AI not configured" with reason "needs a key" for that provider
+(row 3). Today a request is made with the ambient token. [unit]
+
+AC-42. Given a server process whose environment sets the providers' own key
+variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`),
+and a user on OpenAI, Anthropic or Bedrock with no key of their own, when the
+user parses a sentence, refreshes a brief or runs the probe, then nothing is
+sent to any host, each answers "needs a key" for that provider (row 3), and no
+response carries any of those values (O-2: no deployment-level credential).
 [unit]
 
 AC-3. Given a user on Azure OpenAI with an approved endpoint, a deployment and a
@@ -519,7 +555,7 @@ answers "needs a key". When they change back to OpenAI, then the OpenAI key is
 usable again. Today the OpenAI key is sent to Anthropic. [unit]
 
 AC-16. Given an account that at upgrade is on Ollama, Bedrock, Azure OpenAI or
-Vertex and has a stored key, when its settings are read, then the key-presence
+Vertex, or stored as "off", and has a stored key, when its settings are read, then the key-presence
 information says a key is on file that is not bound to the selected provider,
 and no AI request ever sends that key. The key is still in storage. [unit]
 
@@ -531,7 +567,9 @@ AC-18. Given an operator approval for OpenAI that includes a path prefix
 (`https://gw.example/openai`) and a user whose base URL is that destination,
 when the user parses a sentence, then the request goes to the prefix followed
 by the chat operation, and to no other path; and a user base URL with the same
-host but a different or missing prefix is refused at write and at send.
+host but a different or missing prefix, or with extra path segments below the
+approved prefix (`https://gw.example/openai/x`), is refused at write and at
+send. A user base URL must equal an approved destination exactly.
 Today any entry with a path is malformed and ignored. [unit]
 
 AC-19. Given the server starting with `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` set,
@@ -539,22 +577,36 @@ when it starts, then it starts, logs once that the variable is no longer used,
 and approves nothing from it. [unit]
 
 AC-20. Given `docker-compose.yml`, `docker-compose.prod.yml`,
-`e2e/docker-compose.e2e.yml` and `.env.example`, when a test reads them, then
-none mentions Ollama or an ambient cloud identity, and `.env.example` states
-that Paceday supplies no LLM credential. Today all four mention Ollama.
-[unit]
+`e2e/docker-compose.e2e.yml` and `.env.example`, when a test reads them line
+by line, case-insensitively, then no line contains any of these terms:
+`ollama`, `cloud identity`, `managed identity`, `instance role`,
+`service account`, `defaultazurecredential`,
+`application default credentials`, `google_application_credentials`,
+`aws_profile`, `aws_access_key_id`, `aws_bearer_token_bedrock=`,
+`openai_api_key=`, `anthropic_api_key=`; and `.env.example` states that
+Paceday supplies no LLM credential. ("Credentials" alone is not a term: the
+files legitimately name OAuth client credentials.) Today all four mention
+Ollama. [unit]
 
 AC-21. Given a signed-in user for whom AI is not configured, when they open the
-dashboard and use the natural-language bar, then the page says that AI
-features are off, why (the row's reason), and who can turn them on (the user in
-Settings, and their organisation's admin when they have an organisation),
-with a link to Settings, instead of an error. When they open Settings, then the
-provider list offers only "Off", OpenAI, Anthropic, Azure OpenAI, AWS Bedrock
-and Google Vertex AI, plus "Use my organisation's AI" (Part 2) **only when the
-user belongs to an organisation**; no Ollama, AWS profile, GCP project or GCP
-location field is shown; and for OpenAI and Anthropic an optional base URL
-field shows the stored value. A user with no organisation sees no
-organisation option. [e2e]
+dashboard and use the natural-language bar, then the page says once that AI
+features are off, why (the row's reason), and who can turn them on, with a
+link to Settings, instead of an error. In Part 1 "who" is only the user, in
+Settings: the page names no organisation admin and says nothing about an
+organisation turning AI on, whether or not the user belongs to an
+organisation. When they open Settings, then the provider list offers only
+"Off", OpenAI, Anthropic, Azure OpenAI, AWS Bedrock and Google Vertex AI; no
+Ollama, AWS profile, GCP project or GCP location field is shown; and for OpenAI
+and Anthropic an optional base URL field shows the stored value. In Part 1 no
+user is offered "Use my organisation's AI". A user whose stored choice is
+"follow organisation" (every new account, D-21) sees, whether or not they
+belong to an organisation: that stored value selected and disabled under the
+label "No provider chosen"; the not-configured notice with the "nothing
+configured" reason and the user-only fix path; and no organisation wording in
+the AI section. Nothing is written until they pick a provider or "Off". From
+Part 2, "Use my organisation's AI" is offered **only when the user belongs to
+an organisation**, and the organisation's admin is named as in the §3 table.
+[e2e]
 
 AC-35. Given a parse whose result has no time range (an "AI not configured"
 answer, or a configured parse whose intent is "unknown"), when the response is
@@ -716,8 +768,10 @@ contain `ollama`. [unit]
 
 AC-34. Given the e2e suite against the compose stack with no key anywhere, when
 a fresh user parses a sentence, then the API answers "AI not configured" with
-reason "nothing configured" (row 6) and not a 4xx/5xx error, and the dashboard
-shows the "AI features are off" message of AC-21. [e2e]
+reason "nothing configured" (row 6), naming only the user as able to fix it,
+and not a 4xx/5xx error, and the dashboard shows the "AI features are off"
+message of AC-21, with no organisation admin named. The same holds for a fresh
+user who belongs to an organisation (Part 1). [e2e]
 
 ## 5. Explicitly out of scope
 
@@ -763,8 +817,25 @@ shows the "AI features are off" message of AC-21. [e2e]
   approved for that provider, with no redirect followed and only the chat
   operation called (PAC-66 parts A and B; API-093). Their existing tests in
   `pac66_llm_destination_test.go` and `pac66b_base_url_test.go` keep passing for
-  OpenAI, Anthropic, Azure and Bedrock; the Ollama and ambient cases are
-  replaced by AC-1, AC-2 and AC-6, not deleted silently (D-11). The same holds
+  OpenAI, Anthropic, Azure and Bedrock **for a caller with a key** (on file or
+  submitted); the Ollama and ambient cases are replaced by AC-1, AC-2 and
+  AC-6, not deleted silently (D-11). Because the row is decided before the
+  destination (§3), the answer changes for a caller with **no** key, from the
+  destination refusal (422) to "AI not configured" with "needs a key" (409 on
+  the probe and brief refresh, the not-configured parse answer). The tests
+  whose keyless case changes, each replaced under D-11 and each still
+  asserting the 422 once a key is on file or submitted:
+  `TestPAC66B_RefusalDoesNotDependOnTheKey` (`pac66b_base_url_test.go:119`,
+  keyless OpenAI and Anthropic accounts with an unapproved base URL; replaced
+  by `TestPAC66B_NoKeyIsNotConfiguredBeforeTheDestination`, with
+  `TestPAC66B_EveryPathRefusesAStoredUnapprovedBaseURL` keeping the 422 with a
+  key bound); the keyless probes of `TestPAC66B_ProbeChecksTheProviderItUses`
+  (409 "needs a key" for OpenAI and Anthropic, 422 with a submitted key or a
+  key on file); the Azure, Bedrock and Vertex destination tests in
+  `pac66_llm_destination_test.go`, which now bind a key first (a keyless case
+  there is AC-2's "needs a key"); and the Azure case of
+  `e2e/tests/llm-destination.spec.ts` (keyless 409, then 422 once an Azure key
+  is saved). The same holds
   for the e2e and web files listed in §2.5: the Ollama probe case of
   `e2e/tests/llm-base-url.spec.ts` is replaced by AC-10's case, and the web
   adapter tests' `ollama` fixtures by a supported provider. The organisation's
@@ -789,11 +860,16 @@ for existing accounts, which provider each stored key is bound to and whether
 the account follows its organisation. It does **not** rewrite any stored
 provider value, does not delete any key, and leaves the Ollama, AWS-profile and
 GCP columns and their values untouched (they are only no longer read). The down
-migration restores the old default and drops only what the up migration
+migration restores the old default (`ollama`) and drops what the up migration
 added; it loses nothing that existed before the upgrade. It does lose choices
 made after the upgrade that the old schema cannot represent ("follow my
-organisation", key-to-provider binding); after a rollback those accounts behave
-as they did before the upgrade.
+organisation", key-to-provider binding). An account that existed before the
+upgrade behaves after a rollback as it did before. A stored "follow my
+organisation" choice, which every account created after Part 1 holds unless
+the user changed it, cannot exist in the old schema: the down migration
+rewrites it to `ollama`, the old default, so such an account behaves after a
+rollback as a new account of the old release would (Ollama, refused unless
+the operator approves an origin).
 
 **Keys entered after the upgrade.** The old schema has one key slot per
 account. After the down migration, each account's slot holds the key bound to
@@ -819,7 +895,11 @@ ambient identity stops making AI requests with it immediately, by design. Users
 on Bedrock, Azure OpenAI or Vertex must add a key; users on Ollama must choose a
 key-based provider or follow their organisation. The release notes and
 `.env.example` must say so, and that `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` and
-the ambient-identity guidance are gone.
+the ambient-identity guidance are gone. They must also say that Vertex express
+mode sends only to the global host `aiplatform.googleapis.com` (D-4): a
+deployment that approved only regional `<location>-aiplatform.googleapis.com`
+hosts must approve the global host, or Vertex stays unavailable even after
+users add keys.
 
 ## 8. Open questions
 
@@ -881,8 +961,12 @@ the ambient-identity guidance are gone.
   Owner: product owner. Surfaced again by the challenge (non-blocking 13),
   together with OQ-1; OQ-4 (warning about Bedrock short-term keys, D-13) and
   OQ-6 / D-4 (Vertex express mode, in Preview) were surfaced with them
-  (non-blocking 14). All four stay assumed as recorded; none widens who sees
-  data or deletes any.
+  (non-blocking 14). Status on 2026-10-28: OQ-1, OQ-7 and OQ-8 are answered by
+  the owner (O-11, O-12, O-13); OQ-4 and OQ-6 stay assumed as recorded (D-13,
+  D-4), and neither widens who can access data or deletes any. O-12 narrows O-6
+  (row 2's precedence) for an organisation that forbids personal keys, so the
+  §3 table will need a row for that state, and `enablers` an answer the user
+  cannot fix alone; that is Part 2 scope (O-12) and changes nothing in Part 1.
 
 ## Decisions
 
@@ -1104,15 +1188,20 @@ any factory assumption. All three concern Part 2, which is not built yet.
   provider failure, not "not configured".** The user did configure AI; the
   provider refused it. Assumed by the factory, pending owner confirmation
   (OQ-4).
-- **D-21. A stored "organization" choice of a user with no organisation is
-  shown neutrally.** Every new account on a generic domain is stored as
-  "organization" (§3) and belongs to no organisation, so for AC-21 the web
-  shows that stored value, disabled, as "No provider chosen", offers no
-  organisation option and shows no organisation wording; nothing is written
-  until the user picks a provider or "Off". The organisation line ("your
-  organisation has not set up AI yet") is shown only to a member following
-  their organisation. Raised by the review of smart-calendar-flow#131.
-  Assumed by the factory, pending owner confirmation.
+- **D-21. In Part 1 a stored "organization" choice is shown neutrally, to
+  every user.** Every new account is stored as "organization" (§3). In Part 1
+  no organisation can provide AI, so for AC-21 the web shows that stored value,
+  disabled, as "No provider chosen", to every user, whether or not they belong
+  to an organisation; it offers no organisation option, shows no organisation
+  wording and names no organisation admin; nothing is written until the user
+  picks a provider or "Off". (Revision 2: the first version of D-21 showed
+  members a line "your organisation has not set up AI yet"; that pointed at an
+  admin who has nothing to do before Part 2, and is removed.) From Part 2 a
+  member is offered "Use my organisation's AI" (AC-21, AC-31). Provenance:
+  added to the spec body by implementation-stage commit `b936b12`, after
+  revision 1, raised by the review of smart-calendar-flow#131; checked by the
+  re-check of revision 1 and recorded in revision 2. Assumed by the factory,
+  pending owner confirmation.
 
 ## Challenge — 2026-10-28
 
@@ -1469,3 +1558,173 @@ None of the owner questions blocks Part 1: each assumption either sends
 nothing a user has not chosen or can be relaxed later without undoing data
 exposure. Part 2 should not reach stage 4 without answers to OQ-1 (and the
 PAC-50 amendment) and OQ-8.
+
+## Challenge, revision 1 — 2026-10-28
+
+Challenger: `spec-challenger`, re-checking revision 1 on
+`origin/impl/new-llm-bring-your-own-backend` (spec last changed at `a4a91a5`).
+Scope: Part 1, plus any promise Part 1 makes about Part 2. No Linear issue
+existed when the check ran, so no Linear comment was posted. This section is the only copy.
+
+Checks run (read-only, no tests or gates executed): the spec at that ref; the
+§2 citations against `origin/main` of both repos via `git show` / `git grep`
+(`llm_factory.go:14-69`, `parser.go:98,167-168,191-200`, `handlers_llm.go:51-85`,
+`handlers_settings.go:22-30,276`, `settings.go:173-177,246`,
+`meeting_brief_service.go:48-95`, `handlers_meeting_briefs.go:74-91`,
+`destination.go:52-64`, `config/llm_user_destinations.go:65-84`; web
+`Settings.tsx:58-66,618-622,738-750`, `client.ts:713-728,834-838,1428-1440`,
+`types.ts:10-16,205-208`); the branch's `029_llm_bring_your_own.{up,down}.sql`,
+`nlp/nlptest/ambient.go`, `nlp/no_ambient_identity_test.go`, `nlp/llm_bedrock.go`
+and `contracts/features/NEW-llm-bring-your-own.yaml`; and the AI call sites on
+main (only parse, brief refresh and probe build an LLM client; the web has no
+brief UI; MCP calls only parse).
+
+**Verdict**: accept-with-changes
+
+### Earlier findings: applied?
+
+All six blocking findings are applied: B1 (§3 lines 300-309, AC-36, D-18),
+B2 (lines 318-331, AC-37, AC-38, D-19), B3 (the table, lines 265-295; AC-2,
+AC-8, AC-10, AC-29, AC-40; D-17), B4 (lines 353-358, D-7, AC-24, AC-31), B5
+(lines 383-392, AC-39, D-14) and B6 (lines 42-48, AC-35, D-20). Non-blocking 1-10
+and both citation fixes are applied. AC-33 is now an observable property.
+
+### Blocking
+
+1. **Part 1 promises an organisation admin who cannot act.** Row 6 (line 279)
+   and row 8 (line 281) name "its admin" as someone who can fix the state.
+   AC-21 (lines 549-550) requires the page to say so to any user with an
+   organisation, and D-21 (lines 1112-1113) shows "your organisation has not
+   set up AI yet". In Part 1 no admin has any way to configure AI: that is
+   Part 2, which cannot land before PAC-50 (lines 53-56, D-6). A Part 1 user
+   would be sent to an IT admin who has nothing to do. Separately, Part 1
+   never says what Settings shows an organisation member whose stored choice
+   is "follow organisation": AC-21 (line 553) offers that option only in
+   Part 2, and D-21 covers only users with no organisation.
+   **Resolve:** state that until Part 2 is deployed the "who can fix it" of
+   every row names only the user. Amend rows 6 and 8 (or add a Part 1 note to
+   the table), AC-21, AC-34 and D-21 to match. Add to AC-21 what Settings
+   shows an organisation member stored on "follow organisation" in Part 1.
+
+2. **The order of "needs a key" and a destination refusal is unstated, and §6
+   is contradicted.** Line 389 says a stored base URL approved for no
+   remaining provider is refused "as PAC-66-B does today". Today that refusal
+   is given whether or not a key is on file. Lines 764-767 say the existing
+   destination tests "keep passing for OpenAI, Anthropic, Azure and Bedrock".
+   But for a keyless OpenAI or Anthropic account with an unapproved base URL,
+   the table says row 3 ("needs a key"). On main,
+   `TestPAC66B_RefusalDoesNotDependOnTheKey`
+   (`backend/api/pac66b_base_url_test.go:119-128`) pins a 422 refusal for that
+   state. The contract (C-1) has already chosen "not configured" first. A
+   reviewer holding the code to §6 would reject the implementation; a
+   reviewer holding it to the table would reject a 422.
+   **Resolve:** state the order in §3: is the row decided before destination
+   approval, or after? Then amend line 389 and §6 to name the existing
+   OpenAI/Anthropic keyless destination tests whose answer changes, and what
+   replaces them (D-11 rule).
+
+### Non-blocking
+
+1. AC-2's Given (lines 432-433, "simulated by the test seams that exist
+   today") cannot be set up after the change. Those seams (`AmbientDeps`
+   `AzureToken`, `VertexToken` and `AWSCredentials`, `destination.go:52-64` on
+   main) are the ambient code that AC-1 removes; the branch replaced them with
+   credentials in the environment. Restate the Given as credentials present
+   in the server's environment or metadata. Line 257 also says no
+   "environment credential" is used, but no AC covers OpenAI or Anthropic
+   users. Add `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and
+   `AWS_BEARER_TOKEN_BEDROCK` set on the server plus a user with no key:
+   nothing is sent (O-2).
+2. AC-20 "mentions … an ambient cloud identity" needs a named set of terms.
+   `.env.example:21` legitimately says "Credentials" for Google OAuth, so a
+   word scan cannot be "credential".
+3. §7 Part 1 (lines 792-796) says the down migration "drops only what the up
+   migration added" and that post-upgrade accounts "behave as they did before
+   the upgrade". Accounts created after Part 1 have no "before", and their
+   stored "follow organisation" choice cannot exist in the old schema. Say
+   what it becomes: the branch's down migration rewrites it to `ollama`.
+4. §7 upgrade note (lines 817-822): Vertex express mode sends only to
+   `aiplatform.googleapis.com` (D-4, OQ-3), so a deployment that approved
+   only regional Vertex hosts loses Vertex even after users add keys. The
+   release notes and `.env.example` must say to approve the global host.
+5. AC-16 lists Ollama, Bedrock, Azure and Vertex but not an account stored
+   "off" with a key, which line 393 covers.
+6. AC-18 does not say whether a user base URL with extra segments below the
+   approved prefix (`https://gw.example/openai/x`) is accepted. The contract
+   refuses it; the spec should say so.
+7. D-21 was added to the spec body by an implementation-stage commit
+   (`b936b12`) after revision 1. It is not in the Revision 1 record and has no
+   AC of its own beyond AC-21. Checked here (see Blocking 1); record it in the
+   next revision note.
+8. Lines 403-405 say the provider account's people "can see" the data
+   "outside Paceday". O-13's wording rule says "access". AC-41 follows it; §3
+   should too.
+9. §8 OQ-7 (lines 877-885) still ends "All four stay assumed as recorded",
+   although OQ-1, OQ-7 and OQ-8 are now answered. O-12 narrows O-6 (row 2's
+   precedence) for Part 2, so the table will need a row for "personal keys
+   forbidden"; that is Part 2 scope, as O-12 already records.
+10. The Status line (lines 12-14) still says "awaiting spec-challenger
+    re-check".
+
+### Criteria I could not falsify
+
+- AC-2: its Given depends on seams that the change removes (Non-blocking 1).
+  As written, the test passes trivially after the change.
+- AC-20: "mentions an ambient cloud identity" has no term set
+  (Non-blocking 2).
+- AC-21, organisation half: falsifiable, but it requires a statement that is
+  false in Part 1 (Blocking 1).
+
+### Citations I checked and found wrong
+
+- Line 389, "refused … as PAC-66-B does today": today the refusal does not
+  depend on the key (`pac66b_base_url_test.go:119-128`); under row 3 a
+  keyless account answers "needs a key" (Blocking 2).
+- No other §2 citation is wrong. Line numbers drift by one or two lines in
+  places (for example `Settings.tsx` Ollama field at about 741-749), with no
+  change in meaning.
+
+### Consumers this breaks
+
+- `backend/api/pac66b_base_url_test.go:119` (`TestPAC66B_RefusalDoesNotDependOnTheKey`):
+  pins 422 for keyless OpenAI and Anthropic accounts with an unapproved base
+  URL; it changes under row 3 although §6 says it keeps passing (Blocking 2).
+- No new consumers beyond those listed in the first challenge, which revision
+  1 and the contract (consumersAffected) now cover.
+
+## Revision 2 — 2026-10-28
+
+Author: `spec-author`, answering "Challenge, revision 1" above (verdict
+accept-with-changes, two blocking findings), on
+`impl/new-llm-bring-your-own-backend` at `2e44c21`. The Linear issue is now
+PAC-73; the challenge and this revision were not posted to Linear, so this
+file is the record. Where a finding needed the code to change, the change is
+in the same commit as this section (api) or in smart-calendar-flow#131 (web).
+
+| Finding | Fix |
+|---|---|
+| **Blocking 1**, Part 1 sends users to an admin who cannot act | §3: new paragraph "Part 1: only the user can fix it"; rows 6 and 8 name the admin only "from Part 2". AC-21 rewritten: in Part 1 the page names only the user, no user is offered "Use my organisation's AI", and a user stored on "follow organisation" (member or not) sees the stored value disabled as "No provider chosen", the "nothing configured" notice with the user-only fix path, and no organisation wording. AC-34 adds "naming only the user", and covers a member. D-21 rewritten (all users, not only those with no organisation; the member line "your organisation has not set up AI yet" is removed). §3 "The web app" says the organisation option is Part 2 only. **Code changed to match:** the server's `enablers` is `[user]` in every Part 1 answer and no not-configured sentence names an admin (`backend/nlp/llm_factory.go`; tests `TestDecideSaved_OneStateOneReason`, `TestBYOK_EveryNotConfiguredRowGivesOneReason` rows 6 and 8 in an organisation); the contract's `AINotConfigured` table, `enablers` and `inOrganization` descriptions and two examples say the same; the web shows no organisation option or line and says "You can turn them on in Settings" only (#131). New e2e case: an organisation member stored on "follow organisation". |
+| **Blocking 2**, order of "needs a key" and destination refusal | §3: new paragraph "The row is decided before any destination check" (as contract C-1 and the code already do). §3 "Existing accounts" (former line 389): the base-URL refusal applies with a key; without one it is row 3. §6 "Approved destinations": the PAC-66 / PAC-66-B tests keep passing for a caller with a key; it names `TestPAC66B_RefusalDoesNotDependOnTheKey` (replaced by `TestPAC66B_NoKeyIsNotConfiguredBeforeTheDestination`; `TestPAC66B_EveryPathRefusesAStoredUnapprovedBaseURL` keeps the 422 with a key), the keyless probes of `TestPAC66B_ProbeChecksTheProviderItUses`, the keyed PAC-66 cloud destination tests, and the Azure case of `e2e/tests/llm-destination.spec.ts`, each answering 409 "needs a key" without a key and still 422 once a key is on file or submitted (D-11). |
+| Non-blocking 1, AC-2's Given; environment keys | AC-2's Given is now credentials in the server's environment (named variables), not the removed seams. New AC-42: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK` on the server and a user with no key: nothing sent, "needs a key", no value echoed (O-2). Test `TestBYOK_EnvironmentKeysAreNeverUsed`; `nlptest.Ambient` now also sets the two provider SDK variables. §0 lists AC-42 in Part 1. |
+| Non-blocking 2, AC-20 term set | AC-20 names the exact case-insensitive term list (the one `TestDeploymentFilesOfferNoOllamaAndNoAmbientIdentity` checks, plus `openai_api_key=` and `anthropic_api_key=`, added to the test), and says "credentials" alone is not a term. |
+| Non-blocking 3, §7 down migration | §7 Part 1: the down migration rewrites a stored "follow my organisation" to `ollama`, the old default; such an account then behaves as a new account of the old release. |
+| Non-blocking 4, Vertex global host | §7 upgrade note: release notes and `.env.example` must say Vertex express mode uses only `aiplatform.googleapis.com` and that host must be approved. `.env.example` on the branch already says so ("Vertex express mode uses only the global host aiplatform.googleapis.com; a regional ... entry approves nothing"). |
+| Non-blocking 5, AC-16 and "off" | AC-16 and §3 cover an account stored "off" with a key; `TestBYOK_LegacyRowsReadValidAndWriteBackUnchanged` gains an "off" case. |
+| Non-blocking 6, AC-18 extra segments | AC-18: a base URL with extra segments below the approved prefix (`https://gw.example/openai/x`) is refused at write and at send; a user base URL must equal an approved destination exactly (as the contract and `byok_test.go` already pin). |
+| Non-blocking 7, D-21 provenance | Recorded here and in D-21: added by implementation-stage commit `b936b12` after revision 1; rewritten by Blocking 1. |
+| Non-blocking 8, "see" vs "access" | §3 "New accounts": the provider account's administrators "can access" the data, per O-13. |
+| Non-blocking 9, OQ-7 text | OQ-7 now records that OQ-1, OQ-7 and OQ-8 are answered (O-11, O-12, O-13), OQ-4 and OQ-6 stay assumed, and that O-12 needs a table row and an `enablers` case in Part 2. |
+| Non-blocking 10, Status line | Status says revision 2, answering the re-check, not yet re-checked. |
+| Citation, former line 389 | Fixed with Blocking 2. |
+
+Also changed by this revision, from the contract challenge of revision 2
+(non-blocking 6, web) and recorded here because AC-21 now says the notice
+states "AI features are off" **once**: the web notice no longer repeats the
+server's "AI features are off:" lead under its heading; switching provider in
+Settings resets the model (restored when returning to the saved provider);
+and "Test connection" after "Remove saved key", before saving, probes with an
+empty key, so it answers "needs a key" instead of testing the stored key.
+
+Checks run for this revision are listed in the PR bodies of
+Enach/clockwise-like#239 and Enach/smart-calendar-flow#131 (gate logs); this
+section claims none.

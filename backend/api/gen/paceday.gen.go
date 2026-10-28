@@ -534,9 +534,9 @@ const (
 // | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
 // | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
 // | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; organization_admin when in an organisation |
+// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
 // | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; organization_admin when in an organisation |
+// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
 //
 // The same caller state gives the same `reason` on parse, brief refresh,
 // the probe naming nothing, and the settings read (spec AC-40). Before
@@ -548,7 +548,7 @@ const (
 // bound it is `needs_key`, never a removed-provider reason (spec D-17).
 // Carries no key, and nothing about any key beyond the facts above.
 type AINotConfigured struct {
-	// Enablers Who can turn AI on for this caller: `user` (the caller, in Settings) is always present; `organization_admin` (an administrator of the caller's organisation) is present exactly in rows 6 and 8 when the caller belongs to an organisation. Never names a person.
+	// Enablers Who can turn AI on for this caller: `user` (the caller, in Settings) is present in every answer before Part 2 of the spec. Before Part 2 it is the only value: no organisation administrator can configure AI yet, so no answer names one (spec revision 2). From Part 2, `organization_admin` (an administrator of the caller's organisation) is added in rows 6 and 8 when the caller belongs to an organisation; Part 2 may also produce answers without `user` (owner answer O-12, personal keys forbidden). Never names a person.
 	Enablers []AINotConfiguredEnablers `json:"enablers"`
 
 	// Message A sentence for the user saying why the configuration decided on cannot be used and who can fix it. When that configuration is the caller's saved choice (parse, brief refresh, the settings read, and a probe that names no other choice and carries no `llmApiKey`) it says that AI features are off. When a probe named a different choice or carried `llmApiKey`, it describes only the probed choice ("Anthropic needs an API key") and never says AI features are off, which may be false for the caller (see `testLLMConnection`). Wording is not contractual beyond that, and it never carries a key.
@@ -573,7 +573,7 @@ type AIStatus struct {
 	// Configured True exactly in rows 2 and 4.
 	Configured bool `json:"configured"`
 
-	// InOrganization Whether the caller belongs to an organisation. Lets a client offer "use my organisation's AI" and name the organisation's admin only to a member (spec AC-21). Says nothing else about the organisation.
+	// InOrganization Whether the caller belongs to an organisation. Lets a client offer "use my organisation's AI" only to a member (spec AC-21; Part 2). Says nothing else about the organisation.
 	InOrganization bool `json:"inOrganization"`
 
 	// NotConfigured NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
@@ -589,9 +589,9 @@ type AIStatus struct {
 	// | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
 	// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
 	// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; organization_admin when in an organisation |
+	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
 	// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; organization_admin when in an organisation |
+	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
 	//
 	// The same caller state gives the same `reason` on parse, brief refresh,
 	// the probe naming nothing, and the settings read (spec AC-40). Before
@@ -1637,9 +1637,9 @@ type LLMNotConfiguredResponse struct {
 	// | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
 	// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
 	// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; organization_admin when in an organisation |
+	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
 	// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; organization_admin when in an organisation |
+	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
 	//
 	// The same caller state gives the same `reason` on parse, brief refresh,
 	// the probe naming nothing, and the settings read (spec AC-40). Before
@@ -1925,9 +1925,9 @@ type NLPParseResult struct {
 	// | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
 	// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
 	// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; organization_admin when in an organisation |
+	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
 	// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; organization_admin when in an organisation |
+	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
 	//
 	// The same caller state gives the same `reason` on parse, brief refresh,
 	// the probe naming nothing, and the settings read (spec AC-40). Before

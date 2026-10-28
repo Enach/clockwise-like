@@ -27,10 +27,15 @@ const (
 	AWSSecretKey      = "sentinel-aws-secret-pac66"
 	AWSBearerToken    = "sentinel-aws-bearer-token-byok"
 	AzureClientSecret = "sentinel-azure-client-secret-byok"
+	// OpenAIEnvKey and AnthropicEnvKey are the providers' own SDK environment
+	// variables, set on the server: a deployment-level key that must never be
+	// sent (O-2, spec AC-42).
+	OpenAIEnvKey    = "sk-sentinel-openai-env-byok"
+	AnthropicEnvKey = "sk-ant-sentinel-anthropic-env-byok"
 )
 
 // Sentinels lists every ambient sentinel value, for leak checks.
-var Sentinels = []string{AWSAccessKey, AWSSecretKey, AWSBearerToken, AzureClientSecret}
+var Sentinels = []string{AWSAccessKey, AWSSecretKey, AWSBearerToken, AzureClientSecret, OpenAIEnvKey, AnthropicEnvKey}
 
 // SuccessBody answers an inference request successfully for every provider
 // at once (OpenAI and Azure choices, Vertex candidates, Anthropic content,
@@ -132,6 +137,8 @@ func Ambient(t testing.TB, approved map[string][]string) *Recorder {
 	t.Setenv("AZURE_TENANT_ID", "sentinel-tenant")
 	t.Setenv("AZURE_CLIENT_SECRET", AzureClientSecret)
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
+	t.Setenv("OPENAI_API_KEY", OpenAIEnvKey)
+	t.Setenv("ANTHROPIC_API_KEY", AnthropicEnvKey)
 	return rec
 }
 

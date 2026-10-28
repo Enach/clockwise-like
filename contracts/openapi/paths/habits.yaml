@@ -549,8 +549,8 @@ paths:
         "500":
           description: >-
             Brief generation returned an error, or (NEW-llm-bring-your-own) the caller's
-            settings could not be loaded, so which AI configuration applies could not be
-            decided; in that case nothing was written (no `pending` or `failed` brief, the
+            settings could not be loaded or the caller's organisation membership could
+            not be read, so which AI configuration applies could not be decided; in that case nothing was written (no `pending` or `failed` brief, the
             stored brief unchanged) and nothing was fetched or sent, as for the 409 (spec
             AC-14). Before this change the handler ignored a settings-load error and went on
             to write a `pending` and then a `failed` brief

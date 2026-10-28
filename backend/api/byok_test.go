@@ -272,6 +272,34 @@ func TestBYOK_CloudProvidersWithoutAKeySendNothing(t *testing.T) { // AC-2, AC-4
 	}
 }
 
+// AC-42 (spec revision 2): API keys in the server's environment under the
+// providers' own variable names (OPENAI_API_KEY, ANTHROPIC_API_KEY,
+// AWS_BEARER_TOKEN_BEDROCK, set by nlptest.Ambient) are deployment-level
+// credentials (O-2). A user with no key of their own gets "needs a key" on
+// every operation, nothing is sent, and no response carries those values.
+func TestBYOK_EnvironmentKeysAreNeverUsed(t *testing.T) {
+	for _, tc := range []struct{ provider, patch string }{
+		{"openai", `{"llmProvider":"openai"}`},
+		{"anthropic", `{"llmProvider":"anthropic"}`},
+		{"bedrock", `{"llmProvider":"bedrock","awsRegion":"us-east-1"}`},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			b := newBYOK(t, "ac42-"+tc.provider)
+			b.mustPatch(tc.patch)
+			b.allThree("needs_key", tc.provider, "user")
+			settingsW, _ := b.get()
+			for what, w := range map[string]*httptest.ResponseRecorder{
+				"probe {}": b.probe(`{}`),
+				"settings": settingsW,
+			} {
+				if leaks := nlptest.Leaks(w.Body.String()); len(leaks) != 0 {
+					t.Errorf("%s response carries server environment credentials %v", what, leaks)
+				}
+			}
+		})
+	}
+}
+
 func TestBYOK_EveryNotConfiguredRowGivesOneReason(t *testing.T) { // AC-40 (Part 1 rows), AC-8b, AC-11, AC-17
 	t.Run("row 1 off", func(t *testing.T) {
 		b := newBYOK(t, "row1")
@@ -293,7 +321,7 @@ func TestBYOK_EveryNotConfiguredRowGivesOneReason(t *testing.T) { // AC-40 (Part
 	t.Run("row 6 new account in an organisation", func(t *testing.T) {
 		b := newBYOK(t, "row6org")
 		joinOrg(t, b.user, "row6org.byok.example")
-		b.allThree("nothing_configured", "", "user", "organization_admin")
+		b.allThree("nothing_configured", "", "user") // Part 1: no admin can act yet (spec rev. 2)
 		if st := b.aiStatus(); st["inOrganization"] != true {
 			t.Errorf("aiStatus.inOrganization = %v, want true", st["inOrganization"])
 		}
@@ -310,7 +338,7 @@ func TestBYOK_EveryNotConfiguredRowGivesOneReason(t *testing.T) { // AC-40 (Part
 		b := newBYOK(t, "row8org")
 		joinOrg(t, b.user, "row8org.byok.example")
 		b.sql(`llm_provider = 'ollama'`)
-		b.allThree("provider_removed", "", "user", "organization_admin")
+		b.allThree("provider_removed", "", "user") // Part 1: no admin can act yet (spec rev. 2)
 	})
 	t.Run("row 2 configured", func(t *testing.T) {
 		b := newBYOK(t, "row2")
@@ -436,6 +464,8 @@ func TestBYOK_LegacyRowsReadValidAndWriteBackUnchanged(t *testing.T) { // AC-8, 
 		{"bedrock", `llm_provider = 'bedrock', llm_api_key = '` + byokLegacy + `', aws_profile = 'prod'`, "bedrock", "needs_key", "bedrock"},
 		{"azure_openai", `llm_provider = 'azure_openai', llm_api_key = '` + byokLegacy + `'`, "azure_openai", "needs_key", "azure_openai"},
 		{"vertex", `llm_provider = 'vertex', llm_api_key = '` + byokLegacy + `', gcp_project = 'proj'`, "vertex", "needs_key", "vertex"},
+		// Spec revision 2 (AC-16): an account stored "off" with a key.
+		{"off", `llm_provider = '', llm_api_key = '` + byokLegacy + `'`, "", "off", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newBYOK(t, "ac8-"+tc.name)

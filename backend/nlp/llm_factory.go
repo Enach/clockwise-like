@@ -151,13 +151,14 @@ func newProviderClient(provider string, s *storage.Settings, key, model string) 
 	return nil
 }
 
+// notConfigured builds a not-configured answer. Before Part 2 of the spec only
+// the user can turn AI on: no organisation administrator has any way to
+// configure it yet, so no answer names one, in an organisation or not (spec
+// revision 2; challenge of revision 1, Blocking 1). EnablerOrganizationAdmin
+// stays in the contract's set for Part 2.
 func notConfigured(reason, provider string, inOrg, saved bool, s *storage.Settings) Decision {
-	enablers := []string{EnablerUser}
-	if inOrg && (reason == ReasonNothingConfigured || reason == ReasonProviderRemoved) {
-		enablers = append(enablers, EnablerOrganizationAdmin)
-	}
 	return Decision{Provider: provider, NotConfigured: &storage.AINotConfigured{
-		Reason: reason, Provider: provider, Enablers: enablers,
+		Reason: reason, Provider: provider, Enablers: []string{EnablerUser},
 		Message: notConfiguredMessage(reason, provider, inOrg, saved, s),
 	}}
 }
@@ -166,10 +167,6 @@ func notConfigured(reason, provider string, inOrg, saved bool, s *storage.Settin
 // says AI features are off; for another probed choice it describes only that
 // choice (contract AINotConfigured.message). It never carries a key.
 func notConfiguredMessage(reason, provider string, inOrg, saved bool, s *storage.Settings) string {
-	orAdmin := ""
-	if inOrg {
-		orAdmin = ", or ask your organisation's admin"
-	}
 	name := displayNames[provider]
 	if saved {
 		switch reason {
@@ -178,9 +175,9 @@ func notConfiguredMessage(reason, provider string, inOrg, saved bool, s *storage
 		case ReasonNeedsKey:
 			return fmt.Sprintf("AI features are off: %s needs an API key. Add one in Settings.", name)
 		case ReasonNothingConfigured:
-			return "AI features are off: no AI provider is set up. Add your own API key in Settings" + orAdmin + "."
+			return "AI features are off: no AI provider is set up. Add your own API key in Settings."
 		default:
-			return "AI features are off: " + removedName(s) + " is no longer supported. Choose another provider in Settings" + orAdmin + "."
+			return "AI features are off: " + removedName(s) + " is no longer supported. Choose another provider in Settings."
 		}
 	}
 	switch reason {
@@ -190,7 +187,7 @@ func notConfiguredMessage(reason, provider string, inOrg, saved bool, s *storage
 		return fmt.Sprintf("%s needs an API key. Enter one to test it.", name)
 	case ReasonNothingConfigured:
 		if inOrg {
-			return "Your organisation has no AI provider set up, so there is nothing to test. Use your own key, or ask your organisation's admin."
+			return "Your organisation has no AI set up in Paceday, so there is nothing to test. Choose a provider and enter your own key."
 		}
 		return "You do not belong to an organisation, so there is no organisation AI to test. Choose a provider and enter your own key."
 	default:

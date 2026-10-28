@@ -55,9 +55,11 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
       const notice = page.getByTestId('ai-off-notice');
       await expect(notice).toBeVisible();
       await expect(notice).toContainText('AI features are off');
-      await expect(notice).toContainText('no AI provider is set up');
+      await expect(notice).toContainText('No AI provider is set up');
       await expect(notice).toContainText('You can turn them on in Settings');
-      await expect(notice).not.toContainText('admin'); // no organisation for this user
+      await expect(notice).not.toContainText('admin');
+      // The heading says "AI features are off"; the reason line does not repeat it.
+      expect((await notice.textContent())?.match(/AI features are off/g)).toHaveLength(1);
       await notice.getByRole('link', { name: /open ai settings/i }).click();
       await expect(page).toHaveURL(/\/settings#ai$/);
       await expect(page.getByTestId('ai-off-notice')).toBeVisible();
@@ -79,6 +81,72 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
     } finally {
       await context.close();
     }
+  });
+
+  test('AC-21 (Part 1, spec revision 2): an organisation member following the organisation is sent to no admin', async ({ browser, apiAs }) => {
+    const user = await freshUser('orgmember');
+    const domain = `byok-${user.id.slice(0, 8)}.paceday.test`;
+    const org = await queryOne<{ id: string }>('INSERT INTO organizations (name, domain) VALUES ($1, $1) RETURNING id', [domain]);
+    await query('UPDATE users SET org_id = $1 WHERE id = $2', [org!.id, user.id]);
+    const api = apiAs(user);
+
+    const settings = await (await api.get('/api/settings')).json();
+    expect(settings).toMatchObject({
+      llmProvider: 'organization',
+      aiStatus: { configured: false, inOrganization: true, notConfigured: { reason: 'nothing_configured', enablers: ['user'] } },
+    });
+    expect(settings.aiStatus.notConfigured.message).not.toMatch(/admin/i);
+    const parsed = await (await api.post('/api/nlp/parse', { text: 'meet alice tomorrow' })).json();
+    expect(parsed.not_configured).toMatchObject({ reason: 'nothing_configured', enablers: ['user'] });
+    const probe = await api.post('/api/llm/test', {});
+    expect(probe.status(), await probe.text()).toBe(409);
+    expect((await probe.json()).notConfigured).toMatchObject({ reason: 'nothing_configured', enablers: ['user'] });
+
+    const context = await browser.newContext({ storageState: storageStateFor(user) });
+    const page = await context.newPage();
+    try {
+      await page.goto('/settings');
+      const notice = page.getByTestId('ai-off-notice');
+      await expect(notice).toContainText('No AI provider is set up');
+      await expect(notice).toContainText('You can turn them on in Settings');
+      await expect(notice).not.toContainText(/admin/i);
+      const select = page.getByLabel('AI provider');
+      await expect(select).toHaveValue('organization');
+      await expect(select.locator('option:checked')).toHaveText('No provider chosen');
+      const enabled = await select.locator('option:not([disabled])').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
+      expect(enabled).toEqual(['', 'openai', 'anthropic', 'azure_openai', 'bedrock', 'vertex']);
+      await expect(page.locator('#ai')).not.toContainText(/organi[sz]ation|admin/i);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('Settings: switching provider resets the model, and a removed unsaved key is tested as removed', async ({ browser, apiAs }) => {
+    const user = await freshUser('switch');
+    const key = `sk-e2e-${randomUUID()}`;
+    const api = apiAs(user);
+    expect((await api.patch('/api/settings', { llmProvider: 'anthropic', llmModel: 'claude-haiku-4-5-20251001', llmApiKey: key })).status()).toBe(200);
+
+    const context = await browser.newContext({ storageState: storageStateFor(user) });
+    const page = await context.newPage();
+    try {
+      await page.goto('/settings');
+      const select = page.getByLabel('AI provider');
+      const model = page.getByRole('textbox', { name: /^Model/ });
+      await expect(model).toHaveValue('claude-haiku-4-5-20251001');
+      await select.selectOption('openai');
+      await expect(model).toHaveValue('');
+      await select.selectOption('anthropic');
+      await expect(model).toHaveValue('claude-haiku-4-5-20251001');
+
+      await page.getByRole('button', { name: /remove saved key/i }).click();
+      await page.getByRole('button', { name: /test connection/i }).click();
+      await expect(page.getByText('Anthropic needs an API key. Enter one to test it.')).toBeVisible();
+    } finally {
+      await context.close();
+    }
+    // Nothing was saved: the key is still on file.
+    expect(await (await api.get('/api/settings')).json()).toMatchObject({ llmProvider: 'anthropic', llmApiKeysSet: { anthropic: true } });
   });
 
   test('AC-21: Settings offers only off and the five key-based providers, with no removed field', async ({ browser, apiAs }) => {

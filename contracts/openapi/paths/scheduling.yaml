@@ -455,11 +455,11 @@ paths:
                 notConfigured:
                   value:
                     intent: unknown
-                    error: 'AI features are off: no AI provider is set up. Add your own API key in Settings, or ask your organisation''s admin.'
+                    error: 'AI features are off: no AI provider is set up. Add your own API key in Settings.'
                     not_configured:
                       reason: nothing_configured
-                      enablers: [user, organization_admin]
-                      message: 'AI features are off: no AI provider is set up. Add your own API key in Settings, or ask your organisation''s admin.'
+                      enablers: [user]
+                      message: 'AI features are off: no AI provider is set up. Add your own API key in Settings.'
         '400':
           description: '`missing text field` - JSON error shape (writeError).'
           content:
@@ -784,11 +784,11 @@ paths:
                       message: 'AI features are off: Anthropic needs an API key. Add one in Settings.'
                 providerRemoved:
                   value:
-                    error: 'AI features are off: Ollama is no longer supported. Choose another provider in Settings, or ask your organisation''s admin.'
+                    error: 'AI features are off: Ollama is no longer supported. Choose another provider in Settings.'
                     notConfigured:
                       reason: provider_removed
-                      enablers: [user, organization_admin]
-                      message: 'AI features are off: Ollama is no longer supported. Choose another provider in Settings, or ask your organisation''s admin.'
+                      enablers: [user]
+                      message: 'AI features are off: Ollama is no longer supported. Choose another provider in Settings.'
         '422':
           description: >
             PAC-66 and PAC-66-B. The configuration is set up, but the probe
@@ -829,7 +829,8 @@ paths:
                     property: llmBaseUrl
         '500':
           description: >-
-            Settings load failure. Body: `{"error":"internal error"}`. The detail is
+            Settings load failure, or the caller's organisation membership could not
+            be read (NEW-llm-bring-your-own). Body: `{"error":"internal error"}`. The detail is
             written to the server log and Sentry only (PAC-21). A caller with no key, or
             with `llmProvider: ""`, is the 409, never a 500 (spec AC-12). A destination
             refusal is never a 500; it is the 422.
@@ -1959,9 +1960,9 @@ components:
         | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
         | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
         | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-        | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; organization_admin when in an organisation |
+        | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
         | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-        | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; organization_admin when in an organisation |
+        | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
 
         The same caller state gives the same `reason` on parse, brief refresh,
         the probe naming nothing, and the settings read (spec AC-40). Before
@@ -1989,9 +1990,14 @@ components:
             enum: [user, organization_admin]
           description: >
             Who can turn AI on for this caller: `user` (the caller, in
-            Settings) is always present; `organization_admin` (an administrator
-            of the caller's organisation) is present exactly in rows 6 and 8
-            when the caller belongs to an organisation. Never names a person.
+            Settings) is present in every answer before Part 2 of the spec.
+            Before Part 2 it is the only value: no organisation administrator
+            can configure AI yet, so no answer names one (spec revision 2).
+            From Part 2, `organization_admin` (an administrator of the
+            caller's organisation) is added in rows 6 and 8 when the caller
+            belongs to an organisation; Part 2 may also produce answers
+            without `user` (owner answer O-12, personal keys forbidden).
+            Never names a person.
         message:
           type: string
           minLength: 1
@@ -2053,8 +2059,7 @@ components:
           type: boolean
           description: >
             Whether the caller belongs to an organisation. Lets a client offer
-            "use my organisation's AI" and name the organisation's admin only
-            to a member (spec AC-21). Says nothing else about the organisation.
+            "use my organisation's AI" only to a member (spec AC-21; Part 2). Says nothing else about the organisation.
         notConfigured:
           $ref: '#/components/schemas/AINotConfigured'
           description: >

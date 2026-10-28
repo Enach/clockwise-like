@@ -23,6 +23,8 @@ func TestDeploymentFilesOfferNoOllamaAndNoAmbientIdentity(t *testing.T) { // AC-
 		"aws_profile",
 		"aws_access_key_id",
 		"aws_bearer_token_bedrock=",
+		"openai_api_key=",
+		"anthropic_api_key=",
 	}
 	files := map[string]string{}
 	for _, f := range []string{"../../docker-compose.yml", "../../docker-compose.prod.yml", "../../e2e/docker-compose.e2e.yml", "../../.env.example"} {

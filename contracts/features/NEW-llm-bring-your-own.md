@@ -1,16 +1,18 @@
 # Contract — NEW-llm-bring-your-own: AI runs only on a key the organisation or the user brings
 
-- **Linear issue**: none yet (spec header: searches of team PAC found no issue for
-  this change). Nothing was posted to Linear; this file and the manifest are the
-  record. A PAC parent issue with one sub-issue per PR pair should be opened at
-  intake, and the manifest's `linearIssueUrl` filled in then.
+- **Linear issue**: PAC-73 (https://linear.app/paceday/issue/PAC-73), opened
+  after this contract was first written; the manifest's `linearIssueUrl` points
+  to it. No contract-stage comment was posted to Linear; this file and the
+  manifest are the record.
 - **Spec**: `docs/specs/NEW-llm-bring-your-own.md`, revision 1 (2026-10-28),
   copied unchanged onto this branch from `factory/new-llm-bring-your-own-spec`
   at `6aeb3d8`. Its status line says "awaiting spec-challenger re-check": the
   challenge verdict was accept-with-changes and revision 1 states that every
   blocking finding was applied, but no re-check is recorded. This contract is
   written against revision 1; if the re-check changes the spec, this contract
-  is revised (§9).
+  is revised (§9). The re-check has since run (accept-with-changes) and spec
+  revision 2 answers it; the contract changes that caused are "Revision 2.1"
+  at the end of this file.
 - **Stage**: contract-author, then contract-challenger. **Revision 2**
   (2026-10-28) answers the contract challenge of the same day (verdict
   accept-with-changes, four blocking findings); the challenge and the answer
@@ -39,8 +41,8 @@ At the HTTP boundary Part 1 changes four operations and adds four schemas:
 | Operation | Change |
 |---|---|
 | `parseNaturalLanguage` (`POST /api/nlp/parse`) | New optional `not_configured` on the 200 when the caller has no AI configuration (nothing sent). `range_start` / `range_end` are absent when there is no range (API-080 fixed). Description of the key-only rule. |
-| `testLLMConnection` (`POST /api/llm/test`) | Rewritten description: key-only provider modes, which configuration a probe uses (D-19), order of decisions, gateway path prefixes, Vertex global host, model-ID path encoding (rev. 2). **New 409** `LLMNotConfiguredResponse`. 500 narrowed to settings-load failure. `llmProvider` set loses `ollama`, gains `organization` and (rev. 2) `unsupported`, the latter accepted only when it is the saved choice. |
-| `refreshMeetingBrief` (`POST /api/meetings/{event_id}/brief/refresh`) | **New 409** `LLMNotConfiguredResponse`: nothing written, nothing fetched, nothing sent. 500 (rev. 2) also covers a settings-load failure, with nothing written. |
+| `testLLMConnection` (`POST /api/llm/test`) | Rewritten description: key-only provider modes, which configuration a probe uses (D-19), order of decisions, gateway path prefixes, Vertex global host, model-ID path encoding (rev. 2). **New 409** `LLMNotConfiguredResponse`. 500 narrowed to settings-load failure (or the caller's organisation membership could not be read). `llmProvider` set loses `ollama`, gains `organization` and (rev. 2) `unsupported`, the latter accepted only when it is the saved choice. |
+| `refreshMeetingBrief` (`POST /api/meetings/{event_id}/brief/refresh`) | **New 409** `LLMNotConfiguredResponse`: nothing written, nothing fetched, nothing sent. 500 (rev. 2) also covers a settings-load failure or an unreadable organisation membership, with nothing written. |
 | `getSettings` / `patchSettings` (`/api/settings`) | `llmProvider` set: `""`, `organization`, `unsupported`, five key-based providers. Keys bound to providers (`llmApiKeysSet`, `llmUnboundApiKeySet`); (rev. 2) the unbound key is removed only by the write-only `llmUnboundApiKey: ""`. Read-only `aiStatus` (rev. 2: `notConfigured` present exactly when `configured` is false). Removed: `awsProfile`, `gcpProject`, `gcpLocation`, `ollamaBaseUrl`, `ollamaModel`. New and changed 400 messages. |
 
 New schemas: `AINotConfigured`, `LLMNotConfiguredResponse`, `AIStatus`,
@@ -267,14 +269,18 @@ account without a key is the 409 `needs_key`.
 - **The reason enum includes the Part 2 values now** (`organization_unconfirmed`,
   `provider_removed_organization_available`). Adding values to a response enum
   later is a breaking change for any client with an exhaustive switch; listing
-  them now, documented as not produced before Part 2, makes Part 2 additive.
+  them now, documented as not produced before Part 2, keeps those two values
+  additive. It does not make all of Part 2 additive: owner answer O-12 (an
+  admin may forbid personal keys) needs a new reason or an answer without
+  `user` in `enablers` (§8).
 - **`aiStatus` on the settings read, not a new endpoint.** The web needs, per
   caller, whether AI works and why, before trying (AC-21). The settings read is
   already per caller. An "enabled providers" endpoint (PAC-70 OQ-B2) is not
   needed (owner decision O-9), and the provider list is now fixed.
   `aiStatus.inOrganization` tells the client whether to offer "use my
-  organisation's AI" and to name the organisation's admin (AC-21); it carries
-  nothing else about the organisation.
+  organisation's AI" (AC-21, from Part 2); it carries nothing else about the
+  organisation. Before Part 2 no answer names an organisation admin (spec
+  revision 2): `enablers` is `[user]` in every row.
 - **`aiStatus` does not check destinations.** A configured caller with a
   refused destination reads `configured: true`; the refusal is reported when a
   request is attempted, as today. Checking destinations on every settings read
@@ -334,8 +340,16 @@ challenger can check Part 1 does not block it):
   runs on their own or the organisation's configuration.
 
 Part 1's choices that Part 2 relies on: the `organization` choice value, the
-full reason enum, `enablers` naming `organization_admin`, and the probe's
-`organization` case.
+full reason enum, the `organization_admin` value in the `enablers` set (never
+produced before Part 2; spec revision 2), and the probe's `organization` case.
+
+**Owner answer O-12 (2026-10-28) adds to Part 2.** An organisation admin may
+forbid personal keys. A member of such an organisation whose organisation AI
+is incomplete cannot turn AI on themselves, so Part 2 adds either a reason value
+or an answer whose `enablers` is `[organization_admin]` without `user`. The
+`enablers` description already says `user` is present in every answer *before*
+Part 2 only, and the web's "who can turn AI on" line will have to follow the
+server's `enablers` again in Part 2.
 
 ---
 
@@ -1011,3 +1025,34 @@ markers, none on an operation this contract edits.
     They need the test Postgres on 127.0.0.1:15432, which was not running, and
     this review was told not to start containers on that port.
   - `make verify`, the web gate and the e2e gate.
+
+## Revision 2.1 — 2026-10-28 (bookkeeping)
+
+Author: contract-author, after the accepted re-check above and spec revision 2
+(the spec-challenger re-check of spec revision 1, recorded in the spec). The
+challenge sections above are unchanged. No schema, status code, property or
+enum value changed; only descriptions, two examples and this file's header.
+
+- **Spec revision 2, Blocking 1 (Part 1 names no admin) and contract
+  non-blocking 1.** `AINotConfigured.enablers` now says `user` is present in
+  every answer before Part 2 and is the only value then; `organization_admin`
+  stays in the set for Part 2, which may also produce an answer without
+  `user` (O-12). Rows 6 and 8 of the `AINotConfigured` table add the admin
+  "from Part 2". The parse `notConfigured` and probe `providerRemoved`
+  examples now show `enablers: [user]` and sentences without "or ask your
+  organisation's admin". `AIStatus.inOrganization` no longer says it is used to
+  name an admin. §7 and §8 above are amended to match, and §8 records O-12.
+  The server was changed to match (`backend/nlp/llm_factory.go`).
+- **Non-blocking 2.** Header and manifest name PAC-73.
+- **Non-blocking 3.** `contractHash` recomputed after this revision's
+  reassembly (manifest `contractHashOf` gives the method; at `2e44c21` the
+  same method gives the challenger's `b14aa7e8…7ff7`).
+- **Non-blocking 5.** The 500 of `testLLMConnection` and `refreshMeetingBrief`
+  also covers "the caller's organisation membership could not be read".
+- **Non-blocking 4 (null in the probe body)** is not changed here: the
+  behaviour predates this feature and the re-check did not require it for
+  Part 1.
+- **Non-blocking 6 (web)** is fixed in smart-calendar-flow#131; **7** is
+  answered by spec revision 2.
+- `gates.contractApproval` is set to accepted, citing the re-check of
+  revision 2 at `2e44c21`; revision 2.1 has not been re-checked.
