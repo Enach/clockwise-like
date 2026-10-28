@@ -48,8 +48,7 @@ func sessionUnauthorized(w http.ResponseWriter) {
 // sessionGenerationUnavailable is the PAC-71 500 (SessionGenerationUnavailable,
 // spec AC-48): JSON, no Set-Cookie, never a 401.
 func sessionGenerationUnavailable(w http.ResponseWriter, r *http.Request, err error) {
-	logServerError(r, "session generation", err, http.StatusInternalServerError)
-	writeError(w, genericServerMessage(http.StatusInternalServerError), http.StatusInternalServerError)
+	writeServerError(w, r, "session generation", err, http.StatusInternalServerError)
 }
 
 // afterAuthLeaseHook is a deterministic test seam (PAC-71 AC-47, AC-50): it

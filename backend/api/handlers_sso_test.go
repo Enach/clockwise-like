@@ -29,6 +29,11 @@ type fakeIdP struct {
 	// acceptSecret, when set, makes the token endpoint refuse any client
 	// secret but this one (PAC-22: proves which stored secret a sign-in used).
 	acceptSecret string
+	// PAC-71: the ID token's subject. Empty means one per address, as a real
+	// IdP issues one subject per person ("idp-subject-" + email).
+	sub string
+	// emailVerified, when set, is the token's email_verified claim.
+	emailVerified *bool
 }
 
 func newFakeIdP(t *testing.T, clientID string) *fakeIdP {
@@ -82,15 +87,23 @@ func (idp *fakeIdP) signIDToken(t *testing.T) string {
 	t.Helper()
 	now := time.Now()
 	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": "test"})
-	claims, _ := json.Marshal(map[string]any{
+	sub := idp.sub
+	if sub == "" {
+		sub = "idp-subject-" + idp.email
+	}
+	claimSet := map[string]any{
 		"iss":   idp.srv.URL,
-		"sub":   "idp-subject",
+		"sub":   sub,
 		"aud":   idp.clientID,
 		"iat":   now.Unix(),
 		"exp":   now.Add(time.Hour).Unix(),
 		"email": idp.email,
 		"name":  "Attacker",
-	})
+	}
+	if idp.emailVerified != nil {
+		claimSet["email_verified"] = *idp.emailVerified
+	}
+	claims, _ := json.Marshal(claimSet)
 	signingInput := b64url(header) + "." + b64url(claims)
 	sum := sha256.Sum256([]byte(signingInput))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, idp.key, crypto.SHA256, sum[:])
