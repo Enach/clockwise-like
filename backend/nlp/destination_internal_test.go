@@ -240,6 +240,16 @@ func TestDecideProbe(t *testing.T) {
 	}
 }
 
+// A stored value that is neither Ollama nor any known choice (a direct
+// database edit) is a removed provider too, named generically.
+func TestDecideSaved_UnknownStoredProviderIsRemoved(t *testing.T) {
+	d := DecideSaved((&settingsForTest{provider: "unsupported", stored: "skynet"}).settings(), false)
+	if d.NotConfigured == nil || d.NotConfigured.Reason != ReasonProviderRemoved ||
+		d.NotConfigured.Message != "AI features are off: Your previous AI provider is no longer supported. Choose another provider in Settings." {
+		t.Errorf("decision = %+v", d.NotConfigured)
+	}
+}
+
 type configuredSettings = storage.Settings
 
 type settingsForTest struct{ provider, stored, unbound string }

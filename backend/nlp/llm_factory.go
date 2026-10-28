@@ -40,11 +40,6 @@ type Decision struct {
 	NotConfigured *storage.AINotConfigured
 }
 
-// NotConfiguredError carries a not-configured answer through an error path.
-type NotConfiguredError struct{ NC *storage.AINotConfigured }
-
-func (e *NotConfiguredError) Error() string { return e.NC.Message }
-
 // DecideSaved decides the caller's saved choice, as parse and brief refresh
 // use it. inOrg says whether the caller belongs to an organisation (it only
 // changes who can fix a not-configured answer).
