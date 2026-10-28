@@ -484,3 +484,60 @@ the contract in this revision:
 | B4: one break-glass change per sign-in | patchOrganizationAI step 3 and 403; OrganizationAIWriteFreshLoginRequired. |
 | NB5: organisation destination refusal names the organisation's admin | LLMDestinationRefusal.configuration (optional), parse and brief descriptions. |
 | NB1: wrong attribution | §2.4 of this document: "the owner's example" withdrawn. |
+
+## Challenge, revision 2 — 2026-10-28
+
+**Verdict**: accept-with-changes
+
+Challenged: contract revision 2 at 0c81d42 (delta `git diff a90ba5e 0c81d42 -- contracts backend`). Bundle sha256 d2044556ed3398e7b791c7de56b28d6749f98ea7e81d9570247a73716ef68780, recomputed with `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`; it matches the manifest. Read: this file's §1-§5 and the Revision 2 table, the manifest diff, the auth/habits/scheduling fragment diffs, the regenerated `api/gen` types, spec revision 1 (§3.1-§3.5, §4.6-§4.10), `backend/api/handlers_llm.go`, `backend/api/middleware.go`, `backend/auth/jwt.go`, `backend/api/pac66_llm_destination_test.go`, e2e/tests (422 assertions), and smart-calendar-flow origin/main (`src/api/client.ts`, `src/api/generated/schemas.ts`).
+
+### Checks run (detached worktree at 0c81d42, no Docker)
+- `py -3 scripts/openapi_assemble.py --check`: rc=0 (bundle in sync, 105 paths)
+- `py -3 scripts/openapi_migration_report.py --check`: rc=0 (127 operations, 6 generated)
+- `bash scripts/openapi_gen_go.sh --check`: rc=0
+- `cd backend && go build ./...`: rc=0; `go vet ./...`: rc=0
+- contractHash: matches.
+- Not run: the backend suite (needs a test database), golangci-lint, the web gate, e2e, `make openapi-check`.
+
+### Revision 1 findings, verified
+- B-1: **partly fixed.** The sequential case is closed: the 409 comes after the body 400s and before the proof, the grant stays live, and P2-AC-40 pins it. The concurrent case is still open; see B-1′ below.
+- B-2: fixed. consumersAffected lists `e2e/tests/llm-bring-your-own.spec.ts:89-120` (amended, not deleted), Part 1 AC-34, `aiProviders.test.ts:59-66` and `SsoAdminStepupSection.tsx:40-57`. mergeConditions require each of them, and also require stage 4 to serve `purpose` on all three step-up operations. The pre-deploy state is read as `sso_write`, and "byte-identical" is scoped to what clients can observe.
+- NB-2 to NB-6: fixed as described in the Revision 2 table.
+
+### Requests wrongly permitted
+1. **(blocking, B-1′)** The stale-form race is still open when the two writes run concurrently. Admins X and Y each hold a live `llm_org_key_write` grant, and A is at v5 (openai). X sends `PATCH /api/organization/ai` `{"configurationVersion":5,"provider":"anthropic","apiKey":"sk-ant-…"}` and Y sends `{"configurationVersion":5,"apiKey":"sk-proj-OPENAI…"}`. Both pass step 2a (scheduling.yaml:1059-1066) before either reaches step 4 (:1090). X stores v6 (anthropic), then Y's write lands and stores the OpenAI secret as Anthropic's key (v7). This contradicts spec §3.2 ("If the configuration has changed since (another administrator saved first), the change is refused as a conflict"). P2-AC-40 (manifest:189) tests only the sequential order. The same race exists for an organisation with no row: two `{"configurationVersion":0,"provider":…}` writes.
+   - Fix (contract): step 4 stores the change only if the stored version still equals `configurationVersion`, as one atomic conditional write that also covers inserting the first row, in the same transaction as the grant consumption. On mismatch: 409 `configuration_changed` with the current read, nothing stored, grant not consumed.
+   - Fix (test): extend P2-AC-40 with an interleaved case using a test store as P2-AC-37 does: the other admin's change is applied between Y's version check and Y's write; Y gets the 409, A holds X's change, and Y's grant is still live.
+2. (non-blocking) Two break-glass changes from the same fresh session at the same time can both find "no change recorded for this issue time" and both succeed (two changes for one sign-in, against P2-D13). Fix: at most one org-AI change is ever recorded per (user, session issue time), and the check and the record are one atomic step. Note: `iat` has one-second resolution and sessions have no `jti` (`backend/auth/jwt.go:17-24`); two sign-ins by the same address in the same second share an issue time, so the second is refused. Fails safe; say so in one sentence.
+3. (non-blocking) The 400s that depend on stored state are decided before the version check, so a stale form gets a misleading 400 instead of the 409 (e.g. form at v5 openai, A now v6 azure_openai, `{"configurationVersion":5,"baseUrl":"https://gw.example/v1"}` → `baseUrl does not apply to azure_openai`). Fix: only shape 400s come before 2a; 400s that read stored state come after it.
+4. (non-blocking) Precedence for a bad `configurationVersion` is undefined (`{"configurationVersion":"3","model":"x"}` fits two messages, scheduling.yaml:1154 and :1156-1157). `ConfigurationVersion` is a plain `int` in `api/gen/paceday.gen.go:2348`, so a missing value decodes as 0 and would match a never-configured organisation unless the handler decodes the raw body. Fix: name one message per case; pin "missing ≠ 0" in P2-AC-4 for a v0 organisation.
+
+### Responses the client cannot handle
+None for the shipped web, mcp/ or e2e:
+- `LLMDestinationRefusal.configuration` (new, optional): the generated zod schema is strict (`smart-calendar-flow/src/api/generated/schemas.ts:221`) but no runtime code parses a 422 with it (`src/api/client.ts:475-480`, `:510-518`). The e2e 422 assertions use `toMatchObject`. mcp/ does not see the 422.
+- The 409 on patchOrganizationAI reuses OrganizationAIConsentConflict; no shipped client calls the operation.
+- Row 10's message renders from `message` and contains none of read/reads/see.
+
+### Consumers affected
+- `backend/api/pac66_llm_destination_test.go:150-154` (non-blocking, NB-1): fails on any 422 key other than error/reason/property; the schema allows `configuration: own`. Fix: the server never sends `own` (absent is the only form), or narrow the enum to `[organization]`; list this test as "must pass unchanged".
+- `backend/api/handlers_llm.go:98-102` (non-blocking): the probe 200 lacks the now-required `LLMTestResult.configuration`. Add merge condition: "the stage-4 api PR emits `configuration` on every probe 200".
+
+### Contract/implementation divergences
+1. patchOrganizationAI step ordering vs spec §3.2's conflict rule under concurrency (B-1′).
+2. Unchanged: purpose and the three new operations not served on this branch; merge conditions cover them.
+
+### Uncertainties not actually resolved
+None claimed.
+
+### Contract vs spec revision 1
+No divergence apart from B-1′.
+
+### Verified clean
+- Sequential stale version: 409 with the v6 read, grant live, nothing stored, break-glass not used.
+- `{"configurationVersion":3}` alone refused; `{"configurationVersion":4,"provider":""}` allowed; `-1` and `null` → 400.
+- Confirmation racing an admin change: exact-version match means row 5, nothing sent.
+- Whole-document patchSettings records no confirmation (P2-AC-38); storing `openai` deletes it (P2-AC-36).
+- Probe while forbidden: organisation/unsupported + key → 409 `[organization_admin]`; `openai` never uses the org key.
+- Repeated `purpose` → 400; pre-deploy state reads as `sso_write`.
+- OrganizationAIConsentConflict keyless; `apiKey` writeOnly on the update only.
+- O-13 wording holds; MCP unchanged; `sso-stepup.spec.ts` unaffected.

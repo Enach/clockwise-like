@@ -1265,3 +1265,57 @@ recorded in the contract rationale): an administrator's change names the
 configuration version they were shown, and a stale one is refused as a
 conflict before the proof is spent (contract challenge B-1; §3.2, P2-D15,
 P2-AC-40).
+
+## Challenge, revision 1 — 2026-10-28
+
+**Verdict**: accept-with-changes
+
+Checked by: `git fetch origin`; `git show` / `git grep` on `origin/factory/new-llm-byo-part2` (0c81d42), clockwise-like `origin/main` (ae5c2cf) and smart-calendar-flow `origin/main` (eea0cf6). No test, build or `make verify` was run. Spec line numbers are of 0c81d42.
+
+### Revision 0 findings, re-checked
+- B1 (withdrawn confirmation returns): fixed. §3.4 (402-408) deletes the confirmation when "off" or a provider is stored. P2-AC-36 tests it. P2-D2's new default makes the forbidden case row 10 anyway. Residual: non-blocking 4 below.
+- B2 (confirmation not tied to sent values): fixed. "Confirmed" names the version read (199-203). Row 4 sends only that version (242-250). Only the confirmation operation records one (395-401, 410-415). P2-AC-37 and P2-AC-38 test both halves. "Read configuration and confirmation as one consistent state" can be built: the configuration's values and its version are one stored record, and the confirmation's version is compared against it. P2-AC-37 fails today, because row 4 does not exist and the answer is row 6. Wording issue: non-blocking 1.
+- B3 (key leaks via error text): partly fixed. §3.1a, §2.5, P2-AC-7 and P2-AC-39 now name the paths and are testable. The residual is understated (Blocking 1).
+- B4 (break-glass not per change): fixed as P2-D13 / OQ-P2-4, with the second-change case in P2-AC-2. Concurrency: non-blocking 5.
+- NB1, NB2, NB4-NB9: fixed as the Revision 1 table says. NB3: fixed in the spec; OQ-P2-3 must still be put to the owner (§8, 950-953).
+
+### Blocking
+
+1. **The redaction residual is understated: a member can receive the whole organisation key in reversible form.**
+   - §3.1a (280-283) describes what is not covered as "a transformed fragment of a key (say, its last four characters)".
+   - §5 (882-883) adds "an encoding" to that exclusion. §6 (887-893) still says no response in any status carries an organisation key.
+   - The brief is the member-visible path. A failed brief stores the provider or gateway body verbatim (`backend/engine/meeting_brief_service.go:87-90`, via `backend/nlp/parser.go:122-123`). The member reads it back through the brief read. Parse failures are a generic 500 and probe failures a fixed 502.
+   - A gateway (owner O-10) may echo the key it was given in a reversible encoding: JSON with `/` escaped as `\/`, or percent-encoded. Exact-string replacement then misses the whole key, and it reaches the member, who reverses the encoding trivially.
+   - This is not hypothetical for O-10 gateways, whose key format is the gateway's own, or for Bedrock, whose API keys are base64 and contain `+`, `/` and `=`.
+   - *Resolves when* one of these holds:
+     - (a) The spec requires that member-visible text produced by a request on the organisation's configuration (the stored brief text, every answer) carries no provider or gateway error text, so the encoding residual is limited to operator logs and error reports. P2-AC-39 gains a case where the double echoes the key JSON-escaped.
+     - (b) §3.1a, §5 and §6 state exactly that a member can receive the full organisation key in a reversible encoding through the brief read, and the owner accepts that.
+
+2. **A confirmation can match a configuration the member never saw, after a removal and a new setup.**
+   - §3.2 (328-330): "Removing the provider removes the whole configuration, key included."
+   - §7(a) (913-916) stores "one AI configuration per organisation" with its version.
+   - §3.4 (372-379) ties a confirmation to a version number.
+   - Nothing says the version is never reused within an organisation, and nothing ends confirmations when the configuration is removed. The contract implies monotonicity ("`0` when no configuration was ever set. Advances by one …", openapi.yaml 11021-11025), but the spec does not require it, and no criterion tests it.
+   - Scenario: A at version 1 (OpenAI, K1); M confirms version 1. The admin removes the provider, and the stored configuration is deleted. Later the admin sets Anthropic with K2, starting again at version 1. M's next parse sends M's text and meeting details to the new account without the §3.4 notice.
+   - *Resolves when* §3.4 states that a configuration version is never reused within an organisation, including across removal and a new setup (or that removing the configuration ends every confirmation for it). A criterion covers: confirm version V → remove → set a new configuration → the next parse answers row 5 and sends nothing.
+
+### Non-blocking
+
+1. **"Version" and the values it covers disagree.** The version does not advance on a model or personal-keys change (§3.4, 377-378; P2-AC-23, 703-704). Yet §3.1 (242-244) and P2-AC-37 (824-826) require sending "V's … model", and §3.2 (331-336) refuses a change when "the configuration has changed since", which a version check cannot detect for a model-only or personal-keys change. State that a version fixes provider, key and destination, that the model sent is the current one, and that the admin conflict is "the version has advanced".
+2. **Redact the key that was sent, not the one stored now.** §3.1a (276-277) says "the organisation's key". After a key rotation during a request, redacting the newly stored key misses an echo of V's key. Say "the keys sent with this request", and add the rotation case to P2-AC-39.
+3. **A forbid made during a request.** "While forbidden, no personal key is sent" (240-241) cannot hold for a request decided before the forbid was stored. Say "a request decided after the forbid is stored".
+4. **Code rollback brings back revision 0's B1.** Part 1's code does not delete confirmations when "off" or a provider is stored. §7 (937-946) should state this, or require confirmations made before a code rollback to be invalid after it.
+5. **Break-glass, once per sign-in, under concurrency and failure.** Two simultaneous changes with the same fresh session must not both succeed; P2-AC-2 (556-560) tests them only one after another. P2-AC-5 (577-579) says what a storage failure does to a grant, not to a break-glass session. The session has no identifier besides its issue time (`backend/auth/jwt.go:17-27`, one issuance point at `handlers_auth.go:214`); two sign-ins in the same second count as one session, which is conservative but should be stated.
+6. **Probe precedence.** For a follower in a forbidding organisation, a probe naming nothing and carrying a key matches both §3.5 bullet 2 ("refused", 432-434) and P2-AC-20 ("personal keys are not allowed", 677-680). Say which answer wins.
+7. **The destination is readable by every member.** §3.2 (296-300) shows the gateway URL to all members. The approval rule refuses userinfo but not a query string or a credential in the path (`backend/nlp/destination.go:124-135`). Say whether such a URL is refused for the organisation, or warn the admin that every member can read it.
+8. **OQ-P2-3 has not been asked yet** (§8, 950-953). None of the four factory defaults is unsafe.
+
+### Criteria I could not falsify
+- None outright. P2-AC-37 should say the change is injected at each storage access the request makes.
+
+### Citations I checked and found wrong
+- `mcp/client.go:22-90` (§3.7, P2-AC-33): the file has 88 lines on ae5c2cf. Trivial.
+- All other new citations match.
+
+### Consumers this breaks
+- None beyond those §2.4 now names.
