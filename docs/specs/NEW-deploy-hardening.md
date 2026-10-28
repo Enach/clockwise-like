@@ -1972,3 +1972,108 @@ post-commit booking completion unit among the tracked units.
    collective slot listing and team availability (AC-A18).
 
 Parts B, C and D need no contract change. There are no new owner questions.
+
+## Challenge, revision 3 — 2026-10-28
+
+Confirming round, limited to the rev-3 delta (`git diff 539316b 9c298a3`).
+Verified by reading code on `origin/main` and on
+`origin/impl/pac-71-identity-binding-backend`; nothing was built or run.
+
+**Verdict**: accept
+
+Both rev-2 blocking findings are resolved by removal (F-12): AC-A19 no longer
+returns a stored booking to any request (B1), and no behaviour depends on a
+retry reaching a replay (B2); retries keep today's 409/410. The §10 follow-up
+carries the three constraints from rev 2 (no leak of name/notes, ordering
+before 410/422/PAC-72/409, migration surviving duplicate rows) and the PAC-72
+dependency.
+
+### Blocking
+
+None.
+
+### Checks behind that
+
+- **The detached unit is implementable and testable.** Today
+  `ConfirmBooking` (`backend/engine/booking.go:216-280`) commits the row at
+  `:229`, then loops hosts building a calendar client from
+  `auth.UserTokenSource(ctx, ...)` (`:202-210`) with the request context, and
+  already sends the email in an untracked `go sendConfirmationEmail` (`:277`).
+  Moving everything after `:229` into a unit is a split at one existing
+  boundary. AC-A19's "own per-call outbound limits (AC-A3), independent of the
+  request budget" and AC-A7's "the process cancels it" together fix whose
+  cancellation the unit obeys (the shutdown group's, not the request's). Tests
+  (a) and (b) are falsifiable today: (a) needs a stub calendar slower than the
+  remaining budget; (b) needs SIGTERM after commit with fast and slow stubs.
+- **PAC-71's session guard does not interact.** On PAC-71's branch the guard
+  is installed only by `requireAuth` (`backend/api/middleware.go:121-131`
+  there), and `WithSessionGeneration` falls back to the plain call when the
+  context carries no guard (`backend/storage/session.go:158-162` there).
+  `POST /api/book/{slug}` is registered outside every `requireAuth` group on
+  both `main` and the PAC-71 branch (`backend/api/routes.go:27`). The renewing
+  token source's `googleStore` loads/saves through that function (PAC-71
+  `credential_lifecycle.go:215-218`), so in the unit it is the plain call. The
+  host's credential is the host's own (PAC-67), not a session's. Confirmed.
+- **It cannot outlive the drain incorrectly.** AC-A6 step 3 now names the unit
+  among awaited units; AC-A7 cancels it at notice + drain, gives it the cancel
+  grace, logs it with the booking id and hosts done/not done, and closes the
+  pool only after it returned or was abandoned. A unit started by a request
+  still in flight during the drain is covered because the request itself is
+  awaited until it has handed the unit over.
+- **201-before-events changes nothing a consumer relies on in the normal
+  case.** The handler waits for the unit up to the remaining budget, so with
+  responsive calendars every host event exists when the 201 is sent, exactly
+  as today. The 201 body (`confirmation`, `handlers_booking.go:95-103`)
+  contains no event data; the email was already asynchronous. No e2e spec
+  asserts host events after a booking (`e2e/tests/public-booking.spec.ts`,
+  `scheduling-links.spec.ts`, `seam.spec.ts`, `time-format.spec.ts`: the only
+  `fake.events` read is the personal-sync blocker at `seam.spec.ts:426`), and
+  no backend test reads `booking_events` after the handler. Only the
+  currently-false 201 description ("host calendar events written",
+  `openapi.yaml:2680`; already contradicted by `:2666-2669`) needs the stage-2
+  edit the spec lists.
+- **The Part A stage-2 list is complete and consistent.** The five items in
+  "Revision 3" (readiness A11, PAC-14 Sentry default A14, shared 503 A2,
+  createPublicBooking 201 description A19, "treated as free" wording A18) match
+  §1 (`:37-45`) and §11 row A. No other rev-3 change touches a contract.
+  No leftover reference to replay, the post-commit 503, or a migration remains
+  outside the superseded F-10 record and the §10 follow-up.
+
+### Non-blocking
+
+1. AC-A2 still reads as a universal rule ("budget elapses → 503, never a 2xx
+   with partial data") with no exception for a booking whose row committed.
+   §1 and AC-A19 state the exception; AC-A2 should cross-reference AC-A19 so a
+   contract author or test writer reading AC-A2 alone does not expect 503 from
+   a committed booking.
+2. The "before commit / after commit" line has an unknown-outcome edge: if the
+   insert is bound to the request's cancellation and the budget fires while
+   the commit is in flight, the server can commit while the handler sees an
+   error. AC-A19's last bullet ("503 and no booking is written") then does not
+   hold. The requirement to state: a 503 on booking create is answered only
+   when no booking row was committed for that request. Narrow and hard to
+   test; the plan should show how it holds.
+3. After the budget expires post-commit, the 201 body is still built from
+   database reads (`confirmation`, hosts and users). Test (a) already asserts
+   the 201, so a body built with the expired request context fails it; worth a
+   sentence in the plan, not a spec change.
+4. The unit's host loop has no item bound (AC-A4's exemption). With many hosts
+   it can run long after the 201; only the drain bounds it. Acceptable as
+   stated; the abandonment log covers the deploy case.
+
+### Criteria I could not falsify
+
+None in the delta.
+
+### Citations I checked and found wrong
+
+None in the delta.
+
+### Consumers this breaks
+
+None found. The web booking page sees the same 201 body and no new status;
+the shared 503 on create (before commit) and on slot listing is unchanged from
+rev 2 and covered by stage 2.
+
+**Ready for the Part A contract stage: yes. Ready for the B/C/D plan stage:
+yes.**
