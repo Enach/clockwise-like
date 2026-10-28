@@ -83,39 +83,61 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
     }
   });
 
-  test('AC-21 (Part 1, spec revision 2): an organisation member following the organisation is sent to no admin', async ({ browser, apiAs }) => {
+  // Amended by PAC-73 Part 2 (spec docs/specs/NEW-llm-bring-your-own-part2.md
+  // §2.4; P2-AC-14, P2-AC-31, P2-AC-35; manifest consumersAffected), not
+  // deleted. Part 1 sent an organisation member to no admin because no admin
+  // could act; with Part 2 an organisation with no AI configuration names its
+  // administrator (row 6: enablers [user, organization_admin]), and a member
+  // stored as "follow my organisation" sees "Use my organisation's AI"
+  // selected and enabled. A user with no organisation is unchanged (the test
+  // above).
+  test('AC-21 / P2-AC-14, P2-AC-31, P2-AC-35: an organisation member with no organisation AI is told the admin can set it up', async ({ browser, apiAs }) => {
     const user = await freshUser('orgmember');
     const domain = `byok-${user.id.slice(0, 8)}.paceday.test`;
     const org = await queryOne<{ id: string }>('INSERT INTO organizations (name, domain) VALUES ($1, $1) RETURNING id', [domain]);
     await query('UPDATE users SET org_id = $1 WHERE id = $2', [org!.id, user.id]);
     const api = apiAs(user);
+    const both = ['organization_admin', 'user'];
 
     const settings = await (await api.get('/api/settings')).json();
     expect(settings).toMatchObject({
       llmProvider: 'organization',
-      aiStatus: { configured: false, inOrganization: true, notConfigured: { reason: 'nothing_configured', enablers: ['user'] } },
+      aiStatus: { configured: false, inOrganization: true, notConfigured: { reason: 'nothing_configured' } },
     });
-    expect(settings.aiStatus.notConfigured.message).not.toMatch(/admin/i);
+    expect([...settings.aiStatus.notConfigured.enablers].sort()).toEqual(both);
+    expect(settings.aiStatus.notConfigured.message).toMatch(/administrator of your organisation/);
     const parsed = await (await api.post('/api/nlp/parse', { text: 'meet alice tomorrow' })).json();
-    expect(parsed.not_configured).toMatchObject({ reason: 'nothing_configured', enablers: ['user'] });
+    expect(parsed.not_configured.reason).toBe('nothing_configured');
+    expect([...parsed.not_configured.enablers].sort()).toEqual(both);
     const probe = await api.post('/api/llm/test', {});
     expect(probe.status(), await probe.text()).toBe(409);
-    expect((await probe.json()).notConfigured).toMatchObject({ reason: 'nothing_configured', enablers: ['user'] });
+    const probed = (await probe.json()).notConfigured;
+    expect(probed.reason).toBe('nothing_configured');
+    expect([...probed.enablers].sort()).toEqual(both);
 
     const context = await browser.newContext({ storageState: storageStateFor(user) });
     const page = await context.newPage();
     try {
+      // P2-AC-35: the dashboard says so.
+      await page.goto('/app');
+      await page.getByLabel('Describe what to schedule').fill('meet alice tomorrow');
+      await page.getByRole('button', { name: /^send$/i }).click();
+      const barNotice = page.getByTestId('ai-off-notice');
+      await expect(barNotice).toBeVisible();
+      await expect(barNotice).toContainText('an administrator of your organisation can set up its AI');
+
       await page.goto('/settings');
       const notice = page.getByTestId('ai-off-notice');
       await expect(notice).toContainText('No AI provider is set up');
-      await expect(notice).toContainText('You can turn them on in Settings');
-      await expect(notice).not.toContainText(/admin/i);
+      await expect(notice).toContainText('You can turn them on in Settings, or an administrator of your organisation can set up its AI.');
       const select = page.getByLabel('AI provider');
       await expect(select).toHaveValue('organization');
-      await expect(select.locator('option:checked')).toHaveText('No provider chosen');
+      await expect(select.locator('option:checked')).toHaveText("Use my organisation's AI");
       const enabled = await select.locator('option:not([disabled])').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
-      expect(enabled).toEqual(['', 'openai', 'anthropic', 'azure_openai', 'bedrock', 'vertex']);
-      await expect(page.locator('#ai')).not.toContainText(/organi[sz]ation|admin/i);
+      expect(enabled).toEqual(['', 'organization', 'openai', 'anthropic', 'azure_openai', 'bedrock', 'vertex']);
+      // The organisation AI section, read by every member: nothing set up yet.
+      await expect(page.getByTestId('org-ai-section')).toContainText('Not set up');
+      await expect(page.getByTestId('org-ai-section')).toContainText('An administrator of your organisation can change this.');
     } finally {
       await context.close();
     }

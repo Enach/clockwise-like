@@ -1347,7 +1347,7 @@ paths:
     get:
       operationId: startSsoAdminStepup
       tags: [auth]
-      summary: Begin an admin step-up for an SSO write
+      summary: Begin an admin step-up for an SSO write or an organisation-AI change
       description: |
         Added by PAC-50 (spec §4.3). Behind the session; the org is the
         caller's, never a parameter. Sets a purpose-bound state cookie and
@@ -1369,12 +1369,27 @@ paths:
         page's. A client with no refused write in hand (the web app's
         Settings, spec AC-25) obtains those values from getSsoStepupOptions.
 
+        **Purpose (NEW-llm-bring-your-own Part 2, spec
+        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.3, P2-D1).** The
+        optional `purpose` names the write the resulting grant may authorise:
+        `sso_write` (the default when absent: PAC-50's flow, byte-identical)
+        or `llm_org_key_write` (one change of the organisation's AI
+        configuration, patchOrganizationAI). The purpose is bound into the
+        signed state cookie and the callback issues the grant with it; a
+        grant is only ever consumed by a write of its own purpose (PAC-50
+        AC-27, spec P2-AC-2). The checks the callback makes and the scopes
+        requested do not depend on the purpose. A client that received
+        OrganizationAIWriteStepupRequired navigates to `stepup_url` with
+        `?provider=<p>&purpose=<stepup_purpose>`; a client that omits
+        `purpose` obtains an SSO grant, which the organisation-AI change
+        refuses without consuming it.
+
         Checks run in this order; the first that fails decides the response,
-        and none of them sets the state cookie: `provider` (400), membership
-        (403), the provider configured on this deployment (503), the state
-        value generated (500). So an orgless caller with `?provider=okta`
-        gets the 400, and an orgless caller naming an unconfigured provider
-        gets the 403.
+        and none of them sets the state cookie: `provider` (400), `purpose`
+        (400), membership (403), the provider configured on this deployment
+        (503), the state value generated (500). So an orgless caller with
+        `?provider=okta` gets the 400, and an orgless caller naming an
+        unconfigured provider gets the 403.
 
         The step-up is optional and separate from sign-in (owner decision
         2026-10-27, PAC-68 OQ-2 / PAC-50 OQ-2). Sign-in (startGoogleOAuth,
@@ -1403,6 +1418,17 @@ paths:
           schema:
             $ref: '#/components/schemas/SsoStepupProvider'
           description: Which identity provider to step up with. Missing, or any other value, is a 400.
+        - name: purpose
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SsoStepupPurpose'
+          description: |
+            NEW-llm-bring-your-own Part 2. The write the grant will authorise.
+            Absent means `sso_write` (PAC-50 unchanged). Present and not in the
+            enum (including empty), or present more than once (whatever the
+            values), is the 400 `purpose must be 'sso_write' or
+            'llm_org_key_write'` (contract revision 2).
       responses:
         '302':
           description: Redirect to the identity provider's authorization endpoint.
@@ -1420,8 +1446,9 @@ paths:
                 deployment sets `PACEDAY_INSECURE_COOKIES=true` (the PAC-20
                 rule every cookie follows, `config.DecideSecureCookies`; a
                 deployment property, not observed per request; spec §4.3). The value binds the caller's user id, org id, the
-                chosen provider and a nonce, and cannot be forged, nor replayed
-                by or for another user.
+                chosen provider, the purpose (`sso_write` when absent;
+                NEW-llm-bring-your-own Part 2) and a nonce, and cannot be
+                forged, nor replayed by or for another user.
         '400':
           description: |
             No state cookie is set. Two forms:
@@ -1435,6 +1462,9 @@ paths:
               (spec §9 D-9).
             - `provider` present but not in the enum: JSON
               `provider must be 'google' or 'microsoft'`.
+            - `purpose` present but not in the enum (NEW-llm-bring-your-own
+              Part 2): JSON `purpose must be 'sso_write' or
+              'llm_org_key_write'`. Checked after `provider`.
           content:
             application/json:
               schema:
@@ -1521,8 +1551,27 @@ paths:
         this path, so a browser in the middle of a step-up sends it here;
         this operation ignores it.
 
-        Checks: membership (403), then 200. Calling it costs nothing, so a
-        client may call it whenever it renders the entry point.
+        **Purpose (NEW-llm-bring-your-own Part 2, spec P2-AC-30).** The
+        optional `purpose` says which write the client is about to offer the
+        step-up for. `stepup_url` and `stepup_scopes` do not depend on it;
+        `without_stepup` does: `[sso_configuration_writes]` for `sso_write`
+        (the default when absent, byte-identical to PAC-50) and
+        `[organization_ai_configuration_writes]` for `llm_org_key_write`. The
+        client navigates to `stepup_url` with `?provider=<p>` and, for
+        `llm_org_key_write`, `&purpose=llm_org_key_write`.
+
+        Checks: `purpose` (400), membership (403), then 200. Calling it costs
+        nothing, so a client may call it whenever it renders the entry point.
+      parameters:
+        - name: purpose
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SsoStepupPurpose'
+          description: |
+            NEW-llm-bring-your-own Part 2. Absent means `sso_write`. Any value
+            outside the enum, including empty, or the parameter present more
+            than once, is the 400 (contract revision 2).
       responses:
         '200':
           description: The step-up's URL, what it would request from each configured provider, and what is lost without it.
@@ -1530,6 +1579,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SsoStepupOptions'
+        '400':
+          description: |
+            NEW-llm-bring-your-own Part 2. `purpose` present but not in the
+            enum: `{"error":"purpose must be 'sso_write' or 'llm_org_key_write'"}`.
+            Nothing is read or recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: No/invalid JWT (from requireAuth, text/plain).
           content:
@@ -1585,10 +1643,20 @@ paths:
            Microsoft `wids` (or, when absent, the directory-role lookup)
            containing a qualifying role template id (spec §4.4). Anything
            else, including a lookup error, gives `not_admin`.
-        5. A grant for (caller, caller's org, provider) is issued with
-           purpose `sso_write`, valid for 10 minutes and good for one SSO
-           configuration write (spec §4.8; a write of another purpose cannot
-           spend it).
+        5. A grant for (caller, caller's org, provider) is issued with the
+           purpose bound in the state (`sso_write` unless the start named
+           `llm_org_key_write`; NEW-llm-bring-your-own Part 2), valid for 10
+           minutes and good for one write of that purpose (spec §4.8; a write
+           of another purpose cannot spend it, PAC-50 AC-27). A state signed
+           before NEW-llm-bring-your-own Part 2 was deployed carries no
+           purpose; it is read as `sso_write` (contract revision 2), so a
+           step-up in flight across the deploy completes as PAC-50's.
+
+        "Byte-identical to PAC-50" for an absent or `sso_write` purpose
+        (NEW-llm-bring-your-own Part 2) covers what a client can observe: the
+        302 and its Location, the 400 bodies, the options read and the
+        landing Location. It does not cover the signed state cookie's value,
+        which now also binds the purpose and is opaque to clients.
 
         Every outcome with a session, granted or denied, is recorded
         server-side for operators (spec §4.6) and clears the state cookie.
@@ -1624,7 +1692,7 @@ paths:
             Location:
               schema:
                 type: string
-                pattern: '/settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin))$'
+                pattern: '/settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin))(&purpose=llm_org_key_write)?$'
               description: |
                 `<FRONTEND_URL>/settings?stepup=granted`, or
                 `<FRONTEND_URL>/settings?stepup=denied&reason=<reason>`, where
@@ -1635,6 +1703,14 @@ paths:
                 `email_mismatch`, `not_admin`. Never a raw token or provider
                 error text. Built from the configured frontend URL, never a
                 literal path (contrast API-084).
+
+                NEW-llm-bring-your-own Part 2: when the state's purpose is
+                `llm_org_key_write`, `&purpose=llm_org_key_write` is appended,
+                granted or denied, so the web returns the admin to the
+                organisation AI section (spec P2-AC-32). A `sso_write` outcome
+                carries no `purpose` parameter: its Location is byte-identical
+                to PAC-50's. A `state_mismatch` whose cookie signature does not
+                verify carries no purpose (none can be trusted).
             Set-Cookie:
               schema: { type: string }
               description: |
@@ -2234,7 +2310,8 @@ components:
         anything else, including break-glass. No `stepup_url`: there is no org
         to step up for. Also the 403 of getSsoStepupOptions and of
         startSsoAdminStepup (the latter always with `org membership
-        required`).
+        required`), and (NEW-llm-bring-your-own Part 2) of getOrganizationAI,
+        patchOrganizationAI and confirmOrganizationAI.
       required: [error]
       properties:
         error:
@@ -2400,6 +2477,14 @@ components:
         configuration writes covered by this code when PAC-22's follow-up
         serves them, and a client must not offer them before then (PAC-50
         contract revision 8.1, N6).
+
+        NEW-llm-bring-your-own Part 2 adds a second value, sent only for the
+        `llm_org_key_write` purpose (OrganizationAIWriteStepupRequired, and
+        getSsoStepupOptions with `?purpose=llm_org_key_write`):
+        `organization_ai_configuration_writes`, no change to the
+        organisation's AI provider, model, key, destination or personal-keys
+        setting except by a break-glass operator. Each response carries the
+        one code of its purpose.
       items:
         type: string
         minLength: 1
@@ -2408,3 +2493,13 @@ components:
       type: string
       enum: [google, microsoft]
       description: Identity provider an SSO admin step-up runs against (PAC-50).
+
+    SsoStepupPurpose:
+      type: string
+      enum: [sso_write, llm_org_key_write]
+      description: |
+        The write an admin step-up grant authorises (PAC-50 §4.8 `purpose`;
+        NEW-llm-bring-your-own Part 2, spec P2-D1). `sso_write`: one SSO
+        configuration write (PAC-50). `llm_org_key_write`: one change of the
+        caller's organisation's AI configuration (patchOrganizationAI). A
+        grant is consumed only by a write of its own purpose (PAC-50 AC-27).

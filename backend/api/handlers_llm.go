@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/nlp"
@@ -16,6 +15,9 @@ import (
 
 type llmHandlers struct {
 	db *sql.DB
+	// source is where the AI decision reads from; nil means db (PAC-73
+	// Part 2, P2-AC-37).
+	source nlp.AISource
 }
 
 // llmTestRequest is the body of POST /api/llm/test (PAC-24). It names a
@@ -48,31 +50,24 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	src := h.source
+	if src == nil {
+		src = nlp.DBSource{DB: h.db}
+	}
+	st, err := nlp.LoadAIState(r.Context(), src, userID)
 	if err != nil {
 		writeServerError(w, r, "testLLM", err, http.StatusInternalServerError)
 		return
 	}
-	inOrg, err := storage.UserInOrganization(h.db, userID)
-	if err != nil {
-		writeServerError(w, r, "testLLM", err, http.StatusInternalServerError)
-		return
-	}
-	// No status's body may carry the submitted key or any stored key (AC-14).
+	s := st.Settings
+	// No status's body may carry the submitted key or any stored key
+	// (AC-14), and nothing logged carries a key sent (Part 2 §3.1a).
 	keys := append(s.LLMAPIKeys.All(), s.LLMUnboundAPIKey)
 	if body.LLMAPIKey != nil {
 		keys = append(keys, *body.LLMAPIKey)
 	}
-	redact := func(msg string) string {
-		for _, key := range keys {
-			if key != "" {
-				msg = strings.ReplaceAll(msg, key, "[redacted]")
-			}
-		}
-		return msg
-	}
 
-	d, bad := nlp.DecideProbe(s, inOrg, nlp.ProbeRequest{Provider: body.LLMProvider, Model: body.LLMModel, Key: body.LLMAPIKey})
+	d, bad := nlp.DecideProbeState(st, nlp.ProbeRequest{Provider: body.LLMProvider, Model: body.LLMModel, Key: body.LLMAPIKey})
 	if bad != "" {
 		writeError(w, bad, http.StatusBadRequest)
 		return
@@ -81,24 +76,27 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 		writeNotConfigured(w, d.NotConfigured)
 		return
 	}
+	keys = append(keys, d.Secrets...)
+	redact := func(msg string) string { return nlp.RedactSecrets(msg, keys) }
 
 	// PAC-66 / PAC-66-B: the provider the probe uses sends nothing to a
 	// destination not approved for it.
 	if err := nlp.CheckDestination(r.Context(), d.Client); err != nil {
-		writeProviderFailure(w, r, err, redact)
+		writeProviderFailure(w, r, err, redact, d.Organization())
 		return
 	}
 	response, err := d.Client.Complete(r.Context(), "You are a helpful assistant.", "Say hello")
 	if err != nil {
-		writeProviderFailure(w, r, err, redact)
+		writeProviderFailure(w, r, err, redact, d.Organization())
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"ok":       true,
-		"response": redact(response),
-		"provider": d.Provider,
+		"ok":            true,
+		"response":      redact(response),
+		"provider":      d.Provider,
+		"configuration": d.Configuration,
 	})
 }
 
@@ -115,16 +113,26 @@ func writeNotConfigured(w http.ResponseWriter, nc *storage.AINotConfigured) {
 
 // writeProviderFailure answers a failed provider call: a PAC-66 destination
 // refusal is a 422 LLMDestinationRefusal (nothing was sent); anything else is
-// the 502 it has always been.
-func writeProviderFailure(w http.ResponseWriter, r *http.Request, err error, redact func(string) string) {
+// the 502 it has always been. org says the refused destination is the
+// organisation's (Part 2, P2-AC-41): the sentence names its administrator
+// and the body carries configuration: organization; for the caller's own
+// destination configuration is absent, never "own".
+func writeProviderFailure(w http.ResponseWriter, r *http.Request, err error, redact func(string) string, org bool) {
 	var refusal *nlp.DestinationRefusal
 	if !errors.As(err, &refusal) {
 		writeServerError(w, r, "LLM provider call", errors.New(redact(err.Error())), http.StatusBadGateway)
 		return
 	}
+	if org {
+		refusal = nlp.OrganizationDestinationRefusal(refusal)
+	}
 	body := gen.LLMDestinationRefusal{
 		Error:  refusal.Message,
 		Reason: gen.LLMDestinationRefusalReason(refusal.Reason),
+	}
+	if org {
+		c := gen.LLMDestinationRefusalConfigurationOrganization
+		body.Configuration = &c
 	}
 	if refusal.Property != "" {
 		p := gen.LLMDestinationRefusalProperty(refusal.Property)

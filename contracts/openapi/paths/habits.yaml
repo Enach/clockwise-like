@@ -516,6 +516,24 @@ paths:
         bound to it; no identity of the machine Paceday runs on and no deployment-level
         key is used (spec O-2, O-3, AC-2). A destination refusal or a provider failure on
         a configured caller is unchanged: 200, `status: "failed"`, stored.
+
+        **NEW-llm-bring-your-own Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`
+        revision 1).** In row 4 the brief is generated with the organisation's configuration
+        at the version the caller confirmed (read with the confirmation as one consistent
+        state; otherwise row 5, the 409). In row 4 a provider or gateway failure stores and
+        returns a FIXED `brief_text`, `The organisation's AI provider returned an error.`,
+        which contains nothing the provider or gateway returned, so no form of the
+        organisation's key (verbatim, JSON-escaped, percent-encoded) can reach the caller
+        through the 200 or any later `getMeetingBrief` (spec §3.1a, P2-D16, P2-AC-39;
+        contract revision 3). The provider text goes only to the server log and Sentry,
+        with every occurrence of every key sent with this request (the confirmed version's
+        key, even if replaced since) and of the caller's keys replaced by `[redacted]`
+        (exact strings; an encoded echo can reach those operator-only surfaces, spec §5).
+        In row 2 (the caller's own key) a failed brief's text keeps Part 1's form,
+        `LLM error: <provider text>`, with the caller's own keys replaced by `[redacted]`
+        before it is stored, returned, logged or reported. In row 4 a destination refusal's
+        text names the organisation's AI destination and its administrator, never the
+        caller's own Settings (P2-AC-41).
       responses:
         "200":
           description: The regenerated brief (AI was configured for the caller).
@@ -525,9 +543,10 @@ paths:
                 $ref: '#/components/schemas/MeetingBriefResponse'
         "409":
           description: |
-            NEW-llm-bring-your-own. AI is not configured for the caller (spec §3 table, rows
-            1, 3 and 5-8; before Part 2 only 1, 3, 6 and 8 occur). Nothing was written and
-            nothing was sent (spec AC-14). `error` is a sentence saying that AI features are
+            NEW-llm-bring-your-own. AI is not configured for the caller (table on
+            AINotConfigured, rows 1, 3, 5-8, 10 and 11; Part 2 adds 5, 7, 10 and 11, including
+            a caller who has not confirmed the organisation's configuration, owner O-13).
+            Nothing was written and nothing was sent (spec AC-14, P2-AC-27). `error` is a sentence saying that AI features are
             off, why and who can turn them on; `notConfigured` carries the same facts. The
             same reason the caller's parse and probe give (spec AC-40). 409 because the
             request is well formed and is refused only because of the current state of the

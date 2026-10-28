@@ -134,6 +134,9 @@ type AINotConfigured struct {
 type AIStatus struct {
 	Configured     bool             `json:"configured"`
 	Provider       string           `json:"provider,omitempty"`
+	// Configuration is "own" (row 2) or "organization" (row 4), present
+	// exactly when Configured (PAC-73 Part 2).
+	Configuration  string           `json:"configuration,omitempty"`
 	InOrganization bool             `json:"inOrganization"`
 	NotConfigured  *AINotConfigured `json:"notConfigured,omitempty"`
 }

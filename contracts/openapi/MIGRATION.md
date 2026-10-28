@@ -40,8 +40,8 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **124**
-- generated: **6**
+- operations: **127**
+- generated: **9**
 - handwritten: **118**
 
 ## Register
@@ -137,6 +137,9 @@ from the contract and any edit is reported as drift.
 | refreshMeetingBrief               | POST   | /api/meetings/{event_id}/brief/refresh          | meeting-briefs   | handwritten | |
 | confirmNaturalLanguage            | POST   | /api/nlp/confirm                                | nlp              | handwritten | |
 | parseNaturalLanguage              | POST   | /api/nlp/parse                                  | nlp              | handwritten | |
+| getOrganizationAI                 | GET    | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
+| patchOrganizationAI               | PATCH  | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
+| confirmOrganizationAI             | POST   | /api/organization/ai/consent                    | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
 | previewCompression                | POST   | /api/schedule/compress                          | schedule         | handwritten | |
 | applyCompression                  | POST   | /api/schedule/compress/apply                    | schedule         | handwritten | |
 | createScheduledMeeting            | POST   | /api/schedule/create                            | schedule         | handwritten | |

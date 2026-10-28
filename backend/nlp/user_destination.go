@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Enach/paceday/backend/config"
@@ -191,4 +192,39 @@ func LLMBaseURLWriteProblem(v string) string {
 		}
 	}
 	return MsgLLMBaseURLNotApproved
+}
+
+// OrgBaseURLWriteProblem is patchOrganizationAI's check for a CHANGED,
+// non-empty organisation baseUrl (PAC-73 Part 2, spec P2-D18): exactly an
+// origin approved for provider followed by exactly that entry's path
+// prefix, with no query, fragment or credentials. "" when acceptable.
+func OrgBaseURLWriteProblem(provider, v string) string {
+	if v == "" {
+		return ""
+	}
+	if b, ok := config.ParseBaseURL(v); ok && (provider == ProviderOpenAI || provider == ProviderAnthropic) && baseURLApproved(provider, b) {
+		return ""
+	}
+	return fmt.Sprintf("baseUrl must be an approved %s destination on this deployment: an approved origin and exactly its path prefix, with no query, fragment or credentials", displayNames[provider])
+}
+
+// OrgAzureEndpointShapeProblem is patchOrganizationAI's shape check for a
+// non-empty organisation azureEndpoint (spec P2-D18, contract shape 400
+// (8)): https://<host> with at most one trailing "/" and no port, path,
+// query, fragment or credentials, because every member reads it.
+func OrgAzureEndpointShapeProblem(v string) string {
+	const msg = "azureEndpoint must be https://<host> with no path, query, fragment or credentials"
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Host == "" ||
+		u.Port() != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(v, "#") ||
+		(u.Path != "" && u.Path != "/") || u.RawPath != "" {
+		return msg
+	}
+	if v != "https://"+u.Host && v != "https://"+u.Host+"/" {
+		return msg
+	}
+	return ""
 }

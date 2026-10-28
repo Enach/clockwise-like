@@ -89,6 +89,21 @@ breaks those selectors without breaking the feature.
 |---|---|---|
 | `ai-off-notice` | the "AI features are off" notice shown by the dashboard's scheduling bar and the AI section of Settings | `tests/llm-bring-your-own.spec.ts` (spec AC-21, AC-34) asserts the notice, not an error, appears for a user with no AI configuration. Provided by smart-calendar-flow in the NEW-llm-bring-your-own PR. |
 
+## 4c. Organisation AI — `src/components/settings/OrganizationAISection.tsx`, `src/components/OrgAIConsentDialog.tsx`, `src/components/AINotConfiguredNotice.tsx` (PAC-73 Part 2)
+
+| Test id | Element | Why |
+|---|---|---|
+| `org-ai-section` | the organisation AI section of Settings (members only) | `tests/llm-org-ai.spec.ts` and `tests/llm-bring-your-own.spec.ts` (P2-AC-30, P2-AC-31) assert what every member is shown, and that the key never is. |
+| `org-ai-read` | the read view of that section | Same. |
+| `org-ai-form` | the administrator's change form | P2-AC-32: a granted return offers the form. |
+| `org-ai-stepup` | the step-up explanation shown before navigating | P2-AC-30. |
+| `org-ai-stepup-outcome` | the step-up outcome stated in the organisation AI section | P2-AC-32: an organisation-AI landing is stated there and not in the SSO section. |
+| `org-ai-forbid-warning` | the warning before forbidding personal keys on an incomplete configuration | P2-AC-30. |
+| `org-ai-consent` / `org-ai-consent-text` / `org-ai-consent-changed` | the one-time notice dialog, its text, and its "changed meanwhile" note | P2-AC-22, P2-AC-26, P2-AC-38 (owner O-13 wording: "access", never read/reads/see). |
+| `ai-org-confirm` | the notice's confirm action in row 5 | P2-AC-22. |
+| `ai-use-org` | the notice's "Use my organisation's AI" action in rows 7 and 10 | P2-AC-18, P2-AC-31. |
+| `ai-personal-keys-forbidden` | the Settings note that a member's own choice and key are kept but not used | P2-AC-31. |
+
 ## 5. Demo / mock state markers — `src/components/MockBanner.tsx`, `DemoBanner.tsx`
 
 | Test id | Element | Why |
