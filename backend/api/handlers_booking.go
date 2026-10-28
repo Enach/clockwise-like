@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
@@ -18,6 +20,9 @@ import (
 type bookingHandlers struct {
 	eng BookingFlow
 	db  *sql.DB
+	// now is the clock the offerable-start rule reads (minimum notice and
+	// horizon); tests fix it (PAC-72).
+	now func() time.Time
 }
 
 func newBookingHandlers(db *sql.DB, oauthConfig *oauth2.Config) *bookingHandlers {
@@ -25,7 +30,7 @@ func newBookingHandlers(db *sql.DB, oauthConfig *oauth2.Config) *bookingHandlers
 }
 
 func newBookingHandlersWithEngine(db *sql.DB, eng BookingFlow) *bookingHandlers {
-	return &bookingHandlers{eng: eng, db: db}
+	return &bookingHandlers{eng: eng, db: db, now: time.Now}
 }
 
 type publicHostDTO struct {
@@ -136,8 +141,58 @@ func durationAllowed(link *storage.SchedulingLink, duration int) bool {
 	return false
 }
 
-func (h *bookingHandlers) slotAllowed(link *storage.SchedulingLink, slot engine.AvailableSlot, now time.Time) bool {
-	return !slot.Start.Before(now.Add(time.Duration(link.MinNoticeMinutes) * time.Minute))
+// bookingHorizonDays is the fixed booking horizon (PAC-72 D-1): today (UTC)
+// and the next 59 days, for both listing modes and the booking.
+const bookingHorizonDays = 60
+
+// errSlotUnavailable is the one body of every offerable-start refusal (PAC-72
+// D-5, D-12), pinned by the contract's BookingSlotUnavailableError.
+var errSlotUnavailable = string(gen.SlotIsNoLongerAvailable)
+
+// utcDay is the UTC calendar day containing t, at 00:00 UTC.
+func utcDay(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// linkOpenOn reports whether day (a UTC day) is one of the link's days of the
+// week (0 = Sunday).
+func linkOpenOn(link *storage.SchedulingLink, day time.Time) bool {
+	for _, d := range link.DaysOfWeek {
+		if d == int(day.Weekday()) {
+			return true
+		}
+	}
+	return false
+}
+
+// offeredSlots is the offerable-start rule (PAC-72), the one rule both the
+// slot listing and the booking apply: the slots of duration minutes on the UTC
+// day containing day that are on one of the link's days, inside the booking
+// horizon, free for every accepted host (CollectiveSlots: the link's window on
+// the 15-minute grid, busy time, at least one accepted host) and at least the
+// minimum notice after now. Days, hours and the horizon are evaluated in UTC
+// whatever zone the process runs in (D-9). The returned slots are in UTC. An
+// error means busy time could not be gathered; nothing may be offered or
+// accepted on that day.
+func (h *bookingHandlers) offeredSlots(ctx context.Context, link *storage.SchedulingLink, day time.Time, duration int, now time.Time) ([]engine.AvailableSlot, error) {
+	day = utcDay(day)
+	today := utcDay(now)
+	out := make([]engine.AvailableSlot, 0)
+	if day.Before(today) || !day.Before(today.AddDate(0, 0, bookingHorizonDays)) || !linkOpenOn(link, day) {
+		return out, nil
+	}
+	slots, err := h.eng.CollectiveSlots(ctx, link, day, duration)
+	if err != nil {
+		return nil, err
+	}
+	earliest := now.Add(time.Duration(link.MinNoticeMinutes) * time.Minute)
+	for _, slot := range slots {
+		if !slot.Start.Before(earliest) {
+			out = append(out, engine.AvailableSlot{Start: slot.Start.UTC(), End: slot.End.UTC()})
+		}
+	}
+	return out, nil
 }
 
 // GET /api/book/{slug}/slots?date=YYYY-MM-DD&duration=30
@@ -171,21 +226,18 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	now := time.Now()
+	now := h.now()
 	dateStr := r.URL.Query().Get("date")
 	if dateStr == "" {
+		// The horizon's days that offer at least one slot. A day whose busy
+		// time cannot be gathered is omitted (PAC-72 D-7).
 		days := []string{}
-		for i := 0; i < 60; i++ {
-			date := now.AddDate(0, 0, i)
-			slots, e := h.eng.CollectiveSlots(r.Context(), link, date, duration)
-			if e != nil {
-				continue
-			}
-			for _, slot := range slots {
-				if h.slotAllowed(link, slot, now) {
-					days = append(days, date.Format("2006-01-02"))
-					break
-				}
+		today := utcDay(now)
+		for i := 0; i < bookingHorizonDays; i++ {
+			date := today.AddDate(0, 0, i)
+			slots, e := h.offeredSlots(r.Context(), link, date, duration, now)
+			if e == nil && len(slots) > 0 {
+				days = append(days, date.Format("2006-01-02"))
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -197,16 +249,10 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid date format, use YYYY-MM-DD", http.StatusBadRequest)
 		return
 	}
-	slots, err := h.eng.CollectiveSlots(r.Context(), link, date, duration)
+	available, err := h.offeredSlots(r.Context(), link, date, duration, now)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
-	}
-	available := make([]engine.AvailableSlot, 0, len(slots))
-	for _, slot := range slots {
-		if h.slotAllowed(link, slot, now) {
-			available = append(available, slot)
-		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"slots": available, "available_dates": []string{}})
@@ -269,9 +315,18 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 			writeError(w, "invalid end time, use RFC3339", http.StatusBadRequest)
 			return
 		}
-		actualDuration := int(end.Sub(start).Minutes())
-		if requestedDuration != 0 && requestedDuration != actualDuration {
+		// The length must be exactly a whole number of minutes; one with
+		// seconds or a fraction is never rounded to an accepted duration
+		// (PAC-72 D-8).
+		length := end.Sub(start)
+		whole := length%time.Minute == 0
+		actualDuration := int(length / time.Minute)
+		if requestedDuration != 0 && (!whole || requestedDuration != actualDuration) {
 			writeError(w, "duration does not match end time", http.StatusBadRequest)
+			return
+		}
+		if !whole {
+			writeError(w, "invalid duration", http.StatusBadRequest)
 			return
 		}
 		requestedDuration = actualDuration
@@ -292,18 +347,37 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "end must be after start", http.StatusBadRequest)
 		return
 	}
-	if !h.slotAllowed(link, engine.AvailableSlot{Start: start, End: end}, time.Now()) {
-		writeError(w, "booking is too soon", http.StatusUnprocessableEntity)
+	// The offerable-start rule (PAC-72): [start, end) must be exactly a slot
+	// the listing offers now, compared as instants; anything else is the one
+	// 409, and nothing is written. Busy time that cannot be gathered is a 500,
+	// never a 409.
+	offered, err := h.offeredSlots(r.Context(), link, start, requestedDuration, h.now())
+	if err != nil {
+		logServerError(r, "booking conflict check", err, http.StatusInternalServerError)
+		writeError(w, "booking conflict check failed", http.StatusInternalServerError)
 		return
 	}
-	if conflict, e := storage.HasOverlappingBooking(h.db, link.ID, start, end); e != nil {
+	var slot *engine.AvailableSlot
+	for i := range offered {
+		if offered[i].Start.Equal(start) && offered[i].End.Equal(end) {
+			slot = &offered[i]
+			break
+		}
+	}
+	if slot == nil {
+		writeError(w, errSlotUnavailable, http.StatusConflict)
+		return
+	}
+	// The rule already counts this link's own bookings as busy; this check is
+	// kept as a second guard on the same link.
+	if conflict, e := storage.HasOverlappingBooking(h.db, link.ID, slot.Start, slot.End); e != nil {
 		writeError(w, "booking conflict check failed", http.StatusInternalServerError)
 		return
 	} else if conflict {
-		writeError(w, "slot is no longer available", http.StatusConflict)
+		writeError(w, errSlotUnavailable, http.StatusConflict)
 		return
 	}
-	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, start, end, body.Notes)
+	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, slot.Start, slot.End, body.Notes)
 	if err != nil {
 		writeServerError(w, r, "booking failed", err, http.StatusInternalServerError)
 		return
