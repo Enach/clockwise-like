@@ -1751,3 +1751,153 @@ Parts B, C and D need no contract change.
 New owner questions: none. Q-O1..Q-O4 are unchanged. Q-P5 is a plan question;
 it becomes an owner question only if the plan proposes a product limit on
 hosts or members.
+
+## Challenge, revision 2 — 2026-10-28
+
+Confirming round on revision 2 (`c05a757`), looking only at the delta and at
+how the rev-1 findings were resolved. Code checked on `origin/main` = `bef4c31`
+and on the in-flight PAC-72 branch `origin/impl/pac-72-offerable-start-backend`
+= `66facad`.
+
+**Verdict**: accept-with-changes. Both blocking findings are in AC-A19 only.
+
+**Ready for the next stages?**
+- Part A contract (stage 2): **not yet.** AC-A19 needs one more revision
+  (Blocking 1 and 2). The other Part A stage-2 items (readiness, the PAC-14 §2
+  Sentry default, the shared budget 503) are ready.
+- Parts B, C and D: ready for plan. They need no contract.
+- Part A plan: after the contract.
+
+### Rev-1 findings: resolution check
+
+| Rev-1 item | Resolved? | Note |
+|---|---|---|
+| Blocking 1 (per-item loops vs AC-A4) | Yes | The four loops are cited correctly (`booking.go:92-96`, `:244-273`; `team_availability.go:78-90`; `smart_schedule.go:71` for suggest). AC-A4 exempts them explicitly. AC-A17 and AC-A18 state the outcome when the budget cuts a loop. The D-4 arithmetic checks out: 25 s per item, 4 workers, 80 s usable; 5 members take 2 waves (50 s), 20 members take 5 waves (125 s) and get 503. |
+| Blocking 2 (booking cut after commit) | In principle; AC-A19 has new defects | See Blocking 1 and 2 below. |
+| Blocking 3 (AC-C5 vs compose profile) | Yes | AC-C4 and AC-C5 are now observable: `config`/`up -d` succeed with no token when MCP is off; when MCP is on with no token, the stack fails fast naming `MCP_AUTH_TOKEN` and has 0 restarts after 60 s; Compose v2 is recorded. `:?` on a profiled service is excluded. Each clause can be falsified. |
+| N1 identity-provider limits | Yes | Table row, AC-A3, AC-A4 sums (20 s, 30 s). |
+| N2 context-free DB calls | Yes, with one wording slip | See Non-blocking 4. |
+| N3 Sentry ingest origin | Yes | Its own operator setting, with a default and tests. |
+| N4 shared `docker/fileserver/main.go` | Yes | Each part's half is named in §11. |
+| N5 ICS limits | Outcome applied; measurement deferred | Acceptable: the deferral is stated. |
+| N6 README / `docs/security.md:81` | Yes | AC-C4 and AC-B10 item (8). |
+| N7 AC-B3 "exactly one" | Yes | |
+
+### Blocking
+
+1. **AC-A19(a) lets anyone who knows a booker's email read that booking's
+   private fields, and returns a success that does not match the request.**
+   The replay key is (link, start, email). Name, end/duration and notes are not
+   part of it. A replay returns "that booking", and the confirmation body is
+   built from the stored row: `booker_name`, `booker_email`, `notes`, `end`
+   and `duration_minutes` (`backend/api/handlers_booking.go:95-96`). The
+   endpoint is public and unauthenticated (`backend/api/routes.go:23-27`).
+   Today the same request gets 409 and no data
+   (`handlers_booking.go:299-304`). Under AC-A19 as written:
+   - someone who knows the victim's email and the slot start (the slot listing
+     shows that slot as taken) gets 201 with the victim's name and free-text
+     notes;
+   - a request with the same start and email but a different duration gets
+     201 for a booking of another length.
+   The booking id leaks too, but no public route takes a booking id today, so
+   the id alone grants nothing. Name and notes are the problem.
+   *Resolves when* AC-A19 states:
+   - which request fields must equal the stored booking for a request to be a
+     replay (at least end/duration, plus name and notes, or else the replay
+     response carries only what the requester submitted);
+   - what a partial match answers (409, as today);
+   - a test: same link, start and email but a different name or notes gets no
+     stored name or notes back.
+
+2. **AC-A19(f)'s retry cannot reach the replay on several links, because
+   earlier checks refuse it first.** The handler runs the link-exhaustion check
+   (410, `handlers_booking.go:231` via `linkExhausted`, `:65-73`) and the
+   min-notice check (422, `:295`) before the overlap check. `uses_count`
+   counts non-cancelled bookings (`backend/storage/scheduling_links.go:87`).
+   - On a single-use link, or a recurring link at its last use, the booking
+     committed before the interruption makes the link exhausted, so the
+     promised retry gets 410 "link is no longer accepting bookings" and the
+     unreached hosts never get their event.
+   - PAC-72 is not mentioned anywhere in this spec, but its branch rewrites
+     the same handler. On it, create first runs the offerable-start rule
+     (`offeredSlots` → `CollectiveSlots`, which now counts the bookings on a
+     host's links as busy). So a retry of a committed booking gets PAC-72's 409
+     before any replay. PAC-72 also pins one 409 body for every refusal, which
+     AC-A19(e) narrows.
+   *Resolves when* AC-A19:
+   - states that a request matching an existing non-cancelled booking (per
+     Blocking 1) is answered as a replay before the exhaustion (410), notice
+     (422), offerable-start (PAC-72) and overlap (409) checks;
+   - adds a test: single-use link, interrupted after commit, retry gives 201
+     with the same id and the remaining host events;
+   - records the PAC-72 dependency: which one merges first, and that the
+     other's stage-2 change amends `createPublicBooking` on top of it. After
+     PAC-72, create also makes a per-host read loop before insert; AC-A18's
+     rule should name it.
+
+### Non-blocking
+
+1. **"Today's documented skipped/treated as free behaviour" is documented for
+   team availability only.** That is `contracts/openapi/openapi.yaml:7481-7483`.
+   `getPublicBookingSlots` documents no host skip (the create side does, at
+   `:2666-2669`). AC-A18 also extends "free" to a call that fails on its own
+   15 s limit. Today such a call hangs; now a slow calendar makes the host
+   look free, and their busy time becomes bookable. That matches the existing
+   error tolerance, and PAC-72 D-6 keeps "calendar unreadable = free", so it
+   is not unsafe beyond what exists. Stage 2 should still write it down for
+   slot listing, with the timeout case named.
+
+2. **The uniqueness migration and existing data.** Rev 2 itself says
+   concurrent requests could double-book, so duplicate non-cancelled rows for
+   (link, start, lower(email)) may already exist. Migrations run at startup. A
+   unique index that fails on such rows would stop the deploy. The spec should
+   require that the migration succeeds on a database with such duplicates, and
+   say what happens to them. Cancelled rows fall outside the key, which is
+   correct: cancel and then rebook the same slot with the same email gives a
+   new booking, per (a)'s "non-cancelled".
+
+3. **Concurrency is fixed only for identical keys.** Two concurrent requests
+   with different emails on the same slot both still pass the
+   check-then-insert. (d) covers identical requests only, and (e)'s "as today"
+   holds only one at a time. §7 says reverting "re-opens concurrent
+   double-booking", which implies it was closed. Either state that
+   different-key concurrency stays open (and file it, or leave it to PAC-72),
+   or include it.
+
+4. **N2 wording.** "Bounded by the pool's turnover" is true of a goroutine
+   waiting for a connection. It is not true of a context-free query that is
+   already running (a lock wait, a slow plan): only the query's own duration
+   bounds that, unless the database applies a statement timeout. Say
+   "bounded by the query's own duration", or state a statement timeout. AC-A7
+   already counts these goroutines, so nothing here can be falsely claimed by
+   a test.
+
+5. **"Host events at most once per (booking, host)" is too strong.** Suppose a
+   create fails on its own 15 s limit after the provider accepted it. It is
+   not recorded, so a replay creates it again. AC-A19(b) should either name
+   this exception or require that it be prevented. AC-A17 has the same issue
+   for blockers ("a create the provider accepted is always recorded" cannot
+   hold when the answer never arrived).
+
+6. **The 503 (f) body carries the booking id.** Only a requester who sent that
+   exact body receives it, and the id is not a capability today. Stage 2
+   should say that the id grants nothing, so that no later route turns it into
+   one.
+
+### Criteria I could not falsify
+
+- None new. AC-A18, AC-A19 and AC-C4/C5 each have a test that fails today.
+
+### Citations I checked and found wrong
+
+- AC-A18: the "documented" skip on slot listing. Only team availability
+  documents it (Non-blocking 1).
+- §7 rollback overstates what AC-A19 closes (Non-blocking 3).
+
+### Consumers this breaks
+
+- PAC-72 (`origin/impl/pac-72-offerable-start-backend`, contract on
+  `origin/factory/pac-72-contract`): the same handler, the same 409, and
+  `CollectiveSlots`' error handling (Blocking 2).
+- `smart-calendar-flow` booking page: a new 503 on create and on slot listing,
+  covered by the stage-2 shared 503.
