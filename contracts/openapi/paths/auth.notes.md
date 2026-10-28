@@ -1,6 +1,6 @@
 # Domain notes: auth
 
-Companion to `auth.yaml`. 18 operations documented (16, plus 2 added by PAC-50; see (d)).
+Companion to `auth.yaml`. 20 operations documented (16, plus `setSsoProviderState` added by PAC-22, plus 3 added by PAC-50; see (d)).
 
 Sources read: `backend/api/routes.go`, `middleware.go`, `handlers_auth.go`,
 `handlers_sso.go`, `handlers_me.go`, `handlers_health.go`,
@@ -76,11 +76,15 @@ merges. It also documents a response that was missing from the contract:
 
 ## (b) Surprising / inconsistent things
 
-1. **`storage.SSOProvider` has no json tags.** `POST` and `GET /api/admin/sso`
-   therefore return PascalCase Go field names (`ID`, `ProviderName`, …) — the
-   only PascalCase payload in this domain — and include
-   **`OIDCClientSecret` and `SAMLCert` in plaintext** to any authenticated org
-   member. Everything else in the codebase uses snake_case or camelCase tags.
+1. **`storage.SSOProvider` has no json tags.** Before PAC-22, `POST` and
+   `GET /api/admin/sso` therefore returned PascalCase Go field names (`ID`,
+   `ProviderName`, …) — the only PascalCase payload in this domain — and
+   included the OIDC client secret and the SAML certificate to any
+   authenticated org member (API-001). Everything else in the codebase uses snake_case or camelCase tags.
+   **PAC-22 (contract):** both operations now answer `SsoProvider`, a
+   snake_case projection with no secret under any name and two `has_*`
+   booleans in their place; the list is wrapped in `SsoProviderList`
+   (API-001 disclosure half, U-22).
 
 2. **Two error encodings side by side.** `writeError()`
    (`handlers_settings.go:206`) emits `application/json` `{"error": "..."}`.
@@ -123,9 +127,15 @@ merges. It also documents a response that was missing from the contract:
 9. **`provider_type: "saml"` is storable but unusable.** `POST /api/admin/sso`
    accepts and persists it; `GET /api/auth/sso/{domain}` then returns
    **501 "SAML not yet supported"**. 501 is otherwise unused in the codebase.
+   **PAC-22 (contract):** `POST /api/admin/sso` refuses SAML and an
+   incomplete OIDC body with a 400 naming the problem (API-060, U-21); the
+   501 stays reachable only for rows stored before PAC-22.
 
 10. **`Enabled` is hardcoded `true`** on upsert and there is no update path that
     can set it false — the column exists but is write-once via this API.
+    **PAC-22 (contract):** `PUT /api/admin/sso/{domain}/state`
+    (`setSsoProviderState`) suspends and resumes; `POST /api/admin/sso` keeps
+    the stored state on a replace (API-066).
 
 11. **`DELETE /api/admin/sso/{domain}` returns 204 for a domain that has no
     provider row** (no rows-affected check), so delete is not observably
@@ -156,8 +166,8 @@ merges. It also documents a response that was missing from the contract:
 | Where | `x-uncertain` | What to verify |
 |---|---|---|
 | `CurrentUserResponse.provider` | Observed writers pass `"google"`, `"microsoft"`, `"sso"`, but the column is free text with no CHECK constraint found. | Grep the migrations for a constraint on `users.provider`, and confirm no other code path writes a fourth value (e.g. a seed script or the Zoom flow). If it is closed, turn it into an enum. |
-| `SsoProviderCreateRequest` (schema level) | Nothing beyond `domain` / `provider_name` / `provider_type` is validated, so an `oidc` row can be created with an empty issuer or client id; the failure only appears later as a 500 from `/api/auth/sso/{domain}`. | Decide whether `oidc_issuer` + `oidc_client_id` + `oidc_client_secret` should be required when `provider_type == "oidc"` (and the SAML trio when `"saml"`), then encode it as a `oneOf` / `dependentRequired`. |
-| `SsoProviderResponse` (schema level) | No frontend consumer exists, so the PascalCase key casing is inferred from the absence of json tags rather than observed on the wire. | Hit `GET /api/admin/sso` against a running server and confirm the casing — and confirm whether returning `OIDCClientSecret` / `SAMLCert` is intended before this is published as the contract. |
+| ~~`SsoProviderCreateRequest` (schema level)~~ | Resolved by PAC-22 (U-21, spec D-1, D-2, D-8, D-12): OIDC only; issuer and client id required; the client secret required on a create and kept on a replace only under createSsoProvider's conditions; SAML properties refused by name. | — |
+| ~~`SsoProviderResponse` (schema level)~~ | Resolved by PAC-22 (U-22): the schema is removed and replaced by `SsoProvider`, whose keys the contract defines and which carries no secret. | — |
 
 Additional points a human should settle that are **not** marked `x-uncertain`
 because the code is unambiguous, but where the code may not be the intent:
@@ -188,17 +198,20 @@ in `contracts/features/PAC-50.md`; the decisions it records are in
   `stepup_scopes` and `without_stepup` so the client can explain the optional
   step-up before navigating). Delete of an absent row is a
   404 (settles (b)(11), API-067).
-- Two operations added: `startSsoAdminStepup` (`GET /api/admin/sso/stepup`) and
-  `ssoAdminStepupCallback` (`GET /api/admin/sso/stepup/callback`). The operation
-  count is now 18.
-- The two `x-uncertain` rows of (c) on `SsoProviderCreateRequest` and
-  `SsoProviderResponse` are resolved by determination, not deletion:
-  - `SsoProviderCreateRequest` (U-21): the handler validates the three required
-    fields as non-empty and `provider_type` against the enum, and nothing else.
-    The schema now says so (`minLength: 1`); requiring the OIDC/SAML trios is a
-    behaviour change outside PAC-50 and stays with API-060.
-  - `SsoProviderResponse` (U-22): a `storage.SSOProvider` marshalled with
-    `encoding/json` on 2026-10-25 printed exactly the thirteen PascalCase keys
-    the schema lists. Returning `OIDCClientSecret` is API-001; PAC-22 removes it.
-- Still open after PAC-50: (b)(9)/(b)(10) (API-060, API-066), and (a)(7): the
-  SSO operations still have no hand-written web consumer.
+- Three operations added: `startSsoAdminStepup` (`GET /api/admin/sso/stepup`),
+  `ssoAdminStepupCallback` (`GET /api/admin/sso/stepup/callback`) and, since
+  contract revision 8, `getSsoStepupOptions` (`GET /api/admin/sso/stepup/options`,
+  the step-up's values without a write, for the Settings entry point).
+- Since contract revision 8 (PAC-22 merged): PAC-22's `setSsoProviderState`
+  is the third SSO write behind the gate (403 `SsoWriteForbiddenResponse`), and
+  PAC-22's create checks sit inside the gate: body 400s (with PAC-50's
+  `unknown property`), domain 403, PAC-22's stored-row 400, then authorization.
+- The two `x-uncertain` rows of (c) on `SsoProviderCreateRequest` (U-21) and
+  `SsoProviderResponse` (U-22) were resolved by PAC-50's revisions 1-7 by
+  determination against the pre-PAC-22 handler; PAC-22 has since replaced both
+  (see (c)), and contract revision 8 describes PAC-22's request and
+  `SsoProvider` response with PAC-50's `unknown property` refusal and
+  lower-cased `domain` added.
+- Still open after PAC-50: (a)(7): the SSO operations still have no
+  hand-written web consumer apart from the Settings step-up entry point
+  (spec AC-25). (b)(9)/(b)(10) (API-060, API-066) are PAC-22's, now on `main`.

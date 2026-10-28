@@ -10,21 +10,13 @@ import (
 	"sync"
 
 	"github.com/Enach/paceday/backend/config"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-// PAC-66: the deployment's own cloud identity (azure_openai, vertex, bedrock)
-// is sent only to inference hosts the operator approved for that provider.
-// The check is made on every send, by every path (probe, parse, meeting
-// briefs), and again by the transport at the moment of sending.
-
-// The three providers that send the deployment's own cloud identity.
-const (
-	ProviderAzureOpenAI = "azure_openai"
-	ProviderVertex      = "vertex"
-	ProviderBedrock     = "bedrock"
-)
+// PAC-66, as changed by NEW-llm-bring-your-own: the user's key for Azure
+// OpenAI, Bedrock and Vertex is sent only to inference hosts the operator
+// approved for that provider. The check is made on every send, by every path
+// (probe, parse, meeting briefs), and again by the transport at the moment of
+// sending. No identity of the machine Paceday runs on is used any more.
 
 // Refusal reasons, as the contract's LLMDestinationRefusal.reason enum.
 const (
@@ -38,40 +30,25 @@ const (
 const (
 	MsgAzureEndpointNotApproved = "azureEndpoint must be an https URL whose host is approved for azure_openai on this deployment"
 	MsgAzureEndpointNotEnabled  = "azureEndpoint cannot be set: azure_openai is not enabled on this deployment"
-	MsgGCPLocationNotApproved   = "gcpLocation must be a region whose Vertex host is approved on this deployment"
-	MsgGCPLocationNotEnabled    = "gcpLocation cannot be set: vertex is not enabled on this deployment"
 	MsgAWSRegionInvalid         = "awsRegion must be a valid AWS region name"
 )
 
-var providerNames = map[string]string{
-	ProviderAzureOpenAI: "Azure OpenAI",
-	ProviderVertex:      "Vertex AI",
-	ProviderBedrock:     "Bedrock",
-}
-
-// AmbientDeps are the process-wide seams of the three providers that send the
-// deployment's own cloud identity. The zero value means production: the real
-// network and the real credential chains.
-type AmbientDeps struct {
+// CloudDeps are the process-wide seams of the three cloud providers. The zero
+// value means production: the real network.
+type CloudDeps struct {
 	// Transport carries inference requests. nil means http.DefaultTransport.
 	Transport http.RoundTripper
-	// AzureToken and VertexToken mint the bearer token. nil means the SDK's
-	// default credential chain.
-	AzureToken  func(context.Context) (string, error)
-	VertexToken func(context.Context) (string, error)
-	// AWSCredentials signs Bedrock requests. nil means the default chain.
-	AWSCredentials aws.CredentialsProvider
 }
 
 var (
 	policyMu sync.RWMutex
 	approved config.LLMApprovedHosts
-	deps     AmbientDeps
+	deps     CloudDeps
 )
 
 // SetApprovedHosts installs the operator's approved inference hosts and
 // returns a function restoring the previous set. main calls it once at
-// startup; until then nothing is approved (fail closed, spec D-1).
+// startup; until then nothing is approved (fail closed).
 func SetApprovedHosts(h config.LLMApprovedHosts) (restore func()) {
 	policyMu.Lock()
 	prev := approved
@@ -80,16 +57,16 @@ func SetApprovedHosts(h config.LLMApprovedHosts) (restore func()) {
 	return func() { SetApprovedHosts(prev) }
 }
 
-// SetAmbientDeps installs d and returns a function restoring the previous one.
-func SetAmbientDeps(d AmbientDeps) (restore func()) {
+// SetCloudDeps installs d and returns a function restoring the previous one.
+func SetCloudDeps(d CloudDeps) (restore func()) {
 	policyMu.Lock()
 	prev := deps
 	deps = d
 	policyMu.Unlock()
-	return func() { SetAmbientDeps(prev) }
+	return func() { SetCloudDeps(prev) }
 }
 
-func currentDeps() AmbientDeps {
+func currentDeps() CloudDeps {
 	policyMu.RLock()
 	defer policyMu.RUnlock()
 	return deps
@@ -102,10 +79,8 @@ func currentApproved() config.LLMApprovedHosts {
 }
 
 // DestinationRefusal is a send-time refusal: the request would carry the
-// deployment's cloud credential (PAC-66), the caller's own key or a keyless
-// Ollama request (PAC-66-B) to a destination not approved for Provider, so
-// nothing was sent. Message is a sentence for the user and
-// never carries a credential.
+// user's key to a destination not approved for Provider, so nothing was sent.
+// Message is a sentence for the user and never carries a key.
 type DestinationRefusal struct {
 	Provider string
 	Reason   string
@@ -118,10 +93,13 @@ type DestinationRefusal struct {
 func (r *DestinationRefusal) Error() string { return r.Message }
 
 func refuseNotEnabled(provider string) *DestinationRefusal {
+	what := "an endpoint for " + displayNames[provider]
+	if provider == ProviderVertex {
+		what = vertexExpressHost
+	}
 	return &DestinationRefusal{
 		Provider: provider, Reason: ReasonProviderNotEnabled,
-		Message: fmt.Sprintf("%s is not enabled on this deployment; ask your administrator to approve an endpoint for %s",
-			provider, providerNames[provider]),
+		Message: fmt.Sprintf("%s is not enabled on this deployment; ask your administrator to approve %s", provider, what),
 	}
 }
 
@@ -132,7 +110,7 @@ func refuseNotApproved(provider, property string) *DestinationRefusal {
 	}
 	return &DestinationRefusal{
 		Provider: provider, Reason: ReasonDestinationNotApproved, Property: property,
-		Message: fmt.Sprintf("%s %s an approved %s endpoint on this deployment", property, verb, providerNames[provider]),
+		Message: fmt.Sprintf("%s %s an approved %s endpoint on this deployment", property, verb, displayNames[provider]),
 	}
 }
 
@@ -161,15 +139,9 @@ func approvedRawURL(provider, raw string) bool {
 	return err == nil && approvedURL(provider, u)
 }
 
-// CheckDestination reports whether c may send now. It returns a
-// *DestinationRefusal when c would carry the deployment credential to a
-// destination the operator did not approve, another error when the
-// destination cannot be worked out for a reason that is not a refusal (a
-// Bedrock configuration that does not load), and nil otherwise. Since
-// PAC-66-B the clients that carry the caller's own key or none (openai,
-// anthropic, ollama) are checked too (user_destination.go). It sends nothing
-// and acquires no credential, so a refusal is reported even where no
-// credential could be obtained.
+// CheckDestination reports whether c may send now: a *DestinationRefusal when
+// c would carry the key to a destination the operator did not approve, nil
+// otherwise. It sends nothing.
 func CheckDestination(ctx context.Context, c LLMClient) error {
 	if dc, ok := c.(interface{ CheckDestination(context.Context) error }); ok {
 		return dc.CheckDestination(ctx)
@@ -191,64 +163,38 @@ func (c *AzureOpenAIClient) CheckDestination(context.Context) error {
 	return nil
 }
 
-// CheckDestination is the Vertex send-time check. The effective host is the
-// host of the URL the server builds, as parsed, so a location that changes the
-// authority is refused.
+// CheckDestination is the Vertex send-time check. Express mode has exactly
+// one destination, so the provider is enabled exactly when that host is
+// approved.
 func (c *VertexClient) CheckDestination(context.Context) error {
-	if !currentApproved().Enabled(ProviderVertex) {
+	if !currentApproved().Approved(ProviderVertex, vertexExpressHost) {
 		return refuseNotEnabled(ProviderVertex)
-	}
-	if !approvedRawURL(ProviderVertex, c.requestURL()) {
-		return refuseNotApproved(ProviderVertex, "gcpLocation")
 	}
 	return nil
 }
 
-// CheckDestination is the Bedrock send-time check.
-func (c *BedrockClient) CheckDestination(ctx context.Context) error {
-	_, err := c.prepare(ctx)
-	return err
-}
-
-// prepare loads the AWS configuration and checks the host the SDK will
-// resolve for it: the explicit region, any endpoint override the operator set
-// (environment, or the selected profile's endpoint_url), FIPS and dual-stack.
-func (c *BedrockClient) prepare(ctx context.Context) (aws.Config, error) {
+// CheckDestination is the Bedrock send-time check: the region must be one
+// host label and its runtime host must be approved. No AWS SDK endpoint
+// resolution is involved, so nothing from the machine's AWS configuration can
+// move the destination.
+func (c *BedrockClient) CheckDestination(context.Context) error {
 	if !currentApproved().Enabled(ProviderBedrock) {
-		return aws.Config{}, refuseNotEnabled(ProviderBedrock)
+		return refuseNotEnabled(ProviderBedrock)
 	}
-	if !config.ValidDNSLabel(c.Region) {
-		return aws.Config{}, refuseNotApproved(ProviderBedrock, "awsRegion")
+	if !config.ValidDNSLabel(c.Region) || !approvedRawURL(ProviderBedrock, "https://"+c.host()+"/") {
+		return refuseNotApproved(ProviderBedrock, "awsRegion")
 	}
-	cfg, err := c.loadConfig(ctx)
-	if err != nil {
-		return aws.Config{}, err
-	}
-	o := bedrockruntime.NewFromConfig(cfg).Options()
-	property := "awsRegion"
-	if o.BaseEndpoint != nil && c.Profile != "" {
-		property = "awsProfile"
-	}
-	ep, err := o.EndpointResolverV2.ResolveEndpoint(ctx, bedrockruntime.EndpointParameters{
-		Region:       aws.String(o.Region),
-		UseFIPS:      aws.Bool(o.EndpointOptions.UseFIPSEndpoint == aws.FIPSEndpointStateEnabled),
-		UseDualStack: aws.Bool(o.EndpointOptions.UseDualStackEndpoint == aws.DualStackEndpointStateEnabled),
-		Endpoint:     o.BaseEndpoint,
-	})
-	if err != nil || !approvedURL(ProviderBedrock, &ep.URI) {
-		return aws.Config{}, refuseNotApproved(ProviderBedrock, property)
-	}
-	return cfg, nil
+	return nil
 }
 
-// errRedirect is why a redirect is never followed with the credential.
-var errRedirect = errors.New("the provider answered with a redirect; the deployment credential is never sent to a redirect target")
+// errRedirect is why a redirect is never followed with the key.
+var errRedirect = errors.New("the provider answered with a redirect; the key is never sent to a redirect target")
 
-// ambientHTTPClient is the HTTP client of the deployment-credential providers.
-// It follows no redirect (spec AC-8), and its transport refuses any request
-// whose destination is not approved for provider, so the rule holds at the
-// moment of sending whatever built the URL.
-func ambientHTTPClient(provider string) *http.Client {
+// cloudHTTPClient is the HTTP client of the three cloud providers. It follows
+// no redirect, and its transport refuses any request whose destination is not
+// approved for provider, so the rule holds at the moment of sending whatever
+// built the URL.
+func cloudHTTPClient(provider string) *http.Client {
 	inner := currentDeps().Transport
 	if inner == nil {
 		inner = http.DefaultTransport
@@ -271,7 +217,7 @@ func (t *approvedOnlyTransport) RoundTrip(req *http.Request) (*http.Response, er
 		}
 		return nil, &DestinationRefusal{
 			Provider: t.provider, Reason: ReasonDestinationNotApproved,
-			Message: fmt.Sprintf("refused to send the %s credential to a host this deployment has not approved", providerNames[t.provider]),
+			Message: fmt.Sprintf("refused to send the %s key to a host this deployment has not approved", displayNames[t.provider]),
 		}
 	}
 	return t.inner.RoundTrip(req)
@@ -279,23 +225,21 @@ func (t *approvedOnlyTransport) RoundTrip(req *http.Request) (*http.Response, er
 
 // AzureEndpointWriteProblem is the settings-write check for a CHANGED
 // azureEndpoint: "" when acceptable, otherwise the catalogue message. "" is
-// always acceptable (spec AC-15, D-3).
+// always acceptable.
 func AzureEndpointWriteProblem(v string) string {
 	if v == "" {
 		return ""
 	}
 	err := (&AzureOpenAIClient{Endpoint: v, Deployment: "d", APIVersion: "v"}).CheckDestination(context.Background())
-	return writeProblem(err, MsgAzureEndpointNotEnabled, MsgAzureEndpointNotApproved)
-}
-
-// GCPLocationWriteProblem is the settings-write check for a CHANGED
-// gcpLocation (see AzureEndpointWriteProblem).
-func GCPLocationWriteProblem(v string) string {
-	if v == "" {
+	var r *DestinationRefusal
+	switch {
+	case err == nil:
 		return ""
+	case errors.As(err, &r) && r.Reason == ReasonProviderNotEnabled:
+		return MsgAzureEndpointNotEnabled
+	default:
+		return MsgAzureEndpointNotApproved
 	}
-	err := (&VertexClient{Project: "p", Location: v, ModelID: "m"}).CheckDestination(context.Background())
-	return writeProblem(err, MsgGCPLocationNotEnabled, MsgGCPLocationNotApproved)
 }
 
 // AWSRegionWriteProblem is the settings-write check for a CHANGED awsRegion:
@@ -305,16 +249,4 @@ func AWSRegionWriteProblem(v string) string {
 		return ""
 	}
 	return MsgAWSRegionInvalid
-}
-
-func writeProblem(err error, notEnabled, notApproved string) string {
-	var r *DestinationRefusal
-	switch {
-	case err == nil:
-		return ""
-	case errors.As(err, &r) && r.Reason == ReasonProviderNotEnabled:
-		return notEnabled
-	default:
-		return notApproved
-	}
 }

@@ -56,8 +56,10 @@ func main() {
 		log.Printf("WARNING: %s", n)
 	}
 	nlp.SetApprovedHosts(llmHosts)
-	// PAC-66-B: approved destinations of openai, anthropic (beside their
-	// built-in public hosts) and ollama (none means not enabled). Never fatal.
+	// PAC-66-B: approved destinations of openai and anthropic (beside their
+	// built-in public hosts), gateway prefixes allowed. Never fatal. The
+	// retired Ollama variable is reported here once and approves nothing
+	// (NEW-llm-bring-your-own AC-19).
 	llmUserDest, llmUserNotices := config.DecideLLMUserDestinations(os.Getenv)
 	for _, n := range llmUserNotices {
 		log.Printf("WARNING: %s", n)

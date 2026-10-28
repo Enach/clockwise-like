@@ -12,26 +12,34 @@ import (
 	"github.com/Enach/paceday/backend/storage"
 )
 
-// PAC-66: the deployment's cloud identity goes only to hosts the operator
-// approved. Every test here runs with the spec's sentinel credential, so the
-// pre-PAC-66 code would have sent each refused request.
+// PAC-66, as changed by NEW-llm-bring-your-own: the user's key for Azure
+// OpenAI, Vertex and Bedrock goes only to hosts the operator approved, and no
+// identity of the machine Paceday runs on is used. Every test runs with
+// ambient AWS, Azure and Google credentials in the environment
+// (nlptest.Ambient) and a sentinel user key bound to the provider, so a
+// request carrying anything but that key would be seen.
 
 const (
 	azureHost    = "my-resource.openai.azure.com"
+	vertexHost   = "aiplatform.googleapis.com"
 	vertexEU     = "europe-west4-aiplatform.googleapis.com"
-	vertexUS     = "us-central1-aiplatform.googleapis.com"
 	bedrockUS    = "bedrock-runtime.us-east-1.amazonaws.com"
 	bedrockEU    = "bedrock-runtime.eu-west-1.amazonaws.com"
 	attackerHost = "attacker.example"
 )
 
+// client builds the client the saved choice in s decides on, binding the
+// sentinel user key to the provider when s has none.
 func client(t *testing.T, s storage.Settings) nlp.LLMClient {
 	t.Helper()
-	c, err := nlp.NewLLMClientFromSettings(&s)
-	if err != nil {
-		t.Fatalf("construct %s: %v", s.LLMProvider, err)
+	if s.LLMAPIKeys.For(s.LLMProvider) == "" {
+		s.LLMAPIKeys.Set(s.LLMProvider, nlptest.UserKey)
 	}
-	return c
+	d := nlp.DecideSaved(&s, false)
+	if d.NotConfigured != nil {
+		t.Fatalf("construct %s: not configured: %s", s.LLMProvider, d.NotConfigured.Message)
+	}
+	return d.Client
 }
 
 // refusal asserts that both the pre-check and Complete refuse with reason and
@@ -49,7 +57,7 @@ func refusal(t *testing.T, rec *nlptest.Recorder, c nlp.LLMClient, reason, prope
 		if r.Reason != reason || r.Property != property {
 			t.Errorf("%s: reason %q property %q, want %q %q", name, r.Reason, r.Property, reason, property)
 		}
-		if strings.TrimSpace(r.Error()) == "" || len(nlptest.Leaks(r.Error())) > 0 {
+		if strings.TrimSpace(r.Error()) == "" || len(nlptest.Leaks(r.Error())) > 0 || strings.Contains(r.Error(), nlptest.UserKey) {
 			t.Errorf("%s: message %q is empty or carries a credential (AC-11)", name, r.Error())
 		}
 	}
@@ -63,7 +71,8 @@ func completeErr(c nlp.LLMClient) error {
 	return err
 }
 
-// sentOnce asserts Complete succeeds with exactly one https request to host.
+// sentOnce asserts Complete succeeds with exactly one https request to host,
+// carrying no ambient credential.
 func sentOnce(t *testing.T, rec *nlptest.Recorder, c nlp.LLMClient, host string) nlptest.Request {
 	t.Helper()
 	if err := nlp.CheckDestination(context.Background(), c); err != nil {
@@ -77,6 +86,11 @@ func sentOnce(t *testing.T, rec *nlptest.Recorder, c nlp.LLMClient, host string)
 	if len(got) != 1 || !strings.EqualFold(got[0].Host, host) || got[0].Scheme != "https" {
 		t.Fatalf("requests = %+v, want exactly one https request to %s", got, host)
 	}
+	for k, v := range got[0].Header {
+		if leaks := nlptest.Leaks(strings.Join(v, " ")); len(leaks) > 0 {
+			t.Errorf("header %s carries an ambient credential %v", k, leaks)
+		}
+	}
 	return got[0]
 }
 
@@ -86,12 +100,15 @@ func TestAzure_UnapprovedEndpointSendsNothing(t *testing.T) { // AC-1, AC-9
 		nlp.ReasonDestinationNotApproved, "azureEndpoint")
 }
 
-func TestAzure_ApprovedEndpointSendsOnceWithTheCredential(t *testing.T) { // AC-6
+func TestAzure_ApprovedEndpointSendsOnceWithTheKeyOnly(t *testing.T) { // AC-6, NEW-llm-bring-your-own AC-3
 	rec := nlptest.Ambient(t, map[string][]string{"azure_openai": {azureHost}})
 	req := sentOnce(t, rec, client(t, storage.Settings{LLMProvider: "azure_openai",
 		AzureEndpoint: "https://My-Resource.openai.azure.com/", AzureDeployment: "gpt"}), azureHost)
-	if req.Header.Get("Authorization") != "Bearer "+nlptest.AzureToken {
-		t.Errorf("Authorization = %q, want the sentinel bearer token", req.Header.Get("Authorization"))
+	if req.Header.Get("api-key") != nlptest.UserKey || req.Header.Get("Authorization") != "" {
+		t.Errorf("headers = %v, want api-key = the user's key and no Authorization", req.Header)
+	}
+	if req.Path != "/openai/deployments/gpt/chat/completions" || req.Query != "api-version=2024-02-01" {
+		t.Errorf("request = %s?%s", req.Path, req.Query)
 	}
 }
 
@@ -127,18 +144,17 @@ func TestAzure_EmptyEndpointIsNotSet(t *testing.T) { // AC-20
 	}
 }
 
-func TestAmbient_NothingApprovedMeansNotEnabled(t *testing.T) { // AC-4, D-1
+func TestCloud_NothingApprovedMeansNotEnabled(t *testing.T) { // AC-4, D-1
 	for _, s := range []storage.Settings{
 		{LLMProvider: "azure_openai", AzureEndpoint: "https://" + azureHost},
 		{LLMProvider: "azure_openai"},
-		{LLMProvider: "vertex", GCPLocation: "europe-west4"},
 		{LLMProvider: "vertex"},
 		{LLMProvider: "bedrock", AWSRegion: "eu-west-1"},
 		{LLMProvider: "bedrock"},
 	} {
-		t.Run(s.LLMProvider+"/"+s.AzureEndpoint+s.GCPLocation+s.AWSRegion, func(t *testing.T) {
+		t.Run(s.LLMProvider+"/"+s.AzureEndpoint+s.AWSRegion, func(t *testing.T) {
 			// A host approved for ANOTHER provider never enables this one (D-8).
-			others := map[string][]string{"azure_openai": {vertexEU, bedrockEU}, "vertex": {azureHost}, "bedrock": {azureHost, vertexEU}}
+			others := map[string][]string{"azure_openai": {vertexHost, bedrockEU}, "vertex": {azureHost}, "bedrock": {azureHost, vertexHost}}
 			delete(others, s.LLMProvider)
 			rec := nlptest.Ambient(t, others)
 			c := client(t, s)
@@ -150,38 +166,32 @@ func TestAmbient_NothingApprovedMeansNotEnabled(t *testing.T) { // AC-4, D-1
 	}
 }
 
-func TestAmbient_HostApprovedOnlyForAnotherProvider(t *testing.T) { // AC-18 (c), D-8
-	rec := nlptest.Ambient(t, map[string][]string{"azure_openai": {azureHost}, "vertex": {vertexEU, attackerHost}})
-	refusal(t, rec, client(t, storage.Settings{LLMProvider: "azure_openai", AzureEndpoint: "https://" + vertexEU}),
+func TestCloud_HostApprovedOnlyForAnotherProvider(t *testing.T) { // AC-18 (c), D-8
+	rec := nlptest.Ambient(t, map[string][]string{"azure_openai": {azureHost}, "vertex": {vertexHost, attackerHost}})
+	refusal(t, rec, client(t, storage.Settings{LLMProvider: "azure_openai", AzureEndpoint: "https://" + vertexHost}),
 		nlp.ReasonDestinationNotApproved, "azureEndpoint")
 	refusal(t, rec, client(t, storage.Settings{LLMProvider: "azure_openai", AzureEndpoint: "https://" + attackerHost}),
 		nlp.ReasonDestinationNotApproved, "azureEndpoint")
 }
 
-func TestVertex_LocationThatMovesTheAuthoritySendsNothing(t *testing.T) { // AC-2
-	for _, loc := range []string{"attacker.example/x", "attacker.example#", "attacker.example:443/", "x@attacker.example/", "europe-west4.attacker.example/"} {
-		t.Run(loc, func(t *testing.T) {
-			rec := nlptest.Ambient(t, map[string][]string{"vertex": {vertexEU}})
-			refusal(t, rec, client(t, storage.Settings{LLMProvider: "vertex", GCPLocation: loc}),
-				nlp.ReasonDestinationNotApproved, "gcpLocation")
-		})
-	}
-}
-
-func TestVertex_ApprovedRegionSendsOnce(t *testing.T) { // AC-6
+// NEW-llm-bring-your-own D-4: Vertex express mode has one destination, the
+// global host, and uses no project or location. A regional host the operator
+// approved for the removed ADC mode approves nothing. Replaces the regional
+// location tests (TestVertex_LocationThatMovesTheAuthoritySendsNothing,
+// TestVertex_EmptyLocationMeansTheDefaultRegion).
+func TestVertex_ExpressModeGlobalHostOnly(t *testing.T) { // AC-5
 	rec := nlptest.Ambient(t, map[string][]string{"vertex": {vertexEU}})
-	req := sentOnce(t, rec, client(t, storage.Settings{LLMProvider: "vertex", GCPLocation: "europe-west4", GCPProject: "p"}), vertexEU)
-	if req.Header.Get("Authorization") != "Bearer "+nlptest.VertexToken {
-		t.Errorf("Authorization = %q, want the sentinel bearer token", req.Header.Get("Authorization"))
+	refusal(t, rec, client(t, storage.Settings{LLMProvider: "vertex", GCPProject: "p", GCPLocation: "europe-west4"}),
+		nlp.ReasonProviderNotEnabled, "")
+
+	rec = nlptest.Ambient(t, map[string][]string{"vertex": {vertexHost}})
+	req := sentOnce(t, rec, client(t, storage.Settings{LLMProvider: "vertex", GCPProject: "p", GCPLocation: "europe-west4", VertexModel: "gemini-2.5-flash"}), vertexHost)
+	if req.Header.Get("x-goog-api-key") != nlptest.UserKey || req.Header.Get("Authorization") != "" {
+		t.Errorf("headers = %v, want x-goog-api-key = the user's key and no Authorization", req.Header)
 	}
-}
-
-func TestVertex_EmptyLocationMeansTheDefaultRegion(t *testing.T) { // AC-16
-	rec := nlptest.Ambient(t, map[string][]string{"vertex": {vertexEU}})
-	refusal(t, rec, client(t, storage.Settings{LLMProvider: "vertex"}), nlp.ReasonDestinationNotApproved, "gcpLocation")
-
-	rec = nlptest.Ambient(t, map[string][]string{"vertex": {vertexUS}})
-	sentOnce(t, rec, client(t, storage.Settings{LLMProvider: "vertex"}), vertexUS)
+	if req.Path != "/v1/publishers/google/models/gemini-2.5-flash:generateContent" || req.Query != "" {
+		t.Errorf("request = %s?%s, want the express path with no key in the URL and no project or location", req.Path, req.Query)
+	}
 }
 
 func TestBedrock_EmptyRegionMeansUSEast1NotTheDeploymentRegion(t *testing.T) { // AC-19, D-7
@@ -192,8 +202,11 @@ func TestBedrock_EmptyRegionMeansUSEast1NotTheDeploymentRegion(t *testing.T) { /
 	rec = nlptest.Ambient(t, map[string][]string{"bedrock": {bedrockUS}})
 	t.Setenv("AWS_REGION", "eu-west-1")
 	req := sentOnce(t, rec, client(t, storage.Settings{LLMProvider: "bedrock"}), bedrockUS)
-	if !strings.Contains(req.Header.Get("Authorization"), nlptest.AWSAccessKey) {
-		t.Errorf("Authorization = %q, want a SigV4 signature by the sentinel key", req.Header.Get("Authorization"))
+	if req.Header.Get("Authorization") != "Bearer "+nlptest.UserKey {
+		t.Errorf("Authorization = %q, want the Bedrock API key as a bearer token (AC-4)", req.Header.Get("Authorization"))
+	}
+	if req.EscapedPath != "/model/anthropic.claude-sonnet-4-5-20251001-v1:0/converse" {
+		t.Errorf("path = %q, want the Converse path with the default model as one segment", req.EscapedPath)
 	}
 }
 
@@ -207,17 +220,21 @@ func TestBedrock_UnapprovedOrInvalidRegionSendsNothing(t *testing.T) { // AC-1, 
 	}
 }
 
-func TestBedrock_OperatorEndpointOverrideIsCheckedToo(t *testing.T) {
+// Was TestBedrock_OperatorEndpointOverrideIsCheckedToo: with the AWS SDK gone,
+// no AWS environment variable or profile can move the destination at all.
+func TestBedrock_AWSEnvironmentCannotMoveTheDestination(t *testing.T) {
 	rec := nlptest.Ambient(t, map[string][]string{"bedrock": {bedrockUS}})
 	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://"+attackerHost)
-	refusal(t, rec, client(t, storage.Settings{LLMProvider: "bedrock", AWSRegion: "us-east-1"}),
-		nlp.ReasonDestinationNotApproved, "awsRegion")
+	t.Setenv("AWS_ENDPOINT_URL", "https://"+attackerHost)
+	t.Setenv("AWS_PROFILE", "attacker")
+	sentOnce(t, rec, client(t, storage.Settings{LLMProvider: "bedrock", AWSRegion: "us-east-1", AWSProfile: "attacker"}), bedrockUS)
 }
 
-func TestAmbient_RedirectIsNeverFollowedWithTheCredential(t *testing.T) { // AC-8
+func TestCloud_RedirectIsNeverFollowedWithTheKey(t *testing.T) { // AC-8
 	cases := map[string]storage.Settings{
-		azureHost: {LLMProvider: "azure_openai", AzureEndpoint: "https://" + azureHost},
-		vertexEU:  {LLMProvider: "vertex", GCPLocation: "europe-west4"},
+		azureHost:  {LLMProvider: "azure_openai", AzureEndpoint: "https://" + azureHost},
+		vertexHost: {LLMProvider: "vertex"},
+		bedrockUS:  {LLMProvider: "bedrock", AWSRegion: "us-east-1"},
 	}
 	for host, s := range cases {
 		for _, target := range []string{"https://" + attackerHost + "/x", "https://sub." + host + "/x", "http://" + host + "/x"} {
@@ -241,35 +258,30 @@ func TestAmbient_RedirectIsNeverFollowedWithTheCredential(t *testing.T) { // AC-
 				if len(got) != 1 || got[0].Host != host || got[0].Scheme != "https" {
 					t.Errorf("requests = %+v, want only the original request to %s", got, host)
 				}
-				if len(nlptest.Leaks(err.Error())) > 0 {
-					t.Errorf("error carries the credential: %v", err)
+				if strings.Contains(err.Error(), nlptest.UserKey) {
+					t.Errorf("error carries the key: %v", err)
 				}
 			})
 		}
 	}
 }
 
-// Part A §6 left openai, anthropic and ollama unchecked. PAC-66-B supersedes
-// it (§B6): AC-B1 (openai at http://10.0.0.1), AC-B2 and AC-B6 (anthropic at
-// http://attacker.example) and AC-B8 (ollama with nothing stored, nothing
-// approved) are now refused.
+// Part A §6 left openai and anthropic unchecked. PAC-66-B supersedes it
+// (§B6): AC-B1 (openai at http://10.0.0.1) and AC-B2 / AC-B6 (anthropic at
+// http://attacker.example) are refused.
 func TestUserKeyProviders_AreCheckedSincePAC66B(t *testing.T) {
 	_ = nlptest.Ambient(t, nil)
-	rec := nlptest.UserDestinations(t, "", "", "")
-	for _, tc := range []struct {
-		s                storage.Settings
-		reason, property string
-	}{
-		{storage.Settings{LLMProvider: "openai", LLMAPIKey: "k", LLMBaseURL: "http://10.0.0.1"}, nlp.ReasonDestinationNotApproved, "llmBaseUrl"},
-		{storage.Settings{LLMProvider: "anthropic", LLMAPIKey: "k", LLMBaseURL: "http://attacker.example"}, nlp.ReasonDestinationNotApproved, "llmBaseUrl"},
-		{storage.Settings{LLMProvider: "ollama"}, nlp.ReasonProviderNotEnabled, ""},
+	rec := nlptest.UserDestinations(t, "", "")
+	for _, s := range []storage.Settings{
+		{LLMProvider: "openai", LLMBaseURL: "http://10.0.0.1"},
+		{LLMProvider: "anthropic", LLMBaseURL: "http://attacker.example"},
 	} {
-		refusal(t, rec, client(t, tc.s), tc.reason, tc.property)
+		refusal(t, rec, client(t, s), nlp.ReasonDestinationNotApproved, "llmBaseUrl")
 	}
 }
 
 func TestWriteChecks(t *testing.T) { // AC-5, AC-7, AC-15 (write side)
-	_ = nlptest.Ambient(t, map[string][]string{"azure_openai": {azureHost}, "vertex": {vertexEU}})
+	_ = nlptest.Ambient(t, map[string][]string{"azure_openai": {azureHost}})
 	for v, want := range map[string]string{
 		"":                               "",
 		"https://" + azureHost:           "",
@@ -284,16 +296,6 @@ func TestWriteChecks(t *testing.T) { // AC-5, AC-7, AC-15 (write side)
 		}
 	}
 	for v, want := range map[string]string{
-		"":                   "",
-		"europe-west4":       "",
-		"us-central1":        nlp.MsgGCPLocationNotApproved,
-		"attacker.example/x": nlp.MsgGCPLocationNotApproved,
-	} {
-		if got := nlp.GCPLocationWriteProblem(v); got != want {
-			t.Errorf("gcpLocation %q: %q, want %q", v, got, want)
-		}
-	}
-	for v, want := range map[string]string{
 		"": "", "us-east-1": "", "eu-west-1": "",
 		"attacker.example": nlp.MsgAWSRegionInvalid, "us-east-1#": nlp.MsgAWSRegionInvalid, "-x": nlp.MsgAWSRegionInvalid,
 	} {
@@ -305,9 +307,6 @@ func TestWriteChecks(t *testing.T) { // AC-5, AC-7, AC-15 (write side)
 	_ = nlptest.Ambient(t, nil)
 	if got := nlp.AzureEndpointWriteProblem("https://" + azureHost); got != nlp.MsgAzureEndpointNotEnabled {
 		t.Errorf("nothing approved: azureEndpoint %q, want %q", got, nlp.MsgAzureEndpointNotEnabled)
-	}
-	if got := nlp.GCPLocationWriteProblem("europe-west4"); got != nlp.MsgGCPLocationNotEnabled {
-		t.Errorf("nothing approved: gcpLocation %q, want %q", got, nlp.MsgGCPLocationNotEnabled)
 	}
 	if got := nlp.AzureEndpointWriteProblem(""); got != "" {
 		t.Errorf("nothing approved: \"\" refused: %q (AC-15)", got)

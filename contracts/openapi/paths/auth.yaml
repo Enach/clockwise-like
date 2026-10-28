@@ -440,8 +440,17 @@ paths:
         at another domain is dropped, so this route never sends one
         organisation's IdP an address outside that organisation's domain.
         Unchanged by PAC-35 (spec D-5): the 404, 500 and 501 answers below.
-        API-060 (SAML and incomplete OIDC rows accepted at create time) stays
-        with PAC-22.
+        Since PAC-22 (API-060, spec D-1) createSsoProvider refuses SAML and
+        incomplete OIDC configurations, so the 501 below is reachable only for
+        rows stored before PAC-22; those rows are neither rewritten nor
+        deleted, and this route keeps refusing them exactly as before. The 500
+        (issuer discovery failed) stays reachable for any row whose discovery
+        fails: a row stored before PAC-22 with an empty issuer, and equally a
+        row written since whose issuer is unreachable or unusable
+        (createSsoProvider requires only a non-empty issuer, so `" "` is
+        accepted). Only an active row is looked up: a configuration
+        suspended through setSsoProviderState (PAC-22) answers the 404, as if
+        no SSO were configured.
       security: []
       parameters:
         - name: domain
@@ -468,7 +477,7 @@ paths:
               schema: { type: string }
               description: 'sso_state=<32 hex chars>|<domain>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
         '404':
-          description: '"SSO not configured for this domain" — no provider row (also returned when the lookup errors).'
+          description: '"SSO not configured for this domain" — no active provider row: none exists, or it is suspended (PAC-22). Also returned when the lookup errors.'
           content:
             application/json:
               schema:
@@ -558,7 +567,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
-          description: '"SSO not configured for this domain" — JSON, unlike the other errors here.'
+          description: '"SSO not configured for this domain" — JSON, unlike the other errors here. No active provider row: none exists, or it is suspended (PAC-22). A sign-in started before a suspension that reaches this callback after it gets this 404 and no session. Also returned when the lookup errors.'
           content:
             application/json:
               schema:
@@ -782,24 +791,76 @@ paths:
     post:
       operationId: createSsoProvider
       tags: [auth]
-      summary: Create or update the SSO provider for the caller's org domain
+      summary: Create or replace the OIDC SSO configuration for the caller's org domain
       description: |
-        Upsert keyed on domain: a second POST for the same domain is the update
-        (there is no PATCH/PUT). Since PAC-50 (spec docs/specs/PAC-50.md §4.2)
-        every write passes this gate, in this order, before the provider store
-        is touched; the first step that fails decides the response:
+        Upsert keyed on domain: a second POST for the same domain replaces the
+        configuration (there is no PATCH/PUT). It is a replace for every value
+        a reader can see (PAC-22 spec §3.2): `provider_name`, `provider_type`,
+        `oidc_issuer` and `oidc_client_id` are supplied on every write and
+        stored as supplied.
+
+        The client secret is the one exception (PAC-22 spec D-12, D-13, D-14):
+        - `oidc_client_secret` supplied (a non-empty string): it replaces the
+          stored secret.
+        - `oidc_client_secret` left out (the property absent): the stored
+          secret is kept, unchanged, but only when all of these hold at the
+          moment the write is stored: a configuration exists for the domain,
+          it is of provider type `oidc`, its stored client secret is
+          non-empty, and the submitted `oidc_issuer` and `oidc_client_id` are
+          byte-for-byte equal to the stored ones (no case folding, no
+          trailing-slash or whitespace normalisation). Otherwise the write is
+          refused (400, step 4) and nothing changes. This binds a kept secret
+          to the place it is sent at sign-in: the issuer decides the token
+          endpoint the secret goes to (PAC-22 spec §2.2, D-13).
+        - `oidc_client_secret` given as `""` or `null`: refused (400, step
+          2f). No write clears the client secret; removing the configuration
+          (deleteSsoProvider) is the way to remove it.
+        A create (no configuration for the domain) has nothing to keep, so it
+        must supply the secret.
+
+        Every write passes this gate, in this order, before the provider
+        store is written; the first step that fails decides the response.
+        The gate is PAC-50's (spec docs/specs/PAC-50.md §4.2); steps 2 and 4
+        are PAC-22's request checks 1-5 and 6, placed in it (PAC-50 contract
+        revision 8).
 
         1. Membership: the caller must belong to an org, and the org is always
            the caller's own; nothing in the body chooses it. Otherwise 403
-           `org membership required` (or `org not found` when the org row is
-           gone). This runs before the break-glass check, so a break-glass
-           email with no org gets this same 403. It carries no `stepup_url`.
-        2. Body shape: `domain`, `provider_name` and `provider_type` non-empty,
-           `provider_type` in the enum, and NO property outside the schema.
-           An undeclared property (for instance `org_id`) is a 400
-           `unknown property: <name>`, never silently dropped. (Before PAC-50
-           the decoder ignored undeclared properties although the schema said
-           `additionalProperties: false`.)
+           `org membership required`, or `org not found` when the org row is
+           gone. Decided before the body is read, so before every 400, and
+           before the break-glass check, so a break-glass email with no org
+           gets this same 403. It carries no `stepup_url`.
+        2. Body, each refusal a 400 that stores nothing and consumes no grant.
+           In this order:
+           a. The body is a JSON object, and each declared property present
+              has its declared type (`invalid JSON`).
+           b. None of `saml_entry_point`, `saml_issuer`, `saml_cert` is
+              present, whatever its value (including `""` and `null`). The
+              first present, in that order, is named: `saml_entry_point is
+              not supported`, `saml_issuer is not supported`, `saml_cert is
+              not supported` (PAC-22 spec D-8, AC-18). Such a value is
+              refused, never stored and never silently dropped.
+           c. No other property outside the schema (PAC-50, spec §4.2 step 3,
+              AC-16a): the first undeclared property, in byte order of the
+              property names, is refused with `unknown property: <name>`, the
+              PAC-24 settings convention. Property names are case-sensitive,
+              so `OIDC_CLIENT_SECRET` or `org_id` is an undeclared property.
+              (Before PAC-50 an undeclared property was ignored, although the
+              schema said `additionalProperties: false`.)
+           d. `domain`, `provider_name` and `provider_type` are non-empty
+              (`domain, provider_name and provider_type are required`).
+           e. `provider_type` is `oidc`. `saml` is refused with
+              `provider_type 'saml' is not supported` (PAC-22 spec D-1, AC-8):
+              the product cannot complete a SAML sign-in. Any other value is
+              refused with `provider_type must be 'oidc'`.
+           f. `oidc_issuer` and `oidc_client_id` are each present and
+              non-empty, in that order: `oidc_issuer is required`,
+              `oidc_client_id is required` (PAC-22 spec D-2, AC-7). Missing,
+              `null` and `""` are the same refusal. Then, when
+              `oidc_client_secret` is present, it is a non-empty string: `""`
+              and `null` are refused with `oidc_client_secret must not be
+              empty` (PAC-22 spec D-12, AC-26). Values are stored as given (not
+              trimmed).
         3. Domain: `domain` must equal the caller's org domain, exact and
            case-insensitive. Otherwise 403 `provider_domain_mismatch` (owner
            decision 2026-10-27, RFC 9110 §15.5.4: the request is understood
@@ -808,8 +869,22 @@ paths:
            403, and so is a foreign domain such as `other.com`. Nothing is
            trimmed: `" acme.com "` is a 403 too. Nothing is written and a live
            grant is NOT consumed. (Before PAC-50 this was the suffix rule
-           domain.DomainMatchesOrg, which accepted any subdomain; ex-PAC-46.)
-        4. Authorization, one of:
+           domain.DomainMatchesOrg, which accepted any subdomain, with the
+           403 `can only configure SSO for your own domain`; ex-PAC-46.)
+        4. Kept secret (PAC-22 check 6), only when `oidc_client_secret` is
+           absent, against the row this write would be stored under: the row
+           under the lower-cased `domain` (PAC-50 stores domains lower-cased
+           and its migration lower-cases older rows, so `ACME.com` is checked
+           against the `acme.com` row). After step 3 the domain is the
+           caller's org domain, so the row read is always the caller's own
+           organisation's. 400 `oidc_client_secret is required` when there is
+           no configuration, or it is not of type `oidc`, or its stored client
+           secret is empty (PAC-22 spec AC-7, AC-25); 400 `oidc_client_secret
+           is required when oidc_issuer or oidc_client_id changes` when the
+           submitted issuer or client id differs from the stored one (PAC-22
+           spec D-13, AC-24). Like every refusal above, decided before
+           authorization: it consumes no grant.
+        5. Authorization, one of:
            a. a live admin step-up grant for (caller, caller's org), obtained
               through GET /api/admin/sso/stepup less than 10 minutes earlier.
               The request carries nothing that names it: the server selects
@@ -817,28 +892,56 @@ paths:
               statement, so one grant authorizes exactly one write, and two
               concurrent writes on one grant yield one success and one 403.
               Every 400 and 403 above happens before this step and leaves
-              the grant live; a failure after it (the 500 below) leaves it
-              consumed.
+              the grant live; a failure after it (the store-time 400 of step
+              6, the 500 below) leaves it consumed.
            b. break-glass: the caller's session email is listed in the
               deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the
-              session JWT was issued less than 10 minutes ago. Listed with an
-              older session gives 403 `sso_write_requires_fresh_login`.
+              session JWT was issued less than 10 minutes ago and not more
+              than one minute in the future (a token stamped further ahead is
+              not fresh). Listed without such a session gives 403
+              `sso_write_requires_fresh_login`.
            (a) is tried first: a break-glass caller who also holds a live
            grant consumes that grant on the write.
            Neither gives 403 `sso_write_requires_admin_stepup` with
            `stepup_url`, `stepup_scopes` and `without_stepup`. A 403 rather
            than a 401: the session is valid, the privilege is not there.
            Every 403 leaves the provider table unchanged.
-        5. Write: the domain is stored lower-cased, so `ACME.com` updates the
-           existing `acme.com` row rather than adding a second one. Each
-           successful write is recorded server-side for operators (spec §4.6);
-           no operation exposes that record.
+        6. Store: the domain is stored lower-cased, so `ACME.com` replaces the
+           existing `acme.com` row rather than adding a second one.
+           Interleaved writes (PAC-22 spec D-14, AC-27, AC-28): another write
+           to the same domain can be stored between this request's checks and
+           its store, so what a replace keeps is decided again, atomically
+           with the store, against the configuration as it is at that moment
+           and under the same key as step 4. When the secret is left out, the
+           store keeps the stored secret only if the conditions of step 4
+           still hold; if they do not (the issuer or client id now differs,
+           there is no secret to keep, the configuration was removed or is no
+           longer `oidc`), the request is refused with the 400 step 4 would
+           give against that state and nothing it carried is stored. The
+           grant consumed in step 5a stays consumed (PAC-50 spec §4.2 step
+           5a: the consume is the last step before the write; §9 D-14). A
+           stored configuration never pairs one write's issuer or client id
+           with a secret kept from a configuration that had a different issuer
+           or client id, and never holds an empty secret written by this
+           operation. The active state is never written by a replace: the
+           configuration keeps the state stored at the moment the replace is
+           stored, so a setSsoProviderState transition stored while the
+           replace was in flight is never undone (PAC-22 AC-28).
+           Each stored write is recorded server-side for operators (PAC-50
+           spec §4.6, `op` `create` or `update`, `via` `stepup` or
+           `breakglass`); a refused or failed store records nothing. No
+           operation exposes that record.
 
-        `enabled` is always forced to true; there is no way to disable a
-        provider through this API (API-066, not changed by PAC-50).
-        `provider_type: "saml"` and an `oidc` row with an empty issuer or
-        client id are still accepted and only fail at sign-in (API-060, not
-        changed by PAC-50).
+        Active state (PAC-22 spec §3.3, D-3, resolves API-066). This operation
+        never changes whether SSO is active: a new configuration is created
+        active, and a replaced configuration keeps the state stored at the
+        moment the replace is stored. Only setSsoProviderState changes it.
+        (Before PAC-22 every write forced `enabled` to true.)
+
+        Configurations stored before PAC-22 (a SAML row, an OIDC row with an
+        empty issuer, client id or secret) are not rewritten or deleted by
+        these checks. They stay readable through listSsoProviders and can be
+        suspended, resumed and deleted.
       requestBody:
         required: true
         content:
@@ -848,20 +951,42 @@ paths:
       responses:
         '201':
           description: |
-            The stored provider row, for a create and for an update alike.
-            It carries the client secret in plaintext (API-001; the projection
-            is PAC-22's, which lands after PAC-50).
+            The stored configuration, for a create and for a replace alike,
+            as an SsoProvider: it never carries the client secret or a signing
+            certificate under any name, nor anything derived from either
+            (API-001 disclosure half, PAC-22 spec AC-1, AC-2). No property
+            carries the supplied or the stored secret. The byte-level form (the
+            secret does not occur in the body or the headers, raw or
+            JSON-escaped, in any letter case) holds for a secret that does
+            not itself occur in the response's non-secret values, as PAC-22
+            spec AC-1 and AC-2 arrange with long, test-unique values: a secret
+            of `okta` or `true` can coincide with `provider_name`,
+            `oidc_issuer` or `has_oidc_client_secret: true`, which is not a
+            disclosure.
+            After a replace that left the secret out, `has_oidc_client_secret`
+            is true (the kept secret, PAC-22 spec AC-22). `domain` is the
+            lower-cased domain (PAC-50).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SsoProviderResponse'
+                $ref: '#/components/schemas/SsoProvider'
         '400':
           description: |
-            JSON error, one of: `invalid JSON`; `unknown property: <name>`
-            (added by PAC-50); `domain, provider_name and provider_type are
-            required`; `provider_type must be 'oidc' or 'saml'`. No row is
-            written and a live grant is NOT consumed. A domain that is not the
-            org domain is not a 400: it is the 403 `provider_domain_mismatch`.
+            JSON error; nothing is stored or changed. One of, in the order of
+            the gate (step 2, then step 4): `invalid JSON`; `saml_entry_point
+            is not supported`; `saml_issuer is not supported`; `saml_cert is
+            not supported`; `unknown property: <name>` (PAC-50); `domain,
+            provider_name and provider_type are required`; `provider_type
+            'saml' is not supported`; `provider_type must be 'oidc'`;
+            `oidc_issuer is required`; `oidc_client_id is required`;
+            `oidc_client_secret must not be empty`; `oidc_client_secret is
+            required`; `oidc_client_secret is required when oidc_issuer or
+            oidc_client_id changes`. The body never echoes a submitted or a
+            stored value, except the undeclared property's name. A live grant
+            is NOT consumed, except by the store-time refusal of step 6 (one of
+            the last two messages, given after the grant was consumed). A domain
+            that is not the org domain is not a 400: it is the 403
+            `provider_domain_mismatch`.
           content:
             application/json:
               schema:
@@ -875,20 +1000,22 @@ paths:
         '403':
           description: |
             The caller may not write SSO configuration. The `error` field tells
-            the four cases apart (see SsoWriteForbiddenResponse): membership,
-            `provider_domain_mismatch` (the body's `domain` is not exactly the
-            org domain: a subdomain, a foreign domain, or one with surrounding
-            whitespace; replaces the pre-PAC-50 403 `can only configure SSO
-            for your own domain`; a live grant is not consumed), the step-up,
-            or a fresh login. Only `sso_write_requires_admin_stepup` carries
-            `stepup_url`. The provider table is unchanged.
+            the four cases apart (see SsoWriteForbiddenResponse): membership
+            (step 1, before any 400), `provider_domain_mismatch` (step 3: the
+            body's `domain` is not exactly the org domain, a subdomain, a
+            foreign domain, or one with surrounding whitespace; replaces the
+            pre-PAC-50 403 `can only configure SSO for your own domain`; a live
+            grant is not consumed), the step-up, or a fresh login (step 5).
+            Only `sso_write_requires_admin_stepup` carries `stepup_url`. The
+            provider table is unchanged.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SsoWriteForbiddenResponse'
         '500':
           description: >-
-            Storage failed: the grant lookup in step 4a, or the save after the gate
+            Storage failed: the stored-row read of step 4 (before any grant is
+            consumed), the grant lookup in step 5a, or the save after the gate
             passed. Body: `{"error":"internal error"}`. The detail is written to the
             server log and Sentry only (PAC-21). A grant consumed for this request
             stays consumed; the retry needs a new step-up.
@@ -899,16 +1026,33 @@ paths:
     get:
       operationId: listSsoProviders
       tags: [auth]
-      summary: List the SSO providers belonging to the caller's org
+      summary: List the SSO configurations belonging to the caller's org
+      description: |
+        Any member of the org may call it (unchanged by PAC-22; restricting
+        who may read is out of PAC-22's scope, spec §5). Since PAC-22 the
+        response is an SsoProviderList: a named container, not a bare array
+        (spec §3.7), whose items never carry the client secret or a signing
+        certificate under any name, nor anything derived from either, whoever
+        the caller is (API-001 disclosure half, spec AC-1): no property of
+        the response carries either stored secret, or anything derived from
+        either, under any name. The byte-level form of that guarantee (neither
+        stored value occurs in the body or the headers, raw or JSON-escaped,
+        in any letter case) holds for a secret that does not itself occur in
+        the response's non-secret values, as spec AC-1 arranges with long,
+        test-unique values; a secret such as `okta` or `true` can coincide
+        with a provider name, an issuer or a fixed token, and that is not a
+        disclosure. Suspended configurations are listed,
+        with `state: suspended`; so are configurations stored before PAC-22
+        that could not be written today (a SAML row, an incomplete OIDC row).
+        A configuration is listed when its domain equals the org's domain
+        exactly (the join is on `organizations.domain`).
       responses:
         '200':
-          description: Providers for the caller's org; `[]` when there are none.
+          description: The org's configurations; `{"providers":[]}` when there are none.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/SsoProviderResponse'
+                $ref: '#/components/schemas/SsoProviderList'
         '401':
           description: No/invalid JWT (text/plain).
           content:
@@ -916,7 +1060,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required" — the user has no org_id.'
+          description: '"org membership required" — the user has no org_id (also returned when the user lookup errors).'
           content:
             application/json:
               schema:
@@ -936,23 +1080,27 @@ paths:
       tags: [auth]
       summary: Delete the SSO provider for the caller's org domain
       description: |
-        Same gate as createSsoProvider, in the same order (spec §4.2):
-        membership (403 `org membership required` / `org not found`), then the
-        `{domain}` segment, lower-cased and not trimmed, must equal the
-        caller's org domain exactly (403 `provider_domain_mismatch`, owner
-        decision 2026-10-27; a subdomain does not match, nor does a foreign
-        domain, nor `%20acme.com`; no grant is consumed),
-        then authorization (a live step-up grant, consumed, or break-glass with
-        a fresh session; otherwise 403 `sso_write_requires_admin_stepup` with
-        `stepup_url`, or `sso_write_requires_fresh_login`).
+        Same gate as createSsoProvider, in the same order (spec §4.2), with no
+        body to check: membership (403 `org membership required` / `org not
+        found`), then the `{domain}` segment, lower-cased and not trimmed, must
+        equal the caller's org domain exactly (403 `provider_domain_mismatch`,
+        owner decision 2026-10-27; a subdomain does not match, nor does a
+        foreign domain, nor `%20acme.com`; no grant is consumed), then
+        authorization (a live step-up grant, consumed, or break-glass with a
+        fresh session; otherwise 403 `sso_write_requires_admin_stepup` with
+        `stepup_url`, `stepup_scopes` and `without_stepup`, or
+        `sso_write_requires_fresh_login`).
         The segment is a target, never an authorization: it chooses which row,
         and only ever within the caller's own org domain.
 
         The row deleted is the lower-cased domain, so `DELETE
-        /api/admin/sso/ACME.com` removes the `acme.com` row. Since PAC-50 a
-        delete that removes no row is a 404 and is not recorded (API-067 fixed;
-        before PAC-50 it answered 204 having deleted nothing). The grant is
-        consumed before the delete runs, so a 404 has used it.
+        /api/admin/sso/ACME.com` removes the `acme.com` row, whatever its
+        state: a suspended configuration (PAC-22) is deleted like an active
+        one. Since PAC-50 a delete that removes no row is a 404 and is not
+        recorded (API-067 fixed; before PAC-50 it answered 204 having deleted
+        nothing). The grant is consumed before the delete runs, so a 404 has
+        used it (spec §9 D-5). A delete that removes a row is recorded for
+        operators (spec §4.6, `op` `delete`).
 
         `DELETE /api/admin/sso/stepup` is this operation with `{domain}` =
         `stepup` (the step-up paths define only GET): it gets the same gate,
@@ -990,6 +1138,7 @@ paths:
           description: |
             `sso provider not found`: authorized, but no provider row exists
             for the org domain (added by PAC-50, API-067). Nothing is recorded.
+            The grant is spent (spec §9 D-5).
           content:
             application/json:
               schema:
@@ -1000,6 +1149,183 @@ paths:
             Body: `{"error":"internal error"}`. The detail is written to the server
             log and Sentry only (PAC-21). A grant consumed for this request stays
             consumed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/{domain}/state:
+    put:
+      operationId: setSsoProviderState
+      tags: [auth]
+      summary: Suspend or resume the SSO configuration for a domain
+      description: |
+        Added by PAC-22 (spec §3.3, §3.5, §3.6; resolves API-066). The only
+        operation that changes whether SSO is active, and it changes nothing
+        else. The request names its target (`{domain}`, as deleteSsoProvider
+        does) and the state it wants; it never toggles. It carries no
+        configuration value and no secret, so suspending and resuming never
+        need the client secret (PAC-22 spec AC-10, AC-12).
+
+        While a configuration is suspended, sign-in behaves as if no SSO were
+        configured for its domain: detectAuthProvider does not answer `sso`
+        and startSsoLogin answers 404. The configuration itself is kept and
+        stays listed. **Suspension stops new sign-ins; it does not end
+        sessions** already issued through the provider (PAC-22 spec §3.5).
+
+        **An SSO configuration write, behind PAC-50's gate** (PAC-22 spec D-5,
+        D-6; PAC-50 contract revision 8). The caller must be permitted to
+        change SSO configuration under exactly the rule that authorizes
+        createSsoProvider and deleteSsoProvider (a live admin step-up grant,
+        consumed, or break-glass with a fresh session), never membership
+        alone, and every refusal of that rule is a SsoWriteForbiddenResponse.
+        **Not served before PAC-50 is on `main`** (PAC-22 D-16): no route
+        answers this operation until PAC-50's gate exists, so no SSO write is
+        ever served ungated. Serving it is PAC-22's follow-up on top of
+        PAC-50; what follows is how it behaves once served.
+
+        Checks run in this order; the first that fails decides the response:
+
+        1. Membership: the caller belongs to an org, else 403
+           `org membership required` (or `org not found`), as at step 1 of
+           createSsoProvider.
+        2. Body: a JSON object, else `invalid JSON`. A body that is not
+           JSON, and a body that is valid JSON but not an object (`[]`,
+           `"active"`, `true`, `1`, `null`), all get `invalid JSON`; then the
+           object's properties in body order:
+           the first property other than `state` is refused
+           (`unknown property: <name>`), so no configuration value can ride
+           along, and a second `state` is refused (`duplicate property:
+           state`), so a body never asks for two states and no decoder's
+           "last one wins" decides a kill switch; then `state` is `active` or
+           `suspended` (`state must be 'active' or 'suspended'`, for a missing
+           or `null` state too).
+        3. Domain: `{domain}`, lower-cased and not trimmed, must equal the
+           caller's org domain exactly, case-insensitively, else 403
+           `provider_domain_mismatch` (SsoWriteDomainMismatch), as on the
+           other two SSO writes (owner decision 2026-10-27; PAC-22 spec D-15,
+           PAC-50 spec §9 D-10). A subdomain of the org domain, another org's
+           domain and a padded segment (`%20acme.com`) are all refused (PAC-22
+           spec AC-21).
+        4. Authorization: step 5 of createSsoProvider (a live step-up grant,
+           consumed, tried first; or break-glass with a fresh session), else
+           403 `sso_write_requires_admin_stepup` (with `stepup_url`,
+           `stepup_scopes` and `without_stepup`) or
+           `sso_write_requires_fresh_login`. Steps 1-3 are decided from the
+           request alone and leave the grant unspent.
+        5. Lookup of the configuration for the lower-cased domain, whatever
+           its state: none gives 404 `sso provider not found`; nothing is
+           created and nothing is recorded, and the grant is spent
+           (PAC-22 spec D-9, AC-19; as deleteSsoProvider's 404, PAC-50 spec
+           §9 D-5).
+        6. If the configuration is already in the requested state, nothing
+           changes and the answer is 200 with the configuration as stored
+           (PAC-22 spec AC-20). Otherwise only the active state is written: no
+           configuration value is read from the request or written, so a
+           replace stored while this request is in flight keeps its values
+           and this request keeps its state (PAC-22 spec AC-28).
+           `updated_at` is not changed by this operation in either case: it
+           records the last configuration write (createSsoProvider).
+        7. Recording: every transition that found its configuration,
+           including one that changed nothing, is recorded where PAC-50
+           records configuration writes (PAC-50 spec §4.6), as
+           `sso_provider_written` with `op` `suspend` (state `suspended`) or
+           `resume` (state `active`) and `via` `stepup` or `breakglass`,
+           naming the organisation, the acting user and the provider (PAC-22
+           spec D-10, AC-16). No operation exposes that record.
+           The state write and its record are one transaction, as PAC-50's
+           configuration writes are: either both happen or neither does.
+
+        Steps 5 to 7 see one and the same row: the state write and its
+        record apply to the row the lookup found, and to nothing else. A
+        configuration removed (deleteSsoProvider) after
+        this request's lookup and before its write is stored is answered
+        exactly as one that was never there: 404 `sso provider not found`,
+        nothing written, nothing recorded, the grant spent (PAC-22 spec
+        D-9: never success for a configuration that does not exist). A
+        removal stored after this request's write is an ordinary later
+        removal.
+
+        This operation acts on configurations stored before PAC-22 that
+        createSsoProvider would refuse today (a SAML row, an incomplete OIDC
+        row) exactly as on any other (PAC-22 spec AC-8).
+
+        `PUT /api/admin/sso/stepup/state` (PAC-50 defines only GET under
+        `/api/admin/sso/stepup`) is this operation with `{domain}` =
+        `stepup`, which is never an org domain: 403 `provider_domain_mismatch`.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+          description: The caller's org domain, in any casing, e.g. "acme.com".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SsoProviderStateRequest'
+      responses:
+        '200':
+          description: |
+            The configuration after the request, as an SsoProvider; `state`
+            is the requested state. The same answer when it was already in
+            that state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoProvider'
+        '400':
+          description: |
+            JSON error; nothing changes and no grant is spent. One
+            of: `invalid JSON` (also for valid JSON that is not an object);
+            `unknown property: <name>`; `duplicate
+            property: state`; `state must be 'active' or 'suspended'`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: No/invalid JWT (text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: |
+            The caller may not write SSO configuration; see
+            SsoWriteForbiddenResponse. `org membership required` / `org not
+            found` (step 1); `provider_domain_mismatch`, the target is not
+            exactly the caller's org domain (step 3, PAC-22 spec AC-21, D-15;
+            no grant is spent); `sso_write_requires_admin_stepup` or
+            `sso_write_requires_fresh_login` (step 4). The configuration's
+            state is unchanged and nothing is recorded (PAC-22 spec AC-15,
+            AC-21).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteForbiddenResponse'
+        '404':
+          description: |
+            `sso provider not found`: the caller is permitted, but no
+            configuration exists for the domain, including one removed
+            after the lookup and before the state write would be stored.
+            Nothing is created, written or recorded; the grant is
+            spent (PAC-22 spec D-9, AC-19).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: >-
+            Storage failed: the grant lookup, the configuration lookup, or the
+            state write. Body: `{"error":"internal error"}`. The detail is written to
+            the server log and Sentry only (PAC-21). A grant consumed for this
+            request stays consumed. The state write and its `sso_provider_written`
+            record are one transaction, so after a 500 the state is the one stored
+            before the request and nothing is recorded for it.
           content:
             application/json:
               schema:
@@ -1021,29 +1347,39 @@ paths:
         Entra role). The outcome comes back through
         GET /api/admin/sso/stepup/callback.
 
-        This is the `stepup_url` of SsoWriteStepupRequired: the client appends
-        `?provider=google` or `?provider=microsoft` after asking the user
-        which account administers their organisation (offering only the
-        providers that are keys of SsoWriteStepupRequired.stepup_scopes, the
-        ones configured on this deployment), then navigates the browser there (a top-level navigation, not a fetch), resolving the
-        path against its configured API base's origin, not the page's.
+        This is the `stepup_url` of SsoWriteStepupRequired and of
+        SsoStepupOptions: the client appends `?provider=google` or
+        `?provider=microsoft` after asking the user which account administers
+        their organisation (offering only the providers that are keys of
+        `stepup_scopes`, the ones configured on this deployment), then
+        navigates the browser there (a top-level navigation, not a fetch),
+        resolving the path against its configured API base's origin, not the
+        page's. A client with no refused write in hand (the web app's
+        Settings, spec AC-25) obtains those values from getSsoStepupOptions.
+
+        Checks run in this order; the first that fails decides the response,
+        and none of them sets the state cookie: `provider` (400), membership
+        (403), the provider configured on this deployment (503), the state
+        value generated (500). So an orgless caller with `?provider=okta`
+        gets the 400, and an orgless caller naming an unconfigured provider
+        gets the 403.
 
         The step-up is optional and separate from sign-in (owner decision
         2026-10-27, PAC-68 OQ-2 / PAC-50 OQ-2). Sign-in (startGoogleOAuth,
         startMicrosoftOAuth, the OIDC SSO start) never requests these scopes
         nor any scope needing admin consent; only this round-trip does. The
-        broader scopes are listed in SsoWriteStepupRequired.stepup_scopes and
-        what is lost without the step-up in `without_stepup`, so a client can
-        explain both before it navigates here. Declining costs nothing else:
-        the app keeps working, and the step-up can be started again at any
-        time by navigating to `stepup_url`; every SSO write made without a
-        live grant answers SsoWriteStepupRequired again, so the choice is
-        offered again at the next write. A grant is single-use and expires
-        after 10 minutes, so the step-up is meant to be started for a write
-        the user is about to make. The resulting tokens
-        are discarded after the check; nothing is written to the user's
-        settings or token store, and the calendar consent is not widened.
-        Google adds the read-only directory-user scope; Microsoft adds
+        broader scopes are listed in `stepup_scopes` and what is lost without
+        the step-up in `without_stepup` (SsoWriteStepupRequired,
+        SsoStepupOptions), so a client can explain both before it navigates
+        here. Declining costs nothing else: the app keeps working, and the
+        step-up can be started again at any time by navigating to
+        `stepup_url`, from Settings (spec §9 D-13) or at the next SSO write,
+        which answers SsoWriteStepupRequired again while there is no live
+        grant. A grant is single-use and expires after 10 minutes, so the
+        step-up is meant to be started for a write the user is about to make.
+        The resulting tokens are discarded after the check; nothing is written
+        to the user's settings or token store, and the calendar consent is not
+        widened. Google adds the read-only directory-user scope; Microsoft adds
         delegated directory-role and organisation read scopes (whether
         `User.Read` suffices for the organisation's verified domains is spec
         OQ-2's technical sub-question, open for the plan; it does not change
@@ -1078,9 +1414,13 @@ paths:
           description: |
             No state cookie is set. Two forms:
             - `provider` missing or empty: text/plain
-              `Query argument provider is required, but not found`, from the
-              generated request wrapper's default error handler (the server
-              installs no JSON error handler for generated operations).
+              `Query argument provider is required, but not found`. The
+              operation is mounted on the router directly, not through the
+              generated request wrapper; the handler writes these exact bytes
+              itself, the ones the generated wrapper's default error handler
+              writes for a missing required query parameter, so the body does
+              not change if the operation later moves to the generated server
+              (spec §9 D-9).
             - `provider` present but not in the enum: JSON
               `provider must be 'google' or 'microsoft'`.
           content:
@@ -1098,10 +1438,11 @@ paths:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
           description: |
-            `org membership required`: the caller has no org, so there is no
-            org domain to step up for. No state cookie is set. (Assumed by the
-            factory at stage 2, pending owner confirmation; spec "Decisions",
-            D-1.)
+            `org membership required`: the caller has no org, or its org row
+            is gone (this operation does not distinguish the second case as
+            `org not found`), so there is no org domain to step up for. No
+            state cookie is set. (Assumed by the factory at stage 2, pending
+            owner confirmation; spec "Decisions", D-1.)
           content:
             application/json:
               schema:
@@ -1113,8 +1454,10 @@ paths:
             callback's redirect_uri cannot be built without it, so with
             `APP_URL` unset every provider answers this 503). No state cookie
             is set. Same
-            precedent as startMicrosoftOAuth's 503. (Assumed by the factory at
-            stage 2, pending owner confirmation; spec "Decisions", D-2.)
+            precedent as startMicrosoftOAuth's 503. A provider answers this
+            503 if and only if it is not a key of `stepup_scopes`. (Assumed by
+            the factory at stage 2, pending owner confirmation; spec
+            "Decisions", D-2.)
           content:
             application/json:
               schema:
@@ -1128,6 +1471,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/stepup/options:
+    get:
+      operationId: getSsoStepupOptions
+      tags: [auth]
+      summary: What the SSO admin step-up would request, without making a write
+      description: |
+        Added by PAC-50 contract revision 8 (spec §9 D-13, AC-25; owner
+        decision 2026-10-27: the step-up can be started again from Settings).
+        Behind the session; the org is the caller's, never a parameter. It
+        gives a signed-in org member the `stepup_url`, `stepup_scopes` and
+        `without_stepup` that the step-up 403 (SsoWriteStepupRequired)
+        carries, so a page with no SSO write to make (the web app's Settings)
+        can explain the optional step-up and offer it before any navigation.
+
+        The values follow the 403's rules and are built from the same
+        components (SsoStepupUrl, SsoStepupScopes, SsoWithoutStepup). On one
+        deployment, this response's `stepup_scopes` and `without_stepup` are
+        equal to the step-up 403's: a provider is a key of `stepup_scopes` if
+        and only if startSsoAdminStepup would not answer 503 for it (spec §9
+        D-2, D-9), each list is exactly what that start requests beyond the
+        identity scopes, and an empty object means no step-up can be started
+        on this deployment.
+
+        Read-only. It consults and consumes no grant, sets and clears no
+        cookie, writes nothing and records nothing (no SSO event). Its answer
+        does not depend on whether the caller holds a live grant or is on the
+        break-glass list: it says what the step-up would request, not whether
+        this caller needs it, and a break-glass operator gets the same 200.
+        The `sso_stepup_state` cookie's Path (`/api/admin/sso/stepup`) covers
+        this path, so a browser in the middle of a step-up sends it here;
+        this operation ignores it.
+
+        Checks: membership (403), then 200. Calling it costs nothing, so a
+        client may call it whenever it renders the entry point.
+      responses:
+        '200':
+          description: The step-up's URL, what it would request from each configured provider, and what is lost without it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoStepupOptions'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: |
+            The caller has no org (`org membership required`, also when the
+            user lookup fails) or its org row is gone (`org not found`): there
+            is no org domain to step up for (as at the start, spec §9 D-1, and
+            as at step 1 of the SSO writes). The body is
+            SsoWriteMembershipRequired; it carries no `stepup_url`. A client
+            offers no step-up entry point to such a caller (spec AC-25).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
 
   /api/admin/sso/stepup/callback:
     get:
@@ -1175,6 +1578,10 @@ paths:
         organisation lookup and an unverified Google email onto the enum is
         assumed by the factory at stage 2, pending owner confirmation (spec
         "Decisions", D-3).
+
+        The web app's Settings page reads the outcome from this query
+        (`stepup`, and `reason` on a denial) and states it (spec AC-25); a
+        step-up started from a refused write elsewhere also lands there.
       parameters:
         - name: state
           in: query
@@ -1242,7 +1649,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
 components:
   securitySchemes:
     bearerAuth:
@@ -1519,8 +1925,9 @@ components:
           type: string
           enum: [google, microsoft, sso, generic]
           description: |
-            "generic" for consumer/unparseable domains, "sso" when a provider row
-            exists for the domain, "microsoft" from a live tenant probe against
+            "generic" for consumer/unparseable domains, "sso" when an active
+            provider row exists for the domain (a row suspended through
+            setSsoProviderState is ignored, PAC-22), "microsoft" from a live tenant probe against
             login.microsoftonline.com (2s timeout, 1h cache), else "google".
         provider_name:
           type: string
@@ -1576,117 +1983,220 @@ components:
     SsoProviderCreateRequest:
       type: object
       description: |
-        Anonymous struct in ssoHandlers.createSSOProvider. Since PAC-50 an
-        undeclared property is rejected with 400 `unknown property: <name>`
-        (before, the decoder ignored it despite `additionalProperties: false`).
-        Determined at stage 2 from the handler (resolves U-21): the server
-        validates exactly `domain`, `provider_name` and `provider_type` as
-        non-empty, `provider_type` against the enum, and (PAC-50) `domain`
-        against the org domain. Nothing else is validated: an `oidc` provider
-        can be stored with an empty issuer, client id or secret and fails only
-        later, at sign-in, as a 500 from /api/auth/sso/{domain} (API-060, not
-        changed by PAC-50).
-      required: [domain, provider_name, provider_type]
+        Body of createSsoProvider. Since PAC-22 (resolves U-21, API-060) it
+        describes an OIDC configuration and nothing else: every property but
+        the client secret is required and non-empty, and the SAML properties
+        are gone (PAC-22 spec D-1, D-2, D-8). The server enforces each of these
+        with the 400 messages listed on createSsoProvider, in the order given
+        there, including a named refusal of `saml_entry_point`, `saml_issuer`
+        and `saml_cert` when present. Since PAC-50 any other property outside
+        this schema is refused with 400 `unknown property: <name>`, so
+        `additionalProperties: false` is what the server does (before PAC-50
+        such a property was ignored). U-21 redetermined at PAC-50 contract
+        revision 8 from `main`'s createSsoProvider decoder (PAC-22): nothing
+        is validated beyond what this schema states and createSsoProvider's
+        400 list names. A replace supplies every value a reader can see again;
+        the client secret alone may be left out of a replace, which keeps the
+        stored one under the conditions stated on createSsoProvider (PAC-22
+        spec §3.2, D-12, D-13, D-14). Whether SSO is active is not part of
+        this body (PAC-22 spec §3.3); see setSsoProviderState.
+      required:
+        - domain
+        - provider_name
+        - provider_type
+        - oidc_issuer
+        - oidc_client_id
       properties:
         domain:
           type: string
           minLength: 1
           description: |
             Must equal the caller's org domain, exact and case-insensitive,
-            else 403 `provider_domain_mismatch`; a subdomain or a foreign
-            domain does not match, and surrounding whitespace is not trimmed
-            (`" acme.com "` is a 403). Stored lower-cased.
+            else 403 `provider_domain_mismatch` (PAC-50); a subdomain or a
+            foreign domain does not match, and surrounding whitespace is not
+            trimmed (`" acme.com "` is a 403). Stored lower-cased.
         provider_name:
           type: string
           minLength: 1
+          description: Display name, returned as `provider_name` and shown by detectAuthProvider.
+        provider_type:
+          type: string
+          enum: [oidc]
+          description: |
+            The only kind the product can complete a sign-in with. `saml` is
+            refused with 400 `provider_type 'saml' is not supported` (PAC-22
+            spec D-1); before PAC-22 it was accepted, stored, and refused only
+            at sign-in with 501.
+        oidc_issuer:
+          type: string
+          minLength: 1
+          description: OIDC issuer used for discovery at sign-in. Stored as given.
+        oidc_client_id:
+          type: string
+          minLength: 1
+        oidc_client_secret:
+          type: string
+          minLength: 1
+          description: |
+            Write-only. No response of any operation returns it, or anything
+            derived from it; SsoProvider reports only whether one is on file
+            (`has_oidc_client_secret`).
+            - Supplied: a non-empty string that replaces the stored secret
+              (PAC-22 spec D-12, AC-23). `""` and `null` are refused with 400
+              `oidc_client_secret must not be empty` (AC-26): no write clears
+              the secret.
+            - Absent: required on a create; on a replace, the stored secret
+              is kept when the stored configuration is `oidc`, holds a
+              non-empty secret, and has exactly the submitted `oidc_issuer`
+              and `oidc_client_id`, all decided at the moment the write is
+              stored; otherwise 400 (PAC-22 spec D-13, D-14, AC-22, AC-24,
+              AC-25, AC-27).
+      additionalProperties: false
+
+    SsoProvider:
+      type: object
+      description: |
+        An organisation's SSO configuration as it may leave the server (PAC-22,
+        resolves U-22, closes the disclosure half of API-001). Returned by
+        createSsoProvider, listSsoProviders and setSsoProviderState. It is a
+        projection written for the wire with explicit snake_case keys, not the
+        storage row: the client secret and the signing certificate are never
+        part of it under any name, for any caller. In their place are two
+        booleans that say only whether each secret is on file; each depends on
+        its own secret and on nothing else (PAC-22 spec §3.1, AC-3, AC-4).
+
+        Rows stored before PAC-22 serialise with this same shape: a SAML row
+        reports `provider_type: saml` and its non-secret SAML values, and an
+        OIDC row with empty values reports them as `""` (PAC-22 spec AC-5). No
+        row writable since PAC-22 has a SAML value, so for those the SAML
+        properties are `""` and `has_saml_cert` is false.
+      required:
+        - id
+        - domain
+        - provider_name
+        - provider_type
+        - state
+        - oidc_issuer
+        - oidc_client_id
+        - has_oidc_client_secret
+        - saml_entry_point
+        - saml_issuer
+        - has_saml_cert
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        domain:
+          type: string
+          description: |
+            Lower-case for every row written since PAC-50, whose migration
+            (`030_sso_admin_stepup`, PAC-50 spec §9 D-7) lower-cases the rows
+            stored before it and makes the domain unique case-insensitively.
+        provider_name:
+          type: string
         provider_type:
           type: string
           enum: [oidc, saml]
           description: |
-            "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-            with 501, so a SAML row can be created that can never be used to
-            log in (API-060).
+            `saml` only for rows stored before PAC-22; createSsoProvider no
+            longer accepts it. startSsoLogin still answers 501 for such a row.
+        state:
+          $ref: '#/components/schemas/SsoProviderState'
         oidc_issuer:
           type: string
+          description: '`""` only for a row stored before PAC-22.'
         oidc_client_id:
           type: string
-        oidc_client_secret:
-          type: string
+          description: '`""` only for a row stored before PAC-22.'
+        has_oidc_client_secret:
+          type: boolean
+          description: |
+            True when a non-empty client secret is on file, false otherwise.
+            The secret itself is never returned (PAC-22 spec AC-3). It depends
+            on the stored secret and nothing else (AC-4). False only for a row
+            stored before PAC-22: every write since either supplies a non-empty
+            secret or keeps a non-empty one. A row of type `saml` stored
+            before PAC-22 can read true here (the write path stored a client
+            secret whatever the type); a replace of such a row that leaves the
+            secret out is still refused, because a secret is kept only from an
+            `oidc` row (PAC-22 spec §3.2, AC-25).
         saml_entry_point:
           type: string
+          description: Non-secret SAML sign-in address of a row stored before PAC-22; `""` otherwise.
         saml_issuer:
           type: string
-        saml_cert:
+          description: Non-secret SAML issuer of a row stored before PAC-22; `""` otherwise.
+        has_saml_cert:
+          type: boolean
+          description: |
+            True when a non-empty SAML signing certificate is on file, false
+            otherwise. The certificate itself is never returned. Only a row
+            stored before PAC-22 can be true (PAC-22 spec §3.1, D-8).
+        created_at:
           type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            Time of the last configuration write (createSsoProvider).
+            setSsoProviderState does not change it.
       additionalProperties: false
 
-    SsoProviderResponse:
+    SsoProviderList:
       type: object
       description: |
-        storage.SSOProvider (backend/storage/sso_providers.go) marshalled directly.
-        The struct has NO json tags, so encoding/json emits the exact Go field
-        names below: PascalCase, all thirteen always present, including the
-        client secret and SAML cert. Determined at stage 2 (resolves U-22) by
-        marshalling a storage.SSOProvider with encoding/json, which printed
-        exactly these keys. Returning `OIDCClientSecret` is a defect
-        (API-001), documented because it is what the code does; the
-        projection is PAC-22's, which lands after PAC-50.
-      required:
-        - ID
-        - Domain
-        - ProviderName
-        - ProviderType
-        - Enabled
-        - OIDCIssuer
-        - OIDCClientID
-        - OIDCClientSecret
-        - SAMLEntryPoint
-        - SAMLIssuer
-        - SAMLCert
-        - CreatedAt
-        - UpdatedAt
+        listSsoProviders response (PAC-22). A named container rather than a
+        bare array so that a property added beside `providers` later does not
+        change the response's type for every consumer (PAC-22 spec §3.7). Most
+        list responses in this contract are bare arrays; this one is
+        deliberately not, and must not be "corrected" towards them.
+      required: [providers]
       properties:
-        ID:
-          type: string
-          format: uuid
-        Domain:
-          type: string
-          description: Lower-case for every row written since PAC-50; migration 029 (`029_sso_admin_stepup`) lower-cases existing rows.
-        ProviderName:
-          type: string
-        ProviderType:
-          type: string
-          enum: [oidc, saml]
-        Enabled:
-          type: boolean
-          description: Always true when written through this API (API-066).
-        OIDCIssuer:
-          type: string
-        OIDCClientID:
-          type: string
-        OIDCClientSecret:
-          type: string
-          description: >-
-            Returned in plaintext to any org member by both POST and GET
-            /api/admin/sso (API-001). Documented because it is what the code
-            does, not because it is intended; PAC-22 removes it.
-        SAMLEntryPoint:
-          type: string
-        SAMLIssuer:
-          type: string
-        SAMLCert:
-          type: string
-        CreatedAt:
-          type: string
-          format: date-time
-        UpdatedAt:
-          type: string
-          format: date-time
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SsoProvider'
+          description: |
+            Ordered by `created_at`, oldest first. Empty when the org has none.
+            At most one item today: a configuration is listed when its domain
+            equals the org's domain exactly, and both `sso_providers.domain`
+            and `organizations.domain` are unique. The array is kept so that
+            the type does not change if an org can ever hold more than one.
+      additionalProperties: false
+
+    SsoProviderState:
+      type: string
+      enum: [active, suspended]
+      description: |
+        Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
+        `active`: detection answers `sso` for the domain and startSsoLogin
+        redirects to the provider. `suspended`: sign-in behaves as if no SSO
+        were configured; the configuration is kept. Stored as the existing
+        `enabled` column (true is `active`), so no migration.
+
+    SsoProviderStateRequest:
+      type: object
+      description: |
+        Body of setSsoProviderState: the state wanted, never a toggle, and
+        nothing else (PAC-22 spec AC-12). Any other property, including any
+        configuration value, is refused with 400 `unknown property: <name>`,
+        and `state` given twice is refused with 400 `duplicate property:
+        state`. A body that is not a JSON object (`[]`, `"active"`, `true`,
+        `null`) is refused with 400 `invalid JSON`.
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/SsoProviderState'
       additionalProperties: false
 
     SsoWriteForbiddenResponse:
       description: |
-        The 403 of createSsoProvider and deleteSsoProvider (PAC-50). Exactly
+        The 403 of the three SSO configuration writes (PAC-50):
+        createSsoProvider, deleteSsoProvider and setSsoProviderState (the
+        last since PAC-50 contract revision 8, which merged PAC-22). Exactly
         one variant applies, told apart by `error`; `stepup_url` is present
         on, and only on, `sso_write_requires_admin_stepup`. All four keep the
         shared `{error}` envelope, so a client that reads only `error` still
@@ -1703,7 +2213,7 @@ components:
       description: |
         The caller has no org (or its org row is gone). Checked before
         anything else, including break-glass. No `stepup_url`: there is no org
-        to step up for.
+        to step up for. Also the 403 of getSsoStepupOptions.
       required: [error]
       properties:
         error:
@@ -1714,13 +2224,14 @@ components:
     SsoWriteDomainMismatch:
       type: object
       description: |
-        The provider domain (create body `domain`, or the DELETE `{domain}`
-        segment) is not exactly the caller's org domain, compared
-        case-insensitively and untrimmed: a subdomain (`sub.acme.com`), a
-        foreign domain (`other.com`) or a padded value (`" acme.com "`).
-        A 403 by owner decision (2026-10-27, RFC 9110 §15.5.4), not a 400.
-        Checked after membership and body shape, before authorization:
-        nothing is written and a live step-up grant is not consumed.
+        The provider domain (create body `domain`, or the `{domain}` segment
+        of the DELETE and of setSsoProviderState) is not exactly the caller's
+        org domain, compared case-insensitively and untrimmed: a subdomain
+        (`sub.acme.com`), a foreign domain (`other.com`) or a padded value
+        (`" acme.com "`). A 403 by owner decision (2026-10-27, RFC 9110
+        §15.5.4), not a 400. Checked after membership and the body's 400s,
+        before authorization: nothing is written and a live step-up grant is
+        not consumed.
       required: [error]
       properties:
         error:
@@ -1741,101 +2252,132 @@ components:
         `stepup_scopes`, appends `?provider=google` or `?provider=microsoft`
         to `stepup_url` and navigates the browser there. When
         `stepup_scopes` is empty no step-up can be started on this
-        deployment, and the client offers none.
+        deployment, and the client offers none. The three values are the
+        ones getSsoStepupOptions returns (same components, same rules).
       required: [error, stepup_url, stepup_scopes, without_stepup]
       properties:
         error:
           type: string
           const: sso_write_requires_admin_stepup
         stepup_scopes:
-          type: object
-          description: |
-            The scopes the step-up requests from each provider on top of the
-            identity scopes (`openid`, `email`, `profile`, and Microsoft's
-            `User.Read`, which sign-in already requests). Requested only by
-            startSsoAdminStepup, never at sign-in; the tokens are discarded
-            after the check.
-
-            Normative rule: each list is exactly what startSsoAdminStepup
-            requests from that provider beyond the identity scopes, so a
-            client shows it as given and does not hard-code it. A provider's
-            key is present if and only if that provider's step-up is
-            configured on this deployment, that is, startSsoAdminStepup would
-            not answer 503 for it (spec §9 D-2 and D-9: no OAuth client for
-            the provider, or `APP_URL` unset). A deployment with only Google
-            configured sends only `google`; an empty object means no step-up
-            can be started on this deployment.
-
-            Today's values, informative only (the exact Microsoft list is
-            spec OQ-2's open technical sub-question and may narrow): Google,
-            the read-only Directory user scope
-            (`https://www.googleapis.com/auth/admin.directory.user.readonly`);
-            Microsoft, organisation and directory-role read scopes
-            (`Organization.Read.All`, `RoleManagement.Read.Directory`, which a
-            tenant administrator may have to consent to).
-          properties:
-            google:
-              type: array
-              minItems: 1
-              uniqueItems: true
-              items:
-                type: string
-                minLength: 1
-            microsoft:
-              type: array
-              minItems: 1
-              uniqueItems: true
-              items:
-                type: string
-                minLength: 1
-          additionalProperties: false
+          $ref: '#/components/schemas/SsoStepupScopes'
         without_stepup:
-          type: array
-          minItems: 1
-          uniqueItems: true
-          description: |
-            What the caller cannot do without the step-up, for the client to
-            explain before it navigates. An open list of codes: the item
-            schema is a non-empty string, not an enum, so a value added later
-            (for example by PAC-68 if it reuses this step-up) does not make
-            the body fail validation in a client generated from this
-            revision. A client explains the codes it knows and ignores any
-            other. The only value the server sends today is
-            `sso_configuration_writes`: no SSO configuration write (create,
-            update or delete); only a deployment operator on the break-glass
-            list can write without it. Nothing else the user already has is
-            lost.
-          items:
-            type: string
-            minLength: 1
+          $ref: '#/components/schemas/SsoWithoutStepup'
         stepup_url:
-          type: string
-          const: /api/admin/sso/stepup
-          description: |
-            Path of startSsoAdminStepup on the API's origin, without the
-            `provider` parameter (spec §4.3 and OQ-8). It has the same form as
-            every operation path in this document, and a client resolves it
-            the way it resolves those: against the origin of its configured
-            API base (for the web app, the base it already uses for
-            `/api/auth/...` navigations), never against the page's origin.
-            The API need not share an origin with the page: the web's API
-            base is set at runtime (`API_BASE_URL`) or at build time
-            (`VITE_API_BASE_URL`), and the session cookie is host-only on
-            the API host, so the page's origin can lack the session.
+          $ref: '#/components/schemas/SsoStepupUrl'
       additionalProperties: false
 
     SsoWriteFreshLoginRequired:
       type: object
       description: |
         The caller's email is on the deployment's break-glass list but the
-        session JWT was issued 10 minutes ago or more. The client sends the
-        user through sign-in again; a step-up grant also satisfies the gate.
+        session JWT was issued 10 minutes ago or more, or carries an issue
+        time more than one minute in the future (beyond that clock-skew
+        allowance a token is not fresh). The client sends the user through
+        sign-in again; a step-up grant also satisfies the gate.
       required: [error]
       properties:
         error:
           type: string
           const: sso_write_requires_fresh_login
       additionalProperties: false
+
+    SsoStepupOptions:
+      type: object
+      description: |
+        getSsoStepupOptions response (PAC-50 contract revision 8, spec §9
+        D-13, AC-25): what the optional SSO admin step-up would request and
+        what is lost without it, for a client with no refused write in hand.
+        The three properties are the step-up 403's (SsoWriteStepupRequired),
+        built from the same components, under the same rules; there is no
+        `error`, because nothing was refused.
+      required: [stepup_url, stepup_scopes, without_stepup]
+      properties:
+        stepup_url:
+          $ref: '#/components/schemas/SsoStepupUrl'
+        stepup_scopes:
+          $ref: '#/components/schemas/SsoStepupScopes'
+        without_stepup:
+          $ref: '#/components/schemas/SsoWithoutStepup'
+      additionalProperties: false
+
+    SsoStepupUrl:
+      type: string
+      const: /api/admin/sso/stepup
+      description: |
+        Path of startSsoAdminStepup on the API's origin, without the
+        `provider` parameter (spec §4.3 and OQ-8). It has the same form as
+        every operation path in this document, and a client resolves it
+        the way it resolves those: against the origin of its configured
+        API base (for the web app, the base it already uses for
+        `/api/auth/...` navigations), never against the page's origin.
+        The API need not share an origin with the page: the web's API
+        base is set at runtime (`API_BASE_URL`) or at build time
+        (`VITE_API_BASE_URL`), and the session cookie is host-only on
+        the API host, so the page's origin can lack the session.
+
+    SsoStepupScopes:
+      type: object
+      description: |
+        The scopes the SSO admin step-up requests from each provider on top of
+        the identity scopes (`openid`, `email`, `profile`, and Microsoft's
+        `User.Read`, which sign-in already requests). Requested only by
+        startSsoAdminStepup, never at sign-in; the tokens are discarded after
+        the check. Carried by SsoWriteStepupRequired and SsoStepupOptions.
+
+        Normative rule: each list is exactly what startSsoAdminStepup
+        requests from that provider beyond the identity scopes, so a client
+        shows it as given and does not hard-code it. A provider's key is
+        present if and only if that provider's step-up is configured on this
+        deployment, that is, startSsoAdminStepup would not answer 503 for it
+        (spec §9 D-2 and D-9: no OAuth client for the provider, or `APP_URL`
+        unset). A deployment with only Google configured sends only `google`;
+        an empty object means no step-up can be started on this deployment.
+        An unconfigured provider is an absent key, never an empty list.
+
+        Today's values, informative only (the exact Microsoft list is spec
+        OQ-2's open technical sub-question and may narrow): Google, the
+        read-only Directory user scope
+        (`https://www.googleapis.com/auth/admin.directory.user.readonly`);
+        Microsoft, organisation and directory-role read scopes
+        (`Organization.Read.All`, `RoleManagement.Read.Directory`, which a
+        tenant administrator may have to consent to).
+      properties:
+        google:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        microsoft:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+      additionalProperties: false
+
+    SsoWithoutStepup:
+      type: array
+      minItems: 1
+      uniqueItems: true
+      description: |
+        What the caller cannot do without the SSO admin step-up, for the
+        client to explain before it navigates. Carried by
+        SsoWriteStepupRequired and SsoStepupOptions. An open list of codes:
+        the item schema is a non-empty string, not an enum, so a value added
+        later (for example by PAC-68 if it reuses this step-up) does not make
+        the body fail validation in a client generated from this revision. A
+        client explains the codes it knows and ignores any other. The only
+        value the server sends today is `sso_configuration_writes`: no SSO
+        configuration write (create, replace, delete, suspend or resume);
+        only a deployment operator on the break-glass list can write without
+        it. Nothing else the user already has is lost.
+      items:
+        type: string
+        minLength: 1
 
     SsoStepupProvider:
       type: string

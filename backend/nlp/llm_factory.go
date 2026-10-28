@@ -1,71 +1,207 @@
 package nlp
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
 	"github.com/Enach/paceday/backend/storage"
 )
 
-// NewLLMClientFromSettings creates the appropriate LLM client based on the configured provider.
-// SSO providers (bedrock, azure_openai, vertex) use ambient credentials — no API keys stored.
-// API-key providers (openai, anthropic) require a non-empty LLMAPIKey.
-func NewLLMClientFromSettings(s *storage.Settings) (LLMClient, error) {
-	switch s.LLMProvider {
-	case "bedrock":
-		return NewBedrockClient(s.AWSRegion, s.AWSProfile, s.BedrockModel)
-	case "azure_openai":
-		return NewAzureOpenAIClient(s.AzureEndpoint, s.AzureDeployment, s.AzureAPIVersion)
-	case "vertex":
-		return NewVertexClient(s.GCPProject, s.GCPLocation, s.VertexModel)
-	case "openai":
-		if s.LLMAPIKey == "" {
-			// PAC-66-B: a refused destination is reported whether or not a
-			// key is on file (spec §B4).
-			if r := (&OpenAIClient{BaseURL: s.LLMBaseURL}).CheckDestination(context.Background()); r != nil {
-				return nil, r
-			}
-			return nil, fmt.Errorf("LLM not configured — set API key in Settings")
-		}
-		model := s.LLMModel
-		if model == "" {
-			model = "gpt-4o-mini"
-		}
-		return &OpenAIClient{APIKey: s.LLMAPIKey, Model: model, BaseURL: s.LLMBaseURL}, nil
-	case "anthropic":
-		if s.LLMAPIKey == "" {
-			if r := (&AnthropicClient{BaseURL: s.LLMBaseURL}).CheckDestination(context.Background()); r != nil {
-				return nil, r
-			}
-			return nil, fmt.Errorf("LLM not configured — set API key in Settings")
-		}
-		model := s.LLMModel
-		if model == "" {
-			model = "claude-haiku-4-5-20251001"
-		}
-		return &AnthropicClient{APIKey: s.LLMAPIKey, Model: model, BaseURL: s.LLMBaseURL}, nil
-	case "ollama":
-		// Fallback order unchanged (PAC-66-B D-B9); the property a refusal
-		// names is the one the effective destination came from.
-		baseURL, property := s.OllamaBaseURL, "ollamaBaseUrl"
-		if baseURL == "" && s.LLMBaseURL != "" {
-			baseURL, property = s.LLMBaseURL, "llmBaseUrl" // fallback to legacy field
-		}
-		if baseURL == "" {
-			baseURL = ollamaDefaultBaseURL
-		}
-		model := s.OllamaModel
-		if model == "" {
-			model = s.LLMModel
-		}
-		if model == "" {
-			model = "llama3.2"
-		}
-		return &OllamaClient{BaseURL: baseURL, Model: model, baseURLProperty: property}, nil
-	default:
-		return nil, fmt.Errorf("LLM not configured — set API key in Settings")
+// NEW-llm-bring-your-own (spec §3): which AI configuration a request runs on.
+// Rows of the spec's table, evaluated top to bottom; only row 2 (and, after
+// Part 2, row 4) sends anything:
+//
+//	1 off                       -> not configured, "off"
+//	2 a provider with its key   -> configured
+//	3 a provider without key    -> not configured, "needs_key"
+//	6 organization              -> not configured, "nothing_configured" (Part 1)
+//	8 a removed provider        -> not configured, "provider_removed"
+//
+// Every AI-backed operation (parse, brief refresh, probe) and the settings
+// read decide through here, so one state gives one reason everywhere
+// (AC-40).
+
+// Not-configured reasons and enablers, as the contract's AINotConfigured.
+const (
+	ReasonOff               = "off"
+	ReasonNeedsKey          = "needs_key"
+	ReasonNothingConfigured = "nothing_configured"
+	ReasonProviderRemoved   = "provider_removed"
+
+	EnablerUser              = "user"
+	EnablerOrganizationAdmin = "organization_admin"
+)
+
+// Decision is the outcome for one request: a client for Provider, or why
+// there is none. Exactly one of Client and NotConfigured is set.
+type Decision struct {
+	Provider      string
+	Client        LLMClient
+	NotConfigured *storage.AINotConfigured
+}
+
+// DecideSaved decides the caller's saved choice, as parse and brief refresh
+// use it. inOrg says whether the caller belongs to an organisation. In Part 1
+// it changes no decision and no sentence (no organisation can turn AI on
+// yet); it is reported as aiStatus.inOrganization and kept for Part 2.
+func DecideSaved(s *storage.Settings, inOrg bool) Decision {
+	return decide(s, inOrg, s.LLMProvider, nil, nil, true)
+}
+
+// Status is the settings read's aiStatus for the caller (AC-8, AC-8b).
+func Status(s *storage.Settings, inOrg bool) storage.AIStatus {
+	d := DecideSaved(s, inOrg)
+	if d.NotConfigured != nil {
+		return storage.AIStatus{InOrganization: inOrg, NotConfigured: d.NotConfigured}
 	}
+	return storage.AIStatus{Configured: true, Provider: d.Provider, InOrganization: inOrg}
+}
+
+// ProbeRequest is the body of POST /api/llm/test; nil means absent.
+type ProbeRequest struct {
+	Provider *string
+	Model    *string
+	Key      *string
+}
+
+// Probe-only 400 messages, as documented on testLLMConnection.
+const (
+	MsgProbeProviderInvalid     = `llmProvider must be one of: "", organization, unsupported, openai, anthropic, azure_openai, bedrock, vertex`
+	MsgProbeUnsupportedNotSaved = "llmProvider unsupported can be probed only when it is your saved choice"
+)
+
+// DecideProbe decides what a probe tests (spec D-19, contract
+// testLLMConnection "Which configuration is probed"). A probe naming a
+// provider uses only the submitted key or the key bound to THAT provider,
+// with the caller's own stored destination values for it. It returns a
+// non-empty badRequest when the body names a value the probe refuses.
+func DecideProbe(s *storage.Settings, inOrg bool, req ProbeRequest) (d Decision, badRequest string) {
+	choice := s.LLMProvider
+	if req.Provider != nil {
+		switch p := *req.Provider; {
+		case p == storage.LLMChoiceUnsupported:
+			if s.LLMProvider != storage.LLMChoiceUnsupported {
+				return Decision{}, MsgProbeUnsupportedNotSaved
+			}
+		case p == storage.LLMChoiceOff, p == storage.LLMChoiceOrganization, IsKeyProvider(p):
+		default:
+			return Decision{}, MsgProbeProviderInvalid
+		}
+		choice = *req.Provider
+	}
+	// The sentence says "AI features are off" only for the caller's saved
+	// choice probed as saved: no other choice named and no key submitted.
+	saved := choice == s.LLMProvider && req.Key == nil
+	model := req.Model
+	if model == nil && choice == s.LLMProvider {
+		model = &s.LLMModel
+	}
+	return decide(s, inOrg, choice, req.Key, model, saved), ""
+}
+
+// decide applies the table to choice. key, when not nil, replaces the key
+// bound to the provider (a probe's submitted key, "" meaning none); model,
+// when not nil, is the openai/anthropic model. inOrg changes nothing in
+// Part 1 (see DecideSaved).
+func decide(s *storage.Settings, inOrg bool, choice string, key, model *string, saved bool) Decision {
+	switch {
+	case choice == storage.LLMChoiceOff:
+		return notConfigured(ReasonOff, "", saved, s)
+	case choice == storage.LLMChoiceOrganization:
+		// Part 1: no organisation configuration exists (row 6).
+		return notConfigured(ReasonNothingConfigured, "", saved, s)
+	case IsKeyProvider(choice):
+		k := s.LLMAPIKeys.For(choice)
+		if key != nil {
+			k = *key
+		}
+		if k == "" {
+			return notConfigured(ReasonNeedsKey, choice, saved, s)
+		}
+		m := ""
+		if model != nil {
+			m = *model
+		}
+		return Decision{Provider: choice, Client: newProviderClient(choice, s, k, m)}
+	default:
+		return notConfigured(ReasonProviderRemoved, "", saved, s)
+	}
+}
+
+// newProviderClient builds the client for a key-based provider with key,
+// reading every destination value from the caller's own stored settings.
+func newProviderClient(provider string, s *storage.Settings, key, model string) LLMClient {
+	or := func(v, def string) string {
+		if v == "" {
+			return def
+		}
+		return v
+	}
+	switch provider {
+	case ProviderOpenAI:
+		return &OpenAIClient{APIKey: key, Model: or(model, defaultOpenAIModel), BaseURL: s.LLMBaseURL}
+	case ProviderAnthropic:
+		return &AnthropicClient{APIKey: key, Model: or(model, defaultAnthropicModel), BaseURL: s.LLMBaseURL}
+	case ProviderAzureOpenAI:
+		return &AzureOpenAIClient{APIKey: key, Endpoint: s.AzureEndpoint, Deployment: s.AzureDeployment,
+			APIVersion: or(s.AzureAPIVersion, defaultAzureAPIVersion)}
+	case ProviderBedrock:
+		return &BedrockClient{APIKey: key, Region: or(s.AWSRegion, defaultBedrockRegion), ModelID: or(s.BedrockModel, defaultBedrockModel)}
+	case ProviderVertex:
+		return &VertexClient{APIKey: key, ModelID: or(s.VertexModel, defaultVertexModel)}
+	}
+	return nil
+}
+
+// notConfigured builds a not-configured answer. Before Part 2 of the spec only
+// the user can turn AI on: no organisation administrator has any way to
+// configure it yet, so no answer names one, in an organisation or not (spec
+// revision 2; challenge of revision 1, Blocking 1). EnablerOrganizationAdmin
+// stays in the contract's set for Part 2.
+func notConfigured(reason, provider string, saved bool, s *storage.Settings) Decision {
+	return Decision{Provider: provider, NotConfigured: &storage.AINotConfigured{
+		Reason: reason, Provider: provider, Enablers: []string{EnablerUser},
+		Message: notConfiguredMessage(reason, provider, saved, s),
+	}}
+}
+
+// notConfiguredMessage is the sentence for the user. For the saved choice it
+// says AI features are off; for another probed choice it describes only that
+// choice (contract AINotConfigured.message). It never carries a key.
+func notConfiguredMessage(reason, provider string, saved bool, s *storage.Settings) string {
+	name := displayNames[provider]
+	if saved {
+		switch reason {
+		case ReasonOff:
+			return "AI features are off: you turned them off in Settings. Choose a provider in Settings to turn them on."
+		case ReasonNeedsKey:
+			return fmt.Sprintf("AI features are off: %s needs an API key. Add one in Settings.", name)
+		case ReasonNothingConfigured:
+			return "AI features are off: no AI provider is set up. Add your own API key in Settings."
+		default:
+			return "AI features are off: " + removedName(s) + " is no longer supported. Choose another provider in Settings."
+		}
+	}
+	switch reason {
+	case ReasonOff:
+		return "Off is not a provider, so there is nothing to test. Choose a provider to test it."
+	case ReasonNeedsKey:
+		return fmt.Sprintf("%s needs an API key. Enter one to test it.", name)
+	case ReasonNothingConfigured:
+		// Part 1: no organisation can turn AI on yet, so the sentence names
+		// none, in an organisation or not (spec challenge r2, non-blocking 2).
+		return "There is no AI provider to test. Choose a provider and add your key in Settings."
+	default:
+		return removedName(s) + " is no longer supported, so it cannot be tested. Choose another provider."
+	}
+}
+
+// removedName names the removed provider a row is stored on.
+func removedName(s *storage.Settings) string {
+	if s != nil && s.StoredLLMProvider == "ollama" {
+		return "Ollama"
+	}
+	return "Your previous AI provider"
 }
 
 func unmarshalLLMResponse(body []byte, v interface{}) error {

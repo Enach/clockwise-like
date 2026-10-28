@@ -74,7 +74,7 @@ func TestSaveSettingsForUser_RoundTrip(t *testing.T) {
 	}
 	s.WorkStart, s.WorkEnd, s.Timezone = "08:00", "17:00", "America/New_York"
 	s.FocusMinBlockMinutes = 30
-	s.LLMProvider, s.LLMAPIKey = "openai", "sk-test"
+	s.LLMProvider, s.LLMAPIKeys.OpenAI = "openai", "sk-test"
 	s.CompressionEnabled = true
 	s.WorkingHours = WorkingHoursSchedule{Mode: "by_day", Days: map[string]DaySchedule{"monday": {Enabled: true, Start: "08:00", End: "12:00"}}}
 	s.LunchBreaks = LunchBreakSchedule{"friday": {Enabled: false}}
@@ -89,7 +89,7 @@ func TestSaveSettingsForUser_RoundTrip(t *testing.T) {
 	if got.WorkStart != "08:00" || got.WorkEnd != "17:00" || got.Timezone != "America/New_York" || got.FocusMinBlockMinutes != 30 {
 		t.Errorf("saved values not read back: %+v", got)
 	}
-	if got.LLMAPIKey != "sk-test" || !got.LLMAPIKeySet || !got.CompressionEnabled {
+	if got.LLMAPIKeys.OpenAI != "sk-test" || !got.LLMAPIKeySet || !got.CompressionEnabled {
 		t.Errorf("key/compression not read back: key set=%v compression=%v", got.LLMAPIKeySet, got.CompressionEnabled)
 	}
 	if got.WorkingHours.Mode != "by_day" || got.WorkingHours.Days["monday"].End != "12:00" {
@@ -110,7 +110,7 @@ func TestSaveSettingsForUser_LeavesOtherUsersUntouched(t *testing.T) {
 	}
 
 	s, _ := GetOrCreateSettingsByUser(db, alice)
-	s.WorkStart, s.Timezone, s.LLMAPIKey = "06:00", "Asia/Tokyo", "alice-key"
+	s.WorkStart, s.Timezone, s.LLMAPIKeys.OpenAI = "06:00", "Asia/Tokyo", "alice-key"
 	s.WorkingHours = WorkingHoursSchedule{Mode: "by_day", Days: map[string]DaySchedule{"tuesday": {Enabled: true, Start: "06:00", End: "10:00"}}}
 	if err := SaveSettingsForUser(db, alice, s); err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestSaveSettingsForUser_LeavesOtherUsersUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.WorkStart != before.WorkStart || after.Timezone != before.Timezone || after.LLMAPIKeySet ||
+	if after.WorkStart != before.WorkStart || after.Timezone != before.Timezone || after.LLMAPIKeysSet.OpenAI ||
 		after.WorkingHours.Mode != before.WorkingHours.Mode || !after.UpdatedAt.Equal(before.UpdatedAt) {
 		t.Errorf("bob's settings changed when alice saved hers:\nbefore %+v\nafter  %+v", before, after)
 	}
@@ -130,13 +130,13 @@ func TestSaveRecapSettingsForUser_TouchesOnlyRecapColumns(t *testing.T) {
 	db := openTestDB(t)
 	user := settingsTestUser(t, db, "settings-recap@example.com")
 	s, _ := GetOrCreateSettingsByUser(db, user)
-	s.WorkStart, s.LLMAPIKey = "07:00", "kept-key"
+	s.WorkStart, s.LLMAPIKeys.OpenAI = "07:00", "kept-key"
 	if err := SaveSettingsForUser(db, user, s); err != nil {
 		t.Fatal(err)
 	}
 
 	stale, _ := GetOrCreateSettingsByUser(db, user)
-	stale.WorkStart, stale.LLMAPIKey = "11:00", "" // must not be written
+	stale.WorkStart, stale.LLMAPIKeys.OpenAI = "11:00", "" // must not be written
 	stale.RecapEnabled, stale.RecapSendTime, stale.RecapSendTo = true, "07:30", "channel"
 	if err := SaveRecapSettingsForUser(db, user, stale); err != nil {
 		t.Fatalf("SaveRecapSettingsForUser: %v", err)
@@ -146,7 +146,7 @@ func TestSaveRecapSettingsForUser_TouchesOnlyRecapColumns(t *testing.T) {
 	if !got.RecapEnabled || got.RecapSendTime != "07:30" || got.RecapSendTo != "channel" {
 		t.Errorf("recap not saved: %+v", got)
 	}
-	if got.WorkStart != "07:00" || got.LLMAPIKey != "kept-key" {
+	if got.WorkStart != "07:00" || got.LLMAPIKeys.OpenAI != "kept-key" {
 		t.Errorf("recap save rewrote other columns: workStart=%q key set=%v", got.WorkStart, got.LLMAPIKeySet)
 	}
 }
