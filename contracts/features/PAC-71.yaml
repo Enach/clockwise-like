@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-71/sign-in-matches-accounts-by-email-alone-anyone-who-controls-an-address",
   "status": "draft",
   "contractRevision": "2",
-  "contractHash": "d14119d716aaf2d0be71979f81a8cd22c63d692f90b8d9373a01cfda7fde7d18",
+  "contractHash": "5d54c76194180202d11049885b711f49f647a386baded03eae53e57481f4abb9",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-71-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py and confirmed by `py -3 scripts/openapi_assemble.py --check` (OK: bundle is in sync (105 paths)). Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-71.md",
   "specDoc": "docs/specs/PAC-71.md",
@@ -149,10 +149,11 @@
   },
 
   "gatesRun": [
+    "Revision 2, recorded at push:",
     "py -3 scripts/openapi_assemble.py --check -> rc=0 (OK: bundle is in sync (105 paths))",
     "py -3 scripts/openapi_migration_report.py --check -> rc=0 (OK: MIGRATION.md covers all 126 operations (6 generated))",
     "bash scripts/openapi_gen_go.sh --check -> rc=0 (OK: backend/api/gen matches the contract)",
-    "cd backend && go build ./... && go vet ./... -> rc=0 (no handwritten change needed: x-enum-varnames keeps every existing generated constant name)",
+    "cd backend && go build ./... -> rc=0; go vet ./... -> rc=0 (generated GoogleOAuthCallbackParams/MicrosoftOAuthCallbackParams: Code string -> *string, Error *string added; no handwritten reference)",
     "web generated types: NOT run here (no web branch at this stage); owed by the paired REGEN=1 web PR."
   ],
 

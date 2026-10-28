@@ -330,3 +330,24 @@ None that block. The callbacks are described as future behaviour on purpose (sta
 - `cd backend && go build ./...` → rc=0; `go vet ./...` → rc=0
 - `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` → `d14119d716aaf2d0be71979f81a8cd22c63d692f90b8d9373a01cfda7fde7d18`, equal to the manifest `contractHash`
 - `go test ./api -run TestPAC21Every5xx` → could not run: the package's TestMain needs the test Postgres at 127.0.0.1:15432 (connection refused). I replaced it with a Python walk of the bundle (above).
+
+## Revision 2 — 2026-10-28, answering challenge revision 1
+
+Bundle hash at this revision: `5d54c76194180202d11049885b711f49f647a386baded03eae53e57481f4abb9` (manifest `contractHash`).
+
+| Finding | Applied? | Where / why not |
+|---|---|---|
+| **B1** `TestPAC35_CurrentUser_EveryDocumentedStatus` missing from consumers | Applied | Manifest `consumersAffected` gains `pac35_auth_flows_test.go:756-785`: struct gains `AddressStanding`, strict decode kept, 500 sub-test added. The backend merge condition names it. §11. |
+| **B2** personal-Microsoft lock-out is an owner question; release note understated; F4 is PAC-77 | Applied | Moved from `assumedByTheFactory` to `ownerQuestionsOpen`, worded as in owner-decisions.md (default: acceptable, release-noted). The release merge condition says that existing personal-Microsoft-only accounts lose sign-in at deploy and how they recover: the operator's "unbind and reassign", another method once F1/PAC-77 exists, or PAC-77 itself. They can still connect Outlook. F4 renamed PAC-77 (https://linear.app/paceday/issue/PAC-77) in the manifest, this document, `auth.yaml`, and annotated in the spec's follow-up list. §3, §12. |
+| **B3** step-up `sub`/`oid` equality not a merge condition | Applied | Merge condition 2 is now HARD and records, for the same Workspace account, the step-up ID token `sub` and the v2 userinfo `id`, asserting equality; and for the same Microsoft work account, `oid` and Graph `/me` `id`. Until verified, check 4b fails closed (`identity_mismatch`), which would lock bound admins out of SSO changes. §3 items 5 and 7 (new), §8, and the 4b text in `auth.yaml`. |
+| NB1 provider cancel during connect is a 500 JSON page | Applied | CONNECT step 4: no `code` → 302 `/?connect=not_credited`. `code` is optional and `error` is documented on both callbacks. Sign-in keeps today's 500 (not in the spec). CONTRACT-10. §4. |
+| NB2 Teams texts point to the sign-in start | Applied | `booking.yaml`: "connect Outlook in Settings (POST /api/auth/microsoft/connect)" for both Teams texts. Consumers: `pac21_4xx_bodies_test.go:193`, `pac67_world_test.go:224`. CONTRACT-11. §1, §11. |
+| NB3 CORS invariant | Applied | Stated in §4 and in the `startGoogleConnect` description (`startMicrosoftConnect` by reference). |
+| NB4 sibling-subdomain cookie tossing / `__Host-` | Not applied | Outside the spec's cross-site model. Prefixing only the connect cookies does not close it, because a tossed `auth_token` suffices, and prefixing `auth_token` changes every consumer. Recorded as `followUps.cookieHostPrefix` for the orchestrator. §4. |
+| NB5 deploy order | Applied | New §14 and a release merge condition: migration, then API, then web, then (if OQ-6 is yes) "advance every account". The API-to-web window is release-noted; web before API is forbidden. |
+| NB6 re-check with no account row | Applied | The re-check answers 401 (`bearerAuth` description, §5). CONTRACT-12. |
+| NB7 connect-branch 500 and the state cookie | Applied | Every connect-branch response, the 500 included, expires the connect state cookie (both callbacks, §4). |
+| Uncertainty: OQ-3 item 4 has no merge condition | Applied | Merge condition 2 (v) asks for documentation or a recorded answer. §3. |
+| Consumers: §11 MCP description wrong | Applied | §11 and the manifest: `mcp/client.go` sends no credential; about 16 endpoints; `MCP_AUTH_TOKEN` guards MCP's own listener. |
+
+Generated-code note: making `code` optional changes `Code string` to `Code *string` in two generated parameter structs and adds `Error *string`. This is the first non-additive change in `backend/api/gen` on this branch. Nothing handwritten references them, and `go build`/`go vet` pass.
