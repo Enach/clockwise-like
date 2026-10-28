@@ -46,13 +46,13 @@ func (h *teamHandlers) createTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	team, err := storage.CreateTeam(h.db, strings.TrimSpace(body.Name), userID)
+	team, err := storage.CreateTeamCtx(r.Context(), h.db, strings.TrimSpace(body.Name), userID)
 	if err != nil {
 		writeServerError(w, r, "createTeam", err, http.StatusInternalServerError)
 		return
 	}
 	// Creator is owner.
-	_ = storage.AddTeamMember(h.db, team.ID, userID, "owner")
+	_ = storage.AddTeamMemberCtx(r.Context(), h.db, team.ID, userID, "owner")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -90,6 +90,9 @@ func (h *teamHandlers) getTeam(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.requireMember(teamID, userID); err != nil {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
+	}
+	if getTeamAfterMembershipHook != nil {
+		getTeamAfterMembershipHook()
 	}
 
 	team, err := storage.GetTeam(h.db, teamID)
@@ -137,7 +140,7 @@ func (h *teamHandlers) patchTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	if err := storage.RenameTeam(h.db, teamID, strings.TrimSpace(body.Name)); err != nil {
+	if err := storage.RenameTeamCtx(r.Context(), h.db, teamID, strings.TrimSpace(body.Name)); err != nil {
 		writeServerError(w, r, "patchTeam", err, http.StatusInternalServerError)
 		return
 	}
@@ -163,7 +166,7 @@ func (h *teamHandlers) deleteTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := storage.DeleteTeam(h.db, teamID); err != nil {
+	if err := storage.DeleteTeamCtx(r.Context(), h.db, teamID); err != nil {
 		writeServerError(w, r, "deleteTeam", err, http.StatusInternalServerError)
 		return
 	}
@@ -195,7 +198,7 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	invite, err := storage.CreateTeamInvite(h.db, teamID, email, userID)
+	invite, err := storage.CreateTeamInviteCtx(r.Context(), h.db, teamID, email, userID)
 	if err != nil {
 		writeServerError(w, r, "inviteMember", err, http.StatusInternalServerError)
 		return
@@ -299,15 +302,18 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ensure the logged-in user's email matches the invite.
 	user, err := storage.GetUserByID(h.db, userID)
-	if err != nil || user == nil || !strings.EqualFold(user.Email, invite.InviteeEmail) {
+	// PAC-71 (granting site): only an account that holds the invitee address
+	// domain-confirmed may accept; an unconfirmed holder is answered as a
+	// different address (spec AC-28).
+	if err != nil || user == nil || !strings.EqualFold(user.Email, invite.InviteeEmail) || !h.holdsConfirmed(userID, invite.InviteeEmail) {
 		writeError(w, "this invite is for a different email address", http.StatusForbidden)
 		return
 	}
-	if err := storage.AddTeamMember(h.db, invite.TeamID, userID, "member"); err != nil {
+	if err := storage.AddTeamMemberCtx(r.Context(), h.db, invite.TeamID, userID, "member"); err != nil {
 		writeServerError(w, r, "acceptInvite", err, http.StatusInternalServerError)
 		return
 	}
-	if err := storage.AcceptTeamInvite(h.db, invite.ID); err != nil {
+	if err := storage.AcceptTeamInviteCtx(r.Context(), h.db, invite.ID); err != nil {
 		writeServerError(w, r, "acceptInvite", err, http.StatusInternalServerError)
 		return
 	}
@@ -337,7 +343,7 @@ func (h *teamHandlers) removeMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// Never leave the team without an owner (PAC-25, API-023). Checked after
 	// the 403 above, so a non-owner cannot learn who the owner is.
-	if err := storage.RemoveTeamMemberKeepingOwner(h.db, teamID, targetID); err != nil {
+	if err := storage.RemoveTeamMemberKeepingOwnerCtx(r.Context(), h.db, teamID, targetID); err != nil {
 		if errors.Is(err, storage.ErrLastOwner) {
 			writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
 			return
@@ -378,7 +384,7 @@ func (h *teamHandlers) createZone(w http.ResponseWriter, r *http.Request) {
 	body.EndTime = strings.TrimSpace(body.EndTime)
 	body.Label = strings.TrimSpace(body.Label)
 	storageDay := storageWeekday(body.DayOfWeek)
-	zone, err := storage.CreateNoMeetingZone(h.db, teamID, storageDay, body.StartTime, body.EndTime, body.Label)
+	zone, err := storage.CreateNoMeetingZoneCtx(r.Context(), h.db, teamID, storageDay, body.StartTime, body.EndTime, body.Label)
 	if err != nil {
 		writeServerError(w, r, "createZone", err, http.StatusInternalServerError)
 		return
@@ -423,7 +429,7 @@ func (h *teamHandlers) updateZone(w http.ResponseWriter, r *http.Request) {
 	body.StartTime = strings.TrimSpace(body.StartTime)
 	body.EndTime = strings.TrimSpace(body.EndTime)
 	body.Label = strings.TrimSpace(body.Label)
-	zone, err := storage.UpdateNoMeetingZone(h.db, zoneID, teamID, storageWeekday(body.DayOfWeek), body.StartTime, body.EndTime, body.Label)
+	zone, err := storage.UpdateNoMeetingZoneCtx(r.Context(), h.db, zoneID, teamID, storageWeekday(body.DayOfWeek), body.StartTime, body.EndTime, body.Label)
 	if err == sql.ErrNoRows {
 		writeError(w, "zone not found", http.StatusNotFound)
 		return
@@ -481,7 +487,7 @@ func (h *teamHandlers) deleteZone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid zone id", http.StatusBadRequest)
 		return
 	}
-	if err := storage.DeleteNoMeetingZone(h.db, zoneID, teamID); err != nil {
+	if err := storage.DeleteNoMeetingZoneCtx(r.Context(), h.db, zoneID, teamID); err != nil {
 		writeServerError(w, r, "deleteZone", err, http.StatusInternalServerError)
 		return
 	}
@@ -649,3 +655,15 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) {
 	}
 	_ = smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpFrom, []string{to}, []byte(msg))
 }
+
+// holdsConfirmed reports whether userID holds email domain-confirmed (PAC-71
+// granting site). A lookup error counts as "no" (fail closed).
+func (h *teamHandlers) holdsConfirmed(userID uuid.UUID, email string) bool {
+	ok, err := storage.HoldsConfirmed(h.db, userID, email)
+	return err == nil && ok
+}
+
+// getTeamAfterMembershipHook is a test seam (PAC-71 CONTRACT-9): it runs
+// between getTeam's membership read and its team read, where a concurrent
+// delete makes the documented 404 reachable. Production leaves it nil.
+var getTeamAfterMembershipHook func()

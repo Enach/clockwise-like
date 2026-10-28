@@ -65,7 +65,7 @@ type BookingEvent struct {
 
 // --- SchedulingLink CRUD ---------------------------------------------------
 
-func CreateSchedulingLink(db *sql.DB, l *SchedulingLink) (*SchedulingLink, error) {
+func CreateSchedulingLink(db Querier, l *SchedulingLink) (*SchedulingLink, error) {
 	if l.UsageType == "" {
 		l.UsageType = "reusable"
 	}
@@ -137,7 +137,7 @@ func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink,
 	return scanSchedulingLinks(rows)
 }
 
-func UpdateSchedulingLink(db *sql.DB, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
+func UpdateSchedulingLink(db Querier, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE scheduling_links SET
 			slug = $2, title = $3, duration_options = $4, days_of_week = $5,
@@ -156,7 +156,7 @@ func UpdateSchedulingLink(db *sql.DB, id uuid.UUID, l *SchedulingLink) (*Schedul
 	return scanSchedulingLink(row)
 }
 
-func DeleteSchedulingLink(db *sql.DB, id uuid.UUID) error {
+func DeleteSchedulingLink(db Querier, id uuid.UUID) error {
 	_, err := db.ExecContext(context.Background(),
 		`UPDATE scheduling_links SET active = false WHERE id = $1`, id)
 	return err
@@ -206,7 +206,7 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 
 // --- LinkHost CRUD ---------------------------------------------------------
 
-func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
+func AddLinkHost(db Querier, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
 		VALUES ($1, $2, $3)
@@ -220,7 +220,7 @@ func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost
 // already a host of the link, their row is returned unchanged and created is
 // false: an invite never changes an existing host's status, so re-inviting an
 // accepted co-host cannot drop their calendar from the link's slots (PAC-61).
-func InviteLinkHost(db *sql.DB, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
+func InviteLinkHost(db Querier, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
 		VALUES ($1, $2, 'pending')
@@ -245,7 +245,7 @@ func InviteLinkHost(db *sql.DB, linkID, userID uuid.UUID) (host *LinkHost, creat
 
 // RemoveLinkHostsExcept deletes every non-owner host of linkID whose user is
 // not in keep. Hosts in keep are left exactly as they are.
-func RemoveLinkHostsExcept(db *sql.DB, linkID, ownerID uuid.UUID, keep []uuid.UUID) error {
+func RemoveLinkHostsExcept(db Querier, linkID, ownerID uuid.UUID, keep []uuid.UUID) error {
 	ids := make([]string, len(keep))
 	for i, id := range keep {
 		ids[i] = id.String()
@@ -335,7 +335,7 @@ func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error)
 
 // RemoveLinkHost deletes userID's host row on linkID. removed is false when
 // no row matched (the user was never a host, or already left): PAC-30.
-func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err error) {
+func RemoveLinkHost(db Querier, linkID, userID uuid.UUID) (removed bool, err error) {
 	res, err := db.ExecContext(context.Background(),
 		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`, linkID, userID)
 	if err != nil {
@@ -351,8 +351,8 @@ func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err err
 // RespondToHostInvite sets userID's host row on linkID to status. matched is
 // false when the user has no host row on that link (or no such link exists);
 // nothing is written in that case: PAC-30.
-func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) (matched bool, err error) {
-	res, err := db.ExecContext(context.Background(), `
+func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (matched bool, err error) {
+	res, err := db.Exec(`
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2

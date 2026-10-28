@@ -61,14 +61,14 @@ func IsPermanentRefusal(err error) bool {
 // starts a loss, writes one connection_lost entry to the owner's own log
 // (best effort, like every activity entry: spec D-16). The entry names only
 // the provider: never the requester, never token material.
-func RecordLoss(db *sql.DB, owner uuid.UUID, provider string) {
-	started, err := storage.RecordCredentialLoss(db, owner, provider)
+func RecordLoss(ctx context.Context, db *sql.DB, owner uuid.UUID, provider string) {
+	started, err := storage.RecordCredentialLossCtx(ctx, db, owner, provider)
 	if err != nil {
 		log.Printf("credential: %s loss for user %s not recorded: %v", provider, owner, err)
 		return
 	}
 	if started {
-		storage.WriteAuditLog(db, owner, "connection_lost", providerDetails(provider))
+		storage.WriteAuditLogCtx(ctx, db, owner, "connection_lost", providerDetails(provider))
 	}
 }
 
@@ -153,7 +153,7 @@ func (s *renewingSource) Token() (*oauth2.Token, error) {
 		// Only a refusal of the credential still stored is a loss: one that a
 		// reconnect replaced (or a disconnect removed) meanwhile is not.
 		if latest, lerr := s.store.load(); lerr == nil && latest != nil && latest.RefreshToken == refresh {
-			RecordLoss(s.db, s.owner, s.provider)
+			RecordLoss(s.ctx, s.db, s.owner, s.provider)
 			return nil, &LostError{Provider: s.provider, Recorded: true, Err: err}
 		}
 		return nil, &LostError{Provider: s.provider, Err: err}
@@ -176,7 +176,7 @@ func copyToken(t *oauth2.Token) *oauth2.Token {
 // UserTokenSource renews owner's stored Google credential (PAC-67). It is the
 // only way a Google calendar client is built from a stored credential.
 func UserTokenSource(ctx context.Context, db *sql.DB, cfg *oauth2.Config, owner uuid.UUID, tok *oauth2.Token) oauth2.TokenSource {
-	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialGoogle, cfg: cfg, store: googleStore{db, owner}, cur: tok}
+	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialGoogle, cfg: cfg, store: googleStore{ctx, db, owner}, cur: tok}
 }
 
 // MicrosoftTokenSource renews owner's stored Outlook (Microsoft) credential.
@@ -186,13 +186,13 @@ func MicrosoftTokenSource(ctx context.Context, db *sql.DB, cfg *MicrosoftConfig,
 	if cfg != nil {
 		oc = cfg.oauthConfig()
 	}
-	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialOutlook, cfg: oc, store: microsoftStore{db, owner}, cur: tok}
+	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialOutlook, cfg: oc, store: microsoftStore{ctx, db, owner}, cur: tok}
 }
 
 // ZoomTokenSource renews owner's stored Zoom credential. cfg is Zoom's token
 // endpoint with client credentials in Basic auth; nil cannot renew.
 func ZoomTokenSource(ctx context.Context, db *sql.DB, cfg *oauth2.Config, owner uuid.UUID, cred *storage.ZoomCredential) oauth2.TokenSource {
-	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialZoom, cfg: cfg, store: zoomStore{db, owner}, cur: zoomToken(cred), zeroExpiryIsExpired: true}
+	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialZoom, cfg: cfg, store: zoomStore{ctx, db, owner}, cur: zoomToken(cred), zeroExpiryIsExpired: true}
 }
 
 func zoomToken(c *storage.ZoomCredential) *oauth2.Token {
@@ -207,34 +207,41 @@ func zoomToken(c *storage.ZoomCredential) *oauth2.Token {
 }
 
 type googleStore struct {
+	ctx   context.Context
 	db    *sql.DB
 	owner uuid.UUID
 }
 
-func (g googleStore) load() (*oauth2.Token, error) { return LoadUserToken(g.db, g.owner) }
-func (g googleStore) save(t *oauth2.Token) error   { return UpdateUserToken(g.db, g.owner, t) }
+func (g googleStore) load() (*oauth2.Token, error) { return LoadUserTokenCtx(g.ctx, g.db, g.owner) }
+func (g googleStore) save(t *oauth2.Token) error {
+	return storage.WithSessionGeneration(g.ctx, g.db, func(q storage.Querier) error { return UpdateUserToken(q, g.owner, t) })
+}
 
 type microsoftStore struct {
+	ctx   context.Context
 	db    *sql.DB
 	owner uuid.UUID
 }
 
-func (m microsoftStore) load() (*oauth2.Token, error) { return LoadMicrosoftToken(m.db, m.owner) }
+func (m microsoftStore) load() (*oauth2.Token, error) {
+	return LoadMicrosoftTokenCtx(m.ctx, m.db, m.owner)
+}
 func (m microsoftStore) save(t *oauth2.Token) error {
 	data, err := json.Marshal(microsoftTokenRecord{AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, Expiry: t.Expiry.UTC()})
 	if err != nil {
 		return err
 	}
-	return storage.UpdateMicrosoftCredential(m.db, m.owner, string(data))
+	return storage.UpdateMicrosoftCredentialCtx(m.ctx, m.db, m.owner, string(data))
 }
 
 type zoomStore struct {
+	ctx   context.Context
 	db    *sql.DB
 	owner uuid.UUID
 }
 
 func (z zoomStore) load() (*oauth2.Token, error) {
-	c, err := storage.LoadZoomCredential(z.db, z.owner)
+	c, err := storage.LoadZoomCredentialCtx(z.ctx, z.db, z.owner)
 	return zoomToken(c), err
 }
 
@@ -244,5 +251,5 @@ func (z zoomStore) save(t *oauth2.Token) error {
 		e := t.Expiry
 		c.Expiry = &e
 	}
-	return storage.UpdateZoomCredential(z.db, z.owner, c)
+	return storage.UpdateZoomCredentialCtx(z.ctx, z.db, z.owner, c)
 }

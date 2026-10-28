@@ -132,7 +132,7 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
@@ -208,7 +208,7 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
+	if err := storage.SaveSettingsForUserCtx(r.Context(), h.db, userID, s); err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}

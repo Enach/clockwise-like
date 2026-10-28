@@ -39,7 +39,7 @@ type HabitOccurrence struct {
 
 // --- Habit CRUD ------------------------------------------------------------
 
-func CreateHabit(db *sql.DB, h *Habit) (*Habit, error) {
+func CreateHabit(db Querier, h *Habit) (*Habit, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO habits (user_id, title, duration_minutes, days_of_week, window_start, window_end, priority, color)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -81,7 +81,7 @@ func ListActiveHabitsByUser(db *sql.DB, userID uuid.UUID) ([]*Habit, error) {
 	return scanHabits(rows)
 }
 
-func UpdateHabit(db *sql.DB, id uuid.UUID, h *Habit) (*Habit, error) {
+func UpdateHabit(db Querier, id uuid.UUID, h *Habit) (*Habit, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE habits SET
 			title = $2, duration_minutes = $3, days_of_week = $4,
@@ -93,7 +93,7 @@ func UpdateHabit(db *sql.DB, id uuid.UUID, h *Habit) (*Habit, error) {
 	return scanHabit(row)
 }
 
-func DeactivateHabit(db *sql.DB, id uuid.UUID) error {
+func DeactivateHabit(db Querier, id uuid.UUID) error {
 	_, err := db.ExecContext(context.Background(),
 		`UPDATE habits SET active = false WHERE id = $1`, id)
 	return err
@@ -146,7 +146,7 @@ func int64SliceToInt(s pq.Int64Array) []int {
 // --- HabitOccurrence CRUD -------------------------------------------------
 
 // UpsertHabitOccurrence creates or replaces the occurrence for a (habit, date) pair.
-func UpsertHabitOccurrence(db *sql.DB, o *HabitOccurrence) (*HabitOccurrence, error) {
+func UpsertHabitOccurrence(db Querier, o *HabitOccurrence) (*HabitOccurrence, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO habit_occurrences (habit_id, scheduled_date, start_time, end_time, status, calendar_event_id)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -184,7 +184,7 @@ func ListHabitOccurrences(db *sql.DB, habitID uuid.UUID, from, to time.Time) ([]
 }
 
 // UpdateHabitOccurrenceStatus changes the status of an occurrence owned by userID.
-func UpdateHabitOccurrenceStatus(db *sql.DB, occurrenceID, habitID, userID uuid.UUID, status string) (*HabitOccurrence, error) {
+func UpdateHabitOccurrenceStatus(db Querier, occurrenceID, habitID, userID uuid.UUID, status string) (*HabitOccurrence, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE habit_occurrences ho
 		SET status = $4

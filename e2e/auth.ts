@@ -59,7 +59,13 @@ export interface SessionUser {
  *
  * @param ttlSeconds defaults to 7 days, matching auth.GenerateToken.
  */
-export function mintSessionToken(user: SessionUser, ttlSeconds = 7 * 24 * 3600): string {
+/**
+ * PAC-71: `gen` is the session generation (backend/auth/jwt.go). A token
+ * without it reads as 0, which every account starts at; a test that advances
+ * an account's generation (the operator step, or the deploy-time step of OQ-6)
+ * must mint the account's current generation, else requireAuth answers 401.
+ */
+export function mintSessionToken(user: SessionUser, ttlSeconds = 7 * 24 * 3600, gen?: number): string {
   const now = Math.floor(Date.now() / 1000);
   const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   // Field order mirrors backend/auth/jwt.go Claims. Note that `sub` carries the
@@ -72,6 +78,7 @@ export function mintSessionToken(user: SessionUser, ttlSeconds = 7 * 24 * 3600):
       email: user.email,
       exp: now + ttlSeconds,
       iat: now,
+      ...(gen === undefined ? {} : { gen }),
     }),
   );
   const signature = b64url(
@@ -103,8 +110,8 @@ function sessionCookie(token: string): Cookie {
 }
 
 /** Attach a session to a live browser context. */
-export async function signIn(context: BrowserContext, user: SessionUser): Promise<void> {
-  await context.addCookies([sessionCookie(mintSessionToken(user))]);
+export async function signIn(context: BrowserContext, user: SessionUser, gen?: number): Promise<void> {
+  await context.addCookies([sessionCookie(mintSessionToken(user, undefined, gen))]);
 }
 
 /**

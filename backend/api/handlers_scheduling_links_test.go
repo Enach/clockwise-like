@@ -68,8 +68,8 @@ func decodeOwnedShared(t *testing.T, body *bytes.Buffer) map[string][]scheduling
 
 func TestSchedulingLinksCreateAndListContract(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "sched-owner@example.com")
-	coHostID := createTestUser(t, "sched-cohost@example.com")
+	ownerID := createConfirmedUser(t, "sched-owner@example.com")
+	coHostID := createConfirmedUser(t, "sched-cohost@example.com")
 	_ = coHostID
 
 	body := `{"title":"Intro Call","slug":" Intro Call ","duration_options":[30,45],"days_of_week":[1,3,5],"window_start_time":"10:00","window_end_time":"16:00","buffer_before":5,"buffer_after":10,"min_notice_minutes":120,"usage_type":"reusable","co_host_emails":["sched-cohost@example.com"]}`
@@ -113,7 +113,7 @@ func TestSchedulingLinksCreateAndListContract(t *testing.T) {
 
 func TestSchedulingLinksCreateRejectsInvalidUsageType(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "sched-invalid-usage@example.com")
+	ownerID := createConfirmedUser(t, "sched-invalid-usage@example.com")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links", bytes.NewBufferString(`{"title":"Bad","slug":"bad","usage_type":"forever"}`))
 	req = withUser(req, ownerID)
@@ -127,8 +127,8 @@ func TestSchedulingLinksCreateRejectsInvalidUsageType(t *testing.T) {
 
 func TestSchedulingLinksPatchUsesFrontendAliases(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "sched-patch-owner@example.com")
-	coHostID := createTestUser(t, "sched-patch-cohost@example.com")
+	ownerID := createConfirmedUser(t, "sched-patch-owner@example.com")
+	coHostID := createConfirmedUser(t, "sched-patch-cohost@example.com")
 	_ = coHostID
 	link := createSchedulingLinkRecord(t, ownerID, "patch-link", "Patch Link")
 
@@ -158,8 +158,8 @@ func TestSchedulingLinksPatchUsesFrontendAliases(t *testing.T) {
 
 func TestSchedulingLinksHostInviteRespondAndLeaveFlow(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "sched-flow-owner@example.com")
-	inviteeID := createTestUser(t, "sched-flow-invitee@example.com")
+	ownerID := createConfirmedUser(t, "sched-flow-owner@example.com")
+	inviteeID := createConfirmedUser(t, "sched-flow-invitee@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "flow-link", "Flow Link")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", bytes.NewBufferString(`{"email":"sched-flow-invitee@example.com"}`))
@@ -212,8 +212,8 @@ func TestSchedulingLinksHostInviteRespondAndLeaveFlow(t *testing.T) {
 
 func TestSchedulingLinksOwnerOnlyBookingsAndDelete(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "sched-booking-owner@example.com")
-	otherID := createTestUser(t, "sched-booking-other@example.com")
+	ownerID := createConfirmedUser(t, "sched-booking-owner@example.com")
+	otherID := createConfirmedUser(t, "sched-booking-other@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "booking-link", "Booking Link")
 	_, err := storage.CreateBooking(openTestDB(t), &storage.Booking{
 		LinkID:      link.ID,
@@ -269,7 +269,7 @@ func TestSchedulingLinksOwnerOnlyBookingsAndDelete(t *testing.T) {
 
 func TestSchedulingLinksValidationErrorsUse422(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "sched-validation-owner@example.com")
+	ownerID := createConfirmedUser(t, "sched-validation-owner@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "validation-link", "Validation Link")
 
 	tests := []struct {
@@ -322,9 +322,9 @@ func hostStatuses(t *testing.T, linkID uuid.UUID) map[uuid.UUID]string {
 
 func TestSchedulingLinksReinviteKeepsExistingHostStatus(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "pac61-owner@example.com")
-	acceptedID := createTestUser(t, "pac61-accepted@example.com")
-	declinedID := createTestUser(t, "pac61-declined@example.com")
+	ownerID := createConfirmedUser(t, "pac61-owner@example.com")
+	acceptedID := createConfirmedUser(t, "pac61-accepted@example.com")
+	declinedID := createConfirmedUser(t, "pac61-declined@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac61-reinvite", "Reinvite")
 	db := openTestDB(t)
 	for id, status := range map[uuid.UUID]string{acceptedID: "accepted", declinedID: "declined"} {
@@ -356,10 +356,10 @@ func TestSchedulingLinksReinviteKeepsExistingHostStatus(t *testing.T) {
 
 func TestSchedulingLinksPatchCoHostsSetsListByDifference(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "pac61-patch-owner@example.com")
-	keptID := createTestUser(t, "pac61-kept@example.com")
-	droppedID := createTestUser(t, "pac61-dropped@example.com")
-	newID := createTestUser(t, "pac61-new@example.com")
+	ownerID := createConfirmedUser(t, "pac61-patch-owner@example.com")
+	keptID := createConfirmedUser(t, "pac61-kept@example.com")
+	droppedID := createConfirmedUser(t, "pac61-dropped@example.com")
+	newID := createConfirmedUser(t, "pac61-new@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac61-patch", "Patch")
 	db := openTestDB(t)
 	for _, id := range []uuid.UUID{keptID, droppedID} {
@@ -430,9 +430,9 @@ func assertNotFoundJSON(t *testing.T, what string, w *httptest.ResponseRecorder)
 
 func TestSchedulingLinksRespondAndLeaveWithoutHostRowIs404(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "pac30-owner@example.com")
-	inviteeID := createTestUser(t, "pac30-invitee@example.com")
-	strangerID := createTestUser(t, "pac30-stranger@example.com")
+	ownerID := createConfirmedUser(t, "pac30-owner@example.com")
+	inviteeID := createConfirmedUser(t, "pac30-invitee@example.com")
+	strangerID := createConfirmedUser(t, "pac30-stranger@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac30-no-row", "No Row")
 	if _, err := storage.AddLinkHost(openTestDB(t), link.ID, inviteeID, "pending"); err != nil {
 		t.Fatalf("add invitee host: %v", err)
@@ -459,8 +459,8 @@ func TestSchedulingLinksRespondAndLeaveWithoutHostRowIs404(t *testing.T) {
 
 func TestSchedulingLinksAcceptWithHostRowIdIs404(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "pac30-rowid-owner@example.com")
-	inviteeID := createTestUser(t, "pac30-rowid-invitee@example.com")
+	ownerID := createConfirmedUser(t, "pac30-rowid-owner@example.com")
+	inviteeID := createConfirmedUser(t, "pac30-rowid-invitee@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac30-rowid", "Row Id")
 	row, err := storage.AddLinkHost(openTestDB(t), link.ID, inviteeID, "pending")
 	if err != nil {
@@ -487,8 +487,8 @@ func TestSchedulingLinksAcceptWithHostRowIdIs404(t *testing.T) {
 
 func TestSchedulingLinksLeaveTwiceIs404(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	ownerID := createTestUser(t, "pac30-leave-owner@example.com")
-	hostID := createTestUser(t, "pac30-leave-host@example.com")
+	ownerID := createConfirmedUser(t, "pac30-leave-owner@example.com")
+	hostID := createConfirmedUser(t, "pac30-leave-host@example.com")
 	link := createSchedulingLinkRecord(t, ownerID, "pac30-leave", "Leave")
 	if _, err := storage.AddLinkHost(openTestDB(t), link.ID, hostID, "accepted"); err != nil {
 		t.Fatalf("add host: %v", err)
@@ -514,7 +514,7 @@ func TestSchedulingLinksLeaveTwiceIs404(t *testing.T) {
 
 func TestSchedulingLinksRespondOnUnknownLinkIs404(t *testing.T) {
 	r := setupSchedulingLinkRoutes(t)
-	userID := createTestUser(t, "pac30-unknown@example.com")
+	userID := createConfirmedUser(t, "pac30-unknown@example.com")
 	missing := uuid.New().String()
 	for _, p := range []string{
 		"/api/scheduling-links/host-invites/" + missing + "/accept",
@@ -535,9 +535,9 @@ func TestSchedulingLinksInvitedHostAcceptsIs200(t *testing.T) {
 	} {
 		t.Run(slug, func(t *testing.T) {
 			r := setupSchedulingLinkRoutes(t)
-			ownerID := createTestUser(t, slug+"-owner@example.com")
+			ownerID := createConfirmedUser(t, slug+"-owner@example.com")
 			inviteeEmail := slug + "-invitee@example.com"
-			inviteeID := createTestUser(t, inviteeEmail)
+			inviteeID := createConfirmedUser(t, inviteeEmail)
 			link := createSchedulingLinkRecord(t, ownerID, slug, "Accept")
 
 			req := httptest.NewRequest(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", bytes.NewBufferString(`{"email":"`+inviteeEmail+`"}`))
@@ -597,11 +597,11 @@ func newPAC25LinkFixture(t *testing.T, prefix string) pac25LinkFixture {
 	t.Helper()
 	db := openTestDB(t)
 	f := pac25LinkFixture{r: setupSchedulingLinkRoutes(t)}
-	f.owner = createTestUser(t, prefix+"-owner@example.com")
-	f.accepted = createTestUser(t, prefix+"-accepted@example.com")
-	f.pending = createTestUser(t, prefix+"-pending@example.com")
-	f.declined = createTestUser(t, prefix+"-declined@example.com")
-	f.stranger = createTestUser(t, prefix+"-stranger@example.com")
+	f.owner = createConfirmedUser(t, prefix+"-owner@example.com")
+	f.accepted = createConfirmedUser(t, prefix+"-accepted@example.com")
+	f.pending = createConfirmedUser(t, prefix+"-pending@example.com")
+	f.declined = createConfirmedUser(t, prefix+"-declined@example.com")
+	f.stranger = createConfirmedUser(t, prefix+"-stranger@example.com")
 	for _, u := range []uuid.UUID{f.owner, f.accepted, f.pending, f.declined} {
 		if _, err := db.Exec(`UPDATE users SET avatar_url = $1 WHERE id = $2`, "https://avatars.example.com/"+u.String(), u); err != nil {
 			t.Fatalf("set avatar: %v", err)

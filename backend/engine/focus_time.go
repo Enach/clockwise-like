@@ -75,7 +75,7 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 	}
 	ctx = context.WithValue(ctx, auth.UserIDKey, userID)
 
-	s, err := storage.GetOrCreateSettingsByUser(e.DB, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
@@ -107,7 +107,7 @@ func (e *FocusTimeEngine) RunForUser(ctx context.Context, userID uuid.UUID, targ
 		"created":       len(result.CreatedBlocks),
 		"total_minutes": result.TotalMinutes,
 	})
-	storage.WriteAuditLog(e.DB, userID, "focus_created", string(detail))
+	storage.WriteAuditLogCtx(ctx, e.DB, userID, "focus_created", string(detail))
 
 	return result, nil
 }
@@ -191,7 +191,7 @@ func (e *FocusTimeEngine) processDay(ctx context.Context, client calendarOps, us
 			continue
 		}
 
-		if err := storage.SaveFocusBlock(e.DB, auth.UserIDFromContext(ctx), created.Id, dateStr, blockStart, blockEnd); err != nil {
+		if err := storage.SaveFocusBlockCtx(ctx, e.DB, auth.UserIDFromContext(ctx), created.Id, dateStr, blockStart, blockEnd); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("save block %s: %v", dateStr, err))
 		}
 

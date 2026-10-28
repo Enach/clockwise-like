@@ -318,29 +318,31 @@ func TestPAC67_ZoomCallbackKeepsRefreshTokenAndStoresExpiry(t *testing.T) {
 }
 
 // AC-11 (Outlook) and AC-19: a Microsoft reconnect without a refresh token
-// keeps the stored one; the sign-in sets only the caller's calendar provider.
-func TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller(t *testing.T) {
+// keeps the stored one; only the caller's account changes.
+//
+// PAC-71 rewrite (spec §6 "Must change", owner PAC-47 vs PAC-67 OQ-13): a
+// session-less Microsoft callback matched by address is now a refused sign-in,
+// so the reconnect is the signed-in CONNECT (AC-12 shape). Alice chose Outlook
+// as her work calendar in the Settings control before connecting, as that
+// control does; the connect itself never changes the work calendar (D-15).
+// Every PAC-67 assertion is kept: refresh token kept, loss ended, Alice's
+// status Outlook-connected, Bob unaffected.
+func TestPAC67_MicrosoftConnectKeepsRefreshAndChangesOnlyTheCaller(t *testing.T) {
 	w := newPAC67World(t)
 	alice := w.user("pac67-ms-callback-alice@example.com")
 	bob := w.user("pac67-ms-callback-bob@example.com")
-	w.providers(alice, "google", "meet")
+	w.providers(alice, "outlook", "meet") // her explicit choice in Settings
 	w.providers(bob, "google", "meet")
 	w.seedOutlook(alice, "ms-a1", "ms-kept-r", pac67Future)
 	if _, err := storage.RecordCredentialLoss(w.db, alice, storage.CredentialOutlook); err != nil {
 		t.Fatal(err)
 	}
 	w.d.ExchangeAnswer("ms-a2", "")
-	w.d.APIAnswer(http.StatusOK, `{"id":"ms-alice","mail":"pac67-ms-callback-alice@example.com","displayName":"Alice"}`)
-	prevMe := microsoftGraphMeURL
-	microsoftGraphMeURL = w.d.APIBase() + "/me"
-	defer func() { microsoftGraphMeURL = prevMe }()
 
 	ah := &authHandlers{db: w.db, jwtSecret: "secret", frontendURL: "http://app.test"}
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/microsoft/callback?state=s1&code=c1", nil)
-	req.AddCookie(&http.Cookie{Name: "ms_oauth_state", Value: "s1"})
 	rec := httptest.NewRecorder()
-	ah.microsoftCallback(rec, req)
-	if rec.Code != http.StatusFound || !strings.HasSuffix(rec.Header().Get("Location"), "/auth/callback?provider=outlook") {
+	ah.microsoftCallback(rec, connectCallbackRequest(t, "secret", "/api/auth/microsoft/callback", msConnectCookie, connectProviderOutlook, alice, 0, alice, 0, "c1"))
+	if rec.Code != http.StatusFound || !strings.HasSuffix(rec.Header().Get("Location"), "/auth/callback?provider=outlook&connect=credited") {
 		t.Fatalf("callback = %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	tok, _ := auth.LoadMicrosoftToken(w.db, alice)
@@ -355,6 +357,9 @@ func TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller(t *testing.T) 
 	}
 	if s := w.status(bob); s["provider"] != "google" {
 		t.Errorf("AC-19: bob's calendar provider changed: %v", s)
+	}
+	if tok, _ := auth.LoadMicrosoftToken(w.db, bob); tok != nil {
+		t.Errorf("AC-19: bob received a credential: %+v", tok)
 	}
 }
 

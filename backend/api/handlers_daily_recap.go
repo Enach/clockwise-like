@@ -28,7 +28,7 @@ type recapSettingsBody struct {
 }
 
 func (h *dailyRecapHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -82,7 +82,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -119,7 +119,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 		s.RecapIncludeHabits = *body.IncludeHabits
 	}
 
-	if err := storage.SaveRecapSettingsForUser(h.db, userID, s); err != nil {
+	if err := storage.SaveRecapSettingsForUserCtx(r.Context(), h.db, userID, s); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
@@ -129,7 +129,7 @@ func (h *dailyRecapHandlers) patchSettings(w http.ResponseWriter, r *http.Reques
 
 func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -149,14 +149,14 @@ func (h *dailyRecapHandlers) preview(w http.ResponseWriter, r *http.Request) {
 
 func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
-	conn, err := storage.GetWorkspaceConnection(h.db, userID, "slack")
+	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
 	if err != nil {
 		http.Error(w, "Slack not connected", http.StatusBadRequest)
 		return

@@ -34,7 +34,7 @@ func (e *FocusTimeEngine) ClearWeek(ctx context.Context, targetWeek time.Time) (
 		if err := client.deleteEvent(ctx, b.GoogleEventID); err != nil {
 			errs = append(errs, fmt.Sprintf("delete event %s: %v", b.GoogleEventID, err))
 		}
-		if err := storage.DeleteFocusBlock(e.DB, userID, b.GoogleEventID); err != nil {
+		if err := storage.DeleteFocusBlockCtx(ctx, e.DB, userID, b.GoogleEventID); err != nil {
 			errs = append(errs, fmt.Sprintf("delete db block %s: %v", b.GoogleEventID, err))
 		}
 	}
@@ -44,7 +44,7 @@ func (e *FocusTimeEngine) ClearWeek(ctx context.Context, targetWeek time.Time) (
 		"cleared":    len(blocks),
 		"errors":     errs,
 	})
-	storage.WriteAuditLog(e.DB, userID, "focus_cleared", string(detail))
+	storage.WriteAuditLogCtx(ctx, e.DB, userID, "focus_cleared", string(detail))
 
 	if len(errs) > 0 {
 		return len(blocks), fmt.Errorf("partial errors clearing week: %v", errs)

@@ -72,7 +72,7 @@ func assertSignedIn(t *testing.T, rec *httptest.ResponseRecorder, wantLocation s
 func failingTokenGenerator(t *testing.T) {
 	t.Helper()
 	prev := generateSessionToken
-	generateSessionToken = func(uuid.UUID, string, string) (string, error) {
+	generateSessionToken = func(uuid.UUID, string, int64, string) (string, error) {
 		return "", errors.New("signing failed")
 	}
 	t.Cleanup(func() { generateSessionToken = prev })
@@ -94,7 +94,13 @@ func closedDB(t *testing.T) *sql.DB {
 type fakeOAuthProvider struct {
 	srv     *httptest.Server
 	profile func(w http.ResponseWriter)
+	// organization is Graph /organization (PAC-71 tenant source); nil answers
+	// one work tenant that verifies example.com.
+	organization func(w http.ResponseWriter)
 }
+
+// pac35Tenant is the work tenant the fake /organization answers by default.
+const pac35Tenant = "7e4a0000-0000-4000-8000-000000000035"
 
 func newFakeOAuthProvider(t *testing.T) *fakeOAuthProvider {
 	t.Helper()
@@ -107,6 +113,13 @@ func newFakeOAuthProvider(t *testing.T) *fakeOAuthProvider {
 		})
 	})
 	mux.HandleFunc("/profile", func(w http.ResponseWriter, _ *http.Request) { p.profile(w) })
+	mux.HandleFunc("/organization", func(w http.ResponseWriter, _ *http.Request) {
+		if p.organization != nil {
+			p.organization(w)
+			return
+		}
+		jsonProfile(map[string]any{"value": []any{map[string]any{"id": pac35Tenant, "verifiedDomains": []any{map[string]any{"name": "example.com"}}}}})(w)
+	})
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
 	return p
@@ -142,7 +155,7 @@ func runGoogleCallback(t *testing.T, ah *authHandlers, p *fakeOAuthProvider) *ht
 func TestPAC35_GoogleCallback_EmptySecretGoesToFailureState(t *testing.T) {
 	db := openTestDB(t)
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "g-ac1", "email": "pac35-ac1-google@example.com", "name": "G", "picture": "https://img.test/g.png"})
+	p.profile = jsonProfile(map[string]any{"verified_email": true, "id": "g-ac1", "email": "pac35-ac1-google@example.com", "name": "G", "picture": "https://img.test/g.png"})
 
 	rec := runGoogleCallback(t, &authHandlers{db: db, jwtSecret: ""}, p)
 	assertSignInFailed(t, rec)
@@ -160,13 +173,13 @@ func TestPAC35_GoogleCallback_EmptySecretGoesToFailureState(t *testing.T) {
 func TestPAC35_GoogleCallback_TokenGenerationFailureGoesToFailureState(t *testing.T) {
 	failingTokenGenerator(t)
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "g-ac1b", "email": "pac35-ac1b-google@example.com", "name": "G"})
+	p.profile = jsonProfile(map[string]any{"verified_email": true, "id": "g-ac1b", "email": "pac35-ac1b-google@example.com", "name": "G"})
 	assertSignInFailed(t, runGoogleCallback(t, &authHandlers{db: openTestDB(t), jwtSecret: "secret"}, p))
 }
 
 func TestPAC35_GoogleCallback_SuccessStillLandsOnCompletionPage(t *testing.T) {
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "g-ok", "email": "pac35-ok-google@example.com", "name": "G"})
+	p.profile = jsonProfile(map[string]any{"verified_email": true, "id": "g-ok", "email": "pac35-ok-google@example.com", "name": "G"})
 	rec := runGoogleCallback(t, &authHandlers{db: openTestDB(t), jwtSecret: "secret"}, p)
 	assertSignedIn(t, rec, pac35Frontend+"/auth/callback")
 }
@@ -182,6 +195,9 @@ func runMicrosoftCallback(t *testing.T, ah *authHandlers, p *fakeOAuthProvider) 
 	microsoftOAuthEndpoint = p.endpoint()
 	microsoftGraphMeURL = p.srv.URL + "/profile"
 	t.Cleanup(func() { microsoftOAuthEndpoint, microsoftGraphMeURL = prevEndpoint, prevGraph })
+	prevOrg := microsoftGraphOrganizationURL
+	microsoftGraphOrganizationURL = p.srv.URL + "/organization"
+	t.Cleanup(func() { microsoftGraphOrganizationURL = prevOrg })
 	ah.frontendURL = pac35Frontend
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/microsoft/callback?state=s1&code=c1", nil)
 	req.AddCookie(&http.Cookie{Name: "ms_oauth_state", Value: "s1"})
@@ -193,7 +209,7 @@ func runMicrosoftCallback(t *testing.T, ah *authHandlers, p *fakeOAuthProvider) 
 func TestPAC35_MicrosoftCallback_EmptySecretGoesToFailureState(t *testing.T) {
 	db := openTestDB(t)
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "ms-ac2", "mail": "pac35-ac2-ms@example.com", "displayName": "M"})
+	p.profile = jsonProfile(map[string]string{"id": "0a5e0000-0000-4000-8000-0000000000a2", "mail": "pac35-ac2-ms@example.com", "displayName": "M"})
 	assertSignInFailed(t, runMicrosoftCallback(t, &authHandlers{db: db, jwtSecret: ""}, p))
 
 	u, err := storage.GetUserByEmail(db, "pac35-ac2-ms@example.com")
@@ -208,7 +224,7 @@ func TestPAC35_MicrosoftCallback_EmptySecretGoesToFailureState(t *testing.T) {
 func TestPAC35_MicrosoftCallback_TokenGenerationFailureGoesToFailureState(t *testing.T) {
 	failingTokenGenerator(t)
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "ms-ac2b", "mail": "pac35-ac2b-ms@example.com", "displayName": "M"})
+	p.profile = jsonProfile(map[string]string{"id": "0a5e0000-0000-4000-8000-0000000000b2", "mail": "pac35-ac2b-ms@example.com", "displayName": "M"})
 	assertSignInFailed(t, runMicrosoftCallback(t, &authHandlers{db: openTestDB(t), jwtSecret: "secret"}, p))
 }
 
@@ -232,13 +248,13 @@ func TestPAC35_MicrosoftCallback_ProfileUnreadableGoesToFailureState(t *testing.
 
 func TestPAC35_MicrosoftCallback_UpsertFailureGoesToFailureState(t *testing.T) {
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "ms-up", "mail": "pac35-upsert-ms@example.com", "displayName": "M"})
+	p.profile = jsonProfile(map[string]string{"id": "0a5e0000-0000-4000-8000-0000000000f0", "mail": "pac35-upsert-ms@example.com", "displayName": "M"})
 	assertSignInFailed(t, runMicrosoftCallback(t, &authHandlers{db: closedDB(t), jwtSecret: "secret"}, p))
 }
 
 func TestPAC35_MicrosoftCallback_SuccessStillLandsOnCompletionPage(t *testing.T) {
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "ms-ok", "mail": "pac35-ok-ms@example.com", "displayName": "M"})
+	p.profile = jsonProfile(map[string]string{"id": "0a5e0000-0000-4000-8000-0000000000c0", "mail": "pac35-ok-ms@example.com", "displayName": "M"})
 	rec := runMicrosoftCallback(t, &authHandlers{db: openTestDB(t), jwtSecret: "secret"}, p)
 	assertSignedIn(t, rec, pac35Frontend+"/auth/callback?provider=outlook")
 }
@@ -543,7 +559,7 @@ func pac35Router(db *sql.DB, secret string) *chi.Mux {
 	mh := &meHandlers{db: db}
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(secret))
+		r.Use(requireAuth(db, secret))
 		r.Get("/api/auth/status", ah.status)
 		r.Delete("/api/auth/disconnect", ah.disconnect)
 		r.Get("/api/auth/me", mh.me)
@@ -773,6 +789,8 @@ func TestPAC35_CurrentUser_EveryDocumentedStatus(t *testing.T) {
 			Name      string `json:"name"`
 			AvatarURL string `json:"avatarUrl"`
 			Provider  string `json:"provider"`
+			// PAC-71: required on CurrentUserResponse.
+			AddressStanding string `json:"addressStanding"`
 			CreatedAt string `json:"createdAt"`
 		}
 		dec := json.NewDecoder(bytes.NewReader(rec.Body.Bytes()))
@@ -780,7 +798,7 @@ func TestPAC35_CurrentUser_EveryDocumentedStatus(t *testing.T) {
 		if err := dec.Decode(&body); err != nil {
 			t.Fatalf("body %q: %v", rec.Body.String(), err)
 		}
-		if body.AvatarURL != "https://img.test/me.png" || body.Provider != "google" || body.ID != u.ID.String() {
+		if body.AvatarURL != "https://img.test/me.png" || body.Provider != "google" || body.ID != u.ID.String() || body.AddressStanding != "unconfirmed" {
 			t.Errorf("body = %+v", body)
 		}
 	})
@@ -794,6 +812,20 @@ func TestPAC35_CurrentUser_EveryDocumentedStatus(t *testing.T) {
 		rec := pac35Do(r, http.MethodGet, "/api/auth/me", pac35Session(t, secret, uuid.New()))
 		if rec.Code != http.StatusNotFound || strings.TrimSpace(rec.Body.String()) != `{"error":"user not found"}` {
 			t.Errorf("status = %d body %q", rec.Code, rec.Body.String())
+		}
+	})
+	// PAC-71 (spec AC-48): getCurrentUser documents a 500 for a session
+	// generation that cannot be read; the cookie is not touched.
+	t.Run("500 generation unreadable", func(t *testing.T) {
+		rec := pac35Do(pac35Router(closedDB(t), secret), http.MethodGet, "/api/auth/me", pac35Session(t, secret, u.ID))
+		if rec.Code != http.StatusInternalServerError || strings.TrimSpace(rec.Body.String()) != `{"error":"internal error"}` {
+			t.Errorf("status = %d body %q", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("Content-Type = %q", got)
+		}
+		if len(rec.Result().Header.Values("Set-Cookie")) != 0 {
+			t.Error("the 500 touched a cookie")
 		}
 	})
 }

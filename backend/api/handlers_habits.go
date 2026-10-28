@@ -118,7 +118,7 @@ func (h *habitsHandlers) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	habit, err := storage.CreateHabit(h.db, &storage.Habit{
+	habit, err := storage.CreateHabitCtx(r.Context(), h.db, &storage.Habit{
 		UserID:          userID,
 		Title:           body.Title,
 		DurationMinutes: body.DurationMinutes,
@@ -230,7 +230,7 @@ func (h *habitsHandlers) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := storage.UpdateHabit(h.db, id, &updated)
+	result, err := storage.UpdateHabitCtx(r.Context(), h.db, id, &updated)
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
@@ -268,7 +268,7 @@ func (h *habitsHandlers) deactivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := storage.DeactivateHabit(h.db, id); err != nil {
+	if err := storage.DeactivateHabitCtx(r.Context(), h.db, id); err != nil {
 		writeServerError(w, r, "deactivate failed", err, http.StatusInternalServerError)
 		return
 	}
@@ -362,7 +362,7 @@ func (h *habitsHandlers) updateOccurrence(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	occurrence, err := storage.UpdateHabitOccurrenceStatus(h.db, occurrenceID, habitID, userID, body.Status)
+	occurrence, err := storage.UpdateHabitOccurrenceStatusCtx(r.Context(), h.db, occurrenceID, habitID, userID, body.Status)
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return

@@ -79,7 +79,7 @@ func (e *TeamAvailabilityEngine) FindSlots(ctx context.Context, teamID uuid.UUID
 		var md memberBusyData
 
 		// Per-member calendar access.
-		token, err := auth.LoadUserToken(e.DB, m.UserID)
+		token, err := auth.LoadUserTokenCtx(ctx, e.DB, m.UserID)
 		if err == nil && token != nil {
 			// The member's own credential: renewal and loss are theirs (PAC-67, D-12).
 			ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, m.UserID, token)

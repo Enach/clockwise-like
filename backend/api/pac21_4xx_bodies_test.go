@@ -190,7 +190,7 @@ func TestPAC21ConferenceProviderRefusals(t *testing.T) {
 		status         int
 		want           string
 	}{
-		{"teams not connected", "teams", errTeamsNotConnected, http.StatusBadRequest, "teams: not connected — visit /api/auth/microsoft to authenticate"},
+		{"teams not connected", "teams", errTeamsNotConnected, http.StatusBadRequest, "teams: not connected — connect Outlook in Settings (POST /api/auth/microsoft/connect)"},
 		{"unsupported echoes the request's provider", "whereby", errUnsupportedConferenceProvider, http.StatusBadRequest, `unsupported conference provider "whereby"`},
 		{"anything else is a 500", "zoom", errors.New(pac21Marker), http.StatusInternalServerError, "internal error"},
 	}

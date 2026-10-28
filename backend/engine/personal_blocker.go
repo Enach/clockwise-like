@@ -49,7 +49,7 @@ func (b *PersonalBlocker) SyncAllForUser(ctx context.Context, userID uuid.UUID) 
 		return fmt.Errorf("PersonalBlocker.SyncAllForUser: userID is required")
 	}
 	ctx = context.WithValue(ctx, auth.UserIDKey, userID)
-	cals, err := storage.ListPersonalCalendarsByUser(b.DB, userID)
+	cals, err := storage.ListPersonalCalendarsByUserCtx(ctx, b.DB, userID)
 	if err != nil {
 		return fmt.Errorf("list personal calendars: %w", err)
 	}
@@ -65,7 +65,7 @@ func (b *PersonalBlocker) SyncAllForUser(ctx context.Context, userID uuid.UUID) 
 }
 
 func (b *PersonalBlocker) Preview(ctx context.Context, calID int64, start, end time.Time) ([]calendar.GenericEvent, error) {
-	pc, err := storage.GetPersonalCalendar(b.DB, calID)
+	pc, err := storage.GetPersonalCalendarCtx(ctx, b.DB, calID)
 	if err != nil {
 		return nil, fmt.Errorf("get calendar: %w", err)
 	}
@@ -73,7 +73,7 @@ func (b *PersonalBlocker) Preview(ctx context.Context, calID int64, start, end t
 }
 
 func (b *PersonalBlocker) Sync(ctx context.Context, calID int64) error {
-	pc, err := storage.GetPersonalCalendar(b.DB, calID)
+	pc, err := storage.GetPersonalCalendarCtx(ctx, b.DB, calID)
 	if err != nil {
 		return fmt.Errorf("get calendar: %w", err)
 	}
@@ -94,7 +94,7 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 		return fmt.Errorf("work calendar: %w", err)
 	}
 
-	s, _ := storage.GetOrCreateSettingsByUser(b.DB, pc.UserID)
+	s, _ := storage.GetOrCreateSettingsByUserCtx(ctx, b.DB, pc.UserID)
 
 	incoming := make(map[string]calendar.GenericEvent, len(events))
 	for _, e := range events {
@@ -109,7 +109,7 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 	for _, blocker := range existing {
 		if _, found := incoming[blocker.PersonalEventID]; !found {
 			_ = calOps.deleteEvent(ctx, blocker.WorkEventID)
-			_ = storage.DeletePersonalBlocker(b.DB, pc.ID, blocker.PersonalEventID)
+			_ = storage.DeletePersonalBlockerCtx(ctx, b.DB, pc.ID, blocker.PersonalEventID)
 		}
 	}
 
@@ -131,7 +131,7 @@ func (b *PersonalBlocker) syncOne(ctx context.Context, pc *storage.PersonalCalen
 			log.Printf("personal_blocker: create blocker for event %s: %v", e.ID, err)
 			continue
 		}
-		_ = storage.UpsertPersonalBlocker(b.DB, pc.ID, e.ID, created.Id)
+		_ = storage.UpsertPersonalBlockerCtx(ctx, b.DB, pc.ID, e.ID, created.Id)
 	}
 	return nil
 }

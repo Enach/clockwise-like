@@ -40,8 +40,8 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **127**
-- generated: **9**
+- operations: **129**
+- generated: **11**
 - handwritten: **118**
 
 ## Register
@@ -59,15 +59,17 @@ from the contract and any edit is reported as drift.
 | getSsoStepupOptions               | GET    | /api/admin/sso/stepup/options                   | auth             | generated   | PAC-50: new (contract revision 8); implemented as generatedServer.GetSsoStepupOptions (backend/api/handlers_sso_stepup.go), mounted through the generated strict wrapper. |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
 | setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | PAC-22: a new operation, so its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
-| googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | |
-| ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | |
+| googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | PAC-71: modified (refusal redirect, connect branch), kept handwritten. Moving it is a contract change: it branches on which state cookie matches and answers text/plain 400, JSON 500 and three cookie-dependent 302s, like the other two sign-in callbacks (PAC-35 precedent). |
+| ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | PAC-71: modified (identity binding, refusal redirect), kept handwritten for the same reason as googleOAuthCallback. |
 | detectAuthProvider                | POST   | /api/auth/detect                                | auth             | handwritten | |
 | disconnectCalendar                | DELETE | /api/auth/disconnect                            | auth             | handwritten | |
 | startGoogleOAuth                  | GET    | /api/auth/google                                | auth             | handwritten | |
+| startGoogleConnect                | POST   | /api/auth/google/connect                        | auth             | generated   | PAC-71: new; implemented as generatedServer.StartGoogleConnect (backend/api/handlers_pac71_auth.go), mounted through the generated strict wrapper. |
 | logout                            | POST   | /api/auth/logout                                | auth             | handwritten | |
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
-| microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | |
+| microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | PAC-71: modified (tenant check, refusal redirect, connect branch), kept handwritten for the same reason as googleOAuthCallback. |
+| startMicrosoftConnect             | POST   | /api/auth/microsoft/connect                     | auth             | generated   | PAC-71: new; implemented as generatedServer.StartMicrosoftConnect (backend/api/handlers_pac71_auth.go), mounted through the generated strict wrapper. |
 | disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | generated   | PAC-67: new; implemented as generatedServer.DisconnectMicrosoft (backend/api/handlers_credentials.go), mounted through the generated strict wrapper. |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |

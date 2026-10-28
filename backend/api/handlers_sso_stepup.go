@@ -54,6 +54,8 @@ const (
 	reasonTIDChanged    = "tid_changed"
 	reasonEmailMismatch = "email_mismatch"
 	reasonNotAdmin      = "not_admin"
+	// reasonIdentityMismatch is PAC-71 check 4b, checked after every other.
+	reasonIdentityMismatch = "identity_mismatch"
 )
 
 // ssoStore is the part of storage the SSO write and step-up paths go
@@ -235,7 +237,7 @@ func (h *ssoHandlers) authorizeWrite(w http.ResponseWriter, r *http.Request, c *
 	if ok {
 		return "stepup", true
 	}
-	if h.breakGlass[strings.ToLower(sessionEmail(r.Context()))] {
+	if h.breakGlassAccount(c.user) {
 		iat := sessionIssuedAt(r.Context())
 		age := now.Sub(iat)
 		// A token stamped in the future (beyond a minute of skew) is not fresh.
@@ -575,6 +577,9 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		if err != nil || !admin {
 			return reasonNotAdmin, ""
 		}
+		if !h.stepupIdentityMatches(user, storage.Identity{Provider: storage.IdentityGoogle, Subject: id.Subject}) {
+			return reasonIdentityMismatch, ""
+		}
 		return "", ""
 	}
 
@@ -600,6 +605,9 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 	}
 	if !auth.HasQualifyingEntraRole(roles) {
 		return reasonNotAdmin, ""
+	}
+	if !h.stepupIdentityMatches(user, storage.Identity{Provider: storage.IdentityMicrosoft, Tenant: strings.ToLower(tid), Subject: strings.ToLower(id.ObjectID)}) {
+		return reasonIdentityMismatch, ""
 	}
 	return "", tid
 }
@@ -640,4 +648,34 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 		target += "&purpose=" + storage.SSOGrantPurposeLLMOrgKeyWrite
 	}
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// breakGlassAccount is PAC-71's break-glass rule (spec §3 "PAC-50 admin
+// step-up and break-glass", D-13, AC-38): the operator's list names
+// addresses, and a listed address authorises the ACCOUNT that holds it
+// domain-confirmed, identified by the session's account, never by the email
+// claim the session carries. An account that carries the address
+// unconfirmed, or no longer carries it, is not break-glass.
+func (h *ssoHandlers) breakGlassAccount(user *storage.User) bool {
+	if user == nil || !h.breakGlass[strings.ToLower(strings.TrimSpace(user.Email))] {
+		return false
+	}
+	return user.AddressStanding == storage.AddressDomainConfirmed
+}
+
+// stepupIdentityMatches is PAC-71 check 4b (spec AC-21, D-13; contract
+// ssoAdminStepupCallback): when the account is bound at the step-up's
+// authority (Google; or Microsoft in the same tenant), the step-up identity
+// must be the bound one. A binding at another authority, or none, leaves
+// today's checks to decide alone. A failed read fails closed.
+func (h *ssoHandlers) stepupIdentityMatches(user *storage.User, stepup storage.Identity) bool {
+	bound, err := storage.GetBoundIdentity(h.ah.db, user.ID)
+	if err != nil {
+		log.Printf("sso step-up: read binding of %s: %v", user.ID, err)
+		return false
+	}
+	if bound == nil || bound.Provider != stepup.Provider || bound.Tenant != stepup.Tenant {
+		return true
+	}
+	return stepup.Subject != "" && bound.Subject == stepup.Subject
 }

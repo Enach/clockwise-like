@@ -27,6 +27,8 @@ paths:
         Not team-scoped. `team_member_count` counts rows in manager_team_members for the
         caller (the global identity table), not assignments to any one formal team.
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Manager profile summary.
           content:
@@ -50,6 +52,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ManagerProfileUpdate" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: >
             The storage.UserProfile Go struct, with explicit snake_case json tags since
@@ -76,6 +80,11 @@ paths:
         email is ALREADY assigned to the selected team. `assigned` is hard-coded to 0:
         this endpoint never creates a manager_team_member_assignments row for any team.
         `team_id` is REQUIRED here and the caller must be the team OWNER.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the roster import (DetectTeam) resolves each detected address to an
+        account (`member_user_id`) only when exactly one account holds it DOMAIN-CONFIRMED
+        (case-insensitive); otherwise the identity row is written with `member_user_id`
+        null, as for a non-Paceday address.
       parameters:
         - $ref: "#/components/parameters/RequiredTeamIdQuery"
       requestBody:
@@ -132,6 +141,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ScanConfirmRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Assignment counts. `total` is the post-commit assignment count for this team.
           content:
@@ -169,6 +180,10 @@ paths:
         synthesised with source="formal" and cadence="none". The caller is always excluded
         from (b). Sorted case-insensitively by display_name. `members` is always an array,
         never null.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): merging formal members with roster entries is a keeping site:
+        a roster entry represents a formal member whose stored address equals the entry's
+        address case-insensitively, at ANY standing. Nothing is granted here.
       parameters:
         - $ref: "#/components/parameters/RequiredTeamIdQuery"
         - name: week
@@ -179,6 +194,8 @@ paths:
             current ISO week's Monday in UTC. Not validated to actually be a Monday.
           schema: { type: string, format: date }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Manager roster.
           content:
@@ -207,6 +224,13 @@ paths:
         manager_team_members plus manager_team_member_assignments, and the caller must
         be the team OWNER. Adding a member never creates a team_invites row (asserted by
         TestManagerTeam_AddMemberCreatesOnlySelectedTeamAssignment).
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): `member_user_id` is resolved to an account only when exactly
+        one account holds `email` DOMAIN-CONFIRMED (compared case-insensitively; before
+        PAC-71 an exact-case match on any account). An address that is carried only
+        unconfirmed, by several accounts (a letter-case collision), or by none resolves to
+        nobody: the roster row is stored with `member_user_id` null, as for a non-Paceday
+        address today.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       requestBody:
@@ -215,6 +239,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AddManagerMemberRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "201":
           description: >
             The member row as stored, read back after the upsert commits (PAC-26,
@@ -263,9 +289,21 @@ paths:
         pending team_invites for this email on this team, and LEAVES the global
         manager_team_members identity row and its 1:1 history intact. Every storage error
         on this path is swallowed, so a failed delete still returns 204.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): with `team_id`, the formal team membership is removed for EVERY
+        account that carries the address in any letter case and at any standing (a
+        revoking site): two accounts that differ only in letter case are both removed,
+        and an unconfirmed carrier is removed too, never a silent no-op. If one of them is
+        the team owner the answer is the 422 and nothing is removed. If no account carries
+        the address, the assignment and pending invites are still removed and the answer
+        is still 204 (spec §6). The global path (no `team_id`) is unchanged.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "204":
           description: Deleted (or silently no-op). Empty body.
         "400":
@@ -293,6 +331,11 @@ paths:
         the canonical global display name is never overwritten. Also, with `team_id`, a
         formal team member with no assignment yet is materialised into an assignment on
         first patch.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): that materialisation is a granting site: a formal member is matched
+        to `{email}` only when that member's account holds `{email}` DOMAIN-CONFIRMED
+        (case-insensitive); a formal member whose address is unconfirmed is not matched,
+        and the answer is the one for an address with no roster entry.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       requestBody:
@@ -301,6 +344,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/PatchManagerMemberRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: >
             The re-read storage.ManagerTeamMember, with explicit snake_case json tags
@@ -343,6 +388,9 @@ paths:
         `/app?attendees=<email>&duration=30&title=1%3A1+with+<display_name>` plus
         `&date=<suggested_date>` when supplied (query params are Go url.Values-encoded, so
         alphabetically ordered). An empty body is accepted (io.EOF is tolerated).
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the roster entry this operation may materialise for a formal team
+        member follows the same DOMAIN-CONFIRMED rule as patchManagerTeamMember.
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       requestBody:
@@ -351,6 +399,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ScheduleOneOnOneRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Prefill URL.
           content:
@@ -390,6 +440,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/OptionalTeamIdQuery"
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Cadence gaps.
           content:
@@ -440,6 +492,8 @@ paths:
           description: Monday of the newest week, YYYY-MM-DD. Defaults to the current UTC ISO week's Monday.
           schema: { type: string, format: date }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Per-member weekly analytics.
           content:
@@ -524,6 +578,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/InviteTokenPath"
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Invite preview.
           content:
@@ -552,6 +608,14 @@ paths:
         The authenticated user's email must case-insensitively equal invitee_email.
         Membership is added with role "member" via an ON CONFLICT DO NOTHING insert, so
         accepting twice cannot demote an existing owner. Returns no body.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the invite is accepted only when the caller's ACCOUNT holds
+        invitee_email DOMAIN-CONFIRMED: its stored address equals invitee_email
+        case-insensitively AND its addressStanding (getCurrentUser) is domain_confirmed.
+        An account that carries the address unconfirmed (bound with mailbox evidence, or
+        created before PAC-71 and not bound yet) gets exactly today's mismatch answer,
+        the 403 "this invite is for a different email address", and nothing changes.
+        The session's email claim is not consulted.
       parameters:
         - $ref: "#/components/parameters/InviteTokenPath"
       responses:
@@ -589,6 +653,8 @@ paths:
         discarded, ordered by joined_at ASC, and is `[]` whenever the list is empty or the
         query failed (PAC-28).
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Team detail.
           content:
@@ -603,14 +669,19 @@ paths:
           $ref: "#/components/responses/JsonForbidden"
         "404":
           description: >
-            JSON error "not found".
+            JSON error "not found". Reachable only in a race: the membership read
+            (requireMember) and the team read (storage.GetTeam) are two separate statements
+            with no transaction (backend/api/handlers_teams.go getTeam), and a team_members
+            row cannot outlive its team (team_members.team_id REFERENCES teams ON DELETE
+            CASCADE, migration 013_teams.up.sql). So the 404 is answered exactly when the team
+            is deleted (deleteTeam, or the cascade from its creator's account) after the
+            membership read succeeded and before the team read; a team that is already gone
+            when the request arrives is the 403. Resolved by PAC-71 at stage 2 (this
+            operation is touched for its 401); the plan owes a seam test that deletes the
+            team between the two reads.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
-          x-uncertain: >
-            Practically unreachable: the membership check runs first and a team_members row
-            cannot exist without its team (FK + ON DELETE CASCADE), so a missing team yields
-            403 before this branch. Kept because the code path exists.
         "500":
           $ref: "#/components/responses/ServerError"
     patch:
@@ -618,6 +689,8 @@ paths:
       tags: [teams]
       summary: Rename a team. Owner only.
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: >
             The re-read team. Never `null`: since PAC-26 (API-032) a failed re-read is
@@ -649,6 +722,8 @@ paths:
         Cascades to team_members, team_invites, no_meeting_zones and
         manager_team_member_assignments via FK ON DELETE CASCADE.
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "204":
           description: Deleted. Empty body.
         "400":
@@ -674,6 +749,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/InviteEmailRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "201":
           description: >
             The created invite INCLUDING its raw `token`, so the owner can share the link
@@ -725,6 +802,8 @@ paths:
           description: The Paceday user id (UUID) of the member to remove.
           schema: { type: string, format: uuid }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "204":
           description: Removed (idempotent — removing a non-member also returns 204). Empty body.
         "400":
@@ -765,6 +844,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/NoMeetingZoneRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "201":
           description: Created zone, dayOfWeek already converted back to the 1..7 wire convention.
           content:
@@ -797,6 +878,8 @@ paths:
         then start_time — which means Sunday sorts FIRST because it is stored as 0, even
         though it is emitted as dayOfWeek 7.
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Zones.
           content:
@@ -836,6 +919,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/NoMeetingZoneRequest" }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Updated zone.
           content:
@@ -865,6 +950,8 @@ paths:
       tags: [teams]
       summary: Delete a no-meeting zone. Owner only.
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "204":
           description: Deleted (idempotent — deleting an unknown zone also returns 204). Empty body.
         "400":
@@ -902,6 +989,8 @@ paths:
           description: Slot length in minutes. Defaults to 60. Must be 1..1440.
           schema: { type: integer, minimum: 1, maximum: 1440, default: 60 }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Candidate slots.
           content:
@@ -939,6 +1028,8 @@ paths:
             parsed value's location (UTC). Defaults to the current local week's Monday.
           schema: { type: string, format: date }
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         "200":
           description: Team analytics.
           content:

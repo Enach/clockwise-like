@@ -464,8 +464,11 @@ func pac67AuditEnum(t *testing.T) map[string]bool {
 // the contract's enum, and every enum value has a writer.
 func TestPAC67_AuditEnumMatchesTheWriters(t *testing.T) {
 	enum := pac67AuditEnum(t)
-	call := regexp.MustCompile(`WriteAuditLog\(`)
-	literal := regexp.MustCompile(`WriteAuditLog\([^,]+,\s*[^,]+,\s*"([a-z_]+)"`)
+	// PAC-71: request paths write through WriteAuditLogCtx(ctx, db, ...), the
+	// same writer under the in-request re-check; its generated wrapper
+	// (storage/guarded_writes.go) only forwards the caller's action.
+	call := regexp.MustCompile(`WriteAuditLog(Ctx)?\(`)
+	literal := regexp.MustCompile(`WriteAuditLog(?:Ctx\([^,]+,\s*|\()[^,]+,\s*[^,]+,\s*"([a-z_]+)"`)
 	writers := map[string][]string{}
 	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -474,7 +477,7 @@ func TestPAC67_AuditEnumMatchesTheWriters(t *testing.T) {
 		if info.IsDir() && path != ".." && (info.Name() == "gen" || strings.HasPrefix(info.Name(), ".")) {
 			return filepath.SkipDir
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, "guarded_writes.go") {
 			return nil
 		}
 		data, err := os.ReadFile(path)

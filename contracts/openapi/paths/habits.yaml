@@ -15,6 +15,8 @@ paths:
         Returns `engine.HabitTemplates` verbatim. Static, not user-scoped, never empty.
         The handler writes no explicit status code, so Go's implicit 200 applies.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: The static template list (always 12 entries).
           content:
@@ -36,6 +38,8 @@ paths:
         returns immediately. The request body is never read. Errors from the background
         job are swallowed and are not observable through this endpoint.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: Reoptimization started. Note the status is 200, not 202 (contrast POST /api/analytics/recompute).
           content:
@@ -437,6 +441,8 @@ paths:
         detached context and returns immediately. The request body is never read, and no
         parameters select the week. Errors from the background job are swallowed.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "202":
           description: Recompute accepted.
           content:
@@ -593,6 +599,8 @@ paths:
         Note this route sits inside the authenticated group, so the browser must already
         carry the `auth_token` cookie when it navigates here.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "302":
           description: Redirect to Slack's authorize page.
           headers:
@@ -683,6 +691,8 @@ paths:
         Always 200. Any storage error (including "no row") is collapsed into
         `{"connected": false}` — the `workspace_name` key is then absent entirely.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: Connection status.
           content:
@@ -703,6 +713,8 @@ paths:
         connection that does not exist is also 204 — this endpoint is idempotent and
         never reports 404.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "204":
           description: Disconnected. Empty body.
         "401":
@@ -718,6 +730,8 @@ paths:
         to Notion. Browser navigation endpoint, no body. Unlike Slack, no `scope` is
         requested — the query carries `response_type=code` and `owner=user`.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "302":
           description: Redirect to Notion's authorize page.
           headers:
@@ -805,6 +819,8 @@ paths:
       summary: Whether Notion is connected for this user
       description: 'Always 200. Any storage error collapses into `{"connected": false}` with no `workspace_name` key.'
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: Connection status.
           content:
@@ -821,6 +837,8 @@ paths:
       summary: Delete the stored Notion connection
       description: Idempotent. The storage error is discarded, so this is always 204.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "204":
           description: Disconnected. Empty body.
         "401":
@@ -852,7 +870,10 @@ components:
     Unauthorized:
       description: |
         No `auth_token` cookie and no `Authorization: Bearer <jwt>` header, or the token
-        failed validation, or its `sub` is not a UUID. Emitted by `requireAuth`.
+        failed validation, or its `sub` is not a UUID, or (PAC-71) its `gen` is not the
+        account's current session generation, detected by `requireAuth` or by the
+        in-request re-check on account data (security scheme `bearerAuth`, SESSION
+        GENERATION). Emitted by `requireAuth`, or with the same bytes by that re-check.
         QUIRK: the body is the JSON text `{"error":"unauthorized"}` but it is written with
         `http.Error`, which overwrites the Content-Type to `text/plain; charset=utf-8`.
         Clients must not rely on the declared media type here.

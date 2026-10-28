@@ -365,21 +365,22 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	link.OwnerUserID = userID
-	created, err := storage.CreateSchedulingLink(h.db, &link)
+	created, err := storage.CreateSchedulingLinkCtx(r.Context(), h.db, &link)
 	if err != nil {
 		writeServerError(w, r, "create failed", err, http.StatusInternalServerError)
 		return
 	}
-	if _, err = storage.AddLinkHost(h.db, created.ID, userID, "accepted"); err != nil {
+	if _, err = storage.AddLinkHostCtx(r.Context(), h.db, created.ID, userID, "accepted"); err != nil {
 		writeServerError(w, r, "owner host failed", err, http.StatusInternalServerError)
 		return
 	}
 	for _, email := range input.CoHostEmails {
-		invitee, e := storage.GetUserByEmail(h.db, strings.ToLower(strings.TrimSpace(email)))
-		if e != nil || invitee == nil {
+		// PAC-71 granting site: only the one domain-confirmed holder.
+		inviteeID, ok, e := storage.ConfirmedHolder(h.db, email)
+		if e != nil || !ok {
 			continue
 		}
-		_, _ = storage.AddLinkHost(h.db, created.ID, invitee.ID, "pending")
+		_, _ = storage.AddLinkHostCtx(r.Context(), h.db, created.ID, inviteeID, "pending")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -539,7 +540,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	result, err := storage.UpdateSchedulingLink(h.db, id, &updated)
+	result, err := storage.UpdateSchedulingLinkCtx(r.Context(), h.db, id, &updated)
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
@@ -548,16 +549,18 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		// Set the co-host list by difference: hosts no longer listed are removed,
 		// new ones are invited as pending, and everyone else keeps their status.
 		// Deleting and re-adding every host demoted accepted co-hosts (PAC-61).
-		keep := make([]uuid.UUID, 0, len(patch.CoHostEmails))
-		for _, email := range patch.CoHostEmails {
-			if u, e := storage.GetUserByEmail(h.db, strings.ToLower(strings.TrimSpace(email))); e == nil && u != nil {
-				keep = append(keep, u.ID)
-			}
+		// PAC-71: the keep set is a KEEPING site (every account carrying a
+		// listed address, any standing, ignoring letter case, AC-43); new
+		// entries are a GRANTING site (only the one domain-confirmed holder).
+		keep, kerr := storage.CarrierIDs(h.db, patch.CoHostEmails)
+		if kerr != nil {
+			writeServerError(w, r, "co-host lookup failed", kerr, http.StatusInternalServerError)
+			return
 		}
-		_ = storage.RemoveLinkHostsExcept(h.db, id, userID, keep)
-		for _, uid := range keep {
-			if uid != userID {
-				_, _, _ = storage.InviteLinkHost(h.db, id, uid)
+		_ = storage.RemoveLinkHostsExceptCtx(r.Context(), h.db, id, userID, keep)
+		for _, email := range patch.CoHostEmails {
+			if uid, ok, e := storage.ConfirmedHolder(h.db, email); e == nil && ok && uid != userID {
+				_, _, _ = storage.InviteLinkHostCtx(r.Context(), h.db, id, uid)
 			}
 		}
 	}
@@ -585,7 +588,7 @@ func (h *schedulingLinkHandlers) deleteLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := storage.DeleteSchedulingLink(h.db, id); err != nil {
+	if err := storage.DeleteSchedulingLinkCtx(r.Context(), h.db, id); err != nil {
 		writeServerError(w, r, "delete failed", err, http.StatusInternalServerError)
 		return
 	}
@@ -653,14 +656,16 @@ func (h *schedulingLinkHandlers) inviteHost(w http.ResponseWriter, r *http.Reque
 		writeError(w, "email is required", http.StatusBadRequest)
 		return
 	}
-	invitee, err := storage.GetUserByEmail(h.db, strings.ToLower(strings.TrimSpace(body.Email)))
-	if err != nil || invitee == nil {
+	// PAC-71 granting site: an unconfirmed holder is "user not found" too,
+	// so the answer does not reveal standing (contract §10, API-072).
+	inviteeID, found, err := storage.ConfirmedHolder(h.db, body.Email)
+	if err != nil || !found {
 		writeError(w, "user not found", http.StatusNotFound)
 		return
 	}
 	// An existing host keeps their status (PAC-61): 200 with their row as is;
 	// a new invitee gets a pending row and 201.
-	host, created, err := storage.InviteLinkHost(h.db, id, invitee.ID)
+	host, created, err := storage.InviteLinkHostCtx(r.Context(), h.db, id, inviteeID)
 	if err != nil {
 		writeServerError(w, r, "invite failed", err, http.StatusInternalServerError)
 		return
@@ -704,7 +709,7 @@ func (h *schedulingLinkHandlers) respondToInvite(w http.ResponseWriter, r *http.
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	matched, err := storage.RespondToHostInvite(h.db, linkID, userID, status)
+	matched, err := storage.RespondToHostInviteCtx(r.Context(), h.db, linkID, userID, status)
 	if err != nil {
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
@@ -746,7 +751,7 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 		writeError(w, "owner cannot leave link", http.StatusBadRequest)
 		return
 	}
-	removed, err := storage.RemoveLinkHost(h.db, id, userID)
+	removed, err := storage.RemoveLinkHostCtx(r.Context(), h.db, id, userID)
 	if err != nil {
 		writeServerError(w, r, "leave failed", err, http.StatusInternalServerError)
 		return

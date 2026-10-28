@@ -248,6 +248,8 @@ paths:
         caller's own settings, so there must be a caller (session cookie, which
         the browser sends on this top-level navigation).
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '302':
@@ -351,6 +353,12 @@ paths:
         The caller is inserted as an `accepted` host. Each entry of `co_host_emails`
         is resolved by lowercased email; unknown emails are silently skipped (no error,
         no host row). An empty/omitted `slug` is auto-generated from the owner's name.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): an entry of `co_host_emails` resolves to an account only when
+        exactly one account holds that address DOMAIN-CONFIRMED (compared
+        case-insensitively); an address carried only unconfirmed, by several accounts
+        (letter-case collision), or by none is skipped exactly as an unknown email is
+        today (no error, no host row).
       requestBody:
         required: true
         content:
@@ -652,6 +660,15 @@ paths:
         difference (PAC-61): non-owner hosts whose email is not listed are removed,
         listed emails that are not yet hosts are added as `pending`, and listed hosts
         keep their status (accepted, pending or declined).
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the two halves follow different rules. KEEP SET (revoking and
+        keeping): an existing host is kept when its account's stored address equals a
+        listed address case-insensitively, at ANY standing, so an accepted co-host stored
+        as `Pat@Acme.com` is kept by a list containing `pat@acme.com` (before PAC-71 the
+        lowercased lookup missed it and removed the host). NEW ENTRIES (granting): a
+        listed address that matches no existing host is invited as `pending` only when
+        exactly one account holds it DOMAIN-CONFIRMED; otherwise it is skipped, as an
+        unknown address is today.
       requestBody:
         required: true
         content:
@@ -800,6 +817,11 @@ paths:
         host of the link changes nothing: their row is returned as is with 200, so an
         accepted or declined host keeps that status (PAC-61). Response is the raw
         `storage.LinkHost` row, not the host DTO used inside SchedulingLink.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the invitee is resolved only to an account that holds the email
+        DOMAIN-CONFIRMED (exactly one, compared case-insensitively). An address carried
+        only unconfirmed, by several accounts, or by none answers the existing 404
+        "user not found", with nothing written.
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       requestBody:
@@ -836,7 +858,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '404':
-          description: '"not found" (no such link) or "user not found" (no account with that email).'
+          description: '"not found" (no such link) or "user not found" (no account holds that email domain-confirmed; PAC-71).'
           content:
             application/json:
               schema:
@@ -1075,18 +1097,22 @@ paths:
             server writes it today; the new stored-credential sentence uses the same
             character on purpose, so the three read alike:
             "invalid body" (the body is not JSON, or, since PAC-67, fails the
-            validation in the operation description: API-052); "teams: not
-            connected — visit /api/auth/microsoft to
-            authenticate" (also returned when reading the stored Microsoft token
+            validation in the operation description: API-052); since PAC-71
+            "teams: not connected — connect Outlook in Settings (POST
+            /api/auth/microsoft/connect)" (before PAC-71 it pointed at the
+            sign-in start /api/auth/microsoft, which since PAC-71 is a sign-in
+            and never connects for a signed-in user; also returned when reading the stored Microsoft token
             fails, not only when there is none: the server does not separate the two
             on this path; see the PAC-21 contract's doesNotResolve); "zoom: not
             connected — visit /api/auth/zoom to authenticate"; "zoom: stored
             credential is invalid — reconnect at /api/auth/zoom" (the stored Zoom
             token does not decode; before PAC-21 was finished this was
             "zoom: invalid token: " plus the JSON decoder's error); NEW in PAC-67,
-            "teams: connection lost — reconnect at /api/auth/microsoft" and "zoom:
-            connection lost — reconnect at /api/auth/zoom" (the provider permanently
-            refused the renewal of the caller's credential, on this request or on an
+            "teams: connection lost — reconnect Outlook in Settings (POST
+            /api/auth/microsoft/connect)" (since PAC-71; before, "reconnect at
+            /api/auth/microsoft") and "zoom: connection lost — reconnect at
+            /api/auth/zoom" (the provider permanently refused the renewal of the
+            caller's credential, on this request or on an
             earlier one whose loss is still recorded; spec AC-8 "fails with an error
             telling A to reconnect"; also the answer when the access token has
             expired and no refresh token is stored, which records nothing).
@@ -1320,13 +1346,13 @@ paths:
             has no start or end, or, new in PAC-21, Google's value does not parse;
             before PAC-21 was finished a parse failure returned Go's time.Parse error
             text); 'unsupported conference provider "<provider>"' (echoes the
-            request's own `provider`); "teams: not connected — visit
-            /api/auth/microsoft to authenticate" (also returned when reading the
+            request's own `provider`); "teams: not connected — connect Outlook in
+            Settings (POST /api/auth/microsoft/connect)" (PAC-71 wording; also returned when reading the
             stored Microsoft token fails); "zoom: not connected — visit
             /api/auth/zoom to authenticate"; "zoom: stored credential is invalid —
             reconnect at /api/auth/zoom"; NEW in PAC-67, "teams: connection lost —
-            reconnect at /api/auth/microsoft" and "zoom: connection lost — reconnect
-            at /api/auth/zoom" (the provider permanently refused the renewal of the
+            reconnect Outlook in Settings (POST /api/auth/microsoft/connect)" (PAC-71
+            wording) and "zoom: connection lost — reconnect at /api/auth/zoom" (the provider permanently refused the renewal of the
             caller's Teams or Zoom credential, or its access token has expired and no
             refresh token is stored; see the operation description).
           content:
@@ -1470,7 +1496,9 @@ components:
     BookingUnauthorized:
       description: >-
         Emitted by the requireAuth middleware when the `auth_token` cookie and the
-        `Authorization: Bearer` header are both absent or invalid. The body is the JSON
+        `Authorization: Bearer` header are both absent or invalid, or (PAC-71) when the
+        session's `gen` is not the account's current session generation (also by the
+        in-request re-check on account data, with the same bytes). The body is the JSON
         text `{"error":"unauthorized"}` but the response is sent with `http.Error`, so
         the Content-Type header is `text/plain; charset=utf-8`, not application/json.
       content:
