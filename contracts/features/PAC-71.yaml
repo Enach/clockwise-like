@@ -3,8 +3,8 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-71/sign-in-matches-accounts-by-email-alone-anyone-who-controls-an-address",
   "status": "draft",
   "contractRevision": "2",
-  "contractHash": "1f0bea37fd775615ff86ad6c3e4f4af1e642791172d352b0f7be76fda33ef9e5",
-  "contractHashHistory": "Revision 2 as accepted: 5d54c761...abb9. Recomputed at the backend implementation after merging origin/main (PAC-73 part 2, 546d647, and 67b7966) into impl/pac-71-identity-binding-backend: the bundle gained main's operations and the step-up reason pattern now carries both identity_mismatch (PAC-71) and &purpose=llm_org_key_write (PAC-73 part 2). No PAC-71 operation, schema or rule changed.",
+  "contractHash": "67718acaddff06539f23ecbbe8f85c4cbf6df36baa5dbef339dbb1746e84a177",
+  "contractHashHistory": "Revision 2 as accepted: 5d54c761...abb9. Recomputed at the backend implementation after merging origin/main (PAC-73 part 2, 546d647, and 67b7966) into impl/pac-71-identity-binding-backend: the bundle gained main's operations and the step-up reason pattern now carries both identity_mismatch (PAC-71) and &purpose=llm_org_key_write (PAC-73 part 2). No PAC-71 operation, schema or rule changed. Then 1f0bea37...9e5 -> 67718aca...a177 at the review of #242: patchOrganizationAI's break-glass description (scheduling.yaml) states the PAC-71 account rule (operationsChanged)."
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-71-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py and confirmed by `py -3 scripts/openapi_assemble.py --check` (OK: bundle is in sync (105 paths)). Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-71.md",
   "specDoc": "docs/specs/PAC-71.md",
