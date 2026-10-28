@@ -111,7 +111,7 @@
     "migrationReport": "python3 scripts/openapi_migration_report.py --check -> OK: MIGRATION.md covers all 120 operations (4 generated)",
     "goGen": "bash scripts/openapi_gen_go.sh regenerated backend/api/gen/paceday.gen.go; go build ./... and go vet ./... in backend/ succeeded (no output)",
     "apiGate": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/new-llm-bring-your-own-contract",
-    "apiGateRun": "on d068418: make openapi rc=0, regenerated: none, openapi-check(api) rc=0, backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp test rc=0, backend coverage 63.2% (floor 57%) rc=0, mcp coverage 84.0% (floor 75%) rc=0",
+    "apiGateRun": "rev. 2 on b6fd578: make openapi rc=0, regenerated: none, openapi-check(api) rc=0, backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp test rc=0, backend coverage 63.2% (floor 57%) rc=0, mcp coverage 84.0% (floor 75%) rc=0. Rev. 1 on b356574 (contract-challenger run): all rc=0 except mcp test rc=1, cause not captured, passed on rerun. Rev. 1 on d068418: make openapi rc=0, regenerated: none, openapi-check(api) rc=0, backend lint rc=0, mcp lint rc=0, backend test rc=0, mcp test rc=0, backend coverage 63.2% (floor 57%) rc=0, mcp coverage 84.0% (floor 75%) rc=0",
     "webGate": "build stage: REGEN=1 bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh <web-branch> <api-branch> in the same build as the backend PR (contract change ships with its web type regeneration)",
     "e2eGate": "build stage: bash /c/Users/jouzu/paceday/.claude/factory/e2e-gate.sh <web-branch> with the host api checkout on the api branch",
     "defaultBranch": "main",

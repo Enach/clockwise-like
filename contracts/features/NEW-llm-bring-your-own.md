@@ -764,4 +764,26 @@ oapi-codegen renamed the `WorkingHoursScheduleMode` constants from `AllDays`,
 
 ### What was run for revision 2
 
-Pending at this commit: the api-gate run on it is recorded by the next commit.
+- Local, before committing: `python scripts/openapi_assemble.py` and
+  `--check`: `OK: bundle is in sync (99 paths)`, 120 operations, 150
+  schemas, 8 `x-uncertain` (unchanged); `bash scripts/openapi_gen_go.sh`
+  regenerated `backend/api/gen/paceday.gen.go`; `go build ./...` and
+  `go vet ./api/` in `backend/`: success; `python
+  scripts/openapi_migration_report.py --check`: `OK: MIGRATION.md covers all
+  120 operations (4 generated)`; `sha256sum contracts/openapi/openapi.yaml`
+  = `c014ab82c2823e38b108ee0aab068437763f42dd1dc345f5fab7c08207d5610a`
+  (manifest `contractHash`).
+- `bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh
+  factory/new-llm-bring-your-own-contract` on `b6fd578` (the revision 2
+  contract, bundle and gen code; the commit recording this touches only this
+  file and the manifest): `make openapi rc=0`, `regenerated: none`,
+  `openapi-check(api) rc=0` (bundle in sync, 99 paths; MIGRATION.md 120
+  operations; backend/api/gen matches the contract), `backend lint rc=0`,
+  `mcp lint rc=0`, `backend test rc=0`, `mcp test rc=0`, backend coverage
+  63.2% (floor 57%) `rc=0`, mcp coverage 84.0% (floor 75%) `rc=0`. Web
+  generated types were not checked by this gate (`WEB=/nonexistent`).
+- Not run: the web gate (REGEN=1) and the e2e gate. As for revision 1, they
+  belong to the build stage, which regenerates the web types with the
+  implementation (manifest `gates.webGate`, `gates.e2eGate`). The behaviour
+  this contract describes is not implemented yet; the existing tests pass
+  because none validates a live response against these schemas.
