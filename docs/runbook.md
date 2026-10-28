@@ -110,16 +110,24 @@ previous version. Run every command from the directory holding
    project="$(docker compose -f docker-compose.prod.yml config | awk '/^name:/ {print $2; exit}')"
    vol="${project}_postgres_data"
    copy="${vol}-failed-$(date -u +%Y%m%dT%H%M%SZ)"
-   docker ps -a --filter "volume=$vol"          # must list nothing (step 1)
-   docker volume inspect "$copy" >/dev/null 2>&1 && echo "$copy exists: stop"   # must not exist
-   docker volume create "$copy"
-   docker run --rm -v "$vol:/from:ro" -v "$copy:/to" postgres:16-alpine sh -c 'cp -a /from/. /to/'
-   # compare before removing: same entry count and content on both sides
-   for v in "$vol" "$copy"; do
-     docker run --rm -v "$v:/v:ro" postgres:16-alpine sh -c \
-       'cd /v && echo "$(find . | wc -l) $(find . -type f -exec md5sum {} + | sort -k2 | md5sum)"'
-   done
-   docker volume rm "$vol"
+   if docker volume inspect "$copy" >/dev/null 2>&1; then
+     echo "$copy exists: stop"                  # never write into a volume you did not create
+   elif [ -n "$(docker ps -aq --filter "volume=$vol")" ]; then
+     echo "$vol is still in use: run step 1 first"
+   else
+     docker volume create "$copy"
+     docker run --rm -v "$vol:/from:ro" -v "$copy:/to" postgres:16-alpine sh -c 'cp -a /from/. /to/'
+     # compare: same entry count and content on both sides
+     sums="$(for v in "$vol" "$copy"; do
+       docker run --rm -v "$v:/v:ro" postgres:16-alpine sh -c \
+         'cd /v && echo "$(find . | wc -l) $(find . -type f -exec md5sum {} + | sort -k2 | md5sum)"'
+     done | uniq | wc -l)"
+     if [ "$sums" -eq 1 ]; then
+       docker volume rm "$vol" && echo "set aside as $copy"
+     else
+       echo "copy differs: $vol NOT removed"
+     fi
+   fi
    ```
 
    The script refuses if a volume with the copy's name already exists, so it
@@ -281,6 +289,7 @@ major version, and record it below.
 | 2026-10-28 | factory implementer (PAC-81 Part D) | `rehearse-backup-restore.sh` at `bef4c31` + this branch, Docker 29.8.2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed.** 34 public tables, counts equal; restored backend `/api/health` 200; pre-backup session `/api/auth/me` 200; other `JWT_SECRET` 401; post-backup row detected; 15-day-old set removed. Not checked on this host: the mode-600 assertion (Windows has no POSIX modes; the script checks it on Linux). Rehearsed with a binary built from the commit, not a published image (no image pipeline, spec F-C1). |
 | 2026-10-28 | factory implementer (PAC-81 Part D, review round 1) | `rehearse-backup-restore.sh` on this branch after `d65a5bd`, Docker 29.8.2 / Compose v2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed** (19:16 UTC). Fresh host: 34 tables equal, `oauth_tokens` credential intact, health 200, old session 200. Same host: the backend refused the dirty database (`Dirty database version 32`), `restore.sh` refused it, the volume was set aside (1487 entries, content checksums equal), restored, health 200, counts equal to the pre-deploy backup, session 200, the set-aside copy still dirty at 32. Negative controls all as expected. Mode-600 check not run (Windows). |
 | 2026-10-28 | factory implementer (PAC-81 Part D, review round 2) | `rehearse-backup-restore.sh` on this branch after `67b8876`, same host setup | **Passed** (19:29 UTC). The rehearsal now runs the runbook's commands only: `up -d --wait postgres` (with the production health check), no extra waits. `restore.sh` onto a Postgres started a moment earlier waited for it to finish initialising, then restored. `set-aside-volume.sh` refused an existing copy name and left both volumes untouched. Retention removed a 15-day-old `.dump.partial`. All earlier assertions passed. |
+| 2026-10-28 | factory implementer (PAC-81 Part D, final round) | `rehearse-backup-restore.sh` on this branch merged with `main` at `ec1f096` (Part B shipped), same host setup | **Passed** (19:58 UTC), all 18 checks. The manual set-aside block above was also run verbatim against a throwaway compose project: it refused while the volume was in use, stopped when the copy name existed (the existing volume was left empty), and otherwise set the volume aside. |
 
 ## Account recovery
 

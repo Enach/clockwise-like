@@ -102,3 +102,14 @@ Concretely, the marked dependencies are:
 - `.gitattributes`: `scripts/ops/*.sh` checked out with LF. A CRLF checkout on
   Windows breaks the scripts under bash.
 
+## Final round (approved at `bafa46b`; Part B merged as `ec1f096`)
+
+- Merged `origin/main`. Conflicts: `.gitattributes` (both rules kept, plus a
+  repo-wide `*.sh text eol=lf`) and `.env.example` (Part D's Sentry/TLS text
+  kept; Part B's nginx settings turned into `#:` reference entries).
+- The env test also reads `nginx/paceday-render.sh` (nginx's settings are
+  read there, not in Go), so `NGINX_*` count as read by a service.
+- `docs/operator/proxy.md` describes Part B as shipped. The runbook's manual
+  set-aside block is safe to paste whole (stops if the copy exists or the
+  volume is in use, removes nothing unless the copy compares equal).
+

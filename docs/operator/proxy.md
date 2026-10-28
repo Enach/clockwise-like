@@ -6,8 +6,10 @@ the job of a proxy you run in front of it (Caddy, Traefik, an nginx of your
 own, a cloud load balancer). This page lists what that proxy must do. It is
 part of PAC-81 (spec `NEW-deploy-hardening`, AC-D2).
 
-Passages marked **added by Part A/B/C** describe PAC-81 work that is not on
-`main` yet; until it ships, the "today" sentence next to them applies.
+PAC-81 Part B (the nginx edge: headers, CSP, trusted proxy, timeouts,
+`/nginx-health`) has shipped. Passages marked **added by Part A** or
+**added by Part C** describe PAC-81 work that is not on `main` yet; until it
+ships, the "today" sentence next to them applies.
 
 ```
 browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80) ──▶ backend :8080
@@ -26,10 +28,13 @@ browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80)
 - The proxy redirects HTTP to HTTPS itself. Paceday's session cookies carry
   `Secure` (leave `PACEDAY_INSECURE_COOKIES` empty), so sign-in does not work
   over plain HTTP anyway.
-- The other browser security headers (CSP, `X-Frame-Options`,
-  `Referrer-Policy`, `nosniff`) are set by Paceday's nginx — **added by
-  Part B** (AC-B10). Today nginx sets none; do not add a CSP at the proxy, it
-  would conflict with Part B's.
+- The other browser security headers (`Content-Security-Policy`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Content-Type-Options: nosniff`) are set by Paceday's nginx on every
+  response (PAC-81 Part B). Do not set them, or a second CSP, at the proxy: a
+  second policy can only narrow the first and breaks the app in ways that
+  are hard to trace. nginx never sends HSTS. The CSP's operator settings are
+  `NGINX_CSP_SENTRY_ORIGIN` and `NGINX_CSP_CONNECT_ORIGINS` (`.env.example`).
 
 ## 2. Forward the client address and scheme
 
@@ -50,18 +55,18 @@ backend believes Paceday's nginx and nothing else.
 Paceday's nginx must learn the real client from your proxy's
 `X-Forwarded-For`, and believe it only when the request comes from your proxy.
 
-- **Added by Part B** (AC-B5..B7, PR #245): `NGINX_TRUSTED_PROXIES`, the
-  IPs/CIDRs (comma or space separated) whose `X-Forwarded-For` and
-  `X-Forwarded-Proto` nginx believes; empty by default, so nothing is trusted.
-  nginx then takes the right-most address in `X-Forwarded-For` that is not in
-  the list, and passes it to the backend as `X-Real-IP`. Part B documents it
-  in `.env.example` when it merges.
-- **Today**, nginx sends `X-Real-IP: $remote_addr`, i.e. your proxy's address.
-  Every visitor therefore shares one rate-limit bucket (the public booking
-  limits count per client). This is safe (nothing can be spoofed) but means
-  one busy visitor can exhaust the limit for everyone until Part B ships.
+- Set **`NGINX_TRUSTED_PROXIES`** (`.env.example`): the IPs/CIDRs, comma or
+  space separated, whose `X-Forwarded-For` and `X-Forwarded-Proto` nginx
+  believes. nginx then takes the right-most address in `X-Forwarded-For` that
+  is not in the list and passes it to the backend as `X-Real-IP`. An invalid
+  entry (or `/0`, which would trust everyone) stops nginx at start.
+- **Left empty** (the default), nothing is trusted: every request's client is
+  the socket peer, i.e. your proxy. That is safe (nothing can be spoofed), but
+  every visitor then shares one rate-limit bucket (the public booking limits
+  count per client), so one busy visitor can exhaust the limit for everyone.
+  Set it in production.
 
-What to put in `NGINX_TRUSTED_PROXIES`:
+What to put in it:
 
 | Topology | nginx sees requests coming from | Trust |
 |---|---|---|
@@ -88,9 +93,11 @@ that the innermost one fires first and the backend returns its own error:
 backend handler budget 90 s < backend write backstop 120 s < nginx 130 s <
 your proxy.
 
-- The 90/120/130 s values are **added by Part A and Part B**. Today the backend
-  has no timeouts and nginx uses its 60 s default; a proxy timeout above 130 s
-  is correct both today and afterwards.
+- nginx's 130 s upstream read/send timeout has shipped (PAC-81 Part B). The
+  backend's 90 s budget and 120 s write backstop are **added by Part A**; until
+  then the backend has no timeouts of its own and nginx's 130 s is the first
+  bound to fire. A proxy timeout above 130 s is correct both now and after
+  Part A.
 - Example: an AWS Application Load Balancer's default idle timeout is 60 s —
   too short; raise it to at least 135 s. Cloudflare's proxied-request timeout
   (100 s on most plans) is also too short for the longest legitimate requests.
@@ -129,11 +136,13 @@ it checks the whole path:
   the check covers the whole path: during a deploy it turns 503 a few seconds
   before the backend stops accepting connections, so the proxy stops sending
   traffic first. This is the check that should take the stack out of rotation.
-- **Edge liveness** — `GET /nginx-health`: **added by Part B** (AC-B11). nginx
-  answers 200 itself, without calling any upstream, so it says only that nginx
-  is up. Use it for the proxy's check of the nginx container (or for Part C's
-  container health check), not as the stack's readiness.
-- **Today**, neither exists: use `GET /api/health` through nginx. It answers
+- **Edge liveness** — `GET /nginx-health` (PAC-81 Part B, shipped). nginx
+  answers 200 itself, without calling any upstream and without logging, so it
+  says only that nginx is up. Use it for the proxy's check of the nginx
+  container (or for Part C's container health check), not as the stack's
+  readiness.
+- **Until Part A ships**, there is no backend readiness: use `GET /api/health`
+  through nginx to take the stack out of rotation. It answers
   `200 {"status":"ok",…}` whenever the backend process is up (backend liveness
   only; it does not check the database). Interval 5–10 s, 2–3 failures to mark
   down.
@@ -144,10 +153,10 @@ it checks the whole path:
    unless chosen); HTTP→HTTPS redirect at the proxy.
 2. `X-Forwarded-For` appended and `X-Forwarded-Proto: https` sent.
 3. `NGINX_TRUSTED_PROXIES` = your proxy's address — the bridge gateway when
-   the proxy is on the same host (setting added by Part B).
+   the proxy is on the same host.
 4. Proxy idle/read timeout > 130 s.
 5. nginx's port reachable only from the proxy (`127.0.0.1` bind on the same
    host); MCP's 3001 not exposed.
-6. Proxy health check through nginx: backend readiness (Part A) to take the
-   stack out of rotation, `/nginx-health` (Part B) for nginx itself;
-   `/api/health` until then.
+6. Proxy health check through nginx: backend readiness (added by Part A;
+   `/api/health` until then) to take the stack out of rotation, and
+   `/nginx-health` for nginx itself.

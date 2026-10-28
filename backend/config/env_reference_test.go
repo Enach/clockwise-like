@@ -28,6 +28,43 @@ const repoRoot = "../.."
 // serviceSourceDirs are the Go programs whose environment the reference covers.
 var serviceSourceDirs = []string{"backend", "mcp", "docker/fileserver"}
 
+// serviceShellScripts are the shell entrypoints whose environment the
+// reference covers: nginx reads its settings through nginx/paceday-render.sh
+// (PAC-81 Part B).
+var serviceShellScripts = []string{"nginx/paceday-render.sh"}
+
+var (
+	shellVarRef    = regexp.MustCompile(`\$\{?([A-Z][A-Z0-9_]*)`)
+	shellAssignVar = regexp.MustCompile(`^\s*(?:readonly\s+|export\s+)?([A-Z][A-Z0-9_]*)=`)
+)
+
+// collectShellEnvReads returns the upper-case variables a POSIX shell script
+// reads from its environment: every $NAME / ${NAME…} outside comments, minus
+// the names the script assigns itself.
+func collectShellEnvReads(name, text string) map[string]string {
+	assigned := map[string]bool{}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		if m := shellAssignVar.FindStringSubmatch(line); m != nil {
+			assigned[m[1]] = true
+		}
+	}
+	out := map[string]string{}
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		for _, m := range shellVarRef.FindAllStringSubmatch(line, -1) {
+			if !assigned[m[1]] {
+				if _, seen := out[m[1]]; !seen {
+					out[m[1]] = fmt.Sprintf("%s:%d", name, i+1)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // composeFiles are the files that may consume a variable themselves.
 var composeFiles = []string{"docker-compose.yml", "docker-compose.prod.yml", "docker-compose.dev.yml", "e2e/docker-compose.e2e.yml"}
 
@@ -350,6 +387,11 @@ func readRepoFile(t *testing.T, rel string) string {
 func TestEnvReferenceIsComplete(t *testing.T) {
 	fset, files := parseServiceSources(t)
 	reads := collectEnvReads(fset, files)
+	for _, script := range serviceShellScripts {
+		for name, pos := range collectShellEnvReads(script, readRepoFile(t, script)) {
+			reads.vars[name] = append(reads.vars[name], pos)
+		}
+	}
 	for _, d := range reads.dynamic {
 		t.Errorf("environment read with a computed name outside the reviewed readers %v: %s — read a literal or an Env* constant, or add the function to dynamicEnvReaders with a reason", keys(dynamicEnvReaders), d)
 	}
@@ -569,5 +611,26 @@ func TestComposeUsesSeparatesPassThrough(t *testing.T) {
 	}
 	if !passOnly["SESSION_SECRET"] || !passOnly["JWT_SECRET"] || passOnly["POSTGRES_PASSWORD"] || passOnly["TLS_CERT_DIR"] {
 		t.Errorf("passthrough-only = %v", passOnly)
+	}
+}
+
+func TestCollectShellEnvReads(t *testing.T) {
+	got := collectShellEnvReads("x.sh", strings.Join([]string{
+		"#!/bin/sh",
+		"# ${COMMENTED_VAR} is documentation only",
+		"OUT=/tmp/x",
+		"readonly LOCAL_CONST=1",
+		`proxies="${NGINX_TRUSTED_PROXIES:-}"`,
+		`echo "$API_BASE_URL $OUT $LOCAL_CONST $lower"`,
+	}, "\n"))
+	for _, want := range []string{"NGINX_TRUSTED_PROXIES", "API_BASE_URL"} {
+		if got[want] == "" {
+			t.Errorf("missed %s; got %v", want, got)
+		}
+	}
+	for _, unwanted := range []string{"COMMENTED_VAR", "OUT", "LOCAL_CONST"} {
+		if got[unwanted] != "" {
+			t.Errorf("reported %s", unwanted)
+		}
 	}
 }
