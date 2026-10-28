@@ -55,7 +55,7 @@ func (e *AnalyticsEngine) ForceCompute(ctx context.Context, userID uuid.UUID, da
 func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*storage.AnalyticsWeek, error) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
 
-	settings, err := storage.GetOrCreateSettingsByUser(e.DB, userID)
+	settings, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get settings: %w", err)
 	}
@@ -209,7 +209,7 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 }
 
 func (e *AnalyticsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
-	token, err := LoadCalendarToken(e.DB, userID)
+	token, err := LoadCalendarTokenCtx(ctx, e.DB, userID)
 	if err != nil {
 		return nil, err
 	}

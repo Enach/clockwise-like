@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -20,6 +22,12 @@ type OIDCUserInfo struct {
 	Sub   string `json:"sub"`
 	Email string `json:"email"`
 	Name  string `json:"name"`
+	// EmailVerified is the token's raw email_verified claim (PAC-71: present
+	// and false is no evidence; some IdPs send it as a string).
+	EmailVerified json.RawMessage `json:"email_verified,omitempty"`
+	// Issuer is the issuer the ID token was verified against (PAC-71: the
+	// authority of an SSO identity).
+	Issuer string `json:"-"`
 }
 
 // oidcProviderCache avoids redundant discovery-endpoint fetches per issuer URL.
@@ -86,6 +94,18 @@ func (c *OIDCClient) Exchange(ctx context.Context, code string) (*OIDCUserInfo, 
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, nil, fmt.Errorf("parse id_token claims: %w", err)
 	}
+	claims.Issuer = idToken.Issuer
 
 	return &claims, token, nil
+}
+
+// EmailUnverified reports whether the ID token says the email is NOT
+// verified: email_verified present with the value false (or "false"). An
+// absent claim is not a denial (PAC-71 contract, ssoOidcCallback).
+func (u *OIDCUserInfo) EmailUnverified() bool {
+	switch strings.TrimSpace(string(u.EmailVerified)) {
+	case "false", `"false"`:
+		return true
+	}
+	return false
 }

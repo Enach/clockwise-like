@@ -44,7 +44,7 @@ func RecordCredentialLoss(db *sql.DB, userID uuid.UUID, provider string) (starte
 
 // ClearCredentialLoss ends userID's loss for provider: they reconnected or
 // disconnected it. A later refusal starts a new loss.
-func ClearCredentialLoss(db *sql.DB, userID uuid.UUID, provider string) error {
+func ClearCredentialLoss(db Querier, userID uuid.UUID, provider string) error {
 	_, err := db.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, provider)
 	return err
 }
@@ -105,7 +105,7 @@ func encodeZoomCredential(c ZoomCredential) (string, error) {
 
 // LoadZoomCredential returns userID's stored Zoom credential, nil when none is
 // stored, or an error when the stored value does not decode.
-func LoadZoomCredential(db *sql.DB, userID uuid.UUID) (*ZoomCredential, error) {
+func LoadZoomCredential(db Querier, userID uuid.UUID) (*ZoomCredential, error) {
 	var raw sql.NullString
 	err := db.QueryRow(`SELECT zoom_tokens FROM settings WHERE user_id = $1`, userID).Scan(&raw)
 	if err == sql.ErrNoRows || (err == nil && strings.TrimSpace(raw.String) == "") {

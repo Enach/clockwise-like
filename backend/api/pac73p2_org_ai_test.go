@@ -43,7 +43,7 @@ func newOrgAIEnv(t *testing.T, breakGlass ...string) *orgAIEnv {
 	e.oa = newOrgAIHandlers(e.db, e.h)
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(pac50Secret))
+		r.Use(requireAuth(e.db, pac50Secret))
 		r.Route("/api/admin/sso", e.h.mountAdmin)
 		r.Route("/api/organization/ai", e.oa.mount)
 	})

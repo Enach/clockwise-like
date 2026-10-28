@@ -136,7 +136,7 @@ func toCalendarEventDTO(e *googlecalendar.Event) calendarEventDTO {
 // engine.ErrCredentialStore error when the store cannot be read (PAC-21).
 func (h *calendarHandlers) getCalendarClient(r *http.Request) (*calendar.CalendarClient, error) {
 	userID := userIDFromCtx(r.Context())
-	token, err := engine.LoadCalendarToken(h.db, userID)
+	token, err := engine.LoadCalendarTokenCtx(r.Context(), h.db, userID)
 	if err != nil {
 		return nil, err
 	}

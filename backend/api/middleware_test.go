@@ -26,7 +26,7 @@ func mwToken(t *testing.T, user uuid.UUID, secret string) string {
 // whoami runs requireAuth around a handler that echoes the authenticated user id.
 func whoami(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
-	h := requireAuth(mwTestSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := requireAuth(openTestDB(t), mwTestSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(userIDFromCtx(r.Context()).String()))
 	}))
 	w := httptest.NewRecorder()

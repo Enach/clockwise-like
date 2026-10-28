@@ -30,6 +30,7 @@ type generatedServer struct {
 	db  *sql.DB
 	ch  *conferencingHandlers
 	sso *ssoHandlers // getSsoStepupOptions only (PAC-50)
+	ah  *authHandlers // startGoogleConnect, startMicrosoftConnect (PAC-71)
 	// orgAI serves the organisation AI operations (PAC-73 Part 2).
 	orgAI *orgAIHandlers
 }
@@ -76,7 +77,7 @@ func serverFailure(ctx context.Context, op string, err error, code int) string {
 
 // The reconnect sentences of meeting creation (PAC-67, spec AC-8).
 var (
-	errTeamsConnectionLost = errors.New("teams: connection lost — reconnect at /api/auth/microsoft")
+	errTeamsConnectionLost = errors.New("teams: connection lost — reconnect Outlook in Settings (POST /api/auth/microsoft/connect)")
 	errZoomConnectionLost  = errors.New("zoom: connection lost — reconnect at /api/auth/zoom")
 )
 
@@ -214,7 +215,7 @@ func (s *generatedServer) CreateConferenceLink(ctx context.Context, req gen.Crea
 	if !validConferenceRequest(req.Body) {
 		return gen.CreateConferenceLink400JSONResponse{Error: "invalid body"}, nil
 	}
-	settings, err := storage.GetOrCreateSettingsByUser(s.db, auth.UserIDFromContext(ctx))
+	settings, err := storage.GetOrCreateSettingsByUserCtx(ctx, s.db, auth.UserIDFromContext(ctx))
 	if err != nil {
 		return gen.CreateConferenceLink500JSONResponse{Error: serverFailure(ctx, "settings", err, http.StatusInternalServerError)}, nil
 	}
@@ -321,7 +322,7 @@ func (s *generatedServer) AddEventConference(ctx context.Context, req gen.AddEve
 		return eventLink(requested, url, "Google Meet"), nil
 	}
 
-	settings, err := storage.GetOrCreateSettingsByUser(h.db, auth.UserIDFromContext(ctx))
+	settings, err := storage.GetOrCreateSettingsByUserCtx(ctx, h.db, auth.UserIDFromContext(ctx))
 	if err != nil {
 		return gen.AddEventConference500JSONResponse{Error: serverFailure(ctx, "settings", err, http.StatusInternalServerError)}, nil
 	}

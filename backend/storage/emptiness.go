@@ -29,34 +29,38 @@ type accountDataCheck struct {
 // settings row (checked column by column, settingsKind), in the contract's
 // D-order. Its foreign-key columns are classifiedUserRefs below.
 var accountDataChecks = []accountDataCheck{
-	{"google_calendar_credential", `SELECT EXISTS (SELECT 1 FROM oauth_tokens WHERE user_id = $1)`},              // D1
-	{"workspace_connection", `SELECT EXISTS (SELECT 1 FROM workspace_connections WHERE user_id = $1)`},           // D6
-	{"personal_calendar", `SELECT EXISTS (SELECT 1 FROM personal_calendars WHERE user_id = $1)`},                 // D7
-	{"credential_loss", `SELECT EXISTS (SELECT 1 FROM credential_losses WHERE user_id = $1)`},                    // D8
-	{"team_created", `SELECT EXISTS (SELECT 1 FROM teams WHERE created_by = $1)`},                                // D9
-	{"team_membership", `SELECT EXISTS (SELECT 1 FROM team_members WHERE user_id = $1)`},                         // D9
-	{"team_invite_sent", `SELECT EXISTS (SELECT 1 FROM team_invites WHERE invited_by = $1)`},                     // D9
-	{"scheduling_link_owned", `SELECT EXISTS (SELECT 1 FROM scheduling_links WHERE owner_user_id = $1)`},         // D10
-	{"scheduling_link_host", `SELECT EXISTS (SELECT 1 FROM scheduling_link_hosts WHERE user_id = $1)`},           // D10
+	{"google_calendar_credential", `SELECT EXISTS (SELECT 1 FROM oauth_tokens WHERE user_id = $1)`},                                // D1
+	{"workspace_connection", `SELECT EXISTS (SELECT 1 FROM workspace_connections WHERE user_id = $1)`},                             // D6
+	{"personal_calendar", `SELECT EXISTS (SELECT 1 FROM personal_calendars WHERE user_id = $1)`},                                   // D7
+	{"credential_loss", `SELECT EXISTS (SELECT 1 FROM credential_losses WHERE user_id = $1)`},                                      // D8
+	{"team_created", `SELECT EXISTS (SELECT 1 FROM teams WHERE created_by = $1)`},                                                  // D9
+	{"team_membership", `SELECT EXISTS (SELECT 1 FROM team_members WHERE user_id = $1)`},                                           // D9
+	{"team_invite_sent", `SELECT EXISTS (SELECT 1 FROM team_invites WHERE invited_by = $1)`},                                       // D9
+	{"scheduling_link_owned", `SELECT EXISTS (SELECT 1 FROM scheduling_links WHERE owner_user_id = $1)`},                           // D10
+	{"scheduling_link_host", `SELECT EXISTS (SELECT 1 FROM scheduling_link_hosts WHERE user_id = $1)`},                             // D10
 	{"booking", `SELECT EXISTS (SELECT 1 FROM bookings b JOIN scheduling_links l ON l.id = b.link_id WHERE l.owner_user_id = $1)`}, // D11
-	{"booking_event", `SELECT EXISTS (SELECT 1 FROM booking_events WHERE user_id = $1)`},                         // D11
+	{"booking_event", `SELECT EXISTS (SELECT 1 FROM booking_events WHERE user_id = $1)`},                                           // D11
 	// user_profiles is created on read with defaults; a row at its defaults
 	// says nothing about use (spec §2), so only a changed profile counts.
 	{"manager_profile", `SELECT EXISTS (SELECT 1 FROM user_profiles WHERE user_id = $1
 		AND (is_manager OR detected_at IS NOT NULL OR NOT analytics_shared_with_manager))`}, // D12
-	{"manager_roster", `SELECT EXISTS (SELECT 1 FROM manager_team_members WHERE manager_user_id = $1)`},            // D12
+	{"manager_roster", `SELECT EXISTS (SELECT 1 FROM manager_team_members WHERE manager_user_id = $1)`},                  // D12
 	{"roster_entry_pointing_at_account", `SELECT EXISTS (SELECT 1 FROM manager_team_members WHERE member_user_id = $1)`}, // D12
-	{"one_on_one_record", `SELECT EXISTS (SELECT 1 FROM one_on_one_occurrences WHERE manager_user_id = $1)`},       // D12
-	{"team_analytics_record", `SELECT EXISTS (SELECT 1 FROM team_analytics_cache WHERE manager_user_id = $1)`},     // D12
-	{"manager_assignment", `SELECT EXISTS (SELECT 1 FROM manager_team_member_assignments WHERE manager_user_id = $1)`}, // D12
-	{"focus_block", `SELECT EXISTS (SELECT 1 FROM focus_blocks WHERE user_id = $1)`},                             // D13
-	{"habit", `SELECT EXISTS (SELECT 1 FROM habits WHERE user_id = $1)`},                                         // D13
-	{"analytics_week", `SELECT EXISTS (SELECT 1 FROM analytics_weeks WHERE user_id = $1)`},                       // D13
-	{"meeting_brief", `SELECT EXISTS (SELECT 1 FROM meeting_briefs WHERE user_id = $1)`},                         // D13
-	{"recap_record", `SELECT EXISTS (SELECT 1 FROM recap_sends WHERE user_id = $1)`},                             // D13
-	{"activity_log_entry", `SELECT EXISTS (SELECT 1 FROM audit_log WHERE user_id = $1)`},                         // D13
-	{"stepup_grant", `SELECT EXISTS (SELECT 1 FROM sso_stepup_grants WHERE user_id = $1)`},                       // D14
-	{"sso_event", `SELECT EXISTS (SELECT 1 FROM sso_events WHERE user_id = $1)`},                                 // D14
+	{"one_on_one_record", `SELECT EXISTS (SELECT 1 FROM one_on_one_occurrences WHERE manager_user_id = $1)`},             // D12
+	{"team_analytics_record", `SELECT EXISTS (SELECT 1 FROM team_analytics_cache WHERE manager_user_id = $1)`},           // D12
+	{"manager_assignment", `SELECT EXISTS (SELECT 1 FROM manager_team_member_assignments WHERE manager_user_id = $1)`},   // D12
+	{"focus_block", `SELECT EXISTS (SELECT 1 FROM focus_blocks WHERE user_id = $1)`},                                     // D13
+	{"habit", `SELECT EXISTS (SELECT 1 FROM habits WHERE user_id = $1)`},                                                 // D13
+	{"analytics_week", `SELECT EXISTS (SELECT 1 FROM analytics_weeks WHERE user_id = $1)`},                               // D13
+	{"meeting_brief", `SELECT EXISTS (SELECT 1 FROM meeting_briefs WHERE user_id = $1)`},                                 // D13
+	{"recap_record", `SELECT EXISTS (SELECT 1 FROM recap_sends WHERE user_id = $1)`},                                     // D13
+	{"activity_log_entry", `SELECT EXISTS (SELECT 1 FROM audit_log WHERE user_id = $1)`},                                 // D13
+	{"stepup_grant", `SELECT EXISTS (SELECT 1 FROM sso_stepup_grants WHERE user_id = $1)`},                               // D14
+	{"sso_event", `SELECT EXISTS (SELECT 1 FROM sso_events WHERE user_id = $1)`},                                         // D14
+	// PAC-73 part 2 (migration 031): an organisation AI configuration written by
+	// the account (admin standing) and the account's confirmation of it.
+	{"org_ai_write", `SELECT EXISTS (SELECT 1 FROM org_ai_configurations WHERE updated_by = $1)`},
+	{"org_ai_confirmation", `SELECT EXISTS (SELECT 1 FROM org_ai_confirmations WHERE user_id = $1)`},
 }
 
 // classifiedUserRefs is every foreign-key column to users(id) that the checks
@@ -91,6 +95,8 @@ var classifiedUserRefs = map[string]bool{
 	"sso_stepup_grants.user_id":                       true,
 	"sso_events.user_id":                              true,
 	"user_identities.user_id":                         true,
+	"org_ai_configurations.updated_by":                true,
+	"org_ai_confirmations.user_id":                    true,
 }
 
 // UserForeignKeys lists every foreign-key column that references users(id),

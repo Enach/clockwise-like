@@ -39,49 +39,6 @@ func (h *authHandlers) startOAuth(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, auth.GetAuthURL(h.oauthConfig, state, loginHintFrom(r)), http.StatusFound)
 }
 
-func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
-	stateCookie, err := r.Cookie("oauth_state")
-	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
-		http.Error(w, "invalid state", http.StatusBadRequest)
-		return
-	}
-	setCookie(w, &http.Cookie{Name: "oauth_state", MaxAge: -1, Path: "/"})
-
-	token, err := auth.ExchangeCode(r.Context(), h.oauthConfig, r.URL.Query().Get("code"))
-	if err != nil {
-		writeServerError(w, r, "token exchange failed", err, http.StatusInternalServerError)
-		return
-	}
-
-	// Fetch user profile from Google
-	info, err := fetchGoogleUserInfo(r.Context(), token, h.oauthConfig)
-	if err != nil {
-		writeServerError(w, r, "userinfo failed", err, http.StatusInternalServerError)
-		return
-	}
-
-	// Upsert user row
-	user, err := storage.UpsertUser(h.db, info.Email, info.Name, info.Picture, "google", info.ID)
-	if err != nil {
-		writeServerError(w, r, "upsert user failed", err, http.StatusInternalServerError)
-		return
-	}
-
-	// Store OAuth token associated with user
-	if err := auth.UpsertUserToken(h.db, user.ID, token); err != nil {
-		writeServerError(w, r, "save token failed", err, http.StatusInternalServerError)
-		return
-	}
-
-	// Auto-associate with org based on email domain
-	_ = storage.AssociateUserWithOrg(h.db, user.ID, info.Email)
-
-	if err := h.issueJWT(w, user); err != nil {
-		h.signInFailed(w, r, "issue session", err)
-		return
-	}
-	http.Redirect(w, r, h.frontendURL+"/auth/callback", http.StatusFound)
-}
 
 // signInFailurePath is the web app's sign-in failure state (PAC-35, API-011):
 // a fixed literal that carries no cause, provider or detail.
@@ -111,7 +68,7 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false, "provider": "google", "email": ""})
 		return
@@ -124,8 +81,8 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 
 	switch provider {
 	case "outlook":
-		// PAC-67: connected means usable — stored, renewable and not lost.
-		msToken, _ := auth.LoadMicrosoftToken(h.db, userID)
+		// PAC-67: connected means usable â stored, renewable and not lost.
+		msToken, _ := auth.LoadMicrosoftTokenCtx(r.Context(), h.db, userID)
 		lost, _ := storage.IsCredentialLost(h.db, userID, storage.CredentialOutlook)
 		connected := msToken != nil && msToken.RefreshToken != "" && !lost
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -140,7 +97,7 @@ func (h *authHandlers) status(w http.ResponseWriter, r *http.Request) {
 			"email":     s.CalendarEmail,
 		})
 	default: // google
-		token, err := auth.LoadUserToken(h.db, userID)
+		token, err := auth.LoadUserTokenCtx(r.Context(), h.db, userID)
 		// PAC-67: a credential recorded as lost is kept (D-1) but not connected.
 		lost, lostErr := storage.IsCredentialLost(h.db, userID, storage.CredentialGoogle)
 		if err != nil || token == nil || lostErr != nil || lost {
@@ -179,7 +136,7 @@ type calendarDisconnectUnsupported struct {
 // anything else is Google. A settings read failure deletes nothing (D-9).
 func (h *authHandlers) disconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		writeServerError(w, r, "disconnect: read settings", err, http.StatusInternalServerError)
 		return
@@ -205,30 +162,10 @@ func (h *authHandlers) disconnectMicrosoft(w http.ResponseWriter, r *http.Reques
 	newGeneratedHandler(h.db, nil).DisconnectMicrosoft(w, r)
 }
 
-// issueJWT sets the auth_token session cookie for user. It returns an error,
-// and sets nothing, when the session cannot be issued (PAC-35, API-011).
-func (h *authHandlers) issueJWT(w http.ResponseWriter, user *storage.User) error {
-	if h.jwtSecret == "" {
-		return errNoSigningSecret
-	}
-	jwtToken, err := generateSessionToken(user.ID, user.Email, h.jwtSecret)
-	if err != nil {
-		return err
-	}
-	setCookie(w, &http.Cookie{
-		Name:     "auth_token",
-		Value:    jwtToken,
-		Path:     "/",
-		MaxAge:   7 * 24 * 3600,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
-	return nil
-}
 
 // Test seams: the session-token generator and the Google profile URL.
 var (
-	generateSessionToken = auth.GenerateToken
+	generateSessionToken = auth.GenerateSessionToken
 	googleUserInfoURL    = "https://www.googleapis.com/oauth2/v2/userinfo"
 )
 
@@ -237,6 +174,10 @@ type googleUserInfo struct {
 	Email   string `json:"email"`
 	Name    string `json:"name"`
 	Picture string `json:"picture"`
+	// PAC-71 evidence (contract googleOAuthCallback step 3): verified_email and,
+	// for Workspace accounts, the hosted domain.
+	VerifiedEmail *bool  `json:"verified_email"`
+	HD            string `json:"hd"`
 }
 
 func fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token, cfg *oauth2.Config) (*googleUserInfo, error) {

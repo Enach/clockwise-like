@@ -35,18 +35,22 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		r.Get("/microsoft", ah.startMicrosoftOAuth)
 		r.Get("/microsoft/callback", ah.microsoftCallback)
 		// Connecting Zoom attaches it to the signed-in user's settings (PAC-24).
-		r.With(requireAuth(jwtSecret)).Get("/zoom", (newConferencingHandlers(db, oauthConfig)).startZoomOAuth)
-		r.With(requireAuth(jwtSecret)).Get("/zoom/callback", (newConferencingHandlers(db, oauthConfig)).zoomCallback)
+		r.With(requireAuth(db, jwtSecret)).Get("/zoom", (newConferencingHandlers(db, oauthConfig)).startZoomOAuth)
+		r.With(requireAuth(db, jwtSecret)).Get("/zoom/callback", (newConferencingHandlers(db, oauthConfig)).zoomCallback)
 		r.Post("/detect", ssoh.detect)
 		r.Get("/sso/{domain}", ssoh.startSSO)
 		r.Get("/callback/oidc/{domain}", ssoh.oidcCallback)
 
 		// Protected sub-routes (status, disconnect)
 		r.Group(func(r chi.Router) {
-			r.Use(requireAuth(jwtSecret))
+			r.Use(requireAuth(db, jwtSecret))
 			r.Get("/status", ah.status)
 			r.Delete("/disconnect", ah.disconnect)
 			r.Post("/microsoft/disconnect", ah.disconnectMicrosoft)
+			// PAC-71: the signed-in connect starts (POST only; a GET is not a
+			// connect and answers 405).
+			r.Post("/google/connect", ah.startGoogleConnect)
+			r.Post("/microsoft/connect", ah.startMicrosoftConnect)
 		})
 	})
 	// Provider availability only exposes non-sensitive configuration status and is public
@@ -56,14 +60,14 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 	// /api/auth/me and /api/auth/logout — protected
 	mh := &meHandlers{db: db}
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(jwtSecret))
+		r.Use(requireAuth(db, jwtSecret))
 		r.Get("/api/auth/me", mh.me)
 		r.Post("/api/auth/logout", mh.logout)
 	})
 
 	// All remaining API routes — protected
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(jwtSecret))
+		r.Use(requireAuth(db, jwtSecret))
 
 		ch := &calendarHandlers{oauthConfig: oauthConfig, db: db}
 		r.Route("/api/calendar", func(r chi.Router) {

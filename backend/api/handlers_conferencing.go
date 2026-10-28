@@ -35,7 +35,7 @@ type defaultConferenceProviderFactory struct{ db *sql.DB }
 // conference.ErrZoomNotConnected and conference.ErrZoomInvalidCredential they
 // are the closed list conferenceRefusal turns into a 400 (PAC-21).
 var (
-	errTeamsNotConnected             = errors.New("teams: not connected — visit /api/auth/microsoft to authenticate")
+	errTeamsNotConnected             = errors.New("teams: not connected — connect Outlook in Settings (POST /api/auth/microsoft/connect)")
 	errUnsupportedConferenceProvider = errors.New("unsupported conference provider")
 )
 
@@ -57,7 +57,7 @@ func (f defaultConferenceProviderFactory) ProviderForRequest(ctx context.Context
 		}
 		return &conference.ZoomProvider{Tokens: auth.ZoomTokenSource(ctx, f.db, conference.ZoomOAuthConfigFromEnv(), userID, cred)}, nil
 	case "teams":
-		msToken, tokenErr := auth.LoadMicrosoftToken(f.db, userID)
+		msToken, tokenErr := auth.LoadMicrosoftTokenCtx(ctx, f.db, userID)
 		if tokenErr != nil || msToken == nil {
 			return nil, errTeamsNotConnected
 		}
@@ -169,7 +169,7 @@ func (h *conferencingHandlers) createConference(w http.ResponseWriter, r *http.R
 // not recorded as lost; Teams' `enabled` follows it exactly.
 func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	settings, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	settings, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		writeServerError(w, r, "settings", err, http.StatusInternalServerError)
 		return
@@ -179,8 +179,8 @@ func (h *conferencingHandlers) providers(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, r, "credential losses", err, http.StatusInternalServerError)
 		return
 	}
-	googleToken, _ := auth.LoadUserToken(h.db, userID)
-	microsoftToken, _ := auth.LoadMicrosoftToken(h.db, userID)
+	googleToken, _ := auth.LoadUserTokenCtx(r.Context(), h.db, userID)
+	microsoftToken, _ := auth.LoadMicrosoftTokenCtx(r.Context(), h.db, userID)
 	googleUsable := googleToken != nil && !losses[storage.CredentialGoogle]
 	zoomUsable := false
 	if strings.TrimSpace(settings.ZoomTokens) != "" {

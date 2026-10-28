@@ -152,14 +152,39 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := storage.UpsertUser(h.ah.db, userInfo.Email, userInfo.Name, "", "sso", userInfo.Sub)
-	if err != nil {
-		writeServerError(w, r, "upsert user", err, http.StatusInternalServerError)
+	// PAC-71 (spec §3, D-10; contract ssoOidcCallback): the identity is the
+	// verified issuer plus the subject. A bound identity reaches its account;
+	// any account carrying the address is refused (SSO never reaches or binds
+	// an existing account); otherwise a new account is created
+	// domain-confirmed, unless the token says the email is unverified.
+	evidence := storage.EvidenceAuthoritative
+	if userInfo.EmailUnverified() {
+		evidence = storage.EvidenceNone
+	}
+	issuer := userInfo.Issuer
+	if issuer == "" {
+		issuer = provider.OIDCIssuer
+	}
+	res, err := storage.ResolveSignIn(r.Context(), h.ah.db, storage.SignInRequest{
+		Identity:      storage.Identity{Provider: storage.IdentityOIDC, Tenant: issuer, Subject: userInfo.Sub},
+		Email:         userInfo.Email,
+		Name:          userInfo.Name,
+		Evidence:      evidence,
+		FirstProvider: "sso",
+	})
+	var refused *storage.RefusalError
+	if errors.As(err, &refused) {
+		h.ah.signInRefused(w, r, err)
 		return
 	}
-	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, userInfo.Email)
+	if err != nil {
+		writeServerError(w, r, "account creation", err, http.StatusInternalServerError)
+		return
+	}
+	user := res.User
+	_ = storage.AssociateUserWithOrg(h.ah.db, user.ID, user.Email)
 
-	if err := h.ah.issueJWT(w, user); err != nil {
+	if err := h.ah.issueJWT(w, user, res.Gen); err != nil {
 		h.ah.signInFailed(w, r, "issue session", err)
 		return
 	}

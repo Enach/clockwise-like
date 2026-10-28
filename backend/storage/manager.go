@@ -152,21 +152,6 @@ func UpsertManagerTeamMemberForTeam(db *sql.DB, teamID uuid.UUID, m *ManagerTeam
 	return tx.Commit()
 }
 
-func AssignManagerTeamMembersMatchingFormalTeam(db *sql.DB, managerID, teamID uuid.UUID) (int64, error) {
-	result, err := db.Exec(`
-		INSERT INTO manager_team_member_assignments (manager_user_id, team_id, member_email)
-		SELECT mtm.manager_user_id, $2, mtm.member_email
-		FROM manager_team_members mtm
-		JOIN users u ON lower(u.email) = lower(mtm.member_email)
-		JOIN team_members tm ON tm.team_id=$2 AND tm.user_id=u.id
-		WHERE mtm.manager_user_id=$1 AND u.id<>$1
-		ON CONFLICT DO NOTHING`, managerID, teamID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 func ListManagerTeamMembersForTeam(db *sql.DB, managerID, teamID uuid.UUID) ([]*ManagerTeamMember, error) {
 	rows, err := db.Query(`
 		SELECT mtm.id, mtm.manager_user_id, mtm.member_email, mtm.member_user_id,

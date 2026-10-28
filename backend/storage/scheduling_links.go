@@ -351,8 +351,8 @@ func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err err
 // RespondToHostInvite sets userID's host row on linkID to status. matched is
 // false when the user has no host row on that link (or no such link exists);
 // nothing is written in that case: PAC-30.
-func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) (matched bool, err error) {
-	res, err := db.ExecContext(context.Background(), `
+func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (matched bool, err error) {
+	res, err := db.Exec(`
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2

@@ -21,3 +21,11 @@ func setCookie(w http.ResponseWriter, c *http.Cookie) {
 	c.Secure = secureCookies
 	http.SetCookie(w, c)
 }
+
+// cookieHeader renders c as a Set-Cookie value under the same Secure rule as
+// setCookie, for a response the generated strict wrapper writes (PAC-71's
+// connect starts declare Set-Cookie as a response header).
+func cookieHeader(c *http.Cookie) string {
+	c.Secure = secureCookies
+	return c.String()
+}

@@ -21,7 +21,7 @@ type WorkspaceConnection struct {
 	ExpiresAt     *time.Time
 }
 
-func UpsertWorkspaceConnection(db *sql.DB, c *WorkspaceConnection) error {
+func UpsertWorkspaceConnection(db Querier, c *WorkspaceConnection) error {
 	_, err := db.Exec(`
 		INSERT INTO workspace_connections
 			(user_id, provider, access_token, bot_token, workspace_id, workspace_name, scopes, expires_at)
@@ -40,7 +40,7 @@ func UpsertWorkspaceConnection(db *sql.DB, c *WorkspaceConnection) error {
 	return err
 }
 
-func GetWorkspaceConnection(db *sql.DB, userID uuid.UUID, provider string) (*WorkspaceConnection, error) {
+func GetWorkspaceConnection(db Querier, userID uuid.UUID, provider string) (*WorkspaceConnection, error) {
 	row := db.QueryRow(`
 		SELECT id, user_id, provider, access_token, bot_token,
 		       workspace_id, workspace_name, scopes, connected_at, expires_at

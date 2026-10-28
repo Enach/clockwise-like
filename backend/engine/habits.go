@@ -67,7 +67,7 @@ func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) erro
 	// calOps may be nil if not connected — we degrade gracefully.
 
 	now := e.now()
-	if settings, settingsErr := storage.GetOrCreateSettingsByUser(e.DB, userID); settingsErr == nil {
+	if settings, settingsErr := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID); settingsErr == nil {
 		if loc, locErr := time.LoadLocation(settings.Timezone); locErr == nil {
 			now = now.In(loc)
 		}
@@ -93,7 +93,7 @@ func (e *HabitsEngine) scheduleDay(
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
 
-	settings, _ := storage.GetOrCreateSettingsByUser(e.DB, userID)
+	settings, _ := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
 
 	// Fetch calendar busy intervals once for the day.
 	var calBusy []interval
@@ -247,7 +247,7 @@ func (e *HabitsEngine) createHabitEvent(
 }
 
 func (e *HabitsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
-	token, err := auth.LoadUserToken(e.DB, userID)
+	token, err := auth.LoadUserTokenCtx(ctx, e.DB, userID)
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("no token for user %s", userID)
 	}

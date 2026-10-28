@@ -57,7 +57,7 @@ func (e *SmartScheduler) calClient(ctx context.Context) (calendarOps, error) {
 }
 
 func (e *SmartScheduler) Suggest(ctx context.Context, req ScheduleRequest) (*ScheduleSuggestions, error) {
-	s, err := storage.GetOrCreateSettingsByUser(e.DB, auth.UserIDFromContext(ctx))
+	s, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, auth.UserIDFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
@@ -291,7 +291,7 @@ func (e *SmartScheduler) CreateMeeting(ctx context.Context, req ScheduleRequest,
 		return nil, err
 	}
 
-	settings, err := storage.GetOrCreateSettingsByUser(e.DB, auth.UserIDFromContext(ctx))
+	settings, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, auth.UserIDFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}

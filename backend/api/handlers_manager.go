@@ -315,8 +315,8 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 		CadenceCustomDays: body.CadenceCustomDays,
 	}
 	// Resolve member_user_id if they're a Paceday user
-	var uid uuid.UUID
-	if err := h.db.QueryRow(`SELECT id FROM users WHERE email=$1`, email).Scan(&uid); err == nil {
+	// PAC-71 granting site: only the one domain-confirmed holder (any case).
+	if uid, ok, err := storage.ConfirmedHolder(h.db, email); err == nil && ok {
 		m.MemberUserID = &uid
 	}
 	if teamID != nil {
@@ -352,15 +352,26 @@ func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	if teamID == nil {
 		_ = storage.DeleteManagerTeamMemberByEmail(h.db, userID, email)
 	} else {
-		var targetID uuid.UUID
-		if err := h.db.QueryRow(`SELECT id FROM users WHERE lower(email)=lower($1)`, email).Scan(&targetID); err == nil {
+		// PAC-71 revoking site: every account carrying the address, at any
+		// standing and in any letter case, loses its formal membership (spec
+		// AC-43); if the owner is among them nothing is removed (422).
+		targets, terr := storage.CarrierIDs(h.db, []string{email})
+		if terr != nil {
+			writeServerError(w, r, "remove member: lookup", terr, http.StatusInternalServerError)
+			return
+		}
+		members := make([]uuid.UUID, 0, len(targets))
+		for _, targetID := range targets {
 			if membership, memberErr := storage.GetTeamMember(h.db, *teamID, targetID); memberErr == nil {
 				if membership.Role == "owner" {
 					writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
 					return
 				}
-				_ = storage.RemoveTeamMember(h.db, *teamID, targetID)
+				members = append(members, targetID)
 			}
+		}
+		for _, targetID := range members {
+			_ = storage.RemoveTeamMember(h.db, *teamID, targetID)
 		}
 		_ = storage.UnassignManagerTeamMember(h.db, userID, *teamID, email)
 		_, _ = h.db.Exec(`DELETE FROM team_invites WHERE team_id=$1 AND lower(invitee_email)=lower($2) AND status='pending'`, *teamID, email)
@@ -680,6 +691,11 @@ func (h *managerHandlers) getOrCreateScopedMember(userID uuid.UUID, teamID *uuid
 	}
 	for _, formal := range formalMembers {
 		if !strings.EqualFold(formal.Email, email) || formal.UserID == userID {
+			continue
+		}
+		// PAC-71 granting site: a roster entry points only at a formal member
+		// who holds the address domain-confirmed.
+		if ok, herr := storage.HoldsConfirmed(h.db, formal.UserID, email); herr != nil || !ok {
 			continue
 		}
 		memberUserID := formal.UserID

@@ -29,8 +29,16 @@ var ErrCredentialStore = errors.New("read stored calendar credential")
 // LoadCalendarToken loads the user's stored Google credential, telling a
 // missing one (ErrCalendarNotConnected) apart from a store that could not be
 // read (ErrCredentialStore, wrapping the cause for the server log).
+// It is the plain load (no session re-check): scheduled jobs and other
+// accounts. Request paths use LoadCalendarTokenCtx.
 func LoadCalendarToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
-	token, err := auth.LoadUserToken(db, userID)
+	return LoadCalendarTokenCtx(context.Background(), db, userID)
+}
+
+// LoadCalendarTokenCtx is LoadCalendarToken with PAC-71's in-request
+// re-check when ctx carries the session guard (contract section 5, D1).
+func LoadCalendarTokenCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+	token, err := auth.LoadUserTokenCtx(ctx, db, userID)
 	if errors.Is(err, auth.ErrNoUser) {
 		return nil, ErrCalendarNotConnected
 	}
@@ -83,7 +91,7 @@ func (r realOps) getFreeBusy(ctx context.Context, emails []string, tMin, tMax ti
 
 func newCalOps(ctx context.Context, db *sql.DB, oauthConfig *oauth2.Config) (calendarOps, error) {
 	userID := auth.UserIDFromContext(ctx)
-	token, err := LoadCalendarToken(db, userID)
+	token, err := LoadCalendarTokenCtx(ctx, db, userID)
 	if err != nil {
 		return nil, err
 	}

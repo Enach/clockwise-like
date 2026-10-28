@@ -23,8 +23,8 @@ type AISource interface {
 type DBSource struct{ DB *sql.DB }
 
 // Settings is the caller's settings row, created on first read.
-func (s DBSource) Settings(_ context.Context, userID uuid.UUID) (*storage.Settings, error) {
-	return storage.GetOrCreateSettingsByUser(s.DB, userID)
+func (s DBSource) Settings(ctx context.Context, userID uuid.UUID) (*storage.Settings, error) {
+	return storage.GetOrCreateSettingsByUserCtx(ctx, s.DB, userID)
 }
 
 // OrgAI is storage.ReadOrgAIState.

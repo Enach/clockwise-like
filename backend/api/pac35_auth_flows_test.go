@@ -72,7 +72,7 @@ func assertSignedIn(t *testing.T, rec *httptest.ResponseRecorder, wantLocation s
 func failingTokenGenerator(t *testing.T) {
 	t.Helper()
 	prev := generateSessionToken
-	generateSessionToken = func(uuid.UUID, string, string) (string, error) {
+	generateSessionToken = func(uuid.UUID, string, int64, string) (string, error) {
 		return "", errors.New("signing failed")
 	}
 	t.Cleanup(func() { generateSessionToken = prev })
@@ -543,7 +543,7 @@ func pac35Router(db *sql.DB, secret string) *chi.Mux {
 	mh := &meHandlers{db: db}
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(secret))
+		r.Use(requireAuth(db, secret))
 		r.Get("/api/auth/status", ah.status)
 		r.Delete("/api/auth/disconnect", ah.disconnect)
 		r.Get("/api/auth/me", mh.me)

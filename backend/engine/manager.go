@@ -188,7 +188,7 @@ func inferCandidateCadence(candidate *oneOnOneCandidate) string {
 // DetectTeam scans a six-week window around now and identifies 1:1
 // recurring meetings to build the manager's team member list.
 func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*DetectResult, error) {
-	token, err := LoadCalendarToken(e.DB, managerID)
+	token, err := LoadCalendarTokenCtx(ctx, e.DB, managerID)
 	if err != nil {
 		return nil, err
 	}
@@ -239,10 +239,10 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		}
 
 		// Check if member is a Paceday user
+		// PAC-71 granting site (roster import): only the one account that
+		// holds the address domain-confirmed, ignoring letter case.
 		var memberUserID *uuid.UUID
-		var uid uuid.UUID
-		err := e.DB.QueryRow(`SELECT id FROM users WHERE email=$1`, c.email).Scan(&uid)
-		if err == nil {
+		if uid, ok, err := storage.ConfirmedHolder(e.DB, c.email); err == nil && ok {
 			memberUserID = &uid
 		}
 

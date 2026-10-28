@@ -50,7 +50,7 @@ type NoMeetingZone struct {
 
 // --- Teams ---
 
-func CreateTeam(db *sql.DB, name string, createdBy uuid.UUID) (*Team, error) {
+func CreateTeam(db Querier, name string, createdBy uuid.UUID) (*Team, error) {
 	row := db.QueryRow(`
 		INSERT INTO teams (name, created_by) VALUES ($1, $2)
 		RETURNING id, org_id, name, created_by, created_at`,

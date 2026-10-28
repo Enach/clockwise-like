@@ -46,7 +46,7 @@ func (h *teamHandlers) createTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "name is required", http.StatusBadRequest)
 		return
 	}
-	team, err := storage.CreateTeam(h.db, strings.TrimSpace(body.Name), userID)
+	team, err := storage.CreateTeamCtx(r.Context(), h.db, strings.TrimSpace(body.Name), userID)
 	if err != nil {
 		writeServerError(w, r, "createTeam", err, http.StatusInternalServerError)
 		return
@@ -299,7 +299,10 @@ func (h *teamHandlers) acceptInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ensure the logged-in user's email matches the invite.
 	user, err := storage.GetUserByID(h.db, userID)
-	if err != nil || user == nil || !strings.EqualFold(user.Email, invite.InviteeEmail) {
+	// PAC-71 (granting site): only an account that holds the invitee address
+	// domain-confirmed may accept; an unconfirmed holder is answered as a
+	// different address (spec AC-28).
+	if err != nil || user == nil || !strings.EqualFold(user.Email, invite.InviteeEmail) || !h.holdsConfirmed(userID, invite.InviteeEmail) {
 		writeError(w, "this invite is for a different email address", http.StatusForbidden)
 		return
 	}
@@ -648,4 +651,11 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) {
 		auth = smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
 	}
 	_ = smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpFrom, []string{to}, []byte(msg))
+}
+
+// holdsConfirmed reports whether userID holds email domain-confirmed (PAC-71
+// granting site). A lookup error counts as "no" (fail closed).
+func (h *teamHandlers) holdsConfirmed(userID uuid.UUID, email string) bool {
+	ok, err := storage.HoldsConfirmed(h.db, userID, email)
+	return err == nil && ok
 }

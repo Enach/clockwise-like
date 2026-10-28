@@ -18,7 +18,7 @@ import (
 // It is the Google (re)connect (PAC-67): a token without a refresh token keeps
 // the stored one, so a reconnect never erases a working credential, and
 // storing ends any recorded loss of the Google connection (AC-12, AC-24).
-func UpsertUserToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+func UpsertUserToken(db storage.Querier, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}
@@ -58,7 +58,7 @@ var ErrNoUser = errors.New("auth.LoadUserToken: userID is required (received uui
 // LoadUserToken retrieves the most recent OAuth token for a specific user.
 // Returns ErrNoUser if userID is uuid.Nil — silent fallback to a legacy
 // id=1 row was removed because it leaked tokens across tenants.
-func LoadUserToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+func LoadUserToken(db storage.Querier, userID uuid.UUID) (*oauth2.Token, error) {
 	if userID == uuid.Nil {
 		return nil, ErrNoUser
 	}

@@ -67,6 +67,15 @@ type microsoftTokenRecord struct {
 // keeps the stored one (AC-11), and storing ends any recorded loss of the
 // Outlook connection (AC-12, AC-24).
 func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error {
+	return StoreMicrosoftCredential(db, userID, token, true)
+}
+
+// StoreMicrosoftCredential is SaveMicrosoftToken inside a caller's transaction.
+// setOutlook is whether it also makes Outlook the work calendar: only a
+// Microsoft SIGN-IN does (PAC-71 contract: an account created by it, and
+// today's reset on a bound sign-in, which PAC-47 removes); a connect and a
+// migration binding never change the work calendar (spec D-15, AC-12, AC-31).
+func StoreMicrosoftCredential(db storage.Querier, userID uuid.UUID, token *oauth2.Token, setOutlook bool) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveMicrosoftToken: userID is required")
 	}
@@ -87,7 +96,11 @@ func SaveMicrosoftToken(db *sql.DB, userID uuid.UUID, token *oauth2.Token) error
 	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook' WHERE user_id = $1`, userID, string(data)); err != nil {
+	q := `UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1`
+	if setOutlook {
+		q = `UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook' WHERE user_id = $1`
+	}
+	if _, err := db.Exec(q, userID, string(data)); err != nil {
 		return err
 	}
 	return storage.ClearCredentialLoss(db, userID, storage.CredentialOutlook)
@@ -109,7 +122,7 @@ func MicrosoftConfigFromEnv() *MicrosoftConfig {
 
 // LoadMicrosoftToken returns userID's Outlook credential, or nil when they
 // have none.
-func LoadMicrosoftToken(db *sql.DB, userID uuid.UUID) (*oauth2.Token, error) {
+func LoadMicrosoftToken(db storage.Querier, userID uuid.UUID) (*oauth2.Token, error) {
 	row := db.QueryRow(`SELECT microsoft_tokens FROM settings WHERE user_id = $1`, userID)
 	var raw sql.NullString
 	if err := row.Scan(&raw); err != nil || !raw.Valid || raw.String == "" {

@@ -45,7 +45,7 @@ func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
 	return cals, rows.Err()
 }
 
-func GetPersonalCalendar(db *sql.DB, id int64) (*PersonalCalendar, error) {
+func GetPersonalCalendar(db Querier, id int64) (*PersonalCalendar, error) {
 	row := db.QueryRow(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at FROM personal_calendars WHERE id = $1`, id)
 	var c PersonalCalendar
 	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
@@ -54,7 +54,7 @@ func GetPersonalCalendar(db *sql.DB, id int64) (*PersonalCalendar, error) {
 	return &c, nil
 }
 
-func InsertPersonalCalendar(db *sql.DB, c *PersonalCalendar) (int64, error) {
+func InsertPersonalCalendar(db Querier, c *PersonalCalendar) (int64, error) {
 	var id int64
 	err := db.QueryRow(
 		`INSERT INTO personal_calendars (user_id, provider, name, url, credentials_json, enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -159,7 +159,7 @@ func SaveZoomTokens(db *sql.DB, userID uuid.UUID, accessToken, refreshToken stri
 }
 
 // ListPersonalCalendarsByUser returns calendars owned by the given user.
-func ListPersonalCalendarsByUser(db *sql.DB, userID uuid.UUID) ([]PersonalCalendar, error) {
+func ListPersonalCalendarsByUser(db Querier, userID uuid.UUID) ([]PersonalCalendar, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("ListPersonalCalendarsByUser: userID is required")
 	}
