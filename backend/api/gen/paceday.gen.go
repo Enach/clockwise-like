@@ -179,6 +179,12 @@ const (
 	CreateSchedulingLinkRequestUsageTypeSingleUse CreateSchedulingLinkRequestUsageType = "single_use"
 )
 
+// Defines values for CurrentUserResponseAddressStanding.
+const (
+	AddressStandingDomainConfirmed CurrentUserResponseAddressStanding = "domain_confirmed"
+	AddressStandingUnconfirmed     CurrentUserResponseAddressStanding = "unconfirmed"
+)
+
 // Defines values for CurrentUserResponseProvider.
 const (
 	CurrentUserResponseProviderGoogle    CurrentUserResponseProvider = "google"
@@ -1077,6 +1083,18 @@ type ConferenceProviderStatusAutoWith string
 // ConferenceProviderStatusProvider defines model for ConferenceProviderStatus.Provider.
 type ConferenceProviderStatusProvider string
 
+// ConnectStartResponse New in PAC-71. The answer of `startGoogleConnect` and
+// `startMicrosoftConnect`: where to send the window to continue the
+// connect. Readable only by the web app's own origin (another site
+// cannot read it, which is the point; spec §3 "Cross-site request
+// model").
+type ConnectStartResponse struct {
+	// AuthorizeUrl The provider's authorization URL, carrying this connect's state.
+	// Single browser, 300 seconds, today's scope set. Never contains a
+	// Paceday session token.
+	AuthorizeUrl string `json:"authorize_url"`
+}
+
 // CreateConferenceRequest POST /api/conference/create. Since PAC-67 (API-052) all three fields are required and validated before any provider is called; a body that fails is the 400 "invalid body". Before PAC-67 every field silently defaulted to the Go zero value when absent and was forwarded to the provider.
 type CreateConferenceRequest struct {
 	// End Must be strictly after `start`.
@@ -1164,6 +1182,23 @@ type CreateSchedulingLinkRequestUsageType string
 
 // CurrentUserResponse storage.User (backend/storage/users.go) serialized directly.
 type CurrentUserResponse struct {
+	// AddressStanding New in PAC-71 (spec §3 "Evidence and address standing", D-5).
+	// `domain_confirmed`: the sign-in that bound this account's
+	// identity carried AUTHORITATIVE evidence for `email` (Google
+	// verified with matching `hd` or a Google consumer domain; a
+	// Microsoft tenant that verifies the domain; the SSO issuer
+	// configured for the domain). `unconfirmed`: everything else,
+	// including every account created before PAC-71 that has not bound
+	// yet and every account bound with MAILBOX evidence. Only a
+	// `domain_confirmed` address acts as a person at the granting sites
+	// (team-invite acceptance, scheduling-link co-host invitations,
+	// the manager's member add, roster import and roster entries,
+	// break-glass); an `unconfirmed` one works fully for its own user
+	// but resolves to nobody there. It changes only when the account
+	// binds (sign-in) or through the operator procedure; never on an
+	// ordinary sign-in, a connect or a refusal.
+	AddressStanding CurrentUserResponseAddressStanding `json:"addressStanding"`
+
 	// AvatarUrl The user's picture URL. In the current-user read (`getCurrentUser`)
 	// this is the only name for it; clients read it as `avatarUrl`, not
 	// `avatar` (PAC-35, API-065: the web app read it as `avatar`, or not at
@@ -1194,8 +1229,28 @@ type CurrentUserResponse struct {
 	// handlers_sso.go "sso"; tests and the e2e seed write "google").
 	// A CHECK constraint is not added (spec PAC-35 section 7: no
 	// migration).
+	// Unchanged by PAC-71 (spec §6): it is NOT the provider of the
+	// account's bound identity, which this response does not expose
+	// (listing sign-in methods is follow-up F1).
 	Provider CurrentUserResponseProvider `json:"provider"`
 }
+
+// CurrentUserResponseAddressStanding New in PAC-71 (spec §3 "Evidence and address standing", D-5).
+// `domain_confirmed`: the sign-in that bound this account's
+// identity carried AUTHORITATIVE evidence for `email` (Google
+// verified with matching `hd` or a Google consumer domain; a
+// Microsoft tenant that verifies the domain; the SSO issuer
+// configured for the domain). `unconfirmed`: everything else,
+// including every account created before PAC-71 that has not bound
+// yet and every account bound with MAILBOX evidence. Only a
+// `domain_confirmed` address acts as a person at the granting sites
+// (team-invite acceptance, scheduling-link co-host invitations,
+// the manager's member add, roster import and roster entries,
+// break-glass); an `unconfirmed` one works fully for its own user
+// but resolves to nobody there. It changes only when the account
+// binds (sign-in) or through the operator procedure; never on an
+// ordinary sign-in, a connect or a refusal.
+type CurrentUserResponseAddressStanding string
 
 // CurrentUserResponseProvider The provider of the user's FIRST sign-in: set when the row is
 // inserted and never updated (UpsertUser's ON CONFLICT does not touch
@@ -1209,6 +1264,9 @@ type CurrentUserResponse struct {
 // handlers_sso.go "sso"; tests and the e2e seed write "google").
 // A CHECK constraint is not added (spec PAC-35 section 7: no
 // migration).
+// Unchanged by PAC-71 (spec §6): it is NOT the provider of the
+// account's bound identity, which this response does not expose
+// (listing sign-in methods is follow-up F1).
 type CurrentUserResponseProvider string
 
 // DailyRecapPatch api.recapSettingsBody. A property absent means "leave unchanged"; a property present is applied.
@@ -1893,7 +1951,7 @@ type MemberWeekStats struct {
 	MeetingMinutes int `json:"meeting_minutes"`
 }
 
-// MiddlewareUnauthorized A JSON literal delivered with a text/plain Content-Type, because the handler sets application/json and http.Error then overwrites the header. Every producer of this exact body in backend/api/ is an `http.Error` with the literal `{"error":"unauthorized"}`: the three in `requireAuth` (backend/api/middleware.go — one per rejection reason: no token, a token that fails `auth.ValidateToken`, a `UserID` claim that is not a UUID; cited by function because this description is emitted into generated files in both repos), `orgHandlers.members` (backend/api/handlers_org.go:21), and `meHandlers.me` (backend/api/handlers_me.go:19, reached at `GET /api/auth/me`). The falsifying command, excluding the generated package, is `grep -rn error.:.unauthorized --include=*.go backend/api/`, which returns exactly those five lines. The third is listed for completeness only: `getCurrentUser` declares its 401 against `PlainTextError`, not this schema, and lives in paths/auth.yaml, which PAC-23 does not own and does not touch.
+// MiddlewareUnauthorized A JSON literal delivered with a text/plain Content-Type, because the handler sets application/json and http.Error then overwrites the header. Every producer of this exact body in backend/api/ is an `http.Error` with the literal `{"error":"unauthorized"}`: the three in `requireAuth` (backend/api/middleware.go — one per rejection reason: no token, a token that fails `auth.ValidateToken`, a `UserID` claim that is not a UUID; cited by function because this description is emitted into generated files in both repos), `orgHandlers.members` (backend/api/handlers_org.go:21), and `meHandlers.me` (backend/api/handlers_me.go:19, reached at `GET /api/auth/me`). The falsifying command, excluding the generated package, is `grep -rn error.:.unauthorized --include=*.go backend/api/`, which returns exactly those five lines. Since PAC-71 the same bytes are also written, with the same headers, for a session whose `gen` claim is not the account's current session generation: by `requireAuth` and by the in-request re-check on account data (security scheme `bearerAuth`, SESSION GENERATION). The grep then also returns those producers; the response itself is unchanged. The third is listed for completeness only: `getCurrentUser` declares its 401 against `PlainTextError`, not this schema, and lives in paths/auth.yaml, which PAC-23 does not own and does not touch.
 //
 // Precisely, because PAC-23 AC-12 requires this response to be unchanged: as net/http's `http.Error` produces it the header is `text/plain; charset=utf-8`, `X-Content-Type-Options: nosniff` is set, and the message is written with `Fprintln`, so the body is 25 bytes — the example below, trailing newline included. The two headers are stated here because the sibling `PlainTextError` states them and "exactly as today" includes them.
 //
@@ -3249,7 +3307,9 @@ type SsoWriteForbiddenResponse struct {
 	union json.RawMessage
 }
 
-// SsoWriteFreshLoginRequired The caller's email is on the deployment's break-glass list but the
+// SsoWriteFreshLoginRequired The caller's account holds an address on the deployment's
+// break-glass list domain-confirmed (PAC-71: the account's stored
+// address and standing, not the session's email claim) but the
 // session JWT was issued 10 minutes ago or more, or carries an issue
 // time more than one minute in the future (beyond that clock-skew
 // allowance a token is not fresh). The client sends the user through
@@ -3617,6 +3677,12 @@ type SchedulingLinkValidationError = BookingError
 // `error` is a server-chosen message, never the text of a Go, driver or
 // provider error; every 5xx in this document uses this envelope (PAC-21).
 type ServerError = ErrorResponse
+
+// SessionGenerationUnavailable The shared JSON error envelope, written by writeError()
+// (backend/api/handlers_settings.go:206). Content-Type: application/json.
+// `error` is a server-chosen message, never the text of a Go, driver or
+// provider error; every 5xx in this document uses this envelope (PAC-21).
+type SessionGenerationUnavailable = ErrorResponse
 
 // SettingsValidationError The JSON error shape produced by api.writeError (handlers_settings.go:206). Emitted with `Content-Type: application/json`. Every 5xx in this domain uses it, with a fixed server-chosen message (PAC-21). Handlers that use the Go stdlib `http.Error` for a 4xx return text/plain and do NOT use this shape; each response above says which applies. The 401 from requireAuth is a hybrid: the body text is `{"error":"unauthorized"}` but it is written through http.Error, which overwrites the Content-Type to `text/plain; charset=utf-8`.
 type SettingsValidationError = SchedulingErrorResponse
@@ -5703,7 +5769,7 @@ type ServerInterface interface {
 	// The calling user's own activity entries
 	// (GET /api/audit)
 	ListAuditEntries(w http.ResponseWriter, r *http.Request, params ListAuditEntriesParams)
-	// Google OAuth callback
+	// Google OAuth callback (sign-in, or a signed-in user's calendar connect)
 	// (GET /api/auth/callback)
 	GoogleOAuthCallback(w http.ResponseWriter, r *http.Request, params GoogleOAuthCallbackParams)
 	// OIDC SSO callback
@@ -5718,6 +5784,9 @@ type ServerInterface interface {
 	// Begin Google OAuth
 	// (GET /api/auth/google)
 	StartGoogleOAuth(w http.ResponseWriter, r *http.Request, params StartGoogleOAuthParams)
+	// Start connecting a Google calendar to the signed-in account (never a sign-in)
+	// (POST /api/auth/google/connect)
+	StartGoogleConnect(w http.ResponseWriter, r *http.Request)
 	// Clear the session cookie
 	// (POST /api/auth/logout)
 	Logout(w http.ResponseWriter, r *http.Request)
@@ -5727,9 +5796,12 @@ type ServerInterface interface {
 	// Begin Microsoft OAuth
 	// (GET /api/auth/microsoft)
 	StartMicrosoftOAuth(w http.ResponseWriter, r *http.Request, params StartMicrosoftOAuthParams)
-	// Microsoft OAuth callback
+	// Microsoft OAuth callback (sign-in, or a signed-in user's Outlook connect)
 	// (GET /api/auth/microsoft/callback)
 	MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Request, params MicrosoftOAuthCallbackParams)
+	// Start connecting an Outlook (Microsoft) calendar to the signed-in account (never a sign-in)
+	// (POST /api/auth/microsoft/connect)
+	StartMicrosoftConnect(w http.ResponseWriter, r *http.Request)
 	// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
 	// (POST /api/auth/microsoft/disconnect)
 	DisconnectMicrosoft(w http.ResponseWriter, r *http.Request)
@@ -6120,7 +6192,7 @@ func (_ Unimplemented) ListAuditEntries(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Google OAuth callback
+// Google OAuth callback (sign-in, or a signed-in user's calendar connect)
 // (GET /api/auth/callback)
 func (_ Unimplemented) GoogleOAuthCallback(w http.ResponseWriter, r *http.Request, params GoogleOAuthCallbackParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -6150,6 +6222,12 @@ func (_ Unimplemented) StartGoogleOAuth(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Start connecting a Google calendar to the signed-in account (never a sign-in)
+// (POST /api/auth/google/connect)
+func (_ Unimplemented) StartGoogleConnect(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Clear the session cookie
 // (POST /api/auth/logout)
 func (_ Unimplemented) Logout(w http.ResponseWriter, r *http.Request) {
@@ -6168,9 +6246,15 @@ func (_ Unimplemented) StartMicrosoftOAuth(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Microsoft OAuth callback
+// Microsoft OAuth callback (sign-in, or a signed-in user's Outlook connect)
 // (GET /api/auth/microsoft/callback)
 func (_ Unimplemented) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Request, params MicrosoftOAuthCallbackParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Start connecting an Outlook (Microsoft) calendar to the signed-in account (never a sign-in)
+// (POST /api/auth/microsoft/connect)
+func (_ Unimplemented) StartMicrosoftConnect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -7387,6 +7471,28 @@ func (siw *ServerInterfaceWrapper) StartGoogleOAuth(w http.ResponseWriter, r *ht
 	handler.ServeHTTP(w, r)
 }
 
+// StartGoogleConnect operation middleware
+func (siw *ServerInterfaceWrapper) StartGoogleConnect(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartGoogleConnect(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // Logout operation middleware
 func (siw *ServerInterfaceWrapper) Logout(w http.ResponseWriter, r *http.Request) {
 
@@ -7498,6 +7604,28 @@ func (siw *ServerInterfaceWrapper) MicrosoftOAuthCallback(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.MicrosoftOAuthCallback(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartMicrosoftConnect operation middleware
+func (siw *ServerInterfaceWrapper) StartMicrosoftConnect(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartMicrosoftConnect(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10830,6 +10958,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/auth/google", wrapper.StartGoogleOAuth)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/auth/google/connect", wrapper.StartGoogleConnect)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/auth/logout", wrapper.Logout)
 	})
 	r.Group(func(r chi.Router) {
@@ -10840,6 +10971,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/auth/microsoft/callback", wrapper.MicrosoftOAuthCallback)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/auth/microsoft/connect", wrapper.StartMicrosoftConnect)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/auth/microsoft/disconnect", wrapper.DisconnectMicrosoft)
@@ -11190,6 +11324,8 @@ type SchedulingLinkValidationErrorJSONResponse BookingError
 
 type ServerErrorJSONResponse ErrorResponse
 
+type SessionGenerationUnavailableJSONResponse ErrorResponse
+
 type SettingsValidationErrorJSONResponse SchedulingErrorResponse
 
 type UnauthorizedJSONResponse ErrorResponse
@@ -11459,6 +11595,17 @@ func (response GetSsoStepupOptions403JSONResponse) VisitGetSsoStepupOptionsRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetSsoStepupOptions500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response GetSsoStepupOptions500JSONResponse) VisitGetSsoStepupOptionsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteSsoProviderRequestObject struct {
 	Domain string `json:"domain"`
 }
@@ -11642,6 +11789,17 @@ type RecomputeAnalytics401JSONResponse struct{ UnauthorizedJSONResponse }
 func (response RecomputeAnalytics401JSONResponse) VisitRecomputeAnalyticsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RecomputeAnalytics500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response RecomputeAnalytics500JSONResponse) VisitRecomputeAnalyticsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -12014,6 +12172,49 @@ func (response StartGoogleOAuth302Response) VisitStartGoogleOAuthResponse(w http
 	return nil
 }
 
+type StartGoogleConnectRequestObject struct {
+}
+
+type StartGoogleConnectResponseObject interface {
+	VisitStartGoogleConnectResponse(w http.ResponseWriter) error
+}
+
+type StartGoogleConnect200ResponseHeaders struct {
+	SetCookie string
+}
+
+type StartGoogleConnect200JSONResponse struct {
+	Body    ConnectStartResponse
+	Headers StartGoogleConnect200ResponseHeaders
+}
+
+func (response StartGoogleConnect200JSONResponse) VisitStartGoogleConnectResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type StartGoogleConnect401TextResponse PlainTextError
+
+func (response StartGoogleConnect401TextResponse) VisitStartGoogleConnectResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type StartGoogleConnect500JSONResponse ErrorResponse
+
+func (response StartGoogleConnect500JSONResponse) VisitStartGoogleConnectResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type LogoutRequestObject struct {
 }
 
@@ -12043,6 +12244,15 @@ func (response Logout401TextResponse) VisitLogoutResponse(w http.ResponseWriter)
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type Logout500JSONResponse ErrorResponse
+
+func (response Logout500JSONResponse) VisitLogoutResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetCurrentUserRequestObject struct {
@@ -12079,6 +12289,15 @@ func (response GetCurrentUser404TextResponse) VisitGetCurrentUserResponse(w http
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type GetCurrentUser500JSONResponse ErrorResponse
+
+func (response GetCurrentUser500JSONResponse) VisitGetCurrentUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type StartMicrosoftOAuthRequestObject struct {
@@ -12160,6 +12379,58 @@ func (response MicrosoftOAuthCallback500JSONResponse) VisitMicrosoftOAuthCallbac
 type MicrosoftOAuthCallback503JSONResponse ErrorResponse
 
 func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type StartMicrosoftConnectRequestObject struct {
+}
+
+type StartMicrosoftConnectResponseObject interface {
+	VisitStartMicrosoftConnectResponse(w http.ResponseWriter) error
+}
+
+type StartMicrosoftConnect200ResponseHeaders struct {
+	SetCookie string
+}
+
+type StartMicrosoftConnect200JSONResponse struct {
+	Body    ConnectStartResponse
+	Headers StartMicrosoftConnect200ResponseHeaders
+}
+
+func (response StartMicrosoftConnect200JSONResponse) VisitStartMicrosoftConnectResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Set-Cookie", fmt.Sprint(response.Headers.SetCookie))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type StartMicrosoftConnect401TextResponse PlainTextError
+
+func (response StartMicrosoftConnect401TextResponse) VisitStartMicrosoftConnectResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type StartMicrosoftConnect500JSONResponse ErrorResponse
+
+func (response StartMicrosoftConnect500JSONResponse) VisitStartMicrosoftConnectResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type StartMicrosoftConnect503JSONResponse ErrorResponse
+
+func (response StartMicrosoftConnect503JSONResponse) VisitStartMicrosoftConnectResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(503)
 
@@ -12279,6 +12550,15 @@ func (response GetAuthStatus401TextResponse) VisitGetAuthStatusResponse(w http.R
 	return err
 }
 
+type GetAuthStatus500JSONResponse ErrorResponse
+
+func (response GetAuthStatus500JSONResponse) VisitGetAuthStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type StartZoomOAuthRequestObject struct {
 }
 
@@ -12310,6 +12590,17 @@ func (response StartZoomOAuth401TextResponse) VisitStartZoomOAuthResponse(w http
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type StartZoomOAuth500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response StartZoomOAuth500JSONResponse) VisitStartZoomOAuthResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type StartZoomOAuth503JSONResponse BookingError
@@ -13135,6 +13426,15 @@ func (response ListFocusBlocks400JSONResponse) VisitListFocusBlocksResponse(w ht
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ListFocusBlocks401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListFocusBlocks401JSONResponse) VisitListFocusBlocksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListFocusBlocks500JSONResponse SchedulingErrorResponse
 
 func (response ListFocusBlocks500JSONResponse) VisitListFocusBlocksResponse(w http.ResponseWriter) error {
@@ -13345,6 +13645,17 @@ func (response ReoptimizeHabits401JSONResponse) VisitReoptimizeHabitsResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ReoptimizeHabits500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response ReoptimizeHabits500JSONResponse) VisitReoptimizeHabitsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListHabitTemplatesRequestObject struct {
 }
 
@@ -13366,6 +13677,17 @@ type ListHabitTemplates401JSONResponse struct{ UnauthorizedJSONResponse }
 func (response ListHabitTemplates401JSONResponse) VisitListHabitTemplatesResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListHabitTemplates500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response ListHabitTemplates500JSONResponse) VisitListHabitTemplatesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -13668,6 +13990,17 @@ func (response DisconnectNotion401JSONResponse) VisitDisconnectNotionResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
+type DisconnectNotion500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response DisconnectNotion500JSONResponse) VisitDisconnectNotionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type NotionOauthCallbackRequestObject struct {
 	Params NotionOauthCallbackParams
 }
@@ -13759,6 +14092,17 @@ func (response ConnectNotion401JSONResponse) VisitConnectNotionResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ConnectNotion500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response ConnectNotion500JSONResponse) VisitConnectNotionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ConnectNotion503JSONResponse ErrorResponse
 
 func (response ConnectNotion503JSONResponse) VisitConnectNotionResponse(w http.ResponseWriter) error {
@@ -13793,6 +14137,17 @@ func (response GetNotionStatus401JSONResponse) VisitGetNotionStatusResponse(w ht
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetNotionStatus500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response GetNotionStatus500JSONResponse) VisitGetNotionStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DisconnectSlackRequestObject struct {
 }
 
@@ -13813,6 +14168,17 @@ type DisconnectSlack401JSONResponse struct{ UnauthorizedJSONResponse }
 func (response DisconnectSlack401JSONResponse) VisitDisconnectSlackResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type DisconnectSlack500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response DisconnectSlack500JSONResponse) VisitDisconnectSlackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -13908,6 +14274,17 @@ func (response ConnectSlack401JSONResponse) VisitConnectSlackResponse(w http.Res
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ConnectSlack500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response ConnectSlack500JSONResponse) VisitConnectSlackResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ConnectSlack503JSONResponse ErrorResponse
 
 func (response ConnectSlack503JSONResponse) VisitConnectSlackResponse(w http.ResponseWriter) error {
@@ -13942,6 +14319,17 @@ func (response GetSlackStatus401JSONResponse) VisitGetSlackStatusResponse(w http
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetSlackStatus500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response GetSlackStatus500JSONResponse) VisitGetSlackStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type TestLLMConnectionRequestObject struct {
 	Body *TestLLMConnectionJSONRequestBody
 }
@@ -13964,6 +14352,15 @@ type TestLLMConnection400JSONResponse SchedulingErrorResponse
 func (response TestLLMConnection400JSONResponse) VisitTestLLMConnectionResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type TestLLMConnection401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response TestLLMConnection401JSONResponse) VisitTestLLMConnectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14026,6 +14423,15 @@ type GetManagerAnalytics400JSONResponse ErrorResponse
 func (response GetManagerAnalytics400JSONResponse) VisitGetManagerAnalyticsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetManagerAnalytics401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetManagerAnalytics401JSONResponse) VisitGetManagerAnalyticsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14139,6 +14545,15 @@ func (response ConfirmManagerDetection400JSONResponse) VisitConfirmManagerDetect
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ConfirmManagerDetection401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ConfirmManagerDetection401JSONResponse) VisitConfirmManagerDetectionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ConfirmManagerDetection403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response ConfirmManagerDetection403JSONResponse) VisitConfirmManagerDetectionResponse(w http.ResponseWriter) error {
@@ -14192,6 +14607,15 @@ func (response GetManagerCadenceGaps400JSONResponse) VisitGetManagerCadenceGapsR
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetManagerCadenceGaps401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetManagerCadenceGaps401JSONResponse) VisitGetManagerCadenceGapsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetManagerCadenceGaps403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response GetManagerCadenceGaps403JSONResponse) VisitGetManagerCadenceGapsResponse(w http.ResponseWriter) error {
@@ -14222,6 +14646,15 @@ type GetManagerProfile200JSONResponse ManagerProfileSummary
 func (response GetManagerProfile200JSONResponse) VisitGetManagerProfileResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetManagerProfile401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetManagerProfile401JSONResponse) VisitGetManagerProfileResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14261,6 +14694,15 @@ func (response SetManagerProfile400JSONResponse) VisitSetManagerProfileResponse(
 	return json.NewEncoder(w).Encode(response)
 }
 
+type SetManagerProfile401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SetManagerProfile401JSONResponse) VisitSetManagerProfileResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type SetManagerProfile500JSONResponse struct{ ServerErrorJSONResponse }
 
 func (response SetManagerProfile500JSONResponse) VisitSetManagerProfileResponse(w http.ResponseWriter) error {
@@ -14292,6 +14734,15 @@ type GetManagerRoster400JSONResponse ErrorResponse
 func (response GetManagerRoster400JSONResponse) VisitGetManagerRosterResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetManagerRoster401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetManagerRoster401JSONResponse) VisitGetManagerRosterResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14337,6 +14788,15 @@ type AddManagerTeamMember400JSONResponse ErrorResponse
 func (response AddManagerTeamMember400JSONResponse) VisitAddManagerTeamMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type AddManagerTeamMember401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response AddManagerTeamMember401JSONResponse) VisitAddManagerTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14394,6 +14854,15 @@ func (response RemoveManagerTeamMember400JSONResponse) VisitRemoveManagerTeamMem
 	return json.NewEncoder(w).Encode(response)
 }
 
+type RemoveManagerTeamMember401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RemoveManagerTeamMember401JSONResponse) VisitRemoveManagerTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type RemoveManagerTeamMember403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response RemoveManagerTeamMember403JSONResponse) VisitRemoveManagerTeamMemberResponse(w http.ResponseWriter) error {
@@ -14408,6 +14877,17 @@ type RemoveManagerTeamMember422JSONResponse ErrorResponse
 func (response RemoveManagerTeamMember422JSONResponse) VisitRemoveManagerTeamMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RemoveManagerTeamMember500JSONResponse struct {
+	SessionGenerationUnavailableJSONResponse
+}
+
+func (response RemoveManagerTeamMember500JSONResponse) VisitRemoveManagerTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14436,6 +14916,15 @@ type PatchManagerTeamMember400JSONResponse ErrorResponse
 func (response PatchManagerTeamMember400JSONResponse) VisitPatchManagerTeamMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PatchManagerTeamMember401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PatchManagerTeamMember401JSONResponse) VisitPatchManagerTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14501,6 +14990,15 @@ type ScheduleManagerOneOnOne400JSONResponse ErrorResponse
 func (response ScheduleManagerOneOnOne400JSONResponse) VisitScheduleManagerOneOnOneResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ScheduleManagerOneOnOne401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ScheduleManagerOneOnOne401JSONResponse) VisitScheduleManagerOneOnOneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14717,6 +15215,15 @@ type ParseNaturalLanguage400JSONResponse SchedulingErrorResponse
 func (response ParseNaturalLanguage400JSONResponse) VisitParseNaturalLanguageResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ParseNaturalLanguage401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ParseNaturalLanguage401JSONResponse) VisitParseNaturalLanguageResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16122,6 +16629,15 @@ func (response GetSettings200JSONResponse) VisitGetSettingsResponse(w http.Respo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetSettings401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetSettings401JSONResponse) VisitGetSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetSettings500JSONResponse SchedulingErrorResponse
 
 func (response GetSettings500JSONResponse) VisitGetSettingsResponse(w http.ResponseWriter) error {
@@ -16159,6 +16675,15 @@ func (response PatchSettings400JSONResponse) VisitPatchSettingsResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
+type PatchSettings401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PatchSettings401JSONResponse) VisitPatchSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type PatchSettings500JSONResponse SchedulingErrorResponse
 
 func (response PatchSettings500JSONResponse) VisitPatchSettingsResponse(w http.ResponseWriter) error {
@@ -16180,6 +16705,15 @@ type GetDailyRecapSettings200JSONResponse DailyRecapSettings
 func (response GetDailyRecapSettings200JSONResponse) VisitGetDailyRecapSettingsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetDailyRecapSettings401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetDailyRecapSettings401JSONResponse) VisitGetDailyRecapSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16219,6 +16753,15 @@ func (response PatchDailyRecapSettings400TextResponse) VisitPatchDailyRecapSetti
 	return err
 }
 
+type PatchDailyRecapSettings401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PatchDailyRecapSettings401JSONResponse) VisitPatchDailyRecapSettingsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type PatchDailyRecapSettings500JSONResponse SchedulingErrorResponse
 
 func (response PatchDailyRecapSettings500JSONResponse) VisitPatchDailyRecapSettingsResponse(w http.ResponseWriter) error {
@@ -16240,6 +16783,15 @@ type PreviewDailyRecap200JSONResponse DailyRecapPreview
 func (response PreviewDailyRecap200JSONResponse) VisitPreviewDailyRecapResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PreviewDailyRecap401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PreviewDailyRecap401JSONResponse) VisitPreviewDailyRecapResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16277,6 +16829,15 @@ func (response SendDailyRecapTest400TextResponse) VisitSendDailyRecapTestRespons
 
 	_, err := w.Write([]byte(response))
 	return err
+}
+
+type SendDailyRecapTest401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SendDailyRecapTest401JSONResponse) VisitSendDailyRecapTestResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type SendDailyRecapTest500JSONResponse SchedulingErrorResponse
@@ -16388,6 +16949,15 @@ type GetTeamInvite200JSONResponse TeamInvitePreview
 func (response GetTeamInvite200JSONResponse) VisitGetTeamInviteResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetTeamInvite401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetTeamInvite401JSONResponse) VisitGetTeamInviteResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16505,6 +17075,15 @@ func (response DeleteTeam400JSONResponse) VisitDeleteTeamResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
+type DeleteTeam401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response DeleteTeam401JSONResponse) VisitDeleteTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteTeam403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response DeleteTeam403JSONResponse) VisitDeleteTeamResponse(w http.ResponseWriter) error {
@@ -16545,6 +17124,15 @@ type GetTeam400JSONResponse ErrorResponse
 func (response GetTeam400JSONResponse) VisitGetTeamResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetTeam401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetTeam401JSONResponse) VisitGetTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16603,6 +17191,15 @@ func (response RenameTeam400JSONResponse) VisitRenameTeamResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
+type RenameTeam401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RenameTeam401JSONResponse) VisitRenameTeamResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type RenameTeam403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response RenameTeam403JSONResponse) VisitRenameTeamResponse(w http.ResponseWriter) error {
@@ -16644,6 +17241,15 @@ type GetFormalTeamAnalytics400JSONResponse ErrorResponse
 func (response GetFormalTeamAnalytics400JSONResponse) VisitGetFormalTeamAnalyticsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetFormalTeamAnalytics401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetFormalTeamAnalytics401JSONResponse) VisitGetFormalTeamAnalyticsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16693,6 +17299,15 @@ func (response GetTeamAvailability400JSONResponse) VisitGetTeamAvailabilityRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetTeamAvailability401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetTeamAvailability401JSONResponse) VisitGetTeamAvailabilityResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetTeamAvailability403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response GetTeamAvailability403JSONResponse) VisitGetTeamAvailabilityResponse(w http.ResponseWriter) error {
@@ -16734,6 +17349,15 @@ type InviteTeamMember400JSONResponse ErrorResponse
 func (response InviteTeamMember400JSONResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type InviteTeamMember401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response InviteTeamMember401JSONResponse) VisitInviteTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16791,6 +17415,15 @@ func (response RemoveTeamMember400JSONResponse) VisitRemoveTeamMemberResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
+type RemoveTeamMember401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RemoveTeamMember401JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type RemoveTeamMember403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response RemoveTeamMember403JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
@@ -16844,6 +17477,15 @@ func (response ListNoMeetingZones400JSONResponse) VisitListNoMeetingZonesRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ListNoMeetingZones401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListNoMeetingZones401JSONResponse) VisitListNoMeetingZonesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListNoMeetingZones403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response ListNoMeetingZones403JSONResponse) VisitListNoMeetingZonesResponse(w http.ResponseWriter) error {
@@ -16885,6 +17527,15 @@ type CreateNoMeetingZone400JSONResponse ErrorResponse
 func (response CreateNoMeetingZone400JSONResponse) VisitCreateNoMeetingZoneResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateNoMeetingZone401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateNoMeetingZone401JSONResponse) VisitCreateNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -16942,6 +17593,15 @@ func (response DeleteNoMeetingZone400JSONResponse) VisitDeleteNoMeetingZoneRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type DeleteNoMeetingZone401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response DeleteNoMeetingZone401JSONResponse) VisitDeleteNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteNoMeetingZone403JSONResponse struct{ JsonForbiddenJSONResponse }
 
 func (response DeleteNoMeetingZone403JSONResponse) VisitDeleteNoMeetingZoneResponse(w http.ResponseWriter) error {
@@ -16984,6 +17644,15 @@ type UpdateNoMeetingZone400JSONResponse ErrorResponse
 func (response UpdateNoMeetingZone400JSONResponse) VisitUpdateNoMeetingZoneResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateNoMeetingZone401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response UpdateNoMeetingZone401JSONResponse) VisitUpdateNoMeetingZoneResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -17065,7 +17734,7 @@ type StrictServerInterface interface {
 	// The calling user's own activity entries
 	// (GET /api/audit)
 	ListAuditEntries(ctx context.Context, request ListAuditEntriesRequestObject) (ListAuditEntriesResponseObject, error)
-	// Google OAuth callback
+	// Google OAuth callback (sign-in, or a signed-in user's calendar connect)
 	// (GET /api/auth/callback)
 	GoogleOAuthCallback(ctx context.Context, request GoogleOAuthCallbackRequestObject) (GoogleOAuthCallbackResponseObject, error)
 	// OIDC SSO callback
@@ -17080,6 +17749,9 @@ type StrictServerInterface interface {
 	// Begin Google OAuth
 	// (GET /api/auth/google)
 	StartGoogleOAuth(ctx context.Context, request StartGoogleOAuthRequestObject) (StartGoogleOAuthResponseObject, error)
+	// Start connecting a Google calendar to the signed-in account (never a sign-in)
+	// (POST /api/auth/google/connect)
+	StartGoogleConnect(ctx context.Context, request StartGoogleConnectRequestObject) (StartGoogleConnectResponseObject, error)
 	// Clear the session cookie
 	// (POST /api/auth/logout)
 	Logout(ctx context.Context, request LogoutRequestObject) (LogoutResponseObject, error)
@@ -17089,9 +17761,12 @@ type StrictServerInterface interface {
 	// Begin Microsoft OAuth
 	// (GET /api/auth/microsoft)
 	StartMicrosoftOAuth(ctx context.Context, request StartMicrosoftOAuthRequestObject) (StartMicrosoftOAuthResponseObject, error)
-	// Microsoft OAuth callback
+	// Microsoft OAuth callback (sign-in, or a signed-in user's Outlook connect)
 	// (GET /api/auth/microsoft/callback)
 	MicrosoftOAuthCallback(ctx context.Context, request MicrosoftOAuthCallbackRequestObject) (MicrosoftOAuthCallbackResponseObject, error)
+	// Start connecting an Outlook (Microsoft) calendar to the signed-in account (never a sign-in)
+	// (POST /api/auth/microsoft/connect)
+	StartMicrosoftConnect(ctx context.Context, request StartMicrosoftConnectRequestObject) (StartMicrosoftConnectResponseObject, error)
 	// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
 	// (POST /api/auth/microsoft/disconnect)
 	DisconnectMicrosoft(ctx context.Context, request DisconnectMicrosoftRequestObject) (DisconnectMicrosoftResponseObject, error)
@@ -17907,6 +18582,30 @@ func (sh *strictHandler) StartGoogleOAuth(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// StartGoogleConnect operation middleware
+func (sh *strictHandler) StartGoogleConnect(w http.ResponseWriter, r *http.Request) {
+	var request StartGoogleConnectRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartGoogleConnect(ctx, request.(StartGoogleConnectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartGoogleConnect")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartGoogleConnectResponseObject); ok {
+		if err := validResponse.VisitStartGoogleConnectResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Logout operation middleware
 func (sh *strictHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	var request LogoutRequestObject
@@ -18000,6 +18699,30 @@ func (sh *strictHandler) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(MicrosoftOAuthCallbackResponseObject); ok {
 		if err := validResponse.VisitMicrosoftOAuthCallbackResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartMicrosoftConnect operation middleware
+func (sh *strictHandler) StartMicrosoftConnect(w http.ResponseWriter, r *http.Request) {
+	var request StartMicrosoftConnectRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartMicrosoftConnect(ctx, request.(StartMicrosoftConnectRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartMicrosoftConnect")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartMicrosoftConnectResponseObject); ok {
+		if err := validResponse.VisitStartMicrosoftConnectResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -1212,6 +1212,11 @@ components:
         `GET /api/auth/me`). The falsifying command, excluding the generated package,
         is `grep -rn error.:.unauthorized --include=*.go backend/api/`, which returns
         exactly those five lines.
+        Since PAC-71 the same bytes are also written, with the same headers, for a
+        session whose `gen` claim is not the account's current session generation: by
+        `requireAuth` and by the in-request re-check on account data (security scheme
+        `bearerAuth`, SESSION GENERATION). The grep then also returns those producers;
+        the response itself is unchanged.
         The third is listed for completeness only: `getCurrentUser` declares its 401
         against `PlainTextError`, not this schema, and lives in paths/auth.yaml, which
         PAC-23 does not own and does not touch.

@@ -152,7 +152,7 @@ Notes on the inventory:
 - *Preference values the code writes by itself (revision 4).* Nothing records whether a user or the code wrote a setting: there is no per-field origin, and `updated_at` is not a use signal. The code writes settings without a settings request in these places:
   - row creation at the column defaults (`storage/settings.go:271`, `storage/credentials.go:132`, `auth/microsoft_oauth.go:87`);
   - storing a Microsoft credential also sets `calendar_provider = 'outlook'` (`auth/microsoft_oauth.go:90`), and removing that credential leaves `calendar_provider` alone (`storage/credentials.go:184-194`, PAC-67 D-3);
-  - storing a Zoom credential sets `conferencing_provider = 'zoom'` (`storage/credentials.go:148`); removing it sets `'meet'` (`:179-182`), which is the column default (`005_conferencing.up.sql:1`); removing a Microsoft credential turns `'teams'` into `'meet'` (`:192`);
+  - storing a Zoom credential sets `conferencing_provider = 'zoom'` (`storage/credentials.go:148`); removing it sets `'meet'` (`:179-182`), which is the column default (`005_conferencing.up.sql:1`); removing a Microsoft credential turns `'teams'` into `'meet'` (`:193`, in the statement at `:191-194`; citation corrected at the contract stage, challenge r4 Non-blocking 2);
   - every settings save normalises the working-hours and lunch schedules before storing them (`storage/settings.go:93-108`, called at `:327`), so a stored schedule can differ in form from the column default (`020_schedule_preferences.up.sql:3-4`) while meaning the same thing;
   - the scheduler advances the auto-schedule watermark, only while auto-schedule is on (`storage/settings.go:543-556`).
 

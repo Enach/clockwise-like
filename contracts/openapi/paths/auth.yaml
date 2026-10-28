@@ -44,6 +44,11 @@ paths:
         account the user typed is preselected. Google still shows its consent
         screen every time (`oauth2.ApprovalForce`); the hint chooses the
         account, it does not skip the screen.
+        Since PAC-71 this is the SIGN-IN start only (spec §3 "Connecting a
+        calendar"): a flow it starts is always a sign-in, whether or not the
+        browser holds a session. The signed-in "connect a calendar" controls
+        use `startGoogleConnect` instead. The scope set is unchanged
+        (exactly `calendar` and `userinfo.email`, PAC-50 AC-24).
       security: []
       parameters:
         - $ref: '#/components/parameters/LoginHint'
@@ -71,26 +76,115 @@ paths:
     get:
       operationId: googleOAuthCallback
       tags: [auth]
-      summary: Google OAuth callback
+      summary: Google OAuth callback (sign-in, or a signed-in user's calendar connect)
       description: |
-        Validates the `oauth_state` cookie against the `state` query param,
-        exchanges the code, upserts the user, stores the OAuth token, associates
-        the org, issues the `auth_token` JWT cookie, then redirects to
-        `<FRONTEND_URL>/auth/callback`.
-        Since PAC-35 (API-011) the redirect to `/auth/callback` happens only when
-        the session cookie was actually set. If the session cannot be issued
-        (empty signing secret, or token generation fails) the user is sent to
-        the sign-in failure state instead; see the `302` response.
+        Since PAC-71 this one redirect target serves two flows, and ONLY the
+        state cookie that the `state` query parameter matches decides which
+        (spec §3 "Connecting a calendar", D-24):
+        - it equals the `google_connect_state` cookie, which only
+          `startGoogleConnect` sets: the CONNECT branch;
+        - otherwise it equals the `oauth_state` cookie, which only
+          `startGoogleOAuth` sets: the SIGN-IN branch;
+        - neither cookie is present or equal: the 400 "invalid state", as
+          today. Nothing is exchanged or written.
+        The two cookies hold independent random values, so at most one can
+        match. A session cookie, an Authorization header or any other query
+        parameter never selects a branch: a flow that `startGoogleConnect`
+        did not start is a sign-in, wherever it was started (spec AC-14,
+        PAC-47 D-18).
 
-        Since PAC-67 a successful Google sign-in is also the Google RECONNECT
-        (spec PAC-67 AC-12, AC-24): storing the new token ends any recorded
-        loss of the Google connection for the user it resolves to, so
-        `getAuthStatus` (Google calendar provider) and the `google_meet` row of
-        `listConferenceProviders` report connected again, and a later loss of
-        the new credential is a new loss with its own `connection_lost`
-        activity entry. The user is still resolved by the Google account's
-        email, exactly as before (spec PAC-67 OQ-10: sign-in matching is not
-        changed). No response of this operation changes.
+        SIGN-IN branch (spec §3 "Identities", "The sign-in rule", migration
+        rules (a) and (b)). Steps 1 to 3 are today's; the rest is PAC-71's.
+        1. `oauth_state` checked (400) and expired; the code is exchanged
+           (500 on failure).
+        2. Google's v2 userinfo is read with the access token (500 on
+           failure, as today). Sign-in still requests exactly `calendar` and
+           `userinfo.email` (PAC-50 AC-24, spec D-14). From the answer:
+           `id` is the Google subject (identity = authority `google` +
+           `id`); `email` is the reported address; `verified_email` and
+           `hd` are evidence (spec OQ-3 item 5; see PAC-71.md §3 for what is
+           and is not established).
+        3. Evidence for the reported address: AUTHORITATIVE when
+           `verified_email` is true and either `hd` equals the address's
+           domain (exact, case-insensitive; a subdomain does not count) or
+           the domain is `gmail.com` or `googlemail.com`; MAILBOX when
+           `verified_email` is true otherwise; NONE when it is false or
+           absent.
+        4. The account is chosen ONLY by identity, never by address for a
+           bound identity. Addresses are compared case-insensitively.
+           a. The identity is bound to an account: that account, whatever
+              address Google now reports. Its stored address and address
+              standing are not changed (spec D-7).
+           b. Otherwise, if two or more accounts carry the address in any
+              letter case (a case collision): REFUSED.
+           c. Otherwise, if one account carries the address and it is bound
+              (to any other identity, at any authority): REFUSED.
+           d. Otherwise, if one account carries the address and it is
+              unbound (created before PAC-71), it binds to this identity in
+              ONE atomic step (lock the account, re-check every condition,
+              write the binding and standing, advance the session generation;
+              all or nothing) when:
+              - rule (a): the account's recorded identifier (`users.provider_id`)
+                has the Google format `^[0-9]{1,255}$`, equals `id`, and the
+                evidence is MAILBOX or AUTHORITATIVE; or
+              - rule (b): the evidence is AUTHORITATIVE and the account is
+                EMPTY (PAC-71.md §6: no account data of any kind, every
+                setting at its named default in normal form).
+              The standing is DOMAIN_CONFIRMED for AUTHORITATIVE evidence,
+              UNCONFIRMED for MAILBOX. If neither rule holds, or the re-check
+              under the lock fails (a competing binding or write won):
+              REFUSED, and the account stays unbound with nothing stored.
+           e. Otherwise (no account carries the address): with AUTHORITATIVE
+              evidence an account is created, bound, DOMAIN_CONFIRMED; with
+              MAILBOX evidence created, bound, UNCONFIRMED; with NONE:
+              REFUSED. Creation is atomic against a concurrent creation for
+              the same address in any letter case: the loser is REFUSED.
+        5. For the chosen, created or newly bound account (never another):
+           the Google token is stored on it (ending a recorded Google loss,
+           PAC-67), PAC-68's organisation rule is evaluated for it, name and
+           picture are overwritten as today, and a session is issued whose
+           `gen` is the account's current generation (after any advance in
+           step 4). A binding writes the subject into `users.provider_id`
+           (spec §7 "Re-applying"); a bound sign-in leaves it alone.
+           `users.provider` keeps meaning "provider of the first sign-in".
+           A migration binding never changes the work calendar.
+
+        REFUSED (spec §3 "Refusal"): the one fixed redirect
+        `<FRONTEND_URL>/?error=signin_refused`, the same for every cause, so
+        it never reveals whether an account exists for the address (spec
+        D-6). A refusal creates no account, binds nothing, stores no token,
+        changes no organisation, work calendar, standing or generation, and
+        neither sets nor expires `auth_token`: a session the browser already
+        holds is kept. The cause, and the account it concerns, go to the
+        server log only.
+
+        CONNECT branch (spec §3 "Connecting a calendar", PAC-47 §3 item 3,
+        D-4, D-24). Checks run in this order; the first failure decides:
+        1. The state is one `startGoogleConnect` issued, at most 300 seconds
+           ago, for provider google; it names the user U and the generation
+           g that the starting session carried. Else: NOT CREDITED.
+        2. The request's session (the `auth_token` cookie, validated as
+           requireAuth validates it; a provider redirect carries no
+           Authorization header) is valid, names U, and carries `gen` g.
+           Else (no session, another user's, or another generation):
+           NOT CREDITED.
+        3. U's current generation is read, uncached, and equals g. Else:
+           NOT CREDITED. If it cannot be read: the 500 below.
+        4. The code is exchanged (500 on failure). Userinfo is not read and
+           nothing about the Google account's identity or address is used:
+           whatever identity and address it has, nothing is bound.
+        5. The token is stored on U, in one transaction that re-reads U's
+           current generation and stores only while it still equals g
+           (spec AC-47). If it moved: nothing is stored, NOT CREDITED.
+           Storing ends a recorded Google loss of U (PAC-67 AC-12).
+        6. CREDITED.
+        A connect, credited or not, binds no identity, adds no sign-in
+        method, creates no account, issues no session, never sets or
+        expires `auth_token`, evaluates no organisation membership, and
+        changes nothing else on any account: not U's name, picture,
+        address, standing, recorded identifier, work calendar (spec D-15) or
+        generation. Every connect-branch redirect expires the
+        `google_connect_state` cookie.
       security: []
       parameters:
         - name: state
@@ -104,41 +198,140 @@ paths:
       responses:
         '302':
           description: |
-            One of exactly two destinations (PAC-35, API-011):
+            SIGN-IN branch, one of exactly three destinations:
             - Success: the `auth_token` cookie is set and Location is
               `<FRONTEND_URL>/auth/callback` (no query string, unlike the
               Microsoft/SSO callbacks).
-            - Session not issued (signing secret empty, or token generation
-              failed) after the user and token were saved: NO `auth_token`
+            - Refused (PAC-71): Location `<FRONTEND_URL>/?error=signin_refused`,
+              NO `auth_token` cookie set or expired, nothing written (see
+              REFUSED above).
+            - Session not issued (signing secret empty, token generation
+              failed, or the account's generation could not be read for the
+              token) after the account and token were saved: NO `auth_token`
               cookie is set or expired, and Location is the sign-in failure
-              state `<FRONTEND_URL>/?error=auth_failed`. Never `/auth/callback`.
-            The user row and stored Google token written before that point are
-            kept; nothing is deleted on the failure path. The cause is written
-            to the server log and Sentry only; the Location carries no cause.
+              state `<FRONTEND_URL>/?error=auth_failed` (PAC-35, API-011).
+              What was saved before that point is kept; nothing is deleted.
+            CONNECT branch, one of exactly two destinations, neither setting
+            nor expiring `auth_token`:
+            - CREDITED: Location
+              `<FRONTEND_URL>/auth/callback?provider=google&connect=credited`.
+            - NOT CREDITED: Location `<FRONTEND_URL>/?connect=not_credited`;
+              nothing stored on any account.
+            The cause of a refusal or failure is written to the server log
+            and Sentry only; no Location carries a cause, address or
+            provider detail beyond the fixed values above.
           headers:
             Location:
               schema:
                 type: string
+                pattern: '/(auth/callback(\?provider=google&connect=credited)?|\?error=(auth_failed|signin_refused)|\?connect=not_credited)$'
               description: |
-                `<FRONTEND_URL>/auth/callback` on success;
-                `<FRONTEND_URL>/?error=auth_failed` when the session could not be issued.
+                `<FRONTEND_URL>` followed by exactly one of:
+                `/auth/callback` (sign-in success);
+                `/?error=signin_refused` (sign-in refused);
+                `/?error=auth_failed` (session could not be issued);
+                `/auth/callback?provider=google&connect=credited` (connect credited);
+                `/?connect=not_credited` (connect credited to nobody).
             Set-Cookie:
               schema:
                 type: string
               description: |
-                On success: auth_token=<HS256 JWT>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax.
-                On the failure redirect: no `auth_token` cookie at all.
+                Sign-in success: auth_token=<HS256 JWT carrying `gen`>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax.
+                Refusal, failure redirect and every connect outcome: no `auth_token` cookie at all.
+                Connect outcomes also expire `google_connect_state`
+                (`google_connect_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`).
         '400':
-          description: Missing or mismatched `oauth_state` cookie ("invalid state").
+          description: |
+            Neither `google_connect_state` nor `oauth_state` is present and
+            equal to `state` ("invalid state"). Nothing is exchanged or
+            written.
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
           description: >-
-            Token exchange, userinfo fetch, user upsert or token save failed. Body:
-            `{"error":"internal error"}`. The detail is written to the server log and Sentry
-            only (PAC-21).
+            Token exchange, userinfo fetch (sign-in), account creation or binding, token
+            save, or reading the generation (connect step 3) failed. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and
+            Sentry only (PAC-21). A failed binding or creation writes nothing (it is one
+            transaction); no session is issued or changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/google/connect:
+    post:
+      operationId: startGoogleConnect
+      tags: [auth]
+      summary: Start connecting a Google calendar to the signed-in account (never a sign-in)
+      description: |
+        New in PAC-71 (spec §3 "Connecting a calendar", AC-12 to AC-14,
+        AC-32, D-4, D-24). Protected by requireAuth, so it carries the
+        SESSION GENERATION rules of the security scheme. It is the only way
+        to start a Google CONNECT; the four signed-in controls (Settings
+        work-calendar control, connection status control, Dashboard
+        "Connect calendar" banner, onboarding calendar step) call it instead
+        of navigating to `startGoogleOAuth`.
+
+        Takes no request body (any body is ignored) and no parameter. It
+        answers 200 with the provider authorization URL in a JSON body; it
+        NEVER redirects. The web app then navigates the window to
+        `authorize_url`. This is what makes a start by another site useless
+        (spec §3 "Cross-site request model"): another site can make the
+        victim's browser send this POST with the victim's cookie (a form
+        post), but cannot read the response, so it never learns the URL or
+        the state; a GET (navigation, GET form, image, script, frame) is not
+        this operation and starts nothing; and the state it would need is
+        bound to the victim's browser by the `google_connect_state` cookie
+        and to the victim's account and generation by the server.
+
+        Effects: the server issues a new opaque state bound to (the caller's
+        user id, the session's `gen`, provider `google`, an expiry 300
+        seconds later) in a form only the server can create and check (a
+        server-side record or a server-keyed MAC; the plan decides), and
+        sets it as the `google_connect_state` cookie. Nothing else is
+        written: no credential, no setting, no work calendar (the Settings
+        work-calendar control and onboarding change the work calendar by the
+        user's own explicit choice BEFORE calling this, as today), no
+        session. A second start replaces the cookie; only the latest state
+        of this browser can complete.
+
+        `authorize_url` is the same Google authorization URL
+        `startGoogleOAuth` builds (same client, same redirect URI
+        `GOOGLE_REDIRECT_URL` = this server's `/api/auth/callback`, exactly
+        the scopes `calendar` and `userinfo.email`, offline access and
+        forced consent), with this state and no `login_hint`. The callback
+        recognises the connect by the state alone (see
+        `googleOAuthCallback`, CONNECT branch).
+      responses:
+        '200':
+          description: The connect is started; navigate the window to `authorize_url`.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `google_connect_state=<opaque state>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax`,
+                plus `Secure` under the deployment rule every cookie follows
+                (PAC-20, backend/api/cookies.go). Never an `auth_token` cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectStartResponse'
+        '401':
+          description: |
+            requireAuth's rejection, including a session whose `gen` is not
+            the account's current generation (PAC-71). Nothing is issued.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            The account's generation could not be read, or the state could not be
+            issued. Body: `{"error":"internal error"}`; the detail goes to the server
+            log and Sentry only (PAC-21). No cookie is set.
           content:
             application/json:
               schema:
@@ -154,6 +347,11 @@ paths:
         Configuration is read from env at request time (MICROSOFT_CLIENT_ID);
         if the client id is blank the route 503s.
         Since PAC-35 (API-064) a valid `login_hint` is forwarded to Microsoft.
+        Since PAC-71 this is the SIGN-IN start only: a flow it starts is
+        always a sign-in, whether or not the browser holds a session. The
+        signed-in "connect a calendar" controls use `startMicrosoftConnect`.
+        The scope set is unchanged (exactly `Calendars.ReadWrite`,
+        `User.Read`, `offline_access`; PAC-50 AC-24, spec AC-11).
       security: []
       parameters:
         - $ref: '#/components/parameters/LoginHint'
@@ -184,41 +382,93 @@ paths:
     get:
       operationId: microsoftOAuthCallback
       tags: [auth]
-      summary: Microsoft OAuth callback
+      summary: Microsoft OAuth callback (sign-in, or a signed-in user's Outlook connect)
       description: |
-        Validates `ms_oauth_state`, exchanges the code, fetches the Graph profile
-        and upserts the user, then saves the Microsoft token on THAT USER'S OWN
-        settings row (making Outlook their calendar provider), sets the session
-        cookie and redirects. Since PAC-24 the profile fetch is required, not
-        best-effort: without it there is no user to attach the credential to, so
-        nothing is saved. Before PAC-24 the token was saved on the single shared
-        settings row and the provider flipped for everyone.
-        Since PAC-35 (API-011, API-012) three failures after a successful code
-        exchange end on the app's sign-in failure state rather than on a JSON
-        error page on the API origin: the Graph profile could not be read (or
-        carried no email), the user could not be saved, or the session could
-        not be issued. See the `302` response.
+        Since PAC-71 this one redirect target serves two flows, and ONLY the
+        state cookie that the `state` query parameter matches decides which
+        (spec §3 "Connecting a calendar", D-24):
+        - it equals the `ms_connect_state` cookie, which only
+          `startMicrosoftConnect` sets: the CONNECT branch;
+        - otherwise it equals the `ms_oauth_state` cookie, which only
+          `startMicrosoftOAuth` sets: the SIGN-IN branch;
+        - neither: the 400 "invalid state", as today.
+        A session cookie never selects a branch: a Microsoft flow that
+        `startMicrosoftConnect` did not start is a sign-in, wherever it was
+        started (PAC-47 D-18, spec AC-14). An unconfigured client is the 503
+        on both branches, checked after the state as today.
 
-        Since PAC-67 this sign-in is also the Outlook RECONNECT, and what it
-        stores changes in two ways; no response, status or Location changes.
-        (1) When the code exchange returns an access token but NO refresh
-        token, the user's stored refresh token is kept, never overwritten with
-        an empty one, so a working connection is never erased by a reconnect
-        (spec PAC-67 AC-11). With no refresh token stored before either, the
-        result is a credential with no refresh token. It can never be renewed,
-        so it is reported not connected both by `getAuthStatus` (as today) and,
-        since PAC-67, by the `teams` row of `listConferenceProviders` (which
-        before PAC-67 reported it connected and enabled); once its access token
-        expires, Teams meeting creation with it answers the 400 "teams:
-        connection lost — reconnect at /api/auth/microsoft" without recording a
-        loss (contract challenge finding 5). (2) Storing the credential ends any recorded loss of
-        the Outlook connection for the user it resolves to (AC-12, AC-24), so
-        `getAuthStatus` (Outlook calendar provider) and the `teams` row of
-        `listConferenceProviders` report connected again. The credential is
-        still attached to the user matched by the Microsoft account's email,
-        and every sign-in still sets that user's calendar provider to
-        `outlook`, including a sign-in after `disconnectMicrosoft` (spec
-        PAC-67 D-4, OQ-5, OQ-10: unchanged on purpose).
+        SIGN-IN branch. Steps 1 and 2 are today's (PAC-24, PAC-35); the rest
+        is PAC-71's.
+        1. `ms_oauth_state` checked (400) and expired; the code is exchanged
+           (500 on failure). Sign-in still requests exactly
+           `Calendars.ReadWrite`, `User.Read`, `offline_access` (spec AC-11,
+           PAC-50 AC-24); no `openid`, so no ID token.
+        2. Graph `GET /v1.0/me?$select=id,mail,displayName` with the access
+           token. Unreadable, or no `mail`: the sign-in failure state (a)
+           below, nothing saved (PAC-35, unchanged).
+        3. TENANT AND CLASSIFICATION (spec §3 "The Microsoft tenant fails
+           closed", D-23, OQ-3 items 1 and 2; source chosen in PAC-71.md
+           §3): Graph `GET /v1.0/organization?$select=id,verifiedDomains`
+           with the same access token (documented least-privileged delegated
+           permission: `User.Read`, already granted). The account is a WORK
+           account, with tenant = that entry's `id` and object id = `/me`'s
+           `id`, only when the answer is a 200 whose `value` holds exactly
+           one entry, that entry's `id` is a GUID, and `/me`'s `id` is a
+           GUID. Anything else (an error, a timeout, a 4xx including the
+           refusal Graph gives personal Microsoft accounts, an empty or
+           multi-entry `value`, a non-GUID id): REFUSED, before anything is
+           looked up or written. No answer under today's scopes is adopted as
+           a positive personal-account signal, so a personal Microsoft
+           account cannot sign in (spec AC-5, AC-11b, AC-11c; follow-up F4).
+           The identity is authority (`microsoft`, tenant) + object id.
+        4. Evidence for `mail`: AUTHORITATIVE when an entry of
+           `verifiedDomains` has `name` equal to the address's domain (exact,
+           case-insensitive); otherwise NONE. A Microsoft work account never
+           has MAILBOX evidence.
+        5. The account is chosen exactly as `googleOAuthCallback`'s SIGN-IN
+           step 4 (bound identity first; case collision, bound carrier or
+           unknown identity on a carried address REFUSED; unbound
+           pre-existing account binds atomically under rule (a) or (b) or is
+           REFUSED; new account created with AUTHORITATIVE evidence, REFUSED
+           with NONE), with one difference in rule (a): the recorded
+           identifier must have the Microsoft work format (a GUID,
+           `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+           and equal `/me`'s `id` case-insensitively, with AUTHORITATIVE
+           evidence (the Google and Microsoft formats are disjoint, so no
+           recorded value can fit both; spec AC-37).
+        6. For the chosen, created or newly bound account (never another):
+           the Microsoft credential is stored on it as PAC-67 stores it (a
+           response without a refresh token keeps the stored one, AC-11;
+           storing ends a recorded Outlook loss, AC-12); PAC-68's
+           organisation rule is evaluated for it; a session carrying its
+           current `gen` is issued. Work calendar: an account CREATED here
+           gets `outlook`, as today. For an account REACHED through its bound
+           identity, every sign-in still sets `outlook`: that is today's
+           reset, PAC-47's to remove (PAC-47 D-17; spec §5, D-15), and
+           PAC-71 does not change it. A MIGRATION BINDING (rule (a) or (b))
+           never changes the work calendar (spec AC-31, AC-41).
+
+        REFUSED: the one fixed redirect `<FRONTEND_URL>/?error=signin_refused`
+        with the same guarantees as `googleOAuthCallback` (nothing created,
+        bound or stored; no organisation, work calendar, standing or
+        generation change; `auth_token` neither set nor expired; cause in the
+        server log only). The same redirect for every cause, including a
+        tenant that cannot be obtained, so a Graph outage of
+        `/organization` refuses every Microsoft sign-in (spec §5 "Microsoft
+        availability"; owner question OQ-8, factory default: accept).
+
+        CONNECT branch: the checks, order and outcomes of
+        `googleOAuthCallback`'s CONNECT branch, with the `ms_connect_state`
+        cookie and provider `outlook`. Neither `/me` nor `/organization` is
+        read, so any Microsoft account (work or personal, any tenant, any
+        address) can be connected and nothing about it is bound. The
+        credential is stored on U as PAC-67 stores it (refresh token kept
+        when none is returned; a recorded Outlook loss ends), in the
+        transaction that re-checks U's generation (spec AC-47), and the
+        connect NEVER changes U's work calendar (spec D-15, AC-12, AC-31):
+        unlike today's sign-in, it does not set `outlook`. The Settings
+        work-calendar control sets `outlook` by the user's explicit choice
+        before starting the connect, as today.
       security: []
       parameters:
         - name: state
@@ -232,47 +482,65 @@ paths:
       responses:
         '302':
           description: |
-            One of exactly two destinations (PAC-35):
+            SIGN-IN branch, one of exactly three destinations:
             - Success: Location `<FRONTEND_URL>/auth/callback?provider=outlook`,
               with the `auth_token` cookie set.
+            - Refused (PAC-71): Location `<FRONTEND_URL>/?error=signin_refused`,
+              NO `auth_token` cookie set or expired, nothing written.
             - Sign-in failure state, Location `<FRONTEND_URL>/?error=auth_failed`,
               with NO `auth_token` cookie set or expired, when any of these
               happens after the code exchange succeeded:
-              (a) the Graph profile could not be read, or carried no email
-                  (nothing is saved; API-012, was a 502);
-              (b) the user upsert failed (nothing is saved; API-012, was a 500
-                  with `{"error":"save user failed"}`);
-              (c) the session could not be issued (signing secret empty, or
-                  token generation failed) after the user and the Microsoft
+              (a) the Graph profile could not be read, or carried no `mail`
+                  (nothing is saved; API-012);
+              (b) creating or binding the account failed (nothing is saved:
+                  one transaction; API-012);
+              (c) the session could not be issued (signing secret empty,
+                  token generation failed, or the generation could not be
+                  read for the token) after the account and the Microsoft
                   token were saved; they are kept (API-011).
-            The cause is written to the server log and Sentry only; the
-            Location carries no cause, provider name or detail.
+            CONNECT branch, one of exactly two destinations, neither setting
+            nor expiring `auth_token`:
+            - CREDITED: `<FRONTEND_URL>/auth/callback?provider=outlook&connect=credited`.
+            - NOT CREDITED: `<FRONTEND_URL>/?connect=not_credited`; nothing
+              stored on any account.
+            The cause is written to the server log and Sentry only; no
+            Location carries a cause, provider detail or address.
             State mismatch, token exchange failure, token save failure and an
             unconfigured client are NOT redirects; they are the 400, 500 and
             503 below (spec PAC-35 D-1).
           headers:
             Location:
-              schema: { type: string }
+              schema:
+                type: string
+                pattern: '/(auth/callback\?provider=outlook(&connect=credited)?|\?error=(auth_failed|signin_refused)|\?connect=not_credited)$'
               description: |
-                `<FRONTEND_URL>/auth/callback?provider=outlook` on success;
-                `<FRONTEND_URL>/?error=auth_failed` on the failures (a)-(c).
+                `<FRONTEND_URL>` followed by exactly one of:
+                `/auth/callback?provider=outlook` (sign-in success);
+                `/?error=signin_refused` (sign-in refused);
+                `/?error=auth_failed` (failures (a)-(c));
+                `/auth/callback?provider=outlook&connect=credited` (connect credited);
+                `/?connect=not_credited` (connect credited to nobody).
             Set-Cookie:
               schema: { type: string }
               description: |
-                On success: auth_token JWT for the upserted user. On the failure
-                redirect: no `auth_token` cookie at all.
+                Sign-in success: auth_token JWT (carrying `gen`) for the
+                chosen account. Refusal, failure redirect and every connect
+                outcome: no `auth_token` cookie at all. Connect outcomes
+                expire `ms_connect_state`
+                (`ms_connect_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`).
         '400':
-          description: Missing or mismatched `ms_oauth_state` cookie ("invalid state").
+          description: Neither `ms_connect_state` nor `ms_oauth_state` is present and equal to `state` ("invalid state").
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
           description: >-
-            Token exchange or token save failed. Body: `{"error":"internal error"}`. The
-            detail is written to the server log and Sentry only (PAC-21). A failed user
-            upsert is no longer a 500, and an unreadable Graph profile is no longer a 502:
-            since PAC-35 both are the failure redirect under `302`.
+            Token exchange or token save failed, or (connect) the generation could not be
+            read. Body: `{"error":"internal error"}`. The detail is written to the server
+            log and Sentry only (PAC-21). A failed account creation or binding is not a
+            500 but the failure redirect (b) under `302`; an unreadable Graph profile is
+            (a). A failed or refused `/organization` read is neither: it is the refusal.
           content:
             application/json:
               schema:
@@ -281,6 +549,66 @@ paths:
           description: >-
             `MICROSOFT_CLIENT_ID` is unset. Body: `{"error":"Microsoft OAuth not
             configured"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/microsoft/connect:
+    post:
+      operationId: startMicrosoftConnect
+      tags: [auth]
+      summary: Start connecting an Outlook (Microsoft) calendar to the signed-in account (never a sign-in)
+      description: |
+        New in PAC-71. The Microsoft twin of `startGoogleConnect`: same
+        protection, same JSON-body-never-redirect rule and the same
+        cross-site argument, same state binding (caller's user id, session
+        `gen`, provider `outlook`, 300-second expiry), set as the
+        `ms_connect_state` cookie. Nothing else is written; in particular
+        the work calendar is not changed (spec D-15).
+
+        `authorize_url` is the URL `startMicrosoftOAuth` builds (same client,
+        `/common` authority, redirect URI `MICROSOFT_REDIRECT_URL` = this
+        server's `/api/auth/microsoft/callback`, exactly the scopes
+        `Calendars.ReadWrite`, `User.Read`, `offline_access`) with this
+        state and no `login_hint`. Configuration is read from env at request
+        time, as `startMicrosoftOAuth` does. The callback recognises the
+        connect by the state alone (`microsoftOAuthCallback`, CONNECT
+        branch).
+      responses:
+        '200':
+          description: The connect is started; navigate the window to `authorize_url`.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `ms_connect_state=<opaque state>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax`,
+                plus `Secure` under the deployment rule (PAC-20). Never an
+                `auth_token` cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectStartResponse'
+        '401':
+          description: |
+            requireAuth's rejection, including a session whose `gen` is not
+            the account's current generation (PAC-71). Nothing is issued.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            The account's generation could not be read, or the state could not be
+            issued. Body: `{"error":"internal error"}` (PAC-21). No cookie is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            `MICROSOFT_CLIENT_ID` is unset. Body: `{"error":"Microsoft OAuth not
+            configured"}`. No cookie is set.
           content:
             application/json:
               schema:
@@ -512,6 +840,34 @@ paths:
         user goes to the sign-in failure state (see `302`).
         Inconsistent error encoding: the 404 and 500 use the JSON helpers while
         the 400s and the 403 use http.Error (text/plain).
+
+        Since PAC-71 (spec §3 "Identities", "The sign-in rule", D-10) the
+        account is no longer found by email. After the PAC-45 domain check
+        (the 403 below, unchanged), the identity is authority = the issuer
+        the ID token was verified against (its `iss`) + subject = its `sub`.
+        Two issuers are two authorities even when one asserts the other's
+        subjects. Evidence for the asserted email is AUTHORITATIVE unless the
+        ID token carries `email_verified` with the value false, which is
+        NONE. Then:
+        - the identity is bound to an account: that account, whatever email
+          the IdP now asserts (its stored address and standing unchanged);
+        - otherwise, if any account carries the email in any letter case
+          (bound or not, created before PAC-71 or not): REFUSED. An issuer
+          is never authoritative over an existing account, and SSO never
+          binds an account created before PAC-71 (migration rules (a) and (b)
+          are Google and Microsoft only; spec D-10, owner question OQ-2,
+          factory default "no");
+        - otherwise: AUTHORITATIVE creates an account bound to the identity,
+          DOMAIN_CONFIRMED (atomic against a concurrent creation for the
+          same address; the loser is REFUSED); NONE is REFUSED.
+        The session issued carries the account's current `gen`. A binding or
+        creation writes the subject into `users.provider_id`; it is never
+        used for migration rule (a).
+        REFUSED is the same fixed redirect as the other two callbacks,
+        `<FRONTEND_URL>/?error=signin_refused`, with the same guarantees
+        (nothing created, bound or stored; no organisation, standing or
+        generation change; `auth_token` neither set nor expired). The SSO
+        flow has no connect branch.
       security: []
       parameters:
         - name: domain
@@ -529,26 +885,32 @@ paths:
       responses:
         '302':
           description: |
-            One of exactly two destinations (PAC-35, API-011):
+            One of exactly three destinations (PAC-35, API-011; PAC-71):
             - Success: the `auth_token` cookie is set and Location is
               `<FRONTEND_URL>/auth/callback?provider=sso`.
-            - Session not issued (signing secret empty, or token generation
-              failed) after the user was saved: NO `auth_token` cookie is set
-              or expired, and Location is the sign-in failure state
-              `<FRONTEND_URL>/?error=auth_failed`. The saved user row is kept.
+            - Refused (PAC-71): Location `<FRONTEND_URL>/?error=signin_refused`,
+              NO `auth_token` cookie set or expired, nothing written.
+            - Session not issued (signing secret empty, token generation
+              failed, or the generation could not be read for the token)
+              after the account was saved: NO `auth_token` cookie is set or
+              expired, and Location is the sign-in failure state
+              `<FRONTEND_URL>/?error=auth_failed`. The saved account is kept.
             Every other failure stays a non-302 response below (spec PAC-35
             D-1).
           headers:
             Location:
-              schema: { type: string }
+              schema:
+                type: string
+                pattern: '/(auth/callback\?provider=sso|\?error=(auth_failed|signin_refused))$'
               description: |
                 `<FRONTEND_URL>/auth/callback?provider=sso` on success;
+                `<FRONTEND_URL>/?error=signin_refused` when refused;
                 `<FRONTEND_URL>/?error=auth_failed` when the session could not be issued.
             Set-Cookie:
               schema: { type: string }
               description: |
-                On success: auth_token JWT cookie. On the failure redirect: no
-                `auth_token` cookie at all.
+                On success: auth_token JWT cookie (carrying `gen`). On the
+                refusal and the failure redirect: no `auth_token` cookie at all.
         '400':
           description: '"missing state cookie", "invalid state", or "no email in OIDC token claims".'
           content:
@@ -574,7 +936,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: >-
-            OIDC setup, code exchange or user upsert failed. Body: `{"error":"internal
+            OIDC setup, code exchange, or account creation (one transaction, nothing kept) failed. Body: `{"error":"internal
             error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -592,7 +954,12 @@ paths:
         `calendarProvider` and, on the outlook branch, reads the caller's own
         stored Microsoft credential.
         On an internal failure it does NOT error — it 200s with
-        {connected:false, provider:"google", email:""}.
+        {connected:false, provider:"google", email:""}. Since PAC-71 two
+        cases are excluded from that fallback (security scheme, SESSION
+        GENERATION): a session whose generation is no longer current is the
+        401, including when the in-request re-check on the settings or
+        credential read finds the generation moved; and a generation that
+        cannot be read is the 500.
 
         Since PAC-67 `connected` means USABLE, not merely stored (spec PAC-67
         §3, AC-8, AC-12, AC-13, AC-21). A credential whose renewal the provider
@@ -632,13 +999,26 @@ paths:
                 $ref: '#/components/schemas/AuthStatusResponse'
         '401':
           description: |
-            No/invalid JWT. Body is the literal JSON text `{"error":"unauthorized"}`
-            but Content-Type is `text/plain; charset=utf-8` because http.Error
-            overwrites the header the middleware just set.
+            No/invalid JWT, or (PAC-71) a session whose `gen` is not the
+            account's current generation, detected by requireAuth or by the
+            in-request re-check. Body is the literal JSON text
+            `{"error":"unauthorized"}` but Content-Type is
+            `text/plain; charset=utf-8` because http.Error overwrites the
+            header the middleware just set.
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            Only (PAC-71) the account's current session generation could not be read.
+            Body `{"error":"internal error"}`, application/json; the session cookie is
+            neither replaced nor expired (spec AC-48). Every other internal failure is
+            still the 200 fallback above.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/disconnect:
     delete:
@@ -718,6 +1098,9 @@ paths:
         Clients read it under that name; the server does not rename it.
         Scheduling-link and booking hosts carry the same stored value as
         `avatar_url` (`SchedulingLinkHost`, `PublicHost`), unchanged by PAC-35.
+        Since PAC-71 the response carries `addressStanding`, so the web app's
+        Settings can say that an unconfirmed address cannot accept
+        invitations yet (spec §3 "What standing allows").
       responses:
         '200':
           description: The user row (with its org when one is associated).
@@ -742,6 +1125,15 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            Only (PAC-71) the account's current session generation could not be read.
+            Body `{"error":"internal error"}`; no Set-Cookie (spec AC-48). Other read
+            failures answer as before this change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/logout:
     post:
@@ -751,7 +1143,11 @@ paths:
       description: |
         Expires the `auth_token` cookie. Note it is behind requireAuth, so logging
         out with an already-expired token returns 401 rather than succeeding
-        (unchanged by PAC-35, spec section 5).
+        (unchanged by PAC-35, spec section 5). Since PAC-71 the same holds
+        for a session whose generation is no longer current (401). Logout
+        still only expires this browser's cookie; it does not advance the
+        generation (spec §3 "Sessions"; "sign out everywhere" is follow-up
+        F3).
       responses:
         '204':
           description: |
@@ -763,11 +1159,19 @@ paths:
               schema: { type: string }
               description: 'auth_token=; Path=/; Max-Age=-1; HttpOnly; SameSite=Lax'
         '401':
-          description: No/invalid JWT.
+          description: No/invalid JWT, or a session whose generation is no longer current (PAC-71).
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            (PAC-71) The account's current session generation could not be read. Body
+            `{"error":"internal error"}`; the cookie is NOT expired (spec AC-48).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/availability:
     get:
@@ -906,12 +1310,21 @@ paths:
               Every 400 and 403 above happens before this step and leaves
               the grant live; a failure after it (the store-time 400 of step
               6, the 500 below) leaves it consumed.
-           b. break-glass: the caller's session email is listed in the
-              deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) AND the
+           b. break-glass: the caller's ACCOUNT holds a listed address
+              DOMAIN-CONFIRMED, i.e. the address stored on the session's
+              account (`users.email`, compared lower-cased) is listed in the
+              deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) and
+              that account's `addressStanding` is `domain_confirmed`
+              (PAC-71, spec §3 "PAC-50 admin step-up and break-glass", D-13,
+              AC-38; before PAC-71 the session's `email` CLAIM was compared,
+              which a session of an account that no longer carries the
+              address, or carries it unconfirmed, could pass) AND the
               session JWT was issued less than 10 minutes ago and not more
               than one minute in the future (a token stamped further ahead is
-              not fresh). Listed without such a session gives 403
-              `sso_write_requires_fresh_login`.
+              not fresh). Qualifying except for freshness gives 403
+              `sso_write_requires_fresh_login`. An account that carries a
+              listed address UNCONFIRMED, or whose session claim is listed
+              but whose stored address is not, is not break-glass at all.
            (a) is tried first: a break-glass caller who also holds a live
            grant consumes that grant on the write.
            Neither gives 403 `sso_write_requires_admin_stepup` with
@@ -1524,6 +1937,8 @@ paths:
         Checks: membership (403), then 200. Calling it costs nothing, so a
         client may call it whenever it renders the entry point.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         '200':
           description: The step-up's URL, what it would request from each configured provider, and what is lost without it.
           content:
@@ -1585,6 +2000,18 @@ paths:
            Microsoft `wids` (or, when absent, the directory-role lookup)
            containing a qualifying role template id (spec §4.4). Anything
            else, including a lookup error, gives `not_admin`.
+        4b. (PAC-71, spec §3 "PAC-50 admin step-up and break-glass", D-13,
+           AC-21) When the caller's account is bound to an identity at the
+           step-up's authority (Google; or Microsoft with the same tenant as
+           the step-up token's `tid`), the step-up token's identity must be
+           that bound identity: Google `sub` equal to the bound Google
+           subject; Microsoft `oid` equal to the bound object id. Else
+           `identity_mismatch`. When the account's binding is at another
+           authority (another provider, another tenant, an SSO issuer) or
+           it has none, this check does not apply and today's checks 0 to 4
+           decide alone. It runs after every existing check, so a step-up
+           that fails one of them keeps today's reason. The step-up's scopes
+           and consent are unchanged.
         5. A grant for (caller, caller's org, provider) is issued with
            purpose `sso_write`, valid for 10 minutes and good for one SSO
            configuration write (spec §4.8; a write of another purpose cannot
@@ -1624,15 +2051,16 @@ paths:
             Location:
               schema:
                 type: string
-                pattern: '/settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin))$'
+                pattern: '/settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin|identity_mismatch))$'
               description: |
                 `<FRONTEND_URL>/settings?stepup=granted`, or
                 `<FRONTEND_URL>/settings?stepup=denied&reason=<reason>`, where
-                `<reason>` is one of the eight values in the pattern (spec
+                `<reason>` is one of the nine values in the pattern (spec
                 §4.6; the same enum the server records): `state_mismatch`,
                 `token_invalid`, `no_hd`, `hd_mismatch` (Google only),
                 `tid_mismatch`, `tid_changed` (Microsoft only),
-                `email_mismatch`, `not_admin`. Never a raw token or provider
+                `email_mismatch`, `not_admin`, and since PAC-71
+                `identity_mismatch` (check 4b). Never a raw token or provider
                 error text. Built from the configured frontend URL, never a
                 literal path (contrast API-084).
             Set-Cookie:
@@ -1676,12 +2104,62 @@ components:
       bearerFormat: JWT
       description: |
         HS256 JWT issued by backend/auth/jwt.go GenerateToken. Claims: `sub`
-        (user uuid, string), `email`, `exp` (+7 days), `iat`.
+        (user uuid, string), `email`, `exp` (+7 days), `iat`, and since PAC-71
+        `gen` (see SESSION GENERATION below).
         middleware.requireAuth accepts it as `Authorization: Bearer <jwt>`.
         Since PAC-39 (API-008) the header wins over the `auth_token` cookie: when
         a `Bearer ` header is present its token is the only credential
         considered, whatever the cookie holds, and an invalid bearer token is a
         401 with no fallback to the cookie.
+
+        SESSION GENERATION (PAC-71, spec §3 "Sessions", D-20). Every account
+        has a session generation, a non-negative integer that starts at 0
+        for every account (existing accounts included) and only ever
+        increases. Every session token the server issues since PAC-71 carries
+        the generation of its account at issue time as the integer claim
+        `gen`. A token without `gen` (every token issued before PAC-71, and a
+        test helper's token that omits it) is read as `gen` 0. A `gen` that is
+        present but not a non-negative integer makes the token invalid.
+        The generation advances (by one, in the same transaction as the
+        change that causes it) when, and only when: a sign-in binds an
+        account created before PAC-71 (migration rule (a) or (b)); an
+        operator frees an account's address or replaces or writes its
+        binding (operator procedure, server-side command only, no HTTP
+        operation); or the operator runs the one-time "advance every
+        account's generation" command (spec OQ-6: whether a release runs it
+        is the owner's decision). A refusal, a connect and an ordinary sign-in
+        of a bound identity never advance it.
+
+        On EVERY protected operation of this document (every operation
+        without `security: []`), requireAuth additionally reads the account's
+        current generation, uncached, after the signature, expiry and `sub`
+        checks:
+        - token `gen` != the account's current generation (older, or newer
+          than any the account has had): 401, the same response as any other
+          requireAuth rejection (body the JSON text `{"error":"unauthorized"}`,
+          Content-Type `text/plain; charset=utf-8`, no Set-Cookie);
+        - no account row for `sub`: unchanged from today (the request
+          proceeds; handlers that need the row answer as they document);
+        - the generation cannot be read (database error or timeout): 500,
+          Content-Type `application/json`, body exactly
+          `{"error":"internal error"}`, no Set-Cookie; never 401, because the
+          web app treats 401 as "signed out" (spec AC-48). Every protected
+          operation documents a 500 for this reason.
+        IN-REQUEST RE-CHECK (spec §3 "An older-generation request never
+        reaches what a binding stored", D-20 r4): every read or write of the
+        session account's ACCOUNT DATA made while serving the request
+        re-confirms, in the same statement or transaction as the read or
+        write, that the account's current generation still equals the
+        token's `gen`. On a mismatch the read returns nothing, the write
+        stores nothing, no provider call is made with anything the read
+        would have returned, and the operation answers the same 401 as
+        above, whatever it had already decided. ACCOUNT DATA is exactly the
+        closed list in contracts/features/PAC-71.md §5 (credentials, AI keys,
+        connections, every settings column, and every other kind spec §3
+        rule (b) counts); reads of OTHER accounts' data (a teammate's
+        credential for team availability, a host's credential on a public
+        page) and work done by scheduled jobs carry no session and are not
+        covered.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -1692,6 +2170,27 @@ components:
         frontend uses (both fetch wrappers send `credentials: "include"` and
         never set an Authorization header). It is consulted only when the request
         carries no `Authorization: Bearer` header (PAC-39, API-008).
+        Since PAC-71 the token carries the `gen` claim and every protected
+        operation applies the SESSION GENERATION rules described on
+        `bearerAuth` (stale generation: 401; generation unreadable: 500
+        `{"error":"internal error"}`; the in-request re-check on account
+        data).
+
+  responses:
+    SessionGenerationUnavailable:
+      description: |
+        PAC-71 (spec §3 "Sessions", AC-48; security scheme SESSION
+        GENERATION). The account's current session generation could not be
+        read, so requireAuth (or the in-request re-check) could not decide
+        whether the session is still current. Fails closed as a server
+        error, never as 401 (the web app treats 401 as signed out): body
+        exactly `{"error":"internal error"}`, Content-Type
+        `application/json`, no Set-Cookie, nothing written. On operations
+        that document their own 500, this is one more cause of it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
 
   parameters:
     LoginHint:
@@ -1859,7 +2358,7 @@ components:
     CurrentUserResponse:
       type: object
       description: storage.User (backend/storage/users.go) serialized directly.
-      required: [id, email, name, avatarUrl, provider, createdAt]
+      required: [id, email, name, avatarUrl, provider, addressStanding, createdAt]
       properties:
         id:
           type: string
@@ -1897,6 +2396,29 @@ components:
             handlers_sso.go "sso"; tests and the e2e seed write "google").
             A CHECK constraint is not added (spec PAC-35 section 7: no
             migration).
+            Unchanged by PAC-71 (spec §6): it is NOT the provider of the
+            account's bound identity, which this response does not expose
+            (listing sign-in methods is follow-up F1).
+        addressStanding:
+          type: string
+          enum: [domain_confirmed, unconfirmed]
+          x-enum-varnames: [AddressStandingDomainConfirmed, AddressStandingUnconfirmed]
+          description: |
+            New in PAC-71 (spec §3 "Evidence and address standing", D-5).
+            `domain_confirmed`: the sign-in that bound this account's
+            identity carried AUTHORITATIVE evidence for `email` (Google
+            verified with matching `hd` or a Google consumer domain; a
+            Microsoft tenant that verifies the domain; the SSO issuer
+            configured for the domain). `unconfirmed`: everything else,
+            including every account created before PAC-71 that has not bound
+            yet and every account bound with MAILBOX evidence. Only a
+            `domain_confirmed` address acts as a person at the granting sites
+            (team-invite acceptance, scheduling-link co-host invitations,
+            the manager's member add, roster import and roster entries,
+            break-glass); an `unconfirmed` one works fully for its own user
+            but resolves to nobody there. It changes only when the account
+            binds (sign-in) or through the operator procedure; never on an
+            ordinary sign-in, a connect or a refusal.
         org:
           description: |
             Present only when the user has an org_id AND the org row loads
@@ -1906,6 +2428,25 @@ components:
         createdAt:
           type: string
           format: date-time
+      additionalProperties: false
+
+    ConnectStartResponse:
+      type: object
+      description: |
+        New in PAC-71. The answer of `startGoogleConnect` and
+        `startMicrosoftConnect`: where to send the window to continue the
+        connect. Readable only by the web app's own origin (another site
+        cannot read it, which is the point; spec §3 "Cross-site request
+        model").
+      required: [authorize_url]
+      properties:
+        authorize_url:
+          type: string
+          format: uri
+          description: |
+            The provider's authorization URL, carrying this connect's state.
+            Single browser, 300 seconds, today's scope set. Never contains a
+            Paceday session token.
       additionalProperties: false
 
     OrgSummary:
@@ -2291,7 +2832,9 @@ components:
     SsoWriteFreshLoginRequired:
       type: object
       description: |
-        The caller's email is on the deployment's break-glass list but the
+        The caller's account holds an address on the deployment's
+        break-glass list domain-confirmed (PAC-71: the account's stored
+        address and standing, not the session's email claim) but the
         session JWT was issued 10 minutes ago or more, or carries an issue
         time more than one minute in the future (beyond that clock-skew
         allowance a token is not fresh). The client sends the user through
