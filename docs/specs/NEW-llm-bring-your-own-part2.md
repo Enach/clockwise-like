@@ -1587,3 +1587,47 @@ in the contract rationale), as orchestrator decisions at factory level:
   (§3.2, P2-AC-40.)
 - Non-blocking 4: each kind of bad version gets one message, and a missing
   version is not read as version 0. (P2-AC-4.)
+
+## Challenge, revision 2 — 2026-10-28
+
+**Verdict**: accept
+
+Checked by: `git fetch origin`; `git show` / `git diff 0c81d42 3ab38c7 -- docs/specs` on `origin/factory/new-llm-byo-part2` (3ab38c7); `git show` / `git grep` on clockwise-like `origin/main` (ae5c2cf); the branch contract (`contracts/features/NEW-llm-bring-your-own-part2.md`, `contracts/openapi/openapi.yaml`); the factory owner-decisions record (LLM org key, OQ-P2-1 to OQ-P2-4 listed as asked). No test, build or `make verify` was run. Spec line numbers are of 3ab38c7.
+
+### Revision 1 findings, re-checked
+- B1 (encoded echo reaches a member): fixed. §3.1a (287-311): every member-visible text from a row-4 request, including the stored brief, is a fixed Paceday sentence with no provider text, so no encoding of the organisation key can reach a member. Provider text goes only to the server log and Sentry, redacted of the keys sent and the caller's keys. The residual (encoded or partial echoes in the log and Sentry) is stated the same way in §3.1a, §5 (1042-1048) and §6 (1055-1067). P2-AC-39 (iii) tests the JSON-escaped and percent-encoded echoes. On ae5c2cf, parse and probe failures already answer with fixed text (`server_errors.go` `genericServerMessage`), so the brief (`meeting_brief_service.go:87-90`) is the only path the rule changes, as §3.1a says.
+- B2 (version reuse after removal): fixed. §3.2 (387-388), §3.4 (459-465), §7 (a) (1090-1093), P2-D17 and P2-AC-42, which includes the case of re-setting the same provider and key. The contract agrees: removal advances `configurationVersion` and keeps the count.
+- NB1 (version scope): fixed. 205-207, 249-260, 389-403, 466-475; P2-AC-37 has the model-only case.
+- NB2 (redact keys sent): fixed. 300-303; P2-AC-39 (iv).
+- NB3 (forbid during a request): fixed. 244-248.
+- NB4 (code rollback restores revision 0's B1): fixed. §7 (1126-1136).
+- NB5 (break-glass under concurrency and failure): fixed. 366-372, 412-416; P2-AC-2 concurrent case; P2-AC-5.
+- NB6 (probe precedence): fixed. 523-531; P2-AC-20.
+- NB7 (members can read the destination): fixed. 337-344; P2-AC-4; P2-AC-30.
+- NB8 (OQ-P2-3 not asked): fixed. The owner-decisions record lists it.
+- Citation `mcp/client.go:13-88`: correct.
+
+### Blocking
+None. I looked specifically for each of the following and found none:
+- a path that sends a member's data to the organisation's account without a confirmation of the version sent;
+- a personal key sent by a request decided after a forbid;
+- the organisation key in any member-visible text or response;
+- an organisation-AI change without a proof of that purpose;
+- a grant or break-glass session spent across purposes or twice;
+- a contradiction between sections that the text does not resolve.
+
+### Non-blocking
+1. **What a removal or a provider change does to "personal keys forbidden" is not stated.** §3.2 (330-335) makes the personal-keys setting part of "the configuration", and 385 says "Removing the provider removes the whole configuration". Read literally, a removal re-allows personal keys. The contract keeps the stored `personalKeysAllowed` on removal; for a provider change it says "every property not in the body takes its default", which is ambiguous for this flag. The spec should state that the personal-keys setting survives both a removal and a provider change, and a criterion (in P2-AC-42 or P2-AC-18) should pin it: forbid, then remove, then a member's own-key parse still answers row 11.
+2. **§3.1a (290-291) covers a row-4 request that "fails at the provider or gateway".** The brief stores `LLM error: %v` for any `Complete` error (`meeting_brief_service.go:87-90`), including transport errors and timeouts. Keys are sent in headers (`llm_vertex.go:38`), so no key is exposed today. The rule should say "any failure of the call".
+3. **P2-AC-4 (677-678) leaves "fragment" out** of the organisation destination refusals that §3.2 (339-340) requires.
+4. **Row 10's sentence (213)** says "your own provider and key are kept" for a member stored on the removed provider (Ollama), who has no key. Word it so it holds for both cases.
+5. **§3.1a (313-316) calls the own-key brief behaviour "Part 1's".** Part 1 stores that text unredacted (§2.5, 172-175). Redacting the member's own keys there is a small, harmless change, and §3.8 should name it as one.
+
+### Criteria I could not falsify
+- None.
+
+### Citations I checked and found wrong
+- None.
+
+### Consumers this breaks
+- None beyond those §2.4 names.

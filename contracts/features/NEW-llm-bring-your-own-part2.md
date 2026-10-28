@@ -663,3 +663,58 @@ the contract in this revision:
 | NB7 (P2-D18): organisation destination stricter | patchOrganizationAI (approved destinations paragraph, shape 400 (8)), OrganizationAIConfigurationUpdate.azureEndpoint; §2.7d; P2-AC-4. |
 | NB4: code rollback and confirmations | manifest mergeConditions and rollback: a re-upgrade after a code rollback deletes every stored confirmation first. |
 | NB3 (forbid during a request), NB8 (OQ-P2-3 asked), citation fix | Spec-only; no contract change (§5 of this document already lists the four questions). |
+
+## Challenge, revision 3 — 2026-10-28
+
+**Verdict**: accept
+
+Challenged: contract revision 3 at 3ab38c7 (delta `git diff 0c81d42 3ab38c7 -- contracts backend`). Bundle sha256 c9b86ef37c1671e324feeb43c2c88f6d3e52b91b5d92e9742f539e356425bba6, recomputed with `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`; it matches the manifest.
+
+### Checks run (detached worktree at 3ab38c7, no Docker)
+- `py -3 scripts/openapi_assemble.py --check`: rc=0 (bundle in sync, 105 paths)
+- `py -3 scripts/openapi_migration_report.py --check`: rc=0 (127 operations, 6 generated)
+- `bash scripts/openapi_gen_go.sh --check`: rc=0
+- `cd backend && go build ./...`: rc=0; `go vet ./...`: rc=0
+- contractHash: matches.
+- Not run: the backend suite (needs a test database), golangci-lint, the web gate, e2e, `make openapi-check`.
+
+### Revision 2 findings, verified
+- **B-1′: fixed.** Steps 3 and 4 run as one transaction: grant consumption (or the break-glass record) plus a write that stores only if the stored version still equals `configurationVersion`, covering the first insert at 0 (scheduling.yaml:1137-1154). On a conflict the transaction rolls back, the answer is the 409 with the current read, the grant stays live and break-glass is not marked used. P2-AC-40 (manifest:189) gains the interleaved and version-0 cases; a merge condition (manifest:330) requires the single transaction and both tests.
+- **NB-1: fixed.** `LLMDestinationRefusal.configuration` narrowed to `[organization]` (scheduling.yaml:2570); `pac66_llm_destination_test.go:150-154` listed as must-pass-unchanged.
+- **NB-2: fixed.** Break-glass once per (user, `iat`) via a partial unique index inserted in the write's transaction; same-second note stated; P2-AC-2 concurrent case.
+- **NB-3: fixed.** Shape 400s at step 2, state 400s at step 2b (scheduling.yaml:1101).
+- **NB-4: fixed.** One message per request; absent never read as 0; P2-AC-4 pins it.
+- **Probe 200 `configuration`: fixed** via a merge condition.
+
+### Spec revision 2 changes carried, verified
+- Row-4 failed brief uses the fixed `brief_text` (habits.yaml:524); `api/handlers_meeting_briefs.go:94` is the only call site that generates a brief.
+- Parse provider failure as the fixed 500 (scheduling.yaml:458-469) is a correction, not a breaking change: the server already does this (`nlp/parser.go:195-198`, `api/handlers_nlp.go:28-31`) and main's contract at ae5c2cf already said 500. Web `client.ts:1392`, `mcp/tools.go:199` and the e2e parse specs are unaffected.
+- Versions never reused; `removed` example (scheduling.yaml:1031) fits the schema.
+- Organisation `azureEndpoint` origin-only (scheduling.yaml:1259).
+
+### P2-AC-5: is a live grant after a storage failure safe?
+Yes. Grant consumption and the conditional write commit together or not at all. When a COMMIT's outcome is unknown, the change and the spent grant are stored together, and a retry naming the old version gets the step-2a 409. One grant can never authorise two changes.
+
+### Requests wrongly permitted
+None blocking.
+- **NB-A.** scheduling.yaml:1338-1342 and P2-AC-5 (manifest:154) promise "unchanged and grant still live" after any failure in step 4; with an unknown COMMIT outcome the server cannot know. Say: after a 500 the client re-reads before retrying; "unchanged, grant live" holds only for a known rollback; a retry is safe either way.
+- **NB-B.** The operator record for a grant-authorised change (P2-AC-6, scheduling.yaml:1157) should be inserted in the same transaction as the write.
+- **NB-C.** A `personalKeysAllowed`-only change before setup leaves a row at version 0; "inserts only if none was inserted meanwhile" (scheduling.yaml:1142-1145) can give a racing full setup a 409 whose read still says 0. Make the condition the version alone (no row counts as version 0).
+- **NB-D.** Shape order (4) at scheduling.yaml:1251-1253 is ambiguous between "all nulls first" and "per property in body order". Name one.
+
+### Responses the client cannot handle
+None.
+
+### Consumers affected
+No new ones.
+
+### Contract/implementation divergences
+1. Unchanged: `purpose` and the three new operations not served on this branch; merge conditions cover them.
+2. Resolved: revision 3's parse text matches `handlers_nlp.go:28-31`.
+
+### Uncertainties not actually resolved
+None claimed.
+
+### Verified clean
+- Concurrent stale admin writes, one-grant double use, concurrent break-glass, missing version on v0, stale state-check body, removal then setup, row-4 member-visible text: all behave as the contract states.
+- Residual noted, not a finding: the row-4 parse 200 still carries model-generated fields (`parser.go:243-262`); that is a successful answer's content, outside §3.1a.
