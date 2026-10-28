@@ -1143,3 +1143,128 @@ Answers every finding of "Challenge, revision 1" by **narrowing** the ticket, on
 - **OQ-1 (for F1 only):** this ticket answers "no" on factory guidance, aligned with PAC-47. Open for F1: may a connect offer to add the sign-in method? Factory default for F1: only through an explicit "add a sign-in method" step.
 - **OQ-2 (unchanged, matters from F1):** may SSO reach existing members without each adding it? Factory default: no.
 - **OQ-3 item 4 (conditional):** becomes an owner question only if stage 2 finds that unmanaged Microsoft directories defeat tenant evidence. Items 2 and 3 may trigger F4.
+
+## Challenge, revision 2 — 2026-10-28
+
+**Verdict**: accept-with-changes.
+
+I judged revision 2 against its own narrowed scope: is the core safe and shippable with F1 to F4 absent? Mostly yes. Linking is gone, so revision 1's B5 has no cause left, and the session generation is a sound primitive. Three problems still block stage 2:
+- migration rule (b) still lets data from the rightful owner's new calendar credential reach other parties, through relationships and a race that its "no other party" test does not see;
+- a connect can still be completed by a session that the binding was meant to end;
+- PAC-71 contradicts PAC-68's accepted AC-9 on the same Microsoft callback.
+
+What I checked:
+- this spec at `05be889`;
+- `clockwise-like` `origin/main` `ae5c2cf` (still the tip), `origin/factory/pac-47-spec` `24e0833`, `origin/factory/pac-68-spec` `ec76099`;
+- `smart-calendar-flow` `origin/main` `eea0cf6`, read with `git show` only.
+
+I ran no code and called no provider endpoint. Line numbers below are this file at `05be889`.
+
+**Revision 1's blocking findings:**
+
+| # | Status in revision 2 | Judgement |
+|---|---|---|
+| B1 | Resolved in part | Sessions from before the binding now end (lines 239, 254), and an account with a stored credential, connection or key is refused (lines 226-230). Two channels to other parties remain, and the "no recorded identifier" test cannot be decided from today's data. These are Blocking 1 and 2 below. |
+| B2 | Legitimately moved to F2 | The squatter gains nothing: granting sites resolve the address to nobody (line 184, AC-40), and PAC-68 decides organisation membership on evidence. The rightful owner is locked out, and an operator procedure covers it (lines 284-298). That is lock-out, not takeover. |
+| B3 | Legitimately moved to F2 | Without linking, a departed holder keeps only a suspended identity and sessions of at most 7 days, the same as today. Break-glass needs a session under 10 minutes old, so a departed holder who cannot sign in cannot use it. New invites to the address go to an account nobody can newly sign in to. That is lock-out, not exposure. |
+| B4 | Resolved | §2's table classifies each site as granting or revoking/keeping (lines 125-138), and AC-43 pins removal and keeping. |
+| B5 | Legitimately moved to F1 | No user-facing method management exists in the core, so there is no last-method race. The revocation primitive ships here (D-20, AC-42). |
+| B6 | Resolved | The connect follows `PAC-47.md:377-411` at `24e0833` word for word on the points that matter: it attaches the credential to the starting account, is credited only while that account is signed in, and is recognised by a connect marker, not by a session being present. A new conflict with PAC-68 appears instead (Blocking 3). |
+
+### Blocking
+
+1. **Migration (b) checks only what is stored on the account. It does not check the relationships through which other accounts and public pages read the account's calendar. And it cannot tell an SSO subject from a Google or Microsoft identifier.**
+
+   Lines 226-228 bind an authoritative identity to an unbound account that has "no recorded last-sign-in identifier from Google or Microsoft (the recorded value is empty, or is an SSO subject)" and "no stored provider credential and no third-party connection or key". Binding then stores the new holder's calendar credential on that account (`handlers_auth.go:71`, `handlers_microsoft_auth.go:74`). Two facts make this unsafe:
+   - **Other accounts read a member's calendar through Paceday relationships, not through credentials stored on the member's own account.**
+     - Team availability and team analytics: any member of a team reads slots and analytics computed from every member's stored credential (`handlers_teams.go:492-533`, `engine/team_availability.go:78-84`).
+     - Public scheduling links: the link's public slot listing reads each accepted host's stored credential (`handlers_booking.go:80-88`). The slug is public to whoever knows it, and the link's owner can be another account.
+   - **"Is an SSO subject" cannot be decided.** §2 line 44 says it itself: "Nothing records which provider that identifier belongs to." `provider` records the *first* sign-in's provider and `provider_id` the *last* one's (`users.go:21-31`). An SSO issuer chooses its subjects freely, so a subject can look like a Google or Microsoft identifier, and the reverse. If the plan reads "SSO subject" as "`provider = 'sso'`", then an account first created through SSO and later signed in with a consumer Google account GA counts as having no recorded identifier, although GA is recorded. That account carries no credential once GA disconnects (`handlers_auth.go:194` deletes the Google token).
+
+   *Attack (works with F1 and F2 absent):*
+   - Before PAC-50's gate, an `acme.com` member points the SSO configuration at their own IdP. They sign in through it as `henry@acme.com`, and email matching creates account A with `provider = 'sso'`. Henry has never used Paceday.
+   - From their own account B, the attacker creates a team and a scheduling link with a known slug. From A, they accept B's team invite and the co-host invitation. They connect nothing on A.
+   - After deployment, Henry signs in for the first time with acme's Workspace G1 (`hd=acme.com`). A has an "SSO subject" and no credential, connection or key, so rule (b) binds G1 to A and stores Henry's Google credential on A. The attacker's sessions on A end (line 239), as intended.
+   - B still reads Henry's busy times and meeting analytics through the team, and the public link exposes Henry's free slots. Bookings land on Henry's calendar.
+   - Nothing tells Henry: notifications are F3, and Settings shows the team and the link as his own.
+
+   This is revision 1's B1 ("integrations on A keep receiving Henry's meeting data") through a channel that line 228's list does not name. The variant where the IdP really was acme's and the account was a predecessor's (a recycled address) gives the new holder the predecessor's bookings, booker names and addresses.
+
+   *Resolve:*
+   - Define "no recorded identifier" by a test that today's data can decide, in the safe direction. Either only an empty value qualifies, or any value that is not provably an SSO subject counts as recorded.
+   - Extend (b)'s second condition, or the contract's enumeration that line 228 defers to the plan, to every relationship through which another account or a public page reads the account's calendar or data. At minimum: membership of a team that has other members; accepted or pending co-host rows on a link owned by another account; scheduling links the account owns that have other hosts or are publicly listable. With any of them present, (b) refuses (operator procedure), the same as for a connection.
+   - Add an AC: an unbound pre-existing account with an SSO-recorded identifier, no credential, and membership of another account's team (separately: an accepted co-host row on another account's link) is refused under (b), and no credential is stored on it. Add AC-41 cases for an empty identifier versus `provider = 'sso'` with a Google-format value.
+
+2. **The binding ends old sessions only for requests that start after it. In-flight requests from those sessions, and a connect that was started before it, still write to the newly bound account.**
+   - The generation is checked once, when a request is authenticated (line 252). Rule (b)'s "no credential, connection or key" is a check made at binding time (line 228). Nothing says the two are atomic against writes by sessions of the old generation.
+   - The connect is credited "only while the account that started it is still the one signed in when the provider step completes" (line 210). Line 252 refuses stale sessions only on "every authenticated request", and today's provider callbacks are public routes (`routes.go:34`, `:36`). AC-14 (line 422) tests no session and another user's session, but not the same account's session with a stale generation.
+   - The state cookie lives 5 minutes (`handlers_auth.go:34`, `handlers_microsoft_auth.go:32`). Credentials are one row per user and calendar (`017_oauth_tokens_per_user.up.sql:12`), so a connect replaces the stored credential.
+
+   *Attack A (connect across the binding):*
+   - A squatter holds session S0 on account A, which qualifies for (b). Every few minutes, S0 starts a Google connect and leaves Google's consent page open.
+   - Henry binds A under (b). His Google credential is stored on A, and S0's next authenticated request gets 401. That 401 tells the squatter the binding has happened.
+   - Within the 5-minute state window, the squatter completes the pending consent with their own Google account. The callback sees S0, which still names A.
+   - If the connect callback does not check the generation, it credits A. The squatter's calendar credential replaces Henry's, and from then on Paceday writes Henry's meetings, attendees and focus blocks into the squatter's calendar.
+
+   *Attack B (write during the check):* during the same window, S0 sends a stream of requests that set a personal AI key or start a Slack connection. A request that passed authentication before the binding commits writes its key or connection after (b)'s check, onto the account now bound to Henry.
+
+   *Resolve:*
+   - Require that a connect completion counts the account as signed in only if the session's generation is current when the callback is handled. Otherwise it is credited to nobody, as in PAC-47 AC-3f. Add AC-14 (c): A's session issued before A's generation advanced completes a connect; nothing is stored and no session changes.
+   - Require that (b)'s conditions hold at the moment the binding and the generation advance take effect. A write by a session of the old generation either lands before that moment, and is then seen by the check, or is refused.
+   - Add an AC that interleaves the binding with a write from a pre-binding session, using a deterministic test seam, not timing.
+
+3. **PAC-71 contradicts PAC-68's accepted AC-9 and AC-15 on the Microsoft callback, and §6 names only the scope half.**
+   - PAC-68 AC-9 (`PAC-68.md:95` at `ec76099`) says a separate verified-domain lookup that "errors or times out" still lets the sign-in complete, "with the same redirect and session as a successful sign-in today", not joined. PAC-68 AC-15's second clause (`:115`) says the same for a lookup refused for lack of permission. D-4 (`:157`) states the principle: "fails closed for membership, open for sign-in".
+   - PAC-71 takes the Microsoft tenant, which is part of the identity, from that same lookup. Line 163 says so, and line 384 says it is the only source under today's scopes. When it cannot be obtained, the sign-in fails (line 163, AC-11b at line 380), and for a new account it is refused (AC-11 at line 377).
+   - So a bound Microsoft user whose `/organization` call errors is signed in under PAC-68 and gets the generic failure under PAC-71. Whichever spec is built second fails the other's test.
+   - §6 line 533 asks PAC-68 to amend only AC-15's scope allowance and D-5. AC-9 relies on a tenant "taken from the token response", which needs `openid`, and that is forbidden here.
+
+   *Resolve:*
+   - Add PAC-68 AC-9 (its Microsoft case), AC-15's second clause and D-4 to §6 "Must change, in PAC-68", stating PAC-71's outcome: generic failure, nothing written.
+   - Add a decision row recording that PAC-71 overrides "open for sign-in" for Microsoft, because the tenant is identity, not membership evidence. Release-note that Microsoft sign-in now depends on a second Graph call.
+   - If the factory prefers PAC-68's availability stance, say instead how a bound Microsoft identity is recognised without the tenant. Line 157 suggests it cannot be.
+
+### Non-blocking
+
+1. **Rule (a) with mailbox evidence makes a takeover from before deployment permanent, and the operator procedure cannot undo it.**
+   - Before deployment, a mailbox holder's consumer Google account GA signs in to Henry's account by email matching. That overwrites `provider_id` with GA (`users.go:28`).
+   - After deployment, whichever of the two signs in first, GA binds under (a) (lines 221-225). Henry's G1 is refused under (a) because the identifier differs, and under (b) because an identifier is recorded.
+   - The procedure's step 3 (line 295) only frees the address. That leaves Henry's data with GA and gives Henry a new, empty account.
+
+   Either state this residual in §5, and add to the procedure how an operator unbinds an account bound to the wrong identity, or have the server log flag every (a) binding made on mailbox evidence on a non-consumer domain, for the operator to review.
+2. **Failure mode of the per-request generation read.** Line 252 adds a database read to every authenticated request. `requireAuth` reads no server state today (`middleware.go:39-75`). State that a failed read is a server error, not 401: the web app treats 401 as signed out. State also whether any cache is allowed, and if so the maximum time a closed session can keep working. Nothing else validates sessions: `requireAuth` is the only caller of `ValidateToken`. There are no per-user API or MCP tokens: the MCP server uses one shared `MCP_AUTH_TOKEN` (`mcp/main.go:29`) and calls the backend without user credentials (`mcp/client.go:22-41`). So the generation covers every way in that exists today.
+3. **§2's address-as-person table misses one join.** `AssignManagerTeamMembersMatchingFormalTeam` (`storage/manager.go:155-168`) resolves roster addresses to accounts with `lower(u.email) = lower(mtm.member_email)`. `handlers_manager.go:621-660` (`listManagerMembers`) and `:669-697` (`getOrCreateScopedMember`) map formal members to roster entries by their stored address. Classify these sites as granting or keeping.
+4. **AC-5 and AC-11c depend on OQ-3 item 2.** If no positive signal for a personal account exists, the personal-account sign-in in AC-5 ends on AC-11b's generic failure, not on "refused". State AC-5's personal-account outcome as conditional, as AC-11c already is.
+5. **A connect start triggered from another site.** Line 211 requires the connect to be recognised by "something that a connect action of the signed-in user produces and another site cannot". If the start itself is a GET that issues that marker, a cross-site navigation can start a genuine connect in the victim's browser. A provider that skips the consent screen then replaces the victim's stored credential with whichever provider account that browser is signed in to. Add an AC-14 case: a cross-site navigation to the connect start stores nothing.
+6. **PAC-47 AC-3i (c)** (`PAC-47.md:665-675`) allows, as one outcome, creating `m@z` through a Microsoft sign-in. Under rule 5 that needs a tenant that verifies `z`. §6 line 532 names AC-3j for this but not AC-3i (c).
+7. **e2e mints sessions** (`e2e/auth.ts:17-25`), and those sessions will carry no generation. They stay valid only while the account is at the initial generation (line 253). State that accounts created after the deploy-time step (AC-44) start at the initial generation, or that the e2e helper must mint the generation.
+8. **Rule (b) and Microsoft evidence.** Until stage 2 answers OQ-3 item 4, (b) binds legacy accounts on tenant evidence that an unmanaged directory might fake. Consider listing (b) by Microsoft evidence in §5's provider-evidence residual explicitly.
+
+### Criteria I could not falsify
+
+- **AC-7 and AC-7b, the atomicity part.** Today both fail deterministically: the second sign-in upserts into the first account (`users.go:25`), and `Zoe@`/`zoe@` create two rows. After the change, a test that runs the two sign-ins one after the other passes even with a non-atomic check-then-insert. Require the test to force the interleaving through a seam, or to assert a storage-level constraint.
+- **AC-35.** The owner's optional "extended access" step does not exist on `ae5c2cf`. Only PAC-50's step-up exists, and its contract says it is not that step (`contracts/features/PAC-50.yaml:215`). No test can run this criterion in this ticket. Make it conditional on the step existing, or move it to the ticket that builds the step.
+- **AC-5, personal-account half.** See Non-blocking 4.
+
+Every other AC has an offline test that fails today and passes afterwards. For example:
+- AC-41's first case fails today because no session is ever refused (`middleware.go:57`);
+- AC-43's co-host case fails today at `handlers_scheduling_links.go:553`.
+
+### Citations I checked and found wrong
+
+None in revision 2's new or changed citations. Checked and correct at `ae5c2cf` / `eea0cf6` / `24e0833` / `ec76099`:
+- `routes.go:32-50` (public `:33-36,40-42`, Zoom `:38-39` behind `requireAuth`, protected `:47-49`); `middleware.go:18-24,39,57,71-73`; `jwt.go:11-27`; `handlers_me.go:31-42`.
+- `handlers_auth.go:42-84,64,71,77,79`; `handlers_microsoft_auth.go:40-84,65,69,74,78,79,83,90`; `handlers_sso.go:62-65,103-167,155,160,162,183-247`; `handlers_sso_stepup.go:43,228-252,238`; `microsoft_oauth.go:90`; `users.go:21-31,23,28,37-40`; `006_auth.up.sql:5,8-9`; `storage/sso_stepup.go:70`.
+- `handlers_scheduling_links.go:377-382,547-562,550-557,553,557,558-561,656-660`; `handlers_manager.go:319,345-369,356,364-368`; `engine/manager.go:244`; `handlers_teams.go:300-305`.
+- `pac35_auth_flows_test.go:142,145,160,163,165,167,169,183,193,196,208,211,237,239,241,246,286`; `pac67_conferencing_test.go:322-358,333-341,346-349`; `handlers_teams_test.go:53-60`; `pac50_signin_scopes_test.go:19-69`; `e2e/auth.ts:13-25`.
+- `PAC-47.md:377-411,650-695`; `PAC-68.md:115` (AC-15), `:158` (D-5); `PAC-22.md:80`; `api-audit.md:284` (API-026), `:350` (API-092).
+- `smart-calendar-flow`: `client.ts:1181-1182`, `WorkCalendarConnection.tsx:77,87`, `ConnectionStatus.tsx:18`, `Dashboard.tsx:475`, `Onboarding.tsx:80`, `AuthDialog.tsx:79,98,102,108`, `AuthCallback.tsx:8`, `Index.tsx:568`, `SignInFailedNotice.tsx:8`.
+
+One imprecision: line 136 says the manager's removal "answers 204 (`:364-368`)". The removals are at `:365-366` and the 204 at `:368`. The range is right.
+
+### Consumers this breaks
+
+The consumers already listed by revision 2 stand. Add:
+- `clockwise-like` `docs/specs/PAC-68.md:95` (AC-9), `:115` (AC-15, second clause) and `:157` (D-4) on `origin/factory/pac-68-spec` (Blocking 3);
+- `clockwise-like` `docs/specs/PAC-47.md:665-675` (AC-3i (c)) (Non-blocking 6);
+- `clockwise-like` `e2e/auth.ts:17-25` and every e2e test that inserts users and mints sessions (Non-blocking 7).
