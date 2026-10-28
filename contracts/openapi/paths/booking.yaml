@@ -1097,18 +1097,22 @@ paths:
             server writes it today; the new stored-credential sentence uses the same
             character on purpose, so the three read alike:
             "invalid body" (the body is not JSON, or, since PAC-67, fails the
-            validation in the operation description: API-052); "teams: not
-            connected — visit /api/auth/microsoft to
-            authenticate" (also returned when reading the stored Microsoft token
+            validation in the operation description: API-052); since PAC-71
+            "teams: not connected — connect Outlook in Settings (POST
+            /api/auth/microsoft/connect)" (before PAC-71 it pointed at the
+            sign-in start /api/auth/microsoft, which since PAC-71 is a sign-in
+            and never connects for a signed-in user; also returned when reading the stored Microsoft token
             fails, not only when there is none: the server does not separate the two
             on this path; see the PAC-21 contract's doesNotResolve); "zoom: not
             connected — visit /api/auth/zoom to authenticate"; "zoom: stored
             credential is invalid — reconnect at /api/auth/zoom" (the stored Zoom
             token does not decode; before PAC-21 was finished this was
             "zoom: invalid token: " plus the JSON decoder's error); NEW in PAC-67,
-            "teams: connection lost — reconnect at /api/auth/microsoft" and "zoom:
-            connection lost — reconnect at /api/auth/zoom" (the provider permanently
-            refused the renewal of the caller's credential, on this request or on an
+            "teams: connection lost — reconnect Outlook in Settings (POST
+            /api/auth/microsoft/connect)" (since PAC-71; before, "reconnect at
+            /api/auth/microsoft") and "zoom: connection lost — reconnect at
+            /api/auth/zoom" (the provider permanently refused the renewal of the
+            caller's credential, on this request or on an
             earlier one whose loss is still recorded; spec AC-8 "fails with an error
             telling A to reconnect"; also the answer when the access token has
             expired and no refresh token is stored, which records nothing).
@@ -1342,13 +1346,13 @@ paths:
             has no start or end, or, new in PAC-21, Google's value does not parse;
             before PAC-21 was finished a parse failure returned Go's time.Parse error
             text); 'unsupported conference provider "<provider>"' (echoes the
-            request's own `provider`); "teams: not connected — visit
-            /api/auth/microsoft to authenticate" (also returned when reading the
+            request's own `provider`); "teams: not connected — connect Outlook in
+            Settings (POST /api/auth/microsoft/connect)" (PAC-71 wording; also returned when reading the
             stored Microsoft token fails); "zoom: not connected — visit
             /api/auth/zoom to authenticate"; "zoom: stored credential is invalid —
             reconnect at /api/auth/zoom"; NEW in PAC-67, "teams: connection lost —
-            reconnect at /api/auth/microsoft" and "zoom: connection lost — reconnect
-            at /api/auth/zoom" (the provider permanently refused the renewal of the
+            reconnect Outlook in Settings (POST /api/auth/microsoft/connect)" (PAC-71
+            wording) and "zoom: connection lost — reconnect at /api/auth/zoom" (the provider permanently refused the renewal of the
             caller's Teams or Zoom credential, or its access token has expired and no
             refresh token is stored; see the operation description).
           content:

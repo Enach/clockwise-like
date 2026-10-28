@@ -3773,7 +3773,17 @@ type ListAuditEntriesParams struct {
 // GoogleOAuthCallbackParams defines parameters for GoogleOAuthCallback.
 type GoogleOAuthCallbackParams struct {
 	State string `form:"state" json:"state"`
-	Code  string `form:"code" json:"code"`
+
+	// Code The authorization code. Absent when the provider returns an
+	// `error` instead (the user cancelled, or the provider refused):
+	// CONNECT branch gives NOT CREDITED (step 4); SIGN-IN branch keeps
+	// today's 500.
+	Code *string `form:"code,omitempty" json:"code,omitempty"`
+
+	// Error Set by the provider instead of `code` when the user cancelled or
+	// the provider refused (for example `access_denied`). Never echoed
+	// into a Location; logged only.
+	Error *string `form:"error,omitempty" json:"error,omitempty"`
 }
 
 // SsoOidcCallbackParams defines parameters for SsoOidcCallback.
@@ -3853,7 +3863,17 @@ type StartMicrosoftOAuthParams struct {
 // MicrosoftOAuthCallbackParams defines parameters for MicrosoftOAuthCallback.
 type MicrosoftOAuthCallbackParams struct {
 	State string `form:"state" json:"state"`
-	Code  string `form:"code" json:"code"`
+
+	// Code The authorization code. Absent when the provider returns an
+	// `error` instead (the user cancelled, or the provider refused):
+	// CONNECT branch gives NOT CREDITED (step 4); SIGN-IN branch keeps
+	// today's 500.
+	Code *string `form:"code,omitempty" json:"code,omitempty"`
+
+	// Error Set by the provider instead of `code` when the user cancelled or
+	// the provider refused (for example `access_denied`). Never echoed
+	// into a Location; logged only.
+	Error *string `form:"error,omitempty" json:"error,omitempty"`
 }
 
 // StartSsoLoginParams defines parameters for StartSsoLogin.
@@ -7324,18 +7344,19 @@ func (siw *ServerInterfaceWrapper) GoogleOAuthCallback(w http.ResponseWriter, r 
 		return
 	}
 
-	// ------------- Required query parameter "code" -------------
+	// ------------- Optional query parameter "code" -------------
 
-	if paramValue := r.URL.Query().Get("code"); paramValue != "" {
-
-	} else {
-		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "code"})
+	err = runtime.BindQueryParameter("form", true, false, "code", r.URL.Query(), &params.Code)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
 		return
 	}
 
-	err = runtime.BindQueryParameter("form", true, true, "code", r.URL.Query(), &params.Code)
+	// ------------- Optional query parameter "error" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "error", r.URL.Query(), &params.Error)
 	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "error", Err: err})
 		return
 	}
 
@@ -7587,18 +7608,19 @@ func (siw *ServerInterfaceWrapper) MicrosoftOAuthCallback(w http.ResponseWriter,
 		return
 	}
 
-	// ------------- Required query parameter "code" -------------
+	// ------------- Optional query parameter "code" -------------
 
-	if paramValue := r.URL.Query().Get("code"); paramValue != "" {
-
-	} else {
-		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "code"})
+	err = runtime.BindQueryParameter("form", true, false, "code", r.URL.Query(), &params.Code)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
 		return
 	}
 
-	err = runtime.BindQueryParameter("form", true, true, "code", r.URL.Query(), &params.Code)
+	// ------------- Optional query parameter "error" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "error", r.URL.Query(), &params.Error)
 	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "error", Err: err})
 		return
 	}
 

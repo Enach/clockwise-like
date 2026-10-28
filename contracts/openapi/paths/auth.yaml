@@ -170,21 +170,30 @@ paths:
            NOT CREDITED.
         3. U's current generation is read, uncached, and equals g. Else:
            NOT CREDITED. If it cannot be read: the 500 below.
-        4. The code is exchanged (500 on failure). Userinfo is not read and
+        4. `code` is present and non-empty. Else (the provider returned
+           without a code, typically `error=access_denied` because the user
+           cancelled or the provider refused): NOT CREDITED, nothing is
+           exchanged. The user lands on the web app, never on a JSON page of
+           the API origin.
+        5. The code is exchanged (500 on failure). Userinfo is not read and
            nothing about the Google account's identity or address is used:
            whatever identity and address it has, nothing is bound.
-        5. The token is stored on U, in one transaction that re-reads U's
+        6. The token is stored on U, in one transaction that re-reads U's
            current generation and stores only while it still equals g
            (spec AC-47). If it moved: nothing is stored, NOT CREDITED.
            Storing ends a recorded Google loss of U (PAC-67 AC-12).
-        6. CREDITED.
+        7. CREDITED.
         A connect, credited or not, binds no identity, adds no sign-in
         method, creates no account, issues no session, never sets or
         expires `auth_token`, evaluates no organisation membership, and
         changes nothing else on any account: not U's name, picture,
         address, standing, recorded identifier, work calendar (spec D-15) or
-        generation. Every connect-branch redirect expires the
-        `google_connect_state` cookie.
+        generation. Every connect-branch response, the redirects and the
+        500 alike, expires the `google_connect_state` cookie, so a state is
+        used at most once.
+        The SIGN-IN branch keeps today's behaviour for a missing `code` (the
+        exchange of an empty code fails: the 500 below); PAC-71 does not
+        change it.
       security: []
       parameters:
         - name: state
@@ -193,7 +202,20 @@ paths:
           schema: { type: string }
         - name: code
           in: query
-          required: true
+          required: false
+          description: |
+            The authorization code. Absent when the provider returns an
+            `error` instead (the user cancelled, or the provider refused):
+            CONNECT branch gives NOT CREDITED (step 4); SIGN-IN branch keeps
+            today's 500.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            Set by the provider instead of `code` when the user cancelled or
+            the provider refused (for example `access_denied`). Never echoed
+            into a Location; logged only.
           schema: { type: string }
       responses:
         '302':
@@ -255,7 +277,9 @@ paths:
             save, or reading the generation (connect step 3) failed. Body:
             `{"error":"internal error"}`. The detail is written to the server log and
             Sentry only (PAC-21). A failed binding or creation writes nothing (it is one
-            transaction); no session is issued or changed.
+            transaction); no session is issued or changed. On the CONNECT branch this
+            500 also expires `google_connect_state`; on the SIGN-IN branch
+            `oauth_state` is already expired (step 1), as today.
           content:
             application/json:
               schema:
@@ -286,6 +310,13 @@ paths:
         this operation and starts nothing; and the state it would need is
         bound to the victim's browser by the `google_connect_state` cookie
         and to the victim's account and generation by the server.
+        INVARIANT this argument rests on: the API never answers a
+        cross-origin request with `Access-Control-Allow-Credentials: true`
+        for an origin other than the one configured web origin (today
+        `corsMiddleware`, backend/api/middleware.go: `*` without
+        credentials, or exactly `FRONTEND_URL` with credentials). A change
+        that reflects an arbitrary origin with credentials breaks it and
+        must revise this contract.
 
         Effects: the server issues a new opaque state bound to (the caller's
         user id, the session's `gen`, provider `google`, an expiry 300
@@ -419,7 +450,7 @@ paths:
            multi-entry `value`, a non-GUID id): REFUSED, before anything is
            looked up or written. No answer under today's scopes is adopted as
            a positive personal-account signal, so a personal Microsoft
-           account cannot sign in (spec AC-5, AC-11b, AC-11c; follow-up F4).
+           account cannot sign in (spec AC-5, AC-11b, AC-11c; follow-up PAC-77).
            The identity is authority (`microsoft`, tenant) + object id.
         4. Evidence for `mail`: AUTHORITATIVE when an entry of
            `verifiedDomains` has `name` equal to the address's domain (exact,
@@ -459,7 +490,10 @@ paths:
 
         CONNECT branch: the checks, order and outcomes of
         `googleOAuthCallback`'s CONNECT branch, with the `ms_connect_state`
-        cookie and provider `outlook`. Neither `/me` nor `/organization` is
+        cookie and provider `outlook`, including step 4 (no `code`, as when
+        the user cancels at Microsoft: NOT CREDITED, a redirect to the web
+        app, never a JSON page) and the expiry of `ms_connect_state` on
+        every connect-branch response, the 500 included. Neither `/me` nor `/organization` is
         read, so any Microsoft account (work or personal, any tenant, any
         address) can be connected and nothing about it is bound. The
         credential is stored on U as PAC-67 stores it (refresh token kept
@@ -477,7 +511,20 @@ paths:
           schema: { type: string }
         - name: code
           in: query
-          required: true
+          required: false
+          description: |
+            The authorization code. Absent when the provider returns an
+            `error` instead (the user cancelled, or the provider refused):
+            CONNECT branch gives NOT CREDITED (step 4); SIGN-IN branch keeps
+            today's 500.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            Set by the provider instead of `code` when the user cancelled or
+            the provider refused (for example `access_denied`). Never echoed
+            into a Location; logged only.
           schema: { type: string }
       responses:
         '302':
@@ -538,7 +585,8 @@ paths:
           description: >-
             Token exchange or token save failed, or (connect) the generation could not be
             read. Body: `{"error":"internal error"}`. The detail is written to the server
-            log and Sentry only (PAC-21). A failed account creation or binding is not a
+            log and Sentry only (PAC-21). On the CONNECT branch this 500 also expires
+            `ms_connect_state`. A failed account creation or binding is not a
             500 but the failure redirect (b) under `302`; an unreadable Graph profile is
             (a). A failed or refused `/organization` read is neither: it is the refusal.
           content:
@@ -562,7 +610,7 @@ paths:
       description: |
         New in PAC-71. The Microsoft twin of `startGoogleConnect`: same
         protection, same JSON-body-never-redirect rule and the same
-        cross-site argument, same state binding (caller's user id, session
+        cross-site argument (and the same CORS invariant it rests on), same state binding (caller's user id, session
         `gen`, provider `outlook`, 300-second expiry), set as the
         `ms_connect_state` cookie. Nothing else is written; in particular
         the work calendar is not changed (spec D-15).
@@ -2011,7 +2059,13 @@ paths:
            it has none, this check does not apply and today's checks 0 to 4
            decide alone. It runs after every existing check, so a step-up
            that fails one of them keeps today's reason. The step-up's scopes
-           and consent are unchanged.
+           and consent are unchanged. It relies on two provider facts that
+           are a merge condition of PAC-71 (PAC-71.md §3, §8): the step-up
+           ID token's Google `sub` equals the v2 userinfo `id` recorded at
+           sign-in, and the Microsoft `oid` equals Graph `/me` `id`. If
+           either did not hold, this check would fail closed
+           (`identity_mismatch`) for every bound administrator at that
+           provider.
         5. A grant for (caller, caller's org, provider) is issued with
            purpose `sso_write`, valid for 10 minutes and good for one SSO
            configuration write (spec §4.8; a write of another purpose cannot
@@ -2139,7 +2193,9 @@ components:
           requireAuth rejection (body the JSON text `{"error":"unauthorized"}`,
           Content-Type `text/plain; charset=utf-8`, no Set-Cookie);
         - no account row for `sub`: unchanged from today (the request
-          proceeds; handlers that need the row answer as they document);
+          proceeds; handlers that need the row answer as they document),
+          except that every IN-REQUEST RE-CHECK below finds no current
+          generation and so answers the 401;
         - the generation cannot be read (database error or timeout): 500,
           Content-Type `application/json`, body exactly
           `{"error":"internal error"}`, no Set-Cookie; never 401, because the
