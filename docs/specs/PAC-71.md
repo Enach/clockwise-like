@@ -297,3 +297,134 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
 | D-13 | PAC-50 step-up also requires the bound identity when the account has one at that authority. | **Factory-assumed**. Step-up today compares only the address (§2). |
 | D-14 | Sign-in requests no permission needing tenant-admin consent. | **Owner** (PAC-68 OQ-2, "offer both"). |
 | D-15 | A Microsoft sign-in must not reset an existing user's work calendar. This spec adds no reset path, and a refusal touches no calendar. | **Owner** (PAC-47 vs PAC-67 OQ-13). |
+
+## Challenge, revision 0 — 2026-10-28
+
+**Verdict**: accept-with-changes. The core model is sound and answers the issue's three cases and its draft acceptance: an identity is an authority plus a subject, rule 3 says the address never links to a bound account, a refusal has no side effects, legacy accounts bind lazily, and nothing is deleted. Six findings below block stage 2. One contradicts an owner-pinned test. One adds a work-calendar reset path the owner forbade. Four leave a takeover or lock-out path that the rule still allows. Revision 1 must resolve all six before contract work starts.
+
+Checked against `clockwise-like` `origin/main` `ae5c2cf` (worktree on `eddc3ce`, which differs from `ae5c2cf` only by this file) and `smart-calendar-flow` `origin/main` `eea0cf6` (read with `git show` only). No code was run. No provider endpoint was called. Every provider fact below is marked as known or unverified.
+
+### Blocking
+
+1. **Rule 4's Google "vouch" is the evidence §1 case 1 calls worthless, so squatting (§1 case 7) stays open.** Line 86 makes Google's email-verified flag enough to create an account. Line 17 says Google sets that flag "because a mail reached it". §5 (line 240) then claims rule 4 "removes the squatting route", which is false for Google.
+   - *Attack:* before Henry first uses Paceday, a catch-all or ex-employee mailbox holder creates a consumer Google account on `henry@acme.com` (verified, no `hd`) and signs in. An account bound to the attacker is created. When Henry later arrives through acme's Workspace (`hd=acme.com`), rule 3 refuses him, so he is locked out of his own address.
+   - Meanwhile the attacker's account receives every grant made to the address: scheduling-link co-host invites (`handlers_scheduling_links.go:377-382`, `:553`, `:656-660`) and **team invites**. Team-invite acceptance compares only the stored address (`backend/api/handlers_teams.go:302`), and §2 does not list it.
+   - The same evidence is treated differently elsewhere: a personal Microsoft account is refused on it (line 88).
+   - *Resolve:* the spec decides one of these, as an owner question:
+     - (a) On a domain that is not a Google consumer domain, only `hd` equal to the address's domain vouches. Consumer Google accounts on custom domains then cannot create accounts, and that limit is release-noted.
+     - (b) The residual risk is accepted explicitly.
+
+     Either way, add an AC for the pre-emptive squat (attacker first, Workspace owner second) and correct line 240. Whatever is chosen, make the Google and personal-Microsoft rules consistent or justify the difference.
+
+2. **The link step creates a permanent, invisible, irremovable sign-in method from any transient session.** Four parts of the spec combine:
+   - Rule 5 (line 90) and D-4 (line 288) make every "Connect work calendar" add a sign-in identity.
+   - OQ-1's default (lines 260-263) adds no list of sign-in methods and no unlink.
+   - D-11 (line 295) says disconnecting the calendar does not unlink, and §5 (line 238) gives no operator tool.
+   - OQ-6 (line 279) leaves pre-deployment sessions, obtained by email matching, valid for up to 7 days.
+
+   *Attack:* anyone who holds Henry's session for a moment connects their **own** Microsoft account as Henry's work calendar. That session can be one from before deployment (the §1 scenarios), a stolen cookie, or an unlocked laptop. From then on they sign in as Henry indefinitely. Nothing in the product shows it or can undo it, and neither JWT expiry nor rotating the signing secret removes it. This turns the OQ-6 "transitional" exposure into a permanent takeover.
+
+   *Resolve:* state a requirement that closes this, with ACs. Acceptable forms:
+   - adding an identity requires fresh proof of an identity already bound to the account; or
+   - the user can see and remove linked identities (this overrides OQ-1's default, so it is an owner question).
+
+   In either case, also require that a session issued before deployment cannot add an identity, or make rotating the secret at deploy mandatory rather than a release note.
+
+3. **Organisation SSO is inconsistent across the migration, D-10/OQ-2 and OQ-1, and no AC covers it.**
+   - Migration (b) (line 100) makes "the issuer configured for that exact domain" authoritative over every **unbound** legacy account in the domain. That is OQ-2's rejected "alternative" (line 266), applied to every pre-existing account at once.
+   - *Attack:* during the lazy-binding window, whoever configures or swaps the `acme.com` issuer binds it to every acme account that has not signed in since deployment. Doing so needs only a PAC-50 step-up or a **break-glass** address, and break-glass is an email-only check (`handlers_sso_stepup.go:238`).
+   - Migration (a) compares "the identifier recorded on the account" with no provider attached (§2 line 31: nothing records which provider it belongs to). An SSO `sub` is a string the configured IdP chooses, so the issuer can assert a legacy user's Google `id` and also qualify under (a).
+   - OQ-2's default says existing members "link SSO from Settings". OQ-1's default adds no such step, and no start route exists for an SSO link. Under the defaults, SSO is therefore permanently unusable by every existing member.
+
+   *Resolve:*
+   - Decide whether (b)-SSO applies to unbound accounts, and reconcile it with D-10.
+   - State that (a) matches only an identifier from the same authority.
+   - Either define the SSO link step with ACs, or record "SSO unusable for existing accounts" as a limit the owner accepts.
+   - Add migration ACs for SSO and for the `gmail.com` branch of (b). AC-15 to AC-17 cover only Google `hd` and Microsoft.
+
+4. **A new path that resets the work calendar, against §3 line 142 and the owner's PAC-47 vs PAC-67 OQ-13 ruling.** AC-12 makes a linked Microsoft identity with a different address (`h.work@other.org`) reach Henry on a later sign-in without a session. AC-8 requires that sign-in to follow "today's success path", and today's path calls `SaveMicrosoftToken`, which sets `calendar_provider = 'outlook'` (`backend/auth/microsoft_oauth.go:90`).
+   - *Scenario:* Henry links Outlook. Later he switches his work calendar back to Google in Settings. He then signs in with Microsoft, and his work calendar is reset to Outlook.
+   - Before this spec, that sign-in reached a different account. So this is a new reset path, not "today's existing behaviour".
+
+   *Resolve:* add an AC that a Microsoft sign-in reaching an account through an identity bound by the link step leaves `calendar_provider` unchanged. Alternatively, make PAC-47's removal of the reset a stated prerequisite (OQ-5 ordering).
+
+5. **The link step's entry points are incomplete, so ordinary reconnects regress.** §2 (line 53) names only `WorkCalendarConnection.tsx:87`. `api.authConnectUrl` is also called from these signed-in surfaces in `smart-calendar-flow`:
+   - `src/components/ConnectionStatus.tsx:18`
+   - `src/pages/Dashboard.tsx:475` (reconnect after credential loss, PAC-67)
+   - `src/pages/Onboarding.tsx:80`
+
+   AC-14 rules that a session cookie alone never links. The start routes are the same URLs as sign-in (`AuthDialog.tsx:79,98,102`). So every entry point the plan does not convert becomes an ordinary sign-in.
+
+   *Scenario:* Henry is bound to Google and reconnects Outlook from the Dashboard banner. The Outlook account carries the **same** address. Today that works. Under rule 3 it is refused.
+
+   *Resolve:* list every signed-in connect entry point in both repos, state whether each is a link step, and give each an AC. That includes a [unit] web AC that the link-start path is used. Also add the Google analogue of AC-12: a Microsoft-bound user connects Google.
+
+6. **§6's scope guard is wrong, and it contradicts AC-11/OQ-3.** Line 245 says "No test protects Microsoft's scope set today". In fact `backend/auth/pac50_signin_scopes_test.go:19-69` (`TestPAC50_SignInAuthorizeURLsCarryNoNewScope`, PAC-50 AC-24, an owner decision) asserts that each sign-in's scope set is **exactly** today's:
+   - Google: `{calendar, userinfo.email}`
+   - Microsoft: `{Calendars.ReadWrite, User.Read, offline_access}`
+
+   AC-11 (line 188) and OQ-3 (line 270, "no `openid`") allow adding "sign-in identity scopes", and doing so fails that test. The owner's words are "Sign-in keeps today's permissions".
+
+   *Resolve:* choose one, and do not leave both statements in the spec:
+   - require the identity evidence to be obtained within exactly today's scope set. AC-11's third bullet then becomes "the scope set is unchanged", which the existing test already guards; or
+   - list that test under "Must change" with an explicit owner question, because this changes an owner-pinned decision.
+
+### Non-blocking
+
+1. **Microsoft "tenant has proven ownership" and unmanaged ("viral") directories. Unverified.** From my knowledge, Microsoft self-service sign-up has created *unmanaged* directories in which a domain counts as verified by email alone. If that still holds, a mailbox holder at `acme.com` could satisfy rule 4 and migration (b) for Microsoft, for example where acme is a Google Workspace shop with no Entra tenant. I could not verify whether such directories still appear in `verifiedDomains` or can still be created in 2026. Make this a question OQ-3 must answer before the contract. PAC-68 §3 relies on the same evidence.
+2. **Source of the tenant id.** Require that `tid` and `oid` come from Microsoft's answer for the same token, and that the two sources agree when both are read (PAC-50 step-up does this at `handlers_sso_stepup.go:512`). AC-4 runs against fake providers, so it cannot tell a trusted source from an untrusted one.
+3. **Identifier formats.** Today the recorded Microsoft identifier is the Graph `/me` `id`. For work accounts this equals the object id (known). For personal accounts it is a short hex id, not the token's `oid` (from memory, unverified). Name the exact field for each authority so that migration (a) compares like with like.
+4. **Concurrent binding of a legacy account.** AC-7 covers new accounts only. Add an AC where two qualifying identities race to bind one unbound legacy account, for example on a hybrid domain verified in both Workspace and Entra: exactly one binds and the other is refused.
+5. **Address comparison is case-sensitive today.** `users.email` is plain `TEXT UNIQUE` (`006_auth.up.sql:5`), and no callback lowercases the address. Define "an account holds the address" as case-insensitive. Otherwise `HENRY@acme.com` is a separate address an attacker can squat.
+6. **Google `hd` and secondary or alias domains.** `hd` is the Workspace primary domain. Users on a secondary domain fail migration (b) and must rely on (a). Release-note it.
+7. **The owner's "extended access" step** (PAC-68 OQ-2, "offer both") is another round trip to the provider. State that it never binds or links an identity.
+8. **Address-as-person consumers missing from §2/§5:**
+   - team-invite acceptance, `handlers_teams.go:302`;
+   - break-glass by session address, `handlers_sso_stepup.go:238`;
+   - the `lower(email)` lookup at `handlers_manager.go:356`.
+9. **AC-11's third bullet names no scope set.** A test-writer cannot falsify "identity scopes that need no tenant-admin consent" without a list. Resolve it together with Blocking 6.
+10. **AC-23 may be dropped by the plan.** That is acceptable as written. If it is dropped, though, AC-1 to AC-7 are the only proof, so their tests must drive the real callback handlers (as `pac35_auth_flows_test.go` does), not a storage-level helper.
+
+### Criteria I could not falsify
+
+- AC-11, third bullet: no scope set is named (Blocking 6, Non-blocking 9).
+- AC-19, web half: "offers sign-in again" names nothing observable, such as a button text or a route.
+
+Every other AC has a test that fails today and passes afterwards. Example: AC-1 fails today because `UpsertUser`'s `ON CONFLICT (email)` returns Henry's row and the callback stores G2's token on it.
+
+### Citations I checked and found wrong
+
+- `routes.go:33` for `GET /api/auth/callback`: the route is at `routes.go:34` (`:33` is `/google`).
+- "Both callbacks are public (`routes.go:28-35`)": the Microsoft callback is at `:36`, outside that range.
+- §6 line 245, "No test protects Microsoft's scope set today": wrong (Blocking 6).
+- `AuthDialog.tsx:79,102`: correct as far as it goes, but it omits the Google start with a login hint at `:98`.
+
+I checked every other citation in §2, §6 and the header and found it correct:
+
+- `clockwise-like` backend: `006_auth.up.sql:5,8-9`; `users.go:21-31`; `paceday.gen.go:1186-1197`; `handlers_auth.go:42-84` and the lines inside it; `google_oauth.go:16-19`; `microsoft_oauth.go:17-18,40,90`; `handlers_microsoft_auth.go:40-97`; `handlers_sso.go:62-65,103-167,183-247`; `oidc.go:19-23,79-83`; `stepup.go:172-182`; `handlers_sso_stepup.go:494-533`; `handlers_scheduling_links.go:377-382,553,656-660`; `jwt.go:17-22`.
+- `clockwise-like` tests: `pac67_conferencing_test.go:322-358`; `handlers_teams_test.go:53-60`; `e2e/auth.ts:13-25`; `pac35_auth_flows_test.go:142,167,193,239,286`; `handlers_sso_test.go:161-195`.
+- `clockwise-like` docs: `api-audit.md:284,350`; `PAC-22.md:80`; `PAC-68.md:144`.
+- `smart-calendar-flow`: `client.ts:1181-1182`; `WorkCalendarConnection.tsx:87`.
+
+### Consumers this breaks
+
+- `clockwise-like` `backend/api/pac67_conferencing_test.go:322-358`: already named by the spec.
+- `clockwise-like` `backend/auth/pac50_signin_scopes_test.go:19-69`: fails if any sign-in scope is added (Blocking 6).
+- `smart-calendar-flow` `src/components/ConnectionStatus.tsx:18`, `src/pages/Dashboard.tsx:475`, `src/pages/Onboarding.tsx:80` and `src/components/WorkCalendarConnection.tsx:87`: these signed-in connects become refused sign-ins unless they are converted to the link step (Blocking 5).
+- `smart-calendar-flow` `src/pages/Index.tsx:568` and `src/pages/AuthCallback.tsx:8`: they only recognise `auth_failed`, so the new refusal state needs a reader (AC-19).
+
+### Provider facts (OQ-3): known vs unverified
+
+Known from my knowledge, not checked by any call:
+
+- Google's v2 userinfo `id` equals the OIDC `sub`.
+- With the `userinfo.email` scope, v2 userinfo returns `verified_email` (not `email_verified`), and returns `hd` for Workspace accounts.
+- Graph `GET /organization` returns `id` (the tenant id) and `verifiedDomains` under delegated `User.Read`. The step-up already reads `/organization?$select=id,verifiedDomains` (`stepup.go:290`), but with its own, wider scopes.
+- A Microsoft object id is the same across apps in one tenant. The `sub` claim is different for each app.
+- A personal Microsoft account carries the consumer tenant id, and `/organization` does not answer for it.
+
+Could not verify:
+
+- whether `User.Read` alone is enough for `/organization` in 2026;
+- whether unmanaged ("viral") directories list a domain in `verifiedDomains`, and whether they can still be created;
+- whether Microsoft offers a claim that the email's domain owner verified it, usable without new consent, which would vouch for a personal account's address.
