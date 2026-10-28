@@ -3,7 +3,7 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-50/sso-configuration-is-writable-by-any-employee-and-for-any-subdomain",
   "status": "draft",
   "contractRevision": "8.1",
-  "contractHash": "62853fa6daf6eb91e2e013a0c53d09ef6f50c52686c94b62fec7ff9bf993a16d",
+  "contractHash": "2f030a443a4212a4d24ddfa3503df71d60f7436e442a25b6bd04ee5a1ad1efc2",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml at the commit that carries this revision (git show HEAD:contracts/openapi/openapi.yaml | sha256sum).",
   "contractDoc": "contracts/features/PAC-50.md",
   "specDoc": "docs/specs/PAC-50.md",
@@ -250,6 +250,7 @@
     "Revision 8.1 (N4): startSsoAdminStepup's 403 schema is SsoWriteMembershipRequired instead of ErrorResponse (same bytes); generated code and web types regenerate; no hand-written consumer reads it."
   ],
   "gates": {
+    "contract checks (revision 8.1)": "On f71a91a (the commit carrying revision 8.1's fragments, bundle and generated code), in the detached worktree wt-pac50-81: py -3 scripts/openapi_assemble.py --check -> OK: bundle is in sync (103 paths), rc=0; py -3 scripts/openapi_migration_report.py --check -> OK: MIGRATION.md covers all 124 operations (5 generated), rc=0; bash scripts/openapi_gen_go.sh --check -> OK: backend/api/gen matches the contract, rc=0; cd backend && go build ./... rc=0. git show f71a91a:contracts/openapi/openapi.yaml | sha256sum = contractHash. api-gate, web-gate and e2e-gate run on #212 and the web PR against this revision (contracts/features/PAC-50.md Revision 8.1).",
     "contract checks (revision 8)": "On 6a1521e (the merge commit carrying revision 8), in the worktree: python3 scripts/openapi_assemble.py --check -> OK: bundle is in sync (103 paths), rc=0; python3 scripts/openapi_migration_report.py --check -> OK: MIGRATION.md covers all 124 operations (5 generated), rc=0; bash scripts/openapi_gen_go.sh --check -> OK: backend/api/gen matches the contract, rc=0; cd backend && go build ./... rc=0. git show HEAD:contracts/openapi/openapi.yaml | sha256sum = contractHash. Not run: api-gate, web-gate, e2e-gate, go test (no test database on this host; this branch carries no handler code). Output in contracts/features/PAC-50.md Revision 8.",
     "contract checks (revision 6)": "make openapi and make openapi-check (api half) in a golang:1.25-bookworm container on a clone of 8c36c52: make openapi rc=0, regenerated backend/api/gen/paceday.gen.go and contracts/openapi/openapi.yaml (committed as 76ffa0c), openapi-check(api) rc=0. The api-gate and web-gate results for revision 6 are in contracts/features/PAC-50.md Revision 6.",
     "api-gate (revision 5)": "bash /c/Users/jouzu/paceday/.claude/factory/api-gate.sh factory/pac-50-contract on a7ce915: make openapi rc=0, regenerated: none, openapi-check(api) rc=0 (101 paths, 122 operations, 4 generated), backend/mcp lint rc=0, backend/mcp test rc=0, backend coverage 63.1% (floor 57%) rc=0, mcp coverage 84.0% (floor 75%) rc=0; output in contracts/features/PAC-50.md Revision 5.",
@@ -332,6 +333,13 @@
       "commit": "6a1521e",
       "hash": "62853fa6daf6eb91e2e013a0c53d09ef6f50c52686c94b62fec7ff9bf993a16d",
       "summary": "Round-5 challenge: main merged (PAC-22 0da1b8c, PAC-73 8c542de; no rebase). B1: createSsoProvider takes PAC-22's request, 201 SsoProvider and 400 list inside PAC-50's gate (stored-row check after the domain 403, before the consume); setSsoProviderState's 403 is SsoWriteForbiddenResponse; without_stepup covers suspend/resume; spec §4.6 op gains suspend/resume; U-21/U-22 restated; SsoProviderResponse gone; PAC-22.yaml correction becomes a follow-up. B2: GET /api/admin/sso/stepup/options (getSsoStepupOptions, SsoStepupOptions) with SsoStepupUrl/SsoStepupScopes/SsoWithoutStepup shared with the 403; AC-24 extended, AC-25 completed, AC-26 added. Non-blocking: start check order, its 400 rationale, future-iat break-glass, Settings outcome text. Migration renumbered 029 -> 030 (PAC-73 took 029)."
+    },
+    {
+      "revision": "8.1",
+      "date": "2026-10-28",
+      "commit": "f71a91a",
+      "hash": "2f030a443a4212a4d24ddfa3503df71d60f7436e442a25b6bd04ee5a1ad1efc2",
+      "summary": "Round-6 challenge (accept, 6 non-blocking) applied: N1 null is empty in createSsoProvider step 2a; N2 pac22_sso_secrets_test.go named as consumer and merge condition; N3 spec §4.2 step 4b and before/after-consume list, AC-3c extended; N4 start 403 is SsoWriteMembershipRequired; N5 grant purpose column (sso_write), AC-27; N6 without_stepup and AC-25 without suspend/resume."
     }
   ],
   "decisionsOwner": [

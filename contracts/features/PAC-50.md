@@ -2661,3 +2661,60 @@ when oidc_issuer or oidc_client_id changes` instead of the step-up 403. But
   `getSsoStepupOptions` (AC-25 and AC-26). Sign-in scopes are unchanged (AC-24).
 - **LLM org key OQ-1:** this revision does not contradict it. See N5 for the
   grant-sharing question it leaves to the plan.
+
+## Revision 8.1 — 2026-10-28 (response to the round-6 challenge, non-blocking)
+
+Written by `contract-author` in a local session, in a detached worktree
+(`wt-pac50-81`) of `origin/factory/pac-50-contract` at `edcbe72`. The round-6
+verdict was accept; this revision applies its six non-blocking findings before
+#212 and the web PR are updated, as the challenger asked for N1 and N2. The
+fragments, the bundle and the generated Go code are in `f71a91a`; the bundle
+there hashes to
+`2f030a443a4212a4d24ddfa3503df71d60f7436e442a25b6bd04ee5a1ad1efc2`
+(`git show f71a91a:contracts/openapi/openapi.yaml | sha256sum`), recorded in
+the manifest. The commit that adds this section changes no fragment and no
+bundle.
+
+### Findings and what changed
+
+| Finding | Fix | Where |
+|---|---|---|
+| N1 step 2a vs 2f on `null` | Step 2a now reads "each declared property present is `null` or a value of its declared type"; `null` counts as empty and is decided by step d or f. `"domain":null` gives `domain, provider_name and provider_type are required`, `"oidc_client_secret":null` gives `oidc_client_secret must not be empty`, exactly as `main`'s `decodeSSOProviderWrite` (`null` into `string` is a no-op, into `*string` is nil, and neither is an unmarshal error). | `createSsoProvider` step 2a; spec §4.2 step 3; §9 D-15(1) |
+| N2 `pac22_sso_secrets_test.go` not named | Named in `consumersAffected` and `mergeConditions`: #212 builds the handler through its constructor and gives the caller a live `sso_write` grant (or fresh break-glass) before each write; every PAC-22 assertion stays; only the pre-PAC-50 403 `can only configure SSO for your own domain` becomes 403 `provider_domain_mismatch`. | manifest; §9 D-15(2) |
+| N3 spec body lags D-14 | §4.2 step 3 covers create and `setSsoProviderState` bodies; new step 4b is PAC-22's stored-row check (before authorization; a 500 on its read is also before any consume); step 5a lists what is decided before the consume (every 400 and 403 of steps 2-4b) and what comes after it and spends the grant (storage failure, 404 of a delete or state change, PAC-22's store-time 400). AC-3c is extended with the check-6 400 that leaves the grant live and the store-time 400 that spends it. | spec §4.2, AC-3c; manifest AC-3c |
+| N4 two 403 shapes for membership | Cheap, so done: `startSsoAdminStepup`'s 403 is `$ref SsoWriteMembershipRequired` (it still always says `org membership required`; the bytes do not change). A generated client now has one type for every membership refusal under `/api/admin/sso`. | start 403; `SsoWriteMembershipRequired` description |
+| N5 grant purpose | Migration 030's grant table gains `purpose TEXT NOT NULL` with no default, so every insert names it; the index serves the newest live grant for (user, org, purpose). PAC-50 issues and consumes only `sso_write`. The future organisation AI key write (owner 2026-10-28, LLM org key OQ-1) adds its own value, so neither write can spend the other's grant and no further migration is needed. New AC-27. | spec §4.1, §4.2 step 5a, §4.8; `createSsoProvider` step 5a; callback step 5; manifest `migration`, AC-27 |
+| N6 suspend/resume ahead of what is served | `SsoWithoutStepup` names create, replace and delete, says suspend and resume join only when PAC-22's follow-up serves `setSsoProviderState`, and says a client must not offer them before then. AC-25's copy says the grant is spent by the next create, replace or delete, and Settings names and offers no suspend or resume. §4.6 notes PAC-50 never records them itself. | `SsoWithoutStepup`; spec AC-25, §4.6; manifest AC-25 |
+
+### Alternatives rejected
+
+- **A default on `purpose`** (the challenger offered `sso_configuration`). A
+  default would let a later feature's insert that forgets the column mint an
+  SSO grant. No default makes the omission an error.
+- **A `CHECK (purpose IN ('sso_write'))`.** It would force the org-key ticket
+  to write a migration only to widen it, which is what N5 asked to avoid.
+- **A `purpose` parameter on the step-up start now.** Under PAC-50 every
+  step-up is for an SSO write. How a step-up for another purpose is started
+  is the org-key ticket's contract (spec §9 D-15(5)).
+- **Leaving the start's 403 on `ErrorResponse` (N4 is optional).** The swap
+  changes no bytes, only the generated type, so there was no reason to keep
+  two shapes.
+
+### Gates run for revision 8.1
+
+Run in `wt-pac50-81` on `f71a91a`:
+
+```
+$ py -3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (103 paths)                                   rc=0
+$ py -3 scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 124 operations (5 generated)            rc=0
+$ bash scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract                            rc=0
+$ (cd backend && go build ./...)                                    rc=0
+$ git show f71a91a:contracts/openapi/openapi.yaml | sha256sum
+2f030a443a4212a4d24ddfa3503df71d60f7436e442a25b6bd04ee5a1ad1efc2
+```
+
+`api-gate`, `web-gate` and `e2e-gate` are run on #212 and the web PR after
+they merge this revision; their results are recorded in those PRs, not here.
