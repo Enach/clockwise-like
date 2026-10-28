@@ -82,13 +82,13 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
       for (const label of ['AWS Profile', 'GCP Project', 'GCP Location']) {
         await expect(page.getByLabel(label)).toHaveCount(0);
       }
-      await expect(page.getByLabel('Base URL')).toHaveValue('');
-      await expect(page.getByLabel('API key')).toBeVisible();
+      await expect(page.getByRole('textbox', { name: /^Base URL/ })).toHaveValue('');
+      await expect(page.getByRole('textbox', { name: /^API key/ })).toBeVisible();
 
       await select.selectOption('bedrock');
-      await expect(page.getByLabel('API key')).toBeVisible();
+      await expect(page.getByRole('textbox', { name: /^API key/ })).toBeVisible();
       await expect(page.getByLabel('Bedrock model ID')).toBeVisible();
-      await expect(page.getByLabel('Base URL')).toHaveCount(0);
+      await expect(page.getByRole('textbox', { name: /^Base URL/ })).toHaveCount(0);
     } finally {
       await context.close();
     }
@@ -159,10 +159,10 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
         await page.goto('/settings');
         await expect(page.getByTestId('ai-off-notice')).toContainText('Ollama is no longer supported');
         await page.getByLabel('AI provider').selectOption('openai');
-        const baseUrl = page.getByLabel('Base URL');
+        const baseUrl = page.getByRole('textbox', { name: /^Base URL/ });
         await expect(baseUrl).toHaveValue(OLLAMA_ORIGIN);
         if (clear) await baseUrl.fill('');
-        await page.getByLabel('API key').fill(`sk-e2e-${randomUUID()}`);
+        await page.getByRole('textbox', { name: /^API key/ }).fill(`sk-e2e-${randomUUID()}`);
         await page.getByRole('button', { name: /save changes/i }).click();
         await expect(page.getByText(/settings saved/i)).toBeVisible();
       } finally {
