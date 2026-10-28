@@ -5,11 +5,11 @@
 - **Manifest**: `contracts/features/PAC-50.yaml`
 - **Fragment**: `contracts/openapi/paths/auth.yaml` (plus its notes, section (d))
 - **Absorbs**: PAC-46 (the exact-domain rule)
-- **Revision**: 7, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27, 5 and 6 earlier on 2026-10-28; see the Revision sections at the end). Revision 7 changes no operation or schema (the bundle is revision 6's): it replaces spec §9 D-13 with the owner's answer (a Settings entry point for the step-up, AC-25) and corrects stale lines in the manifest and in section 2. Revision 6 answers the round-4 challenge: `without_stepup` is an open list of codes and `stepup_scopes` carries a key only for a configured provider. Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
+- **Revision**: 8, 2026-10-28 (1 and 2 on 2026-10-25, 3 and 4 on 2026-10-27, 5 to 7 earlier on 2026-10-28; see the Revision sections at the end). **Revision 8 merges `main` (PAC-22, PAC-73)**: `createSsoProvider` now carries PAC-22's request, 201 (`SsoProvider`) and 400 list inside PAC-50's gate, `setSsoProviderState` is the third gated write, `GET /api/admin/sso/stepup/options` is added for the Settings entry point, and the migration is `030_sso_admin_stepup`. Where sections 1-6 below describe `SsoProviderResponse`, the pre-PAC-22 request, two write operations or migration 029, "Revision 8" supersedes them. Revision 7 changes no operation or schema (the bundle is revision 6's): it replaces spec §9 D-13 with the owner's answer (a Settings entry point for the step-up, AC-25) and corrects stale lines in the manifest and in section 2. Revision 6 answers the round-4 challenge: `without_stepup` is an open list of codes and `stepup_scopes` carries a key only for a configured provider. Revision 5 records the owner decisions of 2026-10-27: sections 1 and 2 below describe revisions 1-4 where they say `provider_domain_mismatch` is a 400 or that the client navigates on a step-up 403; "Revision 5" supersedes both.
 
 ## 1. The change
 
-*Sections 1 and 2 describe revisions 1-4. Where they differ from later revisions they are superseded, and each such place is marked: since revision 5 the 403 has four variants (`SsoWriteDomainMismatch`) and `provider_domain_mismatch` is a 403, not a 400; since revision 6 the step-up variant also carries `stepup_scopes` (a key per configured provider) and `without_stepup` (an open list). PAC-22 lands before PAC-50 (spec §9 D-12).*
+*Sections 1 and 2 describe revisions 1-4. Where they differ from later revisions they are superseded (since revision 8, also for PAC-22's request and response, `setSsoProviderState` and the new options operation; see "Revision 8"), and each such place is marked: since revision 5 the 403 has four variants (`SsoWriteDomainMismatch`) and `provider_domain_mismatch` is a 403, not a 400; since revision 6 the step-up variant also carries `stepup_scopes` (a key per configured provider) and `without_stepup` (an open list). PAC-22 lands before PAC-50 (spec §9 D-12).*
 
 Two operations change and two are added. Nothing else in the contract moves.
 
@@ -197,7 +197,7 @@ proven by the spec's `[unit]` ACs:
 - the state cookie's binding to user, org, provider and nonce (AC-13b, AC-21a);
 - the SSO event table (AC-12). It is not exposed by any operation, by spec
   §4.6. The contract mentions it only to say no operation exposes it;
-- migration 029, `029_sso_admin_stepup` (027 before revision 3, 028 in revisions 3 and 4; spec §9 D-7), and the `lower(domain)` uniqueness (AC-20);
+- migration 030, `030_sso_admin_stepup` (027 before revision 3, 028 in revisions 3 and 4, 029 in revisions 5-7; spec §9 D-7), and the `lower(domain)` uniqueness (AC-20);
 - "no settings or token row changes" (AC-17).
 
 ## 3. What this resolves, and what it does not
@@ -2187,3 +2187,228 @@ Each payload below was traced through #212 `44b1c5f` and matches the contract:
 - **Delete 404** consumes the grant (D-5) and records nothing.
 
 The bundle is in sync, and the hash matches the manifest.
+
+## Revision 8 — 2026-10-28 (response to the round-5 challenge)
+
+Written by `contract-author` in a local session, against "Challenge, revision
+7" above. Contract revision 8. `origin/main` at `8c542de` (PAC-22 #237 as
+`0da1b8c`, then PAC-73 #239) is **merged** into this branch as `6a1521e`, with
+no rebase. The bundle at `6a1521e` hashes to
+`62853fa6daf6eb91e2e013a0c53d09ef6f50c52686c94b62fec7ff9bf993a16d`
+(`git show 6a1521e:contracts/openapi/openapi.yaml | sha256sum`), recorded in the
+manifest. The commit that adds this section changes no fragment and no bundle.
+
+### Merge conflicts and how they were resolved
+
+`git merge origin/main` stopped on four files. Each is resolved so that both
+sides' intent survives:
+
+| File | `main` (PAC-22) wanted | This branch (PAC-50) wanted | Resolution |
+|---|---|---|---|
+| `contracts/openapi/paths/auth.yaml`, `createSsoProvider` | OIDC-only request, 12 ordered 400s, stored-row check 6, 201 `SsoProvider`, interleaved-write rules, active state kept; 403 still `ErrorResponse` with the old domain message ("PAC-50 replaces this gate") | The gate: membership, body, exact domain 403, authorization, store; 403 `SsoWriteForbiddenResponse`; `unknown property` 400 | PAC-22's request, 201, 400 messages, secret rules, interleaving and active-state text are kept word for word where they do not describe the gate. They are placed inside PAC-50's gate as steps 2 (checks 1-5, with `unknown property` as 2c) and 4 (check 6). The 403 is PAC-50's. The suffix-rule 403 text is gone, as PAC-22 said it would be. |
+| same file, `listSsoProviders` | `SsoProviderList` of `SsoProvider`, generated server | untouched by PAC-50 | `main`'s, unchanged. |
+| same file, components | `SsoProviderResponse` removed; `SsoProvider`, `SsoProviderList`, `SsoProviderState`, `SsoProviderStateRequest` added; new `SsoProviderCreateRequest` | `SsoProviderResponse` (13 PascalCase keys) and the old request, with PAC-50 descriptions; the `SsoWrite*` schemas | `main`'s schemas, with PAC-50's descriptions added where PAC-50 changes behaviour (`domain` on the request: 403 and lower-casing; `SsoProvider.domain`: lower-cased, migration 030; `unknown property` on the request). `SsoProviderResponse` stays removed. PAC-50's `SsoWrite*` schemas are kept. |
+| same file, `setSsoProviderState` (auto-merged from `main`, then edited) | Specified "against PAC-50's gate", 403 `ErrorResponse`, a note that PAC-50's branch still answered 400 | n/a | Put behind the gate (B1 below). The obsolete note about PAC-50's 400 is removed, because the owner's 403 is what PAC-50 says. |
+| `contracts/openapi/MIGRATION.md` | 121 operations, 5 generated; `listSsoProviders` generated; PAC-22 notes on `createSsoProvider`; `setSsoProviderState` row | 122 operations, 4 generated; step-up rows | `main`'s rows and notes, plus PAC-50's two step-up rows and the new `getSsoStepupOptions` row, then `openapi_migration_report.py` rewrote the counts: 124 operations, 5 generated, 119 handwritten. |
+| `contracts/openapi/openapi.yaml` | (generated) | (generated) | Not hand-merged: reassembled from the resolved fragments by `scripts/openapi_assemble.py`. |
+| `backend/api/gen/paceday.gen.go` | (generated) | (generated) | Not hand-merged: regenerated by `scripts/openapi_gen_go.sh` (oapi-codegen v2.4.1). `go build ./...` passes. `main`'s `generatedServer` embeds the strict interface, so the two new methods (`GetSsoStepupOptions`, and `SetSsoProviderState` already on `main`) need no stub. |
+
+`auth.notes.md` merged without a conflict; its section (d) is updated for this
+revision. `docs/specs/PAC-50.md` merged without a conflict and is updated (see
+below).
+
+**A second conflict the merge did not show: migration 029.** PAC-73 landed
+`029_llm_bring_your_own`. PAC-50's migration was `029_sso_admin_stepup`, so it
+moves to **`030_sso_admin_stepup`** (spec §9 D-7, the manifest's `migration`,
+AC-20a, `SsoProvider.domain`). It touches no table 029 alters: 029 alters the
+settings and LLM tables, and 030 touches `sso_providers`, `organizations` and
+its own two new tables.
+
+### B1 — accepted, fixed as proposed
+
+The D-12 trigger fired, and every item the challenge listed is now in the
+fragment:
+
+- **`setSsoProviderState` 403 is `$ref SsoWriteForbiddenResponse`.** Its step 3
+  is the `SsoWriteDomainMismatch` variant, and its step 4 is
+  `createSsoProvider`'s authorization step (a grant tried first, then
+  break-glass with a fresh session). Its record carries `via`. Its description
+  now says it is **not served before PAC-50 is on `main`** (PAC-22 D-16), so
+  no SSO write is ever served ungated. Serving it is PAC-22's follow-up, and
+  that follow-up inherits this gate (manifest `mergeConditions`).
+- **`SsoWriteForbiddenResponse`'s description names the three writes.**
+  `SsoWriteDomainMismatch` names the `{domain}` of `setSsoProviderState`.
+- **`without_stepup`.** The `sso_configuration_writes` code now reads "create,
+  replace, delete, suspend or resume" (`SsoWithoutStepup`).
+- **Spec §4.6.** The `op` enum is now `create|update|delete|suspend|resume`.
+- **`createSsoProvider`'s 201 is `SsoProvider`.** The 400 list is PAC-22's 12
+  messages plus `unknown property: <name>`, listed in gate order. (The
+  challenge said "nine"; the list on `main` has twelve, counting the three SAML
+  refusals and the three secret messages.)
+- **Check 6 placed.** It is gate step 4: after the domain 403 and before the
+  grant is consumed, so it is a 400 that leaves the grant live (AC-3c's
+  intent: a mistyped issuer does not burn a grant). It reads the row under the
+  lower-cased domain, which PAC-22's own text had anticipated ("after PAC-50,
+  … the row under the lower-cased domain"). Its read failure is a 500 before
+  any consume. PAC-22's *store-time* refusal (its D-14) happens after the
+  consume, so it spends the grant, as a storage failure does (§4.2 step 5a).
+  PAC-22 left this open, and it is now spec §9 D-14(2).
+- **U-21 restated.** PAC-22 resolved U-21 on `main` with its replaced request.
+  Revision 8 redetermined it by reading `main`'s `decodeSSOProviderWrite`
+  (`backend/api/handlers_sso.go`): it validates exactly what the schema and
+  the 400 list state. PAC-50 adds only the `unknown property` refusal, so
+  `additionalProperties: false` is now what the server does. **U-22**
+  (13 PascalCase keys) no longer describes anything: PAC-22 removed
+  `SsoProviderResponse`. The manifest's `resolvesUncertain` says so instead of
+  carrying the old determination forward.
+- **The two "lands after PAC-50" descriptions** handed over by revision 7
+  (`createSsoProvider` 201 and `SsoProviderResponse`) are gone, because the
+  text they were in was replaced.
+- **The `PAC-22.yaml` clause** is no longer a precondition. PAC-22 landed with
+  `contractBase`, `gates.contractApproval` and `followUps.rebaseOntoPac50`
+  still stating the old order. It is now a manifest `followUps` item owned by
+  PAC-22's next stage.
+- #212 and #119 regenerate against the new hash after this revision is
+  challenged (manifest `mergeConditions`). Neither was touched here.
+
+One more consequence of the merge, settled here rather than left for the
+challenger. On PAC-22's `main`, `org not found` came after the body 400s.
+PAC-50's gate decides membership, and with it `org not found`, before the
+body is read. Revision 8 keeps PAC-50's order (spec §9 D-14(1)), because a
+caller whose org row is gone has no org to write for, whatever the body
+says. #212's `callerOrg` already does this.
+
+### B2 — accepted, fixed as proposed (without the optional flag)
+
+- **`GET /api/admin/sso/stepup/options`** (`getSsoStepupOptions`), behind the
+  session. Its path is distinct from `GET /stepup`, `GET /stepup/callback`,
+  `DELETE /{domain}` and `PUT /{domain}/state`. `{domain}` matches one segment,
+  so `/stepup/options` can only be confused with `/{domain}/state` if the last
+  segment were `state`, and it is not.
+- **200 `SsoStepupOptions`** = `{stepup_url, stepup_scopes, without_stepup}`,
+  all required, `additionalProperties: false`.
+- **401** text/plain. **403** `SsoWriteMembershipRequired` (`org membership
+  required`, or `org not found` when the org row is gone, as at the writes'
+  step 1). It has no 500: membership lookup errors are the 403, as for every
+  SSO operation, and the configured providers are in memory.
+- **Shared components.** `SsoStepupScopes`, `SsoWithoutStepup` and also
+  `SsoStepupUrl` are extracted, and `SsoWriteStepupRequired` and
+  `SsoStepupOptions` both `$ref` them, so the two bodies cannot drift.
+  `SsoStepupUrl` was extracted too, because the same drift argument applies to
+  the `const`.
+- **Stated in the description.** It consumes and consults no grant, sets no
+  cookie, records nothing, and its `stepup_scopes` and `without_stepup` equal
+  the step-up 403's on the same deployment. It also says that the
+  `sso_stepup_state` cookie's `Path=/api/admin/sso/stepup` covers this path,
+  so the browser sends that cookie here mid-step-up, and the operation ignores
+  it.
+- **AC-24** is extended to the options operation on the three configurations.
+  **AC-26** `[unit]` (new) pins the operation itself.
+- **AC-25** is now fully specified for the web stage. The values come from this
+  operation. Its 403 means no entry point. The return states the outcome:
+  `granted` says the grant is live for 10 minutes and is spent by the next SSO
+  configuration write, so the user should make that write now (this is
+  divergence 4). Settings makes no write and starts nothing on return. An
+  unknown `reason` is shown as a denial without detail. No `stepup`, or any
+  other value, shows nothing.
+- **AC-22** needed no new contract surface: the 403 carries everything it
+  needs, and its manifest text is unchanged. **The web lacks both AC-22 and
+  AC-25.** That is stage-4 work, and the manifest's web `mergeConditions` item
+  now names both, with their files.
+
+**`breakglass: boolean` — rejected.** Break-glass needs a session less than 10
+minutes old, so the flag would go stale before the user acts on it. The
+write's own 403 (`sso_write_requires_fresh_login`) already tells a listed
+operator what to do. It would also turn a read-only, caller-independent answer
+into one that depends on the caller (spec §9 D-14(6)).
+
+### Contract/implementation divergences (non-blocking): all applied
+
+1. **`startSsoAdminStepup` 400 rationale.** It is reworded: the route is mounted
+   directly, and the handler writes the generated wrapper's bytes itself, so the
+   body does not change if the operation moves to the generated server. Spec §9
+   D-14(5).
+2. **Start order stated.** It is `provider` 400, then membership 403, then 503,
+   then 500, with the two examples from the challenge. The 403 is
+   `org membership required` also for a missing org row (#212 does that). Spec
+   §9 D-14(3).
+3. **Future `iat`.** A session issued more than one minute in the future is not
+   fresh. This is in `createSsoProvider` step 5b and in
+   `SsoWriteFreshLoginRequired`. Spec §9 D-14(4).
+4. **Callback lands on Settings.** This is in AC-25's outcome text (above) and
+   in the callback description ("a step-up started from a refused write
+   elsewhere also lands there").
+
+### Uncertainties not actually resolved: answered
+
+U-21 and U-22 are restated under B1 and are not carried over. No `x-uncertain`
+marker is on any `/api/admin/sso*` operation or `Sso*` schema in the bundle
+(checked with a short script over the bundle). The bundle's `x-uncertain`
+count is `main`'s (7 lines).
+
+### Owner decisions: still reflected
+
+- **403 for a subdomain or foreign domain** applies to all three writes,
+  `setSsoProviderState` included.
+- **The optional step-up, explained before navigating, revisitable from
+  Settings** (PAC-68 OQ-2 "offer both") is now served: the
+  `getSsoStepupOptions` operation backs AC-25.
+- **Sign-in never asks for a new admin consent**: unchanged (AC-24).
+- **LLM org key OQ-1** (2026-10-28) reuses PAC-50's admin proof. Nothing in
+  this revision blocks that. The grant is consumed by "the next SSO
+  configuration write", and whether an org-key write may also consume it is
+  that ticket's contract to say. This revision does not widen the grant's
+  scope beyond SSO configuration writes.
+
+No question for the owner: everything this revision decides is an interface
+detail, recorded as such in spec §9 D-13/D-14.
+
+### Alternatives rejected
+
+- **Rebasing onto `main`.** Published history is never rebased (factory,
+  spec §9 D-12).
+- **Keeping PAC-22's order with `org not found` after the body.** It would make
+  the two membership messages straddle the 400s, so an org-less caller could
+  learn whether a body is well-formed. PAC-50's gate decides membership first.
+- **`unknown property` before the SAML refusals.** A SAML property would then be
+  reported as unknown, which loses PAC-22's named refusal (PAC-22 AC-18).
+- **Check 6 after authorization.** A mistyped issuer would burn a grant, which
+  is the AC-3c failure the gate order exists to prevent.
+- **`/api/admin/sso/stepup-options`**, to keep the state cookie off the options
+  path. Rejected: the cookie is harmless there and ignored. The challenger's
+  path keeps all step-up operations under one prefix.
+- **Serving the options inside `listSsoProviders`'s response.** That read is
+  PAC-22's, and it is unrelated to the step-up. It would also change a response
+  the web already consumes.
+- **A `breakglass` flag:** see B2.
+
+### Gates run for revision 8
+
+Run in the worktree `C:\Users\jouzu\paceday\wt-pac50-contract` on `6a1521e`,
+before the commit that adds this section (which changes only this file and
+the manifest):
+
+```
+$ python3 scripts/openapi_assemble.py --check
+OK: bundle is in sync (103 paths)                                   rc=0
+$ python3 scripts/openapi_migration_report.py --check
+OK: MIGRATION.md covers all 124 operations (5 generated)            rc=0
+$ bash scripts/openapi_gen_go.sh --check
+OK: backend/api/gen matches the contract                            rc=0
+$ (cd backend && go build ./...)                                    rc=0
+$ git show 6a1521e:contracts/openapi/openapi.yaml | sha256sum
+62853fa6daf6eb91e2e013a0c53d09ef6f50c52686c94b62fec7ff9bf993a16d
+```
+
+The same three checks were rerun with `py -3` on the final commit, after this
+section was added (see the commit message of that commit).
+
+**Not run:** `api-gate.sh`, `web-gate.sh`, `e2e-gate.sh` and `go test`. There
+is no test database on this host: `go test ./api -run PAC21` failed at the
+test database connection (`127.0.0.1:15432` refused), so
+`pac21_contract_5xx_test.go` did not run against the new bundle. This branch
+carries no handler code. No zod or JSON-Schema probe of the new
+components was run: the web types were not regenerated here (#119 is not
+touched, as instructed), and no JSON-Schema validator is installed in this
+Python. The challenger should repeat the round-5 probe rows A-I against #119
+after it regenerates, and add one for `SsoStepupOptions`.
