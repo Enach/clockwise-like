@@ -79,9 +79,24 @@ func NewMicrosoftStepup(clientID, clientSecret, redirectURL string, ep config.Id
 		[]string{gooidc.ScopeOpenID, "profile", "email", "User.Read", "Organization.Read.All", "RoleManagement.Read.Directory"})
 }
 
-// ExtraScopes is the seam for the step-up 403's stepup_scopes (PAC-50 AC-24).
-// Not implemented yet.
-func (p *StepupProvider) ExtraScopes() []string { return nil }
+// identityScopes are the scopes sign-in already requests (openid, profile,
+// email, and Microsoft's User.Read). They are not "extra" (contract
+// SsoWriteStepupRequired.stepup_scopes).
+var identityScopes = map[string]bool{gooidc.ScopeOpenID: true, "profile": true, "email": true, "User.Read": true}
+
+// ExtraScopes is what this step-up requests beyond the identity scopes, in
+// request order: the step-up 403's stepup_scopes entry for this provider
+// (PAC-50 AC-24, owner 2026-10-27). It is derived from the scopes the
+// authorize URL carries, so the two cannot disagree. A fresh slice.
+func (p *StepupProvider) ExtraScopes() []string {
+	out := make([]string, 0, len(p.oauth.Scopes))
+	for _, s := range p.oauth.Scopes {
+		if !identityScopes[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 func newStepup(name, clientID, clientSecret, redirectURL string, ep config.IdPEndpoint, scopes []string) *StepupProvider {
 	client := newIdPHTTPClient(ep.Guard)

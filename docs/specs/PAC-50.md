@@ -291,6 +291,13 @@ All unit ACs run against stand-ins for Google and Microsoft that sign ID tokens 
 
 **Rollback.** Reverting the code removes the gate, the two step-up operations and the recording; the previous behaviour (any member writes) returns, which is the defect this spec closes, so a revert is a security regression and is release-noted as such. The down migration drops the grant table, the SSO event table and `organizations.ms_tenant_id` — losing their rows, which hold no user data beyond ids and short enums — and restores the raw uniqueness on `sso_providers.domain`; it does **not** restore the original casing of backfilled domains, which is harmless because every reader compares lower-cased after this spec and the only pre-existing writer of mixed case was the defect itself.
 
+**Release requirements (operator setup, every deployment; added at stage 4, 2026-10-28).** The release notes for PAC-50 list these, and none is a secret:
+* `APP_URL` must be set to the public base URL the browser uses for the API (the e2e stack sets it in `e2e/docker-compose.e2e.yml`). The step-up callback's `redirect_uri` is `<APP_URL>/api/admin/sso/stepup/callback`; with `APP_URL` unset every step-up start answers 503 and the step-up 403's `stepup_scopes` is `{}` (§9 D-9, D-2).
+* That callback URL must be registered as an authorized redirect URI on the Google and the Microsoft OAuth clients (`GOOGLE_CLIENT_ID`, `MICROSOFT_CLIENT_ID`; §9 D-16). A provider without its client id and secret is not offered (absent from `stepup_scopes`) and its start answers 503.
+* `PACEDAY_ADMIN_EMAILS` (optional, comma-separated) names the break-glass operators (§4.5).
+* Migration `029_sso_admin_stepup` runs at startup after `028_credential_losses`; its down returns the database to 028 (§9 D-7).
+* After the release, SSO configuration writes by ordinary org members are refused until they complete the optional step-up: this is the fix, and it is release-noted as a behaviour change.
+
 ## 8. Revision log
 
 * v2 (2026-10-21 am): IdP-derived authorization replaces the four designation options; absorbs PAC-46.

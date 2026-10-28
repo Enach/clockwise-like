@@ -243,12 +243,41 @@ func (h *ssoHandlers) authorizeWrite(w http.ResponseWriter, r *http.Request, c *
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error":      "sso_write_requires_admin_stepup",
-		"stepup_url": stepupStartPath,
-	})
+	_ = json.NewEncoder(w).Encode(h.stepupRequired())
 	return "", false
 }
+
+// stepupRequiredBody is SsoWriteStepupRequired (contract revision 6).
+type stepupRequiredBody struct {
+	Error         string              `json:"error"`
+	StepupURL     string              `json:"stepup_url"`
+	StepupScopes  map[string][]string `json:"stepup_scopes"`
+	WithoutStepup []string            `json:"without_stepup"`
+}
+
+// stepupRequired is the step-up 403 (owner, 2026-10-27, spec §9 D-11): what
+// the optional step-up would request from each provider configured on this
+// deployment (a key only for a provider whose start would not answer 503)
+// and what the caller cannot do without it, so the client can explain both
+// before navigating anywhere.
+func (h *ssoHandlers) stepupRequired() stepupRequiredBody {
+	scopes := make(map[string][]string, 2)
+	for _, p := range []*auth.StepupProvider{h.stepup.google, h.stepup.microsoft} {
+		if p != nil {
+			scopes[p.Name] = p.ExtraScopes()
+		}
+	}
+	return stepupRequiredBody{
+		Error:         "sso_write_requires_admin_stepup",
+		StepupURL:     stepupStartPath,
+		StepupScopes:  scopes,
+		WithoutStepup: []string{withoutStepupSSOWrites},
+	}
+}
+
+// withoutStepupSSOWrites is the one without_stepup code the server sends
+// today: no SSO configuration write except by a break-glass operator.
+const withoutStepupSSOWrites = "sso_configuration_writes"
 
 // --- the state cookie ----------------------------------------------------------
 

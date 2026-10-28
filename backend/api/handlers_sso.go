@@ -175,8 +175,11 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 		writeError(w, msg, http.StatusBadRequest)
 		return
 	}
+	// Owner, 2026-10-27 (spec §9 D-10): a subdomain of, or a domain foreign
+	// to, the caller's org domain is understood and not permitted: 403
+	// (RFC 9110 §15.5.4). Before the grant is touched (AC-3c).
 	if !domain.DomainMatchesOrg(body.Domain, caller.org.Domain) {
-		writeError(w, "provider_domain_mismatch", http.StatusBadRequest)
+		writeError(w, "provider_domain_mismatch", http.StatusForbidden)
 		return
 	}
 
@@ -295,7 +298,7 @@ func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) 
 	// spec §9 D-9).
 	d := strings.ToLower(chi.URLParam(r, "domain"))
 	if !domain.DomainMatchesOrg(d, caller.org.Domain) {
-		writeError(w, "provider_domain_mismatch", http.StatusBadRequest)
+		writeError(w, "provider_domain_mismatch", http.StatusForbidden) // spec §9 D-10
 		return
 	}
 

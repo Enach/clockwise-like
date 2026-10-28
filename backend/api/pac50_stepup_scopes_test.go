@@ -46,7 +46,9 @@ func TestPAC50_StepupBodyNamesOnlyConfiguredProviders(t *testing.T) {
 				e.do(t, http.MethodPost, "/api/admin/sso", createBody(org.Domain), sess),
 				e.do(t, http.MethodDelete, "/api/admin/sso/"+org.Domain, "", sess),
 			} {
-				got := strings.TrimSpace(rec.Body.String())
+				// Compared as JSON values (keys sorted), not as byte order.
+				canon, _ := json.Marshal(errorBody(t, rec))
+				got := string(canon)
 				if rec.Code != http.StatusForbidden || got != tc.want {
 					t.Fatalf("= %d %s, want 403 %s", rec.Code, got, tc.want)
 				}
