@@ -275,6 +275,7 @@ const (
 	LLMTestRequestLlmProviderEmpty        LLMTestRequestLlmProvider = ""
 	LLMTestRequestLlmProviderOpenai       LLMTestRequestLlmProvider = "openai"
 	LLMTestRequestLlmProviderOrganization LLMTestRequestLlmProvider = "organization"
+	LLMTestRequestLlmProviderUnsupported  LLMTestRequestLlmProvider = "unsupported"
 	LLMTestRequestLlmProviderVertex       LLMTestRequestLlmProvider = "vertex"
 )
 
@@ -436,6 +437,11 @@ const (
 	SettingsUpdateLlmProviderVertex       SettingsUpdateLlmProvider = "vertex"
 )
 
+// Defines values for SettingsUpdateLlmUnboundApiKey.
+const (
+	SettingsUpdateLlmUnboundApiKeyEmpty SettingsUpdateLlmUnboundApiKey = ""
+)
+
 // Defines values for SettingsUpdateRecapSendTo.
 const (
 	SettingsUpdateRecapSendToChannel SettingsUpdateRecapSendTo = "channel"
@@ -499,9 +505,9 @@ const (
 
 // Defines values for WorkingHoursScheduleMode.
 const (
-	AllDays WorkingHoursScheduleMode = "all_days"
-	ByDay   WorkingHoursScheduleMode = "by_day"
-	Empty   WorkingHoursScheduleMode = ""
+	WorkingHoursScheduleModeAllDays WorkingHoursScheduleMode = "all_days"
+	WorkingHoursScheduleModeByDay   WorkingHoursScheduleMode = "by_day"
+	WorkingHoursScheduleModeEmpty   WorkingHoursScheduleMode = ""
 )
 
 // Defines values for DeleteEventParamsSendUpdates.
@@ -540,7 +546,7 @@ type AINotConfigured struct {
 	// Enablers Who can turn AI on for this caller: `user` (the caller, in Settings) is always present; `organization_admin` (an administrator of the caller's organisation) is present exactly in rows 6 and 8 when the caller belongs to an organisation. Never names a person.
 	Enablers []AINotConfiguredEnablers `json:"enablers"`
 
-	// Message A sentence for the user saying that AI features are off, why, and who can turn them on. Wording is not contractual beyond that, and it never carries a key.
+	// Message A sentence for the user saying why the configuration decided on cannot be used and who can fix it. When that configuration is the caller's saved choice (parse, brief refresh, the settings read, and a probe that names no other choice and carries no `llmApiKey`) it says that AI features are off. When a probe named a different choice or carried `llmApiKey`, it describes only the probed choice ("Anthropic needs an API key") and never says AI features are off, which may be false for the caller (see `testLLMConnection`). Wording is not contractual beyond that, and it never carries a key.
 	Message string `json:"message"`
 
 	// Provider Present exactly when `reason` is `needs_key`; the provider that needs a key.
@@ -557,7 +563,7 @@ type AINotConfiguredProvider string
 // AINotConfiguredReason defines model for AINotConfigured.Reason.
 type AINotConfiguredReason string
 
-// AIStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
+// AIStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8), so a client always has the reason and the enablers to render the notice of spec AC-21. It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
 type AIStatus struct {
 	// Configured True exactly in rows 2 and 4.
 	Configured bool `json:"configured"`
@@ -1645,7 +1651,7 @@ type LLMNotConfiguredResponse struct {
 // LLMTestRequest Body for POST /api/llm/test. Added by PAC-24 to close API-037.
 // **This schema is a closed list of three properties and that is the whole point of it.** Not one of them can contribute to the URL the server requests, so no submitted value can direct a stored key anywhere. The destination properties a probe might plausibly want to override - `llmBaseUrl`, `azureEndpoint`, `azureDeployment`, `azureApiVersion`, `awsRegion`, `bedrockModel`, `vertexModel` - are DELIBERATELY ABSENT and are a 400 via `additionalProperties: false`. The operation description carries the argument.
 // Required. `{}` probes the caller's saved choice; an absent body is a 400. `{"llmProvider": "anthropic", "llmApiKey": "..."}` probes an unsaved key for a provider against the caller's own stored destination for it, which is the case the settings UI needs because a stored key can never be read back to re-submit.
-// This is deliberately NOT `SettingsUpdate`: sharing that schema would re-admit every destination property by inheritance and make a probe read like a write. The three property names match the corresponding SettingsUpdate ones so a client can build this from the document it already holds.
+// This is deliberately NOT `SettingsUpdate`: sharing that schema would re-admit every destination property by inheritance and make a probe read like a write. The three property names match the corresponding SettingsUpdate ones so a client can build this from the document it already holds: every `llmProvider` value a settings read can return (`Settings.llmProvider`, including `unsupported`) is accepted here, and `unsupported` is accepted only in the one state in which a read returns it.
 // `llmApiKey` here is `writeOnly` for the same reason it is on SettingsUpdate: it is accepted and is never echoed, in any status. Nothing submitted here is persisted.
 type LLMTestRequest struct {
 	// LlmApiKey An unsaved key to probe with, for the provider the probe uses. Sent only in that provider's key header (see the operation) and only to a destination approved for that provider. `""` means "no key": the 409 `needs_key`, and the stored key is NOT used instead. Never combined with an organisation configuration, never persisted, never echoed.
@@ -1654,11 +1660,11 @@ type LLMTestRequest struct {
 	// LlmModel Used only when the probed provider is `openai` or `anthropic`, as a field of the JSON request body; `""` means the provider default. It never appears in a URL. `azureDeployment`, `bedrockModel` and `vertexModel`, which DO appear in URLs, are not accepted here. Ignored, and never sent, for any other choice.
 	LlmModel *string `json:"llmModel,omitempty"`
 
-	// LlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider. `""` is the 409 `off`. `organization` is decided as a follower's request (before Part 2: the 409 `nothing_configured`). `ollama` and `unsupported` are not in the set (400). The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
+	// LlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider. `""` is the 409 `off`. `organization` is decided as a follower's request (before Part 2: the 409 `nothing_configured`). `unsupported` is accepted only when the caller's saved choice reads as `unsupported` and is then decided as the saved choice (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
 	LlmProvider *LLMTestRequestLlmProvider `json:"llmProvider,omitempty"`
 }
 
-// LLMTestRequestLlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider. `""` is the 409 `off`. `organization` is decided as a follower's request (before Part 2: the 409 `nothing_configured`). `ollama` and `unsupported` are not in the set (400). The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
+// LLMTestRequestLlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider. `""` is the 409 `off`. `organization` is decided as a follower's request (before Part 2: the 409 `nothing_configured`). `unsupported` is accepted only when the caller's saved choice reads as `unsupported` and is then decided as the saved choice (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
 type LLMTestRequestLlmProvider string
 
 // LLMTestResult Literal map: `{"ok": true, "response": ..., "provider": ...}`.
@@ -2486,7 +2492,7 @@ type SchedulingLinkListResponse struct {
 // PAC-24 revision 3 makes this a concrete schema rather than an `allOf` over a shared field set with `readOnly`/`writeOnly` markers: all three generators (oapi-codegen, openapi-typescript, typed-openapi) dropped those markers and generated a response type carrying `llmApiKey`, and typed-openapi also dropped the `required` list (contract challenge, revision 2, finding 1). The property map is shared with `SettingsUpdate` through a YAML anchor, so the two cannot drift; every `Settings` document is a valid `SettingsUpdate` body.
 // Every value this schema forbids has been normalised away in storage by migration 024 (see `SettingsUpdate` and contracts/features/PAC-24.md, Revisions 3 and 4), so a GET always satisfies it.
 type Settings struct {
-	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
+	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8), so a client always has the reason and the enablers to render the notice of spec AC-21. It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
 	AiStatus                       AIStatus `json:"aiStatus"`
 	AutoDeclineOutsideWorkingHours bool     `json:"autoDeclineOutsideWorkingHours"`
 
@@ -2563,7 +2569,7 @@ type Settings struct {
 	// LlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 	LlmProvider SettingsLlmProvider `json:"llmProvider"`
 
-	// LlmUnboundApiKeySet Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key stored before this change is on file that is bound to no provider: the account's provider at the upgrade was not `openai` or `anthropic`. Such a key is never sent anywhere and is not deleted by the upgrade. Any settings write carrying `llmApiKey` (a new key for the selected provider, or `""`) removes it; nothing else does. Accepted and ignored on write.
+	// LlmUnboundApiKeySet Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key stored before this change is on file that is bound to no provider: the account's provider at the upgrade was not `openai` or `anthropic`. Such a key is never sent anywhere and is never deleted implicitly (spec D-5): not by the upgrade and not by a write of `llmApiKey`. Only the explicit write-only `llmUnboundApiKey: ""` removes it (see `patchSettings`). Accepted and ignored on write.
 	LlmUnboundApiKeySet *bool `json:"llmUnboundApiKeySet,omitempty"`
 
 	// LunchBreaks storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name. Normalised to `{}` (never null) on read (`backend/storage/settings.go:103-105`). A per-day entry overrides the legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including disabling lunch for that day. Replaced whole by a PATCH that mentions it; `lunchBreaks: {}` clears every per-day override (spec AC-9).
@@ -2650,14 +2656,14 @@ type SettingsRecapSendTo string
 type SettingsTimeFormat string
 
 // SettingsUpdate PATCH /api/settings body - the only settings write. Nothing is required: a property absent means "leave it as it is", and `{}` is a valid no-op request. A property present is applied exactly as given - `""`, `0` and `false` are values, not absences, except where a property's enum or pattern excludes `""` (`recapSendTime`, `recapSendTo`, `calendarProvider`, `conferencingProvider`, `timeFormat`), where `""` is a 400 like any other value outside the set (spec AC-7 as amended 2026-10-12).
-// The same properties as `Settings` (one YAML anchor) plus the write-only `llmApiKey`. `llmApiKeySet`, `llmApiKeysSet`, `llmUnboundApiKeySet`, `aiStatus` and `updatedAt` are accepted and ignored, so a document read from GET can be submitted back unchanged (spec AC-10; NEW-llm-bring-your-own AC-9).
+// The same properties as `Settings` (one YAML anchor) plus the write-only `llmApiKey` and `llmUnboundApiKey`. `llmApiKeySet`, `llmApiKeysSet`, `llmUnboundApiKeySet`, `aiStatus` and `updatedAt` are accepted and ignored, so a document read from GET can be submitted back unchanged (spec AC-10; NEW-llm-bring-your-own AC-9).
 // No property is nullable: `null` is a 400 `<property> must not be null` and an unknown property - including a snake_case spelling of a real one - is a 400 `unknown property: <name>` (spec AC-8). These are enforced by the handler, not by a generated validator.
 // Validation applies to the properties whose value the body CHANGES. A property sent with the value already stored is not re-validated, so a GET document submitted back unchanged is always accepted - including a legacy combination a newer cross-property rule would reject (an end before a start, a focus minimum above the maximum) - and a stored value never locks the user out of saving something else (challenge r2, finding 2).
 // `workingHours` is ONE property and is replaced whole, so a write that changes it must make the whole document valid: both its `default` and its `days`, whatever the mode. That includes a `default` the client derived from legacy values - for a row whose mode was `""` the server derives it from `workStart`/`workEnd` on read - so a client switching such a row to `by_day` must send a valid `default` (revision 6).
 // `workingHours` and `lunchBreaks` are replaced whole when present, not deep-merged (spec AC-9).
 // Before PAC-24 this was the body of `PUT /api/settings`, a replace: every omitted property was persisted as its Go zero value (API-004). That operation is removed because the two repositories deploy together (spec PAC-24, Decisions 2026-10-12, OQ-3).
 type SettingsUpdate struct {
-	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
+	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8), so a client always has the reason and the enablers to render the notice of spec AC-21. It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
 	AiStatus                       *AIStatus `json:"aiStatus,omitempty"`
 	AutoDeclineOutsideWorkingHours *bool     `json:"autoDeclineOutsideWorkingHours,omitempty"`
 
@@ -2718,7 +2724,7 @@ type SettingsUpdate struct {
 	// FocusMinBlockMinutes Rejected when < 0. DB default 25.
 	FocusMinBlockMinutes *int `json:"focusMinBlockMinutes,omitempty"`
 
-	// LlmApiKey WRITE-ONLY. Accepted on write; never present in any response from any operation (spec AC-11). NEW-llm-bring-your-own: bound to the provider the row has after the write (see `patchSettings`); every one of the five providers needs one, and a non-empty value is a 400 when that provider is `""`, `organization` or `unsupported`. Any write carrying it also removes a key bound to no provider (`llmUnboundApiKeySet`).
+	// LlmApiKey WRITE-ONLY. Accepted on write; never present in any response from any operation (spec AC-11). NEW-llm-bring-your-own: bound to the provider the row has after the write (see `patchSettings`); every one of the five providers needs one, and a non-empty value is a 400 when that provider is `""`, `organization` or `unsupported`. It never touches a key bound to no provider (`llmUnboundApiKeySet`); only `llmUnboundApiKey: ""` removes that one.
 	// Under the merge semantics this needs no special case: omit it and the stored key is unchanged; send `""` and it is cleared; send a value and it is replaced (spec AC-13). There is no way to read it back, by design - someone who loses their key re-enters it. Do not add a reveal affordance later.
 	// Before PAC-24 it was returned in cleartext from a row shared by every authenticated account (API-002 + API-003), and wiped by any write that omitted it (API-004). Every key configured before this ships must be treated as compromised and rotated - closing the read path does not un-expose it (spec §5, OQ-5).
 	LlmApiKey *string `json:"llmApiKey,omitempty"`
@@ -2739,7 +2745,10 @@ type SettingsUpdate struct {
 	// LlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 	LlmProvider *SettingsUpdateLlmProvider `json:"llmProvider,omitempty"`
 
-	// LlmUnboundApiKeySet Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key stored before this change is on file that is bound to no provider: the account's provider at the upgrade was not `openai` or `anthropic`. Such a key is never sent anywhere and is not deleted by the upgrade. Any settings write carrying `llmApiKey` (a new key for the selected provider, or `""`) removes it; nothing else does. Accepted and ignored on write.
+	// LlmUnboundApiKey WRITE-ONLY, NEW-llm-bring-your-own (spec D-5, AC-16; contract challenge 2026-10-28, blocking 2). The one way to remove a key stored before that change and bound to no provider (`Settings.llmUnboundApiKeySet`). The only accepted value is `""`, which removes it (a no-op when there is none); any other value is the 400 `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)` and nothing is stored. A legacy key cannot be written or replaced through this property: a new key is always entered for a provider, through `llmApiKey`. Never present in any response.
+	LlmUnboundApiKey *SettingsUpdateLlmUnboundApiKey `json:"llmUnboundApiKey,omitempty"`
+
+	// LlmUnboundApiKeySet Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key stored before this change is on file that is bound to no provider: the account's provider at the upgrade was not `openai` or `anthropic`. Such a key is never sent anywhere and is never deleted implicitly (spec D-5): not by the upgrade and not by a write of `llmApiKey`. Only the explicit write-only `llmUnboundApiKey: ""` removes it (see `patchSettings`). Accepted and ignored on write.
 	LlmUnboundApiKeySet *bool `json:"llmUnboundApiKeySet,omitempty"`
 
 	// LunchBreaks storage.LunchBreakSchedule - a bare map keyed by lowercase weekday name. Normalised to `{}` (never null) on read (`backend/storage/settings.go:103-105`). A per-day entry overrides the legacy global `lunchStart`/`lunchEnd`/`protectLunch` trio, including disabling lunch for that day. Replaced whole by a PATCH that mentions it; `lunchBreaks: {}` clears every per-day override (spec AC-9).
@@ -2818,6 +2827,9 @@ type SettingsUpdateConferencingProvider string
 
 // SettingsUpdateLlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 type SettingsUpdateLlmProvider string
+
+// SettingsUpdateLlmUnboundApiKey WRITE-ONLY, NEW-llm-bring-your-own (spec D-5, AC-16; contract challenge 2026-10-28, blocking 2). The one way to remove a key stored before that change and bound to no provider (`Settings.llmUnboundApiKeySet`). The only accepted value is `""`, which removes it (a no-op when there is none); any other value is the 400 `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)` and nothing is stored. A legacy key cannot be written or replaced through this property: a new key is always entered for a provider, through `llmApiKey`. Never present in any response.
+type SettingsUpdateLlmUnboundApiKey string
 
 // SettingsUpdateRecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
 type SettingsUpdateRecapSendTo string

@@ -574,6 +574,19 @@ paths:
           `https://aiplatform.googleapis.com/v1/publishers/google/models/<vertexModel>:generateContent`.
           No project or location is used (spec AC-5).
 
+        **Model IDs in the path.** `<bedrockModel>` and `<vertexModel>` are each
+        sent as ONE path segment, percent-encoded with the path-segment rule of
+        RFC 3986 §3.3 (Go `url.PathEscape`): `/`, `?`, `#`, `%`, `;`, `,`,
+        space and every non-ASCII or control byte are encoded; letters,
+        digits, `-`, `.`, `_`, `~`, `:`, `@` and the other sub-delimiters are
+        sent literally. So the stored default
+        `anthropic.claude-sonnet-4-5-20251001-v1:0` is requested as exactly
+        `/model/anthropic.claude-sonnet-4-5-20251001-v1:0/converse` (the `:` is
+        not encoded, as in the provider's own examples), and a value containing
+        `/` (an inference-profile ARN) cannot add a path segment: its `/` is
+        sent as `%2F`. For Vertex the `:` before `generateContent` is the
+        method separator and is not part of the encoded model segment.
+
         A key the provider rejects (an expired Bedrock short-term key, a key
         for another region, a revoked key) is a provider failure, the 502, not
         "AI not configured" (spec D-13).
@@ -593,6 +606,17 @@ paths:
           `llmApiKey: ""`) the answer is the 409 with reason `needs_key` naming
           that provider, and nothing is sent.
         * **`""`** (AI off): the 409 `off`. Nothing is sent.
+        * **`unsupported`**: accepted ONLY when the caller's saved choice reads
+          as `unsupported` (a stored provider Paceday no longer supports,
+          `ollama`), so a client that builds the probe body from the settings
+          document it read (`Settings.llmProvider`) gets the same answer as
+          `{}` and as the caller's parse: it is decided exactly as the absent
+          case below, which for such a row is the 409 of row 7 or 8
+          (`provider_removed`, or after Part 2
+          `provider_removed_organization_available`). A submitted `llmModel` /
+          `llmApiKey` is sent nowhere. When the saved choice does not read as
+          `unsupported`, `unsupported` is a 400 (contract challenge
+          2026-10-28, blocking 1).
         * **`organization`**: decided as a request of a caller who follows
           their organisation. Before Part 2 of the spec no organisation
           configuration exists, so this is always the 409
@@ -696,8 +720,12 @@ paths:
         '400':
           description: >
             Malformed JSON body; a body naming an `llmProvider` outside the
-            permitted set (this includes `ollama`, spec AC-6, and
-            `unsupported`); or a body carrying any property other than
+            permitted set (this includes `ollama`, spec AC-6; message
+            `llmProvider must be one of: "", organization, unsupported, openai, anthropic, azure_openai, bedrock, vertex`);
+            `llmProvider: "unsupported"` when the caller's saved choice does
+            not read as `unsupported` (message
+            `llmProvider unsupported can be probed only when it is your saved choice`);
+            or a body carrying any property other than
             `llmProvider`, `llmModel` and `llmApiKey`
             (`additionalProperties: false`). The last case is how a caller
             attempting to supply a destination - `llmBaseUrl`, `azureEndpoint`,
@@ -715,10 +743,18 @@ paths:
             NEW-llm-bring-your-own. AI is not configured for the configuration
             this probe decided on (spec §3 table, rows 1, 3 and 5-8; before
             Part 2 only rows 1, 3, 6 and 8 occur). Nothing was sent to any
-            host. `error` is a non-empty sentence saying that AI features are
-            off, why and who can turn them on (a client that reads only `error`,
-            as the web settings page did before this change, renders it);
-            `notConfigured` carries the same facts for a client to act on. This
+            host. `error` is a non-empty sentence describing THE PROBED CHOICE:
+            why it cannot be used and who can fix it (a client that reads only
+            `error`, as the web settings page did before this change, renders
+            it); `notConfigured` carries the same facts for a client to act on.
+            When the body names a provider other than the saved one, or carries
+            `llmApiKey`, the sentence is about that choice ("Anthropic needs an
+            API key"), never "AI features are off": the caller's saved
+            configuration may well work (spec AC-37, or `{"llmApiKey": ""}` on a
+            configured account). Only when the probe decided on the caller's
+            saved choice (absent `llmProvider`, or one equal to the saved
+            choice, with no `llmApiKey`) does it say that AI features are off.
+            This
             replaces the 500 a caller with no key used to get (spec AC-12).
             409 because the request is well formed and is refused only because
             of the current state of the caller's AI configuration (RFC 9110
@@ -729,6 +765,16 @@ paths:
                 $ref: '#/components/schemas/LLMNotConfiguredResponse'
               examples:
                 needsKey:
+                  summary: '{"llmProvider":"anthropic"} while the saved choice is OpenAI with a key (spec AC-37)'
+                  value:
+                    error: 'Anthropic needs an API key. Enter one to test it.'
+                    notConfigured:
+                      reason: needs_key
+                      provider: anthropic
+                      enablers: [user]
+                      message: 'Anthropic needs an API key. Enter one to test it.'
+                savedNeedsKey:
+                  summary: '{} by a caller saved on Anthropic with no key bound'
                   value:
                     error: 'AI features are off: Anthropic needs an API key. Add one in Settings.'
                     notConfigured:
@@ -940,9 +986,16 @@ paths:
           the provider after the write is not one of the five, a non-empty
           `llmApiKey` is a 400 and nothing is stored; `""` is accepted.
         * A key stored before this change and bound to no provider
-          (`llmUnboundApiKeySet`) is removed by any write that carries
-          `llmApiKey`, with any value, and by nothing else (spec AC-16: Settings
-          offers to replace or remove it).
+          (`llmUnboundApiKeySet`) is never deleted implicitly (spec D-5:
+          "never sent, never deleted"; §3 "It is not deleted"; AC-16). A write
+          carrying `llmApiKey`, with any value, touches only the key of the
+          provider after the write and leaves the unbound key in storage. The
+          unbound key is removed only by the explicit, write-only
+          `llmUnboundApiKey: ""`; any other value of that property is a 400
+          and nothing is stored. "Replace" in spec §3 is a key entered for the
+          selected provider, optionally sent together with
+          `llmUnboundApiKey: ""` in the same write when the user also asks to
+          remove the old key.
         * Choosing a provider with no key bound to it is accepted; AI is then
           not configured, `needs_key`, until a key is written (spec row 3).
         * `llmApiKeysSet`, `llmUnboundApiKeySet` and `aiStatus` are read-only
@@ -1261,7 +1314,10 @@ components:
         `unsupported`);
         `llmApiKey cannot be set: choose openai, anthropic, azure_openai, bedrock or vertex as llmProvider first`
         (a non-empty `llmApiKey` when the provider after the write is `""`,
-        `organization` or `unsupported`).
+        `organization` or `unsupported`);
+        `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)`
+        (any `llmUnboundApiKey` value other than `""`; a non-string is
+        `invalid JSON: llmUnboundApiKey has the wrong type`).
         A removed property (`awsProfile`, `gcpProject`, `gcpLocation`,
         `ollamaBaseUrl`, `ollamaModel`) is the existing
         `unknown property: <name>`.
@@ -1774,7 +1830,10 @@ components:
         re-admit every destination property by inheritance and make a probe
         read like a write. The three property names match the corresponding
         SettingsUpdate ones so a client can build this from the document it
-        already holds.
+        already holds: every `llmProvider` value a settings read can return
+        (`Settings.llmProvider`, including `unsupported`) is accepted here, and
+        `unsupported` is accepted only in the one state in which a read
+        returns it.
 
         `llmApiKey` here is `writeOnly` for the same reason it is on
         SettingsUpdate: it is accepted and is never echoed, in any status.
@@ -1782,7 +1841,7 @@ components:
       properties:
         llmProvider:
           type: string
-          enum: ['', organization, openai, anthropic, azure_openai, bedrock, vertex]
+          enum: ['', organization, unsupported, openai, anthropic, azure_openai, bedrock, vertex]
           description: >
             The choice to probe (NEW-llm-bring-your-own, spec D-19); absent
             means the caller's saved choice. A provider name selects that
@@ -1790,8 +1849,11 @@ components:
             the submitted key or else the key bound to it; never a key bound
             to another provider. `""` is the 409 `off`. `organization` is
             decided as a follower's request (before Part 2: the 409
-            `nothing_configured`). `ollama` and `unsupported` are not in the
-            set (400). The approved-destination check follows this value when
+            `nothing_configured`). `unsupported` is accepted only when the
+            caller's saved choice reads as `unsupported` and is then decided
+            as the saved choice (the row 7/8 409, a submitted key sent
+            nowhere); otherwise it is a 400. `ollama` is not in the set
+            (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when
             present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11).
             Nothing submitted here is stored.
         llmModel:
@@ -1934,9 +1996,16 @@ components:
           type: string
           minLength: 1
           description: >
-            A sentence for the user saying that AI features are off, why, and
-            who can turn them on. Wording is not contractual beyond that, and it
-            never carries a key.
+            A sentence for the user saying why the configuration decided on
+            cannot be used and who can fix it. When that configuration is the
+            caller's saved choice (parse, brief refresh, the settings read, and
+            a probe that names no other choice and carries no `llmApiKey`) it
+            says that AI features are off. When a probe named a different
+            choice or carried `llmApiKey`, it describes only the probed choice
+            ("Anthropic needs an API key") and never says AI features are off,
+            which may be false for the caller (see `testLLMConnection`).
+            Wording is not contractual beyond that, and it never carries a
+            key.
       required: [reason, enablers, message]
       additionalProperties: false
 
@@ -1964,7 +2033,11 @@ components:
       description: >
         NEW-llm-bring-your-own. Read-only summary on the settings document of
         whether AI works for the caller right now, by the same table as
-        `AINotConfigured` (spec AC-8). It does not check the destination: a
+        `AINotConfigured` (spec AC-8). Exactly one of `provider` and
+        `notConfigured` is present: `provider` exactly when `configured` is
+        true, `notConfigured` exactly when `configured` is false (rows 1, 3,
+        5-8), so a client always has the reason and the enablers to render the
+        notice of spec AC-21. It does not check the destination: a
         configured caller whose stored destination is refused is
         `configured: true` and gets the 422 / refusal sentence when a request
         is attempted.
@@ -1984,6 +2057,11 @@ components:
             to a member (spec AC-21). Says nothing else about the organisation.
         notConfigured:
           $ref: '#/components/schemas/AINotConfigured'
+          description: >
+            Present exactly when `configured` is false; absent exactly when it
+            is true. Why AI does not work for the caller and who can turn it
+            on: the same reason the caller's parse, brief refresh and probe
+            `{}` give (spec AC-8, AC-40).
       required: [configured, inOrganization]
       additionalProperties: false
 
@@ -2367,10 +2445,10 @@ components:
             Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key
             stored before this change is on file that is bound to no provider:
             the account's provider at the upgrade was not `openai` or
-            `anthropic`. Such a key is never sent anywhere and is not deleted
-            by the upgrade. Any settings write carrying `llmApiKey` (a new key
-            for the selected provider, or `""`) removes it; nothing else does.
-            Accepted and ignored on write.
+            `anthropic`. Such a key is never sent anywhere and is never deleted
+            implicitly (spec D-5): not by the upgrade and not by a write of
+            `llmApiKey`. Only the explicit write-only `llmUnboundApiKey: ""`
+            removes it (see `patchSettings`). Accepted and ignored on write.
         aiStatus:
           $ref: '#/components/schemas/AIStatus'
           readOnly: true
@@ -2640,8 +2718,8 @@ components:
         any other value outside the set (spec AC-7 as amended 2026-10-12).
 
         The same properties as `Settings` (one YAML anchor) plus the write-only
-        `llmApiKey`. `llmApiKeySet`, `llmApiKeysSet`, `llmUnboundApiKeySet`,
-        `aiStatus` and `updatedAt` are accepted and ignored, so a document read
+        `llmApiKey` and `llmUnboundApiKey`. `llmApiKeySet`, `llmApiKeysSet`,
+        `llmUnboundApiKeySet`, `aiStatus` and `updatedAt` are accepted and ignored, so a document read
         from GET can be submitted back unchanged (spec AC-10;
         NEW-llm-bring-your-own AC-9).
 
@@ -2682,9 +2760,9 @@ components:
             any operation (spec AC-11). NEW-llm-bring-your-own: bound to the
             provider the row has after the write (see `patchSettings`); every
             one of the five providers needs one, and a non-empty value is a 400
-            when that provider is `""`, `organization` or `unsupported`. Any
-            write carrying it also removes a key bound to no provider
-            (`llmUnboundApiKeySet`).
+            when that provider is `""`, `organization` or `unsupported`. It
+            never touches a key bound to no provider (`llmUnboundApiKeySet`);
+            only `llmUnboundApiKey: ""` removes that one.
 
             Under the merge semantics this needs no special case: omit it and
             the stored key is unchanged; send `""` and it is cleared; send a
@@ -2697,6 +2775,20 @@ components:
             omitted it (API-004). Every key configured before this ships must be
             treated as compromised and rotated - closing the read path does not
             un-expose it (spec §5, OQ-5).
+        llmUnboundApiKey:
+          type: string
+          enum: ['']
+          writeOnly: true
+          description: >
+            WRITE-ONLY, NEW-llm-bring-your-own (spec D-5, AC-16; contract
+            challenge 2026-10-28, blocking 2). The one way to remove a key
+            stored before that change and bound to no provider
+            (`Settings.llmUnboundApiKeySet`). The only accepted value is `""`,
+            which removes it (a no-op when there is none); any other value is
+            the 400 `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)`
+            and nothing is stored. A legacy key cannot be written or replaced
+            through this property: a new key is always entered for a provider,
+            through `llmApiKey`. Never present in any response.
       additionalProperties: false
 
     # ----------------------------------------------------------- daily recap
