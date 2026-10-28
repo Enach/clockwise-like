@@ -628,6 +628,11 @@ the backend PR; the fixture move is harmless under the old code.
   owns or co-hosts.** Assumed by the factory, pending owner confirmation
   (2026-10-28). Identical to today in effect (every booking is `confirmed`),
   and the broader set is the conservative one should `pending` ever be written.
+- **D-12 — OQ-4 answered by the contract stage (2026-10-28): every 409 keeps
+  today's text, `{"error":"slot is no longer available"}`, pinned by an enum
+  in the contract (`BookingSlotUnavailableError`).** Contract-author choice
+  within D-5; see `contracts/features/PAC-72.md` §2.2 for the alternatives
+  rejected. Not a product decision; no owner confirmation needed beyond D-5.
 
 ## Challenge — 2026-10-28
 
