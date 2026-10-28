@@ -2,13 +2,13 @@
   "featureId": "PAC-72",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-72/public-booking-never-checks-host-availability-the-links-hours-or-a",
   "status": "draft",
-  "contractRevision": "1",
-  "contractHash": "7c528c7eb9d6da4a7b0918faf7a4b9badf09e248211cbcaf363e4c033f969629",
+  "contractRevision": "2",
+  "contractHash": "3badfa9d0853a2a1245570b333648940277dee42f816e2afba5ac10294874011",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as this revision leaves it (LF), computed after `python scripts/openapi_assemble.py` and verified with `python scripts/openapi_assemble.py --check` (`OK: bundle is in sync (99 paths)`). Reproduce with: `python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`.",
   "contractDoc": "contracts/features/PAC-72.md",
   "specDoc": "docs/specs/PAC-72.md (challenged accept-with-changes at d9be46b; revision 1 at 5236cfb; carried on this branch, which fast-forwards factory/pac-72-spec)",
   "sourceOfTruth": "Enach/clockwise-like",
-  "mergeAfter": "factory/pac-72-spec is contained in this branch (fast-forward); no other ordering constraint.",
+  "mergeAfter": "factory/pac-72-spec is contained in this branch (fast-forward). This contract lands on main together with, or immediately before, the PAC-72 backend PR (and its paired web type regeneration), never on its own ahead of it: main must not document a 409 for the minimum notice, a 500 for unreadable busy time or a link-day filter that main's server does not have, nor drop from the web types a 422 that main's server still sends (factory §7 rule 2). The audit register's 'fix contracted (PAC-72), server pending' wording exists only for the window between the two merges, if there is one.",
 
   "repositories": {
     "backend": {
@@ -19,7 +19,7 @@
         "backend/storage (queries only; spec §7: no migration)",
         "contracts",
         "docs/specs/PAC-72.md",
-        "docs/factory/api-audit.md (API-094 status to Fixed (PAC-72) in the backend PR)",
+        "docs/factory/api-audit.md (REQUIRED in the backend PR: API-094 status to 'Fixed (PAC-72)'; spec AC-19's 'API-094 marked fixed' is satisfied there, not by this contract)",
         "e2e/tests",
         "e2e/lib"
       ],
@@ -46,7 +46,7 @@
       "operationId": "createPublicBooking",
       "method": "POST",
       "path": "/api/book/{slug}",
-      "change": "Description: the 'Not checked (API-094, open)' paragraph is replaced by the offerable-start rule (six parts: duration; link days_of_week and daily window on the 15-minute grid from window_start_time with zero seconds, end no later than window_end_time; every accepted host free of calendar events widened by buffers, focus blocks and non-cancelled bookings on any link they own or co-host; min notice; 60-day UTC horizon; at least one accepted host), UTC as the one zone, instant comparison of start, stored interval equals the slot, refusal body identical for every cause, ordering after 429/404/410/400, external-calendar tolerance, storage failure -> 500, concurrency not guaranteed, API-051 still open. 201: stored start/end equal the slot. 400: 'duration does not match end time' and 'invalid duration' now defined exactly (no rounding of a length with seconds). 409: every refusal cause listed; body schema now BookingSlotUnavailableError (enum 'slot is no longer available'). 422 response REMOVED (inside min notice is a 409). 429 description: the list of otherwise-answered statuses loses 422. 500: 'booking conflict check failed' is the answer when busy time cannot be gathered from storage; never 409."
+      "change": "Revision 2: 409 text no longer mentions the former 422; rule names the link fields in both spellings (days_of_week/days, window_start_time/window_start, window_end_time/window_end); end, duration and duration_minutes say a 0 or null length counts as not sent (handlers_booking.go:259-285, today's behaviour, unchanged). Revision 1: the 'Not checked (API-094, open)' paragraph is replaced by the offerable-start rule (six parts: duration; link days_of_week and daily window on the 15-minute grid from window_start_time with zero seconds, end no later than window_end_time; every accepted host free of calendar events widened by buffers, focus blocks and non-cancelled bookings on any link they own or co-host; min notice; 60-day UTC horizon; at least one accepted host), UTC as the one zone, instant comparison of start, stored interval equals the slot, refusal body identical for every cause, ordering after 429/404/410/400, external-calendar tolerance, storage failure -> 500, concurrency not guaranteed, API-051 still open. 201: stored start/end equal the slot. 400: 'duration does not match end time' and 'invalid duration' now defined exactly (no rounding of a length with seconds). 409: every refusal cause listed; body schema now BookingSlotUnavailableError (enum 'slot is no longer available'). 422 response REMOVED (inside min notice is a 409). 429 description: the list of otherwise-answered statuses loses 422. 500: 'booking conflict check failed' is the answer when busy time cannot be gathered from storage; never 409."
     },
     {
       "operationId": "getPublicBookingSlots",
@@ -114,7 +114,7 @@
     "AC-17c [unit] Bookings on host A's links unreadable: booking 500, nothing written; explicit-date listing 500; date-less omits that date.",
     "AC-17d [unit] Host A external calendar unreadable: otherwise free slot books 201 and the explicit-date listing offers it. None of AC-17a-c is 409.",
     "AC-18  [unit] Over the rate limit / unknown slug / exhausted link / malformed body, for a start the rule would refuse -> 429 / 404 / 410 / 400, as today.",
-    "AC-19  [contract] Contract text as listed in the spec: 409 causes, stored interval equals slot, 500 for unreadable busy time, no 422 anywhere on createPublicBooking (responses, 429 list, start field), exact-length end field, API-094 no longer stated open, API-051 still stated open, listing documents link-day filter, horizon, UTC and unreadable-busy-time behaviour, available_dates wording. API-094 status: 'fix contracted (PAC-72), server pending' on this branch; the backend PR sets 'Fixed (PAC-72)'.",
+    "AC-19  [contract] Checked on response keys and status lists, not by text search (the 409 description no longer mentions 422 in any case, revision 2). Contract text as listed in the spec: 409 causes, stored interval equals slot, 500 for unreadable busy time, no 422 anywhere on createPublicBooking (responses, 429 list, start field), exact-length end field, API-094 no longer stated open, API-051 still stated open, listing documents link-day filter, horizon, UTC and unreadable-busy-time behaviour, available_dates wording. API-094 status: 'fix contracted (PAC-72), server pending' on this branch; the backend PR MUST set 'Fixed (PAC-72)' (the spec's 'API-094 marked fixed' is met there).",
     "AC-20  [e2e] Full stack with the fake calendar: an offered slot books 201; an unoffered start on the same link (overlapping an event the fake Google server reports for a host) -> 409, no booking row for that start, no event insert recorded by the fake.",
     "AC-21a [unit] Start 10:00:30 or 10:00:00.5 UTC with duration 30 -> 409, nothing written.",
     "AC-21b [unit] Start 10:00 UTC, end 10:30:30 UTC (with duration 30: 'duration does not match end time'; without: 'invalid duration') -> 400, nothing written.",
@@ -137,7 +137,7 @@
     { "consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "no", "detail": "Regenerate (REGEN=1 web-gate): adds BookingSlotUnavailableError, removes the 422 response from createPublicBooking, description changes. No hand-written web code names these generated operation types (git grep on origin/main aa5c52e)." },
     { "consumer": "backend/api/gen (oapi-codegen types)", "breaks": "no", "detail": "Adds BookingSlotUnavailableError and its enum constant SlotIsNoLongerAvailable; comment changes. `go build ./...` passes on this branch." },
     { "consumer": "backend/api tests pinning 422 or booking off-rule starts", "breaks": "yes, by design", "detail": "Spec §6 list: TestPublicBookingErrorsContract (:198 422 -> 409, fixture), TestPublicBookingCreateContract, TestPublicBookingPropagatesEngineFailure, TestPAC67_PublicBookingWithARefusedHost, TestCreateBooking_RateLimited, TestCreateBooking_ConcurrentBurstCannotOvershoot. Amended, never deleted or skipped; the rate-limit tests keep asserting 20 x 201." },
-    { "consumer": "e2e/tests public-booking, seam, time-format, scheduling-links", "breaks": "no expected", "detail": "All book or list on link days within 60 days (spec §6). e2e/lib/dates.ts:34-37 comment becomes stale and is corrected by the implementation." },
+    { "consumer": "e2e/tests public-booking, seam, time-format, scheduling-links", "breaks": "no expected (static check at contract revision 2; the build stage must confirm with the e2e gate)", "detail": "All book or list on link days within 60 days (spec §6). Rule 3 now applies to the POST every non-cancelled booking on any link the host owns or co-hosts, so two journeys booking the same host at an overlapping instant would now collide on the POST, not only in the listing. Static check of the journeys that POST a booking (contract-author, revision 2): primary user, uiBooking 09:00-11:00 UTC on bookingDay(4) (browser, first slot) and bookingDay(5) 09:00, and scheduling-links' created link 16:00 on nextBookableWeekday(14); second user, apiBooking 13:00 on bookingDay(1) (the duplicate POST there expects 409 by design) and 14:00 on bookingDay(2); alphaReport, exhausted link (410 before the rule); seam user, seam link 16:00 on EXERCISE_DAY(3); time-format, a fresh user. Seeded hosts are each link's owner only (seed.sql scheduling_link_hosts), so no host is shared and no two journeys book the same host at the same instant. Focus-block journeys stay out of the booking band (dates.ts weekDay). The build stage must re-check this when AC-20 adds its offered and unoffered bookings, and when any journey is added. e2e/lib/dates.ts:34-37 comment becomes stale and is corrected by the implementation." },
     { "consumer": "mcp", "breaks": "no", "detail": "Does not call /api/book (grep of mcp/)." }
   ],
 

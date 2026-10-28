@@ -83,7 +83,10 @@ paths:
         400, checked first); (2) the start falls on one of the link's
         `days_of_week` and inside its daily window, on the 15-minute grid
         counted from `window_start_time`, with zero seconds and zero fraction, and
-        start + duration ends no later than `window_end_time`; (3) every accepted
+        start + duration ends no later than `window_end_time` (these are the
+        create/update request and storage names; the owner's `SchedulingLink`
+        read model calls the same fields `days`, `window_start` and
+        `window_end`); (3) every accepted
         host is free for the whole slot: no non-transparent calendar event
         (widened by the link's buffers; buffers apply to calendar events only,
         and events are read only for the daily window), no focus block, and no
@@ -172,8 +175,8 @@ paths:
             (including any non-zero seconds or fraction), or start + duration
             ends after `window_end_time`; the start's UTC date is after today + 59
             days (the 60-day booking horizon); the start is inside
-            `min_notice_minutes` (formerly 422 "booking is too soon"); or the
-            link has no accepted host. Nothing is written.
+            `min_notice_minutes`; or the link has no accepted host. Nothing is
+            written.
           content:
             application/json:
               schema:
@@ -1748,11 +1751,14 @@ components:
           format: date-time
           description: >-
             RFC3339, optional. When present it wins: end - start must be exactly
-            `duration`/`duration_minutes` minutes if either was also sent (else 400
-            "duration does not match end time"), and must be exactly a whole number
-            of minutes that is one of the link's durations (else 400 "invalid
-            duration"); a length with seconds or a fraction is never rounded. When
-            absent, end = start + resolved duration.
+            the requested length in minutes if one was sent (else 400 "duration
+            does not match end time"); the requested length is `duration` when it
+            is present and not null, else `duration_minutes`, and a requested
+            length of 0 or null counts as not sent (no comparison is made). The
+            length must be exactly a whole number of minutes that is one of the
+            link's durations (else 400 "invalid duration"); a length with seconds
+            or a fraction is never rounded. When absent, end = start + resolved
+            duration.
         notes:
           type: string
           description: Free text; no length limit enforced.
@@ -1760,15 +1766,20 @@ components:
           type: integer
           nullable: true
           description: >-
-            Minutes. Takes precedence over `duration_minutes` when both are sent. This
-            is the field the frontend actually populates.
+            Minutes. Takes precedence over `duration_minutes` whenever it is present
+            and not null, even when it is 0. A requested length of 0 or null counts as
+            not sent: with `end` no length comparison is made, without `end` the
+            fallback below applies (so `"duration":0` with `"duration_minutes":60`
+            books the fallback length, not 60). This is the field the frontend
+            actually populates.
         duration_minutes:
           type: integer
           nullable: true
           description: >-
-            Minutes. Overridden by `duration` when both are present. When neither is
-            sent and `end` is absent, the length falls back to durations[0] (else 30).
-            The resolved value must be in the link's duration set, else 400.
+            Minutes. Overridden by `duration` when that is present and not null. When
+            no length is sent (both absent or null, or the one that applies is 0) and
+            `end` is absent, the length falls back to durations[0] (else 30). The
+            resolved value must be in the link's duration set, else 400.
 
     PublicBookingConfirmation:
       type: object
@@ -1850,7 +1861,7 @@ components:
         backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field
         names deliberately differ from the storage json tags (`durations` vs
         `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`,
-        `window_start_time` vs `window_start_time`).
+        `window_start` vs `window_start_time`).
       required:
         [id, owner_id, title, slug, durations, days, window_start, window_end,
          buffer_before, buffer_after, min_notice_minutes, usage_type, uses_count,

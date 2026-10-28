@@ -124,7 +124,10 @@ schema-level 400 would split one rule into two statuses.
 - Backend tests that pin 422 or book off-rule starts: amended by the backend PR
   (spec §6 list), never deleted or skipped.
 - e2e: existing booking flows use link days within 60 days; AC-20 adds the
-  offered/unoffered pair.
+  offered/unoffered pair. Rule 3 now applies a host's bookings on all of their
+  links to the POST, not only to the listing; the manifest's e2e entry records
+  the static check that no two journeys book the same host at the same instant
+  (revision 2), which the build stage re-confirms with the e2e gate.
 - `mcp`: does not call `/api/book`.
 
 ## 4. Findings and uncertainties
@@ -388,3 +391,91 @@ server is unchanged. API-051 is still stated as open on the operation
   AC-9/AC-21a across 400 and 409.
 - **Security conventions**: no `security` key changed on the public operations.
   The refusal discloses no cause (D-5). No field reveals host calendar facts.
+
+## Revision — 2026-10-28
+
+Answers the challenge above (accept-with-changes, 1 blocking). Contract
+revision 2. `.claude/factory/owner-decisions.md` still holds no PAC-72 answer,
+so every product choice stays "assumed by the factory, pending owner
+confirmation" in the spec's Decisions.
+
+### Blocking
+
+1. **`SchedulingLink` description corrupted.** Fixed. `booking.yaml` reads
+   "`window_start` vs `window_start_time`" again (DTO name against storage
+   tag, as on `main`). Bundle and `backend/api/gen/paceday.gen.go` regenerated;
+   `git diff origin/main` on both no longer touches that sentence.
+   `contractHash` updated to the new bundle (`3badfa9d…94874011`) and
+   `contractRevision` to 2.
+
+### Non-blocking
+
+1. **`0`/`null` lengths.** Accepted as description-only. `end`, `duration` and
+   `duration_minutes` now say the requested length is `duration` when present
+   and not null, else `duration_minutes`, and that a requested length of 0 or
+   null counts as not sent: with `end` no comparison is made (so `end` =
+   start + 30 with `"duration":0` is not a "duration does not match end time"
+   400), and without `end` the fallback (durations[0], else 30) applies. The
+   `duration` text spells out the consequence of the precedence:
+   `"duration":0` with `"duration_minutes":60` books the fallback, not 60.
+   This is today's handler (`handlers_booking.go:259-285`); no behaviour
+   change, so no spec amendment.
+2. **Landing order.** Accepted. `mergeAfter` now says the contract lands on
+   `main` together with, or immediately before, the PAC-72 backend PR and its
+   paired web type regeneration, never ahead of it on its own, and that the
+   register's "server pending" wording covers only the window between the two
+   merges.
+3. **"(formerly 422 …)" in the 409 text.** Dropped from `booking.yaml`; the
+   history lives here (§2.1) and in the spec. `createPublicBooking`'s text in
+   the bundle no longer contains "422" anywhere. The manifest's AC-19 line also
+   says the AC-19 test checks response keys and status lists, not text.
+4. **e2e collisions under rule 3.** Checked statically and recorded in the
+   manifest's e2e consumer entry: each seeded booking link has only its owner
+   as host; the primary user is booked at 09:00-11:00 (uiBooking) and 16:00
+   (scheduling-links' created link), the second user at 13:00 and 14:00 on two
+   different days (the duplicate POST at 13:00 expects 409 by design), the
+   seam user at 16:00, and time-format uses a fresh user. No two journeys book
+   the same host at the same instant. This is a reading of the specs, not an
+   e2e run; the build stage re-confirms it with the e2e gate after AC-20 is
+   added.
+5. **API-094 row "No PAC issue yet".** Replaced with "Opened as PAC-72."
+6. **Field names.** Rule (2) now names `days_of_week`, `window_start_time` and
+   `window_end_time` once as the create/update request and storage names and
+   says the owner's `SchedulingLink` read model calls them `days`,
+   `window_start` and `window_end`.
+7. **AC-19 "API-094 marked fixed".** Kept on the backend PR, now stated as an
+   obligation in the manifest (backend `allowedPaths` and the AC-19 line: the
+   backend PR MUST set "Fixed (PAC-72)").
+8. **Demo-mode `bookSlot`** (`smart-calendar-flow/src/api/schedulingLinks.ts:743-750`,
+   422 for the notice, any start accepted). Acknowledged, not changed: demo
+   only, and spec §5 rules out web changes. It is not the contract; a follow-up
+   to align the demo is a triage item, not part of PAC-72.
+9. **OWNER items (challenge non-blocking 8-13).** No owner answer recorded for
+   PAC-72, so each stays as the spec records it, assumed by the factory pending
+   owner confirmation, and is listed for the owner in spec OQ-1, OQ-2 and OQ-6:
+   D-1 (fixed 60-day horizon for both listing modes and booking; a date past
+   it answers 200 with no slots; no per-link horizon exists), D-2 (inside the
+   minimum notice answers 409, not 422), D-3 (an unoffered duration stays 400),
+   D-4 (link days of the week hide days the listing shows today), D-6 / OQ-2
+   (an unreadable external calendar is treated as free in both paths), D-7 to
+   D-11 / OQ-6 (storage failures fail closed; exact interval; UTC; hostless
+   link offers nothing; pending bookings are busy). None of them deletes data
+   or widens who sees data.
+
+### Checks run (revision 2, worktree of `factory/pac-72-contract`)
+
+```
+python scripts/openapi_assemble.py                   wrote bundle (99 paths, 120 operations)  rc=0
+python scripts/openapi_migration_report.py           120 operations (4 generated)             rc=0
+bash scripts/openapi_gen_go.sh                       wrote backend/api/gen/paceday.gen.go     rc=0
+python scripts/openapi_assemble.py --check           OK: bundle is in sync (99 paths)         rc=0
+python scripts/openapi_migration_report.py --check   OK: MIGRATION.md covers all 120 operations (4 generated)  rc=0
+bash scripts/openapi_gen_go.sh --check               OK: backend/api/gen matches the contract rc=0
+cd backend && go build ./...                         rc=0
+sha256sum contracts/openapi/openapi.yaml             3badfa9d0853a2a1245570b333648940277dee42f816e2afba5ac10294874011 (= manifest contractHash)
+```
+
+Not run: `api-gate.sh`, `web-gate.sh` and `e2e-gate.sh` (build stage; the host
+api and web checkouts are on PAC-22 branches of another stage and were left
+there), the web half of `make openapi-check` (expected drift until the paired
+web regeneration), and `go test` (needs the test Postgres).

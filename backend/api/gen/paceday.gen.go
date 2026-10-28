@@ -940,16 +940,16 @@ type CreateConferenceRequest struct {
 
 // CreatePublicBookingRequest Anonymous request body of POST /api/book/{slug}. `name`, `email` and `start` are required by the handler; `end`, `duration` and `duration_minutes` are three overlapping ways to express the length.
 type CreatePublicBookingRequest struct {
-	// Duration Minutes. Takes precedence over `duration_minutes` when both are sent. This is the field the frontend actually populates.
+	// Duration Minutes. Takes precedence over `duration_minutes` whenever it is present and not null, even when it is 0. A requested length of 0 or null counts as not sent: with `end` no length comparison is made, without `end` the fallback below applies (so `"duration":0` with `"duration_minutes":60` books the fallback length, not 60). This is the field the frontend actually populates.
 	Duration *int `json:"duration"`
 
-	// DurationMinutes Minutes. Overridden by `duration` when both are present. When neither is sent and `end` is absent, the length falls back to durations[0] (else 30). The resolved value must be in the link's duration set, else 400.
+	// DurationMinutes Minutes. Overridden by `duration` when that is present and not null. When no length is sent (both absent or null, or the one that applies is 0) and `end` is absent, the length falls back to durations[0] (else 30). The resolved value must be in the link's duration set, else 400.
 	DurationMinutes *int `json:"duration_minutes"`
 
 	// Email Trimmed; must be non-empty after trimming. Never validated as an email address.
 	Email string `json:"email"`
 
-	// End RFC3339, optional. When present it wins: end - start must be exactly `duration`/`duration_minutes` minutes if either was also sent (else 400 "duration does not match end time"), and must be exactly a whole number of minutes that is one of the link's durations (else 400 "invalid duration"); a length with seconds or a fraction is never rounded. When absent, end = start + resolved duration.
+	// End RFC3339, optional. When present it wins: end - start must be exactly the requested length in minutes if one was sent (else 400 "duration does not match end time"); the requested length is `duration` when it is present and not null, else `duration_minutes`, and a requested length of 0 or null counts as not sent (no comparison is made). The length must be exactly a whole number of minutes that is one of the link's durations (else 400 "invalid duration"); a length with seconds or a fraction is never rounded. When absent, end = start + resolved duration.
 	End *time.Time `json:"end,omitempty"`
 
 	// Name Trimmed; must be non-empty after trimming.
@@ -2166,7 +2166,7 @@ type SchedulingErrorResponse struct {
 	Error string `json:"error"`
 }
 
-// SchedulingLink backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`, `window_start_time` vs `window_start_time`).
+// SchedulingLink backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`, `window_start` vs `window_start_time`).
 type SchedulingLink struct {
 	Active       bool `json:"active"`
 	BufferAfter  int  `json:"buffer_after"`

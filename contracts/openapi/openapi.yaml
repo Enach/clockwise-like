@@ -1663,30 +1663,32 @@ paths:
         booking apply one rule: (1) the duration is one of the link''s durations (else 400, checked first);
         (2) the start falls on one of the link''s `days_of_week` and inside its daily window, on the 15-minute
         grid counted from `window_start_time`, with zero seconds and zero fraction, and start + duration
-        ends no later than `window_end_time`; (3) every accepted host is free for the whole slot: no non-transparent
-        calendar event (widened by the link''s buffers; buffers apply to calendar events only, and events
-        are read only for the daily window), no focus block, and no booking that is not `cancelled` (pending
-        or confirmed) on any link the host owns or co-hosts, this link included; (4) the start is at least
-        `min_notice_minutes` after the request is handled; (5) the start''s UTC date is today (UTC) or
-        one of the next 59 days, a fixed 60-day booking horizon (no per-link horizon exists); (6) the
-        link has at least one accepted host. Days, hours and the horizon are evaluated in UTC whatever
-        zone the server process runs in. `start` is compared as an instant, so another UTC offset denoting
-        a grid instant is the same start; the stored and returned start and end are exactly the slot''s,
-        in UTC. A start the rule does not offer answers 409 with the single body `{"error":"slot is no
-        longer available"}`, whatever rule failed, and nothing is written: no booking row, no calendar
-        event, no email. The 409 check runs after the 429, 404, 410 and 400 checks. A host whose external
-        calendar cannot be read (not connected, provider error, refused credential) is treated as free
-        for calendar events, as the listing does, and the booking proceeds if the rest of the rule offers
-        the slot; a storage failure while reading the link''s accepted hosts, a host''s focus blocks or
-        the bookings on the hosts'' links answers 500 and writes nothing, never 409. Not guaranteed: two
-        concurrent requests for the same or overlapping starts can both pass the check before either is
-        written (no storage-level exclusion; out of scope for PAC-72). Still open (API-051, owned by PAC-40):
-        `uses_count` is recomputed from live bookings, so cancelling a booking re-opens an exhausted single-use
-        link. When the start is accepted, the booking row is saved, then a calendar event (with the booker
-        email as a guest) is attempted on each accepted host''s calendar, best effort: a host whose user
-        record or calendar client cannot be loaded is skipped and a failed event creation is ignored,
-        so a 201 does not mean any host''s calendar was written. Operation-level `security: []` is kept:
-        this operation is public and is registered outside requireAuth; the rate limit is not authentication.'
+        ends no later than `window_end_time` (these are the create/update request and storage names; the
+        owner''s `SchedulingLink` read model calls the same fields `days`, `window_start` and `window_end`);
+        (3) every accepted host is free for the whole slot: no non-transparent calendar event (widened
+        by the link''s buffers; buffers apply to calendar events only, and events are read only for the
+        daily window), no focus block, and no booking that is not `cancelled` (pending or confirmed) on
+        any link the host owns or co-hosts, this link included; (4) the start is at least `min_notice_minutes`
+        after the request is handled; (5) the start''s UTC date is today (UTC) or one of the next 59 days,
+        a fixed 60-day booking horizon (no per-link horizon exists); (6) the link has at least one accepted
+        host. Days, hours and the horizon are evaluated in UTC whatever zone the server process runs in.
+        `start` is compared as an instant, so another UTC offset denoting a grid instant is the same start;
+        the stored and returned start and end are exactly the slot''s, in UTC. A start the rule does not
+        offer answers 409 with the single body `{"error":"slot is no longer available"}`, whatever rule
+        failed, and nothing is written: no booking row, no calendar event, no email. The 409 check runs
+        after the 429, 404, 410 and 400 checks. A host whose external calendar cannot be read (not connected,
+        provider error, refused credential) is treated as free for calendar events, as the listing does,
+        and the booking proceeds if the rest of the rule offers the slot; a storage failure while reading
+        the link''s accepted hosts, a host''s focus blocks or the bookings on the hosts'' links answers
+        500 and writes nothing, never 409. Not guaranteed: two concurrent requests for the same or overlapping
+        starts can both pass the check before either is written (no storage-level exclusion; out of scope
+        for PAC-72). Still open (API-051, owned by PAC-40): `uses_count` is recomputed from live bookings,
+        so cancelling a booking re-opens an exhausted single-use link. When the start is accepted, the
+        booking row is saved, then a calendar event (with the booker email as a guest) is attempted on
+        each accepted host''s calendar, best effort: a host whose user record or calendar client cannot
+        be loaded is skipped and a failed event creation is ignored, so a 201 does not mean any host''s
+        calendar was written. Operation-level `security: []` is kept: this operation is public and is
+        registered outside requireAuth; the rate limit is not authentication.'
       requestBody:
         required: true
         content:
@@ -1730,8 +1732,8 @@ paths:
             is on a day not in the link''s `days_of_week`, outside its daily window, off the 15-minute
             grid counted from `window_start_time` (including any non-zero seconds or fraction), or start
             + duration ends after `window_end_time`; the start''s UTC date is after today + 59 days (the
-            60-day booking horizon); the start is inside `min_notice_minutes` (formerly 422 "booking is
-            too soon"); or the link has no accepted host. Nothing is written.'
+            60-day booking horizon); the start is inside `min_notice_minutes`; or the link has no accepted
+            host. Nothing is written.'
           content:
             application/json:
               schema:
@@ -7100,25 +7102,31 @@ components:
         end:
           type: string
           format: date-time
-          description: 'RFC3339, optional. When present it wins: end - start must be exactly `duration`/`duration_minutes`
-            minutes if either was also sent (else 400 "duration does not match end time"), and must be
-            exactly a whole number of minutes that is one of the link''s durations (else 400 "invalid
-            duration"); a length with seconds or a fraction is never rounded. When absent, end = start
-            + resolved duration.'
+          description: 'RFC3339, optional. When present it wins: end - start must be exactly the requested
+            length in minutes if one was sent (else 400 "duration does not match end time"); the requested
+            length is `duration` when it is present and not null, else `duration_minutes`, and a requested
+            length of 0 or null counts as not sent (no comparison is made). The length must be exactly
+            a whole number of minutes that is one of the link''s durations (else 400 "invalid duration");
+            a length with seconds or a fraction is never rounded. When absent, end = start + resolved
+            duration.'
         notes:
           type: string
           description: Free text; no length limit enforced.
         duration:
           type: integer
           nullable: true
-          description: Minutes. Takes precedence over `duration_minutes` when both are sent. This is the
-            field the frontend actually populates.
+          description: 'Minutes. Takes precedence over `duration_minutes` whenever it is present and not
+            null, even when it is 0. A requested length of 0 or null counts as not sent: with `end` no
+            length comparison is made, without `end` the fallback below applies (so `"duration":0` with
+            `"duration_minutes":60` books the fallback length, not 60). This is the field the frontend
+            actually populates.'
         duration_minutes:
           type: integer
           nullable: true
-          description: Minutes. Overridden by `duration` when both are present. When neither is sent and
-            `end` is absent, the length falls back to durations[0] (else 30). The resolved value must
-            be in the link's duration set, else 400.
+          description: Minutes. Overridden by `duration` when that is present and not null. When no length
+            is sent (both absent or null, or the one that applies is 0) and `end` is absent, the length
+            falls back to durations[0] (else 30). The resolved value must be in the link's duration set,
+            else 400.
     CreateSchedulingLinkRequest:
       type: object
       description: backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two
@@ -9670,7 +9678,7 @@ components:
       type: object
       description: backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names
         deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`,
-        `owner_id` vs `owner_user_id`, `window_start_time` vs `window_start_time`).
+        `owner_id` vs `owner_user_id`, `window_start` vs `window_start_time`).
       required:
       - id
       - owner_id
