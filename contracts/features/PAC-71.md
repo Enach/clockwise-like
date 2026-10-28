@@ -231,3 +231,79 @@ See the manifest's `consumersAffected`. In summary:
 ## 14. Gates run at this stage
 
 See the manifest `gatesRun` (each command with its exit code), recorded when the branch was pushed.
+
+## Challenge, revision 1 — 2026-10-28
+
+**Verdict**: accept-with-changes. 3 blocking, all in the manifest (`contracts/features/PAC-71.yaml`); no fragment or schema change is required. Reviewed at `9bda6bf`. The bundle hash matches the manifest.
+
+### Blocking
+
+1. **Consumer missing, and the merge conditions forbid fixing it.** `GET /api/auth/me` with a valid session will answer `{"id":"…","email":"pac35-me@example.com","name":"Me","avatarUrl":"https://img.test/me.png","provider":"google","addressStanding":"unconfirmed","createdAt":"…"}`. `addressStanding` is required in `CurrentUserResponse`. `TestPAC35_CurrentUser_EveryDocumentedStatus` (`backend/api/pac35_auth_flows_test.go:756-785`) decodes that body into a six-field struct with `dec.DisallowUnknownFields()` (`:779`), so it fails with `json: unknown field "addressStanding"`. The test is also named "every documented status", and `getCurrentUser` now documents a 500. `consumersAffected` names `pac35_auth_flows_test.go` only at `:142-246, :286`. The merge condition says "PAC-35 and PAC-67 tests amended only as consumersAffected states", so the implementer may not amend `:756-785` as the manifest stands. **Fix:** add a `consumersAffected` entry for `pac35_auth_flows_test.go:756-785`. The struct gains `AddressStanding`; the strict decode is kept; a 500 sub-test is added for an unreadable generation.
+2. **The personal-Microsoft question is recorded as a factory assumption, but it is an open owner question. The release note also understates the effect.** Take an existing account created by a personal Microsoft sign-in (outlook.com). After deploy, `GET /api/auth/microsoft/callback?state=S&code=C`: Graph `/organization` refuses the personal account, so the answer is `302 Location: <FRONTEND_URL>/?error=signin_refused`. Google cannot rescue that account either. Rule (a) needs a Google-format `provider_id`, which it does not have. Rule (b) needs AUTHORITATIVE evidence and an empty account. So the account is **locked out**, not merely unable to sign up, until PAC-77 ships or the operator runs "unbind and reassign". `.claude/factory/owner-decisions.md` (2026-10-28, "Still open") lists this as asked of the owner: "acceptable, or must PAC-77 ship with PAC-71? (default: acceptable, release-noted)". The manifest has it only in `assumedByTheFactory`. `followUps.F4` says "orchestrator files it", but it is already filed as PAC-77. **Fix:** (a) add it to `ownerQuestionsOpen`, with its default. (b) Make the release merge condition say that existing accounts whose only sign-in is a personal Microsoft account lose access until PAC-77, that recovery is the operator's "unbind and reassign", and that they can still connect an Outlook calendar. (c) Rename F4 to PAC-77.
+3. **A provider fact that check 4b depends on is not a merge condition.** Step-up check 4b compares the step-up ID token's `sub` with the bound Google subject. The bound subject is the v2 userinfo `id` (sign-in step 2). §3 item 5 says the two are equal "from memory of Google's documentation, not called". If they differ, every Google step-up by a bound Workspace admin gets `302 Location: <FRONTEND_URL>/settings?stepup=denied&reason=identity_mismatch`, and no Google admin can write SSO configuration (break-glass aside). Merge condition 2 records a v2 userinfo answer but never compares it with a step-up ID token. **Fix:** extend merge condition 2 so that, for the same Workspace test account, the plan records the step-up ID token's `sub` and asserts that it equals the v2 userinfo `id`. Do the same for Microsoft: the step-up `oid` equals Graph `/me` `id` for a work account. A mismatch revises the contract before stage 4.
+
+### Requests wrongly permitted
+
+None found at the schema level. Attacks tried:
+
+- **Connect CSRF, attacker's state into the victim's browser.** The attacker runs `POST /api/auth/google/connect` with his own session and sends the victim the `authorize_url`. The victim consents with her account, and `GET /api/auth/callback?state=S_A&code=C_V` arrives without a `google_connect_state` cookie and without `oauth_state`. Result: 400 "invalid state", nothing written.
+- **Victim's state completed with the attacker's code.** The attacker would need the victim's state value. The POST response cannot be read cross-site. `corsMiddleware` (`backend/api/middleware.go:79-99`) sends `*` without credentials, or one exact origin with credentials. A cross-site form POST does not even carry the `SameSite=Lax` `auth_token`, so it gets a 401 before any state is issued.
+- **The victim's callback crediting the attacker, or the reverse.** Connect steps 1 and 2 bind the state to (U, g), and the session in the browser must be U's at g. A browser holding B's session, or none, gets `302 Location: <FRONTEND_URL>/?connect=not_credited`.
+- **Cookie-name collision.** `oauth_state`, `ms_oauth_state`, `google_connect_state`, `ms_connect_state` and `sso_stepup_state` (`handlers_auth.go:31`, `handlers_microsoft_auth.go:29`, `handlers_sso_stepup.go:40`) are distinct names holding independent random values, so at most one matches. The step-up has its own callback path, behind requireAuth.
+- **`SameSite=Lax` on the return from the provider.** Google and Microsoft return to the callback by a top-level GET (Microsoft uses the default `response_mode=query`, and the code sets none), and Lax cookies are sent on top-level GET navigations. Both the state cookie and `auth_token` arrive.
+- **`gen` claim.** A token without `gen` reads as 0, every account starts at 0, and any advance makes it 1, so an old token gets a 401 after the first advance. `"gen":"0"`, `null` or `-1` are invalid tokens (401). A `gen` above the current value is a 401. Nothing survives an advance.
+
+### Responses the client cannot handle
+
+None blocking.
+
+- `addressStanding`: the web's `AuthUser` (`smart-calendar-flow` `src/contexts/AuthContext.tsx`, `eea0cf6`) is a plain interface read by `apiFetch`, with no strict zod, so the extra field is ignored. Nothing in `src/contracts` parses `/me`.
+- 401 vs 500: `refresh()` in the same file maps only 401/403 to signed-out. A 5xx keeps the user and sets `sessionStale`, so the generation-unreadable 500 does not sign anyone out (AC-48 holds for the shipped web).
+- `identity_mismatch`: `SsoAdminStepupSection.test.tsx:148-152` pins the generic denial for an unknown reason.
+- The CREDITED Location `/auth/callback?provider=google&connect=credited` lands on `AuthCallback.tsx`, which calls `refresh()` and navigates to `/app`, as today. Until the web PR, `/?connect=not_credited` and `/?error=signin_refused` are silent on the shipped web.
+
+### Consumers affected
+
+- `clockwise-like/backend/api/pac35_auth_flows_test.go:756-785`: see Blocking 1.
+- `clockwise-like/backend/api/pac21_contract_5xx_test.go`: every new 500 is the `ErrorResponse` / `SessionGenerationUnavailable` JSON envelope. Checked by walking the bundle; the Go test itself needs the test DB and was not run here.
+- 114 operations newly declaring 401/500: no shipped client or e2e asserts an operation's exact response set. `git grep` in both repos finds the bundle read only by `pac21_contract_5xx_test.go` and the scripts. `e2e/tests/team-invite-analytics.spec.ts:66` pins the keys of a 200 body, not responses.
+- `mcp/`: unaffected, but for a different reason than §11 states. `mcp/client.go:68-88` sends **no** credential, and `mcp/tools.go` calls about 16 endpoints, not only `getAuthStatus`. `MCP_AUTH_TOKEN` (`mcp/main.go:29`) guards MCP's own SSE listener and is never forwarded. Non-blocking: correct §11.
+
+### Contract/implementation divergences
+
+None that block. The callbacks are described as future behaviour on purpose (stage 2), and the unchanged parts (state checks, cookie helper, `/common`, scopes) match `handlers_auth.go`, `handlers_microsoft_auth.go` and `cookies.go` at this head.
+
+### Uncertainties not actually resolved
+
+- `getTeam` 404: resolved by reasoning from the schema (`013_teams` cascade) and the two-statement handler. Acceptable because CONTRACT-9 owes the seam test that pins it.
+- OQ-3 item 4 (unmanaged Microsoft directories): open and release-noted, but no merge condition asks the plan to look. Non-blocking: add it to merge condition 2 ("documentation or the recorded call").
+
+### Non-blocking
+
+1. **The user cancels at the provider on a connect.** `GET /api/auth/callback?error=access_denied&state=S` (no code) passes connect steps 1 to 3, then the exchange of an empty code is the 500 JSON page on the API origin. Sign-in does the same today, but connect is a new signed-in flow. Consider "provider returned no code" → `/?connect=not_credited`.
+2. **Instructions that now point at a sign-in start.** The pinned 400 strings "teams: not connected — visit /api/auth/microsoft to authenticate" and "teams: connection lost — reconnect at /api/auth/microsoft" (`booking.yaml:1100-1110`, `:1349-1350`; `handlers_credentials.go:77`) now point at a sign-in start. A signed-in Google-bound user who follows them gets a Microsoft sign-in: a refusal, or a new account and a replaced session. It never reconnects Teams. File a follow-up, or change the text.
+3. **The cross-site argument in §4 depends on CORS.** It relies on CORS never reflecting an arbitrary origin with credentials. State that as an invariant next to the argument.
+4. **Sibling-subdomain cookie tossing.** It can plant an attacker's `auth_token` and `google_connect_state`, so the victim's consent credits the attacker's account. This is outside the spec's cross-site model. Consider the `__Host-` prefix when `Secure` is on.
+5. **Deploy order.** Between the backend deploy and the web deploy, the shipped connect controls (`api.authConnectUrl`, `client.ts:1181`) start a sign-in. The rollback names a revert order, but nothing names a deploy order. Add one to the release merge condition.
+6. **No account row for `sub`.** requireAuth says "no account row for `sub`: request proceeds", but the in-request re-check does not say what it does when the row is absent. Say 401.
+7. **The connect-branch 500s** do not say whether `google_connect_state` / `ms_connect_state` is expired.
+
+### Verified clean
+
+- Spec ACs vs `acceptanceTests`: the AC numbers missing from the manifest (AC-24, -26, -27, -30, -33, -34, -36) are each replaced (AC-40 replaces AC-24) or moved to F1/F2 by the spec itself (`docs/specs/PAC-71.md:773`, `:782`). No silent narrowing.
+- `MIGRATION.md`: main has 124 operations and this branch 126, with exactly `startGoogleConnect` and `startMicrosoftConnect` added. No row lost; the bundle `operationId` count matches (124 → 126).
+- 401/500 coverage, by walking the bundle: main has 112 protected operations, missing 31 × 401 and 15 × 500 (the same 31 and 15 the doc names). HEAD has 114 protected operations, each with a 401 and a JSON 500.
+- Generated Go: the diff adds only. No existing identifier is removed or renamed; `x-enum-varnames` avoids the `unconfirmed` collision with `ProviderDisconnectResult`.
+- The refusal Location is one fixed value on all three callbacks, pinned by the Location patterns, with no reason or address in it. Whether a refusal happens depends on account existence only where the requester is AUTHORITATIVE or controls the mailbox for that address. Foreign-tenant probing yields NONE, so a refusal whether or not an account exists (D-6 holds).
+- `identity_mismatch` is ordered after `not_admin`, so every reason pinned by `pac50_sso_stepup_test.go` is unchanged. The pattern and the "nine values" text agree.
+- Break-glass by stored address: the session's `email` claim is no longer compared. An unconfirmed carrier, or a stale claim, is not break-glass; a case collision cannot bind, so it cannot become domain-confirmed.
+- `getAuthStatus`: a stale generation (401) and an unreadable one (500) are carved out of the 200 fallback, so the web cannot read "signed in, not connected" from a dead session.
+
+### Checks run (this worktree, `9bda6bf`)
+
+- `py -3 scripts/openapi_assemble.py --check` → rc=0 (OK: bundle is in sync (105 paths))
+- `py -3 scripts/openapi_migration_report.py --check` → rc=0 (OK: MIGRATION.md covers all 126 operations (6 generated))
+- `bash scripts/openapi_gen_go.sh --check` → rc=0 (OK: backend/api/gen matches the contract)
+- `cd backend && go build ./...` → rc=0; `go vet ./...` → rc=0
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` → `d14119d716aaf2d0be71979f81a8cd22c63d692f90b8d9373a01cfda7fde7d18`, equal to the manifest `contractHash`
+- `go test ./api -run TestPAC21Every5xx` → could not run: the package's TestMain needs the test Postgres at 127.0.0.1:15432 (connection refused). I replaced it with a Python walk of the bundle (above).
