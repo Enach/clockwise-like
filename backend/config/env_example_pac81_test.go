@@ -18,7 +18,7 @@ func TestEnvExamplePAC81(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^SENTRY_DSN=$`).MatchString(src) {
 		t.Error("SENTRY_DSN is not empty in .env.example")
 	}
-	if !strings.Contains(src, "monitoring OFF") || !strings.Contains(src, `"monitoring disabled"`) {
+	if !strings.Contains(src, "monitoring is off until SENTRY_DSN is set") || !strings.Contains(src, `"monitoring disabled"`) {
 		t.Error(".env.example does not say that an empty DSN turns monitoring off")
 	}
 	for _, name := range []string{EnvDBMaxOpenConns, EnvDBMaxIdleConns, EnvDBConnMaxLifetime, EnvDBConnMaxIdleTime} {

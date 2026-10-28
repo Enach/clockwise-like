@@ -34,8 +34,8 @@ var DefaultDBPool = DBPool{MaxOpen: 20, MaxIdle: 10, MaxLifetime: 30 * time.Minu
 func DecideDBPool(getenv func(string) string) (DBPool, []string) {
 	p := DefaultDBPool
 	var notices []string
-	readInt := func(name string, dst *int) {
-		raw := strings.TrimSpace(getenv(name))
+	readInt := func(name, value string, dst *int) {
+		raw := strings.TrimSpace(value)
 		if raw == "" {
 			return
 		}
@@ -46,8 +46,8 @@ func DecideDBPool(getenv func(string) string) (DBPool, []string) {
 		}
 		*dst = n
 	}
-	readDur := func(name string, dst *time.Duration) {
-		raw := strings.TrimSpace(getenv(name))
+	readDur := func(name, value string, dst *time.Duration) {
+		raw := strings.TrimSpace(value)
 		if raw == "" {
 			return
 		}
@@ -58,10 +58,10 @@ func DecideDBPool(getenv func(string) string) (DBPool, []string) {
 		}
 		*dst = d
 	}
-	readInt(EnvDBMaxOpenConns, &p.MaxOpen)
-	readInt(EnvDBMaxIdleConns, &p.MaxIdle)
-	readDur(EnvDBConnMaxLifetime, &p.MaxLifetime)
-	readDur(EnvDBConnMaxIdleTime, &p.MaxIdleTime)
+	readInt(EnvDBMaxOpenConns, getenv(EnvDBMaxOpenConns), &p.MaxOpen)
+	readInt(EnvDBMaxIdleConns, getenv(EnvDBMaxIdleConns), &p.MaxIdle)
+	readDur(EnvDBConnMaxLifetime, getenv(EnvDBConnMaxLifetime), &p.MaxLifetime)
+	readDur(EnvDBConnMaxIdleTime, getenv(EnvDBConnMaxIdleTime), &p.MaxIdleTime)
 	if p.MaxIdle > p.MaxOpen {
 		p.MaxIdle = p.MaxOpen
 	}
