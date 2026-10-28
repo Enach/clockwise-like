@@ -169,6 +169,33 @@ func TestKeepableClientSecret(t *testing.T) {
 	}
 }
 
+// An empty supplied secret is refused by storage itself, whatever the handler
+// let through (PAC-22 AC-26: no write can clear the secret).
+func TestSaveOIDCProvider_RefusesAnEmptySuppliedSecret(t *testing.T) {
+	db := openTestDB(t)
+	d := "pac22-storage-" + uuid.NewString()[:8] + ".test"
+	empty := ""
+
+	if _, err := SaveOIDCProvider(db, OIDCProviderWrite{Domain: d, ProviderName: "A", Issuer: "https://i", ClientID: "c", ClientSecret: &empty}); err != ErrSSOClientSecretEmpty {
+		t.Fatalf("create with an empty secret: err = %v, want ErrSSOClientSecretEmpty", err)
+	}
+	if p, _ := GetSSOProviderByDomainAnyState(db, d); p != nil {
+		t.Fatal("refused create stored a row")
+	}
+
+	secret := "s1"
+	if _, err := SaveOIDCProvider(db, OIDCProviderWrite{Domain: d, ProviderName: "A", Issuer: "https://i", ClientID: "c", ClientSecret: &secret}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveOIDCProvider(db, OIDCProviderWrite{Domain: d, ProviderName: "B", Issuer: "https://i", ClientID: "c", ClientSecret: &empty}); err != ErrSSOClientSecretEmpty {
+		t.Fatalf("replace with an empty secret: err = %v, want ErrSSOClientSecretEmpty", err)
+	}
+	after, _ := GetSSOProviderByDomainAnyState(db, d)
+	if after == nil || after.OIDCClientSecret != "s1" || after.ProviderName != "A" {
+		t.Fatalf("refused replace changed the row: %+v", after)
+	}
+}
+
 func TestSaveOIDCProvider_CreateKeepAndRefuse(t *testing.T) {
 	db := openTestDB(t)
 	d := "pac22-storage-" + uuid.NewString()[:8] + ".test"

@@ -100,6 +100,11 @@ var ErrSSOClientSecretRequired = errors.New("oidc_client_secret is required")
 // D-13, AC-24.
 var ErrSSOClientSecretTargetChanged = errors.New("oidc_client_secret is required when oidc_issuer or oidc_client_id changes")
 
+// ErrSSOClientSecretEmpty: a write supplied an empty client secret. No write
+// can clear the secret (PAC-22 spec AC-26); the handler refuses "" and null
+// first, and storage refuses it again so no caller can store one.
+var ErrSSOClientSecretEmpty = errors.New("oidc_client_secret must not be empty")
+
 // KeepableClientSecret decides whether a write that leaves the client secret
 // out may keep the one stored on current (nil when nothing is stored). It
 // returns nil, ErrSSOClientSecretRequired or ErrSSOClientSecretTargetChanged.
@@ -131,7 +136,9 @@ type OIDCProviderWrite struct {
 // values as absent. When w.ClientSecret is nil, whether the stored secret may
 // be kept is decided again here, inside the transaction that stores the write,
 // against the row as it is then (PAC-22 spec D-14, AC-27, AC-28): if it may
-// not, nothing is stored and KeepableClientSecret's error is returned.
+// not, nothing is stored and KeepableClientSecret's error is returned. A
+// supplied secret that is empty is refused with ErrSSOClientSecretEmpty and
+// nothing is stored (AC-26).
 func SaveOIDCProvider(db *sql.DB, w OIDCProviderWrite) (*SSOProvider, error) {
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
@@ -157,6 +164,9 @@ func SaveOIDCProvider(db *sql.DB, w OIDCProviderWrite) (*SSOProvider, error) {
 		}
 		secret = current.OIDCClientSecret
 	} else {
+		if *w.ClientSecret == "" {
+			return nil, ErrSSOClientSecretEmpty
+		}
 		secret = *w.ClientSecret
 	}
 

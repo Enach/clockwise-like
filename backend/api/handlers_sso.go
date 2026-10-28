@@ -237,9 +237,12 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 }
 
 // ssoKeepRefusal maps a refusal to keep the client secret to its fixed 400
-// message (contract check 6), or "" for any other outcome.
+// message (contract check 6), and storage's own refusal of an empty supplied
+// secret to check 5's message, or "" for any other outcome.
 func ssoKeepRefusal(err error) string {
 	switch {
+	case errors.Is(err, storage.ErrSSOClientSecretEmpty):
+		return "oidc_client_secret must not be empty"
 	case errors.Is(err, storage.ErrSSOClientSecretTargetChanged):
 		return "oidc_client_secret is required when oidc_issuer or oidc_client_id changes"
 	case errors.Is(err, storage.ErrSSOClientSecretRequired):
@@ -264,16 +267,30 @@ func decodeSSOProviderWrite(r *http.Request) (storage.OIDCProviderWrite, string)
 	if err := json.Unmarshal(raw, &props); err != nil || props == nil {
 		return storage.OIDCProviderWrite{}, "invalid JSON"
 	}
+	// Every property is read from props by its exact name. JSON names are
+	// case sensitive, but decoding into a struct matches field names case
+	// insensitively, so a struct would take "OIDC_CLIENT_SECRET" as the
+	// secret while the presence check below, on props, did not see it, and an
+	// empty secret could be stored (review finding on PAC-22). Reading the
+	// presence and the value from the same map makes a case variant what the
+	// contract says it is: an undeclared property, ignored today.
 	var body struct {
-		Domain           string  `json:"domain"`
-		ProviderName     string  `json:"provider_name"`
-		ProviderType     string  `json:"provider_type"`
-		OIDCIssuer       string  `json:"oidc_issuer"`
-		OIDCClientID     string  `json:"oidc_client_id"`
-		OIDCClientSecret *string `json:"oidc_client_secret"`
+		Domain, ProviderName, ProviderType, OIDCIssuer, OIDCClientID string
+		OIDCClientSecret                                             *string
 	}
-	if err := json.Unmarshal(raw, &body); err != nil {
-		return storage.OIDCProviderWrite{}, "invalid JSON"
+	for name, dst := range map[string]any{
+		"domain":             &body.Domain,
+		"provider_name":      &body.ProviderName,
+		"provider_type":      &body.ProviderType,
+		"oidc_issuer":        &body.OIDCIssuer,
+		"oidc_client_id":     &body.OIDCClientID,
+		"oidc_client_secret": &body.OIDCClientSecret,
+	} {
+		if v, present := props[name]; present {
+			if err := json.Unmarshal(v, dst); err != nil {
+				return storage.OIDCProviderWrite{}, "invalid JSON"
+			}
+		}
 	}
 	for _, name := range samlProperties {
 		if _, present := props[name]; present {

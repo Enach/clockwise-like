@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -644,6 +645,53 @@ func TestPAC22_OmittedSecretIsKeptAndSignInStillWorks(t *testing.T) {
 	}
 }
 
+// JSON property names are case sensitive and the contract declares only
+// "oidc_client_secret". A case variant ("OIDC_CLIENT_SECRET") is an undeclared
+// property, ignored like any other today, so it can neither clear, replace nor
+// supply the secret (AC-7, AC-26; review finding on PR #237: Go's struct
+// decoding matches field names case-insensitively, which made "" under a case
+// variant store an empty secret).
+func TestPAC22_CaseVariantSecretKeyIsNotTheSecret(t *testing.T) {
+	org := pac22NewOrg(t)
+	s1 := pac22Secret(t)
+	idp := newFakeIdP(t, "client-"+org.domain)
+	idp.acceptSecret = s1
+	pac22DecodeCreated(t, pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID,
+		pac22JSON(t, pac22Body(org.domain, idp.srv.URL, idp.clientID, map[string]any{"oidc_client_secret": s1}))))
+
+	base := pac22JSON(t, pac22Body(org.domain, idp.srv.URL, idp.clientID, nil))
+	withTail := func(tail string) string { return strings.TrimSuffix(base, "}") + "," + tail + "}" }
+	cases := map[string]string{
+		"upper case, empty":           withTail(`"OIDC_CLIENT_SECRET":""`),
+		"upper case, null":            withTail(`"OIDC_CLIENT_SECRET":null`),
+		"mixed case, other value":     withTail(`"Oidc_Client_Secret":"` + pac22Secret(t) + `"`),
+		"exact then variant, empty":   withTail(`"oidc_client_secret":"` + s1 + `","OIDC_CLIENT_SECRET":""`),
+		"exact then variant, a value": withTail(`"oidc_client_secret":"` + s1 + `","OIDC_CLIENT_SECRET":"` + pac22Secret(t) + `"`),
+	}
+	for name, body := range cases {
+		rec := pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID, body)
+		pac22AssertNoSecret(t, rec, s1)
+		p := pac22DecodeCreated(t, rec)
+		if !p.HasOidcClientSecret {
+			t.Errorf("%s: has_oidc_client_secret = false after the write", name)
+		}
+		if stored := pac22Stored(t, org.domain); stored == nil || stored.OIDCClientSecret != s1 {
+			t.Errorf("%s: the stored secret changed", name)
+		}
+		if !pac22SignIn(t, org.domain, idp) {
+			t.Fatalf("%s: sign-in failed after the write", name)
+		}
+	}
+
+	// With nothing stored, a case variant does not supply a secret either.
+	other := pac22NewOrg(t)
+	body := pac22JSON(t, pac22Body(other.domain, "https://i", "c", nil))
+	body = strings.TrimSuffix(body, "}") + `,"OIDC_CLIENT_SECRET":"` + pac22Secret(t) + `"}`
+	pac22AssertError(t, pac22Do(t, http.MethodPost, "/api/admin/sso", other.userID, body),
+		http.StatusBadRequest, "oidc_client_secret is required")
+	pac22AssertUnchanged(t, nil, pac22Stored(t, other.domain))
+}
+
 func TestPAC22_SuppliedSecretReplacesTheStoredOne(t *testing.T) {
 	org := pac22NewOrg(t)
 	s1, s2 := pac22Secret(t), pac22Secret(t)
@@ -849,5 +897,19 @@ func TestPAC22_RemovalDuringAReplaceIsNotUndone(t *testing.T) {
 	pac22AssertError(t, rec, http.StatusBadRequest, "oidc_client_secret is required")
 	if pac22Stored(t, org.domain) != nil {
 		t.Fatal("a configuration was recreated with an empty secret")
+	}
+}
+
+func TestPAC22_StorageRefusalsMapToFixedMessages(t *testing.T) {
+	for err, want := range map[error]string{
+		storage.ErrSSOClientSecretEmpty:         "oidc_client_secret must not be empty",
+		storage.ErrSSOClientSecretRequired:      "oidc_client_secret is required",
+		storage.ErrSSOClientSecretTargetChanged: "oidc_client_secret is required when oidc_issuer or oidc_client_id changes",
+		errors.New("connection reset"):          "",
+		nil:                                     "",
+	} {
+		if got := ssoKeepRefusal(err); got != want {
+			t.Errorf("ssoKeepRefusal(%v) = %q, want %q", err, got, want)
+		}
 	}
 }
