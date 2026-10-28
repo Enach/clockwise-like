@@ -3,16 +3,16 @@
   "factoryTicket": "NEW-llm-bring-your-own (Part 2)",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-73",
   "linearIssueNote": "Part 2 of PAC-73 (organisation-wide AI key). PR bodies say Part of PAC-73; never Fixes PAC-73 (factory README §6).",
-  "status": "draft",
-  "contractRevision": "1 (Part 2)",
+  "status": "draft (contract revision 2 answers contract challenge revision 1; spec revision 1 answers spec challenge revision 0)",
+  "contractRevision": "2 (Part 2)",
   "contractBase": "main at ae5c2cf (PAC-50 merged, #212; Part 1 merged, #239). Base bundle sha256 2f030a443a4212a4d24ddfa3503df71d60f7436e442a25b6bd04ee5a1ad1efc2 (= PAC-50 revision 8.1's contractHash).",
-  "contractHash": "2dfed13770b83f8d0b744196a6bf41d5e125662b661bd4cb0efcbc1a1499f9c6",
+  "contractHash": "d2044556ed3398e7b791c7de56b28d6749f98ea7e81d9570247a73716ef68780",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml at the commit that carries this revision (git show HEAD:contracts/openapi/openapi.yaml | sha256sum).",
   "contractDoc": "contracts/features/NEW-llm-bring-your-own-part2.md",
-  "specDoc": "docs/specs/NEW-llm-bring-your-own-part2.md (revision 1, 2026-10-28, not yet challenged). Supersedes the Part 2 criteria of docs/specs/NEW-llm-bring-your-own.md (mapping in its §4.0).",
+  "specDoc": "docs/specs/NEW-llm-bring-your-own-part2.md (revision 1, 2026-10-28, answering spec challenge revision 0). Supersedes the Part 2 criteria of docs/specs/NEW-llm-bring-your-own.md (mapping in its §4.0).",
   "partOneManifest": "contracts/features/NEW-llm-bring-your-own.yaml (Part 1, unchanged by this revision; its deferred.part2 is what this manifest delivers).",
   "sourceOfTruth": "Enach/clockwise-like",
-  "scope": "Spec P2-AC-1 to P2-AC-35: the organisation's AI configuration (read by every member, changed by proven admins under a purpose-bound PAC-50 grant), personal keys forbidden (owner O-12), the member's one-time confirmation (owner O-13), the Part 2 rows of the not-configured table on parse, brief refresh, probe and settings read, and the step-up purpose.",
+  "scope": "Spec P2-AC-1 to P2-AC-41: the organisation's AI configuration (read by every member, changed by proven admins under a purpose-bound PAC-50 grant, naming the version it was made from), personal keys forbidden (owner O-12), the member's one-time confirmation of one configuration version (owner O-13), the Part 2 rows of the not-configured table on parse, brief refresh, probe and settings read, the step-up purpose, and no key in provider error text.",
   "repositories": {
     "backend": {
       "url": "https://github.com/Enach/clockwise-like",
@@ -34,7 +34,7 @@
         "any path in Enach/smart-calendar-flow",
         "Makefile coverage floors, .github, .claude settings"
       ],
-      "migration": "One reversible migration, next free number on main at stage 4 (031 on ae5c2cf). Up: (a) one AI configuration per organisation (org id primary key, provider, model, base URL, Azure endpoint/deployment/API version, AWS region, the key, personal_keys_allowed default true, configuration_version integer default 0, updated_at, updated_by); (b) one confirmation per (user, org): configuration_version confirmed, confirmed_at; both cascade on user/org delete; (c) sso_events.kind CHECK widened with 'llm_org_ai_written'. sso_stepup_grants needs no change (purpose has no value list, 030_sso_admin_stepup.up.sql:13-25). No settings row is rewritten. Down: delete sso_events rows of the new kind, restore the CHECK, delete sso_stepup_grants rows with purpose 'llm_org_key_write', drop (a) and (b). The down loses every organisation's configuration and key, every confirmation, and those operator records (spec §7); release notes must say so."
+      "migration": "One reversible migration, next free number on main at stage 4 (031 on ae5c2cf). Up: (a) one AI configuration per organisation (org id primary key, provider, model, base URL, Azure endpoint/deployment/API version, AWS region, the key, personal_keys_allowed default true, configuration_version integer default 0, updated_at, updated_by); (b) one confirmation per (user, org): configuration_version confirmed, confirmed_at; both cascade on user/org delete; (c) sso_events.kind CHECK widened with 'llm_org_ai_written'; a break-glass change's record carries the session's issue time so a second change with the same session is refused (spec P2-D13). sso_stepup_grants needs no change (purpose has no value list, 030_sso_admin_stepup.up.sql:13-25). No settings row is rewritten. Down: delete sso_events rows of the new kind, restore the CHECK, delete sso_stepup_grants rows with purpose 'llm_org_key_write', drop (a) and (b). The down loses every organisation's configuration and key, every confirmation, and those operator records (spec §7); release notes must say so."
     },
     "frontend": {
       "url": "https://github.com/Enach/smart-calendar-flow",
@@ -67,13 +67,13 @@
       "operationId": "patchOrganizationAI",
       "method": "PATCH",
       "path": "/api/organization/ai",
-      "change": "Merge write of OrganizationAIConfigurationUpdate (minProperties 1, additionalProperties false). Gate order = PAC-50 §4.2: membership 403 -> body 400s (unknown/null property, empty body, provider change without apiKey, apiKey without provider, provider \"\" with anything else, property not applying to the provider, unapproved destination) -> consume newest live grant with purpose llm_org_key_write (never sso_write) -> else break-glass with session < 10 min (403 organization_ai_write_requires_fresh_login when stale) -> else 403 organization_ai_write_requires_admin_stepup {stepup_url, stepup_purpose: llm_org_key_write, stepup_scopes, without_stepup: [organization_ai_configuration_writes]} -> write -> 200 re-read. 500 after consume leaves the grant consumed. configurationVersion +1 on a change of provider, key or any destination property. Every write recorded for operators (never the key). Planned generated."
+      "change": "Merge write of OrganizationAIConfigurationUpdate (required configurationVersion, minProperties 2, additionalProperties false). Gate order = PAC-50 §4.2: membership 403 -> body 400s (unknown/null property, missing configurationVersion, nothing to change, provider change without apiKey, apiKey/model/destination without a provider, provider \"\" with anything else, property not applying to the provider incl. model with azure_openai, unapproved destination) -> configurationVersion not current: 409 OrganizationAIConsentConflict configuration_changed with the current read, nothing stored, no grant consumed (revision 2, challenge B-1) -> consume newest live grant with purpose llm_org_key_write (never sso_write) -> else break-glass with session < 10 min and no earlier org-AI change by that session (403 organization_ai_write_requires_fresh_login when stale or already used, spec P2-D13) -> else 403 organization_ai_write_requires_admin_stepup {stepup_url, stepup_purpose: llm_org_key_write, stepup_scopes, without_stepup: [organization_ai_configuration_writes]} -> write -> 200 re-read. 500 after consume leaves the grant consumed. configurationVersion +1 on a change of provider, any apiKey write (keys never compared) or any destination property. Every write recorded for operators (never the key). Planned generated."
     },
     {
       "operationId": "confirmOrganizationAI",
       "method": "POST",
       "path": "/api/organization/ai/consent",
-      "change": "Body {configurationVersion >= 1} (additionalProperties false). 400 bad body; 403 SsoWriteMembershipRequired; 409 OrganizationAIConsentConflict {reason organization_not_configured | configuration_changed, organization: current read}, nothing recorded; 200 AIStatus after recording. Idempotent for the current version. No MCP tool calls it. Planned generated."
+      "change": "Body {configurationVersion >= 1} (additionalProperties false). 400 bad body; 403 SsoWriteMembershipRequired; 409 OrganizationAIConsentConflict {reason organization_not_configured (wins when both apply) | configuration_changed, organization: current read}, nothing recorded; 200 AIStatus after recording. Idempotent for the current version. The only way a confirmation is recorded (patchSettings never records one). No MCP tool calls it. Planned generated."
     }
   ],
   "operationsChanged": [
@@ -81,78 +81,79 @@
       "operationId": "startSsoAdminStepup",
       "method": "GET",
       "path": "/api/admin/sso/stepup",
-      "change": "Optional query purpose (SsoStepupPurpose: sso_write default | llm_org_key_write), bound into the signed state cookie. New 400 JSON `purpose must be 'sso_write' or 'llm_org_key_write'` after the provider 400. Absent purpose: byte-identical to PAC-50."
+      "change": "Optional query purpose (SsoStepupPurpose: sso_write default | llm_org_key_write), bound into the signed state cookie. New 400 JSON `purpose must be 'sso_write' or 'llm_org_key_write'` after the provider 400. Absent purpose: byte-identical to PAC-50. Revision 2: a repeated purpose parameter is the 400."
     },
     {
       "operationId": "getSsoStepupOptions",
       "method": "GET",
       "path": "/api/admin/sso/stepup/options",
-      "change": "Optional query purpose; without_stepup is [organization_ai_configuration_writes] for llm_org_key_write, unchanged otherwise. New 400 JSON for an unknown purpose. SsoStepupOptions schema unchanged. Code on this branch passes empty params (backend/api/handlers_sso_stepup.go getStepupOptions) so behaviour is unchanged until stage 4."
+      "change": "Optional query purpose; without_stepup is [organization_ai_configuration_writes] for llm_org_key_write, unchanged otherwise. New 400 JSON for an unknown purpose. SsoStepupOptions schema unchanged. Code on this branch passes empty params (backend/api/handlers_sso_stepup.go getStepupOptions) so behaviour is unchanged until stage 4. Revision 2: a repeated purpose parameter is the 400."
     },
     {
       "operationId": "ssoAdminStepupCallback",
       "method": "GET",
       "path": "/api/admin/sso/stepup/callback",
-      "change": "Step 5 issues the grant with the state's purpose. Location pattern gains an optional `&purpose=llm_org_key_write` suffix, present only for that purpose; an sso_write outcome is byte-identical to PAC-50."
+      "change": "Step 5 issues the grant with the state's purpose. Location pattern gains an optional `&purpose=llm_org_key_write` suffix, present only for that purpose; an sso_write outcome is byte-identical to PAC-50. Revision 2: a state signed before the deploy (no purpose) is read as sso_write; \"byte-identical\" covers the 302/400/options bodies and the landing Location, not the signed cookie value."
     },
     {
       "operationId": "parseNaturalLanguage",
       "method": "POST",
       "path": "/api/nlp/parse",
-      "change": "Description and example only: rows 4 and 9 use the organisation's configuration; rows 5, 10, 11 are the not-configured 200 (new example organizationUnconfirmed). Response schema unchanged except AINotConfigured (below)."
+      "change": "Description and examples only: row 4 uses the organisation's configuration at exactly the confirmed version (read with the confirmation as one consistent state, else row 5); rows 5, 10, 11 are the not-configured 200 (examples organizationUnconfirmed, personalKeysForbidden); row 9 reserved. The 200 error sentence, logs and Sentry have the org key and the caller's keys replaced by [redacted] (spec §3.1a). Response schema unchanged except AINotConfigured (below)."
     },
     {
       "operationId": "refreshMeetingBrief",
       "method": "POST",
       "path": "/api/meetings/{event_id}/brief/refresh",
-      "change": "409 description lists the Part 2 rows (5, 7, 10, 11). Nothing written or fetched (P2-AC-27). U-05's 400 untouched."
+      "change": "409 description lists the Part 2 rows (5, 7, 10, 11). Nothing written or fetched (P2-AC-27). Row 4 uses the confirmed version. A failed brief's stored brief_text, logs and Sentry never contain the org key or the caller's keys (P2-AC-39). U-05's 400 untouched."
     },
     {
       "operationId": "testLLMConnection",
       "method": "POST",
       "path": "/api/llm/test",
-      "change": "Naming a provider never selects the organisation's key (spec P2-D6). {} / organization probe the organisation's configuration in rows 4/9. New 400 `llmModel and llmApiKey cannot be used with your organisation's AI configuration` (rows 4/9 with model or key). New 409 personal_keys_forbidden [organization_admin] when the organisation forbids personal keys and the body names a provider or carries llmApiKey. 200 LLMTestResult gains required configuration (own | organization)."
+      "change": "\"Names a provider\" = one of the five provider values. Naming a provider never selects the organisation's key (spec P2-D6). {} / organization probe the organisation's configuration in row 4. New 400 `llmModel and llmApiKey cannot be used with your organisation's AI configuration` (row 4 with model or key). New 409 personal_keys_forbidden [organization_admin] when the organisation forbids personal keys and the body names a provider or carries llmApiKey (whatever llmProvider is). 200 LLMTestResult gains required configuration (own | organization). 422 LLMDestinationRefusal gains optional configuration (organization when the refused destination is the organisation's). 502 detail redacted of the org key too."
     },
     {
       "operationId": "getSettings",
       "method": "GET",
       "path": "/api/settings",
-      "change": "aiStatus follows the Part 2 table (rows 1-11); AIStatus gains configuration (own | organization) present exactly when configured. llmProvider description updated."
+      "change": "aiStatus follows the Part 2 table (rows 1-8, 10, 11; row 9 reserved); AIStatus gains configuration (own | organization) present exactly when configured. llmProvider description updated."
     },
     {
       "operationId": "patchSettings",
       "method": "PATCH",
       "path": "/api/settings",
-      "change": "Description only: llmProvider organization does not confirm; own provider/key writes accepted and stored while personal keys are forbidden, never sent (P2-D8). No new 400."
+      "change": "Description only: llmProvider organization never records a confirmation (alone or in a whole document); storing \"\" or a provider deletes the caller's organisation confirmation (side effect, never a refusal; spec P2-AC-36); own provider/key writes accepted and stored while personal keys are forbidden, never sent (P2-D8). No new 400."
     }
   ],
   "schemasAdded": [
     "OrganizationAIConfiguration",
-    "OrganizationAIConfigurationUpdate",
+    "OrganizationAIConfigurationUpdate (revision 2: required configurationVersion, minProperties 2)",
     "OrganizationAIWriteForbiddenResponse (oneOf SsoWriteMembershipRequired | OrganizationAIWriteStepupRequired | OrganizationAIWriteFreshLoginRequired)",
     "OrganizationAIWriteStepupRequired",
     "OrganizationAIWriteFreshLoginRequired",
     "OrganizationAIConsentRequest",
-    "OrganizationAIConsentConflict",
+    "OrganizationAIConsentConflict (409 of confirmOrganizationAI and, revision 2, of patchOrganizationAI)",
     "SsoStepupPurpose"
   ],
   "schemasChanged": [
-    "AINotConfigured: reason enum + personal_keys_forbidden; table rows 9-11; enablers rules (organization_admin in rows 6 and 8 in an organisation; alone in row 11, row 6 when forbidden, and the forbidden probe); message wording rule (O-13: 'access', never 'read'/'reads'/'see').",
-    "AIStatus: + configuration (own | organization), present exactly when configured; configured true in rows 2, 4, 9; also the 200 of confirmOrganizationAI.",
+    "AINotConfigured: reason enum + personal_keys_forbidden; table rows 9 (reserved), 10 (forbids; complete; [user]), 11 (forbids; not complete; [organization_admin]); 'Confirmed' = stored confirmation names exactly the version read, deleted by a patchSettings storing \"\" or a provider; enablers rules (organization_admin in rows 6 and 8 in an organisation; alone in row 11, row 6 when forbidden, and the forbidden probe); message wording rule (O-13: 'access', never 'read'/'reads'/'see'; row 10 says own provider and key kept but not used, choose 'Use my organisation's AI').",
+    "AIStatus: + configuration (own | organization), present exactly when configured; configured true in rows 2 and 4; also the 200 of confirmOrganizationAI.",
     "LLMTestResult: + required configuration (own | organization).",
-    "LLMTestRequest.llmProvider: description (organization meaningful; forbidden personal keys).",
-    "Settings.llmProvider: description.",
+    "LLMDestinationRefusal: + optional configuration (own | organization); absent = own (revision 2, spec P2-AC-41).",
+    "LLMTestRequest.llmProvider: description (organization meaningful; only the five providers 'name a provider'; forbidden personal keys).",
+    "Settings.llmProvider: description (writing \"\" or a provider deletes the organisation confirmation).",
     "SsoWithoutStepup: description adds organization_ai_configuration_writes (items are open strings; no schema change).",
     "SsoWriteMembershipRequired: description names the three new operations."
   ],
   "acceptanceTests": [
     "P2-AC-1  [contract][unit] Member without proof (incl. team owner): every change refused 403 organization_ai_write_requires_admin_stepup with stepup_purpose llm_org_key_write; config, version, updatedAt unchanged. No-org: 403 org membership required, no stepup_url.",
-    "P2-AC-2  [unit] llm_org_key_write grant: change 200, equals a member's read; second change 403. Live sso_write grant: org-AI change 403 and the sso_write grant still live (SSO write then 2xx); live llm_org_key_write grant: SSO write 403 sso_write_requires_admin_stepup and the grant still live (PAC-50 AC-27). Break-glass: session 9 min old 200; >= 10 min or > 1 min in the future 403 organization_ai_write_requires_fresh_login.",
+    "P2-AC-2  [unit] llm_org_key_write grant: change 200, equals a member's read; second change 403. Live sso_write grant: org-AI change 403 and the sso_write grant still live (SSO write then 2xx); live llm_org_key_write grant: SSO write 403 sso_write_requires_admin_stepup and the grant still live (PAC-50 AC-27). Break-glass: session 9 min old 200; >= 10 min or > 1 min in the future 403 organization_ai_write_requires_fresh_login; a second valid change with the same session (2 min old) 403 organization_ai_write_requires_fresh_login, config as the first change left it; after a new sign-in one further change 200 (P2-D13).",
     "P2-AC-3  [contract][unit] Step-up with purpose=llm_org_key_write: grant purpose llm_org_key_write; Location ends &purpose=llm_org_key_write. No purpose: sso_write grant, Location byte-identical to PAC-50. purpose=x or empty: 400, no cookie.",
-    "P2-AC-4  [unit] Each body 400 of patchOrganizationAI leaves a live grant unconsumed and the config unchanged.",
+    "P2-AC-4  [unit] Each body 400 of patchOrganizationAI (incl. missing configurationVersion, <property> requires a provider, model with azure_openai) leaves a live grant unconsumed and the config unchanged.",
     "P2-AC-5  [unit] Store failure after consume: 500 internal error, config unchanged, grant consumed.",
     "P2-AC-6  [unit] One operator record per change (who, when, stepup|breakglass, changed property names); step-up outcome records name the purpose; no record contains the key.",
-    "P2-AC-7  [contract][unit][e2e] Two members' getOrganizationAI byte-identical (one just wrote); no response of any operation contains the org key.",
+    "P2-AC-7  [contract][unit][e2e] Two members' getOrganizationAI byte-identical (one just wrote). With A's key a distinctive string, it appears in none of: getOrganizationAI; every patchOrganizationAI status (200, 400s, 403s, 409, 500); every confirmOrganizationAI status; getSettings; the parse 200; every probe status; the brief refresh answer and the brief read afterwards.",
     "P2-AC-8  [unit] Member of B reads/changes/confirms only B (no way to name A); nothing of A returned.",
     "P2-AC-9  [unit] No-org user: getOrganizationAI, confirmOrganizationAI 403 membership; aiStatus.inOrganization false.",
     "P2-AC-10 [unit] Confirmed follower M1 -> A's key to A's provider; own-key M2 -> M2's key to M2's provider; never crossed.",
@@ -163,24 +164,30 @@
     "P2-AC-15 [unit] Pre-Part-1 Ollama account: row 7 once A complete; Bedrock without key: needs_key before and after.",
     "P2-AC-16 [unit] Stored off: row 1 under every org state incl. forbidden and confirmed.",
     "P2-AC-17 [unit] personalKeysAllowed change needs the same proof and spends it.",
-    "P2-AC-18 [unit] Forbidden + complete: own-key M2 -> row 10 [user] before confirm, row 9 after; K2 never sent; M2's choice and K2 still stored; allowing again -> K2 used with no action.",
+    "P2-AC-18 [unit] Forbidden + complete, own-key M2 (confirmed or not): parse, refresh, probe {} -> row 10 personal_keys_forbidden [user], sentence says own provider and key kept but not used and to choose 'Use my organisation's AI'; nothing sent, K2 never sent. confirmOrganizationAI alone -> still row 10. patchSettings organization + confirm displayed version -> row 4. K2 still stored throughout. M2 never changes choice and admin allows personal keys again -> K2 to OpenAI with no action.",
     "P2-AC-19 [unit] Forbidden + no key: own-key member row 11 [organization_admin]; follower nothing_configured [organization_admin]; nothing sent.",
     "P2-AC-20 [unit] Forbidden: probe naming a provider (with or without key) or {} with llmApiKey -> 409 personal_keys_forbidden [organization_admin]; zero outbound requests.",
     "P2-AC-21 [unit] Forbidden: patchSettings own provider + key 200; read shows the key on file and row 10/11; no request sends it.",
-    "P2-AC-22 [unit][e2e] Row 5 first use: nothing sent, notice names A's provider with the O-13 text and a confirm action; after confirm the request is sent with A's configuration and the notice is not shown again; choosing 'Use my organisation's AI' shows the notice and confirms.",
-    "P2-AC-23 [unit] Change of provider, key or any destination -> confirmed member back to row 5/10; change of model or personalKeysAllowed only -> no re-ask.",
-    "P2-AC-24 [contract][unit] Stale configurationVersion -> 409 configuration_changed with the current read, nothing recorded; incomplete -> 409 organization_not_configured; same current version twice -> 200 twice.",
+    "P2-AC-22 [unit][e2e] Row 5 first use: nothing sent, notice names A's provider with the O-13 text and a confirm action; after confirm the request is sent with A's configuration and the notice is not shown again; choosing 'Use my organisation's AI' shows the notice and confirms the displayed version (P2-AC-38).",
+    "P2-AC-23 [unit] Change of provider, any apiKey write or any destination -> confirmed member back to row 5; change of model or personalKeysAllowed only -> no re-ask.",
+    "P2-AC-24 [contract][unit] Stale configurationVersion -> 409 configuration_changed with the current read, nothing recorded; incomplete -> 409 organization_not_configured (also when the version is stale too); same current version twice -> 200 twice.",
     "P2-AC-25 [unit] M1's confirmation does not confirm M3.",
-    "P2-AC-26 [unit][e2e] Every not-configured message (all rows, all probe cases) and the web notice: rows 5/10 contain 'access'; none contains the whole words read/reads/see (case-insensitive).",
+    "P2-AC-26 [unit][e2e] Every not-configured message (all rows, all probe cases), the web notices for rows 5 and 10, and the notice on choosing 'Use my organisation's AI': the row 5 sentence and both confirmation notices contain 'access'; none contains the whole words read/reads/see (case-insensitive).",
     "P2-AC-27 [unit] Brief refresh in rows 5/10/11 with each stored brief state: 409, brief read unchanged, zero Slack/Notion/provider requests.",
     "P2-AC-28 [unit] Confirmed follower: {} or organization tests A (configuration organization); naming openai without key -> needs_key openai, nothing sent; naming anthropic with key -> only that key to Anthropic; {} or organization with llmModel/llmApiKey -> 400, nothing sent; unconfirmed follower {} -> row 5 409.",
-    "P2-AC-29 [unit] One account per row 1-11: parse, refresh, probe {} and settings read give the same reason and enablers; only rows 2, 4, 9 send.",
+    "P2-AC-29 [unit] One account per reachable row (1-8, 10, 11; 9 reserved): parse, refresh, probe {} and settings read give the same reason and enablers; only rows 2 and 4 send.",
     "P2-AC-30 [e2e] Org AI section identical for members; Edit explains then steps up with purpose; granted return offers the form, one save succeeds; non-admin refusal shown, section unchanged; break-glass fresh saves directly; key never shown; warning when forbidding without a key; no section without an org.",
     "P2-AC-31 [e2e] Member stored on organization sees 'Use my organisation's AI' selected and enabled; non-member keeps Part 1's disabled 'No provider chosen'; forbidden -> own providers disabled with the reason; notice names the admin exactly when enablers include organization_admin.",
-    "P2-AC-32 [e2e] Org-AI step-up lands on the org AI section with the outcome; SSO step-up landing unchanged.",
-    "P2-AC-33 [unit] MCP clockwise_parse_command in rows 5/10/11 returns the sentence and reason, nothing sent; the MCP tool list has no tool calling /api/organization/ai or /api/organization/ai/consent.",
-    "P2-AC-34 [contract] Bundle documents the three new operations with their refusals, the purpose on the three step-up operations, personal_keys_forbidden in AINotConfigured.reason, and no readable schema carries an org key (apiKey is writeOnly on OrganizationAIConfigurationUpdate only).",
-    "P2-AC-35 [e2e] Fresh user in an org with no configuration: parse not_configured nothing_configured [user, organization_admin]; dashboard says so."
+    "P2-AC-32 [e2e] Org-AI step-up lands on the org AI section with the outcome and the SSO section shows no outcome (not 'used by your next SSO configuration change'); SSO step-up landing unchanged and the org AI section shows nothing for it.",
+    "P2-AC-33 [unit] Against a stand-in backend returning the row 5/10/11 parse answer, clockwise_parse_command returns that sentence and reason unchanged; the MCP tool list has no tool calling /api/organization/ai or /api/organization/ai/consent. ('Nothing sent' is P2-AC-29's.)",
+    "P2-AC-34 [contract] Bundle documents the three new operations with their refusals (incl. patchOrganizationAI's 409), the purpose on the three step-up operations, personal_keys_forbidden in AINotConfigured.reason, patchSettings' confirmation side effects, and no readable schema carries an org key (apiKey is writeOnly on OrganizationAIConfigurationUpdate only).",
+    "P2-AC-35 [e2e] Fresh user in an org with no configuration: parse not_configured nothing_configured [user, organization_admin]; dashboard says so.",
+    "P2-AC-36 [unit] Confirmed follower M (v V) -> patchSettings openai + key K2 -> admin forbids (V unchanged): parse, refresh, probe {} -> row 10, nothing sent. M -> '' (or openai) -> patchSettings organization without confirming -> row 5, nothing sent. The write storing '' or a provider deleted the confirmation.",
+    "P2-AC-37 [unit] Confirmed for V; admin change to V+1 applied between the request's reads (test store): the request sends exactly V's values or answers row 5; never any V+1 value, never V and V+1 mixed. Change stored before the request: row 5, nothing sent.",
+    "P2-AC-38 [unit][e2e] No confirmation; patchSettings llmProvider organization (alone or whole document) -> nothing recorded, next parse row 5. Web 'Use my organisation's AI' with V displayed + confirm -> confirmation for V recorded, next parse sent with V. Admin moved to V+1 before the confirm -> 409, nothing recorded, web shows V+1's notice, next parse row 5.",
+    "P2-AC-39 [unit] Echoing gateway test double; K_A and K_U distinctive: (i) brief read after a failed refresh in row 4 has no K_A; (ii) parse and probe answers (every status) in row 4 have no K_A; (iii) for (i), (ii) and a failing row-2 member, no server log line, no captured error-reporter event and no operator record contains K_A or K_U.",
+    "P2-AC-40 [contract][unit] Admin shown V with a live llm_org_key_write grant; another admin moves A to V+1; valid change naming V -> 409 configuration_changed with the V+1 read, A unchanged, grant still live; change naming V+1 then 200 with the same grant. Malformed body naming a stale version -> 400 (body first).",
+    "P2-AC-41 [unit] A complete with a destination no longer approved; confirmed follower: parse, refresh, probe {} send nothing; each refusal names the organisation's AI destination and its administrator (probe 422 configuration: organization), never the member's own Settings; settings read still configured."
   ],
   "resolvesFindings": [],
   "resolvesUncertain": [],
@@ -229,8 +236,28 @@
     },
     {
       "consumer": "e2e/tests",
-      "breaks": "no existing spec; new scenarios at stage 5",
-      "detail": "P2-AC-7, -14, -22, -26, -30 to -32, -35."
+      "breaks": "yes: one existing spec reversed (listed separately); new scenarios at stage 5",
+      "detail": "New scenarios for P2-AC-7, -14, -22, -26, -30 to -32, -35, -38."
+    },
+    {
+      "consumer": "e2e/tests/llm-bring-your-own.spec.ts:89-120 ('AC-21 (Part 1, spec revision 2): an organisation member following the organisation is sent to no admin')",
+      "breaks": "yes, amended at stage 5 (not deleted)",
+      "detail": "Asserts (line numbers at ae5c2cf; the test spans 86-121) enablers ['user'] for an organisation member (96, 100, 103), no 'admin' in the message (98) or notice (112), 'No provider chosen' (115), no organisation option among the enabled choices (116-117) and no organisation/admin wording in #ai (118). Part 2 reverses each for members (row 6 in an organisation is [user, organization_admin]; P2-AC-14, P2-AC-31, P2-AC-35). Contract challenge revision 1, B-2."
+    },
+    {
+      "consumer": "contracts/features/NEW-llm-bring-your-own.yaml:149 (Part 1 manifest AC-34: a fresh organisation member gets enablers [user], naming no admin)",
+      "breaks": "yes, superseded for members by P2-AC-35",
+      "detail": "The Part 1 manifest is amended in the stage-4 api PR to say AC-34's member clause holds only before Part 2 (pointing at P2-AC-35)."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow src/lib/aiProviders.test.ts:59-66 (a stored organization is 'No provider chosen', disabled, for everyone)",
+      "breaks": "yes, amended in the paired web PR",
+      "detail": "For members it becomes 'Use my organisation's AI', selected and enabled (P2-AC-31); non-members keep the Part 1 assertion."
+    },
+    {
+      "consumer": "e2e/tests/sso-stepup.spec.ts:71-108 (toEqual on the SSO 403, options without purpose, Location toBe .../settings?stepup=granted)",
+      "breaks": "no, if the absent-purpose path is byte-identical as contracted",
+      "detail": "Listed so stage 4 runs it unchanged."
     }
   ],
   "decisionsOwner": [
@@ -241,9 +268,9 @@
   ],
   "decisionsAssumed": [
     "P2-D1 Purpose-bound PAC-50 grant started by a purpose on the existing step-up (one callback, one set of checks).",
-    "P2-D2 While forbidden, own/removed-provider members use the org config after confirming; their choice and keys are not rewritten. (spec OQ-P2-2)",
-    "P2-D3 Forbidding allowed while the config is incomplete (web warns).",
-    "P2-D4 Confirmation per user, org and configurationVersion; version advances on provider, key or destination change (wider than the owner's 'provider'). (spec OQ-P2-1)",
+    "P2-D2 (product, pending owner OQ-P2-2; revision 1 default changed) While forbidden, own/removed-provider members are NOT moved to the org config: row 10/11, nothing sent until they choose organization and confirm; their choice and keys are not rewritten. Row 9 reserved.",
+    "P2-D3 (product, pending owner OQ-P2-3) Forbidding allowed while the config is incomplete (web warns).",
+    "P2-D4 (product, pending owner OQ-P2-1) Confirmation per user, org and configurationVersion; version advances on provider, any apiKey write or destination change. Widens the owner's 'tell and ask once', which did not say when to ask again.",
     "P2-D5 Reuse organization_unconfirmed for consent-required; one new reason personal_keys_forbidden.",
     "P2-D6 A probe naming a provider never selects the org key; org config probed by {} / organization only; model/key with it is a 400.",
     "P2-D7 Provider change on the org config replaces it whole and requires apiKey; non-applying properties are 400.",
@@ -251,22 +278,27 @@
     "P2-D9 No MCP tool confirms or reads the org config.",
     "P2-D10 Org AI changes and their step-ups recorded for operators, never the key.",
     "P2-D11 Accounts stored on 'organization' since Part 1 follow the org subject to confirmation; parent D-8 unchanged.",
-    "Contract-author: paths /api/organization/ai and /api/organization/ai/consent (tag organization-ai) in scheduling.yaml next to settings and the probe; membership 403 reuses SsoWriteMembershipRequired (one type for that refusal, as PAC-50 N4)."
+    "P2-D12 The organisation's admin is named whenever the caller is in an organisation, whatever the deployment's step-up/break-glass configuration.",
+    "P2-D13 (product, pending owner OQ-P2-4) One org-AI change per fresh break-glass sign-in; a second with the same session is 403 organization_ai_write_requires_fresh_login. PAC-50's SSO rule unchanged.",
+    "P2-D14 patchSettings storing '' or a provider deletes the confirmation; only confirmOrganizationAI records one; row 4 sends exactly the confirmed version.",
+    "P2-D15 patchOrganizationAI names the version it was made from; stale -> 409 before the proof (contract challenge B-1).",
+    "Contract-author: paths /api/organization/ai and /api/organization/ai/consent (tag organization-ai) in scheduling.yaml next to settings and the probe; membership 403 reuses SsoWriteMembershipRequired (one type for that refusal, as PAC-50 N4); the admin's version is a body field, not If-Match (rationale §2.7)."
   ],
   "gates": {
-    "specApproval": "pending: spec-challenger on docs/specs/NEW-llm-bring-your-own-part2.md revision 1.",
-    "contractApproval": "pending: contract-challenger on this revision.",
-    "assembler": "py -3 scripts/openapi_assemble.py --check -> OK: bundle is in sync (105 paths), rc=0",
-    "migrationReport": "py -3 scripts/openapi_migration_report.py --check -> OK: MIGRATION.md covers all 127 operations (6 generated), rc=0",
-    "goGen": "bash scripts/openapi_gen_go.sh --check -> OK: backend/api/gen matches the contract, rc=0",
-    "goBuild": "cd backend && go build ./... rc=0; go vet ./... rc=0 (after the one-line getStepupOptions params fix)",
-    "backendTests": "PACEDAY_TEST_DB_PORT=15499 bash scripts/test-backend.sh (full suite, postgres:16 container, golang:1.25-alpine) on this branch's tree -> every package ok, rc=0. golangci-lint run ./api/... rc=0. Coverage not measured (no code behaviour changed).",
+    "specApproval": "pending: spec-challenger on docs/specs/NEW-llm-bring-your-own-part2.md revision 1 (revision 0 challenged 2026-10-28: accept-with-changes, answered by revision 1).",
+    "contractApproval": "pending: contract-challenger on revision 2 (revision 1 challenged 2026-10-28: accept-with-changes, answered by revision 2).",
+    "assembler": "revision 2: py -3 scripts/openapi_assemble.py --check -> OK: bundle is in sync (105 paths), rc=0",
+    "migrationReport": "revision 2: py -3 scripts/openapi_migration_report.py --check -> OK: MIGRATION.md covers all 127 operations (6 generated), rc=0 (no operation added or removed by revision 2; MIGRATION.md unchanged)",
+    "goGen": "revision 2: bash scripts/openapi_gen_go.sh (regenerated), then --check -> OK: backend/api/gen matches the contract, rc=0",
+    "goBuild": "revision 2: cd backend && go build ./... rc=0; go vet ./... rc=0",
+    "backendTests": "revision 2: not run (no Docker-backed suite run for this text-and-contract revision; no handler behaviour changed). Revision 1 ran the full suite on its tree, rc=0.",
     "apiGate": "not run: it requires the host checkout on this branch, which this stage must not touch",
     "webGate": "build stage: REGEN=1 web-gate in the same build as the backend PR",
     "e2eGate": "build stage",
     "defaultBranch": "main",
     "ci": "local",
-    "deployment": "local-only"
+    "deployment": "local-only",
+    "webOpenapiCheck": "not run: make openapi-check delegates to the web repo checkout, which this stage must not touch"
   },
   "mergeConditions": [
     "spec-challenger accepts docs/specs/NEW-llm-bring-your-own-part2.md (or its revision) and the verdict is recorded in that file.",
@@ -275,7 +307,11 @@
     "The api and web stage-4 PRs land in the same build (new reason value, AIStatus.configuration, LLMTestResult.configuration, purpose landings).",
     "PAC-50's TestPAC50_* suite, including AC-27, passes unchanged on the api PR.",
     "Release notes state the down migration's data loss (org configurations and keys, confirmations, operator records of org-AI changes).",
-    "No open owner question blocks merge: OQ-P2-1 and OQ-P2-2 are recorded factory assumptions (conservative); an owner answer that differs is a later revision."
+    "Stage-4 api PR serves `purpose` on startSsoAdminStepup, getSsoStepupOptions and ssoAdminStepupCallback (P2-AC-3): the purpose is read, bound into the state, and issued on the grant; a state without a purpose (signed before the deploy) is read as sso_write. Until then this branch answers sso_write for every purpose.",
+    "e2e/tests/llm-bring-your-own.spec.ts:89-120 is amended (not deleted) in the stage-4/5 api PR to Part 2's answer for organisation members; Part 1's manifest AC-34 is amended to point at P2-AC-35; e2e/tests/sso-stepup.spec.ts passes unchanged.",
+    "The paired web PR amends src/lib/aiProviders.test.ts:59-66 for members and makes SsoAdminStepupSection.tsx (:40-57) show no outcome for a landing with &purpose=llm_org_key_write (P2-AC-32).",
+    "Release notes state that a code rollback without the down migration re-enables personal keys in organisations that forbade them (spec §7).",
+    "No open owner question blocks merge: OQ-P2-1 to OQ-P2-4 are recorded factory defaults (P2-D4, P2-D2, P2-D3, P2-D13), each factory-assumed pending the owner; an owner answer that differs is a later revision."
   ],
-  "rollback": "Contract-only revision until stage 4: revert this commit (the getStepupOptions params fix goes with it). After stage 4: revert the PRs and run the down migration; it loses every organisation's AI configuration and key, every confirmation and the org-AI operator records (spec §7). Members fall back to Part 1 behaviour; their own choices and keys were never rewritten."
+  "rollback": "Contract-only revision until stage 4: revert this commit (the getStepupOptions params fix goes with it). After stage 4: revert the PRs and run the down migration; it loses every organisation's AI configuration and key, every confirmation and the org-AI operator records (spec §7). Members fall back to Part 1 behaviour; their own choices and keys were never rewritten. A code rollback WITHOUT the down migration re-enables personal keys in organisations that forbade them (Part 1 code ignores the setting); release notes must say so."
 }

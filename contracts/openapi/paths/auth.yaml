@@ -1426,8 +1426,9 @@ paths:
           description: |
             NEW-llm-bring-your-own Part 2. The write the grant will authorise.
             Absent means `sso_write` (PAC-50 unchanged). Present and not in the
-            enum (including empty) is the 400 `purpose must be 'sso_write' or
-            'llm_org_key_write'`.
+            enum (including empty), or present more than once (whatever the
+            values), is the 400 `purpose must be 'sso_write' or
+            'llm_org_key_write'` (contract revision 2).
       responses:
         '302':
           description: Redirect to the identity provider's authorization endpoint.
@@ -1569,7 +1570,8 @@ paths:
             $ref: '#/components/schemas/SsoStepupPurpose'
           description: |
             NEW-llm-bring-your-own Part 2. Absent means `sso_write`. Any value
-            outside the enum, including empty, is the 400.
+            outside the enum, including empty, or the parameter present more
+            than once, is the 400 (contract revision 2).
       responses:
         '200':
           description: The step-up's URL, what it would request from each configured provider, and what is lost without it.
@@ -1645,7 +1647,16 @@ paths:
            purpose bound in the state (`sso_write` unless the start named
            `llm_org_key_write`; NEW-llm-bring-your-own Part 2), valid for 10
            minutes and good for one write of that purpose (spec §4.8; a write
-           of another purpose cannot spend it, PAC-50 AC-27).
+           of another purpose cannot spend it, PAC-50 AC-27). A state signed
+           before NEW-llm-bring-your-own Part 2 was deployed carries no
+           purpose; it is read as `sso_write` (contract revision 2), so a
+           step-up in flight across the deploy completes as PAC-50's.
+
+        "Byte-identical to PAC-50" for an absent or `sso_write` purpose
+        (NEW-llm-bring-your-own Part 2) covers what a client can observe: the
+        302 and its Location, the 400 bodies, the options read and the
+        landing Location. It does not cover the signed state cookie's value,
+        which now also binds the purpose and is opaque to clients.
 
         Every outcome with a session, granted or denied, is recorded
         server-side for operators (spec §4.6) and clears the state cookie.

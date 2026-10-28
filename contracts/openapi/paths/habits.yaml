@@ -516,6 +516,17 @@ paths:
         bound to it; no identity of the machine Paceday runs on and no deployment-level
         key is used (spec O-2, O-3, AC-2). A destination refusal or a provider failure on
         a configured caller is unchanged: 200, `status: "failed"`, stored.
+
+        **NEW-llm-bring-your-own Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`
+        revision 1).** In row 4 the brief is generated with the organisation's configuration
+        at the version the caller confirmed (read with the confirmation as one consistent
+        state; otherwise row 5, the 409). A failed brief's stored `brief_text`, the 200 that
+        returns it, every later `getMeetingBrief`, and anything logged or reported to Sentry
+        have every occurrence of the organisation's key and of the caller's keys replaced by
+        `[redacted]` before the text is stored, returned, logged or reported, including when
+        a provider or gateway echoes the key in its error body (spec §3.1a, P2-AC-39). In
+        row 4 a destination refusal's text names the organisation's AI destination and its
+        administrator, never the caller's own Settings (P2-AC-41).
       responses:
         "200":
           description: The regenerated brief (AI was configured for the caller).

@@ -2,7 +2,12 @@
 
 - **Linear**: PAC-73 (https://linear.app/paceday/issue/PAC-73). Part 2 of the
   spec `docs/specs/NEW-llm-bring-your-own.md` (the "parent spec").
-- **Status**: draft, revision 1 (2026-10-28). Not yet challenged.
+- **Status**: challenged; revision 1 (2026-10-28) answers the challenge.
+  The text challenged at `a90ba5e` called itself "revision 1"; the
+  challenger recorded it as revision 0, and this file now counts that way:
+  revision 0 is the challenged text, revision 1 is this one. The challenge
+  is recorded verbatim at the end of the file, followed by the "Revision 1"
+  table answering every finding. Sections 3 to 9 are the live text.
 - **Author**: spec-author
 - **Supersedes**: the parent spec's "Part 2" acceptance criteria (AC-22 to
   AC-31, AC-36, AC-38, AC-41 and the Part 2 rows of AC-40) and the Part 2
@@ -57,7 +62,8 @@ The owner also decided (2026-10-28):
 - before a member's first AI request on the organisation's account, the member
   is told that their text and meeting details go to that account, whose
   administrators can **access** them outside Paceday, and is asked once;
-  nothing is sent before they confirm (O-13).
+  nothing is sent before they confirm (O-13; the owner's words were "tell and
+  ask once before the first AI request").
 
 ## 2. Current behaviour (main at `ae5c2cf`)
 
@@ -135,6 +141,49 @@ organisation with no configuration, rows 6 and 8 now add the organisation's
 admin (§3). PAC-50's `TestPAC50_*` grant tests and AC-27 must keep passing
 unchanged.
 
+Other consumers that pin the Part 1 answer for an organisation member, and
+are amended (not deleted) when this part lands (revision 1, challenge "Consumers
+this breaks"):
+
+- `e2e/tests/llm-bring-your-own.spec.ts:86-121`, the test "AC-21 (Part 1,
+  spec revision 2): an organisation member following the organisation is
+  sent to no admin": it asserts `enablers: ['user']` for an organisation
+  member (96, 100, 103), no "admin" in the message or notice (98, 112), the
+  disabled "No provider chosen" (114-115), no organisation option among the
+  enabled choices (116-117) and no organisation wording (118). P2-AC-14, P2-AC-31 and P2-AC-35 reverse
+  each of these for members.
+- Part 1's manifest criterion AC-34
+  (`contracts/features/NEW-llm-bring-your-own.yaml:149`): "a fresh
+  organisation member … enablers [user] … naming no admin".
+- `smart-calendar-flow/src/lib/aiProviders.test.ts:57-66` (on
+  `smart-calendar-flow` `origin/main`): a stored `organization` is "No
+  provider chosen", disabled, for everyone; P2-AC-31 changes it for members.
+- `smart-calendar-flow/src/components/settings/SsoAdminStepupSection.tsx:38-58`:
+  shows any `stepup=granted` landing as an SSO outcome ("used by your next
+  SSO configuration change"), whatever the purpose; P2-AC-32 changes it.
+
+### 2.5 Provider error text today (where a key can leak)
+
+- A provider's non-success answer is copied verbatim into the error:
+  `fmt.Errorf("LLM API error %d: %s", …, string(respBody))`
+  (`backend/nlp/parser.go:122-123`).
+- A failed brief stores that error as the brief's text,
+  `fmt.Sprintf("LLM error: %v", err)`
+  (`backend/engine/meeting_brief_service.go:87-90`), which the member reads
+  back through the brief read.
+- The probe replaces the caller's own stored and submitted keys with
+  `[redacted]` before logging (`backend/api/handlers_llm.go:61-70`, used at
+  `:122`); the 502 body is the fixed `upstream provider error`.
+- A parse failure is logged and reported with the unredacted error
+  (`backend/api/handlers_nlp.go:28-31` → `writeServerError` →
+  `logServerError`, `backend/api/server_errors.go:41-49`, which writes the log
+  line and reports to Sentry).
+
+Under Part 1 the only key such a text could contain was the caller's own.
+Under this part it can contain the organisation's key, which members must
+never hold, and an OpenAI-compatible gateway (owner O-10) may echo the key in
+its error body.
+
 ## 3. Desired behaviour
 
 ### 3.1 Who decides, and the one table
@@ -143,19 +192,22 @@ For each user, at each AI request (natural-language parse, meeting-brief
 refresh, the provider probe) and at each settings read, exactly one row
 applies. Rows are evaluated **in the order listed** (the numbers are the parent
 spec's, kept so its tests keep their names; 9 to 11 are new and come right
-after row 1). Only rows 2, 4 and 9 send anything.
+after row 1). Only rows 2 and 4 send anything. Row 9 is reserved and is not
+reachable while P2-D2's current default stands (revision 1; OQ-P2-2).
 
 "Complete" means the organisation has a provider, a key for it, and every
 destination value that provider needs. "Forbids" means an administrator has
-forbidden personal keys. "Confirmed" means the user has confirmed the
-organisation's **current** configuration (§3.4).
+forbidden personal keys. "Confirmed" means the user's stored confirmation
+names exactly the version of the organisation's configuration that this
+request reads (§3.4); a confirmation of any other version, or one ended by
+the user's own choice (§3.4), does not count.
 
 | # | User's stored choice | Condition | Outcome and reason | Who can fix it |
 |---|---|---|---|---|
 | 1 | Off | none | not configured: off by the user's choice | the user |
-| 9 | Own provider, or a removed provider | organisation forbids; complete; confirmed | **configured: the organisation's** | n/a |
-| 10 | Own provider, or a removed provider | organisation forbids; complete; not confirmed | not configured: **personal keys are not allowed; confirm to use your organisation's AI** | the user, in one step |
-| 11 | Own provider, or a removed provider | organisation forbids; not complete | not configured: **personal keys are not allowed and your organisation has not finished setting up AI** | the organisation's admin only |
+| 9 | (reserved) | not reachable under P2-D2's current default. If the owner answers OQ-P2-2 the other way it becomes "own or removed provider; forbids; complete; confirmed → configured: the organisation's" | - | - |
+| 10 | Own provider, or a removed provider | organisation forbids; complete | not configured: **personal keys are forbidden by your organisation; your own provider and key are kept but not used; choose "Use my organisation's AI" in Settings** | the user, by choosing "Use my organisation's AI" (which shows the §3.4 notice and confirms) |
+| 11 | Own provider, or a removed provider | organisation forbids; not complete | not configured: **personal keys are forbidden by your organisation and it has not finished setting up AI** | the organisation's admin only |
 | 2 | Own provider | a key bound to it | **configured: the user's own** | n/a |
 | 3 | Own provider | no key bound to it | not configured: that provider needs a key | the user |
 | 4 | Follow the organisation | complete; confirmed | **configured: the organisation's** | n/a |
@@ -174,20 +226,61 @@ Consequences, stated so nobody has to derive them:
   personal keys are allowed, rows 2 and 3 apply to an own-provider user even
   if the organisation is complete: nobody is moved to the organisation's
   account silently (parent AC-27).
-- **Forbidding never rewrites the user's choice or key.** Rows 9 to 11 are
+- **Forbidding never moves anyone to the organisation's account** (P2-D2,
+  factory default pending the owner, OQ-P2-2). A member who chose their own
+  provider, or is stored on a removed one, gets row 10 or 11 and nothing is
+  sent until they themselves choose "Use my organisation's AI" and confirm.
+  Only then are they in rows 4 to 6.
+- **Forbidding never rewrites the user's choice or key.** Rows 10 and 11 are
   decided from the organisation's setting at the moment of the request; the
   user's stored provider and keys are untouched. When the administrator allows
-  personal keys again, the same user is back in row 2 or 3 with no action.
+  personal keys again, the same user is back in row 2 or 3 with no action. (A
+  member who chose "Use my organisation's AI" meanwhile stays on it: that was
+  their own choice.)
 - **While forbidden, no personal key is sent**: not a stored one, not one typed
   into "Test connection" (§3.5).
-- **Rows 9 and 4 send only the organisation's values**: provider, model, key
-  and destination, and nothing from the member's account (parent D-18,
-  unchanged).
+- **Row 4 sends only the organisation's values, of the confirmed version**:
+  provider, model, key and destination exactly as they stand at the version
+  the member's confirmation names, and nothing from the member's account
+  (parent D-18, unchanged). The configuration and the confirmation are read
+  together, as one consistent state: a request never sends values of a
+  version other than the confirmed one, and never combines values of two
+  versions. If the configuration has moved on since the confirmation (an
+  administrator changed it before or while this request was decided), the
+  request answers row 5 and sends nothing (revision 1, challenge blocking 2).
 - The row is still decided before any destination approval check (parent §3):
-  only rows 2, 4 and 9 go on to it.
+  only rows 2 and 4 go on to it. In row 4 a destination refusal is about the
+  organisation's configuration: its sentence says the organisation's AI
+  destination is not approved on this deployment and that an administrator of
+  the organisation can fix it, and never tells the member to change their own
+  Settings (revision 1, challenge non-blocking 5).
 - A failed read of the caller's settings, organisation membership,
   organisation configuration or confirmation is a server error and nothing is
   written, fetched or sent (parent §3, extended to the two new reads).
+- **The organisation's administrator is named whenever the caller is in an
+  organisation** (rows 6, 8 and 11, as the table says), whether or not this
+  deployment currently has a way to prove one (a configured Google or
+  Microsoft step-up, or a break-glass list). That is the operator's
+  configuration, not the member's state, and it can change without the
+  member doing anything; an administrator who then finds no way to prove it
+  gets PAC-50's answer for an unconfigured step-up provider. Factory-assumed,
+  P2-D12 (revision 1, challenge non-blocking 8).
+
+### 3.1a No key leaves through error text
+
+The organisation's key, and every user's key, never appears in any answer of
+any operation (in any status), in a stored brief text, in a server log line,
+in an error report sent to Sentry, or in an operator record. Provider and
+gateway error text is the one place a key can arrive from outside (§2.5): a
+gateway may echo the key it was given. So, before any such text is stored,
+returned, logged or reported, every occurrence of the organisation's key and
+of the caller's own keys (stored or submitted) is replaced by a fixed marker.
+This applies to every path that carries provider error text: the brief's
+failed text, the parse failure, the probe failure, and anything logged or
+reported on the way. Only the exact key string is replaced; a gateway that
+echoes a transformed fragment of a key (say, its last four characters) is not
+covered, and this part does not claim it is (revision 1, challenge
+blocking 3).
 
 ### 3.2 The organisation's configuration
 
@@ -216,7 +309,11 @@ that proved the caller administers the organisation's Google Workspace domain
 or Microsoft Entra tenant, **started for this purpose**, which authorises
 exactly one change and expires after 10 minutes; or an address on the
 operator's break-glass list whose session was issued less than 10 minutes ago
-(PAC-50 AC-14a). A step-up proof obtained for an SSO change cannot be spent on
+(PAC-50 AC-14a), which authorises **one change per fresh sign-in**: a second
+change with the same session is refused with "sign in again", even inside the
+10 minutes (factory-assumed, P2-D13: the conservative reading of the owner's
+"repeated per change", which names the break-glass list alongside the
+step-up; pending the owner, OQ-P2-4). A step-up proof obtained for an SSO change cannot be spent on
 the AI configuration, and the reverse (PAC-50 AC-27). A member who is not
 proven is refused, told why, and told how to give the proof. Being a team owner
 proves nothing.
@@ -231,14 +328,20 @@ Rules for a change (factory-assumed, §9):
 - Removing the provider removes the whole configuration, key included.
   Removing only the key leaves the rest; members following the organisation
   then get "nothing configured" naming the admin.
+- A change names the version of the configuration the admin was shown. If
+  the configuration has changed since (another administrator saved first),
+  the change is refused as a conflict, nothing is stored, the answer carries
+  the current configuration, and the proof is not spent (revision 1; contract
+  challenge B-1: otherwise a key typed for one provider could be stored as
+  another provider's key).
 - A refusal of the change itself (malformed, a value that does not apply, an
-  unapproved destination) happens before the proof is spent, so the admin can
-  correct it without a new step-up. A storage failure after the proof is spent
+  unapproved destination, a stale version) happens before the proof is spent,
+  so the admin can correct it without a new step-up. A storage failure after the proof is spent
   leaves the configuration unchanged and the proof spent.
 - An administrator may forbid personal keys while the configuration is not
-  complete. Members other than those who chose "off" then have no AI until it
-  is complete (row 11, and row 6 naming only the admin). The web warns the
-  admin before saving (§3.6).
+  complete (P2-D3, factory-assumed, pending the owner, OQ-P2-3). Members other
+  than those who chose "off" then have no AI until it is complete (row 11, and
+  row 6 naming only the admin). The web warns the admin before saving (§3.6).
 - Every change and every step-up started for it is recorded for operators:
   who, when, how it was authorised (step-up or break-glass) and which values
   changed, never the key (as PAC-50 records SSO changes).
@@ -258,51 +361,85 @@ AI change can be made except by a break-glass operator.
 ### 3.4 Telling the member, and asking once (owner O-13)
 
 Before a member's first AI request that would use the organisation's account
-(rows 4 and 9), the member is told, and asked to confirm, that their text and
+(row 4), the member is told, and asked to confirm, that their text and
 meeting details (event titles, attendee emails, and the Slack and Notion
 excerpts used for briefs) are sent to their organisation's AI provider account,
 named, which its administrators can **access** outside Paceday. The wording
 never says the administrators can "read" (or "see") the data. Until the member
-confirms, nothing is sent (rows 5 and 10).
+confirms, nothing is sent (row 5; and row 10, where nothing is sent until the
+member chooses "Use my organisation's AI", which shows this notice).
 
-- The confirmation is stored per user, per organisation, and per **version** of
-  the organisation's configuration. The version changes whenever the
-  provider, the key or any destination value changes, because any of those may
-  mean another provider account with other administrators; it does not change
-  when only the model or the personal-keys setting changes. A member whose
-  confirmation is for an older version is asked again (factory-assumed,
-  widening the owner's "re-ask if the provider changes", §9).
-- A confirmation names the version the member was shown. If the configuration
-  changed in between, the confirmation is refused, nothing is recorded, and the
-  member is shown the current configuration to confirm instead. A confirmation
-  for an organisation with no complete configuration is refused.
+- **What is stored.** The confirmation is stored per user, per organisation,
+  and per **version** of the organisation's configuration.
+- **When the version changes** (P2-D4, factory-assumed, pending the owner,
+  OQ-P2-1). The version changes whenever the provider, the key or any
+  destination value changes, because any of those may mean another provider
+  account with other administrators; it does not change when only the model
+  or the personal-keys setting changes. A member whose confirmation is for an
+  older version is asked again. This **widens** the owner's "tell and ask
+  once" (2026-10-28): the owner did not say when to ask again, and asking
+  again after a key or destination change is the factory's choice, not the
+  owner's.
+- **What a confirmation covers.** A request in row 4 sends exactly the values
+  of the version the stored confirmation names, read together with the
+  confirmation as one consistent state; when the stored configuration's
+  version is not the confirmed one, the request answers row 5 and sends
+  nothing (§3.1).
+- **Confirming names a version.** A confirmation names the version the member
+  was shown. If the configuration changed in between, the confirmation is
+  refused, nothing is recorded, and the member is shown the current
+  configuration to confirm instead. A confirmation for an organisation with
+  no complete configuration is refused. When both apply (the version is stale
+  and the current configuration is not complete), the answer is "nothing to
+  confirm", carrying the current configuration.
+- **Only the confirmation records a confirmation.** Choosing "Use my
+  organisation's AI" in Settings shows the same notice and, on the member's
+  confirm, confirms **the version that was displayed**, through the same
+  confirmation and under the same stale-version rule. A settings write by
+  itself, including one that stores "follow my organisation" (and including
+  a whole-document write that a client sends when its cache is empty),
+  records no confirmation.
+- **Choosing one's own provider, or "off", ends the confirmation.** A settings
+  write that stores "off" or one of the five providers as the member's choice
+  deletes the member's stored confirmation for their organisation. A member
+  who comes back to "Use my organisation's AI" is told and asked again, even
+  if the configuration has not changed. This is what makes §5's "withdrawing
+  by choosing off or one's own provider" true (revision 1, challenge
+  blocking 1).
 - One member's confirmation never confirms another member.
-- Choosing "Use my organisation's AI" in Settings shows the same notice and
-  counts as confirming.
-- The confirmation is given by the person, in the web app. No MCP tool gives
-  it; an assistant acting through MCP gets the "confirm in Paceday" answer and
-  sends nothing (§3.7).
+- **No path but the confirmation operation records one.** No MCP tool, and no
+  server-side path other than the member's own call to the confirmation
+  operation, records a confirmation. (The server cannot tell whether a
+  person or a program made that call; the web is the only client that
+  offers it, and §3.7 keeps it out of MCP.) An assistant acting through MCP
+  gets the "confirm in Paceday" answer and sends nothing.
 - Brief refresh in rows 5, 10 and 11 is the not-configured answer of Part 1:
   nothing written, nothing fetched from Slack or Notion, nothing sent (parent
   D-12).
 
 ### 3.5 Test connection
 
-- A probe that names a provider is always a test of the user's **own**
+- A probe that names a provider (one of the five: OpenAI, Anthropic, Azure
+  OpenAI, Bedrock, Vertex) is always a test of the user's **own**
   configuration for that provider (parent D-19). This replaces the parent §3
   clause "or names exactly the organisation's provider and no model or key",
   which let a named provider select the organisation's key (factory-assumed,
-  §9).
+  §9). Naming "follow my organisation", "off" or the removed provider is not
+  naming a provider.
 - A probe that names nothing, or names "follow my organisation", is decided
-  by the table like a parse. In rows 4 and 9 it tests the organisation's
-  configuration exactly as members' requests use it. A model or key in such a
-  probe is refused (it would otherwise be silently ignored or, worse,
-  combined with the organisation's key; parent D-18), and nothing is sent.
+  by the table like a parse. In row 4 it tests the organisation's
+  configuration exactly as members' requests use it (the confirmed version).
+  A model or key in such a probe is refused (it would otherwise be silently
+  ignored or, worse, combined with the organisation's key; parent D-18), and
+  nothing is sent.
 - While the organisation forbids personal keys, a probe that names a provider
   or carries a key is answered "personal keys are not allowed" naming the
-  admin, and nothing is sent.
+  admin, and nothing is sent. A probe that names nothing for a member stored
+  on their own provider answers row 10 or 11.
 - An administrator who wants to test a key before saving it for the
-  organisation does so with their own key (parent §5, unchanged).
+  organisation does so with their own key (parent §5, unchanged); while
+  personal keys are forbidden, that is not possible, which the admin accepted
+  by forbidding them.
 
 ### 3.6 What the web shows
 
@@ -312,26 +449,33 @@ confirms, nothing is sent (rows 5 and 10).
   organisation can change this". An "Edit" action explains the step-up (the
   scopes and what is lost without it, from PAC-50) before navigating, sends
   the admin through it for this purpose, and on return offers the form; a
-  break-glass operator with a fresh session saves directly. A refused save
-  says why and how to give the proof, and the section is unchanged. The key
-  field is write-only. Forbidding personal keys while the configuration is not
-  complete shows a warning first. A user with no organisation sees no such
-  section.
+  break-glass operator with a fresh session saves directly, once per sign-in.
+  A refused save says why and how to give the proof, and the section is
+  unchanged. A save refused because another administrator changed the
+  configuration first shows the current configuration and keeps the proof
+  for the next attempt. The key field is write-only. Forbidding personal keys
+  while the configuration is not complete shows a warning first. A user with
+  no organisation sees no such section.
 - **Settings, the user's own choice.** Members are offered "Use my
-  organisation's AI" (choosing it shows the §3.4 notice and confirms). A
-  member stored as "follow my organisation" sees that choice selected and
-  enabled, no longer the disabled "No provider chosen". A user with no
-  organisation keeps Part 1's display (parent D-21). When the organisation
-  forbids personal keys, the own-provider choices are shown disabled with the
-  reason, and the user's stored choice and keys are shown as kept.
-- **Dashboard bar and Settings notice.** In rows 5 and 10 the notice is the
-  §3.4 text with a confirm action; after confirming, the request the user made
-  is sent. In rows 6, 8 and 11 the notice names who can fix it as the table
-  says (the admin appears only in an organisation, and alone when personal
-  keys are forbidden).
+  organisation's AI" (choosing it shows the §3.4 notice and, on confirm,
+  confirms the displayed version). A member stored as "follow my
+  organisation" sees that choice selected and enabled, no longer the
+  disabled "No provider chosen". A user with no organisation keeps Part 1's
+  display (parent D-21). When the organisation forbids personal keys, the
+  own-provider choices are shown disabled with the reason, and the user's
+  stored choice and keys are shown as kept.
+- **Dashboard bar and Settings notice.** In row 5 the notice is the §3.4 text
+  with a confirm action; after confirming, the request the user made is
+  sent. In row 10 the notice says personal keys are forbidden by the
+  organisation, that the member's own provider and key are kept but not
+  used, and offers "Use my organisation's AI" (which shows the §3.4 text and
+  confirms); nothing is sent before that. In rows 6, 8 and 11 the notice names
+  who can fix it as the table says (the admin appears only in an
+  organisation, and alone when personal keys are forbidden).
 - **Step-up landing.** An outcome for this purpose brings the admin back to
-  the organisation AI section and states the outcome there; an SSO outcome
-  lands exactly as today.
+  the organisation AI section and states the outcome there, and the SSO
+  step-up section shows no outcome for it; an SSO outcome lands exactly as
+  today and the organisation AI section shows nothing for it.
 
 ### 3.7 What MCP sees
 
@@ -344,15 +488,21 @@ status carries the new rows' reasons. No MCP tool reads or changes the
 organisation's configuration or gives a confirmation: the confirmation is the
 person's, and the owner's rule is that nothing is sent before *the user*
 confirms (factory-assumed that an assistant must not confirm for them, §9).
+The MCP server passes the backend's answers through and carries no per-user
+identity of its own (`mcp/client.go:22-90`), so what MCP returns is proven against
+a stand-in backend, and that nothing is sent rests on P2-AC-29.
 
 ### 3.8 API surface and audit impact (what changes, in outline)
 
 New: the organisation-AI configuration read (members), its change (proven
-admins), and the member confirmation. Changed: the not-configured answer of
-parse, brief refresh, probe and settings read (one new reason, the
-organisation's admin as an enabler, rows 4 to 11 now reachable); the probe's
-rules (§3.5); the step-up start, its options read and its landing (a purpose).
-The register of hand-written versus generated endpoints gains three rows,
+admins, naming the version they were shown), and the member confirmation.
+Changed: the not-configured answer of parse, brief refresh, probe and
+settings read (one new reason, the organisation's admin as an enabler, rows
+4 to 8, 10 and 11 now reachable); the probe's rules (§3.5); the settings
+write (choosing "off" or one's own provider ends the confirmation); the
+step-up start, its options read and its landing (a purpose); provider error
+text (keys replaced before it is stored, returned, logged or reported). The
+register of hand-written versus generated endpoints gains three rows,
 implemented on the generated server interface (factory README §4: new
 endpoints are generated). No audit finding is opened or closed; PAC-50 AC-27
 must stay true.
@@ -380,6 +530,7 @@ must stay true.
 | AC-21, "from Part 2" sentence | P2-AC-31 |
 | (new, O-12) | P2-AC-17 to P2-AC-21 |
 | (new, O-13) | P2-AC-23 to P2-AC-27 |
+| (new, revision 1) | P2-AC-36 to P2-AC-41 |
 
 ### 4.1 Changing the organisation's configuration (O-11)
 
@@ -402,7 +553,11 @@ succeeds with it); given a live organisation-AI grant, an SSO write is refused
 and that grant is still live. Given an address on the operator's break-glass
 list whose session was issued 9 minutes ago, the change succeeds; at 10 minutes
 or more, or with a session stamped more than one minute in the future, it is
-refused with "sign in again". [unit]
+refused with "sign in again". Given that break-glass address made one change
+with a session issued 2 minutes ago, when it sends a second valid change with
+the same session (still under 10 minutes), then the second change is refused
+with "sign in again" and A's configuration is as the first change left it;
+after a new sign-in, one further change succeeds (P2-D13). [unit]
 
 P2-AC-3. Given a step-up started for an organisation-AI change that succeeds,
 then the grant it leaves can authorise an organisation-AI change and not an SSO
@@ -435,7 +590,12 @@ changed the configuration with a proof, each read A's configuration, then the
 two answers are byte-identical and carry the provider, the model, the
 destination, that a key is set, whether personal keys are allowed, the
 version, the last-changed time and that an organisation administrator can
-change it; and no answer of any operation, in any status, contains A's key.
+change it. And, with A's key a distinctive string, none of these answers
+contains it, in any status the operation can give: the organisation
+configuration read; every answer of its change (success, each refusal,
+conflict, server error); every answer of the confirmation; the settings read;
+the parse answer; every probe answer; the brief refresh answer and the brief
+read afterwards. (P2-AC-39 covers the case of a provider that echoes the key.)
 [contract] [unit] [e2e]
 
 P2-AC-8. Given a user in organisation B, when they try to read or change A's
@@ -495,13 +655,19 @@ P2-AC-17. Given a member without a proof, when they change only the
 personal-keys setting, then it is refused as in P2-AC-1; with a proof it
 succeeds and spends the proof. [unit]
 
-P2-AC-18. Given A complete and forbidding personal keys, and member M2 stored
-on OpenAI with a key K2, when M2 parses, refreshes a brief or runs the probe
-naming nothing, then before M2 confirms each answers row 10 naming only the
-user and sends nothing, and after M2 confirms each uses A's configuration
-(row 9). K2 is never sent. M2's stored provider and K2 are still stored; when
-the admin allows personal keys again, M2's next parse carries K2 to OpenAI
-with no action by M2. [unit]
+P2-AC-18. (Revision 1: rewritten for P2-D2's current default.) Given A
+complete and forbidding personal keys, and member M2 stored on OpenAI with a
+key K2, whether or not M2 has ever confirmed A, when M2 parses, refreshes a
+brief or runs the probe naming nothing, then each answers row 10 naming only
+the user, its sentence says personal keys are forbidden by the organisation,
+that M2's own provider and key are kept but not used, and to choose "Use my
+organisation's AI" in Settings; nothing is sent, and K2 is never sent. When
+M2 confirms A's current version without changing their choice, the next
+parse still answers row 10 and sends nothing. When M2 chooses "Use my
+organisation's AI" and confirms the displayed version, the next parse uses
+A's configuration (row 4). M2's stored OpenAI key is still stored throughout.
+Given instead M2 never changes their choice, when the admin allows personal
+keys again, M2's next parse carries K2 to OpenAI with no action by M2. [unit]
 
 P2-AC-19. Given A forbidding personal keys with no key set, when M2 of
 P2-AC-18 parses, then the answer is row 11 naming only the organisation's
@@ -528,11 +694,12 @@ excerpts) go to the organisation's AI provider account, which its
 administrators can access outside Paceday, with a confirm action. After they
 confirm, the request is sent with A's configuration, and the notice is not
 shown again on later requests. Choosing "Use my organisation's AI" in Settings
-shows the same notice and counts as confirming. [unit] [e2e]
+shows the same notice and, on confirm, confirms the version displayed
+(P2-AC-38). [unit] [e2e]
 
 P2-AC-23. Given a member confirmed for A's current configuration, when an
 admin changes A's provider, or its key, or any destination value, then the
-member's next request answers row 5 (or 10) and sends nothing until they
+member's next request answers row 5 and sends nothing until they
 confirm again; when the admin changes only the model or only the personal-keys
 setting, the member's next request is sent without asking. [unit]
 
@@ -548,10 +715,12 @@ P2-AC-25. Given members M1 and M3 of A, when M1 confirms, then M3's next
 request still answers row 5. [unit]
 
 P2-AC-26. Given every not-configured answer the server can give (every row and
-every probe case) and the web notice for rows 5 and 10, when a test reads each
-sentence, then the row 5 and row 10 sentences contain "access" and none of the
-sentences contains the word "read", "reads" or "see" (as whole words,
-case-insensitive). [unit] [e2e]
+every probe case), the web notice for rows 5 and 10, and the notice shown when
+a member chooses "Use my organisation's AI", when a test reads each sentence,
+then the row 5 sentence and both web notices that ask for confirmation
+(row 5's, and the one shown on choosing "Use my organisation's AI") contain
+"access", and none of the sentences contains the word "read", "reads" or
+"see" (as whole words, case-insensitive). [unit] [e2e]
 
 P2-AC-27. Given a member in row 5, 10 or 11 and, for one event, each stored
 brief state in turn (none, pending, ready, failed), when they refresh that
@@ -574,10 +743,11 @@ nothing. [unit]
 
 ### 4.7 One state, one answer
 
-P2-AC-29. Given one account per row of §3.1 (all eleven), when each parses,
-refreshes a brief, runs the probe naming nothing and reads its settings, then
-all four give exactly that row's outcome, reason and who-can-fix-it, and only
-rows 2, 4 and 9 send a request. [unit]
+P2-AC-29. Given one account per reachable row of §3.1 (rows 1 to 8, 10 and
+11; row 9 is reserved), when each parses, refreshes a brief, runs the probe
+naming nothing and reads its settings, then all four give exactly that row's
+outcome, reason and who-can-fix-it, and only rows 2 and 4 send a request.
+[unit]
 
 ### 4.8 Web and MCP
 
@@ -603,14 +773,18 @@ includes them. [e2e]
 
 P2-AC-32. Given a step-up for an organisation-AI change, when the identity
 provider returns, then the admin lands on the organisation AI section with the
-outcome stated there; an SSO step-up lands and reads exactly as under PAC-50.
-[e2e]
+outcome stated there, and the SSO step-up section shows no outcome (in
+particular not "used by your next SSO configuration change"); an SSO step-up
+lands and reads exactly as under PAC-50, and the organisation AI section
+shows no outcome for it. [e2e]
 
-P2-AC-33. Given a member in row 5, 10 or 11, when the MCP tool
-`clockwise_parse_command` is called for them, then it returns the
-not-configured sentence and reason, nothing is sent to any provider, and the
-MCP server offers no tool that confirms or reads the organisation's
-configuration. [unit]
+P2-AC-33. Given a stand-in backend whose parse answer is the row 5, row 10
+or row 11 not-configured answer, when the MCP tool `clockwise_parse_command`
+is called, then it returns that sentence and reason unchanged; and the MCP
+server's tool list has no tool that calls the organisation configuration
+read or change or the confirmation. (That nothing is sent to a provider in
+those rows is P2-AC-29's, on the backend; the MCP server has no per-user
+identity to set up a member end to end, `mcp/client.go:22-90`.) [unit]
 
 ### 4.9 Contract
 
@@ -618,7 +792,10 @@ P2-AC-34. Given the assembled contract, when it is read, then: the
 organisation configuration's read, change and confirmation are documented with
 every refusal; the change's refusal distinguishes "no organisation",
 "administrator step-up needed for this purpose" (with how to start it) and
-"sign in again"; the step-up start, its options read and its landing document
+"sign in again", and a stale version is a conflict carrying the current
+configuration; the settings write documents that storing "off" or a provider
+ends the confirmation and that storing "follow my organisation" records none;
+the step-up start, its options read and its landing document
 the purpose; the not-configured reason set contains the personal-keys reason;
 and no schema carries an organisation key in a readable response. [contract]
 
@@ -627,11 +804,73 @@ organisation with no configuration, when they parse, then the answer is
 "nothing configured" naming the user and the organisation's admin, and the
 dashboard says so. [e2e]
 
+### 4.10 Added by revision 1
+
+P2-AC-36. (Challenge blocking 1.) Given A complete with personal keys allowed
+and member M following A who confirmed A's current version V, when M chooses
+OpenAI and saves a key K2 for it, and then an admin forbids personal keys (V
+unchanged), then M's next parse, brief refresh and probe naming nothing each
+answer row 10 and send nothing. Given instead M chooses "off" and then a
+settings write stores "follow my organisation" again (without the
+confirmation), M's next parse answers row 5 and sends nothing; likewise after
+M chooses OpenAI and a settings write stores "follow my organisation" again.
+In each case M's stored confirmation was deleted by the write that stored
+"off" or OpenAI. [unit]
+
+P2-AC-37. (Challenge blocking 2a.) Given member M following A who confirmed
+version V of A (provider P_V, key K_V), and an admin change to version V+1
+(provider P_W, key K_W) that is stored after M's request has begun to be
+decided (a test store that applies the change between the request's reads),
+when the request completes, then it either sends exactly V's values (P_V,
+K_V, V's destination and model) or answers row 5 and sends nothing; it never
+sends any value of V+1, and never combines values of V and V+1. Given the
+change was stored before the request began, the request answers row 5 and
+sends nothing. [unit]
+
+P2-AC-38. (Challenge blocking 2b.) Given member M of A, A complete at version
+V, and no confirmation, when a settings write stores "follow my
+organisation" (alone, or inside a whole settings document), then no
+confirmation is recorded and M's next parse answers row 5 and sends nothing.
+When M chooses "Use my organisation's AI" in the web while V is displayed and
+confirms, then a confirmation naming V is recorded and the next parse is
+sent with V's values. Given the admin changed A to V+1 after V was displayed
+and before M confirmed, then that confirmation is refused, nothing is
+recorded, the web shows V+1's notice, and M's next parse answers row 5.
+[unit] [e2e]
+
+P2-AC-39. (Challenge blocking 3.) Given a provider or gateway test double
+that echoes, in its error body, the key it was sent, and A's key K_A and a
+member's own key K_U both distinctive strings: (i) when a confirmed follower
+of A refreshes a brief and the call fails, then the brief read afterwards
+does not contain K_A; (ii) when that follower parses and the call fails, and
+when they probe naming nothing and the call fails, then no answer, in any
+status, contains K_A; (iii) in each of (i) and (ii), and for a member in row
+2 whose own call fails, no line written to the server log, no event sent to
+the error reporter (a test reporter capturing what would go to Sentry), and
+no operator record contains K_A or K_U. [unit]
+
+P2-AC-40. (Contract challenge B-1.) Given an admin shown A at version V and
+holding a live organisation-AI grant, when another proven admin changes A to
+V+1 and the first admin then sends a valid change naming V, then the change
+is refused as a conflict, the answer carries A's current configuration
+(V+1), A is unchanged, and the first admin's grant is still live (a change
+naming V+1 then succeeds with it). A malformed body naming a stale version
+is refused as malformed (the body is checked first). [contract] [unit]
+
+P2-AC-41. (Challenge non-blocking 5.) Given A complete with a destination the
+operator has since stopped approving, and a confirmed follower M, when M
+parses, refreshes a brief and probes naming nothing, then nothing is sent,
+each refusal says the organisation's AI destination is not approved on this
+deployment and that an administrator of the organisation can fix it, and no
+sentence tells M to change their own Settings; M's settings read still says
+configured (the settings read does not check the destination, Part 1). [unit]
+
 ## 5. Explicitly out of scope
 
 - **Withdrawing a confirmation** other than by choosing "off" or one's own
-  provider (when allowed). A member who wants to stop sending to the
-  organisation's account turns AI off; a separate "withdraw" is a later change.
+  provider, each of which ends it (§3.4; a member can choose their own
+  provider even while personal keys are forbidden, P2-D8). A separate
+  "withdraw" action is a later change.
 - **Testing an unsaved organisation configuration** (parent §5).
 - **Per-team keys, usage reporting, quotas** (parent §5).
 - **An admin role stored in Paceday** (parent §5, D-6). The proof stays
@@ -640,24 +879,34 @@ dashboard says so. [e2e]
   than by asking again at their next AI request (P2-AC-23). No email or
   notification is sent.
 - **Confirming through MCP** (§3.7).
+- **A key echoed in a transformed form** (a fragment, an encoding) by a
+  provider or gateway: only the exact key string is replaced (§3.1a).
 
 ## 6. What must not change
 
 - **Keys are write-only**, the organisation's included: no response, in any
   status, carries a user or organisation key (PAC-24; Part 1 §6;
-  `TestLLMTest_BodyRulesAndNoKeyEcho`, `e2e/tests/settings.spec.ts`).
+  `TestLLMTest_BodyRulesAndNoKeyEcho`, `e2e/tests/settings.spec.ts`). From
+  this part the rule also covers stored brief text, server logs, error
+  reports sent to Sentry and operator records, for the organisation's key and
+  for users' keys (§3.1a, P2-AC-39). Today only the probe redacts, and only
+  the caller's own keys (§2.5), so this is a widening, not a preservation.
 - **The probe body cannot carry a destination** (PAC-24 invariant).
 - **Approved destinations** apply to the organisation's values exactly as to a
   user's (PAC-66 A and B, Part 1 §6).
 - **PAC-50 is unchanged for SSO.** A step-up started without a purpose issues
-  an SSO grant and lands exactly as today; the SSO write gate, its 403 shapes
+  an SSO grant and lands exactly as today; the SSO write gate (including its
+  break-glass rule, which keeps allowing several SSO writes within one fresh
+  session: P2-D13 applies to organisation-AI changes only), its 403 shapes
   and its option read without a purpose are byte-identical. Protected by
   PAC-50's `TestPAC50_*` tests and AC-27 (a grant of another purpose is never
   spent by an SSO write).
 - **Part 1 for users with no organisation** is unchanged: rows 1, 2, 3, 6 and
   8 with the user alone as the fixer.
 - **"Off" is never overridden** (parent D-9).
-- **Settings writes validate only what they change** (PAC-24 AC-17).
+- **Settings writes validate only what they change** (PAC-24 AC-17). Storing
+  "off" or a provider additionally ends the caller's confirmation (§3.4);
+  that is a side effect, not a validation, and never refuses the write.
 
 ## 7. Migration and rollback
 
@@ -665,12 +914,14 @@ dashboard says so. [e2e]
 organisation: provider, model, destination values, the key, whether personal
 keys are allowed, the configuration version, and when and by whom it was last
 changed; (b) one confirmation per user and organisation: the version confirmed
-and when; (c) a new kind of operator record for organisation-AI changes. No
-existing row is rewritten: settings rows, including every stored "follow my
-organisation" choice, are untouched; PAC-50's grant table needs no change
-(its purpose column takes the new value). Until an admin sets a
-configuration, every organisation behaves as in Part 1 except that rows 6 and
-8 in an organisation now also name its admin.
+and when; (c) a new kind of operator record for organisation-AI changes,
+which for a break-glass change also identifies the session used, so that a
+second change with the same session can be refused (P2-D13). No existing row
+is rewritten: settings rows, including every stored "follow my organisation"
+choice, are untouched; PAC-50's grant table needs no change (its purpose
+column takes the new value). Until an admin sets a configuration, every
+organisation behaves as in Part 1 except that rows 6 and 8 in an
+organisation now also name its admin.
 
 **Down.** Drops (a), (b) and (c), and deletes grants issued for the new
 purpose (useless without this part) and operator records of the new kind
@@ -679,25 +930,57 @@ organisation's AI configuration including its key, every confirmation, and the
 operator records of organisation-AI changes.** Release notes must say so.
 After rollback, followers answer "nothing configured" (Part 1), members whose
 organisation forbade personal keys are back on their own keys (their choice
-and keys were never rewritten), and nobody is asked to confirm; after
+and keys were never rewritten), members who chose "Use my organisation's AI"
+answer "nothing configured", and nobody is asked to confirm; after
 re-upgrading, admins re-enter the configuration and members confirm again.
 
-**Code rollback** without the down migration is safe: Part 1's code ignores
-the new storage.
+**Code rollback without the down migration is not safe for O-12** (revision
+1, challenge non-blocking 6). Part 1's code ignores the new storage, so it
+also ignores "personal keys forbidden": members on their own provider have
+their personal keys sent again while the stored setting still says
+forbidden, and nothing tells the administrator. Followers answer "nothing
+configured" and nothing goes to the organisation's account. Release notes
+must say that a code rollback re-enables personal keys in every organisation
+that forbade them, and that an operator who needs O-12 to hold must not roll
+back the code (or must accept that). No data is lost by a code rollback; a
+re-upgrade restores the stored setting's effect.
 
 ## 8. Open questions
 
-None blocks the contract stage. Each below is a factory assumption recorded
-in §9, and each is the more conservative choice (it sends less, or asks more).
+None blocks the contract stage. Four are product questions put to the owner
+on 2026-10-28 (three of them; OQ-P2-3 is added by this revision) and
+recorded in the factory's owner-decisions record, which lives in the
+workspace outside this repository ("Still open", LLM org key). Until the owner answers, the factory default below
+applies; each default is factory-assumed, pending the owner. Each question is
+stated neutrally; the default is what is built, not a recommendation the
+owner made.
 
-- **OQ-P2-1** — Re-ask on a key or destination change, not only on a provider
-  change (§3.4, P2-D4)? Owner: product owner. Cost of the assumption: members
-  are asked again after a key rotation.
-- **OQ-P2-2** — While personal keys are forbidden, should an own-provider
-  member be routed to the organisation's configuration after confirming (rows
-  9 and 10, P2-D2), or stay off until they choose "Use my organisation's AI"?
-  Owner: product owner. The assumption follows O-12's "every member uses the
-  organisation's key", gated by O-13's confirmation.
+- **OQ-P2-1 (P2-D4)** — When an administrator changes the organisation's key
+  or destination (not its provider), are members told and asked again before
+  their next AI request, or only when the provider changes? **Default: asked
+  again on a change of provider, key or any destination value.** This widens
+  the owner's "tell and ask once" (2026-10-28), which said nothing about
+  asking again; the cost is a confirmation after every key rotation.
+- **OQ-P2-2 (P2-D2)** — While personal keys are forbidden, is a member who
+  chose their own provider moved onto the organisation's account (after
+  confirming), or does that member have no AI until they themselves choose
+  "Use my organisation's AI" and confirm? **Default: not moved**; they get
+  row 10 ("personal keys are forbidden by your organisation; choose 'Use my
+  organisation's AI' in Settings") and nothing is sent until they choose it
+  and confirm. This is the conservative alternative: it sends nothing more
+  and asks no less. Row 9 is reserved for the other answer.
+- **OQ-P2-3 (P2-D3)** — May an administrator forbid personal keys before the
+  organisation's configuration is complete (which leaves every member except
+  those on "off" without AI until it is)? **Default: yes, with a warning in
+  the web before saving.**
+- **OQ-P2-4 (P2-D13)** — Does a break-glass operator's fresh sign-in allow one
+  organisation-AI change, or any number within its 10 minutes? **Default: one
+  change per fresh sign-in**, the conservative reading of "repeated per
+  change".
+
+Not a product question, recorded so a reader does not have to infer it:
+the organisation's administrator is named as able to fix the configuration
+even on a deployment with no way to prove one (P2-D12).
 
 ## 9. Decisions
 
@@ -707,14 +990,19 @@ in §9, and each is the more conservative choice (it sends less, or asks more).
   organisation-wide AI provider and key requires PAC-50's admin proof
   (Google Workspace / Microsoft 365 admin step-up, or the operator's
   break-glass list), repeated per change. → §3.2, §3.3, P2-AC-1 to P2-AC-5,
-  P2-AC-17.
+  P2-AC-17, P2-AC-40. How "repeated per change" applies to the break-glass
+  list is P2-D13 (factory-assumed).
 - **O-12 (owner, 2026-10-28, OQ-7: yes).** An organisation admin may forbid
-  personal keys, so every member uses the organisation's key. → rows 9 to 11,
-  §3.5, P2-AC-17 to P2-AC-21.
+  personal keys, so every member uses the organisation's key. → rows 10 and
+  11, §3.5, P2-AC-17 to P2-AC-21, P2-AC-36. Under P2-D2's default "every
+  member uses the organisation's key" holds as "no member's personal key is
+  used, and the organisation's is the only AI available"; whether a member
+  is moved onto it without choosing it is OQ-P2-2.
 - **O-13 (owner, 2026-10-28, OQ-8: yes).** Tell and ask once before the first
   AI request; the wording says the provider account's administrators can
   **access** the data, never "read"; nothing is sent before the user confirms.
-  → §3.4, P2-AC-22 to P2-AC-27.
+  → §3.4, P2-AC-22 to P2-AC-27, P2-AC-36 to P2-AC-38. The owner did not say
+  when, if ever, to ask again; that is P2-D4 (factory-assumed).
 - Carried from the parent spec: O-1, O-5, O-6, O-7, O-8 (2026-10-27).
 
 ### Carried factory decisions (parent spec, pending owner confirmation)
@@ -724,26 +1012,34 @@ D-18, D-19 (amended by P2-D6).
 
 ### Assumed by the factory, pending owner confirmation
 
+Product-level (put to the owner, §8): P2-D2, P2-D3, P2-D4, P2-D13.
+Interface or engineering choices: the others.
+
 - **P2-D1. The organisation-AI proof is a PAC-50 grant of its own purpose,
   obtained by a PAC-50 step-up started for that purpose.** Rejected: a second
   step-up flow (a second callback address to register with Google and
   Microsoft, and two copies of the checks); reusing the SSO grant (PAC-50
   AC-27 forbids it, and an SSO admin would silently gain AI authority).
-- **P2-D2. While personal keys are forbidden, an own-provider or
-  removed-provider member uses the organisation's configuration once they
-  confirm (rows 9-10).** Their choice and keys are not rewritten. Rejected:
-  leaving them off until they re-choose (contradicts "every member uses the
-  organisation's key"); rewriting their choice (loses it when the ban is
-  lifted). OQ-P2-2.
+- **P2-D2 (revision 1: default changed). While personal keys are forbidden,
+  an own-provider or removed-provider member is NOT moved to the
+  organisation's configuration** (row 10 when complete, row 11 when not).
+  Nothing is sent for them until they choose "Use my organisation's AI" and
+  confirm the displayed version. Their choice and keys are not rewritten.
+  Pending the owner, OQ-P2-2. Rejected for now: moving them once they confirm
+  (revision 0's default; it moves a member who deliberately chose their own
+  provider onto the organisation's account, which is the owner's call, not
+  the factory's); rewriting their choice (loses it when the ban is lifted).
 - **P2-D3. Forbidding is allowed while the configuration is incomplete**, with
-  a warning in the web (row 11). Rejected: refusing it (the admin could still
-  reach the same state by removing the key afterwards, so the refusal would
-  protect nothing).
+  a warning in the web (row 11). Pending the owner, OQ-P2-3. Rejected:
+  refusing it (the admin could still reach the same state by removing the key
+  afterwards, so the refusal would protect nothing).
 - **P2-D4. The confirmation is per user, per organisation, per configuration
   version; the version advances on a change of provider, key or any
-  destination value.** Rejected: provider only (a new key or gateway can be
-  another account with other administrators, which is exactly what O-13 tells
-  the member about). OQ-P2-1.
+  destination value.** This widens the owner's "tell and ask once"; pending
+  the owner, OQ-P2-1. Rejected: never asking again (a new provider, key or
+  gateway can be another account with other administrators, which is exactly
+  what O-13 tells the member about); asking again on a provider change only
+  (a new key or gateway can be another account on the same provider).
 - **P2-D5. One new not-configured reason, "personal keys forbidden".** The
   confirm-required case reuses Part 1's reserved "organisation unconfirmed"
   reason rather than a new "consent required" one, so Part 1 clients already
@@ -771,6 +1067,29 @@ D-18, D-19 (amended by P2-D6).
   since Part 1) is treated as a new account**: it follows the organisation,
   subject to confirmation (rows 4-6). Parent D-8 (pre-Part-1 accounts are not
   enrolled) is unchanged.
+- **P2-D12 (revision 1). The organisation's administrator is named as able to
+  fix it whenever the caller is in an organisation**, whatever the
+  deployment's step-up or break-glass configuration (§3.1). Rejected: naming
+  the admin only when the deployment can prove one (the same member state
+  would then give different answers as the operator changes configuration,
+  and the member would be told nobody can fix it when the operator can).
+- **P2-D13 (revision 1). A break-glass sign-in authorises one
+  organisation-AI change.** A second change with the same session is refused
+  with "sign in again". Pending the owner, OQ-P2-4. Rejected for now: any
+  number of changes within 10 minutes (PAC-50's SSO rule; the owner's
+  "repeated per change" names the break-glass list alongside the step-up).
+  PAC-50's SSO break-glass rule is unchanged.
+- **P2-D14 (revision 1). Settings choices end the confirmation; only the
+  confirmation operation records one; a request sends exactly the confirmed
+  version.** (§3.1, §3.4.) Rejected: keeping a confirmation across a switch
+  to one's own provider (a later forbid would send the member's data with no
+  notice, challenge blocking 1); treating a settings write of "follow my
+  organisation" as confirming (a client can send it without showing
+  anything, challenge blocking 2).
+- **P2-D15 (revision 1). An administrator's change names the version they
+  were shown; a stale one is a conflict, checked before the proof is spent**
+  (contract challenge B-1). Rejected: last write wins (a key typed for one
+  provider could be stored as another's).
 
 ## Challenge, revision 0 — 2026-10-28
 
@@ -913,3 +1232,36 @@ Checked by: `git fetch origin`; `git show` / `git grep` on
   for `organization`, which changes for members (P2-AC-31).
 - smart-calendar-flow/src/components/settings/SsoAdminStepupSection.tsx:40-57:
   reads `stepup` whatever the purpose (Non-blocking 4).
+
+## Revision 1 — 2026-10-28 (answers challenge revision 0)
+
+Author: spec-author. Every finding of the challenge above, with what was done.
+"Applied" means the live text (§§2-9) now says it; the section or criterion
+is named. Nothing in this revision was tested or built: it is text.
+
+| Finding | Resolution | Where |
+|---|---|---|
+| B1 A withdrawn confirmation comes back when personal keys are forbidden | Applied. A settings write that stores "off" or one of the five providers deletes the member's stored confirmation. New criterion: confirmed follower → own provider (+ key) → admin forbids → next parse, brief refresh and probe answer row 10 and send nothing; also off/own provider → settings write back to "follow" → row 5. Under P2-D2's new default the forbidden case is row 10 anyway; the deletion makes it hold whatever the owner answers to OQ-P2-2. | §3.4 ("Choosing one's own provider, or 'off', ends the confirmation"), §5, §6, P2-D14, P2-AC-36 |
+| B2 The confirmation is not tied to the configuration actually sent | Applied. (a) "Confirmed" now means the stored confirmation names exactly the version the request reads; configuration and confirmation are read as one consistent state; a request sends exactly the confirmed version's values, else row 5 (row 10 no longer sends under P2-D2). (b) The Settings choice confirms only the displayed version, through the confirmation operation and its stale-version rule; a settings write alone (including a whole-document write) records no confirmation. One criterion for each. | §3.1 (definition, "Row 4 sends only … of the confirmed version"), §3.4, P2-D14, P2-AC-37, P2-AC-38, P2-AC-22 |
+| B3 The organisation key can leak through provider error text; P2-AC-7 not falsifiable | Applied. New §3.1a: the org key and users' keys never appear in any answer, stored brief text, log, Sentry report or operator record; provider/gateway error text has every occurrence of the org key and the caller's keys replaced before it is stored, returned, logged or reported. §2.5 cites today's paths. P2-AC-7 now names every read it covers; new P2-AC-39 uses an echoing gateway test double for (i) brief read after a failed refresh, (ii) parse and probe answers, (iii) logs, error reporter, operator records. §6 extends "write-only" to logs and error reports (stated as a widening). Exact-string only; transformed echoes are out of scope (§5). | §2.5, §3.1a, §5, §6, P2-AC-7, P2-AC-39 |
+| B4 Break-glass is not "repeated per change" | Applied as the conservative reading: one organisation-AI change per fresh break-glass sign-in; a second change with the same session is "sign in again". Recorded as factory-assumed P2-D13, pending the owner (OQ-P2-4). PAC-50's SSO break-glass rule unchanged. Criterion for the second change being refused added to P2-AC-2. | §3.2, §6, §7 (c), §8, P2-D13, P2-AC-2 |
+| NB1 Wrong attribution "the owner's 're-ask if the provider changes'" | Applied. The phrase is removed. §3.4, §8 and P2-D4 now say the owner said "tell and ask once" and did not say when to ask again; asking again on a key or destination change widens that and is the factory's choice, pending the owner. | §1, §3.4, §8 OQ-P2-1, §9 O-13 and P2-D4 |
+| NB2 §8 claims every default is the more conservative choice; false for P2-D2 | Applied. P2-D2's default is changed to the conservative alternative (not moved; row 10 "personal keys are forbidden by your organisation; choose 'Use my organisation's AI' in Settings"; nothing sent until they choose it and confirm). Row 9 is reserved for the other answer. §8 no longer claims every default is conservative; it states each question neutrally and says each default is factory-assumed, pending the owner. The row-10 sentence says the personal provider and key are kept but not used (P2-AC-18). | §3.1 (table, consequences), §3.4, §3.6, §8, P2-D2, P2-AC-18, P2-AC-29 |
+| NB3 Product-level assumptions to confirm with the owner | Applied. P2-D2, P2-D3, P2-D4 and P2-D13 are listed as product-level in §9 and put as OQ-P2-1 to OQ-P2-4 in §8 with their current defaults. OQ-P2-1, -2 and -4 match the questions the owner was asked on 2026-10-28 (the factory's owner-decisions record, "Still open"); P2-D3 was not among those and is added as OQ-P2-3, to be asked. | §8, §9 |
+| NB4 Step-up landing consumer (SsoAdminStepupSection) | Applied. P2-AC-32: the SSO section shows no outcome for an AI-purpose landing, and the AI section none for an SSO landing. Consumer listed in §2.4. | §2.4, §3.6, P2-AC-32 |
+| NB5 Destination refusals on the organisation's configuration misdirect the member | Applied. In row 4 a destination refusal names the organisation's AI destination and its administrator, never the member's own Settings. A separate criterion (P2-AC-41) covers a complete but no-longer-approved organisation configuration, rather than folding it into P2-AC-29, because the settings read does not check destinations (Part 1) and P2-AC-29 requires all four answers to agree. | §3.1, P2-AC-41 |
+| NB6 Code rollback is not safe for O-12 | Applied. §7 now says a code rollback without the down migration re-enables personal keys in organisations that forbade them, and release notes must say so. | §7 |
+| NB7 MCP: no per-user identity; "in the web app" cannot be enforced | Applied. P2-AC-33 is restated against a stand-in backend plus the tool list; "nothing sent" rests on P2-AC-29. §3.4 now says no MCP tool and no server-side path other than the confirmation operation records a confirmation, and that the server cannot tell a person from a program. | §3.4, §3.7, P2-AC-33 |
+| NB8 The admin is named when no admin can be proven | Answered: intended, recorded as factory-assumed P2-D12 with the reason (operator configuration, not member state; one state, one answer). | §3.1, §8, P2-D12 |
+| NB9 Stage order: contract already on the branch | Applied. The contract was re-checked against this revision and amended in the same push (contract revision 2, `contracts/features/NEW-llm-bring-your-own-part2.md`): P2-D2's default, the settings-write side effect, the admin's configurationVersion, the redaction rule, break-glass once per session, the destination refusal's configuration. | contract revision 2 |
+| Could not falsify: P2-AC-7 | Fixed by naming the reads (P2-AC-7) and the echo case (P2-AC-39). | P2-AC-7, P2-AC-39 |
+| Could not falsify: P2-AC-33 | Fixed by restating it against a stand-in backend (NB7). | P2-AC-33 |
+| Could not falsify: P2-AC-2 break-glass count | Fixed (B4). | P2-AC-2 |
+| Wrong citation §3.4 "re-ask if the provider changes" | Removed (NB1). | §3.4 |
+| Consumers not named: e2e `llm-bring-your-own.spec.ts`, Part 1 AC-34, web `aiProviders.test.ts`, `SsoAdminStepupSection.tsx` | Applied: listed in §2.4 as amended (not deleted) when this part lands. The contract manifest lists them in consumersAffected and mergeConditions. | §2.4 |
+
+Also changed in this revision, from the contract challenge (revision 1,
+recorded in the contract rationale): an administrator's change names the
+configuration version they were shown, and a stale one is refused as a
+conflict before the proof is spent (contract challenge B-1; §3.2, P2-D15,
+P2-AC-40).
