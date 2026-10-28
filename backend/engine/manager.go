@@ -192,7 +192,7 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 	if err != nil {
 		return nil, err
 	}
-	ts := auth.TokenSource(ctx, e.OAuthConfig, token)
+	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, managerID, token)
 	client, err := calendar.NewClient(ctx, ts)
 	if err != nil {
 		return nil, fmt.Errorf("calendar client: %w", err)

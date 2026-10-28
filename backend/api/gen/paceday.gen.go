@@ -45,13 +45,16 @@ const (
 
 // Defines values for AuditEntryAction.
 const (
-	FocusCleared     AuditEntryAction = "focus_cleared"
-	FocusCreated     AuditEntryAction = "focus_created"
-	MeetingCreated   AuditEntryAction = "meeting_created"
-	MeetingMoved     AuditEntryAction = "meeting_moved"
-	MeetingScheduled AuditEntryAction = "meeting_scheduled"
-	NlpConfirmed     AuditEntryAction = "nlp_confirmed"
-	NlpParsed        AuditEntryAction = "nlp_parsed"
+	ConnectionLost        AuditEntryAction = "connection_lost"
+	FocusCleared          AuditEntryAction = "focus_cleared"
+	FocusCreated          AuditEntryAction = "focus_created"
+	MeetingCreated        AuditEntryAction = "meeting_created"
+	MeetingMoved          AuditEntryAction = "meeting_moved"
+	MeetingScheduled      AuditEntryAction = "meeting_scheduled"
+	NlpConfirmed          AuditEntryAction = "nlp_confirmed"
+	NlpParsed             AuditEntryAction = "nlp_parsed"
+	ProviderDisconnected  AuditEntryAction = "provider_disconnected"
+	RevocationUnconfirmed AuditEntryAction = "revocation_unconfirmed"
 )
 
 // Defines values for AuthStatusResponseProvider.
@@ -59,6 +62,11 @@ const (
 	AuthStatusResponseProviderGoogle  AuthStatusResponseProvider = "google"
 	AuthStatusResponseProviderOutlook AuthStatusResponseProvider = "outlook"
 	AuthStatusResponseProviderWebcal  AuthStatusResponseProvider = "webcal"
+)
+
+// Defines values for BookingRateLimitErrorError.
+const (
+	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
 )
 
 // Defines values for Cadence.
@@ -107,6 +115,13 @@ const (
 // Defines values for CalendarNotConnectedErrorError.
 const (
 	CalendarNotConnectedErrorErrorCalendarNotConnected CalendarNotConnectedErrorError = "calendar not connected"
+)
+
+// Defines values for ConferenceMeetingDetailsProvider.
+const (
+	ConferenceMeetingDetailsProviderMeet  ConferenceMeetingDetailsProvider = "meet"
+	ConferenceMeetingDetailsProviderTeams ConferenceMeetingDetailsProvider = "teams"
+	ConferenceMeetingDetailsProviderZoom  ConferenceMeetingDetailsProvider = "zoom"
 )
 
 // Defines values for ConferenceProviderStatusAutoWith.
@@ -210,6 +225,8 @@ const (
 	AwsRegion     LLMDestinationRefusalProperty = "awsRegion"
 	AzureEndpoint LLMDestinationRefusalProperty = "azureEndpoint"
 	GcpLocation   LLMDestinationRefusalProperty = "gcpLocation"
+	LlmBaseUrl    LLMDestinationRefusalProperty = "llmBaseUrl"
+	OllamaBaseUrl LLMDestinationRefusalProperty = "ollamaBaseUrl"
 )
 
 // Defines values for LLMDestinationRefusalReason.
@@ -253,6 +270,20 @@ const (
 	MeetingBriefResponseStatusFailed  MeetingBriefResponseStatus = "failed"
 	MeetingBriefResponseStatusPending MeetingBriefResponseStatus = "pending"
 	MeetingBriefResponseStatusReady   MeetingBriefResponseStatus = "ready"
+)
+
+// Defines values for ProviderDisconnectResultProvider.
+const (
+	ProviderDisconnectResultProviderOutlook ProviderDisconnectResultProvider = "outlook"
+	ProviderDisconnectResultProviderZoom    ProviderDisconnectResultProvider = "zoom"
+)
+
+// Defines values for ProviderDisconnectResultRevocation.
+const (
+	Confirmed     ProviderDisconnectResultRevocation = "confirmed"
+	NotOffered    ProviderDisconnectResultRevocation = "not_offered"
+	NothingStored ProviderDisconnectResultRevocation = "nothing_stored"
+	Unconfirmed   ProviderDisconnectResultRevocation = "unconfirmed"
 )
 
 // Defines values for PublicLinkInfoUsageType.
@@ -358,9 +389,9 @@ const (
 
 // Defines values for SettingsUpdateConferencingProvider.
 const (
-	Meet  SettingsUpdateConferencingProvider = "meet"
-	Teams SettingsUpdateConferencingProvider = "teams"
-	Zoom  SettingsUpdateConferencingProvider = "zoom"
+	SettingsUpdateConferencingProviderMeet  SettingsUpdateConferencingProvider = "meet"
+	SettingsUpdateConferencingProviderTeams SettingsUpdateConferencingProvider = "teams"
+	SettingsUpdateConferencingProviderZoom  SettingsUpdateConferencingProvider = "zoom"
 )
 
 // Defines values for SettingsUpdateLlmProvider.
@@ -510,7 +541,7 @@ type AnalyticsBreakdownEntry struct {
 	Color    string                          `json:"color"`
 	Minutes  int                             `json:"minutes"`
 
-	// Percentage `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. Note buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.
+	// Percentage A percentage where 100 means the whole of `total_working_minutes` (PAC-42: the same scale as `habit_completion_rate` and `focus_score` in the same response): `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. No maximum is declared because the value is not bounded by 100: the total counts Monday–Friday working windows only, while meeting and personal minutes count every timed event in the seven days at any hour. buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.
 	Percentage float64 `json:"percentage"`
 }
 
@@ -538,19 +569,21 @@ type AnalyticsRecomputeAck struct {
 // AnalyticsRecomputeAckStatus defines model for AnalyticsRecomputeAck.Status.
 type AnalyticsRecomputeAckStatus string
 
-// AnalyticsWeekRow Raw `storage.AnalyticsWeek` as returned by GET /api/analytics/trends. Same field
-// set as AnalyticsWeekWithBreakdown minus `breakdown`, and with `week_start`
-// serialised as a full RFC3339 timestamp because the Go field is a `time.Time`.
+// AnalyticsWeekRow One item of GET /api/analytics/trends. Same fields as AnalyticsWeekWithBreakdown,
+// in the same formats and on the same scales, minus `breakdown` (PAC-42).
 type AnalyticsWeekRow struct {
+	// BufferMinutes Always 0 for engine-computed weeks (open defect API-057); see AnalyticsWeekWithBreakdown.buffer_minutes.
 	BufferMinutes               int       `json:"buffer_minutes"`
 	ComputedAt                  time.Time `json:"computed_at"`
 	EstimatedMeetingCostMinutes int       `json:"estimated_meeting_cost_minutes"`
 	FocusBlockCount             int       `json:"focus_block_count"`
 	FocusMinutes                int       `json:"focus_minutes"`
-	FocusScore                  int       `json:"focus_score"`
-	FreeMinutes                 int       `json:"free_minutes"`
 
-	// HabitCompletionRate 0..1 fraction.
+	// FocusScore A percentage where 100 means all focus and meeting time was focus; same computation and range as AnalyticsWeekWithBreakdown.focus_score.
+	FocusScore  int `json:"focus_score"`
+	FreeMinutes int `json:"free_minutes"`
+
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058; reported unscaled before PAC-42): `completed / (scheduled + completed) * 100`, 0 when there are none, not rounded. Equal to the single-week value for the same stored week. Rows stored before PAC-42 are reported on this scale too: storage keeps the unscaled ratio for every week and the multiplication by 100 is applied on read (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -564,17 +597,16 @@ type AnalyticsWeekRow struct {
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
-	// WeekStart Midnight UTC of the Monday, e.g. "2026-03-02T00:00:00Z" — NOT the "2026-03-02" shape used by /api/analytics/week.
-	WeekStart time.Time `json:"week_start"`
+	// WeekStart The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"), with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekWithBreakdown.week_start, so the two are equal strings for the same week (PAC-42, API-055; this was an RFC3339 timestamp before). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
+	WeekStart openapi_types.Date `json:"week_start"`
 }
 
-// AnalyticsWeekWithBreakdown Response of GET /api/analytics/week. Built by `weekWithBreakdown` as a
-// `map[string]any`, so it deliberately differs from AnalyticsWeekRow: `week_start`
-// is a plain date string and `breakdown` is added.
+// AnalyticsWeekWithBreakdown Response of GET /api/analytics/week. The same fields as AnalyticsWeekRow, in the
+// same formats and on the same scales, plus `breakdown` (PAC-42).
 type AnalyticsWeekWithBreakdown struct {
 	Breakdown []AnalyticsBreakdownEntry `json:"breakdown"`
 
-	// BufferMinutes Never populated by `compute` — the engine leaves it at 0 in every write path.
+	// BufferMinutes Always 0 for engine-computed weeks: AnalyticsEngine.compute never sets it, so every write path stores 0. This is open defect API-057 (docs/factory/api-audit.md), not intended behaviour; computing it is out of PAC-42's scope (spec D-5, pending owner confirmation, OQ-8). The column round-trips through storage, so a row written by other means would report its stored value.
 	BufferMinutes int       `json:"buffer_minutes"`
 	ComputedAt    time.Time `json:"computed_at"`
 
@@ -583,13 +615,13 @@ type AnalyticsWeekWithBreakdown struct {
 	FocusBlockCount             int `json:"focus_block_count"`
 	FocusMinutes                int `json:"focus_minutes"`
 
-	// FocusScore `focus*100/(focus+meeting)` clamped to ≤100; 50 when both are 0.
+	// FocusScore A percentage where 100 means all focus and meeting time was focus: `focus*100/(focus+meeting)` (integer division) clamped to ≤100; 50 when both are 0.
 	FocusScore int `json:"focus_score"`
 
 	// FreeMinutes total_working − meeting − focus − habit − personal, floored at 0.
 	FreeMinutes int `json:"free_minutes"`
 
-	// HabitCompletionRate completed / (scheduled + completed) occurrences in the week, as a 0..1 FRACTION (not a percentage). 0 when there are none.
+	// HabitCompletionRate A percentage where 100 means every counted habit occurrence was completed (PAC-42, API-058: the same scale as `focus_score` and `breakdown[].percentage` in this response): `completed / (scheduled + completed) * 100` over the week's occurrences. 0 when there are none. Not rounded. Storage keeps the unscaled ratio; the multiplication by 100 is applied when the response is built (spec D-3).
 	HabitCompletionRate      float64            `json:"habit_completion_rate"`
 	HabitMinutes             int                `json:"habit_minutes"`
 	Id                       openapi_types.UUID `json:"id"`
@@ -605,7 +637,7 @@ type AnalyticsWeekWithBreakdown struct {
 	TotalWorkingMinutes int                `json:"total_working_minutes"`
 	UserId              openapi_types.UUID `json:"user_id"`
 
-	// WeekStart The Monday of the week, formatted "2006-01-02". DIFFERENT from the trends endpoint, which emits a full timestamp.
+	// WeekStart The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g. "2025-01-06"), with no time of day and no zone: the stored DATE value. Same format as AnalyticsWeekRow.week_start, so the two are equal strings for the same week (PAC-42, API-055). Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
 	WeekStart openapi_types.Date `json:"week_start"`
 }
 
@@ -616,13 +648,13 @@ type AttendeeSuggestion struct {
 	Name  string              `json:"name"`
 }
 
-// AuditEntry storage.AuditEntry. One recorded action, always about the calling user's own calendar — the subject is the scoping predicate and is deliberately NOT echoed back as a field, because it is the same value on every entry of every response (see contracts/features/PAC-23.md §2, rejected alternative A).
+// AuditEntry storage.AuditEntry. One recorded action, always about the calling user's own calendar or, since PAC-67, one of the calling user's own provider connections (Outlook, Zoom, Google; the three connection kinds of `action`) — the subject is the scoping predicate and is deliberately NOT echoed back as a field, because it is the same value on every entry of every response (see contracts/features/PAC-23.md §2, rejected alternative A).
 type AuditEntry struct {
 	// Action What was recorded. Underscore-separated, lower-case; there is no dotted key convention on this endpoint and never was.
 	//
-	// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites.
+	// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above must return these writers as well. No test checks this enum against the writers today (none exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend stage ADDS one covering all ten (manifest CONTRACT-6).
 	//
-	// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and a writer added without one makes the contract test fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
+	// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and once the PAC-67 enum test exists a writer added without one makes it fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
 	//
 	// Because the body of the 200 is an array of this schema, a value outside this enum makes the WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added without a contract change, or one restored backup, and a validating consumer rejects six good rows along with the odd one. That is the intended alarm in a test and the wrong behaviour in a UI, so the expected handling is stated rather than left to each consumer: **render the row, substituting a placeholder such as `unknown` for the unrecognised value, rather than discarding the response.**
 	//
@@ -634,7 +666,7 @@ type AuditEntry struct {
 
 	// Details Scanned from the DB into a Go `string`, so on the wire this is ALWAYS a JSON string — even when the text inside it happens to be JSON. A generator should emit `string`, and that is correct and complete for the transport.
 	//
-	// Whether the text inside parses as JSON depends on which `action` produced it, so the useful statement is per-writer rather than a blanket warning. ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a map with `encoding/json` (`FocusTimeEngine.RunForUser` in backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in backend/engine/focus_time_cleaner.go); `nlp_parsed` uses `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`, backend/nlp/parser.go). NOT GUARANTEED: `meeting_scheduled`, `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by concatenating values into a JSON literal with no escaping (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go, `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go, `CompressionEngine.Apply` in backend/engine/compression.go, `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites are cited by enclosing function, not line, for the reason given in the operation description; `grep -rn 'WriteAuditLog(' --include='*.go' backend/` shows all seven argument expressions on one line each.
+	// Whether the text inside parses as JSON depends on which `action` produced it, so the useful statement is per-writer rather than a blanket warning. ALWAYS VALID JSON: `focus_created` and `focus_cleared` marshal a map with `encoding/json` (`FocusTimeEngine.RunForUser` in backend/engine/focus_time.go, `FocusTimeEngine.ClearWeek` in backend/engine/focus_time_cleaner.go); `nlp_parsed` uses `fmt.Sprintf` with `%q`, which escapes (`NLPService.Parse`, backend/nlp/parser.go); and the three PAC-67 connection kinds, which marshal a struct with `encoding/json` and hold only server-chosen values: `connection_lost` is `{"provider":"outlook"|"zoom"|"google"}`, `provider_disconnected` is `{"provider":"outlook"|"zoom","revocation": "confirmed"|"unconfirmed"|"not_offered"}` (the `revocation` vocabulary of `ProviderDisconnectResult`), and `revocation_unconfirmed` is `{"provider":"zoom"}`. No token material and no actor-supplied text ever appears in them. NOT GUARANTEED: `meeting_scheduled`, `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by concatenating values into a JSON literal with no escaping (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go, `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go, `CompressionEngine.Apply` in backend/engine/compression.go, `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites are cited by enclosing function, not line, for the reason given in the operation description; `grep -rn 'WriteAuditLog(' --include='*.go' backend/` shows all seven argument expressions on one line each.
 	//
 	// The interpolated value differs by site and so does the severity. In `SmartScheduler.CreateMeeting` and `scheduleHandlers.createMeeting` it is a meeting title from the request body, so a title containing `"`, `\` or a newline yields malformed JSON. In `CompressionEngine.Apply` there is no title: the values are a client-supplied `event_id`, copied unvalidated from the request body (`scheduleHandlers.applyCompress`, backend/api/handlers_schedule.go:80-93 — the timestamps are parsed, the id is not touched), and an RFC3339 timestamp — so a caller can write JSON STRUCTURE, not merely a stray quote, into its own row. In `nlpHandlers.confirm` the value is a Google-issued event id, which in practice contains no JSON metacharacter; the construction is the same defect, the input simply is not attacker-controlled.
 	//
@@ -647,9 +679,9 @@ type AuditEntry struct {
 
 // AuditEntryAction What was recorded. Underscore-separated, lower-case; there is no dotted key convention on this endpoint and never was.
 //
-// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites.
+// This is the complete set the server can emit, enumerated from every `storage.WriteAuditLog` call site in `backend/` (the action argument is a string literal at all seven, and `storage.WriteAuditLog`, in backend/storage/focus_blocks.go, holds the only INSERT against the table): `focus_created` (`FocusTimeEngine.RunForUser`, backend/engine/focus_time.go), `focus_cleared` (`FocusTimeEngine.ClearWeek`, backend/engine/focus_time_cleaner.go), `meeting_scheduled` (`SmartScheduler.CreateMeeting`, backend/engine/smart_schedule.go), `meeting_moved` (`CompressionEngine.Apply`, backend/engine/compression.go), `meeting_created` (`scheduleHandlers.createMeeting`, backend/api/handlers_schedule.go), `nlp_parsed` (`NLPService.Parse`, backend/nlp/parser.go), `nlp_confirmed` (`nlpHandlers.confirm`, backend/api/handlers_nlp.go). Cited by enclosing function rather than line because this text is emitted into generated files in both repos; the falsifying command is `grep -rn 'WriteAuditLog(' --include='*.go' backend/ | grep -v _test.go`, which returns the definition and exactly these seven call sites. PAC-67 adds three kinds, none of which redefines the seven above: they are written by the credential lifecycle, not by a scheduling feature, and their writers are named by the PAC-67 plan: `connection_lost` (the provider permanently refused renewing the subject's credential; one per loss, see the operation description), `provider_disconnected` (the subject disconnected Outlook or Zoom), and `revocation_unconfirmed` (a revocation sent to the provider on that disconnect was not confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above must return these writers as well. No test checks this enum against the writers today (none exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend stage ADDS one covering all ten (manifest CONTRACT-6).
 //
-// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and a writer added without one makes the contract test fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
+// The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the set is held by this contract rather than by the database: adding an eighth action is a contract change, and once the PAC-67 enum test exists a writer added without one makes it fail, which is the intended alarm. Spec AC-14 requires that this set never shrinks.
 //
 // Because the body of the 200 is an array of this schema, a value outside this enum makes the WHOLE response non-conforming, not just the one row — one operator `INSERT`, one writer added without a contract change, or one restored backup, and a validating consumer rejects six good rows along with the odd one. That is the intended alarm in a test and the wrong behaviour in a UI, so the expected handling is stated rather than left to each consumer: **render the row, substituting a placeholder such as `unknown` for the unrecognised value, rather than discarding the response.**
 //
@@ -661,6 +693,9 @@ type AuditEntryAction string
 // AuthStatusResponse Assembled from map[string]interface{} literals in authHandlers.status —
 // all three keys are always emitted (no omitempty).
 type AuthStatusResponse struct {
+	// Connected Whether the caller's calendar connection for `provider` is usable
+	// (PAC-67): stored, and not recorded as lost after a permanent
+	// refusal of its renewal. See `getAuthStatus`.
 	Connected bool `json:"connected"`
 
 	// Email For outlook/webcal this is the caller's own settings.calendar_email
@@ -684,11 +719,19 @@ type AuthStatusResponse struct {
 // Google was configured.
 type AuthStatusResponseProvider string
 
-// BookingError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// BookingError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type BookingError struct {
 	// Error Human-readable, server-chosen message. Never the text of a Go, driver or provider error (PAC-21): those go to the server log and Sentry only.
 	Error string `json:"error"`
 }
+
+// BookingRateLimitError The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingRateLimitError struct {
+	Error BookingRateLimitErrorError `json:"error"`
+}
+
+// BookingRateLimitErrorError defines model for BookingRateLimitError.Error.
+type BookingRateLimitErrorError string
 
 // Cadence 1:1 cadence. "none" disables gap detection for that member.
 type Cadence string
@@ -859,30 +902,34 @@ type CompressionResult struct {
 
 // ConferenceMeetingDetails backend/conference/provider.go Details. camelCase json tags, unlike every other response in this domain.
 type ConferenceMeetingDetails struct {
+	// JoinUrl Always present (no omitempty). The join URL for zoom and teams. For meet it is the EMPTY STRING: `MeetProvider` creates nothing (a Meet link is minted by Google Calendar on event creation), so the standalone create with a `meet` conferencing provider answers `{"provider":"meet","joinUrl":""}`. Because of that the earlier `format: uri` was not true of every response and is removed (U-12, factory section 7.2).
 	JoinUrl string `json:"joinUrl"`
 
-	// MeetingId Omitted when empty.
+	// MeetingId Omitted when empty (always omitted for meet).
 	MeetingId *string `json:"meetingId,omitempty"`
 
 	// Password Omitted when empty.
 	Password *string `json:"password,omitempty"`
 
-	// Provider Provider-supplied label.
-	Provider string `json:"provider"`
+	// Provider A literal set by the concrete provider (U-12, resolved by PAC-67 from backend/conference: `MeetProvider.CreateMeeting` writes "meet", `ZoomProvider.CreateMeeting` "zoom", `TeamsProvider.CreateMeeting` "teams"; `grep -n 'Provider:' backend/conference/*.go` shows the three). Note "meet", not "google_meet": this is not the `ConferenceProviderStatus.provider` vocabulary.
+	Provider ConferenceMeetingDetailsProvider `json:"provider"`
 }
+
+// ConferenceMeetingDetailsProvider A literal set by the concrete provider (U-12, resolved by PAC-67 from backend/conference: `MeetProvider.CreateMeeting` writes "meet", `ZoomProvider.CreateMeeting` "zoom", `TeamsProvider.CreateMeeting` "teams"; `grep -n 'Provider:' backend/conference/*.go` shows the three). Note "meet", not "google_meet": this is not the `ConferenceProviderStatus.provider` vocabulary.
+type ConferenceMeetingDetailsProvider string
 
 // ConferenceProviderStatus backend/api/handlers_conferencing.go conferenceProviderStatus.
 type ConferenceProviderStatus struct {
 	// AutoWith "google" for google_meet, "outlook" for teams. Omitted for zoom and custom.
 	AutoWith *ConferenceProviderStatusAutoWith `json:"auto_with,omitempty"`
 
-	// Connected Always present. `custom` is hardcoded to true.
+	// Connected Always present. `custom` is hardcoded to true. Since PAC-67 the other rows mean USABLE (see `listConferenceProviders`), with these predicates over the caller's own credentials: `google_meet`, a Google token row is stored AND no loss of it is recorded; `zoom`, a stored Zoom credential decodes AND holds a refresh token AND no loss of it is recorded; `teams`, a stored Microsoft credential decodes AND holds a refresh token AND no loss of it is recorded, the same predicate as `getAuthStatus` for an Outlook calendar provider. Before PAC-67 `zoom` was true for any non-blank stored value (including one that does not decode) and `teams` for any stored Microsoft credential, with or without a refresh token, which could report a credential that can never be renewed as connected (contract challenge finding 5).
 	Connected bool `json:"connected"`
 
 	// Email Set only for google_meet (the configured calendar email); omitted when empty.
 	Email *string `json:"email,omitempty"`
 
-	// Enabled json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only ever appears as `true`, and only for teams. Absence must be read as false.
+	// Enabled json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key only ever appears as `true`, and only for teams. Absence must be read as false. Since PAC-67 it follows teams' `connected` exactly (same predicate): a lost, disconnected or never-renewable (no refresh token) Microsoft credential omits it, so no field of the row reports Teams usable (spec PAC-67 section 4 preamble).
 	Enabled  *bool                            `json:"enabled,omitempty"`
 	Provider ConferenceProviderStatusProvider `json:"provider"`
 }
@@ -893,13 +940,16 @@ type ConferenceProviderStatusAutoWith string
 // ConferenceProviderStatusProvider defines model for ConferenceProviderStatus.Provider.
 type ConferenceProviderStatusProvider string
 
-// CreateConferenceRequest POST /api/conference/create. No handler-side validation; every field silently defaults to the Go zero value when absent.
+// CreateConferenceRequest POST /api/conference/create. Since PAC-67 (API-052) all three fields are required and validated before any provider is called; a body that fails is the 400 "invalid body". Before PAC-67 every field silently defaulted to the Go zero value when absent and was forwarded to the provider.
 type CreateConferenceRequest struct {
-	End *time.Time `json:"end,omitempty"`
+	// End Must be strictly after `start`.
+	End time.Time `json:"end"`
 
-	// Start Decoded into time.Time. Absent means the zero time, which is forwarded to the provider.
-	Start *time.Time `json:"start,omitempty"`
-	Title *string    `json:"title,omitempty"`
+	// Start `0001-01-01T00:00:00Z` (Go's zero time) is refused with the 400 "invalid body", like an absent `start`: the server cannot tell the two apart.
+	Start time.Time `json:"start"`
+
+	// Title Must contain at least one character that is not whitespace in the ECMA-262 `\s` sense. `pattern` states exactly the test the server applies (see `createConferenceLink`), so a blank title such as "   " cannot be expressed by a client that validates against this schema.
+	Title string `json:"title"`
 }
 
 // CreatePublicBookingRequest Anonymous request body of POST /api/book/{slug}. `name`, `email` and `start` are required by the handler; `end`, `duration` and `duration_minutes` are three overlapping ways to express the length.
@@ -1437,22 +1487,22 @@ type InviteSchedulingLinkHostRequest struct {
 	Email openapi_types.Email `json:"email"`
 }
 
-// LLMDestinationRefusal PAC-66. Body of the 422 from POST /api/llm/test: the probe would have sent the deployment's cloud credential to a destination the operator has not approved, so no inference request was sent. A superset of `SchedulingErrorResponse` (`error` is the same member, so a client that reads only `error`, as the web settings page does, renders it unchanged). Never carries a token, a key or any part of the deployment credential (spec AC-11).
+// LLMDestinationRefusal PAC-66 and PAC-66-B. Body of the 422 from POST /api/llm/test: the probe would have sent the deployment's cloud credential, the caller's own key, or a keyless Ollama request to a destination not approved for that provider, so no inference request was sent. A superset of `SchedulingErrorResponse` (`error` is the same member, so a client that reads only `error`, as the web settings page does, renders it unchanged). Never carries a token, a key or any part of the deployment credential (spec AC-11).
 type LLMDestinationRefusal struct {
 	// Error A human-readable sentence saying what was refused and why.
 	Error string `json:"error"`
 
-	// Property The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region.
+	// Property The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region. PAC-66-B: `llmBaseUrl` on `openai` and `anthropic`, and on `ollama` when the effective destination came from it (`ollamaBaseUrl` empty); `ollamaBaseUrl` on `ollama` otherwise, including when both are empty and the built-in `http://localhost:11434` was refused, since that is the setting the user would save an approved origin in.
 	Property *LLMDestinationRefusalProperty `json:"property,omitempty"`
 
-	// Reason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
+	// Reason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. PAC-66-B: `ollama` with no origin in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (spec AC-B8). Never given for `openai` or `anthropic`, whose public hosts are always approved. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). PAC-66-B: the effective destination of `openai`, `anthropic` or `ollama` is not approved for that provider. This includes a base URL carrying a path, a query, a fragment, userinfo or whitespace; an `http` scheme or a non-default port on `openai` / `anthropic`; a scheme, host or port differing from an approved Ollama origin; a destination approved only for a different provider; and Ollama's built-in default `http://localhost:11434` when it is not approved (spec AC-B1, AC-B2, AC-B6, AC-B9, AC-B10, AC-B11, AC-B18, AC-B19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
 	Reason LLMDestinationRefusalReason `json:"reason"`
 }
 
-// LLMDestinationRefusalProperty The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region.
+// LLMDestinationRefusalProperty The stored setting the refused destination was built from. Present whenever `reason` is not `provider_not_enabled`. `awsProfile` only when the Bedrock host came from that profile's endpoint configuration rather than from the region. PAC-66-B: `llmBaseUrl` on `openai` and `anthropic`, and on `ollama` when the effective destination came from it (`ollamaBaseUrl` empty); `ollamaBaseUrl` on `ollama` otherwise, including when both are empty and the built-in `http://localhost:11434` was refused, since that is the setting the user would save an approved origin in.
 type LLMDestinationRefusalProperty string
 
-// LLMDestinationRefusalReason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
+// LLMDestinationRefusalReason `provider_not_enabled`: the operator approved no host for this provider (spec AC-4, AC-18 b). It wins over the other two: when nothing is approved for the provider, this is the reason whatever is stored. PAC-66-B: `ollama` with no origin in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (spec AC-B8). Never given for `openai` or `anthropic`, whose public hosts are always approved. `destination_not_approved`: the effective host, over `https` on the default port, is not approved for this provider. This includes an `http` endpoint, an explicit non-443 port, a host approved only for a DIFFERENT provider, and an empty Vertex location or Bedrock region whose built-in default region's host is not approved (spec AC-1, AC-2, AC-7, AC-16, AC-18 a/c, AC-19). PAC-66-B: the effective destination of `openai`, `anthropic` or `ollama` is not approved for that provider. This includes a base URL carrying a path, a query, a fragment, userinfo or whitespace; an `http` scheme or a non-default port on `openai` / `anthropic`; a scheme, host or port differing from an approved Ollama origin; a destination approved only for a different provider; and Ollama's built-in default `http://localhost:11434` when it is not approved (spec AC-B1, AC-B2, AC-B6, AC-B9, AC-B10, AC-B11, AC-B18, AC-B19). `destination_not_set`: the destination cannot be built because the stored value is empty and the provider has no default; today only an empty `azureEndpoint` (spec AC-20).
 type LLMDestinationRefusalReason string
 
 // LLMTestRequest Optional body for POST /api/llm/test. Added by PAC-24 to close API-037.
@@ -1461,17 +1511,17 @@ type LLMDestinationRefusalReason string
 // This is deliberately NOT `SettingsUpdate`. Sharing that schema would re-admit every endpoint property by inheritance, which is precisely the defect this shape exists to prevent, and would make a probe read like a write. The three property names match the corresponding SettingsUpdate ones so a client can build this from the document it already holds.
 // `llmApiKey` here is `writeOnly` for the same reason it is on SettingsUpdate: it is accepted and is never echoed, including in the 400 and 502 bodies (spec AC-14). Nothing submitted here is persisted.
 type LLMTestRequest struct {
-	// LlmApiKey An unsaved key to probe. Used only as the `Authorization` header value sent to the caller's stored endpoint (`backend/nlp/parser.go:43`). Ignored by the four branches that take no key. Never persisted and never echoed (spec AC-14).
+	// LlmApiKey An unsaved key to probe. Used only as the `Authorization` header value (`openai`) or the `x-api-key` header value (`anthropic`) (`backend/nlp/parser.go:45,80`), sent only to a destination approved for that provider (PAC-66-B). Ignored by the four branches that take no key. Never persisted and never echoed (spec AC-14).
 	LlmApiKey *string `json:"llmApiKey,omitempty"`
 
 	// LlmModel Consulted only by the `openai` and `anthropic` branches (`backend/nlp/llm_factory.go:25,34`), where it is a field of the JSON request body. It never appears in a URL. `bedrockModel`, `azureDeployment` and `vertexModel` - which DO appear in URLs - are not accepted here.
 	LlmModel *string `json:"llmModel,omitempty"`
 
-	// LlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). Nothing submitted here is stored.
+	// LlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on `ollama` it is the stored `ollamaBaseUrl`, then `llmBaseUrl`, then `http://localhost:11434`; on the other three it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). PAC-66-B: the same holds on `openai`, `anthropic` and `ollama`, so naming `openai` for one probe while the stored `llmBaseUrl` is approved only for Ollama is a 422 and sends no key (spec AC-B11). Nothing submitted here is stored.
 	LlmProvider *LLMTestRequestLlmProvider `json:"llmProvider,omitempty"`
 }
 
-// LLMTestRequestLlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on the other four it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). Nothing submitted here is stored.
+// LLMTestRequestLlmProvider Which provider branch of `nlp.NewLLMClientFromSettings` to probe. Selects the client; it does not select a host. On `openai` and `anthropic` the host is the caller's stored `llmBaseUrl` (or the vendor default when that is empty); on `ollama` it is the stored `ollamaBaseUrl`, then `llmBaseUrl`, then `http://localhost:11434`; on the other three it is built entirely from the caller's stored endpoint properties. Spec AC-15. PAC-66: on `azure_openai`, `vertex` and `bedrock` the operator's approved-host check follows THIS value when present, not the stored provider, so naming an ambient provider here for one probe is checked exactly as if it were saved (spec AC-18; a 422 when refused). PAC-66-B: the same holds on `openai`, `anthropic` and `ollama`, so naming `openai` for one probe while the stored `llmBaseUrl` is approved only for Ollama is a 422 and sends no key (spec AC-B11). Nothing submitted here is stored.
 type LLMTestRequestLlmProvider string
 
 // LLMTestResult Literal map: `{"ok": true, "response": ..., "provider": ...}`.
@@ -1886,6 +1936,58 @@ type PrefillUrlResponse struct {
 	PrefillUrl string `json:"prefill_url"`
 }
 
+// ProviderDisconnectResult Body of the 200 of `disconnectMicrosoft` and `disconnectZoom` (PAC-67,
+// spec AC-13 to AC-17, D-2). Says which provider was disconnected and
+// what became of the grant at the provider. The local credential is gone
+// whatever `revocation` says: a revocation that could not be confirmed
+// never blocks local removal (spec D-2). Carries no token material.
+type ProviderDisconnectResult struct {
+	// Provider `outlook` from `disconnectMicrosoft`, `zoom` from `disconnectZoom`.
+	Provider ProviderDisconnectResultProvider `json:"provider"`
+
+	// Revocation - `confirmed`: the provider answered success to the revocation
+	//   request (Zoom only).
+	// - `unconfirmed`: a credential was removed and its revocation is
+	//   not confirmed (Zoom only): either a revocation was attempted and
+	//   the provider refused it, answered an error, or could not be
+	//   reached; or no revocation could be attempted, because the stored
+	//   credential does not decode or its expired access token could not
+	//   be renewed (see `disconnectZoom`). The client must tell the user
+	//   that revocation at the provider could not be confirmed (spec
+	//   AC-15, D-2) and must not show a plain success.
+	// - `not_offered`: the provider offers no revocation of this one
+	//   grant that Paceday may call, so none was attempted (Outlook
+	//   always, spec AC-17, D-5). The client tells the user the grant
+	//   can be removed from their account at the provider.
+	// - `nothing_stored`: the caller held no credential for this
+	//   provider; nothing was removed or sent, and no activity entry
+	//   was written.
+	Revocation ProviderDisconnectResultRevocation `json:"revocation"`
+}
+
+// ProviderDisconnectResultProvider `outlook` from `disconnectMicrosoft`, `zoom` from `disconnectZoom`.
+type ProviderDisconnectResultProvider string
+
+// ProviderDisconnectResultRevocation - `confirmed`: the provider answered success to the revocation
+//
+//		request (Zoom only).
+//	  - `unconfirmed`: a credential was removed and its revocation is
+//	    not confirmed (Zoom only): either a revocation was attempted and
+//	    the provider refused it, answered an error, or could not be
+//	    reached; or no revocation could be attempted, because the stored
+//	    credential does not decode or its expired access token could not
+//	    be renewed (see `disconnectZoom`). The client must tell the user
+//	    that revocation at the provider could not be confirmed (spec
+//	    AC-15, D-2) and must not show a plain success.
+//	  - `not_offered`: the provider offers no revocation of this one
+//	    grant that Paceday may call, so none was attempted (Outlook
+//	    always, spec AC-17, D-5). The client tells the user the grant
+//	    can be removed from their account at the provider.
+//	  - `nothing_stored`: the caller held no credential for this
+//	    provider; nothing was removed or sent, and no activity entry
+//	    was written.
+type ProviderDisconnectResultRevocation string
+
 // PublicBookingConfirmation backend/api/handlers_booking.go bookingConfirmationDTO, returned by POST /api/book/{slug} with 201.
 type PublicBookingConfirmation struct {
 	BookerEmail string `json:"booker_email"`
@@ -1928,7 +2030,7 @@ type PublicHost struct {
 	Name *string `json:"name,omitempty"`
 }
 
-// PublicLinkCoverage How many accepted hosts had a loadable calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those with a usable OAuth token. Always present, even as {0,0}.
+// PublicLinkCoverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the slots are computed without that host's calendar; a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 type PublicLinkCoverage struct {
 	Checked int `json:"checked"`
 	Total   int `json:"total"`
@@ -1936,7 +2038,7 @@ type PublicLinkCoverage struct {
 
 // PublicLinkInfo backend/api/handlers_booking.go publicLinkDTO.
 type PublicLinkInfo struct {
-	// Coverage How many accepted hosts had a loadable calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those with a usable OAuth token. Always present, even as {0,0}.
+	// Coverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the slots are computed without that host's calendar; a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 	Coverage PublicLinkCoverage `json:"coverage"`
 
 	// Durations Allowed meeting lengths in minutes, straight from the link's duration_options column.
@@ -2283,7 +2385,7 @@ type Settings struct {
 	// `readOnly`, so a client that submits back a document it just read may include it; it is accepted and ignored (spec AC-10). It is NOT the way to clear a key - send `llmApiKey: ""` for that.
 	LlmApiKeySet *bool `json:"llmApiKeySet,omitempty"`
 
-	// LlmBaseUrl Also the legacy fallback for the ollama base URL.
+	// LlmBaseUrl Base URL of the `openai` or `anthropic` destination; `""` means the vendor's public host (`https://api.openai.com`, `https://api.anthropic.com`). Also Ollama's fallback when `ollamaBaseUrl` is `""`. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and approved for at least one of `openai`, `anthropic`, `ollama` (400 otherwise); a request is sent to it only for a provider it is approved for (see `testLLMConnection`). The web app writes this property from its Ollama field. No `pattern`, for the reason given on `awsRegion`.
 	LlmBaseUrl string `json:"llmBaseUrl"`
 
 	// LlmModel Provider default applied at call time when empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic).
@@ -2302,7 +2404,7 @@ type Settings struct {
 	// LunchStart `HH:MM` or `""`. DB default `12:00`. Legacy global; overridden per-day by lunchBreaks. `""` here is the strongest case of the four: it is not merely tolerated but LOAD-BEARING. `LunchWindow` returns `enabled: false` precisely when `lunchStart` or `lunchEnd` is empty (`backend/storage/settings.go:141-142`), so `""` is how "this user has no protected lunch" is represented. Forbidding it in the schema would make an existing, meaningful state unrepresentable.
 	LunchStart string `json:"lunchStart"`
 
-	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`.
+	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`. Stored as `http://localhost:11434` on a new account (migration 002), so it is Ollama's destination until cleared. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and an origin approved in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (400 otherwise); the same check is made whenever an Ollama request would be sent. No `pattern`, for the reason given on `awsRegion`.
 	OllamaBaseUrl string `json:"ollamaBaseUrl"`
 
 	// OllamaModel Falls back to llmModel, then `llama3.2`.
@@ -2456,7 +2558,7 @@ type SettingsUpdate struct {
 	// `readOnly`, so a client that submits back a document it just read may include it; it is accepted and ignored (spec AC-10). It is NOT the way to clear a key - send `llmApiKey: ""` for that.
 	LlmApiKeySet *bool `json:"llmApiKeySet,omitempty"`
 
-	// LlmBaseUrl Also the legacy fallback for the ollama base URL.
+	// LlmBaseUrl Base URL of the `openai` or `anthropic` destination; `""` means the vendor's public host (`https://api.openai.com`, `https://api.anthropic.com`). Also Ollama's fallback when `ollamaBaseUrl` is `""`. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and approved for at least one of `openai`, `anthropic`, `ollama` (400 otherwise); a request is sent to it only for a provider it is approved for (see `testLLMConnection`). The web app writes this property from its Ollama field. No `pattern`, for the reason given on `awsRegion`.
 	LlmBaseUrl *string `json:"llmBaseUrl,omitempty"`
 
 	// LlmModel Provider default applied at call time when empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic).
@@ -2475,7 +2577,7 @@ type SettingsUpdate struct {
 	// LunchStart `HH:MM` or `""`. DB default `12:00`. Legacy global; overridden per-day by lunchBreaks. `""` here is the strongest case of the four: it is not merely tolerated but LOAD-BEARING. `LunchWindow` returns `enabled: false` precisely when `lunchStart` or `lunchEnd` is empty (`backend/storage/settings.go:141-142`), so `""` is how "this user has no protected lunch" is represented. Forbidding it in the schema would make an existing, meaningful state unrepresentable.
 	LunchStart *string `json:"lunchStart,omitempty"`
 
-	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`.
+	// OllamaBaseUrl Falls back to llmBaseUrl, then `http://localhost:11434`. Stored as `http://localhost:11434` on a new account (migration 002), so it is Ollama's destination until cleared. PAC-66-B: a write changing it to a non-empty value must be exactly `<scheme>://<host>[:<port>]` (at most one trailing `/`) and an origin approved in `PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA` (400 otherwise); the same check is made whenever an Ollama request would be sent. No `pattern`, for the reason given on `awsRegion`.
 	OllamaBaseUrl *string `json:"ollamaBaseUrl,omitempty"`
 
 	// OllamaModel Falls back to llmModel, then `llama3.2`.
@@ -2964,6 +3066,12 @@ type SchedulingLinkIdPath = openapi_types.UUID
 // TeamIdPath defines model for TeamIdPath.
 type TeamIdPath = openapi_types.UUID
 
+// BookingCreateRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingCreateRateLimited = BookingRateLimitError
+
+// BookingSlotsRateLimited The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
+type BookingSlotsRateLimited = BookingRateLimitError
+
 // CalendarNotConnected The JSON error envelope for "this user has no calendar connected". The message is a single fixed value so a client can branch on it.
 type CalendarNotConnected = CalendarNotConnectedError
 
@@ -3003,7 +3111,7 @@ type JsonUnauthorized = ErrorResponse
 // provider error; every 5xx in this document uses this envelope (PAC-21).
 type NotFound = ErrorResponse
 
-// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:206): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
+// SchedulingLinkValidationError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type SchedulingLinkValidationError = BookingError
 
 // ServerError The shared JSON error envelope, written by writeError()
@@ -5089,6 +5197,9 @@ type ServerInterface interface {
 	// Microsoft OAuth callback
 	// (GET /api/auth/microsoft/callback)
 	MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Request, params MicrosoftOAuthCallbackParams)
+	// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+	// (POST /api/auth/microsoft/disconnect)
+	DisconnectMicrosoft(w http.ResponseWriter, r *http.Request)
 	// Begin OIDC SSO login for a configured domain
 	// (GET /api/auth/sso/{domain})
 	StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams)
@@ -5122,7 +5233,7 @@ type ServerInterface interface {
 	// Conferencing providers this server can offer, and their connection state.
 	// (GET /api/conference/providers)
 	ListConferenceProviders(w http.ResponseWriter, r *http.Request)
-	// Clear the stored Zoom tokens.
+	// Disconnect the caller's Zoom credential and ask Zoom to revoke it.
 	// (POST /api/conference/zoom/disconnect)
 	DisconnectZoom(w http.ResponseWriter, r *http.Request)
 	// Delete a Google Calendar event
@@ -5308,7 +5419,7 @@ type ServerInterface interface {
 	// Deactivate a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
-	// Fetch one scheduling link by id.
+	// Fetch one scheduling link by id (owner or accepted co-host).
 	// (GET /api/scheduling-links/{id})
 	GetSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Partially update a scheduling link (owner only).
@@ -5377,7 +5488,7 @@ type ServerInterface interface {
 	// Create a 7-day team invite and email it. Owner only.
 	// (POST /api/teams/{id}/members/invite)
 	InviteTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath)
-	// Remove a member by user id. Owner, or the member themselves.
+	// Remove a member by user id. Owner, or the member themselves; never the last owner.
 	// (DELETE /api/teams/{id}/members/{userId})
 	RemoveTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath, userId openapi_types.UUID)
 	// All no-meeting zones for a team. Membership required.
@@ -5518,6 +5629,12 @@ func (_ Unimplemented) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+// (POST /api/auth/microsoft/disconnect)
+func (_ Unimplemented) DisconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Begin OIDC SSO login for a configured domain
 // (GET /api/auth/sso/{domain})
 func (_ Unimplemented) StartSsoLogin(w http.ResponseWriter, r *http.Request, domain string, params StartSsoLoginParams) {
@@ -5584,7 +5701,7 @@ func (_ Unimplemented) ListConferenceProviders(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Clear the stored Zoom tokens.
+// Disconnect the caller's Zoom credential and ask Zoom to revoke it.
 // (POST /api/conference/zoom/disconnect)
 func (_ Unimplemented) DisconnectZoom(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -5956,7 +6073,7 @@ func (_ Unimplemented) DeleteSchedulingLink(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Fetch one scheduling link by id.
+// Fetch one scheduling link by id (owner or accepted co-host).
 // (GET /api/scheduling-links/{id})
 func (_ Unimplemented) GetSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -6094,7 +6211,7 @@ func (_ Unimplemented) InviteTeamMember(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Remove a member by user id. Owner, or the member themselves.
+// Remove a member by user id. Owner, or the member themselves; never the last owner.
 // (DELETE /api/teams/{id}/members/{userId})
 func (_ Unimplemented) RemoveTeamMember(w http.ResponseWriter, r *http.Request, id TeamIdPath, userId openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -6781,6 +6898,28 @@ func (siw *ServerInterfaceWrapper) MicrosoftOAuthCallback(w http.ResponseWriter,
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.MicrosoftOAuthCallback(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DisconnectMicrosoft operation middleware
+func (siw *ServerInterfaceWrapper) DisconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DisconnectMicrosoft(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -10097,6 +10236,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/auth/microsoft/callback", wrapper.MicrosoftOAuthCallback)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/auth/microsoft/disconnect", wrapper.DisconnectMicrosoft)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/auth/sso/{domain}", wrapper.StartSsoLogin)
 	})
 	r.Group(func(r chi.Router) {
@@ -10401,6 +10543,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 
 	return r
+}
+
+type BookingCreateRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingCreateRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingCreateRateLimitedResponseHeaders
+}
+
+type BookingSlotsRateLimitedResponseHeaders struct {
+	RetryAfter int
+}
+type BookingSlotsRateLimitedJSONResponse struct {
+	Body BookingRateLimitError
+
+	Headers BookingSlotsRateLimitedResponseHeaders
 }
 
 type BookingUnauthorizedTextResponse string
@@ -10847,15 +11007,6 @@ type GetAnalyticsWeek401JSONResponse struct{ UnauthorizedJSONResponse }
 func (response GetAnalyticsWeek401JSONResponse) VisitGetAnalyticsWeekResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
-type GetAnalyticsWeek404JSONResponse ErrorResponse
-
-func (response GetAnalyticsWeek404JSONResponse) VisitGetAnalyticsWeekResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(404)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -11319,6 +11470,41 @@ func (response MicrosoftOAuthCallback503JSONResponse) VisitMicrosoftOAuthCallbac
 	return json.NewEncoder(w).Encode(response)
 }
 
+type DisconnectMicrosoftRequestObject struct {
+}
+
+type DisconnectMicrosoftResponseObject interface {
+	VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error
+}
+
+type DisconnectMicrosoft200JSONResponse ProviderDisconnectResult
+
+func (response DisconnectMicrosoft200JSONResponse) VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type DisconnectMicrosoft401TextResponse PlainTextError
+
+func (response DisconnectMicrosoft401TextResponse) VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type DisconnectMicrosoft500JSONResponse ErrorResponse
+
+func (response DisconnectMicrosoft500JSONResponse) VisitDisconnectMicrosoftResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type StartSsoLoginRequestObject struct {
 	Domain string `json:"domain"`
 	Params StartSsoLoginParams
@@ -11599,6 +11785,18 @@ func (response CreatePublicBooking422JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreatePublicBooking429JSONResponse struct {
+	BookingCreateRateLimitedJSONResponse
+}
+
+func (response CreatePublicBooking429JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type CreatePublicBooking500JSONResponse BookingError
 
 func (response CreatePublicBooking500JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
@@ -11651,6 +11849,18 @@ func (response GetPublicBookingSlots410JSONResponse) VisitGetPublicBookingSlotsR
 	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
+}
+
+type GetPublicBookingSlots429JSONResponse struct {
+	BookingSlotsRateLimitedJSONResponse
+}
+
+func (response GetPublicBookingSlots429JSONResponse) VisitGetPublicBookingSlotsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", fmt.Sprint(response.Headers.RetryAfter))
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetPublicBookingSlots500JSONResponse BookingError
@@ -11859,12 +12069,13 @@ type DisconnectZoomResponseObject interface {
 	VisitDisconnectZoomResponse(w http.ResponseWriter) error
 }
 
-type DisconnectZoom204Response struct {
-}
+type DisconnectZoom200JSONResponse ProviderDisconnectResult
 
-func (response DisconnectZoom204Response) VisitDisconnectZoomResponse(w http.ResponseWriter) error {
-	w.WriteHeader(204)
-	return nil
+func (response DisconnectZoom200JSONResponse) VisitDisconnectZoomResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DisconnectZoom401TextResponse string
@@ -15875,6 +16086,15 @@ func (response RemoveTeamMember403JSONResponse) VisitRemoveTeamMemberResponse(w 
 	return json.NewEncoder(w).Encode(response)
 }
 
+type RemoveTeamMember422JSONResponse ErrorResponse
+
+func (response RemoveTeamMember422JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type RemoveTeamMember500JSONResponse struct{ ServerErrorJSONResponse }
 
 func (response RemoveTeamMember500JSONResponse) VisitRemoveTeamMemberResponse(w http.ResponseWriter) error {
@@ -16152,6 +16372,9 @@ type StrictServerInterface interface {
 	// Microsoft OAuth callback
 	// (GET /api/auth/microsoft/callback)
 	MicrosoftOAuthCallback(ctx context.Context, request MicrosoftOAuthCallbackRequestObject) (MicrosoftOAuthCallbackResponseObject, error)
+	// Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+	// (POST /api/auth/microsoft/disconnect)
+	DisconnectMicrosoft(ctx context.Context, request DisconnectMicrosoftRequestObject) (DisconnectMicrosoftResponseObject, error)
 	// Begin OIDC SSO login for a configured domain
 	// (GET /api/auth/sso/{domain})
 	StartSsoLogin(ctx context.Context, request StartSsoLoginRequestObject) (StartSsoLoginResponseObject, error)
@@ -16185,7 +16408,7 @@ type StrictServerInterface interface {
 	// Conferencing providers this server can offer, and their connection state.
 	// (GET /api/conference/providers)
 	ListConferenceProviders(ctx context.Context, request ListConferenceProvidersRequestObject) (ListConferenceProvidersResponseObject, error)
-	// Clear the stored Zoom tokens.
+	// Disconnect the caller's Zoom credential and ask Zoom to revoke it.
 	// (POST /api/conference/zoom/disconnect)
 	DisconnectZoom(ctx context.Context, request DisconnectZoomRequestObject) (DisconnectZoomResponseObject, error)
 	// Delete a Google Calendar event
@@ -16371,7 +16594,7 @@ type StrictServerInterface interface {
 	// Deactivate a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(ctx context.Context, request DeleteSchedulingLinkRequestObject) (DeleteSchedulingLinkResponseObject, error)
-	// Fetch one scheduling link by id.
+	// Fetch one scheduling link by id (owner or accepted co-host).
 	// (GET /api/scheduling-links/{id})
 	GetSchedulingLink(ctx context.Context, request GetSchedulingLinkRequestObject) (GetSchedulingLinkResponseObject, error)
 	// Partially update a scheduling link (owner only).
@@ -16440,7 +16663,7 @@ type StrictServerInterface interface {
 	// Create a 7-day team invite and email it. Owner only.
 	// (POST /api/teams/{id}/members/invite)
 	InviteTeamMember(ctx context.Context, request InviteTeamMemberRequestObject) (InviteTeamMemberResponseObject, error)
-	// Remove a member by user id. Owner, or the member themselves.
+	// Remove a member by user id. Owner, or the member themselves; never the last owner.
 	// (DELETE /api/teams/{id}/members/{userId})
 	RemoveTeamMember(ctx context.Context, request RemoveTeamMemberRequestObject) (RemoveTeamMemberResponseObject, error)
 	// All no-meeting zones for a team. Membership required.
@@ -17000,6 +17223,30 @@ func (sh *strictHandler) MicrosoftOAuthCallback(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(MicrosoftOAuthCallbackResponseObject); ok {
 		if err := validResponse.VisitMicrosoftOAuthCallbackResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DisconnectMicrosoft operation middleware
+func (sh *strictHandler) DisconnectMicrosoft(w http.ResponseWriter, r *http.Request) {
+	var request DisconnectMicrosoftRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DisconnectMicrosoft(ctx, request.(DisconnectMicrosoftRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DisconnectMicrosoft")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DisconnectMicrosoftResponseObject); ok {
+		if err := validResponse.VisitDisconnectMicrosoftResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

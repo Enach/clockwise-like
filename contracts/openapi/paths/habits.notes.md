@@ -71,6 +71,11 @@ The headline finding is **absence, not disagreement**.
    `storage.AnalyticsWeek`, whose `WeekStart time.Time` marshals to RFC3339
    (`"2026-03-02T00:00:00Z"`). Same logical field, two types. Modelled as two distinct
    schemas: `AnalyticsWeekWithBreakdown` vs `AnalyticsWeekRow`.
+   **Resolved by PAC-42:** `week_start` is declared `type: string, format: date`
+   (`YYYY-MM-DD`, the stored `DATE`) on both `AnalyticsWeekWithBreakdown` and
+   `AnalyticsWeekRow`; the two reads return equal strings for the same week, never the
+   zero date. The schemas stay two (they differ only by `breakdown`; why not `allOf`:
+   `contracts/features/PAC-42.md` §6). Neither carries an RFC3339 `week_start` any more.
 
 7. **`breakdown` exists only on `/analytics/week`.** `/analytics/trends` cannot be used to
    render the same chart without the client recomputing percentages.
@@ -109,6 +114,11 @@ The headline finding is **absence, not disagreement**.
 
 15. **`habit_completion_rate` is a 0..1 fraction**, while `AnalyticsBreakdownEntry.percentage`
     is 0..100. Easy client-side bug.
+    **Resolved by PAC-42:** on both reads (`AnalyticsWeekWithBreakdown` and
+    `AnalyticsWeekRow`) `habit_completion_rate` is a percentage on 0..100 (unrounded,
+    `minimum: 0`, `maximum: 100`), the same scale as `focus_score` and the breakdown
+    `percentage`. Storage keeps the unscaled ratio; the ×100 happens on read only
+    (spec D-3, `contracts/features/PAC-42.md` §3).
 
 16. **`NotionPage` field/tag drift.** Go field `LastEditedAt`, json tag `last_edited_time`.
     The tag wins on the wire.
@@ -211,9 +221,19 @@ Marked inline in `habits.yaml`:
    `UpsertAnalyticsWeek`, whose `INSERT ... RETURNING` always yields a row or an error, so
    the `result == nil && err == nil` branch should not fire. Documented because the code
    path exists.
+   **Resolved by PAC-42:** determined unreachable (both the insert and the
+   `ON CONFLICT DO UPDATE` path return a row; observed on Postgres). The 404 and its
+   `x-uncertain` are removed from the contract; the build removes the branch, and any
+   kept guard answers the documented 500 `{"error":"internal error"}`, never 404. See
+   `contracts/features/PAC-42.md` §4.
 2. `/api/meetings/{event_id}/brief` → `400 "event_id required"` — believed unreachable,
    because chi never matches an empty `{event_id}` path segment. Same for the refresh route.
 3. `AnalyticsWeekWithBreakdown.buffer_minutes` — always `0`; the engine never sets it.
+   **Resolved by PAC-42:** the inline `x-uncertain` is removed; both
+   `AnalyticsWeekWithBreakdown.buffer_minutes` and `AnalyticsWeekRow.buffer_minutes` state
+   as fact that the value is always 0 for engine-computed weeks. The defect itself,
+   API-057, is still open (deferred, spec D-5 / OQ-8, pending owner confirmation), so
+   mismatch item 14 above remains true.
 
 Uncertainties not expressible as an inline `x-uncertain` on a single node:
 

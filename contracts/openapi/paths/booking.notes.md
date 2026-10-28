@@ -256,9 +256,10 @@ of the response is therefore not guaranteed to echo the request.
 
 Three, all narrow:
 
-1. **`GET /api/scheduling-links/{id}`** — missing ownership check. Documented as-is, but
-   flagged: it is inconsistent with every sibling route and may be a bug rather than a
-   deliberate public-by-UUID design.
+1. **`GET /api/scheduling-links/{id}`** — missing ownership check. *Resolved by PAC-25
+   (U-08, API-006)*: it was a bug. The read is now limited to the owner and accepted
+   co-hosts; everyone else gets the not-found answer, not `403` (see
+   `contracts/features/PAC-25.md`). The marker is removed from `booking.yaml`.
 2. **`ConferenceMeetingDetails.provider`** — the exact string set written by the concrete
    providers (`meet.go`, `zoom.go`, `teams.go`) was not verified, so no `enum` is asserted.
 3. **`SchedulingLink.window_start` / `window_end` format** — documented as `"HH:MM:SS"`

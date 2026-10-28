@@ -55,6 +55,8 @@ func (f *fakeBookingFlow) ConfirmBooking(_ context.Context, link *storage.Schedu
 
 func setupPublicBookingRoutes(t *testing.T, eng BookingFlow) *chi.Mux {
 	t.Helper()
+	// NEW-booking-rate-limit: every test shares one peer address.
+	resetBookingLimiters(t)
 	h := newBookingHandlersWithEngine(openTestDB(t), eng)
 	r := chi.NewRouter()
 	r.Get("/api/book/{slug}", h.getLinkInfo)

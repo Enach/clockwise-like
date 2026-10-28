@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -272,6 +273,16 @@ func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
 }
 
 func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {
+	dto, _ := buildSchedulingLinkDTO(db, link, viewer, includeHosts, false)
+	return dto
+}
+
+// buildSchedulingLinkDTO builds the wire record. With strict set, a failed
+// roster read (the host rows, or a host's user record) is returned as an error
+// instead of degrading to an emptied roster or a host without an email: the
+// single-link read answers 500 for it (PAC-25 C-2). Without strict, the error
+// is always nil and the roster degrades as it always has.
+func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts, strict bool) (schedulingLinkDTO, error) {
 	dto := schedulingLinkDTO{
 		ID: link.ID.String(), OwnerID: link.OwnerUserID.String(), Title: link.Title, Slug: link.Slug,
 		Durations: link.DurationOptions, Days: dayNames(link.DaysOfWeek), WindowStart: link.WindowStart,
@@ -284,12 +295,21 @@ func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.U
 		dto.UsageType = "reusable"
 	}
 	if includeHosts {
-		hosts, _ := storage.GetLinkHosts(db, link.ID)
+		hosts, err := storage.GetLinkHosts(db, link.ID)
+		if err != nil && strict {
+			return dto, err
+		}
 		dto.Hosts = make([]schedulingHostDTO, 0, len(hosts))
 		for _, host := range hosts {
 			h := schedulingHostDTO{UserID: host.UserID.String(), IsOwner: host.UserID == link.OwnerUserID, Status: host.Status}
-			if user, err := storage.GetUserByID(db, host.UserID); err == nil && user != nil {
+			user, err := storage.GetUserByID(db, host.UserID)
+			if err == nil && user != nil {
 				h.Email, h.Name, h.AvatarURL = user.Email, user.Name, user.AvatarURL
+			} else if strict {
+				if err == nil {
+					err = errors.New("host user record missing")
+				}
+				return dto, err
 			}
 			dto.Hosts = append(dto.Hosts, h)
 			if host.UserID == viewer {
@@ -300,7 +320,7 @@ func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.U
 	if dto.Hosts == nil {
 		dto.Hosts = []schedulingHostDTO{}
 	}
-	return dto
+	return dto, nil
 }
 
 func (h *schedulingLinkHandlers) writeLink(w http.ResponseWriter, link *storage.SchedulingLink, viewer uuid.UUID) {
@@ -403,7 +423,28 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.writeLink(w, link, userIDFromCtx(r.Context()))
+	// Readable only by the owner and accepted co-hosts, the callers who see
+	// the link in their own list. Everyone else gets the unknown-id answer, so
+	// the response does not reveal that the link exists (PAC-25 D-1, D-2).
+	userID := userIDFromCtx(r.Context())
+	if link.OwnerUserID != userID {
+		status, found, err := storage.GetLinkHostStatus(h.db, link.ID, userID)
+		if err != nil {
+			writeServerError(w, r, "getLink host status", err, http.StatusInternalServerError)
+			return
+		}
+		if !found || status != "accepted" {
+			writeError(w, "not found", http.StatusNotFound)
+			return
+		}
+	}
+	dto, err := buildSchedulingLinkDTO(h.db, link, userID, true, true)
+	if err != nil {
+		writeServerError(w, r, "getLink roster", err, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(dto)
 }
 
 // PATCH /api/scheduling-links/{id}

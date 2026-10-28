@@ -56,6 +56,13 @@ func main() {
 		log.Printf("WARNING: %s", n)
 	}
 	nlp.SetApprovedHosts(llmHosts)
+	// PAC-66-B: approved destinations of openai, anthropic (beside their
+	// built-in public hosts) and ollama (none means not enabled). Never fatal.
+	llmUserDest, llmUserNotices := config.DecideLLMUserDestinations(os.Getenv)
+	for _, n := range llmUserNotices {
+		log.Printf("WARNING: %s", n)
+	}
+	nlp.SetUserDestinations(llmUserDest)
 
 	// Cookie Secure attribute (PAC-20). Never fatal; anything but an explicit
 	// PACEDAY_INSECURE_COOKIES=true keeps every cookie Secure (fail closed).
@@ -64,6 +71,15 @@ func main() {
 		log.Printf("WARNING: %s", cookieNotice)
 	}
 	api.SetSecureCookies(secureCookies)
+
+	// Public booking rate limits (NEW-booking-rate-limit). Never fatal; the
+	// counts can be raised only in test mode (the e2e stack), never lowered
+	// or changed in production.
+	bookLimit, slotsLimit, limitNotices := config.DecideBookingRateLimits(os.Getenv)
+	for _, n := range limitNotices {
+		log.Printf("WARNING: %s", n)
+	}
+	api.SetPublicBookingLimits(bookLimit, slotsLimit)
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {

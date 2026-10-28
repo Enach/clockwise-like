@@ -8,16 +8,40 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
-const graphBase = "https://graph.microsoft.com/v1.0"
+// bearer returns the access token to send: the source's when there is one
+// (renewing it if it expired), else the fixed one.
+func bearer(src oauth2.TokenSource, fixed string) (string, error) {
+	if src == nil {
+		return fixed, nil
+	}
+	tok, err := src.Token()
+	if err != nil {
+		return "", err
+	}
+	return tok.AccessToken, nil
+}
+
+// GraphBase is Microsoft Graph's root. A variable so tests can point it at a
+// stand-in; production never changes it.
+var GraphBase = "https://graph.microsoft.com/v1.0"
 
 // TeamsProvider creates Microsoft Teams online meetings via Microsoft Graph.
+// Tokens, when set, supplies the access token (PAC-67: the caller's renewing
+// Outlook credential); otherwise AccessToken is used as is.
 type TeamsProvider struct {
 	AccessToken string
+	Tokens      oauth2.TokenSource
 }
 
 func (t *TeamsProvider) CreateMeeting(ctx context.Context, title string, start, end time.Time) (*Details, error) {
+	accessToken, err := bearer(t.Tokens, t.AccessToken)
+	if err != nil {
+		return nil, err
+	}
 	payload := map[string]interface{}{
 		"subject":       title,
 		"startDateTime": start.UTC().Format(time.RFC3339),
@@ -25,11 +49,11 @@ func (t *TeamsProvider) CreateMeeting(ctx context.Context, title string, start, 
 	}
 	data, _ := json.Marshal(payload)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graphBase+"/me/onlineMeetings", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, GraphBase+"/me/onlineMeetings", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+t.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
