@@ -447,8 +447,13 @@ const (
 
 // Defines values for SsoStepupProvider.
 const (
-	SsoStepupProviderGoogle    SsoStepupProvider = "google"
-	SsoStepupProviderMicrosoft SsoStepupProvider = "microsoft"
+	Google    SsoStepupProvider = "google"
+	Microsoft SsoStepupProvider = "microsoft"
+)
+
+// Defines values for SsoWriteDomainMismatchError.
+const (
+	ProviderDomainMismatch SsoWriteDomainMismatchError = "provider_domain_mismatch"
 )
 
 // Defines values for SsoWriteFreshLoginRequiredError.
@@ -470,6 +475,11 @@ const (
 // Defines values for SsoWriteStepupRequiredStepupUrl.
 const (
 	Apiadminssostepup SsoWriteStepupRequiredStepupUrl = "/api/admin/sso/stepup"
+)
+
+// Defines values for SsoWriteStepupRequiredWithoutStepup.
+const (
+	SsoConfigurationWrites SsoWriteStepupRequiredWithoutStepup = "sso_configuration_writes"
 )
 
 // Defines values for TeamInviteStatus.
@@ -2723,9 +2733,9 @@ type SsoDetectResponseType string
 // changed by PAC-50).
 type SsoProviderCreateRequest struct {
 	// Domain Must equal the caller's org domain, exact and case-insensitive,
-	// else 400 `provider_domain_mismatch`; a subdomain does not match,
-	// and surrounding whitespace is not trimmed (`" acme.com "` is a
-	// 400). Stored lower-cased.
+	// else 403 `provider_domain_mismatch`; a subdomain or a foreign
+	// domain does not match, and surrounding whitespace is not trimmed
+	// (`" acme.com "` is a 403). Stored lower-cased.
 	Domain           string  `json:"domain"`
 	OidcClientId     *string `json:"oidc_client_id,omitempty"`
 	OidcClientSecret *string `json:"oidc_client_secret,omitempty"`
@@ -2757,7 +2767,7 @@ type SsoProviderCreateRequestProviderType string
 type SsoProviderResponse struct {
 	CreatedAt time.Time `json:"CreatedAt"`
 
-	// Domain Lower-case for every row written since PAC-50; migration 028 (`028_sso_admin_stepup`) lower-cases existing rows.
+	// Domain Lower-case for every row written since PAC-50; migration 029 (`029_sso_admin_stepup`) lower-cases existing rows.
 	Domain string `json:"Domain"`
 
 	// Enabled Always true when written through this API (API-066).
@@ -2782,9 +2792,23 @@ type SsoProviderResponseProviderType string
 // SsoStepupProvider Identity provider an SSO admin step-up runs against (PAC-50).
 type SsoStepupProvider string
 
+// SsoWriteDomainMismatch The provider domain (create body `domain`, or the DELETE `{domain}`
+// segment) is not exactly the caller's org domain, compared
+// case-insensitively and untrimmed: a subdomain (`sub.acme.com`), a
+// foreign domain (`other.com`) or a padded value (`" acme.com "`).
+// A 403 by owner decision (2026-10-27, RFC 9110 §15.5.4), not a 400.
+// Checked after membership and body shape, before authorization:
+// nothing is written and a live step-up grant is not consumed.
+type SsoWriteDomainMismatch struct {
+	Error SsoWriteDomainMismatchError `json:"error"`
+}
+
+// SsoWriteDomainMismatchError defines model for SsoWriteDomainMismatch.Error.
+type SsoWriteDomainMismatchError string
+
 // SsoWriteForbiddenResponse The 403 of createSsoProvider and deleteSsoProvider (PAC-50). Exactly
 // one variant applies, told apart by `error`; `stepup_url` is present
-// on, and only on, `sso_write_requires_admin_stepup`. All three keep the
+// on, and only on, `sso_write_requires_admin_stepup`. All four keep the
 // shared `{error}` envelope, so a client that reads only `error` still
 // shows a specific message (the web client renders a 403 without
 // `error` as a generic "no permission" text).
@@ -2813,12 +2837,32 @@ type SsoWriteMembershipRequired struct {
 type SsoWriteMembershipRequiredError string
 
 // SsoWriteStepupRequired An org member with no live step-up grant for (caller, caller's org)
-// who is not a break-glass admin. The client asks the user which
-// provider administers their organisation, appends
-// `?provider=google` or `?provider=microsoft` to `stepup_url` and
-// navigates the browser there.
+// who is not a break-glass admin. The step-up is optional (owner
+// decision 2026-10-27, PAC-68 OQ-2 / PAC-50 OQ-2): before navigating
+// anywhere, the client explains `without_stepup` and `stepup_scopes`
+// and lets the user decline, in which case nothing is navigated and the
+// app keeps working. If the user goes ahead, the client asks which
+// provider administers their organisation, appends `?provider=google`
+// or `?provider=microsoft` to `stepup_url` and navigates the browser
+// there.
 type SsoWriteStepupRequired struct {
 	Error SsoWriteStepupRequiredError `json:"error"`
+
+	// StepupScopes The scopes the step-up requests from each provider on top of the
+	// identity scopes (`openid`, `email`, `profile`, and Microsoft's
+	// `User.Read`, which sign-in already requests). Requested only by
+	// startSsoAdminStepup, never at sign-in; the tokens are discarded
+	// after the check. Google: the read-only Directory user scope
+	// (`https://www.googleapis.com/auth/admin.directory.user.readonly`).
+	// Microsoft: organisation and directory-role read scopes
+	// (`Organization.Read.All`, `RoleManagement.Read.Directory`, which a
+	// tenant administrator may have to consent to). Each list is exactly
+	// what startSsoAdminStepup requests beyond those, so a client shows
+	// it as given.
+	StepupScopes struct {
+		Google    []string `json:"google"`
+		Microsoft []string `json:"microsoft"`
+	} `json:"stepup_scopes"`
 
 	// StepupUrl Path of startSsoAdminStepup on the API's origin, without the
 	// `provider` parameter (spec §4.3 and OQ-8). It has the same form as
@@ -2831,6 +2875,14 @@ type SsoWriteStepupRequired struct {
 	// (`VITE_API_BASE_URL`), and the session cookie is host-only on
 	// the API host, so the page's origin can lack the session.
 	StepupUrl SsoWriteStepupRequiredStepupUrl `json:"stepup_url"`
+
+	// WithoutStepup What the caller cannot do without the step-up, for the client to
+	// explain before it navigates. `sso_configuration_writes`: no SSO
+	// configuration write (create, update or delete); only a deployment
+	// operator on the break-glass list can write without it. Nothing
+	// else the user already has is lost. Values may be added; a client
+	// ignores one it does not know.
+	WithoutStepup []SsoWriteStepupRequiredWithoutStepup `json:"without_stepup"`
 }
 
 // SsoWriteStepupRequiredError defines model for SsoWriteStepupRequired.Error.
@@ -2847,6 +2899,9 @@ type SsoWriteStepupRequiredError string
 // (`VITE_API_BASE_URL`), and the session cookie is host-only on
 // the API host, so the page's origin can lack the session.
 type SsoWriteStepupRequiredStepupUrl string
+
+// SsoWriteStepupRequiredWithoutStepup defines model for SsoWriteStepupRequired.WithoutStepup.
+type SsoWriteStepupRequiredWithoutStepup string
 
 // SuggestedSlot engine.SuggestedSlot.
 type SuggestedSlot struct {
@@ -5063,6 +5118,32 @@ func (t *SsoWriteForbiddenResponse) FromSsoWriteMembershipRequired(v SsoWriteMem
 
 // MergeSsoWriteMembershipRequired performs a merge with any union data inside the SsoWriteForbiddenResponse, using the provided SsoWriteMembershipRequired
 func (t *SsoWriteForbiddenResponse) MergeSsoWriteMembershipRequired(v SsoWriteMembershipRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSsoWriteDomainMismatch returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteDomainMismatch
+func (t SsoWriteForbiddenResponse) AsSsoWriteDomainMismatch() (SsoWriteDomainMismatch, error) {
+	var body SsoWriteDomainMismatch
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSsoWriteDomainMismatch overwrites any union data inside the SsoWriteForbiddenResponse as the provided SsoWriteDomainMismatch
+func (t *SsoWriteForbiddenResponse) FromSsoWriteDomainMismatch(v SsoWriteDomainMismatch) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSsoWriteDomainMismatch performs a merge with any union data inside the SsoWriteForbiddenResponse, using the provided SsoWriteDomainMismatch
+func (t *SsoWriteForbiddenResponse) MergeSsoWriteDomainMismatch(v SsoWriteDomainMismatch) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -10832,15 +10913,6 @@ type DeleteSsoProvider204Response struct {
 func (response DeleteSsoProvider204Response) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
 	w.WriteHeader(204)
 	return nil
-}
-
-type DeleteSsoProvider400JSONResponse ErrorResponse
-
-func (response DeleteSsoProvider400JSONResponse) VisitDeleteSsoProviderResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteSsoProvider401TextResponse PlainTextError
