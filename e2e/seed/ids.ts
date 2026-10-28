@@ -89,6 +89,14 @@ export const CONNECTED = {
     token: 'e2e-rejected-work',
     label: 'rejected-work',
   },
+  /** PAC-72 AC-20: hosts OFFERABLE_LINK; tests/public-booking.spec.ts owns its calendar. */
+  offerable: {
+    id: 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2',
+    email: 'e2e.offerable@paceday.test',
+    name: 'E2E Offerable Host',
+    token: 'e2e-offerable-work',
+    label: 'offerable-work',
+  },
 } as const;
 
 /**
@@ -119,7 +127,14 @@ export const PERSONAL_CALENDAR = {
  * rejected user's token is deliberately absent.
  */
 export const ACCEPTED_CREDENTIALS = [
-  ...[CONNECTED.calendar, CONNECTED.focus, CONNECTED.manager, CONNECTED.seam, DISCONNECTING].map((u) => ({
+  ...[
+    CONNECTED.calendar,
+    CONNECTED.focus,
+    CONNECTED.manager,
+    CONNECTED.seam,
+    CONNECTED.offerable,
+    DISCONNECTING,
+  ].map((u) => ({
     token: u.token,
     label: u.label,
     calendar: u.email,
@@ -184,6 +199,17 @@ export const SEAM_LINK = {
   slug: 'e2e-seam-30min',
   title: 'E2E Seam Link',
   hostUserId: CONNECTED.seam.id,
+} as const;
+
+/**
+ * Hosted by CONNECTED.offerable alone (PAC-72 AC-20): Monday to Friday,
+ * 09:00-12:00 UTC, 30 minutes, no notice.
+ */
+export const OFFERABLE_LINK = {
+  id: 'c6666666-6666-4666-8666-666666666666',
+  slug: 'e2e-offerable-30min',
+  title: 'E2E Offerable Link',
+  hostUserId: CONNECTED.offerable.id,
 } as const;
 
 /** Exact analytics values seed.sql writes, for the manager roster assertions. */

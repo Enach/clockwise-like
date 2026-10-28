@@ -31,10 +31,10 @@ export function mondayOf(d: Date): Date {
 /**
  * A weekday at least `minDaysAhead` in the future, used as the booking target.
  *
- * Weekday-ness is not strictly required — engine.BookingEngine.CollectiveSlots
- * ignores link.DaysOfWeek entirely and only uses the time window — but picking
- * a weekday keeps the fixture honest about what a user would actually book,
- * and means the test still passes if that bug is ever fixed.
+ * Weekday-ness is required: every seeded link is open Monday to Friday, and
+ * since PAC-72 the slot listing and the booking honour the link's days of the
+ * week (in UTC) and a 60-day horizon, so a weekend or a day past today + 59
+ * offers no slot and refuses every booking with 409.
  */
 export function nextBookableWeekday(minDaysAhead = 7, now = new Date()): Date {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
