@@ -500,13 +500,44 @@ paths:
         The request body is never read.
         The returned `status` is "ready" on success and "failed" when the source fetch or
         LLM step failed — a "failed" brief is still returned with HTTP 200.
+
+        **NEW-llm-bring-your-own: "AI not configured" changes nothing.** Before anything
+        else - before any brief is written and before Slack or Notion is searched - the
+        server decides which AI configuration the request runs on, by the table in
+        `docs/specs/NEW-llm-bring-your-own.md` §3 (summarised on `AINotConfigured`). When
+        the caller has none, the answer is the 409 below: no `pending` or `failed` brief
+        is written at any point, whatever was stored for the event (no brief, pending,
+        ready or failed) stays exactly as it was, so `getMeetingBrief` afterwards answers
+        exactly what it answered before, and no Slack, Notion or AI provider request is
+        made (spec AC-14, D-12). Before this change a `pending` brief was written first and
+        then replaced by a `failed` one, losing a ready brief.
+
+        A configured request uses only the caller's own key-based provider with the key
+        bound to it; no identity of the machine Paceday runs on and no deployment-level
+        key is used (spec O-2, O-3, AC-2). A destination refusal or a provider failure on
+        a configured caller is unchanged: 200, `status: "failed"`, stored.
       responses:
         "200":
-          description: The regenerated brief.
+          description: The regenerated brief (AI was configured for the caller).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/MeetingBriefResponse'
+        "409":
+          description: |
+            NEW-llm-bring-your-own. AI is not configured for the caller (spec §3 table, rows
+            1, 3 and 5-8; before Part 2 only 1, 3, 6 and 8 occur). Nothing was written and
+            nothing was sent (spec AC-14). `error` is a sentence saying that AI features are
+            off, why and who can turn them on; `notConfigured` carries the same facts. The
+            same reason the caller's parse and probe give (spec AC-40). 409 because the
+            request is well formed and is refused only because of the current state of the
+            caller's AI configuration; it is neither a server error nor a provider error.
+            No consumer existed when this was added: neither the web app nor the MCP server
+            calls this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMNotConfiguredResponse'
         "400":
           description: '"event_id required" as PLAIN TEXT. Believed unreachable via chi routing.'
           content:
