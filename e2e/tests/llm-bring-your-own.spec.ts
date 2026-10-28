@@ -61,6 +61,21 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
       await notice.getByRole('link', { name: /open ai settings/i }).click();
       await expect(page).toHaveURL(/\/settings#ai$/);
       await expect(page.getByTestId('ai-off-notice')).toBeVisible();
+
+      // AC-21: this user has no organisation, though the stored choice is
+      // "organization" (every new account on a generic domain). The select
+      // shows that value under a neutral label; nothing on the AI section
+      // offers or mentions an organisation.
+      const select = page.getByLabel('AI provider');
+      await expect(select).toHaveValue('organization');
+      await expect(select.locator('option:checked')).toHaveText('No provider chosen');
+      const enabled = await select.locator('option:not([disabled])').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
+      expect(enabled).toEqual(['', 'openai', 'anthropic', 'azure_openai', 'bedrock', 'vertex']);
+      const section = page.locator('#ai');
+      await expect(section).toBeVisible();
+      await expect(section).not.toContainText(/organi[sz]ation/i);
+      const optionTexts = await select.locator('option').allTextContents();
+      for (const text of optionTexts) expect(text).not.toMatch(/organi[sz]ation/i);
     } finally {
       await context.close();
     }

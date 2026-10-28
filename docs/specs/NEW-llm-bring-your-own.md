@@ -1076,6 +1076,15 @@ any factory assumption.
   provider failure, not "not configured".** The user did configure AI; the
   provider refused it. Assumed by the factory, pending owner confirmation
   (OQ-4).
+- **D-21. A stored "organization" choice of a user with no organisation is
+  shown neutrally.** Every new account on a generic domain is stored as
+  "organization" (§3) and belongs to no organisation, so for AC-21 the web
+  shows that stored value, disabled, as "No provider chosen", offers no
+  organisation option and shows no organisation wording; nothing is written
+  until the user picks a provider or "Off". The organisation line ("your
+  organisation has not set up AI yet") is shown only to a member following
+  their organisation. Raised by the review of smart-calendar-flow#131.
+  Assumed by the factory, pending owner confirmation.
 
 ## Challenge — 2026-10-28
 
