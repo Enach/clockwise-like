@@ -433,3 +433,160 @@ Checks run, all rc 0:
 
 Nothing in "Uncertainties not actually resolved" needed action: none were
 claimed.
+
+## Challenge, revision 2 — 2026-10-28
+
+Challenger: contract-challenger (factory stage 2 gate), confirming round.
+Reviewed `git diff 0a9a88f 3268531` on `factory/pac-81-part-a-contract`
+(bundle sha256 `ffcc55cc…e70e`, equal to the manifest's `contractHash` and to
+`git show 5a25c59:contracts/openapi/openapi.yaml`), the "Revision 2" table,
+PAC-71's `origin/impl/pac-71-identity-binding-backend` (459bc02)
+`contracts/openapi/paths/auth.yaml`, and spec AC-B10. No Part B branch
+(`impl/pac-81-part-b-*`) exists on the remote.
+
+**Verdict**: accept. No blocking finding. The contract is ready for Part A
+implementation (stage 3/4). The non-blocking items below are for the stage-4
+PR, or for whichever of PAC-71 and PAC-81 lands second.
+
+### Revision 1 blocking findings, re-checked
+
+- **B1, fixed.** `ReadinessNotReady` is `{error: enum ['not ready']}`,
+  `required: [error]`, `additionalProperties: false`. The PAC-21 test file
+  `backend/api/pac21_contract_5xx_test.go` was copied into a scratch module
+  next to this bundle and run with `go test -count=1`: rc 0.
+  `TestPAC21Every5xxInTheContractIsTheJSONEnvelope` PASS,
+  `TestPAC21ContractCheckCatchesBadShapes` PASS. The revision 1 run on
+  `d568474` failed with `get /api/ready 503: schema ReadinessNotReady is not
+  an {error: string} envelope`.
+  `GET /api/ready` → `503 {"status":"not_ready"}` is no longer permitted.
+  `503 {"error":"not ready"}` is the only 503 body.
+- **B2, fixed.** `getReadiness` states single flight (at most one ping in
+  flight per process; joiners get its result), at most one pooled
+  connection, a 2 s timeout that includes the pool wait, and no ping after
+  shutdown has begun. It is implementable with `net/http` and
+  `database/sql`. `DB.PingContext(ctx)` acquires its connection through
+  `db.conn(ctx, …)`, which waits for a free connection in a `select` on
+  `ctx.Done()`, so a `context.WithTimeout(…, 2s)` bounds the pool wait as well
+  as the driver ping. A retry on `driver.ErrBadConn` is sequential, so it
+  still holds one connection. A shared ping needs a context that does not
+  come from one caller's request, or one caller's disconnect would cancel
+  the others. That is an implementation detail; the contract does not
+  forbid it. "Answers 503 without pinging once shutdown began" holds if the
+  handler reads the shutdown flag before it joins or starts a ping. The
+  manifest's `acceptanceTests` (AC-A11) and `mergeConditions` require the
+  50-concurrent-calls test.
+  Attack: 200 × `GET /api/ready` while the database stalls. The contract
+  now permits exactly one ping and one connection, and every call answers
+  `503 {"error":"not ready"}` within 3 s. The other 19 pool connections stay
+  available.
+- **B3, fixed and consistent.** The same rule appears in every place:
+  `createPublicBooking` 503 ("BEFORE the booking insert was sent … from the
+  moment the insert is sent … never answered with this 503"), its 500 ("does
+  NOT prove that no booking was saved … Only the 503 proves"),
+  `RequestBudgetExpired` (exception paragraph and per-operation line), the
+  `INFO` exception (4), and the manifest's `operationsChanged` and AC-A19
+  test line ("insert held by a stub past the budget -> 201, never 503;
+  insert failing after the budget -> 500, never 503").
+  Revision 1 payload `POST /api/book/intro`
+  `{"name":"A","email":"a@x.test","start":"2026-11-02T09:00:00Z","duration":30}`,
+  with the INSERT sent at 89.9 s and committed at 90.2 s, now has exactly one
+  permitted answer, 201.
+- **B4, fixed for the case it named.** `INFO` exception (2): a Google or
+  Microsoft callback that carries a connect state answers
+  `<FRONTEND_URL>/?connect=not_credited` with the connect cookie expired, and
+  never `signin_refused`. Both values are in PAC-71's Location patterns
+  (auth.yaml:249 and :562 on 459bc02). PAC-71 requires every connect outcome
+  to expire `google_connect_state` / `ms_connect_state` (:192, :263, :576),
+  which matches. Sign-in branches keep `?error=auth_failed`, which PAC-71
+  allows with "what was saved before that point is kept" (:229-234).
+  `mergeInterplay` now names the semantic conflict and says how it is
+  reconciled. See non-blocking 1 for a narrower race in the same place.
+
+Revision 1 non-blocking items NB1 to NB5 are applied as the table says: the
+budget-shortened deadline gives 503 on both reads and on
+`RequestBudgetExpired`; step-up names `state_mismatch` and handles step 5;
+nginx's 502 is stated; the security note is in B8; the text says "any other
+operation".
+
+### Requests wrongly permitted
+
+None blocking. See non-blocking 1.
+
+### Responses the client cannot handle
+
+None new. The readiness 503 body has no reader: probes read the status code,
+and `checkApiAvailability` calls `/api/health`.
+
+### Consumers affected
+
+No change from revision 1. MCP (`mcp/`) and `e2e/` do not call `/api/ready`.
+`e2e/global-setup.ts` still polls `/api/health`, whose bytes are unchanged.
+
+### Contract/implementation divergences
+
+None. No handler exists yet, and every statement is a stage-4 obligation that
+has a test line.
+
+### Non-blocking
+
+1. **Connect step 6 in flight at the budget (the B3 race on PAC-71's connect
+   branch).** PAC-71 defines NOT CREDITED as "nothing stored on any account"
+   (auth.yaml:240-241 on 459bc02), and step 6 stores the token in one
+   transaction. Take `GET /api/auth/google/callback?state=<connect state>&code=c`
+   whose step-6 commit is sent at 89.9 s and lands at 90.2 s. Exception (2)
+   allows `302 Location: <FRONTEND_URL>/?connect=not_credited` while the token
+   is stored. The harm is small: the user is told the calendar was not
+   connected, a retry credits it again, and nothing is lost. The rule also
+   cannot be implemented on `main` until PAC-71 merges. Fix this when the two
+   are reconciled, in the same way as step-up step 5 and the booking insert:
+   "once the step-6 transaction has been sent it is waited for, and the
+   answer is CREDITED if it stored, NOT CREDITED if the generation moved, or
+   the 500". Add that sentence to `followUps.callbackProseAfterPac71` or to
+   `mergeInterplay`.
+2. **Readiness: shutdown that begins during a shared ping.** The 200
+   condition "the process has not begun shutting down" does not say when it
+   is read. A call that joined a ping before SIGTERM may answer 200 just
+   after the notice starts. A probe re-polls inside the 5 s notice, so this
+   is harmless. If tightening it is cheap, say "the shutdown flag is read
+   when the answer is chosen".
+3. **`docs/security.md` line endings.** Commit 5a25c59 rewrote the whole
+   file from CRLF to LF and dropped three stray CRs (`\r\r\n`). The real
+   change is one line, the B8 entry, but `git diff` shows 243 lines. Part B
+   (AC-B10) must edit this same file, so the stage-4 or Part B PR will get a
+   whole-file conflict. The spec's line references (`docs/security.md:52`,
+   `:53`, `:56`, `:81`, `:85`) also shift by one after B8. Restore CRLF
+   (keep only the B8 line), or tell Part B to rebase on this branch. The B8
+   content fits AC-B10's checklist: it is the operator's proxy, not the
+   shipped nginx, that may restrict `/api/ready`, and abuse protection stays
+   at application level. B8 has no STRIDE row in §3. Part B can add one.
+4. The rationale's "What changed" table (§1, `createPublicBooking` row) still
+   says "503 only before the booking is saved". The bundle says "before the
+   insert is sent". Change the rationale to match.
+5. An insert that runs past the 120 s write backstop (no statement timeout,
+   spec §3 N4) gives the client a dropped connection or a proxy 504, not a
+   201 or 500. The spec accepts this. The "client receives it, not a 504"
+   promise is made only for the 503, so nothing contradicts it.
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain` and `resolvesFindings` are empty).
+
+### Verified clean
+
+- Gates, run on 3268531: `py -3 scripts/openapi_assemble.py --check` rc 0
+  (106 paths); `py -3 scripts/openapi_migration_report.py --check` rc 0
+  (128 operations, 9 generated); `bash scripts/openapi_gen_go.sh --check`
+  rc 0; `cd backend && go build ./...` rc 0, `go vet ./...` rc 0; PAC-21
+  bundle walk in a scratch module `go test -count=1` rc 0. Bundle sha256
+  `ffcc55cc0a8fa14179f506e929749bff936cf10f208b94fdc350713ad035e70e` equals
+  `contractHash`.
+- A budget-shortened read (remaining 18 s, deadline 8 s, stub answers at
+  9 s) now has exactly one answer, the 503, on `getPublicBookingSlots`,
+  `getTeamAvailability` and in `RequestBudgetExpired`, and it has a test line.
+- Step-up at the budget: before check 0 the answer is `state_mismatch`;
+  during step 5 the server waits, and the answer is granted or the existing
+  500. No case is left without an answer.
+- `getHealth`, `HealthResponse` and `auth.yaml` are still untouched by this
+  branch.
+- The B8 text and the `getReadiness` description agree (single flight, one
+  connection, operators may restrict at their proxy, liveness stays open).
