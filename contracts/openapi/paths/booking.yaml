@@ -155,18 +155,25 @@ paths:
           description: >-
             Storage or engine failure. `error` is one of "internal error" or "booking
             conflict check failed". The detail is written to the server log and Sentry only
-            (PAC-21).
+            (PAC-21). A 500 from this operation does NOT prove that no booking was
+            saved: when the insert was sent and its result is lost (for example the
+            database connection drops), the outcome is unknown and the answer is
+            this 500 (PAC-81 contract revision 2). Only the 503 proves that nothing
+            was saved.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '503':
           description: >-
-            The request budget ran out BEFORE the booking row was saved (PAC-81,
-            spec AC-A2, AC-A19). Answered only when no booking was saved for this
-            request, so a client may retry it: nothing was written, no calendar
-            event and no email. Once the row is saved the answer is the 201, never
-            this 503. Shared body `{"error":"request timed out"}`.
+            The request budget ran out BEFORE the booking insert was sent (PAC-81,
+            spec AC-A2, AC-A19; contract revision 2). From the moment the insert
+            is sent this request is never answered with this 503: the server
+            waits for the insert's own result (bounded by the insert's own
+            duration, not by the budget) and answers 201 if the row was saved, or
+            the 500 if the insert failed. So this 503 proves that no booking was
+            saved for this request (no calendar event, no email), and a client
+            may retry it. Shared body `{"error":"request timed out"}`.
           content:
             application/json:
               schema:
@@ -190,7 +197,9 @@ paths:
         answers too slowly now looks free where before the request waited for it. A
         host that was not read because the request budget ran out (a read not
         started at the stop margin, or cut short by the budget) is never treated as
-        free: the answer is the 503, never a 200 that silently omits that host or,
+        free. A read that hits a deadline shortened by the budget (budget left minus
+        the margin was below 15 s) counts as cut short by the budget, not as failing
+        on its own limit: the answer is the 503, never a 200 that silently omits that host or,
         without `date`, a day. Neither mode has a partial shape.
         Rate limited per client (NEW-booking-rate-limit), separately from and more
         loosely than `createPublicBooking`: at most 120 requests per client per

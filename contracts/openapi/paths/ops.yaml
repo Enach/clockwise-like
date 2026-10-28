@@ -30,22 +30,41 @@ paths:
         - the process has not begun shutting down; and
         - the database answers a ping within the readiness timeout (2 s).
 
-        Otherwise it is 503 `{"status":"not_ready"}`, answered within the
+        Otherwise it is 503 `{"error":"not ready"}` (the PAC-21 JSON error
+        envelope, like every 5xx in this contract), answered within the
         readiness timeout + 1 s: the database did not answer in time or
         answered with an error, or shutdown has begun. From SIGTERM or SIGINT
         the process answers this 503 for the whole unready notice (5 s) while
         it still serves every other request normally; after the notice the
         listener closes and connections are refused, so no later answer
-        exists.
+        exists from the backend itself.
 
         Migrations run before the listener opens, so while they run the
-        endpoint is unreachable (connection refused), never 200: any answer
-        means migrations have finished.
+        backend is unreachable (connection refused), never 200: any answer
+        from the backend means migrations have finished. Through nginx (the
+        operator's proxy probe, spec AC-D1), the refused connection during
+        migrations or after the unready notice is nginx's own 502, not an
+        answer of this operation; a probe treats any non-200 as not ready.
+
+        **One database ping at a time (contract revision 2).** Concurrent
+        readiness calls share one database ping: at most one ping is in
+        flight per process, and a call that arrives while it runs waits for
+        and gets that ping's result (single flight). Readiness therefore
+        never holds more than one pooled connection, however many calls
+        arrive. The 2 s readiness timeout covers the whole check, including
+        the wait for a pooled connection: a ping that cannot get a
+        connection within 2 s counts as "did not answer in time" (503). A
+        call made after shutdown has begun answers 503 without pinging.
 
         The body never names the cause. The cause (database error or timeout,
         shutting down) goes to the server log only, never the database
         error text in the response (PAC-21). No other property is ever
         present.
+
+        Readiness is public: its answer and its latency reveal database
+        health and deploy timing to anyone who can reach it. That is
+        accepted for a probe; operators may restrict `/api/ready` to their
+        health checker at their proxy (`docs/security.md`).
 
         How this differs from `getHealth` (/api/health), which is unchanged:
         `getHealth` is liveness. It never touches the database, keeps its
@@ -66,7 +85,7 @@ paths:
           description: |
             Not ready: the database did not answer within 2 s or answered with
             an error, or shutdown has begun (the unready notice). Sent within
-            the readiness timeout + 1 s. Exact body `{"status":"not_ready"}`.
+            the readiness timeout + 1 s. Exact body `{"error":"not ready"}`.
           content:
             application/json:
               schema:
@@ -81,8 +100,11 @@ components:
         (90 s, a server setting). When the handler has not finished by then,
         including while it waits for a pooled database connection, or when a
         per-item loop stops starting calendar calls at the stop margin (10 s
-        before the budget ends) with items left, the answer is this 503 with
-        the exact body `{"error":"request timed out"}`. It is sent before
+        before the budget ends) with items left, or when a per-item read
+        hits a deadline the budget shortened, the answer is this 503 with
+        the exact body `{"error":"request timed out"}`. Exception:
+        `createPublicBooking` is never answered with this 503 once its
+        booking insert has been sent (see that operation). It is sent before
         the server's write backstop (120 s), so through nginx (130 s) and a
         correctly configured proxy (over 130 s) the client receives it, not
         a 504 or a dropped connection. Never a 2xx with partial data in its
@@ -93,7 +115,8 @@ components:
         stated per operation: a read (slot listing, team availability, parse)
         stored nothing; `syncPersonalCalendar` keeps the blockers already
         created and does not stamp `last_synced_at`; `createPublicBooking`
-        answers this 503 only when no booking was saved for the request.
+        answers this 503 only before its booking insert is sent, so there
+        this 503 proves that no booking was saved for the request.
       content:
         application/json:
           schema:
@@ -111,12 +134,15 @@ components:
 
     ReadinessNotReady:
       type: object
-      description: The cause is never in the body; it is in the server log.
-      required: [status]
+      description: |
+        The PAC-21 JSON error envelope (`{"error": ...}`) with its one
+        possible readiness message pinned. The cause is never in the body;
+        it is in the server log. Probes read only the status code.
+      required: [error]
       properties:
-        status:
+        error:
           type: string
-          const: not_ready
+          enum: ['not ready']
       additionalProperties: false
 
     RequestBudgetExpiredError:

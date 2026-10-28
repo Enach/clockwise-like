@@ -895,7 +895,9 @@ paths:
         that fails on its own time limit: a member whose calendar answers too slowly now
         looks free, where before the request waited for it. A member who was not read
         because the request budget ran out (a read not started at the stop margin, or
-        cut short by the budget) is never treated as free: the answer is the 503, never
+        cut short by the budget) is never treated as free; a read that hits a deadline
+        shortened by the budget (budget left minus the margin was below 15 s) counts as
+        cut short by the budget, not as failing on its own limit: the answer is the 503, never
         a 200 that silently omits that member. There is no partial shape.
       parameters:
         - $ref: "#/components/parameters/TeamIdPath"

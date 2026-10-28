@@ -22,14 +22,21 @@ info:
     budget (90 s). A request still running when it ends (for example one waiting for a pooled database
     connection) answers the shared `RequestBudgetExpired` 503, body `{"error":"request timed out"}`. It
     is listed on the operations that can reach the budget in normal use (`parseNaturalLanguage`, `getPublicBookingSlots`,
-    `getTeamAvailability`, `syncPersonalCalendar`, `createPublicBooking` before its booking is saved);
-    on any other JSON operation it can occur only under database pool exhaustion and is the same response.
-    Exceptions: the sign-in callbacks that already end in a failure redirect (`googleOAuthCallback`, `microsoftOAuthCallback`,
-    `ssoOidcCallback`: Location `<FRONTEND_URL>/?error=auth_failed`, no `auth_token` cookie set) answer
-    that redirect on budget expiry, never JSON; `ssoAdminStepupCallback` answers its denied redirect with
-    the reason of the check that was running; and a `createPublicBooking` whose booking was saved answers
-    201. A request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before the
-    handler runs, by the backend and by nginx alike.'
+    `getTeamAvailability`, `syncPersonalCalendar`, `createPublicBooking` before its booking insert is
+    sent); on any other operation it can occur only under database pool exhaustion and is the same response.
+    Exceptions: (1) the sign-in branches of the callbacks that already end in a failure redirect (`googleOAuthCallback`,
+    `microsoftOAuthCallback`, `ssoOidcCallback`) answer Location `<FRONTEND_URL>/?error=auth_failed` with
+    no `auth_token` cookie set; (2) a Google or Microsoft callback carrying a calendar-connect state (PAC-71)
+    answers that branch''s NOT CREDITED redirect, Location `<FRONTEND_URL>/?connect=not_credited`, with
+    the connect state cookie expired; budget expiry never answers `?error=signin_refused`; (3) `ssoAdminStepupCallback`
+    answers its denied redirect: `state_mismatch` when the budget runs out before check 0 completes (the
+    state could not be verified), else the reason of the check that was running; once step 5 (issuing
+    the grant) has started it is waited for like the booking insert, and the answer is granted, or the
+    500 if it failed; (4) `createPublicBooking` is never answered with the 503 once its booking insert
+    is sent: it waits for the insert and answers 201 if the row was saved or 500 if the insert failed.
+    Only that 503 proves no booking was saved; a 500 does not (a lost connection leaves the outcome unknown).
+    A request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before the handler
+    runs, by the backend and by nginx alike.'
 servers:
 - url: http://localhost:8080
   description: backend, direct
@@ -2744,17 +2751,22 @@ paths:
         '429':
           $ref: '#/components/responses/BookingCreateRateLimited'
         '500':
-          description: Storage or engine failure. `error` is one of "internal error" or "booking conflict
-            check failed". The detail is written to the server log and Sentry only (PAC-21).
+          description: 'Storage or engine failure. `error` is one of "internal error" or "booking conflict
+            check failed". The detail is written to the server log and Sentry only (PAC-21). A 500 from
+            this operation does NOT prove that no booking was saved: when the insert was sent and its
+            result is lost (for example the database connection drops), the outcome is unknown and the
+            answer is this 500 (PAC-81 contract revision 2). Only the 503 proves that nothing was saved.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '503':
-          description: 'The request budget ran out BEFORE the booking row was saved (PAC-81, spec AC-A2,
-            AC-A19). Answered only when no booking was saved for this request, so a client may retry it:
-            nothing was written, no calendar event and no email. Once the row is saved the answer is the
-            201, never this 503. Shared body `{"error":"request timed out"}`.'
+          description: 'The request budget ran out BEFORE the booking insert was sent (PAC-81, spec AC-A2,
+            AC-A19; contract revision 2). From the moment the insert is sent this request is never answered
+            with this 503: the server waits for the insert''s own result (bounded by the insert''s own
+            duration, not by the budget) and answers 201 if the row was saved, or the 500 if the insert
+            failed. So this 503 proves that no booking was saved for this request (no calendar event,
+            no email), and a client may retry it. Shared body `{"error":"request timed out"}`.'
           content:
             application/json:
               schema:
@@ -2774,15 +2786,17 @@ paths:
         free: not connected, a provider error, or (new with PAC-81) a read that fails on its own time
         limit, so a host whose calendar answers too slowly now looks free where before the request waited
         for it. A host that was not read because the request budget ran out (a read not started at the
-        stop margin, or cut short by the budget) is never treated as free: the answer is the 503, never
-        a 200 that silently omits that host or, without `date`, a day. Neither mode has a partial shape.
-        Rate limited per client (NEW-booking-rate-limit), separately from and more loosely than `createPublicBooking`:
-        at most 120 requests per client per fixed 1-minute window, with or without `date`. The limit is
-        checked and the request counted atomically as the handler''s first step, before the link lookup
-        and before the query is validated, so every request counts whatever it would otherwise have answered,
-        and a refused request answers 429 even for an unknown slug. Booking requests do not consume this
-        budget and slot requests do not consume the booking budget. Client identification, the per-process
-        caveat, the sweep and the CORS preflight exemption are exactly as described on `createPublicBooking`;
+        stop margin, or cut short by the budget) is never treated as free. A read that hits a deadline
+        shortened by the budget (budget left minus the margin was below 15 s) counts as cut short by the
+        budget, not as failing on its own limit: the answer is the 503, never a 200 that silently omits
+        that host or, without `date`, a day. Neither mode has a partial shape. Rate limited per client
+        (NEW-booking-rate-limit), separately from and more loosely than `createPublicBooking`: at most
+        120 requests per client per fixed 1-minute window, with or without `date`. The limit is checked
+        and the request counted atomically as the handler''s first step, before the link lookup and before
+        the query is validated, so every request counts whatever it would otherwise have answered, and
+        a refused request answers 429 even for an unknown slug. Booking requests do not consume this budget
+        and slot requests do not consume the booking budget. Client identification, the per-process caveat,
+        the sweep and the CORS preflight exemption are exactly as described on `createPublicBooking`;
         this limiter has its own counts and its own sweep.'
       security: []
       parameters:
@@ -6143,7 +6157,9 @@ paths:
         - the database answers a ping within the readiness timeout (2 s).
 
 
-        Otherwise it is 503 `{"status":"not_ready"}`, answered within the
+        Otherwise it is 503 `{"error":"not ready"}` (the PAC-21 JSON error
+
+        envelope, like every 5xx in this contract), answered within the
 
         readiness timeout + 1 s: the database did not answer in time or
 
@@ -6155,14 +6171,39 @@ paths:
 
         listener closes and connections are refused, so no later answer
 
-        exists.
+        exists from the backend itself.
 
 
         Migrations run before the listener opens, so while they run the
 
-        endpoint is unreachable (connection refused), never 200: any answer
+        backend is unreachable (connection refused), never 200: any answer
 
-        means migrations have finished.
+        from the backend means migrations have finished. Through nginx (the
+
+        operator''s proxy probe, spec AC-D1), the refused connection during
+
+        migrations or after the unready notice is nginx''s own 502, not an
+
+        answer of this operation; a probe treats any non-200 as not ready.
+
+
+        **One database ping at a time (contract revision 2).** Concurrent
+
+        readiness calls share one database ping: at most one ping is in
+
+        flight per process, and a call that arrives while it runs waits for
+
+        and gets that ping''s result (single flight). Readiness therefore
+
+        never holds more than one pooled connection, however many calls
+
+        arrive. The 2 s readiness timeout covers the whole check, including
+
+        the wait for a pooled connection: a ping that cannot get a
+
+        connection within 2 s counts as "did not answer in time" (503). A
+
+        call made after shutdown has begun answers 503 without pinging.
 
 
         The body never names the cause. The cause (database error or timeout,
@@ -6172,6 +6213,15 @@ paths:
         error text in the response (PAC-21). No other property is ever
 
         present.
+
+
+        Readiness is public: its answer and its latency reveal database
+
+        health and deploy timing to anyone who can reach it. That is
+
+        accepted for a probe; operators may restrict `/api/ready` to their
+
+        health checker at their proxy (`docs/security.md`).
 
 
         How this differs from `getHealth` (/api/health), which is unchanged:
@@ -6202,7 +6252,7 @@ paths:
 
             an error, or shutdown has begun (the unready notice). Sent within
 
-            the readiness timeout + 1 s. Exact body `{"status":"not_ready"}`.
+            the readiness timeout + 1 s. Exact body `{"error":"not ready"}`.
 
             '
           content:
@@ -7644,8 +7694,9 @@ paths:
         with PAC-81, a read that fails on its own time limit: a member whose calendar answers too slowly
         now looks free, where before the request waited for it. A member who was not read because the
         request budget ran out (a read not started at the stop margin, or cut short by the budget) is
-        never treated as free: the answer is the 503, never a 200 that silently omits that member. There
-        is no partial shape.
+        never treated as free; a read that hits a deadline shortened by the budget (budget left minus
+        the margin was below 15 s) counts as cut short by the budget, not as failing on its own limit:
+        the answer is the 503, never a 200 that silently omits that member. There is no partial shape.
 
         '
       parameters:
@@ -11881,13 +11932,20 @@ components:
           $ref: '#/components/schemas/RawGoogleBusyWindow'
     ReadinessNotReady:
       type: object
-      description: The cause is never in the body; it is in the server log.
+      description: 'The PAC-21 JSON error envelope (`{"error": ...}`) with its one
+
+        possible readiness message pinned. The cause is never in the body;
+
+        it is in the server log. Probes read only the status code.
+
+        '
       required:
-      - status
+      - error
       properties:
-        status:
+        error:
           type: string
-          const: not_ready
+          enum:
+          - not ready
       additionalProperties: false
     ReadinessReady:
       type: object
@@ -14281,9 +14339,15 @@ components:
 
         per-item loop stops starting calendar calls at the stop margin (10 s
 
-        before the budget ends) with items left, the answer is this 503 with
+        before the budget ends) with items left, or when a per-item read
 
-        the exact body `{"error":"request timed out"}`. It is sent before
+        hits a deadline the budget shortened, the answer is this 503 with
+
+        the exact body `{"error":"request timed out"}`. Exception:
+
+        `createPublicBooking` is never answered with this 503 once its
+
+        booking insert has been sent (see that operation). It is sent before
 
         the server''s write backstop (120 s), so through nginx (130 s) and a
 
@@ -14304,7 +14368,9 @@ components:
 
         created and does not stamp `last_synced_at`; `createPublicBooking`
 
-        answers this 503 only when no booking was saved for the request.
+        answers this 503 only before its booking insert is sent, so there
+
+        this 503 proves that no booking was saved for the request.
 
         '
       content:

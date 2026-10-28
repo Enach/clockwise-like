@@ -386,9 +386,9 @@ const (
 	PublicLinkInfoUsageTypeSingleUse PublicLinkInfoUsageType = "single_use"
 )
 
-// Defines values for ReadinessNotReadyStatus.
+// Defines values for ReadinessNotReadyError.
 const (
-	NotReady ReadinessNotReadyStatus = "not_ready"
+	NotReady ReadinessNotReadyError = "not ready"
 )
 
 // Defines values for ReadinessReadyStatus.
@@ -2742,13 +2742,15 @@ type RawGoogleBusyWindow struct {
 // RawGoogleFreeBusyMap Response of GET /api/calendar/freebusy: `map[string][]calendar.TimeSlot` keyed by the calendar id Google echoed back (normally the attendee email).
 type RawGoogleFreeBusyMap map[string][]RawGoogleBusyWindow
 
-// ReadinessNotReady The cause is never in the body; it is in the server log.
+// ReadinessNotReady The PAC-21 JSON error envelope (`{"error": ...}`) with its one
+// possible readiness message pinned. The cause is never in the body;
+// it is in the server log. Probes read only the status code.
 type ReadinessNotReady struct {
-	Status ReadinessNotReadyStatus `json:"status"`
+	Error ReadinessNotReadyError `json:"error"`
 }
 
-// ReadinessNotReadyStatus defines model for ReadinessNotReady.Status.
-type ReadinessNotReadyStatus string
+// ReadinessNotReadyError defines model for ReadinessNotReady.Error.
+type ReadinessNotReadyError string
 
 // ReadinessReady defines model for ReadinessReady.
 type ReadinessReady struct {
