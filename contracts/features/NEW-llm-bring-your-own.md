@@ -787,3 +787,227 @@ oapi-codegen renamed the `WorkingHoursScheduleMode` constants from `AllDays`,
   implementation (manifest `gates.webGate`, `gates.e2eGate`). The behaviour
   this contract describes is not implemented yet; the existing tests pass
   because none validates a live response against these schemas.
+
+---
+
+## Challenge, revision 2 — 2026-10-28
+
+Reviewer: contract-challenger, doing the confirming re-check that the manifest's
+`gates.contractApproval` requires. Branch `impl/new-llm-bring-your-own-backend`
+at `7a4e589`, in a detached worktree. That commit holds the revision 2 contract
+(`b6fd578` + `2193af9`), the Part 1 implementation, and `origin/main` merged in.
+Read: this file, the manifest, the spec (including `a4a91a5`, the owner answers
+of 2026-10-28), the fragments `scheduling.yaml` / `habits.yaml`, the handlers
+and decision code named below, `mcp/`, `e2e/`, and `Enach/smart-calendar-flow`
+at `a5beb27` (PR #131). The web repo was read with `git show`; nothing was
+checked out there.
+
+**Verdict**: accept. No blocking finding. Each of revision 1's four blocking
+findings is applied in the fragments, the manifest and the code, and none of
+the attacks below broke revision 2. The non-blocking items are bookkeeping or
+things Part 2 must do. None of them changes a Part 1 request or response.
+
+### Revision 1 findings: applied?
+
+1. **The probe rejected the value the settings read returns.** Applied.
+   `LLMTestRequest.llmProvider` now has the same eight values as
+   `Settings.llmProvider` (`scheduling.yaml:1844`). `unsupported` is accepted
+   only when the saved choice reads as `unsupported` (`backend/nlp/llm_factory.go`
+   `DecideProbe`). Otherwise the answer is the 400
+   `llmProvider unsupported can be probed only when it is your saved choice`,
+   the contract's wording. On an Ollama row, the web's exact body
+   `{"llmProvider":"unsupported","llmModel":""}` (`src/api/client.ts:864-868`
+   at `a5beb27`) gets the 409 `provider_removed` with the saved-choice wording.
+   That is the same reason `{}`, parse and `aiStatus` give. Pinned by
+   `TestBYOK_OllamaUserProbeVariants` (AC-10, AC-10b).
+2. **Any key write deleted the unbound key.** Applied.
+   `SettingsUpdate.llmUnboundApiKey` is `enum: ['']` and write-only. The handler
+   removes the unbound key only when that property is sent
+   (`handlers_settings.go:161-193`). `llmApiKey` only calls
+   `LLMAPIKeys.Set(provider-after-write, …)`. Test case: a Bedrock row with a
+   key at upgrade, then `PATCH {"llmProvider":"openai","llmApiKey":"sk-new"}`.
+   The unbound column is untouched, because the save writes
+   `s.LLMUnboundAPIKey` back unchanged (`storage/settings.go:422`), so
+   `llmUnboundApiKeySet` stays `true`. `{"llmUnboundApiKey":"x"}` is the 400
+   and nothing is stored, because the check runs before the save. Manifest
+   AC-16 is back to the spec's wording, and AC-16b is
+   `TestBYOK_UnboundKeyIsRemovedOnlyExplicitly`. The web makes the removal an
+   explicit "Remove old key" button (`Settings.tsx` at `a5beb27`) and sends
+   `llmUnboundApiKey: ""` only after that click.
+3. **`aiStatus.notConfigured` had no presence rule.** Applied, in both the
+   property description and the `AIStatus` description
+   (`scheduling.yaml:2034-2063`). The code cannot break the rule. `nlp.Status`
+   sets exactly one of `Provider` and `NotConfigured` from the same `Decision`
+   (`llm_factory.go:51-57`), and both fields are `omitempty`. The web shows the
+   notice only when `!configured && notConfigured` (`Settings.tsx:597`).
+4. **409-before-422 broke unlisted consumers.** Applied.
+   `e2e/tests/llm-destination.spec.ts` now asserts the keyless 409
+   `needs_key azure_openai`. It then binds a key and keeps the 422
+   `destination_not_approved azureEndpoint`. `pac66b_base_url_test.go:211-221`
+   keeps the 422 with a submitted key. C-1 is
+   `TestBYOK_KeyedCloudProviderStillRefusesAnUnapprovedDestination`. The PAC-66
+   destination check is still pinned for every provider with a key.
+
+Revision 1's non-blocking items 3, 5 and 7 are in the fragments and match the
+code:
+
+- **Item 3, brief refresh 500 writes nothing.** `refreshBrief` returns the 500
+  when the settings or organisation lookup fails, before `MeetingBriefService`
+  is created (`handlers_meeting_briefs.go:78-91`).
+- **Item 5, the probe sentence describes the probed choice.**
+  `notConfiguredMessage` uses `AI features are off: …` only when `saved` is
+  true. The examples `needsKey`, `savedNeedsKey` and `providerRemoved` are the
+  exact strings the code produces.
+- **Item 7, model IDs as path segments.** The `url.PathEscape` rule is stated
+  on the probe.
+
+### Requests wrongly permitted or forbidden
+
+None blocking. Attacked:
+- `POST /api/llm/test {"llmProvider":"unsupported"}` on an `openai` row: the
+  400. Contract and code agree. On an Ollama row with `"llmApiKey":"sk"`: the
+  409 `provider_removed` with the probed-choice wording, and the key goes
+  nowhere, because `decide`'s default branch builds no client.
+- `{"llmProvider":"anthropic"}` while the saved choice is `openai` with a stored
+  model: `DecideProbe` uses the stored model only when the probed choice equals
+  the saved one (`llm_factory.go:93-97`). So the server never sends a stored
+  OpenAI model to Anthropic.
+- `{"llmApiKey":""}` on a configured `openai` row: the 409 `needs_key openai`,
+  "OpenAI needs an API key. Enter one to test it." It does not say "AI features
+  are off", as revision 2 requires.
+- `PATCH {"llmProvider":"unsupported"}` after an Ollama row has moved to
+  `openai`: the 400, because the row no longer reads as `unsupported`. An
+  Ollama row cannot be re-entered.
+- `PATCH {"llmApiKey":"sk"}` on an Ollama, `organization` or `""` row: the 400
+  `llmApiKey cannot be set: …`. `{"llmApiKey":""}` on such a row is an accepted
+  no-op. Both as the contract states.
+- Probe body `{"llmProvider":null}` or `{"llmApiKey":null}`: the schema makes
+  these a 400, because no property is nullable. The handler decodes into
+  `*string` and treats null as absent (`handlers_llm.go:25-29`). This has been
+  so since PAC-24 (the same struct is on `origin/main`) and is harmless: a null
+  key means the stored key, the same as an absent one. See non-blocking 4.
+
+### Responses the client cannot handle
+
+None blocking.
+- **Generated types are in sync.** I regenerated the web's three generated
+  files from this branch's bundle with the pinned `openapi-typescript` 7.4.4
+  and `typed-openapi` 4.1.0 from the web checkout's `node_modules`, into a
+  scratch directory. `types.ts`, `schemas.ts` and `schemas.types.d.ts` at
+  `a5beb27` are byte-identical to the output.
+- **The 409 sentence reaches the user.** `apiErrorMessage` shows the body's
+  `error` before its generic 409 text (`client.ts:388-393`), so "Test
+  connection" shows the server's sentence.
+- **Parse "not configured" is not shown as an error.** `not_configured` is
+  rendered by `AINotConfiguredNotice` in place of the red error (`NLPBar.tsx`,
+  `Dashboard.tsx`).
+- **The select can display `organization`.** A new account outside an
+  organisation reads `organization`. `providerOptions` adds it as a disabled
+  "No provider chosen" option (AC-21).
+
+### Consumers affected
+
+- `mcp/`: unchanged. `clockwise_parse_command` still gets the parse 200.
+  `mcp/nlp_not_configured_test.go` pins that `not_configured` reaches the tool
+  as a body (ran `go test -run NotConfigured ./...` in `mcp/`: ok). No MCP tool
+  reads settings, runs the probe or refreshes briefs.
+- `e2e/`: `llm-destination.spec.ts`, `llm-base-url.spec.ts`,
+  `llm-bring-your-own.spec.ts` and `settings.spec.ts` expect the contract's
+  answers (read, not run).
+- Backend: every LLM call site goes through `DecideSaved` or `DecideProbe`.
+  Grepping for `Complete(` and `NewLLMClient` finds only parse, brief refresh
+  and the probe. Only `refreshBrief` creates a `MeetingBriefService`.
+
+### Contract/implementation divergences
+
+None that a client can observe, apart from non-blocking 4 and 5.
+
+### Uncertainties not actually resolved
+
+None claimed. `resolvesUncertain` is empty. The bundle has 8 `x-uncertain`
+markers, none on an operation this contract edits.
+
+### Non-blocking
+
+1. **Owner answer O-12 makes two forward-looking statements false.** O-12
+   (OQ-7, 2026-10-28) is settled and is recorded on this branch at `a4a91a5`,
+   after revision 2. The two statements:
+   - `AINotConfigured.enablers` says `user` "is always present".
+   - §7 says listing the Part 2 reasons now "makes Part 2 additive".
+
+   Under O-12, when an organisation forbids personal keys and its own AI setup
+   is incomplete, the member cannot turn AI on themselves. Part 2 then needs
+   either `enablers: [organization_admin]` without `user`, or a reason value
+   that today's enum lacks. Either one changes a guarantee this revision
+   publishes. Both statements are true of Part 1, which cannot produce that
+   state, so this does not block Part 1. The Part 2 revision must handle it,
+   and the cheapest time is now:
+   - replace "is always present" with "is present in every answer before
+     Part 2";
+   - add to §8 that O-12 adds a reason or an enablers case.
+
+   The web's `whoCanEnable` (`src/lib/aiProviders.ts`) would then also have to
+   stop always saying "You can turn them on in Settings".
+2. **Stale header.** This file says "Linear issue: none yet", and the
+   manifest's `linearIssueUrl` is empty, but the ticket is PAC-73. This
+   re-check did not post a Linear comment either.
+3. **Stale `contractHash`.** The manifest's `c014ab82…610a` is the hash of the
+   bundle at `2193af9` (reproduced). Since `origin/main` (PAC-22) was merged,
+   the bundle hash is
+   `b14aa7e8dfca3ad08fa5b0f5503dc3bd929d9ba5d9430c9dca2f839bf76b7ff7`, with 100
+   paths and 121 operations. The merge changed no LLM, NLP, brief or settings
+   schema (checked by grepping
+   `git diff 2193af9 HEAD -- contracts/openapi/openapi.yaml`). Update the hash
+   and the counts.
+4. **null in the probe body** (see above). Either say on `LLMTestRequest` that
+   `null` is treated as absent, or make the handler return the 400 the schema
+   implies. The behaviour predates this change.
+5. **500 wording.** The 500 of the probe and of brief refresh says "settings
+   load failure". The handlers also return it when the organisation-membership
+   lookup (`storage.UserInOrganization`) fails. Add "or the caller's
+   organisation membership could not be read".
+6. **Web (#131), not the contract.** The contract permits each of these:
+   - "Remove saved key" sets the draft's `llm_api_key` to `""`, but
+     `llmTestBody` leaves out an empty key. So "Test connection" before saving
+     probes with the stored key, and can report "Reached OpenAI" right after
+     the user removed it. Fix: send `llmApiKey: ""` when the draft holds `""`.
+   - Switching the draft provider keeps `llm_model`. An unsaved switch from
+     Anthropic to OpenAI therefore probes, and then saves, a `claude-…` model
+     on OpenAI, which gives a 502.
+   - The notice says "AI features are off" twice: once in its heading and again
+     in the server's sentence.
+7. **Spec re-check.** The spec-challenger re-check of spec revision 1 is still
+   not recorded (spec status line). This re-check does not replace it.
+
+### Verified clean
+
+- Revision 1's four blocking findings, checked against the fragments, the code
+  and the web (see above).
+- §9 points 1-6, attacked again on the implementation:
+  - One state gives one reason on parse, brief refresh, the `{}` probe and
+    `aiStatus`. All four call `decide` with the saved choice.
+  - `unsupported` cannot be stored on a non-Ollama row. The save writes
+    `StoredLLMProvider` only while the row reads as `unsupported`
+    (`settings_ai.go:40-45`).
+  - No key reaches a provider it was not bound to or submitted for. The code
+    looks keys up only with `LLMAPIKeys.For(choice)`.
+  - The unbound key is used on no path (`For` never reads it), and every probe
+    response redacts it.
+- Owner decisions:
+  - no `ollama` and no ambient identity in any enum or provider mode;
+  - Azure, Bedrock and Vertex only with API keys;
+  - gateway path prefixes allowed (O-10);
+  - no enabled-providers endpoint;
+  - keys write-only.
+- Checks this re-check ran, in the worktree at `7a4e589`:
+  - `py -3 scripts/openapi_assemble.py --check`: `OK: bundle is in sync (100 paths)`, rc=0.
+  - `py -3 scripts/openapi_migration_report.py --check`: `OK: MIGRATION.md covers all 121 operations (5 generated)`, rc=0.
+  - `bash scripts/openapi_gen_go.sh --check`: `OK: backend/api/gen matches the contract`.
+  - `go build ./...` in `backend/`: ok.
+  - Web generated files at `a5beb27`, regenerated from this bundle: identical (3 files).
+  - `go test -count=1 -run NotConfigured ./...` in `mcp/`: ok.
+- Not run:
+  - The backend `api`, `nlp` and `storage` tests, including every `TestBYOK_*`.
+    They need the test Postgres on 127.0.0.1:15432, which was not running, and
+    this review was told not to start containers on that port.
+  - `make verify`, the web gate and the e2e gate.
