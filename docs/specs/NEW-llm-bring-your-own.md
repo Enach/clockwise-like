@@ -691,8 +691,9 @@ AC-41. Given a new account in A, A configured, and the user has not confirmed,
 when they first use the natural-language bar, then nothing is sent, the answer
 is row 5, and the page shows a notice naming A's provider and saying that the
 text and meeting context (event titles, attendees, and the Slack and Notion
-excerpts used for briefs) go to the organisation's provider account, with a
-confirm action. After they confirm, the next parse is sent with A's
+excerpts used for briefs) go to the organisation's provider account, which
+its administrators can access outside Paceday (O-13: the notice says
+"access", never "read"), with a confirm action. After they confirm, the next parse is sent with A's
 configuration and the notice is not shown again. Choosing "Use my
 organisation's AI" in Settings shows the same notice and counts as confirming.
 [unit] [e2e]
@@ -823,6 +824,7 @@ the ambient-identity guidance are gone.
 ## 8. Open questions
 
 - **OQ-1 — Is PAC-50's admin proof the right gate for the organisation AI key?**
+  **Answered by the owner on 2026-10-28 (O-11): yes, repeated per change.**
   Assumed yes (D-6): it is the only notion of organisation admin the product
   has or plans, and it is narrower than "team owner". Cost: an admin repeats a
   Google/Microsoft step-up per change, and organisations on neither Google
@@ -861,8 +863,9 @@ the ambient-identity guidance are gone.
 - **OQ-8 — Should a new account that follows the organisation by default be
   told, or asked, before its first AI request** that its text and meeting
   context (titles, attendee emails, Slack and Notion excerpts) go to the
-  organisation's provider account, whose console the people who run that
-  account can read outside Paceday? Assumed: told **and** asked once (D-15),
+  organisation's provider account, which its administrators can access
+  outside Paceday? **Answered by the owner on 2026-10-28 (O-13): yes, told and
+  asked once.** Formerly assumed: told **and** asked once (D-15),
   the more conservative choice; nothing is sent before the user confirms.
   Owner: product owner (raised by the challenge, non-blocking 11). Non-blocking:
   the assumption widens nothing, and dropping the confirmation later only
@@ -872,8 +875,9 @@ the ambient-identity guidance are gone.
   Owner: product owner (challenge, non-blocking 12). Non-blocking: enrolling
   them later is possible; un-sending their data is not.
 - **OQ-7 — Should the organisation admin be able to forbid personal keys** (so
-  all members use the organisation's provider)? Not in the owner's decision;
-  not built (the owner's decision makes the user's key take precedence).
+  all members use the organisation's provider)? **Answered by the owner on
+  2026-10-28 (O-12): yes.** Formerly: not in the owner's decision; not built
+  (the owner's decision makes the user's key take precedence).
   Owner: product owner. Surfaced again by the challenge (non-blocking 13),
   together with OQ-1; OQ-4 (warning about Bedrock short-term keys, D-13) and
   OQ-6 / D-4 (Vertex express mode, in Preview) were surfaced with them
@@ -909,6 +913,30 @@ any factory assumption.
   providers) is not needed: the provider list is fixed and key-based.
 - **O-10 (owner, 2026-10-27, PAC-70 OQ-B6).** An operator-approved LLM
   destination may carry a path prefix (for OpenAI-compatible gateways).
+
+### Owner, 2026-10-28
+
+Recorded from `.claude/factory/owner-decisions.md` (2026-10-28). These override
+any factory assumption. All three concern Part 2, which is not built yet.
+
+- **O-11 (owner, 2026-10-28, OQ-1: yes).** Setting or changing the
+  organisation-wide AI provider and key requires PAC-50's admin proof (Google
+  Workspace / Microsoft 365 admin step-up, or the operator's break-glass list),
+  repeated per change. Confirms D-6.
+- **O-12 (owner, 2026-10-28, OQ-7: yes).** An organisation admin may forbid
+  personal keys, so every member uses the organisation's key. This narrows O-6
+  for that organisation's members while the setting is on. It is new Part 2
+  scope: the Part 2 spec revision must add its acceptance criteria (who may
+  set it, under O-11's proof; what a member with a personal key sees; that the
+  member's own key is then never sent) before Part 2's contract stage. Recorded
+  by the build stage of 2026-10-28, not yet challenged.
+- **O-13 (owner, 2026-10-28, OQ-8: yes, tell and ask once before the first AI
+  request).** Wording rule: say the organisation's provider account
+  administrators can **access** the data, never "read". Example: "Your text
+  and meeting details (titles, attendee emails, Slack and Notion excerpts) are
+  sent to your organisation's AI provider account, which its administrators
+  can access outside Paceday." Nothing is sent before the user confirms.
+  Confirms D-15; AC-41's notice follows this wording.
 
 ### Provider modes (factory, from cited provider documentation)
 
@@ -977,8 +1005,8 @@ any factory assumption.
   Rejected: "any organisation member" (membership is self-service by email
   domain, `orgs.go:42-52`) and "team owner" (anyone can create a team and
   becomes its owner, so it is equivalent to any member). Part 2 therefore
-  cannot land before PAC-50's gate does. Assumed by the factory, pending owner
-  confirmation (OQ-1).
+  cannot land before PAC-50's gate does. Confirmed by the owner on 2026-10-28
+  (O-11, OQ-1).
 - **D-7. Every member of the organisation gets the same read of its AI
   configuration: provider, model, destination, whether a key is set, and who
   can change it; never the key.** (Revised in revision 1; the draft showed
@@ -1042,8 +1070,8 @@ any factory assumption.
   used.** A new account follows by default (O-5), but the first AI action
   tells the user where their text and meeting context will go and asks them to
   confirm (row 5, AC-41). This is the more conservative answer to the
-  challenge's owner question (OQ-8). Assumed by the factory, pending owner
-  confirmation.
+  challenge's owner question (OQ-8). Confirmed by the owner on 2026-10-28
+  (O-13), with the wording rule recorded there.
 - **D-16. The Bedrock model is the Bedrock-specific setting the server reads
   today.** The web's Bedrock picker is changed to read and write it. The model
   a web user picked earlier sits in the general model setting and never
