@@ -186,6 +186,30 @@ export const SEAM_LINK = {
   hostUserId: CONNECTED.seam.id,
 } as const;
 
+/**
+ * PAC-81 Part B, AC-B3 (tests/csp.spec.ts). Each host owns one link and shows
+ * its avatar on that link's public booking page. The image is never fetched
+ * from the internet: the test intercepts the request.
+ */
+export const AVATAR_HOSTS = {
+  /** Positive case: a Google profile picture, allowed by img-src. */
+  google: {
+    id: 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1',
+    email: 'e2e.avatar.google@paceday.test',
+    name: 'E2E Avatar Google',
+    avatarUrl: 'https://lh3.googleusercontent.com/a/e2e-avatar-google=s96-c',
+    link: { id: 'c6666666-6666-4666-8666-666666666666', slug: 'e2e-avatar-google-30min', title: 'E2E Avatar Google Link' },
+  },
+  /** Negative control: an origin img-src does not allow. */
+  foreign: {
+    id: 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2',
+    email: 'e2e.avatar.foreign@paceday.test',
+    name: 'E2E Avatar Foreign',
+    avatarUrl: 'https://avatars.e2e-not-allowed.test/e2e-avatar-foreign.png',
+    link: { id: 'c7777777-7777-4777-8777-777777777777', slug: 'e2e-avatar-foreign-30min', title: 'E2E Avatar Foreign Link' },
+  },
+} as const;
+
 /** Exact analytics values seed.sql writes, for the manager roster assertions. */
 export const ANALYTICS = {
   alphaReport: { thisWeekFocusMinutes: 615, priorWeekFocusMinutes: 410 },
