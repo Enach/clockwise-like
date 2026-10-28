@@ -5,16 +5,21 @@
   v3.4"). Revisions 1 and 1.1 of this contract were written against v3.2.
 - **Linear**: https://linear.app/paceday/issue/PAC-22
 - **Manifest**: `contracts/features/PAC-22.yaml`
-- **Branch**: `factory/pac-22-contract`, cut from `origin/main` at `6d751f9`, with the
-  spec branch `factory/pac-22-spec` (`4a517e2`) fast-forwarded in so that the
+- **Branch**: `factory/pac-22-contract`. It was cut from `origin/main` at `6d751f9`
+  with the spec branch `factory/pac-22-spec` (`4a517e2`, spec v3.2) fast-forwarded
+  in. Since then `origin/main` `69ffa92` has been merged in (`3ddbfbc`) and spec
+  v3.4 (`factory/pac-22-spec` at `4f3c609`) merged in (`9ba22ba`), so the base is
+  `69ffa92` plus spec `4f3c609`, as the manifest's `contractBase` says. The
   contract and the spec it transcribes travel together.
-- **Status**: contract revision 1.2, draft, awaiting contract-challenger.
+- **Status**: contract revision 1.3, draft, awaiting contract-challenger.
   Revision 1 (`79d63d9`) was challenged on 2026-10-27 (accept-with-changes, three
   blocking); revision 1.1 applied that challenge. Revision 1.2 (2026-10-28)
   transcribes spec v3.4: an omitted client secret is kept on a replace, bound to
   the issuer and client id, decided at the moment of storing (see "Revision 1.2"
-  below). Revision 2 is still the rebase onto PAC-50 (§0), and only its gates
-  count for implementation.
+  below). Revision 1.2 was challenged on 2026-10-28 (accept-with-changes, one
+  blocking); revision 1.3 applies that challenge (see "Revision 1.3"). Revision 2
+  is still the rebase onto PAC-50 (§0), and only its gates count for
+  implementation.
 - **Author**: contract-author (stage 2). Nothing in this document was executed against
   a running server. Every claim about current behaviour is read from source on
   `6d751f9` (revisions 1, 1.1) and re-checked on `origin/main` `69ffa92`
@@ -55,13 +60,23 @@ because both features rewrite `createSsoProvider`, `SsoProviderCreateRequest` an
 `SsoProviderResponse`. They are resolved like this, and nothing else changes:
 
 1. `createSsoProvider`: keep PAC-50's gate (steps 1 to 5 of its description, its
-   400 `unknown property` / `provider_domain_mismatch`, its 403
-   `SsoWriteForbiddenResponse`). Insert PAC-22's five validation checks into
+   400 `unknown property`, its 403 `SsoWriteForbiddenResponse`) and its
+   `provider_domain_mismatch` refusal with the status the owner decided: 403
+   (spec D-15, owner 2026-10-27), as `setSsoProviderState` already says here.
+   PAC-50's branch at `51aa70a` still answers 400; if PAC-50 merges with 400,
+   revision 2 follows what merged for both operations and says so (D-15).
+   Insert PAC-22's five validation checks into
    PAC-50's step 2 (body shape), in PAC-22's order, so that they still run before
    the authorization step. PAC-22's check 6 (an omitted client secret, against
    the stored configuration: revision 1.2) goes after PAC-50's domain check and
    before its authorization step; the store-time re-check (spec D-14) goes into
-   PAC-50's recorded upsert, inside its transaction. Replace PAC-50's paragraph "`enabled` is always forced
+   PAC-50's recorded upsert, inside its transaction. Check 6 and the store-time
+   re-check read **the row the write would be stored under** (revision 1.3).
+   PAC-50 stores the domain lower-cased (its step 5), so after the rebase that is
+   the row under the lower-cased domain; on `main` it is the row under the domain
+   exactly as submitted, because the upsert conflicts on it unchanged
+   (`sso_providers.go:63`) while the domain match trims and folds case
+   (`domain.go:45-48`). Replace PAC-50's paragraph "`enabled` is always forced
    to true … `provider_type: "saml"` … still accepted" with PAC-22's "Active
    state" and "Configurations stored before PAC-22" paragraphs. The 201 is
    `SsoProvider`.
@@ -215,6 +230,24 @@ outcome that needs the stored row (not found, unchanged, changed) comes after
   the two would leave a state change nobody can attribute, which is what AC-16
   exists to prevent.
 
+- A body that is valid JSON but not an object (`[]`, `"active"`, `true`, `1`,
+  `null`) is refused with `invalid JSON` (revision 1.3). The operation's body is
+  defined as a JSON object, so a value of another type is not a body this
+  operation can read, which is what `invalid JSON` says on every other operation
+  whose decoder fails on it. **Rejected: `state must be 'active' or 'suspended'`**
+  for these: it suggests the caller only got the value wrong, and for `"active"`
+  it names the very value they sent.
+- The lookup (step 5) and the write and record (steps 6, 7) see one and the same
+  row (revision 1.3). If a `deleteSsoProvider` is stored after the lookup and
+  before the state write, the answer is 404 `sso provider not found`, nothing is
+  written and nothing is recorded, as for a row that was never there: D-9 says a
+  request is never told it succeeded for a configuration that does not exist,
+  and a record of a transition on a removed row would be exactly that. How the
+  implementation holds the row (a lock, a conditional update that reports zero
+  rows) is the plan's. **Rejected: answer 200 from the lookup's copy**: the
+  caller would be told SSO is suspended (or active) for a configuration that no
+  longer exists.
+
 **`updated_at` is not touched by the transition.** AC-10 says every described value
 other than the active state is unchanged after suspend and resume, and AC-20 says
 the same of a no-op. `updated_at` is a described value, so the contract defines it
@@ -314,6 +347,14 @@ leave out. The contract encodes it like this:
 - **The comparison is byte-for-byte** (D-13: no case folding, no trailing-slash
   normalisation), and is stated on the operation so the implementer does not
   "helpfully" normalise.
+- **Check 6 reads the row the write would be stored under** (revision 1.3), not
+  "the configuration for the domain" in some normalised sense. On `main` the
+  upsert conflicts on the domain as submitted while the domain match trims and
+  folds case, so a check 6 that lower-cased would let `{"domain":"ACME.com", …}`
+  with no secret pass against a stored `acme.com` and then insert a new
+  `ACME.com` row. Reading the conflict key makes that request a create, which
+  has no secret to keep, so it is refused. After PAC-50 the key is the
+  lower-cased domain, and the two readings coincide.
 
 What check 6 lets a caller learn is nothing new: whether a configuration exists
 for their own domain and what its issuer and client id are, which any member
@@ -417,7 +458,9 @@ Searched on 2026-10-27 in both repos (`grep -rn "admin/sso\|SsoProvider"`):
 | API-067, API-091 | Not touched (PAC-50; spec §5). |
 
 No operation this feature touches carries an `x-uncertain` marker after this
-revision. The bundle's count went from 12 markers to 10 (assembler summary).
+revision. The bundle holds 8 markers on `origin/main` `69ffa92` and 6 on this
+branch (revision 1.3, assembler summary; revision 1 counted 12 on `6d751f9` and
+10 on its branch).
 
 ## 6. Rollback
 
@@ -983,3 +1026,92 @@ revision adds no marker and removes none.
     clients), OQ-7 (the kill switch may need the operator) and OQ-8 / D-11
     (subdomain rows are operator-only) are still open, unchanged by revision
     1.2.
+
+## Revision 1.3 — 2026-10-28
+
+This revision answers the challenge of revision 1.2 above (applies to `f42411f`,
+contract content `b3386cb`). The challenge accepted revision 1.2 with changes.
+Every change it lists is applied, in the challenge's order. The contract content
+and the regenerated Go code are commit `539423c`; bundle sha256
+`cf385679…f392`. Every change is description text: no schema, property,
+`required` list, status code or operation changed, so the generated Go and web
+code change only in doc comments. PAC-50 is still unmerged, so this is not
+revision 2; the rebase in §0 is still owed.
+
+**Blocking**
+
+1. **The byte-level guarantee is scoped to what a server can honour.** In the
+   three places the challenge names (`listSsoProviders` description,
+   `createSsoProvider` 201, manifest `operationsChanged[0]`), the guarantee is
+   now: no property of the response carries either secret or anything derived
+   from it, under any name; and the byte search (raw, JSON-escaped, any letter
+   case, body and headers) holds for secrets that do not occur in the response's
+   non-secret values, as spec AC-1 and AC-2 arrange with long, test-unique values.
+   Each place names the counter-example (a secret of `okta` or `true` coinciding
+   with `provider_name`, `oidc_issuer` or `has_oidc_client_secret: true`) so the
+   precondition is not dropped again. No `minLength` floor was added to the
+   secret: the spec does not ask for it. The manifest's `createSsoProvider` entry
+   says the same. The spec's §3.1 already states the guarantee as a property of
+   the described shape plus the byte search of AC-1, so the spec is unchanged.
+
+**Non-blocking**
+
+1. **Check 6 names its key.** Check 6 now reads "the row this write would be
+   stored under, that is the row the upsert would conflict with": on `main`, the
+   row whose `domain` is byte-for-byte the submitted `domain`
+   (`sso_providers.go:63` conflicts on it unchanged, while `DomainMatchesOrg`
+   trims and folds case, `domain.go:45-48`); after PAC-50, the row under the
+   lower-cased domain PAC-50 stores. `{"domain":"ACME.com", …}` with the secret
+   absent is therefore a create when no `ACME.com` row exists, and refused
+   `oidc_client_secret is required`; it can no longer pass against `acme.com` and
+   insert a new row. The store-time re-check uses the same key. §0 rebase item 1
+   and §2.9 say so; the manifest's `createSsoProvider` entry too.
+2. **`setSsoProviderState` vs. a concurrent delete.** Steps 5 to 7 see one and
+   the same row: the state write and its record apply to the row the lookup
+   found and nothing else. A configuration removed after the lookup and before
+   the state write is stored gets 404 `sso provider not found`, nothing written,
+   nothing recorded, the authorization spent (D-9). Stated after step 7 and on
+   the 404; rationale and the rejected alternative in §2.5; manifest
+   `operationsAdded`. How the row is held is the plan's.
+3. **Non-object bodies** (`[]`, `"active"`, `true`, `1`, `null`) get `invalid
+   JSON`. Stated in step 2, on the 400, and on `SsoProviderStateRequest`;
+   `state must be …` rejected for them in §2.5.
+4. **Step 3** now says the 403 is "as createSsoProvider answers a foreign domain
+   on `main` today", and that `main`'s createSsoProvider still accepts a
+   subdomain under its suffix rule while this operation never does.
+5. **§0 rebase item 1** no longer says to keep PAC-50's "400 …
+   `provider_domain_mismatch`". It keeps PAC-50's refusal with the owner's status,
+   403 (D-15), as `setSsoProviderState` says, and follows what merged for both
+   operations if PAC-50 merges with 400.
+6. **Stale facts.** The header now gives the original cut (`6d751f9`, spec
+   `4a517e2`) and the current base (`origin/main` `69ffa92` merged in `3ddbfbc`,
+   spec `4f3c609` merged in `9ba22ba`), as the manifest's `contractBase` does. §5
+   now says 8 `x-uncertain` markers on `origin/main` `69ffa92` and 6 on this
+   branch (re-counted for this revision: `grep -c "x-uncertain:"` on both
+   bundles, and the assembler's summary `x-uncertain: 6`).
+7. **Mixed-case rows.** Spec D-11 carries a contract-stage note (not a behaviour
+   change): "not exactly an organisation's domain" means byte for byte, and
+   covers rows stored on `main` under another casing or with surrounding
+   whitespace as well as subdomain rows. Such a row is not listed, cannot be
+   reached by `setSsoProviderState`, is not found by detection (it lower-cases
+   the email's domain, `sso_detect.go:37`), yet `GET /api/auth/sso/Acme.com` and
+   its callback still use it (`handlers_sso.go:51`, `:112`, the path segment as
+   given). The release note names all of them; D-11's answer (operator only, API
+   not widened) applies to all of them. Manifest `decisionsAddedToSpec` records
+   the note.
+8. **OWNER: OQ-10 / D-12** ("omitted means kept, never cleared" for the SSO
+   client secret). The owner-decisions record, read again on 2026-10-28, has no
+   PAC-22 entry; its LLM decision ("Keys stay write-only (PAC-24)") is about
+   language-model keys. D-12 stays the factory's assumption, pending owner
+   confirmation, as the spec records it. It is non-blocking: it never deletes a
+   stored secret and widens nobody's access. If the owner answers otherwise,
+   check 6 goes and the secret becomes required again (spec OQ-10).
+9. **OWNER: OQ-9 / D-13** (a changed issuer or client id requires the secret).
+   No owner answer; stays the factory's assumption, pending owner confirmation.
+   Non-blocking: the alternative is the one that can redirect the secret.
+10. **OWNER: OQ-5, OQ-6, OQ-7, OQ-8 / D-11.** No owner answer for any of them;
+    each stays open with its recorded factory assumption, unchanged by this
+    revision (D-11 only gains the note in item 7).
+
+**Not changed**: the response shape, the transition's shape and order of checks,
+the list's audience, `deleteSsoProvider`, every 400/403/404 message text.

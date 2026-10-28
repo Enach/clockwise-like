@@ -1155,6 +1155,22 @@ pending owner confirmation** (2026-10-27).
   - **The release.** Production has zero users (D-4). The release note tells
     other deployments' operators to look for configurations whose domain is not
     exactly an organisation's domain.
+  - **Contract-stage note (contract revision 1.3, 2026-10-28), not a behaviour
+    change.** "Not exactly an organisation's domain" means byte for byte, and
+    covers more than subdomains. `main`'s createSsoProvider stores the domain as
+    submitted (`backend/storage/sso_providers.go:63`), while its domain match
+    trims and folds case (`backend/domain/domain.go:45-48`), so a member of
+    `acme.com` can store a row for `Acme.com` or ` acme.com`. Such a row, like
+    a subdomain row, is not listed (the list joins exactly,
+    `sso_providers.go:89`) and cannot be reached by setSsoProviderState (it
+    looks up the lower-cased domain), and detection does not find it (it looks
+    up the email's lower-cased domain, `backend/auth/sso_detect.go:37`). It is
+    still used by `GET /api/auth/sso/Acme.com` and its callback, which look up
+    the path segment as given (`backend/api/handlers_sso.go:51`, `:112`). The
+    release note therefore names every configuration whose domain differs in
+    any byte from an organisation's domain (other casing, surrounding
+    whitespace, subdomain), and D-11's answer applies to all of them: the
+    operator's to remove, the API not widened to reach them.
   - Assumed by the factory, pending owner confirmation.
 - **D-12: a client secret left out of a write that replaces a configuration is
   kept; a supplied one replaces it; it can never be cleared by a write** (§3.2,
