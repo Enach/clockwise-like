@@ -1,7 +1,8 @@
 # Spec — PAC-22: SSO configuration must not disclose identity-provider secrets
 
 - **Linear**: https://linear.app/paceday/issue/PAC-22/stop-returning-oidcclientsecret-and-samlcert-from-apiadminsso
-- **Status**: challenged (v3.4, 2026-10-28). v1 and v2 were rejected (see
+- **Status**: accepted (v3.4, 2026-10-28: the challenge of v3.4 accepted it,
+  see History). v1 and v2 were rejected (see
   History). v3 was never challenged. v3.1 is v3 checked again against
   `origin/main` at `6d751f9`, with the open questions answered as factory
   assumptions (see **Decisions**). The challenge of v3.1 accepted it with
@@ -2510,3 +2511,69 @@ this review. Every claim comes from reading the source and the Linear issue.
 - **No hand-written consumer.** `git grep` for `admin/sso` and `SsoProvider` on
   web `origin/main` (`aa5c52e`), outside `src/api/generated/`, finds nothing.
   `mcp/` and `e2e/` on `main` have no SSO reference.
+
+## Challenge — 2026-10-28 (applies to **v3.4**, commit `4f3c609`)
+
+**Verdict**: accept
+
+Who ran it: the factory session that also holds PAC-22's stage 4. It is not the
+spec author and did not see the author's reasoning beyond the committed spec.
+That independence is narrower than a separate challenger session, and the
+reviewer (stage 6) should know it.
+
+This round covers the v3.4 delta: the answers to the v3.3 challenge's two
+blocking and seven non-blocking findings, AC-27 and AC-28, D-14 and D-15. It
+re-checks the citations v3.4 relies on, on `origin/main` at `69ffa92`. Nothing
+was executed for this review except `git grep` and `gh pr view`.
+
+### Blocking
+
+None.
+
+- **v3.3 blocking 1 (interleaved writes)** is answered. §3.2 and §3.3 now say
+  what a replace keeps is decided at the moment it is stored. AC-27 names the
+  outcome of a replace race and a removal race, and AC-28 names the outcome of
+  a suspend or resume race. Each is falsifiable today: on `main` an omitted
+  secret decodes to `""` and is stored over the other write's secret
+  (`handlers_sso.go:174-185`, `:216`), and every replace stores `enabled =
+  true` (`:213`, `sso_providers.go:66`).
+- **v3.3 blocking 2 (false attribution)** is answered. D-12 now rests on PAC-24
+  §0 ("Write-only requires merge", `docs/specs/PAC-24.md:36-41`, checked) and
+  no longer cites the Linear issue.
+
+### Non-blocking
+
+1. **D-5 holds the critical disclosure behind a stalled PR.** D-5 orders PAC-50
+   first. On 2026-10-28 PAC-50's implementation PR #212 is open, `CONFLICTING`
+   against `main`, and last updated 2026-10-27 (head `51aa70a`). The spec's own
+   Scope section says the projection half "adds no privilege model and needs no
+   migration", and AC-1 to AC-8, AC-11, AC-18, AC-22 to AC-27 mean the same
+   thing on `main`'s write rule. Only the transition (§3.3, AC-9, AC-10, AC-12,
+   AC-15, AC-16, AC-19 to AC-21) and AC-17 need PAC-50's gate (D-6). Holding
+   the read-side fix of a critical finding (API-001) for an ordering chosen to
+   save a rebase is not the conservative choice. Not blocking, because the spec
+   is correct either way; the sequencing is a stage-4 matter and is recorded
+   there.
+2. **AC-28 can be arranged without the transition.** "A suspension stored
+   between the replace's check and its store" can be arranged by setting the
+   stored active state directly, so the replace half of AC-28 is testable
+   before PAC-50 lands. Stated for the plan, not a spec change.
+
+### Criteria I could not falsify
+
+None. AC-14 is a regression guard by design (stated in the spec).
+
+### Citations I checked and found wrong
+
+None. Checked: `handlers_sso.go:209-220` (secret stored whatever the kind),
+`sso_providers.go:63` (upsert conflicts on the domain as submitted),
+`auth/sso_detect.go:37` (detection uses the enabled-only lookup),
+`PAC-24.md:36-41`, PAC-50 §4.9 (ordering decided by the orchestrator on
+2026-10-22, not by the owner).
+
+### Consumers this breaks
+
+Unchanged from v3.4's own list. Re-checked on 2026-10-28: `git grep` for
+`admin/sso`, `SsoProvider`, `oidc_client` on smart-calendar-flow `origin/main`
+`aa5c52e` outside `src/api/generated/` finds nothing; `mcp/` and `e2e/` on
+clockwise-like `origin/main` `69ffa92` have no SSO reference.
