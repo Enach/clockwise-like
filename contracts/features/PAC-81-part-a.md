@@ -25,7 +25,7 @@ the server after PAC-81 is what stage 4 must build.
 | Operation | Change |
 |---|---|
 | `getReadiness` `GET /api/ready` | **New**, in a new fragment `paths/ops.yaml`. 200 `{"status":"ready"}` / 503 `{"error":"not ready"}` (rev 2), single-flight database ping |
-| `createPublicBooking` | 201 description (AC-A19); 503 only before the booking is saved |
+| `createPublicBooking` | 201 description (AC-A19); 503 only before the insert is sent |
 | `getPublicBookingSlots` | per-host read rule, own-limit timeout treated as free; 503 |
 | `getTeamAvailability` | per-member read rule, own-limit timeout treated as free; 503 |
 | `syncPersonalCalendar` | 503 on budget stop (AC-A17); ICS limits named in the 500 |
