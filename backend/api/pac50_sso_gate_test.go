@@ -95,7 +95,7 @@ func TestSSOWrite_OrglessCallerGetsMembershipRefusal(t *testing.T) {
 
 func issueGrant(t *testing.T, e *ssoEnv, user, org uuid.UUID, at time.Time) *storage.SSOStepupGrant {
 	t.Helper()
-	g, err := storage.IssueSSOStepupGrant(context.Background(), e.db, user, org, "google", at)
+	g, err := storage.IssueSSOStepupGrant(context.Background(), e.db, user, org, "google", storage.SSOGrantPurposeSSOWrite, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,17 +150,17 @@ func TestSSOWrite_OneGrantOneWrite(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first write = %d %s", first.Code, first.Body.String())
 	}
-	// U-22, pinned (contract-challenger round 2): the 201 body is exactly the
-	// thirteen PascalCase keys of SsoProviderResponse.
+	// Contract revision 8: the 201 is PAC-22's SsoProvider, exactly its
+	// thirteen snake_case keys, with a lower-cased domain and no secret.
 	got := errorBody(t, first)
-	for _, k := range []string{"ID", "Domain", "ProviderName", "ProviderType", "Enabled", "OIDCIssuer", "OIDCClientID",
-		"OIDCClientSecret", "SAMLEntryPoint", "SAMLIssuer", "SAMLCert", "CreatedAt", "UpdatedAt"} {
+	for _, k := range []string{"id", "domain", "provider_name", "provider_type", "state", "oidc_issuer", "oidc_client_id",
+		"has_oidc_client_secret", "saml_entry_point", "saml_issuer", "has_saml_cert", "created_at", "updated_at"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("201 body lacks %s", k)
 		}
 	}
-	if len(got) != 13 {
-		t.Errorf("201 body has %d keys, want 13: %v", len(got), got)
+	if len(got) != 13 || got["domain"] != org.Domain || got["has_oidc_client_secret"] != true || strings.Contains(first.Body.String(), `"sec"`) {
+		t.Errorf("201 body = %v; want 13 keys, domain %s, no secret", got, org.Domain)
 	}
 	rec := e.do(t, http.MethodPost, "/api/admin/sso", createBody(org.Domain), sess)
 	wantStepupRequired(t, rec, rec.Code, errorBody(t, rec))
@@ -240,7 +240,7 @@ func TestSSOWrite_DomainMismatchLeavesGrantLive(t *testing.T) {
 
 type failingSSOStore struct {
 	ssoStore
-	failWrite, failRecord, failDelete, failList, failConsume bool
+	failWrite, failRecord, failDelete, failRead, failConsume bool
 }
 
 func (f *failingSSOStore) deleteProvider(ctx context.Context, d string, actor, org uuid.UUID, via string) (bool, error) {
@@ -250,11 +250,11 @@ func (f *failingSSOStore) deleteProvider(ctx context.Context, d string, actor, o
 	return f.ssoStore.deleteProvider(ctx, d, actor, org, via)
 }
 
-func (f *failingSSOStore) listProviders(ctx context.Context, org uuid.UUID) ([]*storage.SSOProvider, error) {
-	if f.failList {
+func (f *failingSSOStore) getProvider(ctx context.Context, d string) (*storage.SSOProvider, error) {
+	if f.failRead {
 		return nil, errors.New("injected store failure")
 	}
-	return f.ssoStore.listProviders(ctx, org)
+	return f.ssoStore.getProvider(ctx, d)
 }
 
 func (f *failingSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error) {
@@ -264,11 +264,11 @@ func (f *failingSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID,
 	return f.ssoStore.consumeGrant(ctx, user, org, now)
 }
 
-func (f *failingSSOStore) upsertProvider(ctx context.Context, p *storage.SSOProvider, actor, org uuid.UUID, via string) (*storage.SSOProvider, error) {
+func (f *failingSSOStore) saveProvider(ctx context.Context, w storage.OIDCProviderWrite, actor, org uuid.UUID, via string) (*storage.SSOProvider, error) {
 	if f.failWrite {
 		return nil, errors.New("injected store failure")
 	}
-	return f.ssoStore.upsertProvider(ctx, p, actor, org, via)
+	return f.ssoStore.saveProvider(ctx, w, actor, org, via)
 }
 
 func (f *failingSSOStore) recordStepup(ctx context.Context, o storage.SSOStepupOutcome) (*storage.SSOStepupGrant, error) {
@@ -431,8 +431,8 @@ func TestSSOWrite_CasingUpdatesTheSameRow(t *testing.T) {
 	if n != 1 || !after.After(before) {
 		t.Fatalf("rows = %d, updated_at %v -> %v", n, before, after)
 	}
-	if body := errorBody(t, rec); body["Domain"] != org.Domain {
-		t.Fatalf("stored domain = %v, want %s", body["Domain"], org.Domain)
+	if body := errorBody(t, rec); body["domain"] != org.Domain {
+		t.Fatalf("stored domain = %v, want %s", body["domain"], org.Domain)
 	}
 	if ev := e.events(t, u.ID); len(ev) != 1 || ev[0].Details["op"] != "update" {
 		t.Fatalf("events = %v", ev)

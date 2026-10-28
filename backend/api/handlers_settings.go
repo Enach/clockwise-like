@@ -15,19 +15,33 @@ import (
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/google/uuid"
 )
 
 var timePattern = regexp.MustCompile(`^\d{2}:\d{2}$`)
 
-var validLLMProviders = map[string]bool{
+// validLLMChoices are the llmProvider values a settings write may choose
+// (NEW-llm-bring-your-own): off, follow the organisation, or one of the five
+// key-based providers. "unsupported" is accepted only unchanged; ollama is
+// gone (spec AC-6).
+var validLLMChoices = map[string]bool{
+	"":             true,
+	"organization": true,
 	"openai":       true,
 	"anthropic":    true,
-	"ollama":       true,
-	"bedrock":      true,
 	"azure_openai": true,
+	"bedrock":      true,
 	"vertex":       true,
-	"":             true,
 }
+
+// Settings-write messages NEW-llm-bring-your-own adds, as catalogued in the
+// contract's SettingsValidationError.
+const (
+	msgLLMProviderInvalid     = `llmProvider must be one of: "", organization, openai, anthropic, azure_openai, bedrock, vertex`
+	msgLLMProviderUnsupported = "llmProvider unsupported cannot be chosen: choose off, organization or a key-based provider"
+	msgLLMAPIKeyNoProvider    = "llmApiKey cannot be set: choose openai, anthropic, azure_openai, bedrock or vertex as llmProvider first"
+	msgLLMUnboundAPIKey       = `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)`
+)
 
 var validCalendarProviders = map[string]bool{"google": true, "outlook": true, "webcal": true}
 var validConferencingProviders = map[string]bool{"meet": true, "zoom": true, "teams": true}
@@ -39,10 +53,11 @@ type settingsHandlers struct {
 }
 
 // getSettings returns the caller's settings, creating their row on first read
-// (PAC-24). The provider key is never in the body; llmApiKeySet says whether
-// one is on file.
+// (PAC-24). No key is ever in the body; llmApiKeySet, llmApiKeysSet and
+// llmUnboundApiKeySet say which are on file, and aiStatus whether AI works
+// for the caller (NEW-llm-bring-your-own).
 func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userIDFromCtx(r.Context()))
+	s, err := h.readSettings(userIDFromCtx(r.Context()))
 	if err != nil {
 		writeServerError(w, r, "getSettings", err, http.StatusInternalServerError)
 		return
@@ -51,11 +66,25 @@ func (h *settingsHandlers) getSettings(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(s)
 }
 
+// readSettings is the caller's settings document with aiStatus filled in.
+func (h *settingsHandlers) readSettings(userID uuid.UUID) (*storage.Settings, error) {
+	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	if err != nil {
+		return nil, err
+	}
+	inOrg, err := storage.UserInOrganization(h.db, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.AIStatus = nlp.Status(s, inOrg)
+	return s, nil
+}
+
 // settingsPatchProperties is every property PATCH /api/settings accepts: the
 // JSON names of storage.Settings plus the write-only llmApiKey, which the
 // struct never encodes.
 var settingsPatchProperties = func() map[string]bool {
-	props := map[string]bool{"llmApiKey": true}
+	props := map[string]bool{"llmApiKey": true, "llmUnboundApiKey": true}
 	t := reflect.TypeOf(storage.Settings{})
 	for i := 0; i < t.NumField(); i++ {
 		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
@@ -120,11 +149,27 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 		writeError(w, settingsDecodeProblem(fields), http.StatusBadRequest)
 		return
 	}
-	if key, ok := fields["llmApiKey"]; ok {
-		if err := json.Unmarshal(key, &s.LLMAPIKey); err != nil {
+	var newKey *string
+	if raw, ok := fields["llmApiKey"]; ok {
+		var key string
+		if err := json.Unmarshal(raw, &key); err != nil {
 			writeError(w, "llmApiKey must be a string", http.StatusBadRequest)
 			return
 		}
+		newKey = &key
+	}
+	removeUnbound := false
+	if raw, ok := fields["llmUnboundApiKey"]; ok {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			writeError(w, "invalid JSON: llmUnboundApiKey has the wrong type", http.StatusBadRequest)
+			return
+		}
+		if v != "" {
+			writeError(w, msgLLMUnboundAPIKey, http.StatusBadRequest)
+			return
+		}
+		removeUnbound = true
 	}
 
 	changed, err := changedSettingsProperties(stored, s)
@@ -136,11 +181,21 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// NEW-llm-bring-your-own (spec D-5): a key binds to the provider AFTER
+	// this write and touches no other key; the unbound legacy key is removed
+	// only by the explicit llmUnboundApiKey: "".
+	if newKey != nil && !s.LLMAPIKeys.Set(s.LLMProvider, *newKey) && *newKey != "" {
+		writeError(w, msgLLMAPIKeyNoProvider, http.StatusBadRequest)
+		return
+	}
+	if removeUnbound {
+		s.LLMUnboundAPIKey = ""
+	}
 	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
-	updated, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	updated, err := h.readSettings(userID)
 	if err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
@@ -254,30 +309,28 @@ func settingsProblems(s *storage.Settings) []settingsProblem {
 		}
 	}
 
-	if !validLLMProviders[s.LLMProvider] {
-		add("llmProvider must be one of: openai, anthropic, ollama, bedrock, azure_openai, vertex", "llmProvider")
+	switch {
+	case s.LLMProvider == storage.LLMChoiceUnsupported:
+		// Reached only when the write changes llmProvider to "unsupported";
+		// written back unchanged it is not a change (spec AC-9).
+		add(msgLLMProviderUnsupported, "llmProvider")
+	case !validLLMChoices[s.LLMProvider]:
+		add(msgLLMProviderInvalid, "llmProvider")
 	}
-	// PAC-66: destinations of the ambient-credential providers, whichever
-	// provider is selected. Only a changed value reaches the caller (PAC-24
-	// AC-17), and "" is always accepted (spec AC-15).
+	// PAC-66: destinations of the cloud providers, whichever provider is
+	// selected. Only a changed value reaches the caller (PAC-24 AC-17), and
+	// "" is always accepted.
 	if msg := nlp.AzureEndpointWriteProblem(s.AzureEndpoint); msg != "" {
 		add(msg, "azureEndpoint")
-	}
-	if msg := nlp.GCPLocationWriteProblem(s.GCPLocation); msg != "" {
-		add(msg, "gcpLocation")
 	}
 	if msg := nlp.AWSRegionWriteProblem(s.AWSRegion); msg != "" {
 		add(msg, "awsRegion")
 	}
-	// PAC-66-B: the user-set base URLs, under the same changed-and-non-empty
-	// rule. llmBaseUrl is read by openai, anthropic and ollama, so it must be
-	// approved for at least one of them (D-B5); which one it is sent to is
-	// decided at send time.
+	// PAC-66-B: the user-set base URL, under the same changed-and-non-empty
+	// rule. It is read by openai and anthropic, so it must be approved for at
+	// least one of them (with its gateway prefix, owner decision O-10).
 	if msg := nlp.LLMBaseURLWriteProblem(s.LLMBaseURL); msg != "" {
 		add(msg, "llmBaseUrl")
-	}
-	if msg := nlp.OllamaBaseURLWriteProblem(s.OllamaBaseURL); msg != "" {
-		add(msg, "ollamaBaseUrl")
 	}
 	if !validCalendarProviders[s.CalendarProvider] {
 		add("calendarProvider must be one of: google, outlook, webcal", "calendarProvider")

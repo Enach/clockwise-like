@@ -71,22 +71,35 @@ func (h *meetingBriefHandlers) refreshBrief(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
+	// NEW-llm-bring-your-own: decide the AI configuration before anything
+	// else, so that "not configured" (409) and a settings-load failure (500)
+	// write no brief, fetch no Slack or Notion context and send nothing
+	// (spec AC-14, D-12; contract C-2).
+	settings, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "load settings", err, http.StatusInternalServerError)
+		return
+	}
+	inOrg, err := storage.UserInOrganization(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "load organisation", err, http.StatusInternalServerError)
+		return
+	}
+	decision := nlp.DecideSaved(settings, inOrg)
+	if decision.NotConfigured != nil {
+		writeNotConfigured(w, decision.NotConfigured)
+		return
+	}
+
 	svc := &engine.MeetingBriefService{DB: h.db}
-	if settings, err := storage.GetOrCreateSettingsByUser(h.db, userID); err == nil {
-		// PAC-66 / PAC-66-B: a refused destination gives the existing failed
-		// brief, with the reason as its text (spec AC-14, AC-B12), and sends
-		// nothing. A user-key provider with no key is refused here too when
-		// its destination is not approved (spec §B4).
-		var refusal *nlp.DestinationRefusal
-		if llm, err := nlp.NewLLMClientFromSettings(settings); err == nil {
-			if errors.As(nlp.CheckDestination(ctx, llm), &refusal) {
-				svc.LLMUnavailable = refusal.Message
-			} else {
-				svc.LLM = llm
-			}
-		} else if errors.As(err, &refusal) {
-			svc.LLMUnavailable = refusal.Message
-		}
+	// PAC-66 / PAC-66-B: a refused destination of a configured caller gives
+	// the existing failed brief, with the reason as its text, and sends
+	// nothing.
+	var refusal *nlp.DestinationRefusal
+	if errors.As(nlp.CheckDestination(ctx, decision.Client), &refusal) {
+		svc.LLMUnavailable = refusal.Message
+	} else {
+		svc.LLM = decision.Client
 	}
 	brief, err := svc.Generate(ctx, userID, event, true)
 	if err != nil {

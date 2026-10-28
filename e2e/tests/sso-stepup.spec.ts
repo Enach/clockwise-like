@@ -76,6 +76,16 @@ test.describe('PAC-50 — SSO admin step-up', () => {
       });
       expect(await rows()).toBe('0');
 
+      // 1b. The same three values without a write (contract revision 8,
+      //     getSsoStepupOptions, AC-26): what Settings shows (AC-25).
+      const options = await ctx.get('/api/admin/sso/stepup/options');
+      expect(options.status()).toBe(200);
+      expect(await options.json()).toEqual({
+        stepup_url: refusal.stepup_url,
+        stepup_scopes: refusal.stepup_scopes,
+        without_stepup: refusal.without_stepup,
+      });
+
       // 2. The start, resolved against the API base (not the page), with the provider.
       const start = await ctx.get(`${refusal.stepup_url}?provider=google`, { maxRedirects: 0 });
       expect(start.status()).toBe(302);
@@ -100,7 +110,11 @@ test.describe('PAC-50 — SSO admin step-up', () => {
       // 5. The same write now succeeds, and the row exists.
       const written = await ctx.post('/api/admin/sso', { data: body });
       expect(written.status()).toBe(201);
-      expect((await written.json()).Domain).toBe(domain);
+      // PAC-22's SsoProvider projection: lower-cased domain, never the secret.
+      const created = await written.json();
+      expect(created.domain).toBe(domain);
+      expect(created.has_oidc_client_secret).toBe(true);
+      expect(JSON.stringify(created)).not.toContain('"secret"');
       expect(await rows()).toBe('1');
 
       // One grant, one write: the next write needs a new step-up.
@@ -126,7 +140,15 @@ test.describe('PAC-50 — SSO admin step-up', () => {
     try {
       for (const d of [`sub.${domain}`, `other-${domain}`, ` ${domain} `]) {
         const res = await ctx.post('/api/admin/sso', {
-          data: { domain: d, provider_name: 'X', provider_type: 'oidc' },
+          // A complete body: PAC-22's body 400s come before the domain 403.
+          data: {
+            domain: d,
+            provider_name: 'X',
+            provider_type: 'oidc',
+            oidc_issuer: 'https://idp.example',
+            oidc_client_id: 'cid',
+            oidc_client_secret: 'secret',
+          },
         });
         expect(res.status()).toBe(403);
         expect(await res.json()).toEqual({ error: 'provider_domain_mismatch' });

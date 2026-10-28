@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
@@ -59,17 +60,21 @@ const (
 // through. It exists so a test can make the store fail after the gate (spec
 // AC-3d, D-4).
 type ssoStore interface {
-	upsertProvider(ctx context.Context, p *storage.SSOProvider, actor, org uuid.UUID, via string) (*storage.SSOProvider, error)
+	getProvider(ctx context.Context, domain string) (*storage.SSOProvider, error)
+	saveProvider(ctx context.Context, w storage.OIDCProviderWrite, actor, org uuid.UUID, via string) (*storage.SSOProvider, error)
 	deleteProvider(ctx context.Context, domain string, actor, org uuid.UUID, via string) (bool, error)
 	recordStepup(ctx context.Context, o storage.SSOStepupOutcome) (*storage.SSOStepupGrant, error)
 	consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error)
-	listProviders(ctx context.Context, org uuid.UUID) ([]*storage.SSOProvider, error)
 }
 
 type dbSSOStore struct{ ah *authHandlers }
 
-func (s dbSSOStore) upsertProvider(ctx context.Context, p *storage.SSOProvider, actor, org uuid.UUID, via string) (*storage.SSOProvider, error) {
-	return storage.UpsertSSOProviderRecorded(ctx, s.ah.db, p, actor, org, via)
+func (s dbSSOStore) getProvider(_ context.Context, d string) (*storage.SSOProvider, error) {
+	return storage.GetSSOProviderByDomainAnyState(s.ah.db, d)
+}
+
+func (s dbSSOStore) saveProvider(ctx context.Context, w storage.OIDCProviderWrite, actor, org uuid.UUID, via string) (*storage.SSOProvider, error) {
+	return storage.SaveOIDCProviderRecorded(ctx, s.ah.db, w, actor, org, via)
 }
 
 func (s dbSSOStore) deleteProvider(ctx context.Context, d string, actor, org uuid.UUID, via string) (bool, error) {
@@ -81,12 +86,10 @@ func (s dbSSOStore) recordStepup(ctx context.Context, o storage.SSOStepupOutcome
 }
 
 func (s dbSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error) {
-	_, ok, err := storage.ConsumeSSOStepupGrant(ctx, s.ah.db, user, org, now)
+	// An SSO configuration write consumes only an sso_write grant (contract
+	// revision 8.1, N5).
+	_, ok, err := storage.ConsumeSSOStepupGrant(ctx, s.ah.db, user, org, storage.SSOGrantPurposeSSOWrite, now)
 	return ok, err
-}
-
-func (s dbSSOStore) listProviders(_ context.Context, org uuid.UUID) ([]*storage.SSOProvider, error) {
-	return storage.ListSSOProvidersByOrg(s.ah.db, org)
 }
 
 // stepupRandRead is the state nonce's entropy source; a test replaces it to
@@ -190,6 +193,7 @@ func (h *ssoHandlers) mountAdmin(r chi.Router) {
 	r.Post("/", h.createSSOProvider)
 	r.Get("/", h.listSSOProviders)
 	r.Get("/stepup", h.startStepup)
+	r.Get("/stepup/options", h.getStepupOptions)
 	r.Get("/stepup/callback", h.stepupCallback)
 	r.Delete("/{domain}", h.deleteSSOProvider)
 }
@@ -273,6 +277,42 @@ func (h *ssoHandlers) stepupRequired() stepupRequiredBody {
 		StepupScopes:  scopes,
 		WithoutStepup: []string{withoutStepupSSOWrites},
 	}
+}
+
+// --- GET /api/admin/sso/stepup/options ------------------------------------------
+
+// getStepupOptions answers getSsoStepupOptions through the generated strict
+// wrapper (factory §4; contracts/openapi/MIGRATION.md).
+func (h *ssoHandlers) getStepupOptions(w http.ResponseWriter, r *http.Request) {
+	gen.NewStrictHandlerWithOptions(&generatedServer{db: h.ah.db, sso: h},
+		[]gen.StrictMiddlewareFunc{withRequest}, strictOptions).GetSsoStepupOptions(w, r)
+}
+
+// GetSsoStepupOptions is getSsoStepupOptions (contract revision 8, spec §9
+// D-13, AC-26): the step-up 403's stepup_url, stepup_scopes and
+// without_stepup, built by the same function, for a page with no write to
+// make. Read-only: no grant is consulted, no cookie set, nothing recorded,
+// and the answer does not depend on the caller beyond membership.
+func (s *generatedServer) GetSsoStepupOptions(ctx context.Context, _ gen.GetSsoStepupOptionsRequestObject) (gen.GetSsoStepupOptionsResponseObject, error) {
+	user, err := storage.GetUserByID(s.db, auth.UserIDFromContext(ctx))
+	if err != nil || user == nil || user.OrgID == nil {
+		return gen.GetSsoStepupOptions403JSONResponse{Error: gen.OrgMembershipRequired}, nil
+	}
+	if org, err := storage.GetOrgByID(s.db, *user.OrgID); err != nil || org == nil {
+		return gen.GetSsoStepupOptions403JSONResponse{Error: gen.OrgNotFound}, nil
+	}
+	b := s.sso.stepupRequired()
+	out := gen.SsoStepupOptions{
+		StepupUrl:     gen.SsoStepupUrl(b.StepupURL),
+		WithoutStepup: b.WithoutStepup,
+	}
+	if v, ok := b.StepupScopes[auth.StepupGoogle]; ok {
+		out.StepupScopes.Google = &v
+	}
+	if v, ok := b.StepupScopes[auth.StepupMicrosoft]; ok {
+		out.StepupScopes.Microsoft = &v
+	}
+	return gen.GetSsoStepupOptions200JSONResponse(out), nil
 }
 
 // withoutStepupSSOWrites is the one without_stepup code the server sends

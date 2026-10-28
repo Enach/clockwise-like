@@ -53,6 +53,19 @@ func TestPAC50_StepupBodyNamesOnlyConfiguredProviders(t *testing.T) {
 					t.Fatalf("= %d %s, want 403 %s", rec.Code, got, tc.want)
 				}
 			}
+			// Contract revision 8 (AC-24, AC-26): getSsoStepupOptions answers
+			// the same three values on the same deployment, without `error`.
+			opts := e.do(t, http.MethodGet, "/api/admin/sso/stepup/options", "", sess)
+			var want map[string]any
+			if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			delete(want, "error")
+			wantOpts, _ := json.Marshal(want)
+			gotOpts, _ := json.Marshal(errorBody(t, opts))
+			if opts.Code != http.StatusOK || string(gotOpts) != string(wantOpts) {
+				t.Fatalf("options = %d %s, want 200 %s", opts.Code, gotOpts, wantOpts)
+			}
 			// The key set is the configured set: each listed provider's start
 			// answers 302, each absent one 503.
 			for name, on := range map[string]bool{"google": tc.google, "microsoft": tc.microsoft} {

@@ -19,6 +19,12 @@ import (
 // configurable.
 const SSOStepupGrantTTL = 10 * time.Minute
 
+// SSOGrantPurposeSSOWrite is the purpose of every grant PAC-50 issues and the
+// only purpose an SSO configuration write consumes (contract revision 8.1,
+// N5; spec §4.8). A later feature reusing the admin proof issues and consumes
+// its own purpose, so neither can spend the other's grant.
+const SSOGrantPurposeSSOWrite = "sso_write"
+
 // ErrTenantPinned is returned when an org is already pinned to a different
 // Microsoft tenant. The pin is never moved by the application (spec §4.3, NB5).
 var ErrTenantPinned = errors.New("organization is pinned to another Microsoft tenant")
@@ -29,6 +35,7 @@ type SSOStepupGrant struct {
 	UserID     uuid.UUID  `json:"user_id"`
 	OrgID      uuid.UUID  `json:"org_id"`
 	Provider   string     `json:"provider"`
+	Purpose    string     `json:"purpose"`
 	IssuedAt   time.Time  `json:"issued_at"`
 	ExpiresAt  time.Time  `json:"expires_at"`
 	ConsumedAt *time.Time `json:"consumed_at"`
@@ -83,22 +90,23 @@ func insertSSOEvent(ctx context.Context, q execer, userID uuid.UUID, orgID *uuid
 	return err
 }
 
-// IssueSSOStepupGrant records a grant for (userID, orgID) issued at now.
-func IssueSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, provider string, now time.Time) (*SSOStepupGrant, error) {
-	return issueGrant(ctx, db, userID, orgID, provider, now)
+// IssueSSOStepupGrant records a grant for (userID, orgID) with the given
+// purpose, issued at now.
+func IssueSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, provider, purpose string, now time.Time) (*SSOStepupGrant, error) {
+	return issueGrant(ctx, db, userID, orgID, provider, purpose, now)
 }
 
 type queryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func issueGrant(ctx context.Context, q queryRower, userID, orgID uuid.UUID, provider string, now time.Time) (*SSOStepupGrant, error) {
-	g := &SSOStepupGrant{UserID: userID, OrgID: orgID, Provider: provider}
+func issueGrant(ctx context.Context, q queryRower, userID, orgID uuid.UUID, provider, purpose string, now time.Time) (*SSOStepupGrant, error) {
+	g := &SSOStepupGrant{UserID: userID, OrgID: orgID, Provider: provider, Purpose: purpose}
 	err := q.QueryRowContext(ctx, `
-		INSERT INTO sso_stepup_grants (user_id, org_id, provider, issued_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO sso_stepup_grants (user_id, org_id, provider, purpose, issued_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, issued_at, expires_at`,
-		userID, orgID, provider, now.UTC(), now.UTC().Add(SSOStepupGrantTTL),
+		userID, orgID, provider, purpose, now.UTC(), now.UTC().Add(SSOStepupGrantTTL),
 	).Scan(&g.ID, &g.IssuedAt, &g.ExpiresAt)
 	if err != nil {
 		return nil, err
@@ -107,20 +115,22 @@ func issueGrant(ctx context.Context, q queryRower, userID, orgID uuid.UUID, prov
 }
 
 // ConsumeSSOStepupGrant atomically consumes the caller's newest live grant for
-// (userID, orgID) at now (spec §4.2 step 5a): one statement selects and marks
-// it, so of two concurrent callers exactly one gets it. ok is false when there
-// is no live grant; nothing is changed then.
-func ConsumeSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, now time.Time) (id uuid.UUID, ok bool, err error) {
+// (userID, orgID) with the given purpose at now (spec §4.2 step 5a): one
+// statement selects and marks it, so of two concurrent callers exactly one
+// gets it. A grant of another purpose is never selected. ok is false when
+// there is no live grant; nothing is changed then.
+func ConsumeSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, purpose string, now time.Time) (id uuid.UUID, ok bool, err error) {
 	err = db.QueryRowContext(ctx, `
 		UPDATE sso_stepup_grants SET consumed_at = $3
 		WHERE id = (
 			SELECT id FROM sso_stepup_grants
-			WHERE user_id = $1 AND org_id = $2 AND consumed_at IS NULL AND expires_at > $3
+			WHERE user_id = $1 AND org_id = $2 AND purpose = $4
+			  AND consumed_at IS NULL AND expires_at > $3
 			ORDER BY issued_at DESC
 			LIMIT 1
 			FOR UPDATE
 		) AND consumed_at IS NULL
-		RETURNING id`, userID, orgID, now.UTC()).Scan(&id)
+		RETURNING id`, userID, orgID, now.UTC(), purpose).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return uuid.Nil, false, nil
 	}
@@ -135,9 +145,9 @@ func GetSSOStepupGrant(ctx context.Context, db *sql.DB, id uuid.UUID) (*SSOStepu
 	g := &SSOStepupGrant{}
 	var consumed sql.NullTime
 	err := db.QueryRowContext(ctx, `
-		SELECT id, user_id, org_id, provider, issued_at, expires_at, consumed_at
+		SELECT id, user_id, org_id, provider, purpose, issued_at, expires_at, consumed_at
 		FROM sso_stepup_grants WHERE id = $1`, id).
-		Scan(&g.ID, &g.UserID, &g.OrgID, &g.Provider, &g.IssuedAt, &g.ExpiresAt, &consumed)
+		Scan(&g.ID, &g.UserID, &g.OrgID, &g.Provider, &g.Purpose, &g.IssuedAt, &g.ExpiresAt, &consumed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -194,7 +204,8 @@ func RecordSSOStepupOutcome(ctx context.Context, db *sql.DB, o SSOStepupOutcome)
 				return nil, ErrTenantPinned
 			}
 		}
-		if grant, err = issueGrant(ctx, tx, o.UserID, *o.OrgID, o.Provider, o.Now); err != nil {
+		// A step-up under PAC-50 is always for an SSO configuration write.
+		if grant, err = issueGrant(ctx, tx, o.UserID, *o.OrgID, o.Provider, SSOGrantPurposeSSOWrite, o.Now); err != nil {
 			return nil, err
 		}
 	} else {
@@ -275,6 +286,36 @@ func UpsertSSOProviderRecorded(ctx context.Context, db *sql.DB, p *SSOProvider, 
 	return stored, nil
 }
 
+// SaveOIDCProviderRecorded stores a createSsoProvider write (PAC-22's
+// SaveOIDCProvider rules: the kept secret is re-decided inside the
+// transaction, the active state of a replace is kept) and its
+// sso_provider_written event in one transaction, so a write is never left
+// unrecorded and a refused or failed store records nothing. The domain is
+// stored lower-cased. via is "stepup" or "breakglass".
+func SaveOIDCProviderRecorded(ctx context.Context, db *sql.DB, w OIDCProviderWrite, actor, orgID uuid.UUID, via string) (*SSOProvider, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stored, inserted, err := saveOIDCProvider(ctx, tx, w)
+	if err != nil {
+		return nil, err
+	}
+	op := "update"
+	if inserted {
+		op = "create"
+	}
+	if err := insertSSOEvent(ctx, tx, actor, &orgID, SSOEventProviderWritten,
+		ssoProviderWrittenDetails{OrgID: orgID, ProviderID: stored.ID, Op: op, Via: via}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return stored, nil
+}
+
 // DeleteSSOProviderRecorded deletes the provider row for the lower-cased
 // domain and records the deletion in one transaction. found is false, and
 // nothing is recorded, when there was no row (API-067).
@@ -287,7 +328,7 @@ func DeleteSSOProviderRecorded(ctx context.Context, db *sql.DB, domain string, a
 	var id uuid.UUID
 	err = tx.QueryRowContext(ctx,
 		`DELETE FROM sso_providers WHERE lower(domain) = $1 RETURNING id`,
-		strings.ToLower(strings.TrimSpace(domain))).Scan(&id)
+		strings.ToLower(domain)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

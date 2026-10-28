@@ -1,29 +1,36 @@
--- 029_sso_admin_stepup.up.sql — PAC-50 (spec docs/specs/PAC-50.md §4.8): SSO
+-- 030_sso_admin_stepup.up.sql — PAC-50 (spec docs/specs/PAC-50.md §4.8): SSO
 -- writes are authorized by a short-lived admin step-up grant, every SSO write
 -- and step-up outcome is recorded for operators, provider domains are unique
 -- case-insensitively, and an org can be pinned to one Microsoft tenant.
 --
--- Numbered 029, the next free version on main (spec §9 D-7): PAC-55 took 025,
--- PAC-23 026_audit_log_user_id, PAC-49 027_settings_auto_schedule_last_run and
--- PAC-67 028_credential_losses, so this is applied after all of them on every
--- environment (§4.9). It touches none of the tables 026-028 alter or create
--- (audit_log, settings, credential_losses).
+-- Numbered 030, the next free version on main (spec §9 D-7): PAC-55 took 025,
+-- PAC-23 026_audit_log_user_id, PAC-49 027_settings_auto_schedule_last_run,
+-- PAC-67 028_credential_losses and PAC-73 029_llm_bring_your_own, so this is
+-- applied after all of them on every environment (§4.9). It touches none of
+-- the tables 026-029 alter or create.
 
 -- 1. Grants: one row per granted step-up, good for one write within
 --    expires_at. Consumed by a single UPDATE ... RETURNING (§4.2 step 5a).
+--    purpose names the write a grant authorizes (contract revision 8.1, N5):
+--    PAC-50 issues and consumes only 'sso_write'. No default, so every insert
+--    names it, and no CHECK on its values (only non-empty), so a later
+--    feature reusing the admin proof (the organisation AI key, owner
+--    2026-10-28) adds its own value without a migration; a grant is only
+--    ever consumed by a write of its own purpose.
 CREATE TABLE sso_stepup_grants (
     id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     org_id      UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     provider    TEXT        NOT NULL CHECK (provider IN ('google', 'microsoft')),
+    purpose     TEXT        NOT NULL CHECK (purpose <> ''),
     issued_at   TIMESTAMPTZ NOT NULL,
     expires_at  TIMESTAMPTZ NOT NULL,
     consumed_at TIMESTAMPTZ NULL,
     CHECK (expires_at > issued_at)
 );
--- Serves "newest live grant for (user, org)".
+-- Serves "newest live grant for (user, org, purpose)".
 CREATE INDEX idx_sso_stepup_grants_live
-    ON sso_stepup_grants (user_id, org_id, issued_at DESC)
+    ON sso_stepup_grants (user_id, org_id, purpose, issued_at DESC)
     WHERE consumed_at IS NULL;
 
 -- 2. The SSO event table (§4.6). Operators only: no API reads it. org_id is

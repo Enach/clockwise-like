@@ -76,87 +76,27 @@ func TestBuildSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestBuildLLMClient_NoKey(t *testing.T) {
-	db := openTestDB(t)
-	svc := &NLPService{DB: db}
+// The TestBuildLLMClient_* tests are replaced by TestDecideSaved_* in
+// destination_internal_test.go (NEW-llm-bring-your-own: one decision table;
+// TestBuildLLMClient_Ollama and the Ollama default model are gone with
+// Ollama, replaced by the provider_removed row).
 
-	s := &storage.Settings{LLMProvider: "openai", LLMAPIKey: ""}
-	_, err := svc.buildLLMClient(s)
-	if err == nil {
-		t.Error("expected error with no API key for openai")
-	}
-}
-
-func TestBuildLLMClient_Ollama(t *testing.T) {
-	db := openTestDB(t)
-	svc := &NLPService{DB: db}
-
-	s := &storage.Settings{LLMProvider: "ollama", LLMAPIKey: "", LLMBaseURL: "http://localhost:11434"}
-	client, err := svc.buildLLMClient(s)
-	if err != nil {
-		t.Fatalf("expected no error for ollama: %v", err)
-	}
-	if client == nil {
-		t.Error("expected non-nil client")
-	}
-}
-
-func TestBuildLLMClient_OpenAI(t *testing.T) {
-	db := openTestDB(t)
-	svc := &NLPService{DB: db}
-
-	s := &storage.Settings{LLMProvider: "openai", LLMAPIKey: "sk-test", LLMModel: "gpt-4o-mini"}
-	client, err := svc.buildLLMClient(s)
-	if err != nil {
-		t.Fatalf("expected no error for openai with key: %v", err)
-	}
-	if client == nil {
-		t.Error("expected non-nil client")
-	}
-}
-
-func TestBuildLLMClient_Anthropic(t *testing.T) {
-	db := openTestDB(t)
-	svc := &NLPService{DB: db}
-
-	s := &storage.Settings{LLMProvider: "anthropic", LLMAPIKey: "ant-test"}
-	client, err := svc.buildLLMClient(s)
-	if err != nil {
-		t.Fatalf("expected no error: %v", err)
-	}
-	if client == nil {
-		t.Error("expected non-nil client")
-	}
-}
-
-func TestBuildLLMClient_DefaultProvider(t *testing.T) {
-	db := openTestDB(t)
-	svc := &NLPService{DB: db}
-
-	s := &storage.Settings{LLMProvider: "", LLMAPIKey: ""}
-	_, err := svc.buildLLMClient(s)
-	if err == nil {
-		t.Error("expected error for empty provider")
-	}
-}
-
-func TestBuildLLMClient_DefaultModels(t *testing.T) {
-	db := openTestDB(t)
-	svc := &NLPService{DB: db}
-
-	// Test default model for ollama (empty model → llama3.2)
-	s := &storage.Settings{LLMProvider: "ollama", LLMModel: ""}
-	client, err := svc.buildLLMClient(s)
-	if err != nil {
-		t.Fatalf("ollama no model: %v", err)
-	}
-	ollamaClient, ok := client.(*OllamaClient)
-	if !ok {
-		t.Fatal("expected *OllamaClient")
-	}
-	if ollamaClient.Model != "llama3.2" {
-		t.Errorf("default ollama model = %q, want llama3.2", ollamaClient.Model)
-	}
+// openAIParseServer answers every OpenAI chat request with content, through
+// the public-host Given (PAC-66-B §B6), and returns the user's settings for
+// it: OpenAI with a key bound.
+func openAIParseServer(t *testing.T, content string) *storage.Settings {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{"message": map[string]string{"content": content}}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	forwardUserRequestsTo(t, srv)
+	s := &storage.Settings{LLMProvider: "openai", Timezone: "UTC", WorkStart: "09:00", WorkEnd: "18:00"}
+	s.LLMAPIKeys.Set("openai", "sk-test")
+	return s
 }
 
 func TestOpenAIClient_Complete(t *testing.T) {
@@ -243,67 +183,33 @@ func TestPostJSON_HTTPError(t *testing.T) {
 	}
 }
 
-func TestOllamaClient_Complete_Mock(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": map[string]string{
-				"content": `{"intent":"schedule_focus","duration_minutes":60,"range_start":"2025-01-06","range_end":"2025-01-06"}`,
-			},
-		})
-	}))
-	defer srv.Close()
+// TestOllamaClient_Complete_Mock is gone with the Ollama client
+// (NEW-llm-bring-your-own O-4); the Azure, Bedrock and Vertex clients are
+// pinned by api/byok_test.go (AC-3, AC-4, AC-5) and destination_test.go.
 
-	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
-	client := &OllamaClient{BaseURL: srv.URL, Model: "llama3.2"}
-	result, err := client.Complete(context.Background(), "system prompt", "block focus time tomorrow")
-	if err != nil {
-		t.Fatalf("OllamaClient.Complete: %v", err)
-	}
-	if !strings.Contains(result, "schedule_focus") {
-		t.Errorf("unexpected result: %s", result)
-	}
-}
-
-func TestNLPService_Parse_NoLLM(t *testing.T) {
+func TestNLPService_Parse_NoLLM(t *testing.T) { // NEW-llm-bring-your-own AC-11, AC-13, AC-35
 	db := openTestDB(t)
-	// DB default for llm_provider is "ollama" (would try localhost:11434); force empty.
 	ctx := settingsUser(t, db, &storage.Settings{LLMProvider: ""})
 	svc := &NLPService{DB: db}
 	result, err := svc.Parse(ctx, "schedule a meeting tomorrow")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if result.Intent != "unknown" {
-		t.Errorf("expected unknown intent, got %q", result.Intent)
+	if result.Intent != "unknown" || result.NotConfigured == nil || result.NotConfigured.Reason != ReasonOff {
+		t.Errorf("result = %+v, want intent unknown with not_configured off", result)
 	}
-	if !strings.Contains(result.Error, "LLM not configured") {
-		t.Errorf("error should mention LLM not configured, got: %q", result.Error)
+	if !strings.Contains(result.Error, "AI features are off") || result.Error != result.NotConfigured.Message {
+		t.Errorf("error = %q, want the not_configured sentence", result.Error)
+	}
+	body, _ := json.Marshal(result)
+	if strings.Contains(string(body), "range_start") || strings.Contains(string(body), "0001-01-01") {
+		t.Errorf("a result with no range carries one (API-080): %s", body)
 	}
 }
 
-func TestNLPService_Parse_WithOllama(t *testing.T) {
-	focusResponse := `{"intent":"schedule_focus","duration_minutes":90,"range_start":"2025-01-07","range_end":"2025-01-07"}`
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": map[string]string{"content": focusResponse},
-		})
-	}))
-	defer srv.Close()
-
-	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
+func TestNLPService_Parse_FocusRequest(t *testing.T) { // was TestNLPService_Parse_WithOllama
 	db := openTestDB(t)
-	s := &storage.Settings{
-		LLMProvider: "ollama",
-		LLMModel:    "llama3.2",
-		LLMBaseURL:  srv.URL,
-		Timezone:    "UTC",
-		WorkStart:   "09:00",
-		WorkEnd:     "18:00",
-	}
-	ctx := settingsUser(t, db, s)
+	ctx := settingsUser(t, db, openAIParseServer(t, `{"intent":"schedule_focus","duration_minutes":90,"range_start":"2025-01-07","range_end":"2025-01-07"}`))
 
 	svc := &NLPService{DB: db}
 	result, err := svc.Parse(ctx, "block focus time tomorrow")
@@ -316,29 +222,16 @@ func TestNLPService_Parse_WithOllama(t *testing.T) {
 	if result.DurationMinutes != 90 {
 		t.Errorf("expected 90 min, got %d", result.DurationMinutes)
 	}
+	body, _ := json.Marshal(result)
+	if !strings.Contains(string(body), `"range_start":"2025-01-07T00:00:00Z"`) || result.NotConfigured != nil {
+		t.Errorf("a found range must be present and not_configured absent (AC-35): %s", body)
+	}
 }
 
 func TestNLPService_Parse_ScheduleMeeting(t *testing.T) {
 	meetingResponse := `{"intent":"schedule_meeting","title":"Team Sync","duration_minutes":30,"attendees":["alice@co.com"],"range_start":"2025-01-06","range_end":"2025-01-10"}`
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": map[string]string{"content": meetingResponse},
-		})
-	}))
-	defer srv.Close()
-
-	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
-	s := &storage.Settings{
-		LLMProvider: "ollama",
-		LLMBaseURL:  srv.URL,
-		Timezone:    "UTC",
-		WorkStart:   "09:00",
-		WorkEnd:     "18:00",
-	}
-	ctx := settingsUser(t, db, s)
+	ctx := settingsUser(t, db, openAIParseServer(t, meetingResponse))
 
 	svc := &NLPService{DB: db}
 	result, err := svc.Parse(ctx, "schedule 30 min meeting with alice@co.com this week")
@@ -354,22 +247,8 @@ func TestNLPService_Parse_ScheduleMeeting(t *testing.T) {
 }
 
 func TestNLPService_Parse_InvalidJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": map[string]string{"content": "not valid json at all!!!"},
-		})
-	}))
-	defer srv.Close()
-
-	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
-	s := &storage.Settings{
-		LLMProvider: "ollama",
-		LLMBaseURL:  srv.URL,
-		Timezone:    "UTC",
-	}
-	ctx := settingsUser(t, db, s)
+	ctx := settingsUser(t, db, openAIParseServer(t, "not valid json at all!!!"))
 
 	svc := &NLPService{DB: db}
 	result, err := svc.Parse(ctx, "something unclear")
@@ -399,17 +278,8 @@ func settingsUser(t *testing.T, db *sql.DB, s *storage.Settings) context.Context
 // PAC-23 AC-5 / AC-14: a parsed request is recorded against the caller in ctx,
 // and the typed prompt reaches nobody else's log.
 func TestParse_AuditEntrySubjectIsCallerFromContext(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": map[string]string{"content": `{"intent":"schedule_focus","duration_minutes":60}`},
-		})
-	}))
-	defer srv.Close()
-
-	approveOllamaOrigin(t, srv.URL) // PAC-66-B §B6 Ollama Given
 	db := openTestDB(t)
-	ctx := settingsUser(t, db, &storage.Settings{LLMProvider: "ollama", LLMBaseURL: srv.URL, Timezone: "UTC", WorkStart: "09:00", WorkEnd: "18:00"})
+	ctx := settingsUser(t, db, openAIParseServer(t, `{"intent":"schedule_focus","duration_minutes":60}`))
 	otherCtx := settingsUser(t, db, &storage.Settings{LLMProvider: ""})
 	caller, other := auth.UserIDFromContext(ctx), auth.UserIDFromContext(otherCtx)
 

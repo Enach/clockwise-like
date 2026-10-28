@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/url"
@@ -65,9 +66,25 @@ func TestPAC50_EveryServerErrorIsTheGenericBody(t *testing.T) {
 	t.Run("list: the query fails", func(t *testing.T) {
 		e := newSSOEnv(t)
 		u, _ := e.member(t, "r4list")
-		e.h.store = &failingSSOStore{ssoStore: e.h.store, failList: true}
+		prev := listSSOProvidersByOrg
+		listSSOProvidersByOrg = func(*sql.DB, uuid.UUID) ([]*storage.SSOProvider, error) {
+			return nil, errors.New("injected list failure")
+		}
+		t.Cleanup(func() { listSSOProvidersByOrg = prev })
 		rec := e.do(t, http.MethodGet, "/api/admin/sso", "", session(t, u, time.Now()))
 		wantInternalError(t, "list", rec, rec.Code, rec.Body.String())
+	})
+	t.Run("create: the stored-row read fails, before any grant is consumed", func(t *testing.T) {
+		e := newSSOEnv(t)
+		u, org := e.member(t, "r81read")
+		g := issueGrant(t, e, u.ID, org.ID, e.clock.Now())
+		e.h.store = &failingSSOStore{ssoStore: e.h.store, failRead: true}
+		body := strings.Replace(createBody(org.Domain), `,"oidc_client_secret":"sec"`, "", 1)
+		rec := e.do(t, http.MethodPost, "/api/admin/sso", body, session(t, u, time.Now()))
+		wantInternalError(t, "create stored-row read", rec, rec.Code, rec.Body.String())
+		if grantConsumed(t, e, g.ID) {
+			t.Fatal("the stored-row read failure consumed the grant")
+		}
 	})
 	t.Run("start: the state cannot be generated", func(t *testing.T) {
 		e := newSSOEnv(t)
