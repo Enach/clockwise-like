@@ -351,3 +351,59 @@ Bundle hash at this revision: `5d54c76194180202d11049885b711f49f647a386baded03ea
 | Consumers: §11 MCP description wrong | Applied | §11 and the manifest: `mcp/client.go` sends no credential; about 16 endpoints; `MCP_AUTH_TOKEN` guards MCP's own listener. |
 
 Generated-code note: making `code` optional changes `Code string` to `Code *string` in two generated parameter structs and adds `Error *string`. This is the first non-additive change in `backend/api/gen` on this branch. Nothing handwritten references them, and `go build`/`go vet` pass.
+
+## Challenge, revision 2 — 2026-10-28
+
+**Verdict**: accept. **Blocking**: 0. **Ready for implementation (stage 3, plan)**: yes. Merge condition 2 (HARD: the recorded provider answers, `sub` = userinfo `id`, `oid` = `/me` `id`) still applies before stage 4.
+
+Scope: a confirming re-check of revision 2 only (`git diff 9d60fca 4774fbc`, head `4774fbc`). Read against the handlers at this head, `smart-calendar-flow` `origin/main`, `mcp/` and `e2e/`.
+
+### Revision 2 table, checked row by row
+
+| Finding | Status | Evidence |
+|---|---|---|
+| B1 `TestPAC35_CurrentUser_EveryDocumentedStatus` | **Closed** | Manifest `consumersAffected` names `pac35_auth_flows_test.go:756-785`; `:756` is the test, `:779` is `dec.DisallowUnknownFields()`. The backend merge condition names the amendment (struct gains `AddressStanding`, strict decode kept, 500 sub-test). |
+| B2 personal-Microsoft lock-out | **Closed in the contract** | Moved to `ownerQuestionsOpen` with the lock-out of EXISTING accounts stated; the release merge condition names the recovery paths; F4 is PAC-77 everywhere (manifest, §3, `auth.yaml`, spec F4 line). See Non-blocking 1 for the owner-facing text. |
+| B3 step-up `sub`/`oid` equality | **Closed** | Merge condition 2 is HARD, items (iii) and (iv) record both values for the same account and assert equality; §3 items 5 and 7, §8 and the 4b text in `auth.yaml` say what fails closed if they differ. |
+| NB1 cancel during connect | Applied | Step 4 in both callbacks; checked below (attacks A1-A5). |
+| NB2 Teams texts | Applied | Checked below. |
+| NB3 CORS invariant | Applied | The description matches `corsMiddleware` (`middleware.go:79-99`): `*` without credentials, or `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Origin` set only when `Origin == FRONTEND_URL`. |
+| NB4 `__Host-` | Not applied, reason accepted | The argument that prefixing only the connect cookies does not close it (a tossed `auth_token` suffices) is correct; `followUps.cookieHostPrefix` records it. |
+| NB5 deploy order | Applied | §14 and the release merge condition. See Non-blocking 2 and 3. |
+| NB6 re-check with no account row | Applied | `bearerAuth` text and CONTRACT-12. |
+| NB7 connect 500 and the state cookie | Applied | Both callbacks' 500 descriptions and step text. |
+| OQ-3 item 4 merge condition | Applied | Merge condition 2 (v). |
+| §11 MCP description | Applied, verified | `mcp/client.go:68-88` `doJSON` sets only `Content-Type`; no credential is forwarded. |
+
+### Attacks on the delta (optional `code`, documented `error`)
+
+Today's handwritten callbacks are routed directly (`routes.go:34`, `:36`), not through the generated wrapper, so the generated `RequiredParamError` for `code` was never on the request path, and the `Code *string` / `Error *string` change has no runtime effect. `grep -rn OAuthCallbackParams backend` outside `api/gen` finds nothing; no request validator (`openapi3filter`) exists in `backend/` or `e2e/`.
+
+- **A1. Cancel on the connect branch.** `GET /api/auth/callback?state=S&error=access_denied` with `Cookie: auth_token=<U, gen g>; google_connect_state=S`, S issued for (U, g, google) under 300 s. Contract: steps 1-3 pass, step 4 fails, `302 <FRONTEND_URL>/?connect=not_credited`, `google_connect_state` expired, no exchange, no `auth_token` Set-Cookie, `error` not echoed. CONTRACT-10 pins it for both providers. Correct.
+- **A2. Cancel on the sign-in branch.** `GET /api/auth/callback?state=S&error=access_denied` with `Cookie: oauth_state=S`. Today: `oauth_state` expired (`handlers_auth.go:48`), then `auth.ExchangeCode(ctx, cfg, "")` (`google_oauth.go:31-33`, a plain `config.Exchange`) fails at the token endpoint, `500 {"error":"internal error"}` (`handlers_auth.go:50-53`). Microsoft: the same at `handlers_microsoft_auth.go:46-57`, after the existing 503 when not configured. The contract says the sign-in branch keeps today's 500 and lists "token exchange failed" under it. Describes the server; unchanged.
+- **A3. Forced navigation to clear a victim's pending connect.** The victim has a pending `google_connect_state=S`; the attacker does not know S (HttpOnly cookie; the only other copy is inside `authorize_url` in a JSON body that a foreign origin cannot read under the CORS invariant). The attacker links `GET /api/auth/callback?state=X&error=access_denied` (or no `state`). Neither cookie equals X, so this is the existing 400 `invalid state` (`handlers_auth.go:44-46`), which sets no cookie: the victim's state survives. Clearing it needs S, and a holder of S could already finish or spoil the flow with any `code`. The no-code path adds no capability.
+- **A4. Oracle.** Steps 1-3 and step 4 all answer the same `302 /?connect=not_credited`, and step 4 runs after the state and session checks. A request without a code learns nothing that a request with a garbage code (which reaches the exchange and 500s only after steps 1-3 pass) did not already reveal to someone holding a valid S and the victim's session, i.e. the victim.
+- **A5. Edge values.** `code=` (present, empty) fails step 4 ("present and non-empty"): NOT CREDITED, no outbound call. `code=C&error=access_denied` passes step 4 and the exchange decides. Both are well defined.
+
+### Teams 400 texts vs pinned tests
+
+Every pin of the old strings is listed: `handlers_conferencing.go:38`, `handlers_credentials.go:77` (sources), `pac21_4xx_bodies_test.go:193`, `pac67_world_test.go:224` (`teamsLost`, used by `pac67_conferencing_test.go`). Whole-repo grep for `visit /api/auth/microsoft` and `reconnect at /api/auth/microsoft` finds nothing else outside `docs/` and earlier contracts (PAC-21, PAC-67 documents, which are history). `mcp/` and `e2e/`: none. `smart-calendar-flow` `origin/main` `src/`: no match on the text. The new instruction works: the connect requests the same Microsoft scopes as sign-in (`microsoft_oauth.go:40`), which is the credential Teams uses.
+
+### Gates run (this head, `4774fbc`)
+
+- `py -3 scripts/openapi_assemble.py --check` → rc=0 (OK: bundle is in sync (105 paths))
+- `py -3 scripts/openapi_migration_report.py --check` → rc=0 (OK: MIGRATION.md covers all 126 operations (6 generated))
+- `bash scripts/openapi_gen_go.sh --check` → rc=0 (OK: backend/api/gen matches the contract)
+- `cd backend && go build ./...` → rc=0; `go vet ./...` → rc=0
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` → `5d54c76194180202d11049885b711f49f647a386baded03eae53e57481f4abb9`, equal to the manifest `contractHash`.
+
+### Non-blocking
+
+1. **The owner-facing question understates B2.** `.claude/factory/owner-decisions.md` (orchestrator's file, outside this repo) asks whether personal Microsoft accounts "cannot sign in or sign up" is acceptable. It does not say that EXISTING personal-Microsoft-only accounts lose access at deploy, nor how they recover. The manifest's `ownerQuestionsOpen` says both. The orchestrator should copy that wording before the owner answers; the release merge condition already depends on the answer.
+2. **§14 window wording.** Between the API and the web deploy, the shipped web's connect control starts a sign-in, which can also **create a new account** (an unbound identity with authoritative or mailbox evidence on an address nobody carries) and switch the session to it, not only refuse or reach the bound account. Today's sign-in does the same, so it is not a regression. Add it to the release note.
+3. **§14 step 1 assumes the migration is safe under the old API.** For the window between the migration and the API, rows the old `UpsertUser` inserts must get generation 0 and no binding by default, so the new API treats them as unbound legacy accounts. The plan should say so; it is a property of the migration, not of the contract.
+4. **Sign-in cancel is still a JSON 500 on the API origin**, after an outbound token request with an empty code (A2). Unchanged by PAC-71 and outside its spec. A follow-up candidate alongside PAC-35 API-011/012, not this ticket. `error_description` / `error_uri`, which the providers also send, are undocumented; harmless with no request validator.
+
+### Verified clean
+
+The optional `code` / `error` delta (A1-A5): no new branch selection, no cookie-clearing by a third party, no oracle, sign-in behaviour unchanged and matching the handler; the generated-type change has no handwritten reference and no runtime path. The Teams text change: every pin listed, no web, MCP or e2e consumer. The CORS invariant text matches `corsMiddleware`. The MCP correction matches `mcp/client.go`. B1-B3 closed. Gates and `contractHash` reproduced.
