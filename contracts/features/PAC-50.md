@@ -1625,3 +1625,235 @@ stops being true once PAC-22's request schema lands first.
 - **Sign-in is not widened (AC-24).** The `startSsoAdminStepup`
   description and spec §4.3 both say sign-in requests none of the step-up
   scopes. That matches the owner's PAC-68 OQ-2 answer.
+
+## Revision 6 — 2026-10-28 (response to the round-4 challenge)
+
+Written by `contract-author` in a local session, against "Challenge, revision
+5" above. Contract revision 6; the bundle hashes to
+`7696ff3f99fe136c8fa42818daebee1a5539dc3dae27a8903c0015517593852a`
+(`git show 76ffa0c:contracts/openapi/openapi.yaml | sha256sum`), recorded in
+the manifest. Two schema changes, both in `SsoWriteStepupRequired`, and
+description changes. No operation, status code or other schema changes.
+
+### B1 — accepted, fix (a): `without_stepup` is really open
+
+`without_stepup.items` is now `{type: string, minLength: 1}`; the `enum` is
+gone. The description names the one value the server sends today
+(`sso_configuration_writes`), says the list is open, and says a client
+explains the codes it knows and ignores any other. Fix (b) was rejected
+because D-11 expects PAC-68 to add a value. Under (b), that value would make
+every client generated before it stop recognising the step-up 403, and that
+is the failure B1 describes. With (a) a later value is a description change
+for the server and no regeneration is forced on the web. Revision 5's
+"open enum" (above) and spec §9 D-11 now say "open list". The Revision 5
+text is annotated, not rewritten.
+
+typed-openapi now emits `without_stepup: z.array(z.string().min(1)).min(1)`
+(#119 `src/api/generated/schemas.ts:422`). The gen.go constant
+`SsoConfigurationWrites` and the type `SsoWriteStepupRequiredWithoutStepup`
+are gone from `backend/api/gen/paceday.gen.go`. Nothing on this branch or on
+#212 (`origin/impl/pac-50-sso-write-gate-backend` `51aa70a`) references
+either (`git grep`).
+
+### B2 — accepted, fixed as proposed
+
+`stepup_scopes` no longer has a `required` list. `minItems: 1` stays on each
+list that is present, and `additionalProperties: false` stays, so the only
+keys are `google` and `microsoft`. The description's normative rule: a
+provider's key is present if and only if that provider's step-up is
+configured on the deployment, that is, if `startSsoAdminStepup` would not
+answer 503 for it (D-2 for a missing OAuth client, D-9 for `APP_URL` unset).
+A Google-only deployment sends `{google: [...]}`, and an empty object means
+no step-up can be started. An unconfigured provider is shown by an absent
+key, not by an empty list, so `microsoft: []` stays invalid: a client never
+has to tell "configured, asks for nothing extra" apart from "not
+configured". `SsoWriteStepupRequired` and `startSsoAdminStepup` tell the
+client to offer only the providers that are keys of `stepup_scopes`, and to
+offer no step-up when it is empty.
+
+AC-24 (spec and manifest) now covers three cases: Google only (the e2e
+stack, no `microsoft` key), both providers, and neither (empty object).
+AC-22's typed outcome offers only the listed providers. The scopes
+mergeCondition requires tests for the same three configurations.
+
+### Consumers (non-blocking): accepted
+
+The manifest's `consumersAffected` now names #212
+`e2e/tests/sso-stepup.spec.ts:64` (exact `toEqual({error, stepup_url})`;
+stage 4 asserts the full body for the Google-only e2e stack) and `:114-115`
+(400 to 403).
+
+### N1 — accepted
+
+The `stepup_scopes` description puts the normative rule first ("each list is
+exactly what startSsoAdminStepup requests from that provider beyond the
+identity scopes") and then gives the Google and Microsoft scope names as
+"today's values, informative only", noting that OQ-2 may narrow Microsoft's.
+
+### N2 — accepted
+
+Spec §9 D-12, the manifest's `decisionsAssumed` D-12 and the "Order with
+PAC-22" mergeCondition now list what the revision after PAC-22 lands must
+cover:
+
+1. `setSsoProviderState` behind this gate, and listed among the operations
+   that answer `SsoWriteForbiddenResponse`.
+2. `without_stepup`'s "(create, update or delete)" extended with suspend and
+   resume.
+3. The §4.6 `op` enum extended with suspend and resume.
+4. U-21's determination redone against PAC-22's replaced request.
+5. The create 400 list replaced (PAC-22's nine messages plus
+   `unknown property`, with the stored-row check placed relative to the
+   gate).
+
+`setSsoProviderState` is not routed on #237, so nothing is ungated in the
+meantime. This revision does not make those changes. PAC-22 is not on
+`main`, and describing its operations here would describe code that does
+not exist (factory §7 rule 2).
+
+### N3 — accepted, with a recorded assumption
+
+`startSsoAdminStepup` now says the step-up "can be started again at any time
+by navigating to `stepup_url`". Every SSO write made without a live grant
+answers the step-up 403 again, so the choice comes back at the next write.
+It also says a grant is single-use and lasts 10 minutes, so the step-up is
+meant for a write the user is about to make. Spec §4.3 says the same. The
+owner's words in D-11 ("revisitable from Settings") are kept as given. How
+PAC-50 meets them is the new spec §9 **D-13**: no Settings entry point in
+PAC-50; the SSO admin page follow-up (spec §3) owns one. This is *assumed by
+the factory, pending owner confirmation* (the OWNER question below). It is
+the conservative reading: it adds no surface and the manifest's
+`src/pages` prohibition stands.
+
+### N4 — accepted
+
+The spec header (Status line and the U-22 inherited-scope line) and §3 now
+carry "*Superseded by §9 D-12*" next to the old order, as §4.9 already did.
+In this document, §1 opens with a note that §1 and §2 describe revisions
+1-4. Each place that later revisions changed is marked inline: three
+variants (four since revision 5), the 400 (a 403 since revision 5), the
+step-up variant's new properties, the PAC-22 order, and §5's `DELETE
+/stepup` 400.
+
+### N5 — accepted as a follow-up input
+
+Nothing changes in PAC-50, whose web scope is `client.ts` and its test. The
+SSO-page follow-up issue (spec §3) must map `provider_domain_mismatch`, and
+the other `SsoWriteForbiddenResponse` codes, to user-facing wording rather
+than show the code. This is recorded here for whoever files that issue.
+
+### OWNER questions: still open, recorded
+
+`owner-decisions.md` (read on 2026-10-28) answers none of the four, so each
+stays *assumed by the factory, pending owner confirmation* in spec §9:
+
+- D-1 to D-5 (start for an orgless caller is 403; an unconfigured provider is
+  503; the callback reason mapping; the callback 500; a 404 delete consumes
+  the grant).
+- D-11 (part): `without_stepup` omits "automatic org membership from a
+  verified domain", because PAC-50's step-up does not grant membership.
+- D-13: no Settings entry point in PAC-50; navigating to `stepup_url` at the
+  next write is enough until the SSO admin page exists.
+- D-12: PAC-22 lands before PAC-50 (sequencing).
+
+None of these deletes user data or widens who can see data.
+
+### Alternatives rejected
+
+- **B1 fix (b), a closed enum.** Rejected for the reason given under B1.
+- **`stepup_scopes` keeps both keys, and an unconfigured provider gets an
+  empty list.** A client cannot tell "configured, nothing extra" from "not
+  configured", and an empty list breaks the `minItems: 1` that keeps a
+  configured provider honest.
+- **A separate `stepup_providers: [google]` array next to `stepup_scopes`.**
+  It states the same fact twice, and the two could disagree. The keys of
+  `stepup_scopes` already carry it.
+- **Adding a Settings entry point now (N3).** It is outside the manifest's
+  web scope and spec §3. With single-use 10-minute grants it would mostly
+  produce grants that expire unused. That is left to the owner (D-13).
+- **Doing PAC-22's revision now (N2).** Rejected for the reason given under
+  N2.
+
+### Gates run for revision 6
+
+API. `api-gate.sh` itself was **not** run. It requires the host api checkout
+(`C:\Users\jouzu\paceday\clockwise-like`) to be on this branch, and that
+checkout is on `impl/pac-22-sso-secrets-backend`, which another stage owns.
+Switching it under that stage was not acceptable. Instead, the same script
+was run from a scratch copy with one difference: the host-side steps (tests,
+coverage, the Makefile floors) point at this branch's worktree
+(`C:\Users\jouzu\paceday\wt-pac50-challenge`) instead of the host checkout,
+and the test database uses port 15457 (`PACEDAY_TEST_DB_PORT`). The
+container step clones `factory/pac-50-contract` exactly as the gate does.
+Run on `0e7beca` (script exit 0):
+
+```
+make openapi rc=0
+regenerated: none
+OK: bundle is in sync (101 paths)
+OK: MIGRATION.md covers all 122 operations (4 generated)
+OK: backend/api/gen matches the contract
+openapi-check(api) rc=0
+backend lint rc=0
+mcp lint rc=0
+backend test rc=0
+mcp test rc=0
+backend  coverage: 63.1% (floor 57%) [3753 generated blocks excluded]
+backend coverage rc=0
+mcp      coverage: 84.0% (floor 75%)
+mcp coverage rc=0
+```
+
+An earlier run of the container step alone, on `8c36c52` (the fragment
+change), regenerated `backend/api/gen/paceday.gen.go` and
+`contracts/openapi/openapi.yaml`. Both were committed as `76ffa0c`.
+
+Web. `REGEN=1 web-gate.sh` was **not** run either. It copies regenerated
+files into the host web checkout, which is on
+`impl/pac-22-sso-secrets-frontend` (another stage). The regeneration was done
+the way the gate does it, in the `paceday-gate` container: a clone of
+`chore/regen-types-pac-50` (in a separate `/work50` directory), `make
+openapi` against this branch's bundle at `76ffa0c`, and the changed files
+copied into a worktree of `chore/regen-types-pac-50`
+(`C:\Users\jouzu\paceday\wt-pac50-web`). It changed
+`src/api/generated/{schemas.ts,schemas.types.d.ts,types.ts}` (+90/-42),
+committed as `ffefc22` on https://github.com/Enach/smart-calendar-flow/pull/119.
+Then
+`bash /c/Users/jouzu/paceday/.claude/factory/web-gate.sh chore/regen-types-pac-50 factory/pac-50-contract`
+(unchanged, no REGEN; script exit 0):
+
+```
+      Tests  315 passed (315)
+lint           PASS
+typecheck      PASS
+design-check   PASS (impeccable, ratcheted)
+openapi-check  PASS
+test           PASS
+coverage       PASS (ratchet floor in vitest.config.ts, target 70%)
+make verify rc=0
+```
+
+Zod probe (`npx tsx`) against the regenerated `schemas.ts`, using the
+round-4 rows plus four new ones (`Stepup` = `SsoWriteStepupRequired`,
+`Forbidden` = `SsoWriteForbiddenResponse`):
+
+```
+A both lists: Stepup=true Forbidden=true
+B extra without_stepup value: Stepup=true Forbidden=true
+C microsoft: []: Stepup=false Forbidden=false
+D no microsoft key (Google only): Stepup=true Forbidden=true
+D2 empty stepup_scopes: Stepup=true Forbidden=true
+D3 unknown provider key: Stepup=false Forbidden=false
+D4 without_stepup empty string: Stepup=false Forbidden=false
+D5 without_stepup []: Stepup=false Forbidden=false
+E mismatch+stepup_url: Stepup=false Forbidden=false
+F mismatch: Stepup=false Forbidden=true
+G fresh-login+without_stepup: Stepup=false Forbidden=false
+H #212 body today: Stepup=false Forbidden=false
+```
+
+B and D now validate (B1, B2). C stays invalid on purpose (see B2). E, F
+and G keep the `oneOf` disjoint.
+
+Not run: e2e-gate. This branch carries no handler code. e2e-gate, including
+`e2e/tests/sso-stepup.spec.ts`, remains a merge condition on #212.
