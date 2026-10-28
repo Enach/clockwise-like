@@ -771,3 +771,145 @@ D-18, D-19 (amended by P2-D6).
   since Part 1) is treated as a new account**: it follows the organisation,
   subject to confirmation (rows 4-6). Parent D-8 (pre-Part-1 accounts are not
   enrolled) is unchanged.
+
+## Challenge, revision 0 — 2026-10-28
+
+**Verdict**: accept-with-changes
+
+Checked by: `git fetch origin`; `git show` / `git grep` on
+`origin/factory/new-llm-byo-part2` (a90ba5e), clockwise-like `origin/main`
+(ae5c2cf) and smart-calendar-flow `origin/main` (eea0cf6). No test, build or
+`make verify` was run for this challenge. Spec line numbers are of a90ba5e.
+
+### Blocking
+
+1. **A withdrawn confirmation comes back when personal keys are forbidden.**
+   §5 (632-634) treats choosing one's own provider as withdrawing the
+   confirmation. §3.4 (268-274) stores it per user, organisation and version
+   and never clears it, and the personal-keys setting does not change the
+   version (271-272). Scenario: M confirms version 3 while following A;
+   M chooses OpenAI and saves K2 (allowed); the admin forbids personal keys
+   (still version 3). M's next parse goes to A's account with no notice: row 9
+   (156), "configured: the organisation's". P2-AC-18 only covers a member who
+   never confirmed. *Resolves when* the spec says whether choosing one's own
+   provider (and "off") ends the stored confirmation. Add a criterion: confirmed
+   follower → own provider → admin forbids → the next parse, brief refresh and
+   probe answer row 10 and send nothing. Alternatively, if the owner wants a
+   confirmation to survive that switch, rewrite §5 and get the owner's answer.
+
+2. **The confirmation is not tied to the configuration actually sent.**
+   "Confirmed" (151) means "the current configuration", but nothing requires
+   the values a request sends to be those of the version the stored
+   confirmation names. A request that reads the confirmation, then (after an
+   admin change) reads the new provider and key, sends to an account the member
+   never confirmed. Separately, "Choosing 'Use my organisation's AI' in
+   Settings ... counts as confirming" (280-281; P2-AC-22, 530-531) does not say
+   which version is confirmed. The web sends the whole settings document when
+   its cache is empty (`smart-calendar-flow/src/hooks/useSettings.ts:16`,
+   `src/api/client.ts:900-902`), so `llmProvider: "organization"` can arrive
+   without the member being shown anything. *Resolves when* §3.1 and §3.4 state
+   that (a) a request in rows 4/9 sends exactly the values of the version its
+   confirmation names, and otherwise answers row 5/10, and (b) the Settings
+   choice confirms only the version that was displayed, under P2-AC-24's
+   stale-version rule, and a settings write by itself records no confirmation
+   (the contract already rejects a `patchSettings` confirmation flag, contract
+   feature .md:93-97). Add a criterion for each.
+
+3. **The organisation key can leak through provider error text, and P2-AC-7
+   cannot be falsified as written.** "No answer of any operation, in any
+   status" (438) does not say which reads to test. On `main`:
+   - provider error bodies are copied verbatim (`backend/nlp/parser.go:123`);
+   - a failed brief stores `LLM error: <that>` as its text
+     (`backend/engine/meeting_brief_service.go:89`), which the member reads back
+     (`handlers_meeting_briefs.go:110`, `briefToResponse`);
+   - the probe blanks out only the caller's own keys before logging
+     (`backend/api/handlers_llm.go:62-65`, 122; logs and Sentry at
+     `server_errors.go:47-48`);
+   - a parse failure is logged unredacted (`handlers_nlp.go:30`).
+   Under Part 1 the only key in those texts was the member's own. Under Part 2
+   it is a key members must never hold, and gateways (owner O-10) may echo it.
+   *Resolves when* P2-AC-7 (or a new criterion) names the cases: with a provider
+   or gateway that echoes the key in its error, (i) the brief read after a
+   failed refresh in rows 4/9, (ii) the parse and probe answers in every
+   status, and (iii) server logs, error reports and operator records never
+   contain A's key. §6 should extend "keys are write-only" to logs and error
+   reports for the organisation key.
+
+4. **Break-glass is not "repeated per change" (owner O-11).** The owner's
+   sentence covers the step-up *and* the break-glass list, "repeated per
+   change". §3.2 (213-219) says "once per change" but lets a break-glass
+   session under 10 minutes old make any number of changes. P2-AC-2 tests one
+   break-glass change only. *Resolves when* the spec either requires one change
+   per fresh break-glass sign-in, or records unlimited changes within the
+   window as a factory assumption pending owner confirmation (a new P2-D),
+   with a criterion for the second break-glass change either way.
+
+### Non-blocking
+
+1. **Wrong attribution, §3.4 (273-274).** "the owner's 're-ask if the
+   provider changes'" appears neither in the owner's decisions (2026-10-28,
+   OQ-8: "tell and ask once") nor in the parent spec. Re-asking on any change
+   is the factory's widening of "once". Restate OQ-P2-1 accordingly.
+2. **§8 (690-691) claims every default is the more conservative choice.** That
+   is false for OQ-P2-2 / P2-D2. The alternative (stay off until the member
+   chooses "Use my organisation's AI") sends nothing more and asks no less.
+   P2-D2 moves a member who deliberately chose their own provider onto the
+   organisation's account. It is a product decision: put it to the owner, and
+   add a criterion that the row-10 notice says the personal provider is
+   set aside (P2-AC-22 tests row 5 only).
+3. **Product-level assumptions to confirm with the owner:** P2-D2 (above),
+   P2-D4 (re-ask after a key rotation, against "ask once"), P2-D3 (an admin can
+   cut every member's AI by forbidding personal keys before the setup is
+   complete), and break-glass covering several changes (Blocking 4).
+   P2-D1 and P2-D5 to P2-D11 are interface or engineering choices.
+4. **Step-up landing consumer.** `SsoAdminStepupSection.tsx:40-57` reads
+   `stepup` whatever the purpose. If an AI-purpose landing keeps
+   `stepup=granted`, it would also say the grant "is used by your next SSO
+   configuration change". P2-AC-32 should state that the SSO section shows no
+   outcome for an AI-purpose landing.
+5. **Destination refusals on the organisation's configuration misdirect the
+   member.** The approval check runs after the row (186-187), and its sentences
+   tell the user to fix their own Settings (`backend/nlp/destination.go:117-121`,
+   `property: azureEndpoint`). The spec should say who is named as able to fix
+   it in rows 4/9, and P2-AC-29 should cover a complete but unapproved
+   organisation configuration.
+6. **Code rollback (§7, 685-686) is not "safe" for O-12.** Part 1's code
+   ignores the forbid setting, so personal keys are sent again while the stored
+   setting says forbidden. Release notes must say so.
+7. **MCP.** `mcp/client.go:22-90` sends no user credential to the backend, so
+   P2-AC-33's "called for them" can only be tested against a fake backend. The
+   "nothing sent" half rests on P2-AC-29. §3.4's "given by the person, in the
+   web app" cannot be enforced by the server. Restate it as: no MCP tool and no
+   server-side path records a confirmation.
+8. **The admin is named as able to fix it when no admin can.** On a deployment
+   with neither Google nor Microsoft step-up configured, and no break-glass
+   list, rows 6, 8 and 11 still name the organisation's admin. Say whether that
+   is intended.
+9. **Stage order.** The branch already contains the contract
+   (`contracts/features/NEW-llm-bring-your-own-part2.*`, `openapi.yaml`), a
+   change to `backend/api/handlers_sso_stepup.go` and regenerated
+   `paceday.gen.go`, while the spec says "not yet challenged". Re-check the
+   contract against the revised spec.
+
+### Criteria I could not falsify
+- P2-AC-7: "any operation, in any status" names no reads (Blocking 3).
+- P2-AC-33: the MCP server has no per-user identity on `main`, so "for a member
+  in row 5" cannot be set up end to end (Non-blocking 7).
+- P2-AC-2 (break-glass): the window is tested but the number of changes in it
+  is not (Blocking 4).
+
+### Citations I checked and found wrong
+- §3.4 (273-274), "the owner's 're-ask if the provider changes'": not in the
+  owner's decisions (2026-10-28) or the parent spec. The owner said "ask once".
+- All other §2 citations match the code at ae5c2cf.
+
+### Consumers this breaks (not named in §2.4)
+- clockwise-like/e2e/tests/llm-bring-your-own.spec.ts:96-115: an
+  organisation member asserts `enablers: ['user']` and "No provider chosen".
+  P2-AC-14, P2-AC-31 and P2-AC-35 change both.
+- clockwise-like/contracts/features/NEW-llm-bring-your-own.yaml:149: Part 1's
+  AC-34.
+- smart-calendar-flow/src/lib/aiProviders.test.ts:59-66: "No provider chosen"
+  for `organization`, which changes for members (P2-AC-31).
+- smart-calendar-flow/src/components/settings/SsoAdminStepupSection.tsx:40-57:
+  reads `stepup` whatever the purpose (Non-blocking 4).
