@@ -283,9 +283,45 @@ func (h *ssoHandlers) stepupRequired() stepupRequiredBody {
 
 // getStepupOptions answers getSsoStepupOptions through the generated strict
 // wrapper (factory §4; contracts/openapi/MIGRATION.md).
+//
+// NEW-llm-bring-your-own Part 2: the optional `purpose` is read here, before
+// membership (contract: "Checks: purpose (400), membership (403)"); an
+// absent purpose is PAC-50's answer, byte-identical.
 func (h *ssoHandlers) getStepupOptions(w http.ResponseWriter, r *http.Request) {
+	purpose, ok := stepupPurposeParam(r)
+	if !ok {
+		writeError(w, msgStepupPurposeInvalid, http.StatusBadRequest)
+		return
+	}
+	params := gen.GetSsoStepupOptionsParams{}
+	if purpose != "" {
+		p := gen.SsoStepupPurpose(purpose)
+		params.Purpose = &p
+	}
 	gen.NewStrictHandlerWithOptions(&generatedServer{db: h.ah.db, sso: h},
-		[]gen.StrictMiddlewareFunc{withRequest}, strictOptions).GetSsoStepupOptions(w, r)
+		[]gen.StrictMiddlewareFunc{withRequest}, strictOptions).GetSsoStepupOptions(w, r, params)
+}
+
+// msgStepupPurposeInvalid is the 400 for a `purpose` outside the enum, empty,
+// or repeated (contract revision 2).
+const msgStepupPurposeInvalid = "purpose must be 'sso_write' or 'llm_org_key_write'"
+
+// stepupPurposeParam reads the optional `purpose` query parameter: "" when
+// absent, else the one valid value; ok is false when it is present and not
+// exactly one value of the enum.
+func stepupPurposeParam(r *http.Request) (string, bool) {
+	vals, present := r.URL.Query()["purpose"]
+	if !present {
+		return "", true
+	}
+	if len(vals) != 1 {
+		return "", false
+	}
+	switch vals[0] {
+	case storage.SSOGrantPurposeSSOWrite, storage.SSOGrantPurposeLLMOrgKeyWrite:
+		return vals[0], true
+	}
+	return "", false
 }
 
 // GetSsoStepupOptions is getSsoStepupOptions (contract revision 8, spec §9
@@ -293,7 +329,7 @@ func (h *ssoHandlers) getStepupOptions(w http.ResponseWriter, r *http.Request) {
 // without_stepup, built by the same function, for a page with no write to
 // make. Read-only: no grant is consulted, no cookie set, nothing recorded,
 // and the answer does not depend on the caller beyond membership.
-func (s *generatedServer) GetSsoStepupOptions(ctx context.Context, _ gen.GetSsoStepupOptionsRequestObject) (gen.GetSsoStepupOptionsResponseObject, error) {
+func (s *generatedServer) GetSsoStepupOptions(ctx context.Context, req gen.GetSsoStepupOptionsRequestObject) (gen.GetSsoStepupOptionsResponseObject, error) {
 	user, err := storage.GetUserByID(s.db, auth.UserIDFromContext(ctx))
 	if err != nil || user == nil || user.OrgID == nil {
 		return gen.GetSsoStepupOptions403JSONResponse{Error: gen.OrgMembershipRequired}, nil
@@ -306,6 +342,10 @@ func (s *generatedServer) GetSsoStepupOptions(ctx context.Context, _ gen.GetSsoS
 		StepupUrl:     gen.SsoStepupUrl(b.StepupURL),
 		WithoutStepup: b.WithoutStepup,
 	}
+	// Part 2: what is lost without the step-up depends on its purpose.
+	if p := req.Params.Purpose; p != nil && *p == gen.SsoStepupPurposeLlmOrgKeyWrite {
+		out.WithoutStepup = []string{withoutStepupOrgAIWrites}
+	}
 	if v, ok := b.StepupScopes[auth.StepupGoogle]; ok {
 		out.StepupScopes.Google = &v
 	}
@@ -315,9 +355,14 @@ func (s *generatedServer) GetSsoStepupOptions(ctx context.Context, _ gen.GetSsoS
 	return gen.GetSsoStepupOptions200JSONResponse(out), nil
 }
 
-// withoutStepupSSOWrites is the one without_stepup code the server sends
-// today: no SSO configuration write except by a break-glass operator.
+// withoutStepupSSOWrites is the without_stepup code of the sso_write
+// purpose: no SSO configuration write except by a break-glass operator.
 const withoutStepupSSOWrites = "sso_configuration_writes"
+
+// withoutStepupOrgAIWrites is the without_stepup code of the
+// llm_org_key_write purpose (PAC-73 Part 2): no change to the organisation's
+// AI configuration except by a break-glass operator.
+const withoutStepupOrgAIWrites = "organization_ai_configuration_writes"
 
 // --- the state cookie ----------------------------------------------------------
 
@@ -330,6 +375,18 @@ type stepupState struct {
 	Provider string    `json:"p"`
 	Nonce    string    `json:"n"`
 	Expires  int64     `json:"e"`
+	// Purpose is the write the grant will authorise (PAC-73 Part 2). It is
+	// written only for llm_org_key_write; absent (a state signed before
+	// Part 2 was deployed, or an SSO step-up) reads as sso_write.
+	Purpose string `json:"pp,omitempty"`
+}
+
+// purpose is the state's grant purpose, sso_write when absent.
+func (s *stepupState) purpose() string {
+	if s == nil || s.Purpose == "" {
+		return storage.SSOGrantPurposeSSOWrite
+	}
+	return s.Purpose
 }
 
 func (h *ssoHandlers) signState(s stepupState) string {
@@ -402,6 +459,16 @@ func (h *ssoHandlers) startStepup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "provider must be 'google' or 'microsoft'", http.StatusBadRequest)
 		return
 	}
+	// PAC-73 Part 2: the purpose, checked after the provider, before
+	// membership; no cookie is set for a refused one.
+	purpose, ok := stepupPurposeParam(r)
+	if !ok {
+		writeError(w, msgStepupPurposeInvalid, http.StatusBadRequest)
+		return
+	}
+	if purpose == storage.SSOGrantPurposeSSOWrite {
+		purpose = "" // sso_write is the default and is not written into the state
+	}
 	user, err := storage.GetUserByID(h.ah.db, userIDFromCtx(r.Context()))
 	if err != nil || user == nil || user.OrgID == nil {
 		// Spec Decisions, D-1: no org, no org domain to step up for.
@@ -432,7 +499,7 @@ func (h *ssoHandlers) startStepup(w http.ResponseWriter, r *http.Request) {
 	nonce := hex.EncodeToString(b)
 	h.setStateCookie(w, h.signState(stepupState{
 		UserID: user.ID, OrgID: org.ID, Provider: name, Nonce: nonce,
-		Expires: h.clock.Now().Add(stepupCookieTTL).Unix(),
+		Expires: h.clock.Now().Add(stepupCookieTTL).Unix(), Purpose: purpose,
 	}), int(stepupCookieTTL/time.Second))
 	email := sessionEmail(r.Context())
 	if email == "" {
@@ -460,17 +527,20 @@ func (h *ssoHandlers) stepupCallback(w http.ResponseWriter, r *http.Request) {
 	if st != nil {
 		provider = st.Provider
 	}
+	// A state whose signature does not verify (st nil) carries no purpose
+	// that can be trusted: it is an SSO outcome.
+	purpose := st.purpose()
 	if !ok {
-		h.finishStepup(w, r, user, user.OrgID, provider, reasonStateMismatch, "")
+		h.finishStepup(w, r, user, user.OrgID, provider, purpose, reasonStateMismatch, "")
 		return
 	}
 	org, err := storage.GetOrgByID(h.ah.db, st.OrgID)
 	if err != nil || org == nil {
-		h.finishStepup(w, r, user, user.OrgID, provider, reasonStateMismatch, "")
+		h.finishStepup(w, r, user, user.OrgID, provider, purpose, reasonStateMismatch, "")
 		return
 	}
 	reason, pin := h.checkStepup(ctx, r, user, org, st)
-	h.finishStepup(w, r, user, &org.ID, provider, reason, pin)
+	h.finishStepup(w, r, user, &org.ID, provider, purpose, reason, pin)
 }
 
 // checkStepup runs callback steps 1–4 and returns the denial reason ("" when
@@ -544,11 +614,13 @@ func containsFold(list []string, s string) bool {
 }
 
 // finishStepup records the outcome and redirects to the settings page. A
-// storage failure is a 500 with no usable grant (spec Decisions, D-4).
-func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user *storage.User, orgID *uuid.UUID, provider, reason, pin string) {
+// storage failure is a 500 with no usable grant (spec Decisions, D-4). The
+// grant carries purpose; an llm_org_key_write outcome's landing says so
+// (`&purpose=llm_org_key_write`), an sso_write one is PAC-50's exactly.
+func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user *storage.User, orgID *uuid.UUID, provider, purpose, reason, pin string) {
 	o := storage.SSOStepupOutcome{
 		UserID: user.ID, OrgID: orgID, Provider: provider,
-		Granted: reason == "", Reason: reason, PinTenant: pin, Now: h.clock.Now(),
+		Granted: reason == "", Reason: reason, PinTenant: pin, Purpose: purpose, Now: h.clock.Now(),
 	}
 	_, err := h.store.recordStepup(r.Context(), o)
 	if errors.Is(err, storage.ErrTenantPinned) {
@@ -563,6 +635,9 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 	target := h.ah.frontendURL + "/settings?stepup=granted"
 	if reason != "" {
 		target = h.ah.frontendURL + "/settings?stepup=denied&reason=" + reason
+	}
+	if purpose == storage.SSOGrantPurposeLLMOrgKeyWrite {
+		target += "&purpose=" + storage.SSOGrantPurposeLLMOrgKeyWrite
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }

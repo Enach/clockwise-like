@@ -63,6 +63,10 @@ type ssoStepupDetails struct {
 	Provider string     `json:"provider"`
 	Outcome  string     `json:"outcome"`
 	Reason   *string    `json:"reason"`
+	// Purpose is present only for a step-up started for another purpose
+	// than an SSO write (PAC-73 Part 2, P2-AC-6), so PAC-50's records are
+	// unchanged.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 type ssoProviderWrittenDetails struct {
@@ -171,7 +175,10 @@ type SSOStepupOutcome struct {
 	// PinTenant, on a granted Microsoft step-up, is the tenant id to pin the
 	// org to (idempotent; ErrTenantPinned when pinned elsewhere).
 	PinTenant string
-	Now       time.Time
+	// Purpose is the write the grant may authorise: SSOGrantPurposeSSOWrite
+	// when empty (PAC-50), or SSOGrantPurposeLLMOrgKeyWrite (PAC-73 Part 2).
+	Purpose string
+	Now     time.Time
 }
 
 // RecordSSOStepupOutcome records a step-up outcome and, when granted, pins the
@@ -184,7 +191,14 @@ func RecordSSOStepupOutcome(ctx context.Context, db *sql.DB, o SSOStepupOutcome)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	purpose := o.Purpose
+	if purpose == "" {
+		purpose = SSOGrantPurposeSSOWrite
+	}
 	details := ssoStepupDetails{OrgID: o.OrgID, Provider: o.Provider, Outcome: "denied"}
+	if purpose != SSOGrantPurposeSSOWrite {
+		details.Purpose = purpose
+	}
 	var grant *SSOStepupGrant
 	if o.Granted {
 		if o.OrgID == nil {
@@ -204,8 +218,8 @@ func RecordSSOStepupOutcome(ctx context.Context, db *sql.DB, o SSOStepupOutcome)
 				return nil, ErrTenantPinned
 			}
 		}
-		// A step-up under PAC-50 is always for an SSO configuration write.
-		if grant, err = issueGrant(ctx, tx, o.UserID, *o.OrgID, o.Provider, SSOGrantPurposeSSOWrite, o.Now); err != nil {
+		// The grant carries the purpose the step-up was started for.
+		if grant, err = issueGrant(ctx, tx, o.UserID, *o.OrgID, o.Provider, purpose, o.Now); err != nil {
 			return nil, err
 		}
 	} else {

@@ -30,6 +30,8 @@ type generatedServer struct {
 	db  *sql.DB
 	ch  *conferencingHandlers
 	sso *ssoHandlers // getSsoStepupOptions only (PAC-50)
+	// orgAI serves the organisation AI operations (PAC-73 Part 2).
+	orgAI *orgAIHandlers
 }
 
 type requestKey struct{}

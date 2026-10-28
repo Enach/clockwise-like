@@ -101,9 +101,11 @@ func TestDecideSaved_OneStateOneReason(t *testing.T) {
 		{"off", &settingsForTest{provider: ""}, true, ReasonOff, "", "user"},
 		{"openai no key", &settingsForTest{provider: "openai"}, true, ReasonNeedsKey, "openai", "user"},
 		{"bedrock no key, unbound key", &settingsForTest{provider: "bedrock", unbound: "k"}, true, ReasonNeedsKey, "bedrock", "user"},
-		{"organization, member", &settingsForTest{provider: "organization"}, true, ReasonNothingConfigured, "", "user"},
+		// PAC-73 Part 2 (spec §2.4, amended not deleted): rows 6 and 8 in an
+		// organisation with no configuration now also name its admin.
+		{"organization, member", &settingsForTest{provider: "organization"}, true, ReasonNothingConfigured, "", "user,organization_admin"},
 		{"organization, no org", &settingsForTest{provider: "organization"}, false, ReasonNothingConfigured, "", "user"},
-		{"ollama, member", &settingsForTest{provider: "unsupported", stored: "ollama"}, true, ReasonProviderRemoved, "", "user"},
+		{"ollama, member", &settingsForTest{provider: "unsupported", stored: "ollama"}, true, ReasonProviderRemoved, "", "user,organization_admin"},
 		{"ollama, no org", &settingsForTest{provider: "unsupported", stored: "ollama"}, false, ReasonProviderRemoved, "", "user"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,10 +123,10 @@ func TestDecideSaved_OneStateOneReason(t *testing.T) {
 			if tc.s.stored == "ollama" && !strings.Contains(nc.Message, "Ollama is no longer supported") {
 				t.Errorf("message %q does not name Ollama", nc.Message)
 			}
-			// Spec revision 2 (Blocking 1): until Part 2 no admin can configure
-			// AI, so no Part 1 answer names one, in or out of an organisation.
-			if strings.Contains(nc.Message, "admin") {
-				t.Errorf("message %q names an organisation admin; in Part 1 only the user can fix it", nc.Message)
+			// Part 2 (P2-AC-31): the sentence names the organisation's admin
+			// exactly when the enablers include them.
+			if got, want := strings.Contains(nc.Message, "administrator"), strings.Contains(tc.enablers, "organization_admin"); got != want {
+				t.Errorf("message %q names an admin = %v, want %v", nc.Message, got, want)
 			}
 			st := Status(tc.s.settings(), tc.inOrg)
 			if st.Configured || st.Provider != "" || st.NotConfigured == nil || st.NotConfigured.Reason != tc.reason || st.InOrganization != tc.inOrg {
@@ -242,11 +244,10 @@ func TestDecideProbe(t *testing.T) {
 	}
 }
 
-// Spec challenge r2, non-blocking 2: a probe sentence names no organisation
-// and no admin in Part 1, whatever the caller's organisation, whatever is
-// probed. Before revision 2.1 a direct probe of "organization" said "Your
-// organisation has no AI set up in Paceday" or "there is no organisation AI
-// to test".
+// Spec challenge r2, non-blocking 2, amended by PAC-73 Part 2 (spec §2.4): a
+// probe sentence names no organisation and no admin for a caller in no
+// organisation; inside an organisation it names the admin exactly when the
+// enablers include organization_admin (P2-AC-31).
 func TestDecideProbe_SentencesNameNoOrganisation(t *testing.T) {
 	str := func(v string) *string { return &v }
 	stored := map[string]*configuredSettings{
@@ -274,6 +275,12 @@ func TestDecideProbe_SentencesNameNoOrganisation(t *testing.T) {
 				}
 				seen[d.NotConfigured.Reason] = true
 				msg := strings.ToLower(d.NotConfigured.Message)
+				if inOrg {
+					if got, want := strings.Contains(msg, "admin"), strings.Join(d.NotConfigured.Enablers, ",") != "user"; got != want {
+						t.Errorf("%s, probe %+v: sentence %q names an admin = %v, want %v (enablers %v)", name, req, d.NotConfigured.Message, got, want, d.NotConfigured.Enablers)
+					}
+					continue
+				}
 				for _, word := range []string{"organisation", "organization", "admin"} {
 					if strings.Contains(msg, word) {
 						t.Errorf("%s, inOrg=%v, probe %+v: sentence %q says %q", name, inOrg, req, d.NotConfigured.Message, word)
@@ -287,7 +294,7 @@ func TestDecideProbe_SentencesNameNoOrganisation(t *testing.T) {
 			t.Errorf("no probe answered %s; the sentence for it was not checked", r)
 		}
 	}
-	d, _ := DecideProbe(stored["openai"], true, ProbeRequest{Provider: str("organization")})
+	d, _ := DecideProbe(stored["openai"], false, ProbeRequest{Provider: str("organization")})
 	if want := "There is no AI provider to test. Choose a provider and add your key in Settings."; d.NotConfigured == nil || d.NotConfigured.Message != want {
 		t.Errorf("organization probe = %+v, want %q", d.NotConfigured, want)
 	}

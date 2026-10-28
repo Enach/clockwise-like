@@ -174,6 +174,11 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 		// and callback live under the same prefix, behind the session.
 		r.Route("/api/admin/sso", ssoh.mountAdmin)
 
+		// PAC-73 Part 2: the organisation's AI configuration (read by every
+		// member, changed with PAC-50's proof for this purpose, confirmed by
+		// each member).
+		r.Route("/api/organization/ai", newOrgAIHandlers(db, ssoh).mount)
+
 		fbh := newFreeBusyHandlers(db, oauthConfig)
 		r.Post("/api/freebusy", fbh.query)
 		r.Get("/api/audit", auditHandler(db))
