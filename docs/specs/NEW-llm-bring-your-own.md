@@ -1728,3 +1728,81 @@ empty key, so it answers "needs a key" instead of testing the stored key.
 Checks run for this revision are listed in the PR bodies of
 Enach/clockwise-like#239 and Enach/smart-calendar-flow#131 (gate logs); this
 section claims none.
+
+## Challenge, revision 2 — 2026-10-28
+
+Challenger: `spec-challenger`, re-checking revision 2 on
+`origin/impl/new-llm-bring-your-own-backend` at `14ee5e3`. Scope: Part 1, plus
+any promise Part 1 makes about Part 2.
+
+Checks run (read-only; no tests, gates or Docker were run, so nothing here
+claims a test passes): the spec at `14ee5e3` and `git diff 2e44c21 14ee5e3`;
+on the branch `backend/nlp/llm_factory.go`, `handlers_llm.go:40-100`,
+`handlers_meeting_briefs.go:66-110`, the call sites of
+`DecideSaved`/`DecideProbe`/`CheckDestination`, `pac66b_base_url_test.go:95-290`,
+`pac66_llm_destination_test.go` (`keyed()`), `byok_test.go`,
+`nlp/destination_internal_test.go:85-150`, `nlp/user_destination_test.go:85-105`,
+`config/deployment_files_test.go`, `.env.example`,
+`e2e/tests/llm-bring-your-own.spec.ts`, `llm-destination.spec.ts`; on
+`origin/main` `handlers_meeting_briefs.go:60-95`, `pac66b_base_url_test.go:119`,
+`nlp/user_destination_test.go:85`, `nlp/destination_internal_test.go:75`; web at
+`ae98fea` `src/lib/aiProviders.ts`, `src/components/AINotConfiguredNotice.tsx`,
+`src/api/client.ts:872-878`, `src/pages/Settings.tsx`.
+
+**Verdict**: accept
+
+### Earlier findings: applied?
+
+- Blocking 1: applied. Spec lines 284-291, rows 6 and 8 (280, 282) name the
+  admin only "from Part 2"; AC-21 (591-609), AC-34 (769-774), D-21 (1191-1204)
+  agree. Code `llm_factory.go:159-163` always returns `enablers: [user]`; pinned
+  by `TestDecideSaved_OneStateOneReason`, `TestBYOK_EveryNotConfiguredRowGivesOneReason`
+  and e2e `llm-bring-your-own.spec.ts:86-118`. Web `aiProviders.ts:59-77`.
+- Blocking 2: applied. Order stated at lines 293-302; line 411 and §6 (815-842)
+  agree. Decision precedes destination check on probe (`handlers_llm.go:75`/`:87`),
+  refresh (`handlers_meeting_briefs.go:88`/`:99`) and parse (`parser.go:169`/`:178`).
+  Tests `pac66b_base_url_test.go:99,131,207`, `keyed()`, and the 409-then-422
+  Azure e2e case.
+- Non-blocking 1-10: applied (AC-2/AC-42, AC-20 term list, §7 down migration and
+  Vertex global host, AC-16 "off", AC-18 extra segments, D-21 provenance,
+  "access" at line 428, OQ-7 text, Status line).
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. §3 "Existing accounts" (lines 397-399) and D-8 (1108-1110) still offer the
+   organisation's AI without "from Part 2", contradicting 284-288 and AC-21
+   (600-601). Add "from Part 2".
+2. `backend/nlp/llm_factory.go:189-192`: a direct API probe resolving to
+   `organization` (not the saved choice) answers with organisation wording that
+   lines 286-288 forbid in Part 1. The web cannot send this request. Make the
+   sentences neutral and extend the test to probe sentences.
+3. §6 lines 822-825: the old keyless answer was a 422 only on the probe; parse
+   answered 200 with the refusal in `error` and refresh 200 with a `failed`
+   brief.
+4. §6's list of replaced tests misses `TestUserKey_RefusalDoesNotDependOnTheKey`
+   (main `nlp/user_destination_test.go:85`) and
+   `TestRefusalDoesNotDependOnTheCredential` (main
+   `nlp/destination_internal_test.go:75`); both are replaced in code with "Was …"
+   comments.
+5. `14ee5e3` changed `contracts/openapi/` after the contract challenge accepted
+   at `2e44c21`, including a new 500 when the organisation membership read
+   fails. State whether that may be a 500 in Part 1; have the contract-challenger
+   re-check the delta.
+6. Post the challenges to Linear PAC-73.
+
+### Criteria I could not falsify
+
+None. AC-21's organisation half is now covered by
+`llm-bring-your-own.spec.ts:86-118`. AC-42 is a regression guard.
+
+### Citations I checked and found wrong
+
+- §6 lines 822-825 (Non-blocking 3). Others in revision 2's changes are correct.
+
+### Consumers this breaks
+
+None new. Two replaced tests are not listed in §6 (Non-blocking 4).

@@ -1056,3 +1056,43 @@ enum value changed; only descriptions, two examples and this file's header.
   answered by spec revision 2.
 - `gates.contractApproval` is set to accepted, citing the re-check of
   revision 2 at `2e44c21`; revision 2.1 has not been re-checked.
+
+## Challenge, revision 2.1 — 2026-10-28
+
+**Verdict**: accept-with-changes. Contract rev. 2.1 (api #239, 2e44c21..14ee5e3) is accepted with no blocking finding. The web side (smart-calendar-flow #131, a5beb27..ae98fea) has one blocking finding, W-1, which needs no contract change.
+
+### Requests wrongly permitted
+None new. Rev. 2.1 changes no schema.
+
+### Responses the client cannot handle
+None. `enablers` keeps its enum `[user, organization_admin]`. Narrowing the produced values to `[user]` cannot break a client that handles the enum.
+
+### Consumers affected
+- W-1 (blocking, web). `src/lib/aiProviders.ts:101-103` `providerSwitch` resets only `llm_provider` and `llm_model`. The draft `llm_api_key` survives a provider switch.
+  (a) Data loss. openai and anthropic both have keys, openai saved. "Remove saved key" (`Settings.tsx:722-728`), then select Anthropic, then Save sends `PATCH {llmProvider:"anthropic", llmModel:"", llmApiKey:""}`. `handlers_settings.go:187` binds `""` to anthropic and deletes the Anthropic key. The OpenAI key, the one the user removed, is kept. Test connection first sends `llmApiKey: ""` (`client.ts:872-877`) and answers 409 needs_key for Anthropic although a key is stored.
+  (b) A key typed in the OpenAI field, then a switch to Anthropic: Test sends it as `x-api-key` to api.anthropic.com, and Save binds it to Anthropic.
+  Fix: a provider switch also sets `llm_api_key: undefined` and restores `llm_api_key_set` / `llm_api_keys_set` from the saved settings. Add a unit test (no `llmApiKey` in the probe or PATCH body after remove-then-switch) and an e2e step (the other provider's key survives Save).
+- mcp/: unaffected. The parse body passes through unchanged and only example and description text moved.
+
+### Contract/implementation divergences
+None. `backend/nlp/llm_factory.go` `notConfigured` returns `Enablers: []string{EnablerUser}` for every reason. The new 500 wording ("organisation membership could not be read") matches `handlers_llm.go:56-60` and `handlers_meeting_briefs.go:83-87`, both `writeServerError` 500 before any decision, write or send.
+
+### Uncertainties not actually resolved
+- At the time of this check, spec revision 2 had not been re-checked by the spec-challenger; this acceptance covers contract rev. 2.1 against spec revision 2 as written.
+
+### Non-blocking
+1. 14ee5e3 is titled `spec(...)` but carries contract, generated code, server and test changes. Retitle or split at merge.
+2. `paths/habits.yaml:552-553` and `paths/scheduling.yaml:2062` leave over-long lines in folded scalars (cosmetic).
+3. `TestBYOK_EnvironmentKeysAreNeverUsed` is a guard: nothing in `backend/nlp` reads the environment, so it cannot currently fail. That is fine; it does not demonstrate a fixed bug.
+
+### Verified clean
+- Description-only: the bundle at 2e44c21 and at 14ee5e3 is equal once `description`/`summary`/`example(s)` are removed (11 changed nodes: two 500 descriptions, `AINotConfigured` and its `enablers` description, `AIStatus.inOrganization`, the parse `notConfigured` / probe `providerRemoved` examples).
+- contractHash: sha256 of the committed bundle is `5e70443f…1b5e` at 14ee5e3 and `b14aa7e8…7ff7` at 2e44c21, as the manifest states.
+- In a scratch worktree at 14ee5e3: `openapi_assemble.py --check` OK (100 paths); `openapi_gen_go.sh --check` OK; `openapi_migration_report.py --check` OK (121 operations, 5 generated); `go build ./...`, `go vet ./...` OK; `go test ./config/...` ok; `go test ./nlp/` 288 pass, 6 failures all "connect to test database at 127.0.0.1:15432".
+- Web generated types reproduce exactly with pinned openapi-typescript 7.4.4 and typed-openapi 4.1.0.
+- Web at ae98fea: `tsc --noEmit` rc 0; vitest 51 files / 334 tests pass; eslint on the changed files rc 0.
+- PAC-66 / PAC-66-B replacement: every former keyless 422 case is now 409 needs_key with no requests; with a key bound the unapproved destination is still 422 with zero requests. Not a weakening.
+- No path sends a key to an unapproved host (probe `handlers_llm.go:87`, refresh `handlers_meeting_briefs.go:99-102`, parse `nlp/parser.go`, provider `Complete` re-checks).
+
+### Not run
+DB tests (`TestBYOK_*`, `pac66*_test.go`), e2e, `make verify`, `make design-check`, `/impeccable critique`.
