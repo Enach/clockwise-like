@@ -12,7 +12,7 @@
 
 ## 1. Order of work
 
-1. Migration `031_identity_binding` (next free number: main's latest is `030_sso_admin_stepup`).
+1. Migration `032_identity_binding` (next free number: main's latest is `031_llm_org_ai`, PAC-73 part 2).
 2. Session generation: JWT `gen` claim, `requireAuth` lease and uncached read, 401/500 split,
    the response guard that turns a stale in-request re-check into the 401.
 3. In-request re-check primitives (storage) and the D1–D14 load sites (§4).
@@ -24,7 +24,7 @@
 9. e2e session helper carries `gen`; the seed gives the journeys' users domain-confirmed standing.
 10. Tests for every AC (§6), the consumer amendments (§7), then build, vet, lint, full suite, coverage.
 
-## 2. Migration `031_identity_binding`
+## 2. Migration `032_identity_binding`
 
 Up:
 
