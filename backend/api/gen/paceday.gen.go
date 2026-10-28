@@ -23,8 +23,8 @@ const (
 
 // Defines values for AINotConfiguredEnablers.
 const (
-	OrganizationAdmin AINotConfiguredEnablers = "organization_admin"
-	User              AINotConfiguredEnablers = "user"
+	AINotConfiguredEnablersOrganizationAdmin AINotConfiguredEnablers = "organization_admin"
+	AINotConfiguredEnablersUser              AINotConfiguredEnablers = "user"
 )
 
 // Defines values for AINotConfiguredProvider.
@@ -42,8 +42,15 @@ const (
 	NothingConfigured                    AINotConfiguredReason = "nothing_configured"
 	Off                                  AINotConfiguredReason = "off"
 	OrganizationUnconfirmed              AINotConfiguredReason = "organization_unconfirmed"
+	PersonalKeysForbidden                AINotConfiguredReason = "personal_keys_forbidden"
 	ProviderRemoved                      AINotConfiguredReason = "provider_removed"
 	ProviderRemovedOrganizationAvailable AINotConfiguredReason = "provider_removed_organization_available"
+)
+
+// Defines values for AIStatusConfiguration.
+const (
+	AIStatusConfigurationOrganization AIStatusConfiguration = "organization"
+	AIStatusConfigurationOwn          AIStatusConfiguration = "own"
 )
 
 // Defines values for AIStatusProvider.
@@ -279,6 +286,12 @@ const (
 	LLMTestRequestLlmProviderVertex       LLMTestRequestLlmProvider = "vertex"
 )
 
+// Defines values for LLMTestResultConfiguration.
+const (
+	LLMTestResultConfigurationOrganization LLMTestResultConfiguration = "organization"
+	LLMTestResultConfigurationOwn          LLMTestResultConfiguration = "own"
+)
+
 // Defines values for LLMTestResultProvider.
 const (
 	LLMTestResultProviderAnthropic   LLMTestResultProvider = "anthropic"
@@ -300,6 +313,51 @@ const (
 	MeetingBriefResponseStatusFailed  MeetingBriefResponseStatus = "failed"
 	MeetingBriefResponseStatusPending MeetingBriefResponseStatus = "pending"
 	MeetingBriefResponseStatusReady   MeetingBriefResponseStatus = "ready"
+)
+
+// Defines values for OrganizationAIConfigurationChangeableBy.
+const (
+	OrganizationAIConfigurationChangeableByOrganizationAdmin OrganizationAIConfigurationChangeableBy = "organization_admin"
+)
+
+// Defines values for OrganizationAIConfigurationProvider.
+const (
+	OrganizationAIConfigurationProviderAnthropic   OrganizationAIConfigurationProvider = "anthropic"
+	OrganizationAIConfigurationProviderAzureOpenai OrganizationAIConfigurationProvider = "azure_openai"
+	OrganizationAIConfigurationProviderBedrock     OrganizationAIConfigurationProvider = "bedrock"
+	OrganizationAIConfigurationProviderOpenai      OrganizationAIConfigurationProvider = "openai"
+	OrganizationAIConfigurationProviderVertex      OrganizationAIConfigurationProvider = "vertex"
+)
+
+// Defines values for OrganizationAIConfigurationUpdateProvider.
+const (
+	OrganizationAIConfigurationUpdateProviderAnthropic   OrganizationAIConfigurationUpdateProvider = "anthropic"
+	OrganizationAIConfigurationUpdateProviderAzureOpenai OrganizationAIConfigurationUpdateProvider = "azure_openai"
+	OrganizationAIConfigurationUpdateProviderBedrock     OrganizationAIConfigurationUpdateProvider = "bedrock"
+	OrganizationAIConfigurationUpdateProviderEmpty       OrganizationAIConfigurationUpdateProvider = ""
+	OrganizationAIConfigurationUpdateProviderOpenai      OrganizationAIConfigurationUpdateProvider = "openai"
+	OrganizationAIConfigurationUpdateProviderVertex      OrganizationAIConfigurationUpdateProvider = "vertex"
+)
+
+// Defines values for OrganizationAIConsentConflictReason.
+const (
+	ConfigurationChanged      OrganizationAIConsentConflictReason = "configuration_changed"
+	OrganizationNotConfigured OrganizationAIConsentConflictReason = "organization_not_configured"
+)
+
+// Defines values for OrganizationAIWriteFreshLoginRequiredError.
+const (
+	OrganizationAiWriteRequiresFreshLogin OrganizationAIWriteFreshLoginRequiredError = "organization_ai_write_requires_fresh_login"
+)
+
+// Defines values for OrganizationAIWriteStepupRequiredError.
+const (
+	OrganizationAiWriteRequiresAdminStepup OrganizationAIWriteStepupRequiredError = "organization_ai_write_requires_admin_stepup"
+)
+
+// Defines values for OrganizationAIWriteStepupRequiredStepupPurpose.
+const (
+	OrganizationAIWriteStepupRequiredStepupPurposeLlmOrgKeyWrite OrganizationAIWriteStepupRequiredStepupPurpose = "llm_org_key_write"
 )
 
 // Defines values for ProviderDisconnectResultProvider.
@@ -493,6 +551,12 @@ const (
 	Microsoft SsoStepupProvider = "microsoft"
 )
 
+// Defines values for SsoStepupPurpose.
+const (
+	SsoStepupPurposeLlmOrgKeyWrite SsoStepupPurpose = "llm_org_key_write"
+	SsoStepupPurposeSsoWrite       SsoStepupPurpose = "sso_write"
+)
+
 // Defines values for SsoStepupUrl.
 const (
 	Apiadminssostepup SsoStepupUrl = "/api/admin/sso/stepup"
@@ -555,35 +619,53 @@ const (
 
 // AINotConfigured NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
 // can change that. One row of the table in
-// `docs/specs/NEW-llm-bring-your-own.md` §3, decided from the caller's
-// stored choice at the moment of the request, rows evaluated top to
-// bottom:
+// `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1 (Part 2; rows 1-8
+// are the parent spec's, rows 9-11 are new), decided from the caller's
+// stored choice and their organisation's configuration at the moment of
+// the request. Rows are evaluated IN THE ORDER LISTED (9-11 right after
+// 1). "Complete": the organisation's configuration is `configured`
+// (OrganizationAIConfiguration). "Forbids": its `personalKeysAllowed` is
+// false. "Confirmed": the caller confirmed its current
+// `configurationVersion` (confirmOrganizationAI).
 //
 // | Row | Stored choice | Condition | `reason` | `enablers` |
 // |---|---|---|---|---|
 // | 1 | `""` (off) | - | `off` | user |
-// | 2 | a provider | a key bound to it | (configured) | - |
+// | 9 | a provider, or `unsupported` | forbids; complete; confirmed | (configured: organisation) | - |
+// | 10 | a provider, or `unsupported` | forbids; complete; not confirmed | `personal_keys_forbidden` | user |
+// | 11 | a provider, or `unsupported` | forbids; not complete | `personal_keys_forbidden` | organization_admin |
+// | 2 | a provider | a key bound to it | (configured: own) | - |
 // | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
-// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
-// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
-// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
+// | 4 | `organization` | complete; confirmed | (configured: organisation) | - |
+// | 5 | `organization` | complete; not confirmed | `organization_unconfirmed` | user |
+// | 6 | `organization` | no organisation, or not complete | `nothing_configured` | user, plus organization_admin in an organisation; organization_admin only when it forbids |
+// | 7 | `unsupported` (Ollama) | complete | `provider_removed_organization_available` | user |
+// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user, plus organization_admin in an organisation |
 //
-// The same caller state gives the same `reason` on parse, brief refresh,
-// the probe naming nothing, and the settings read (spec AC-40). Before
-// Part 2 of the spec (the organisation-wide configuration) only `off`,
-// `needs_key`, `nothing_configured` and `provider_removed` occur; the
-// other two values are in the set now so that a client written against
-// this revision needs no change when Part 2 lands. A stored `bedrock`,
+// The same caller state gives the same `reason` and `enablers` on parse,
+// brief refresh, the probe naming nothing, and the settings read (spec
+// P2-AC-29). Row 1 wins over everything: "off" is never overridden by
+// the organisation (parent D-9, P2-AC-16). While the organisation
+// forbids personal keys, no personal key, stored or submitted, is ever
+// sent (owner O-12); the caller's stored choice and keys are not
+// rewritten, so allowing personal keys again puts the caller back in
+// row 2 or 3. `organization_unconfirmed` and `personal_keys_forbidden`
+// with `enablers: [user]` mean the caller can turn AI on in one step by
+// confirming (owner O-13; nothing is sent before). A stored `bedrock`,
 // `azure_openai` or `vertex` choice is a supported provider: with no key
 // bound it is `needs_key`, never a removed-provider reason (spec D-17).
+//
+// A probe can also give `personal_keys_forbidden` with `enablers:
+// [organization_admin]` when it names a provider or carries a key while
+// the organisation forbids personal keys (see testLLMConnection).
 // Carries no key, and nothing about any key beyond the facts above.
+// Before Part 2 only `off`, `needs_key`, `nothing_configured` and
+// `provider_removed` occurred, always with `enablers: [user]`.
 type AINotConfigured struct {
-	// Enablers Who can turn AI on for this caller: `user` (the caller, in Settings) is present in every answer before Part 2 of the spec. Before Part 2 it is the only value: no organisation administrator can configure AI yet, so no answer names one (spec revision 2). From Part 2, `organization_admin` (an administrator of the caller's organisation) is added in rows 6 and 8 when the caller belongs to an organisation; Part 2 may also produce answers without `user` (owner answer O-12, personal keys forbidden). Never names a person.
+	// Enablers Who can turn AI on for this caller, by the table above: `user` (the caller, in Settings or by confirming) and/or `organization_admin` (an administrator of the caller's organisation, who can change its configuration with PAC-50's proof). `organization_admin` appears only for a caller who belongs to an organisation. It is the ONLY value in row 11, in row 6 when the organisation forbids personal keys, and in a probe refused for naming a personal provider or key while forbidden. Never names a person. (Before Part 2 it was `[user]` in every answer.)
 	Enablers []AINotConfiguredEnablers `json:"enablers"`
 
-	// Message A sentence for the user saying why the configuration decided on cannot be used and who can fix it. When that configuration is the caller's saved choice (parse, brief refresh, the settings read, and a probe that names no other choice and carries no `llmApiKey`) it says that AI features are off. When a probe named a different choice or carried `llmApiKey`, it describes only the probed choice ("Anthropic needs an API key") and never says AI features are off, which may be false for the caller (see `testLLMConnection`). Wording is not contractual beyond that, and it never carries a key.
+	// Message A sentence for the user saying why the configuration decided on cannot be used and who can fix it. When that configuration is the caller's saved choice (parse, brief refresh, the settings read, and a probe that names no other choice and carries no `llmApiKey`) it says that AI features are off. When a probe named a different choice or carried `llmApiKey`, it describes only the probed choice ("Anthropic needs an API key") and never says AI features are off, which may be false for the caller (see `testLLMConnection`). For `organization_unconfirmed` and for `personal_keys_forbidden` with `enablers: [user]` it says that the caller's text and meeting details would be sent to their organisation's AI provider account, which its administrators can access outside Paceday, and that nothing is sent until they confirm in Paceday (owner O-13). No message, in any row, contains the words "read", "reads" or "see" (spec P2-AC-26). Wording is not contractual beyond that, and it never carries a key.
 	Message string `json:"message"`
 
 	// Provider Present exactly when `reason` is `needs_key`; the provider that needs a key.
@@ -600,9 +682,12 @@ type AINotConfiguredProvider string
 // AINotConfiguredReason defines model for AINotConfigured.Reason.
 type AINotConfiguredReason string
 
-// AIStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8), so a client always has the reason and the enablers to render the notice of spec AC-21. It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
+// AIStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` (with `configuration`) exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8, 10, 11), so a client always has the reason and the enablers to render the notice of spec AC-21. Also the 200 of confirmOrganizationAI (Part 2). It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
 type AIStatus struct {
-	// Configured True exactly in rows 2 and 4.
+	// Configuration NEW-llm-bring-your-own Part 2. Present exactly when `configured` is true: `own` in row 2 (the caller's provider, key and destination), `organization` in rows 4 and 9 (the organisation's, and nothing of the caller's, parent D-18).
+	Configuration *AIStatusConfiguration `json:"configuration,omitempty"`
+
+	// Configured True exactly in rows 2, 4 and 9.
 	Configured bool `json:"configured"`
 
 	// InOrganization Whether the caller belongs to an organisation. Lets a client offer "use my organisation's AI" only to a member (spec AC-21; Part 2). Says nothing else about the organisation.
@@ -610,35 +695,56 @@ type AIStatus struct {
 
 	// NotConfigured NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
 	// can change that. One row of the table in
-	// `docs/specs/NEW-llm-bring-your-own.md` §3, decided from the caller's
-	// stored choice at the moment of the request, rows evaluated top to
-	// bottom:
+	// `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1 (Part 2; rows 1-8
+	// are the parent spec's, rows 9-11 are new), decided from the caller's
+	// stored choice and their organisation's configuration at the moment of
+	// the request. Rows are evaluated IN THE ORDER LISTED (9-11 right after
+	// 1). "Complete": the organisation's configuration is `configured`
+	// (OrganizationAIConfiguration). "Forbids": its `personalKeysAllowed` is
+	// false. "Confirmed": the caller confirmed its current
+	// `configurationVersion` (confirmOrganizationAI).
 	//
 	// | Row | Stored choice | Condition | `reason` | `enablers` |
 	// |---|---|---|---|---|
 	// | 1 | `""` (off) | - | `off` | user |
-	// | 2 | a provider | a key bound to it | (configured) | - |
+	// | 9 | a provider, or `unsupported` | forbids; complete; confirmed | (configured: organisation) | - |
+	// | 10 | a provider, or `unsupported` | forbids; complete; not confirmed | `personal_keys_forbidden` | user |
+	// | 11 | a provider, or `unsupported` | forbids; not complete | `personal_keys_forbidden` | organization_admin |
+	// | 2 | a provider | a key bound to it | (configured: own) | - |
 	// | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
-	// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
-	// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
-	// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
+	// | 4 | `organization` | complete; confirmed | (configured: organisation) | - |
+	// | 5 | `organization` | complete; not confirmed | `organization_unconfirmed` | user |
+	// | 6 | `organization` | no organisation, or not complete | `nothing_configured` | user, plus organization_admin in an organisation; organization_admin only when it forbids |
+	// | 7 | `unsupported` (Ollama) | complete | `provider_removed_organization_available` | user |
+	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user, plus organization_admin in an organisation |
 	//
-	// The same caller state gives the same `reason` on parse, brief refresh,
-	// the probe naming nothing, and the settings read (spec AC-40). Before
-	// Part 2 of the spec (the organisation-wide configuration) only `off`,
-	// `needs_key`, `nothing_configured` and `provider_removed` occur; the
-	// other two values are in the set now so that a client written against
-	// this revision needs no change when Part 2 lands. A stored `bedrock`,
+	// The same caller state gives the same `reason` and `enablers` on parse,
+	// brief refresh, the probe naming nothing, and the settings read (spec
+	// P2-AC-29). Row 1 wins over everything: "off" is never overridden by
+	// the organisation (parent D-9, P2-AC-16). While the organisation
+	// forbids personal keys, no personal key, stored or submitted, is ever
+	// sent (owner O-12); the caller's stored choice and keys are not
+	// rewritten, so allowing personal keys again puts the caller back in
+	// row 2 or 3. `organization_unconfirmed` and `personal_keys_forbidden`
+	// with `enablers: [user]` mean the caller can turn AI on in one step by
+	// confirming (owner O-13; nothing is sent before). A stored `bedrock`,
 	// `azure_openai` or `vertex` choice is a supported provider: with no key
 	// bound it is `needs_key`, never a removed-provider reason (spec D-17).
+	//
+	// A probe can also give `personal_keys_forbidden` with `enablers:
+	// [organization_admin]` when it names a provider or carries a key while
+	// the organisation forbids personal keys (see testLLMConnection).
 	// Carries no key, and nothing about any key beyond the facts above.
+	// Before Part 2 only `off`, `needs_key`, `nothing_configured` and
+	// `provider_removed` occurred, always with `enablers: [user]`.
 	NotConfigured *AINotConfigured `json:"notConfigured,omitempty"`
 
 	// Provider Present exactly when `configured` is true; the provider requests go to.
 	Provider *AIStatusProvider `json:"provider,omitempty"`
 }
+
+// AIStatusConfiguration NEW-llm-bring-your-own Part 2. Present exactly when `configured` is true: `own` in row 2 (the caller's provider, key and destination), `organization` in rows 4 and 9 (the organisation's, and nothing of the caller's, parent D-18).
+type AIStatusConfiguration string
 
 // AIStatusProvider Present exactly when `configured` is true; the provider requests go to.
 type AIStatusProvider string
@@ -1658,30 +1764,48 @@ type LLMNotConfiguredResponse struct {
 
 	// NotConfigured NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
 	// can change that. One row of the table in
-	// `docs/specs/NEW-llm-bring-your-own.md` §3, decided from the caller's
-	// stored choice at the moment of the request, rows evaluated top to
-	// bottom:
+	// `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1 (Part 2; rows 1-8
+	// are the parent spec's, rows 9-11 are new), decided from the caller's
+	// stored choice and their organisation's configuration at the moment of
+	// the request. Rows are evaluated IN THE ORDER LISTED (9-11 right after
+	// 1). "Complete": the organisation's configuration is `configured`
+	// (OrganizationAIConfiguration). "Forbids": its `personalKeysAllowed` is
+	// false. "Confirmed": the caller confirmed its current
+	// `configurationVersion` (confirmOrganizationAI).
 	//
 	// | Row | Stored choice | Condition | `reason` | `enablers` |
 	// |---|---|---|---|---|
 	// | 1 | `""` (off) | - | `off` | user |
-	// | 2 | a provider | a key bound to it | (configured) | - |
+	// | 9 | a provider, or `unsupported` | forbids; complete; confirmed | (configured: organisation) | - |
+	// | 10 | a provider, or `unsupported` | forbids; complete; not confirmed | `personal_keys_forbidden` | user |
+	// | 11 | a provider, or `unsupported` | forbids; not complete | `personal_keys_forbidden` | organization_admin |
+	// | 2 | a provider | a key bound to it | (configured: own) | - |
 	// | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
-	// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
-	// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
-	// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
+	// | 4 | `organization` | complete; confirmed | (configured: organisation) | - |
+	// | 5 | `organization` | complete; not confirmed | `organization_unconfirmed` | user |
+	// | 6 | `organization` | no organisation, or not complete | `nothing_configured` | user, plus organization_admin in an organisation; organization_admin only when it forbids |
+	// | 7 | `unsupported` (Ollama) | complete | `provider_removed_organization_available` | user |
+	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user, plus organization_admin in an organisation |
 	//
-	// The same caller state gives the same `reason` on parse, brief refresh,
-	// the probe naming nothing, and the settings read (spec AC-40). Before
-	// Part 2 of the spec (the organisation-wide configuration) only `off`,
-	// `needs_key`, `nothing_configured` and `provider_removed` occur; the
-	// other two values are in the set now so that a client written against
-	// this revision needs no change when Part 2 lands. A stored `bedrock`,
+	// The same caller state gives the same `reason` and `enablers` on parse,
+	// brief refresh, the probe naming nothing, and the settings read (spec
+	// P2-AC-29). Row 1 wins over everything: "off" is never overridden by
+	// the organisation (parent D-9, P2-AC-16). While the organisation
+	// forbids personal keys, no personal key, stored or submitted, is ever
+	// sent (owner O-12); the caller's stored choice and keys are not
+	// rewritten, so allowing personal keys again puts the caller back in
+	// row 2 or 3. `organization_unconfirmed` and `personal_keys_forbidden`
+	// with `enablers: [user]` mean the caller can turn AI on in one step by
+	// confirming (owner O-13; nothing is sent before). A stored `bedrock`,
 	// `azure_openai` or `vertex` choice is a supported provider: with no key
 	// bound it is `needs_key`, never a removed-provider reason (spec D-17).
+	//
+	// A probe can also give `personal_keys_forbidden` with `enablers:
+	// [organization_admin]` when it names a provider or carries a key while
+	// the organisation forbids personal keys (see testLLMConnection).
 	// Carries no key, and nothing about any key beyond the facts above.
+	// Before Part 2 only `off`, `needs_key`, `nothing_configured` and
+	// `provider_removed` occurred, always with `enablers: [user]`.
 	NotConfigured AINotConfigured `json:"notConfigured"`
 }
 
@@ -1697,15 +1821,18 @@ type LLMTestRequest struct {
 	// LlmModel Used only when the probed provider is `openai` or `anthropic`, as a field of the JSON request body; `""` means the provider default. It never appears in a URL. `azureDeployment`, `bedrockModel` and `vertexModel`, which DO appear in URLs, are not accepted here. Ignored, and never sent, for any other choice.
 	LlmModel *string `json:"llmModel,omitempty"`
 
-	// LlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider. `""` is the 409 `off`. `organization` is decided as a follower's request (before Part 2: the 409 `nothing_configured`). `unsupported` is accepted only when the caller's saved choice reads as `unsupported` and is then decided as the saved choice (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
+	// LlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider (and, while the caller's organisation forbids personal keys, the 409 `personal_keys_forbidden`). `""` is the 409 `off`. `organization` is decided as a follower's request (rows 4-6; in row 4 it tests the organisation's configuration). `unsupported` is accepted only when the caller's saved choice reads as `unsupported` and is then decided as the saved choice (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
 	LlmProvider *LLMTestRequestLlmProvider `json:"llmProvider,omitempty"`
 }
 
-// LLMTestRequestLlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider. `""` is the 409 `off`. `organization` is decided as a follower's request (before Part 2: the 409 `nothing_configured`). `unsupported` is accepted only when the caller's saved choice reads as `unsupported` and is then decided as the saved choice (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
+// LLMTestRequestLlmProvider The choice to probe (NEW-llm-bring-your-own, spec D-19); absent means the caller's saved choice. A provider name selects that provider, the caller's own stored destination values for it, and the submitted key or else the key bound to it; never a key bound to another provider (and, while the caller's organisation forbids personal keys, the 409 `personal_keys_forbidden`). `""` is the 409 `off`. `organization` is decided as a follower's request (rows 4-6; in row 4 it tests the organisation's configuration). `unsupported` is accepted only when the caller's saved choice reads as `unsupported` and is then decided as the saved choice (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted here is stored.
 type LLMTestRequestLlmProvider string
 
 // LLMTestResult Literal map: `{"ok": true, "response": ..., "provider": ...}`.
 type LLMTestResult struct {
+	// Configuration NEW-llm-bring-your-own Part 2. `organization` when the probe tested the organisation's configuration (rows 4 and 9), `own` otherwise.
+	Configuration LLMTestResultConfiguration `json:"configuration"`
+
 	// Ok Always literal `true` on the 200 path.
 	Ok bool `json:"ok"`
 
@@ -1715,6 +1842,9 @@ type LLMTestResult struct {
 	// Response The provider's completion text for the fixed "Say hello" prompt.
 	Response string `json:"response"`
 }
+
+// LLMTestResultConfiguration NEW-llm-bring-your-own Part 2. `organization` when the probe tested the organisation's configuration (rows 4 and 9), `own` otherwise.
+type LLMTestResultConfiguration string
 
 // LLMTestResultProvider The provider that was actually probed: the one named in the body, else the caller's saved one. Never empty since NEW-llm-bring-your-own (a probe with no provider is the 409). It is what tells a client which configuration the result is about. It never carries the key.
 type LLMTestResultProvider string
@@ -1946,30 +2076,48 @@ type NLPParseResult struct {
 
 	// NotConfigured NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
 	// can change that. One row of the table in
-	// `docs/specs/NEW-llm-bring-your-own.md` §3, decided from the caller's
-	// stored choice at the moment of the request, rows evaluated top to
-	// bottom:
+	// `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1 (Part 2; rows 1-8
+	// are the parent spec's, rows 9-11 are new), decided from the caller's
+	// stored choice and their organisation's configuration at the moment of
+	// the request. Rows are evaluated IN THE ORDER LISTED (9-11 right after
+	// 1). "Complete": the organisation's configuration is `configured`
+	// (OrganizationAIConfiguration). "Forbids": its `personalKeysAllowed` is
+	// false. "Confirmed": the caller confirmed its current
+	// `configurationVersion` (confirmOrganizationAI).
 	//
 	// | Row | Stored choice | Condition | `reason` | `enablers` |
 	// |---|---|---|---|---|
 	// | 1 | `""` (off) | - | `off` | user |
-	// | 2 | a provider | a key bound to it | (configured) | - |
+	// | 9 | a provider, or `unsupported` | forbids; complete; confirmed | (configured: organisation) | - |
+	// | 10 | a provider, or `unsupported` | forbids; complete; not confirmed | `personal_keys_forbidden` | user |
+	// | 11 | a provider, or `unsupported` | forbids; not complete | `personal_keys_forbidden` | organization_admin |
+	// | 2 | a provider | a key bound to it | (configured: own) | - |
 	// | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
-	// | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
-	// | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-	// | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
-	// | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
+	// | 4 | `organization` | complete; confirmed | (configured: organisation) | - |
+	// | 5 | `organization` | complete; not confirmed | `organization_unconfirmed` | user |
+	// | 6 | `organization` | no organisation, or not complete | `nothing_configured` | user, plus organization_admin in an organisation; organization_admin only when it forbids |
+	// | 7 | `unsupported` (Ollama) | complete | `provider_removed_organization_available` | user |
+	// | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user, plus organization_admin in an organisation |
 	//
-	// The same caller state gives the same `reason` on parse, brief refresh,
-	// the probe naming nothing, and the settings read (spec AC-40). Before
-	// Part 2 of the spec (the organisation-wide configuration) only `off`,
-	// `needs_key`, `nothing_configured` and `provider_removed` occur; the
-	// other two values are in the set now so that a client written against
-	// this revision needs no change when Part 2 lands. A stored `bedrock`,
+	// The same caller state gives the same `reason` and `enablers` on parse,
+	// brief refresh, the probe naming nothing, and the settings read (spec
+	// P2-AC-29). Row 1 wins over everything: "off" is never overridden by
+	// the organisation (parent D-9, P2-AC-16). While the organisation
+	// forbids personal keys, no personal key, stored or submitted, is ever
+	// sent (owner O-12); the caller's stored choice and keys are not
+	// rewritten, so allowing personal keys again puts the caller back in
+	// row 2 or 3. `organization_unconfirmed` and `personal_keys_forbidden`
+	// with `enablers: [user]` mean the caller can turn AI on in one step by
+	// confirming (owner O-13; nothing is sent before). A stored `bedrock`,
 	// `azure_openai` or `vertex` choice is a supported provider: with no key
 	// bound it is `needs_key`, never a removed-provider reason (spec D-17).
+	//
+	// A probe can also give `personal_keys_forbidden` with `enablers:
+	// [organization_admin]` when it names a provider or carries a key while
+	// the organisation forbids personal keys (see testLLMConnection).
 	// Carries no key, and nothing about any key beyond the facts above.
+	// Before Part 2 only `off`, `needs_key`, `nothing_configured` and
+	// `provider_removed` occurred, always with `enablers: [user]`.
 	NotConfigured    *AINotConfigured   `json:"not_configured,omitempty"`
 	ParticipantInfos *[]ParticipantInfo `json:"participant_infos,omitempty"`
 
@@ -2057,6 +2205,240 @@ type OrgSummary struct {
 	Id        openapi_types.UUID `json:"id"`
 	Name      string             `json:"name"`
 }
+
+// OrganizationAIConfiguration NEW-llm-bring-your-own Part 2 (spec §3.2, parent D-7). The
+// organisation's AI configuration as every member reads it, identical
+// for every member (getOrganizationAI, and the 200 of
+// patchOrganizationAI). NEVER carries the key: `keySet` is the only fact
+// about it.
+//
+// `configured` is true exactly when the configuration is complete: a
+// `provider`, a key for it, and for `azure_openai` a non-empty
+// `azureEndpoint` and `azureDeployment` (every other value has a
+// default: `model` the provider's default model, `baseUrl` the vendor's
+// public host, `azureApiVersion` the default API version, `awsRegion`
+// `us-east-1`). Only a complete configuration can be used (rows 4 and 9
+// of the table on AINotConfigured) or confirmed (confirmOrganizationAI).
+//
+// Destination properties appear only for the provider they apply to:
+// `baseUrl` for `openai` and `anthropic`; `azureEndpoint`,
+// `azureDeployment` and `azureApiVersion` for `azure_openai`;
+// `awsRegion` for `bedrock`; none for `vertex`. `model` is the model for
+// `openai`, `anthropic`, `bedrock` and `vertex` (absent for
+// `azure_openai`, whose deployment names it). An empty string means the
+// default. All are absent when `provider` is absent.
+type OrganizationAIConfiguration struct {
+	AwsRegion       *string `json:"awsRegion,omitempty"`
+	AzureApiVersion *string `json:"azureApiVersion,omitempty"`
+	AzureDeployment *string `json:"azureDeployment,omitempty"`
+	AzureEndpoint   *string `json:"azureEndpoint,omitempty"`
+
+	// BaseUrl `openai` / `anthropic` only. `""` is the vendor's public host.
+	BaseUrl *string `json:"baseUrl,omitempty"`
+
+	// ChangeableBy Who can change this: an administrator of the organisation proven per change by PAC-50's step-up (purpose `llm_org_key_write`) or the deployment's break-glass list. Never names a person.
+	ChangeableBy OrganizationAIConfigurationChangeableBy `json:"changeableBy"`
+
+	// ConfigurationVersion `0` when no configuration was ever set. Advances by one on every change of `provider`, the key or a destination property (spec P2-D4), never otherwise. A member's confirmation is for one version (confirmOrganizationAI).
+	ConfigurationVersion int  `json:"configurationVersion"`
+	Configured           bool `json:"configured"`
+
+	// KeySet Whether a key bound to `provider` is stored. Never the key.
+	KeySet bool    `json:"keySet"`
+	Model  *string `json:"model,omitempty"`
+
+	// PersonalKeysAllowed Owner O-12. `true` (the default) means a member's own provider and key take precedence for that member (rows 2-3). `false` means no member's personal key is sent: members other than those who chose "off" use this configuration once they confirm it (rows 9-11).
+	PersonalKeysAllowed bool `json:"personalKeysAllowed"`
+
+	// Provider Present exactly when a provider is set.
+	Provider *OrganizationAIConfigurationProvider `json:"provider,omitempty"`
+
+	// UpdatedAt When the configuration last changed. Absent when it never was set.
+	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+}
+
+// OrganizationAIConfigurationChangeableBy Who can change this: an administrator of the organisation proven per change by PAC-50's step-up (purpose `llm_org_key_write`) or the deployment's break-glass list. Never names a person.
+type OrganizationAIConfigurationChangeableBy string
+
+// OrganizationAIConfigurationProvider Present exactly when a provider is set.
+type OrganizationAIConfigurationProvider string
+
+// OrganizationAIConfigurationUpdate NEW-llm-bring-your-own Part 2. Body of patchOrganizationAI. MERGE:
+// an absent property is unchanged; a present one is set to exactly that
+// value; `null` is a 400. At least one property.
+//
+//   - `provider` set to a provider DIFFERENT from the stored one replaces
+//     the whole configuration: `apiKey` (non-empty) is required, and every
+//     property not in the body takes its default (`""`). A key is never
+//     carried from one provider to another (spec P2-D7).
+//   - `provider: ""` removes the whole configuration, key included. No
+//     other property may be sent with it (400), so the removal is
+//     unambiguous; the stored `personalKeysAllowed` is kept.
+//   - `apiKey: ""` removes only the key (the configuration is then not
+//     complete; followers answer `nothing_configured`, P2-AC-13). A
+//     non-empty `apiKey` replaces the key for the provider after this
+//     write; with no provider stored or sent it is a 400.
+//   - A destination property that does not apply to the provider after
+//     this write is a 400 (`<property> does not apply to <provider>`),
+//     not ignored.
+//   - `personalKeysAllowed` may be changed whether or not the
+//     configuration is complete (spec P2-D3).
+type OrganizationAIConfigurationUpdate struct {
+	// ApiKey Never returned, by any operation, in any status (PAC-24, owner O-7).
+	ApiKey              *string                                    `json:"apiKey,omitempty"`
+	AwsRegion           *string                                    `json:"awsRegion,omitempty"`
+	AzureApiVersion     *string                                    `json:"azureApiVersion,omitempty"`
+	AzureDeployment     *string                                    `json:"azureDeployment,omitempty"`
+	AzureEndpoint       *string                                    `json:"azureEndpoint,omitempty"`
+	BaseUrl             *string                                    `json:"baseUrl,omitempty"`
+	Model               *string                                    `json:"model,omitempty"`
+	PersonalKeysAllowed *bool                                      `json:"personalKeysAllowed,omitempty"`
+	Provider            *OrganizationAIConfigurationUpdateProvider `json:"provider,omitempty"`
+}
+
+// OrganizationAIConfigurationUpdateProvider defines model for OrganizationAIConfigurationUpdate.Provider.
+type OrganizationAIConfigurationUpdateProvider string
+
+// OrganizationAIConsentConflict 409 of confirmOrganizationAI: nothing recorded. A superset of the JSON error shape.
+type OrganizationAIConsentConflict struct {
+	Error string `json:"error"`
+
+	// Organization NEW-llm-bring-your-own Part 2 (spec §3.2, parent D-7). The
+	// organisation's AI configuration as every member reads it, identical
+	// for every member (getOrganizationAI, and the 200 of
+	// patchOrganizationAI). NEVER carries the key: `keySet` is the only fact
+	// about it.
+	//
+	// `configured` is true exactly when the configuration is complete: a
+	// `provider`, a key for it, and for `azure_openai` a non-empty
+	// `azureEndpoint` and `azureDeployment` (every other value has a
+	// default: `model` the provider's default model, `baseUrl` the vendor's
+	// public host, `azureApiVersion` the default API version, `awsRegion`
+	// `us-east-1`). Only a complete configuration can be used (rows 4 and 9
+	// of the table on AINotConfigured) or confirmed (confirmOrganizationAI).
+	//
+	// Destination properties appear only for the provider they apply to:
+	// `baseUrl` for `openai` and `anthropic`; `azureEndpoint`,
+	// `azureDeployment` and `azureApiVersion` for `azure_openai`;
+	// `awsRegion` for `bedrock`; none for `vertex`. `model` is the model for
+	// `openai`, `anthropic`, `bedrock` and `vertex` (absent for
+	// `azure_openai`, whose deployment names it). An empty string means the
+	// default. All are absent when `provider` is absent.
+	Organization OrganizationAIConfiguration         `json:"organization"`
+	Reason       OrganizationAIConsentConflictReason `json:"reason"`
+}
+
+// OrganizationAIConsentConflictReason defines model for OrganizationAIConsentConflict.Reason.
+type OrganizationAIConsentConflictReason string
+
+// OrganizationAIConsentRequest Body of confirmOrganizationAI.
+type OrganizationAIConsentRequest struct {
+	// ConfigurationVersion The `configurationVersion` of the configuration the user was shown and confirmed.
+	ConfigurationVersion int `json:"configurationVersion"`
+}
+
+// OrganizationAIWriteForbiddenResponse The 403 of patchOrganizationAI (NEW-llm-bring-your-own Part 2), the
+// shapes of PAC-50's SsoWriteForbiddenResponse for this purpose.
+// Exactly one variant applies, told apart by `error`; all keep the
+// shared `{error}` envelope.
+type OrganizationAIWriteForbiddenResponse struct {
+	union json.RawMessage
+}
+
+// OrganizationAIWriteFreshLoginRequired The caller's email is on the break-glass list but the session JWT was
+// issued 10 minutes ago or more, or more than one minute in the future
+// (PAC-50 AC-14a). The client sends the user through sign-in again; an
+// `llm_org_key_write` grant also satisfies the gate.
+type OrganizationAIWriteFreshLoginRequired struct {
+	Error OrganizationAIWriteFreshLoginRequiredError `json:"error"`
+}
+
+// OrganizationAIWriteFreshLoginRequiredError defines model for OrganizationAIWriteFreshLoginRequired.Error.
+type OrganizationAIWriteFreshLoginRequiredError string
+
+// OrganizationAIWriteStepupRequired A member with no live `llm_org_key_write` grant who is not a
+// break-glass address. As PAC-50's SsoWriteStepupRequired: the step-up
+// is optional; before navigating, the client explains `without_stepup`
+// and `stepup_scopes` and lets the user decline. If the user goes
+// ahead, the client asks which provider administers the organisation
+// (only keys of `stepup_scopes`) and navigates the browser to
+// `stepup_url` with `?provider=<p>&purpose=<stepup_purpose>`. The
+// landing page then carries `&purpose=llm_org_key_write`. A live
+// `sso_write` grant the caller may hold was not consumed.
+type OrganizationAIWriteStepupRequired struct {
+	Error OrganizationAIWriteStepupRequiredError `json:"error"`
+
+	// StepupPurpose The `purpose` query value the client sends to startSsoAdminStepup.
+	StepupPurpose OrganizationAIWriteStepupRequiredStepupPurpose `json:"stepup_purpose"`
+
+	// StepupScopes The scopes the SSO admin step-up requests from each provider on top of
+	// the identity scopes (`openid`, `email`, `profile`, and Microsoft's
+	// `User.Read`, which sign-in already requests). Requested only by
+	// startSsoAdminStepup, never at sign-in; the tokens are discarded after
+	// the check. Carried by SsoWriteStepupRequired and SsoStepupOptions.
+	//
+	// Normative rule: each list is exactly what startSsoAdminStepup
+	// requests from that provider beyond the identity scopes, so a client
+	// shows it as given and does not hard-code it. A provider's key is
+	// present if and only if that provider's step-up is configured on this
+	// deployment, that is, startSsoAdminStepup would not answer 503 for it
+	// (spec §9 D-2 and D-9: no OAuth client for the provider, or `APP_URL`
+	// unset). A deployment with only Google configured sends only `google`;
+	// an empty object means no step-up can be started on this deployment.
+	// An unconfigured provider is an absent key, never an empty list.
+	//
+	// Today's values, informative only (the exact Microsoft list is spec
+	// OQ-2's open technical sub-question and may narrow): Google, the
+	// read-only Directory user scope
+	// (`https://www.googleapis.com/auth/admin.directory.user.readonly`);
+	// Microsoft, organisation and directory-role read scopes
+	// (`Organization.Read.All`, `RoleManagement.Read.Directory`, which a
+	// tenant administrator may have to consent to).
+	StepupScopes SsoStepupScopes `json:"stepup_scopes"`
+
+	// StepupUrl Path of startSsoAdminStepup on the API's origin, without the
+	// `provider` parameter (spec §4.3 and OQ-8). It has the same form as
+	// every operation path in this document, and a client resolves it
+	// the way it resolves those: against the origin of its configured
+	// API base (for the web app, the base it already uses for
+	// `/api/auth/...` navigations), never against the page's origin.
+	// The API need not share an origin with the page: the web's API
+	// base is set at runtime (`API_BASE_URL`) or at build time
+	// (`VITE_API_BASE_URL`), and the session cookie is host-only on
+	// the API host, so the page's origin can lack the session.
+	StepupUrl SsoStepupUrl `json:"stepup_url"`
+
+	// WithoutStepup What the caller cannot do without the SSO admin step-up, for the
+	// client to explain before it navigates. Carried by
+	// SsoWriteStepupRequired and SsoStepupOptions. An open list of codes:
+	// the item schema is a non-empty string, not an enum, so a value added
+	// later (for example by PAC-68 if it reuses this step-up) does not make
+	// the body fail validation in a client generated from this revision. A
+	// client explains the codes it knows and ignores any other. The only
+	// value the server sends today is `sso_configuration_writes`: no SSO
+	// configuration write (create, replace or delete); only a deployment
+	// operator on the break-glass list can write without it. Nothing else
+	// the user already has is lost. Suspend and resume
+	// (setSsoProviderState) are not served under PAC-50; they become SSO
+	// configuration writes covered by this code when PAC-22's follow-up
+	// serves them, and a client must not offer them before then (PAC-50
+	// contract revision 8.1, N6).
+	//
+	// NEW-llm-bring-your-own Part 2 adds a second value, sent only for the
+	// `llm_org_key_write` purpose (OrganizationAIWriteStepupRequired, and
+	// getSsoStepupOptions with `?purpose=llm_org_key_write`):
+	// `organization_ai_configuration_writes`, no change to the
+	// organisation's AI provider, model, key, destination or personal-keys
+	// setting except by a break-glass operator. Each response carries the
+	// one code of its purpose.
+	WithoutStepup SsoWithoutStepup `json:"without_stepup"`
+}
+
+// OrganizationAIWriteStepupRequiredError defines model for OrganizationAIWriteStepupRequired.Error.
+type OrganizationAIWriteStepupRequiredError string
+
+// OrganizationAIWriteStepupRequiredStepupPurpose The `purpose` query value the client sends to startSsoAdminStepup.
+type OrganizationAIWriteStepupRequiredStepupPurpose string
 
 // ParticipantInfo calendar.ParticipantInfo (backend/calendar/participants.go).
 type ParticipantInfo struct {
@@ -2529,7 +2911,7 @@ type SchedulingLinkListResponse struct {
 // PAC-24 revision 3 makes this a concrete schema rather than an `allOf` over a shared field set with `readOnly`/`writeOnly` markers: all three generators (oapi-codegen, openapi-typescript, typed-openapi) dropped those markers and generated a response type carrying `llmApiKey`, and typed-openapi also dropped the `required` list (contract challenge, revision 2, finding 1). The property map is shared with `SettingsUpdate` through a YAML anchor, so the two cannot drift; every `Settings` document is a valid `SettingsUpdate` body.
 // Every value this schema forbids has been normalised away in storage by migration 024 (see `SettingsUpdate` and contracts/features/PAC-24.md, Revisions 3 and 4), so a GET always satisfies it.
 type Settings struct {
-	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8), so a client always has the reason and the enablers to render the notice of spec AC-21. It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
+	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` (with `configuration`) exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8, 10, 11), so a client always has the reason and the enablers to render the notice of spec AC-21. Also the 200 of confirmOrganizationAI (Part 2). It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
 	AiStatus                       AIStatus `json:"aiStatus"`
 	AutoDeclineOutsideWorkingHours bool     `json:"autoDeclineOutsideWorkingHours"`
 
@@ -2603,7 +2985,7 @@ type Settings struct {
 	// LlmModel Model for `openai` and `anthropic`. Provider default applied at call time when empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic). Not used by `azure_openai` (`azureDeployment`), `bedrock` (`bedrockModel`) or `vertex` (`vertexModel`).
 	LlmModel string `json:"llmModel"`
 
-	// LlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
+	// LlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after Part 1 (owner decision O-5). Part 2: requests then use the organisation's configuration once it is complete and the caller has confirmed it (confirmOrganizationAI). Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3; rows 9-11 while the caller's organisation forbids personal keys, Part 2). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 	LlmProvider SettingsLlmProvider `json:"llmProvider"`
 
 	// LlmUnboundApiKeySet Read-only (NEW-llm-bring-your-own, spec AC-16). `true` when a key stored before this change is on file that is bound to no provider: the account's provider at the upgrade was not `openai` or `anthropic`. Such a key is never sent anywhere and is never deleted implicitly (spec D-5): not by the upgrade and not by a write of `llmApiKey`. Only the explicit write-only `llmUnboundApiKey: ""` removes it (see `patchSettings`). Accepted and ignored on write.
@@ -2683,7 +3065,7 @@ type SettingsCalendarProvider string
 // SettingsConferencingProvider Read with `COALESCE(conferencing_provider,'meet')`; conference.NewProvider switches on `zoom`, `teams`, and treats everything else as `meet`. So the wire values are `meet` / `zoom` / `teams`, not the frontend's `google_meet` / `zoom` / `teams` / `custom`. PAC-24 enforces the set for the same reason as calendarProvider: an unknown value was stored and silently behaved as `meet`.
 type SettingsConferencingProvider string
 
-// SettingsLlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
+// SettingsLlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after Part 1 (owner decision O-5). Part 2: requests then use the organisation's configuration once it is complete and the caller has confirmed it (confirmOrganizationAI). Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3; rows 9-11 while the caller's organisation forbids personal keys, Part 2). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 type SettingsLlmProvider string
 
 // SettingsRecapSendTo DB CHECK constraint enforces this. PAC-24 validates it on the settings write too; before that only the daily-recap PATCH did, so a bad value sent to PUT /api/settings reached the DB CHECK and surfaced as a 500 (API-081).
@@ -2700,7 +3082,7 @@ type SettingsTimeFormat string
 // `workingHours` and `lunchBreaks` are replaced whole when present, not deep-merged (spec AC-9).
 // Before PAC-24 this was the body of `PUT /api/settings`, a replace: every omitted property was persisted as its Go zero value (API-004). That operation is removed because the two repositories deploy together (spec PAC-24, Decisions 2026-10-12, OQ-3).
 type SettingsUpdate struct {
-	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8), so a client always has the reason and the enablers to render the notice of spec AC-21. It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
+	// AiStatus NEW-llm-bring-your-own. Read-only summary on the settings document of whether AI works for the caller right now, by the same table as `AINotConfigured` (spec AC-8). Exactly one of `provider` and `notConfigured` is present: `provider` (with `configuration`) exactly when `configured` is true, `notConfigured` exactly when `configured` is false (rows 1, 3, 5-8, 10, 11), so a client always has the reason and the enablers to render the notice of spec AC-21. Also the 200 of confirmOrganizationAI (Part 2). It does not check the destination: a configured caller whose stored destination is refused is `configured: true` and gets the 422 / refusal sentence when a request is attempted.
 	AiStatus                       *AIStatus `json:"aiStatus,omitempty"`
 	AutoDeclineOutsideWorkingHours *bool     `json:"autoDeclineOutsideWorkingHours,omitempty"`
 
@@ -2779,7 +3161,7 @@ type SettingsUpdate struct {
 	// LlmModel Model for `openai` and `anthropic`. Provider default applied at call time when empty: `gpt-4o-mini` (openai), `claude-haiku-4-5-20251001` (anthropic). Not used by `azure_openai` (`azureDeployment`), `bedrock` (`bedrockModel`) or `vertex` (`vertexModel`).
 	LlmModel *string `json:"llmModel,omitempty"`
 
-	// LlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
+	// LlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after Part 1 (owner decision O-5). Part 2: requests then use the organisation's configuration once it is complete and the caller has confirmed it (confirmOrganizationAI). Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3; rows 9-11 while the caller's organisation forbids personal keys, Part 2). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 	LlmProvider *SettingsUpdateLlmProvider `json:"llmProvider,omitempty"`
 
 	// LlmUnboundApiKey WRITE-ONLY, NEW-llm-bring-your-own (spec D-5, AC-16; contract challenge 2026-10-28, blocking 2). The one way to remove a key stored before that change and bound to no provider (`Settings.llmUnboundApiKeySet`). The only accepted value is `""`, which removes it (a no-op when there is none); any other value is the 400 `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)` and nothing is stored. A legacy key cannot be written or replaced through this property: a new key is always entered for a provider, through `llmApiKey`. Never present in any response.
@@ -2862,7 +3244,7 @@ type SettingsUpdateCalendarProvider string
 // SettingsUpdateConferencingProvider Read with `COALESCE(conferencing_provider,'meet')`; conference.NewProvider switches on `zoom`, `teams`, and treats everything else as `meet`. So the wire values are `meet` / `zoom` / `teams`, not the frontend's `google_meet` / `zoom` / `teams` / `custom`. PAC-24 enforces the set for the same reason as calendarProvider: an unknown value was stored and silently behaved as `meet`.
 type SettingsUpdateConferencingProvider string
 
-// SettingsUpdateLlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after this change (owner decision O-5); before Part 2 of the spec there is no organisation configuration, so it reads as `nothing_configured`. Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
+// SettingsUpdateLlmProvider The caller's AI choice (NEW-llm-bring-your-own, spec §3; the table is on `AINotConfigured`). `""`: AI off by the caller's own choice (row 1). A row stored as `""` before this change stays off and never follows the organisation (spec AC-17, D-9). `organization`: use my organisation's AI (rows 4-6). The stored default for an account created after Part 1 (owner decision O-5). Part 2: requests then use the organisation's configuration once it is complete and the caller has confirmed it (confirmOrganizationAI). Accepted on write whether or not the caller belongs to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller's own key-based provider (rows 2-3; rows 9-11 while the caller's organisation forbids personal keys, Part 2). A row stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying `unsupported` is accepted only when the caller's row already reads as `unsupported` (the document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 type SettingsUpdateLlmProvider string
 
 // SettingsUpdateLlmUnboundApiKey WRITE-ONLY, NEW-llm-bring-your-own (spec D-5, AC-16; contract challenge 2026-10-28, blocking 2). The one way to remove a key stored before that change and bound to no provider (`Settings.llmUnboundApiKeySet`). The only accepted value is `""`, which removes it (a no-op when there is none); any other value is the 400 `llmUnboundApiKey must be "" (it can only remove the key bound to no provider)` and nothing is stored. A legacy key cannot be written or replaced through this property: a new key is always entered for a provider, through `llmApiKey`. Never present in any response.
@@ -3159,11 +3541,26 @@ type SsoStepupOptions struct {
 	// configuration writes covered by this code when PAC-22's follow-up
 	// serves them, and a client must not offer them before then (PAC-50
 	// contract revision 8.1, N6).
+	//
+	// NEW-llm-bring-your-own Part 2 adds a second value, sent only for the
+	// `llm_org_key_write` purpose (OrganizationAIWriteStepupRequired, and
+	// getSsoStepupOptions with `?purpose=llm_org_key_write`):
+	// `organization_ai_configuration_writes`, no change to the
+	// organisation's AI provider, model, key, destination or personal-keys
+	// setting except by a break-glass operator. Each response carries the
+	// one code of its purpose.
 	WithoutStepup SsoWithoutStepup `json:"without_stepup"`
 }
 
 // SsoStepupProvider Identity provider an SSO admin step-up runs against (PAC-50).
 type SsoStepupProvider string
+
+// SsoStepupPurpose The write an admin step-up grant authorises (PAC-50 §4.8 `purpose`;
+// NEW-llm-bring-your-own Part 2, spec P2-D1). `sso_write`: one SSO
+// configuration write (PAC-50). `llm_org_key_write`: one change of the
+// caller's organisation's AI configuration (patchOrganizationAI). A
+// grant is consumed only by a write of its own purpose (PAC-50 AC-27).
+type SsoStepupPurpose string
 
 // SsoStepupScopes The scopes the SSO admin step-up requests from each provider on top of
 // the identity scopes (`openid`, `email`, `profile`, and Microsoft's
@@ -3220,6 +3617,14 @@ type SsoStepupUrl string
 // configuration writes covered by this code when PAC-22's follow-up
 // serves them, and a client must not offer them before then (PAC-50
 // contract revision 8.1, N6).
+//
+// NEW-llm-bring-your-own Part 2 adds a second value, sent only for the
+// `llm_org_key_write` purpose (OrganizationAIWriteStepupRequired, and
+// getSsoStepupOptions with `?purpose=llm_org_key_write`):
+// `organization_ai_configuration_writes`, no change to the
+// organisation's AI provider, model, key, destination or personal-keys
+// setting except by a break-glass operator. Each response carries the
+// one code of its purpose.
 type SsoWithoutStepup = []string
 
 // SsoWriteDomainMismatch The provider domain (create body `domain`, or the `{domain}` segment
@@ -3265,7 +3670,8 @@ type SsoWriteFreshLoginRequiredError string
 // anything else, including break-glass. No `stepup_url`: there is no org
 // to step up for. Also the 403 of getSsoStepupOptions and of
 // startSsoAdminStepup (the latter always with `org membership
-// required`).
+// required`), and (NEW-llm-bring-your-own Part 2) of getOrganizationAI,
+// patchOrganizationAI and confirmOrganizationAI.
 type SsoWriteMembershipRequired struct {
 	Error SsoWriteMembershipRequiredError `json:"error"`
 }
@@ -3340,6 +3746,14 @@ type SsoWriteStepupRequired struct {
 	// configuration writes covered by this code when PAC-22's follow-up
 	// serves them, and a client must not offer them before then (PAC-50
 	// contract revision 8.1, N6).
+	//
+	// NEW-llm-bring-your-own Part 2 adds a second value, sent only for the
+	// `llm_org_key_write` purpose (OrganizationAIWriteStepupRequired, and
+	// getSsoStepupOptions with `?purpose=llm_org_key_write`):
+	// `organization_ai_configuration_writes`, no change to the
+	// organisation's AI provider, model, key, destination or personal-keys
+	// setting except by a break-glass operator. Each response carries the
+	// one code of its purpose.
 	WithoutStepup SsoWithoutStepup `json:"without_stepup"`
 }
 
@@ -3631,6 +4045,12 @@ type Unauthorized = ErrorResponse
 type StartSsoAdminStepupParams struct {
 	// Provider Which identity provider to step up with. Missing, or any other value, is a 400.
 	Provider SsoStepupProvider `form:"provider" json:"provider"`
+
+	// Purpose NEW-llm-bring-your-own Part 2. The write the grant will authorise.
+	// Absent means `sso_write` (PAC-50 unchanged). Present and not in the
+	// enum (including empty) is the 400 `purpose must be 'sso_write' or
+	// 'llm_org_key_write'`.
+	Purpose *SsoStepupPurpose `form:"purpose,omitempty" json:"purpose,omitempty"`
 }
 
 // SsoAdminStepupCallbackParams defines parameters for SsoAdminStepupCallback.
@@ -3643,6 +4063,13 @@ type SsoAdminStepupCallbackParams struct {
 
 	// Error Set by the provider when the user cancelled or the provider refused. Present gives denied/`token_invalid`.
 	Error *string `form:"error,omitempty" json:"error,omitempty"`
+}
+
+// GetSsoStepupOptionsParams defines parameters for GetSsoStepupOptions.
+type GetSsoStepupOptionsParams struct {
+	// Purpose NEW-llm-bring-your-own Part 2. Absent means `sso_write`. Any value
+	// outside the enum, including empty, is the 400.
+	Purpose *SsoStepupPurpose `form:"purpose,omitempty" json:"purpose,omitempty"`
 }
 
 // ListAnalyticsMeetingsParams defines parameters for ListAnalyticsMeetings.
@@ -4058,6 +4485,12 @@ type ConfirmNaturalLanguageJSONRequestBody = NLPConfirmRequest
 
 // ParseNaturalLanguageJSONRequestBody defines body for ParseNaturalLanguage for application/json ContentType.
 type ParseNaturalLanguageJSONRequestBody = NLPParseRequest
+
+// PatchOrganizationAIJSONRequestBody defines body for PatchOrganizationAI for application/json ContentType.
+type PatchOrganizationAIJSONRequestBody = OrganizationAIConfigurationUpdate
+
+// ConfirmOrganizationAIJSONRequestBody defines body for ConfirmOrganizationAI for application/json ContentType.
+type ConfirmOrganizationAIJSONRequestBody = OrganizationAIConsentRequest
 
 // CreatePersonalCalendarJSONRequestBody defines body for CreatePersonalCalendar for application/json ContentType.
 type CreatePersonalCalendarJSONRequestBody = PersonalCalendarCreateRequest
@@ -5548,6 +5981,94 @@ func (a TeamNameRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(object)
 }
 
+// AsSsoWriteMembershipRequired returns the union data inside the OrganizationAIWriteForbiddenResponse as a SsoWriteMembershipRequired
+func (t OrganizationAIWriteForbiddenResponse) AsSsoWriteMembershipRequired() (SsoWriteMembershipRequired, error) {
+	var body SsoWriteMembershipRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSsoWriteMembershipRequired overwrites any union data inside the OrganizationAIWriteForbiddenResponse as the provided SsoWriteMembershipRequired
+func (t *OrganizationAIWriteForbiddenResponse) FromSsoWriteMembershipRequired(v SsoWriteMembershipRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSsoWriteMembershipRequired performs a merge with any union data inside the OrganizationAIWriteForbiddenResponse, using the provided SsoWriteMembershipRequired
+func (t *OrganizationAIWriteForbiddenResponse) MergeSsoWriteMembershipRequired(v SsoWriteMembershipRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsOrganizationAIWriteStepupRequired returns the union data inside the OrganizationAIWriteForbiddenResponse as a OrganizationAIWriteStepupRequired
+func (t OrganizationAIWriteForbiddenResponse) AsOrganizationAIWriteStepupRequired() (OrganizationAIWriteStepupRequired, error) {
+	var body OrganizationAIWriteStepupRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromOrganizationAIWriteStepupRequired overwrites any union data inside the OrganizationAIWriteForbiddenResponse as the provided OrganizationAIWriteStepupRequired
+func (t *OrganizationAIWriteForbiddenResponse) FromOrganizationAIWriteStepupRequired(v OrganizationAIWriteStepupRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeOrganizationAIWriteStepupRequired performs a merge with any union data inside the OrganizationAIWriteForbiddenResponse, using the provided OrganizationAIWriteStepupRequired
+func (t *OrganizationAIWriteForbiddenResponse) MergeOrganizationAIWriteStepupRequired(v OrganizationAIWriteStepupRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsOrganizationAIWriteFreshLoginRequired returns the union data inside the OrganizationAIWriteForbiddenResponse as a OrganizationAIWriteFreshLoginRequired
+func (t OrganizationAIWriteForbiddenResponse) AsOrganizationAIWriteFreshLoginRequired() (OrganizationAIWriteFreshLoginRequired, error) {
+	var body OrganizationAIWriteFreshLoginRequired
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromOrganizationAIWriteFreshLoginRequired overwrites any union data inside the OrganizationAIWriteForbiddenResponse as the provided OrganizationAIWriteFreshLoginRequired
+func (t *OrganizationAIWriteForbiddenResponse) FromOrganizationAIWriteFreshLoginRequired(v OrganizationAIWriteFreshLoginRequired) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeOrganizationAIWriteFreshLoginRequired performs a merge with any union data inside the OrganizationAIWriteForbiddenResponse, using the provided OrganizationAIWriteFreshLoginRequired
+func (t *OrganizationAIWriteForbiddenResponse) MergeOrganizationAIWriteFreshLoginRequired(v OrganizationAIWriteFreshLoginRequired) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t OrganizationAIWriteForbiddenResponse) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *OrganizationAIWriteForbiddenResponse) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsSsoWriteMembershipRequired returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteMembershipRequired
 func (t SsoWriteForbiddenResponse) AsSsoWriteMembershipRequired() (SsoWriteMembershipRequired, error) {
 	var body SsoWriteMembershipRequired
@@ -5670,7 +6191,7 @@ type ServerInterface interface {
 	// Create or replace the OIDC SSO configuration for the caller's org domain
 	// (POST /api/admin/sso)
 	CreateSsoProvider(w http.ResponseWriter, r *http.Request)
-	// Begin an admin step-up for an SSO write
+	// Begin an admin step-up for an SSO write or an organisation-AI change
 	// (GET /api/admin/sso/stepup)
 	StartSsoAdminStepup(w http.ResponseWriter, r *http.Request, params StartSsoAdminStepupParams)
 	// Finish an admin step-up and record its outcome
@@ -5678,7 +6199,7 @@ type ServerInterface interface {
 	SsoAdminStepupCallback(w http.ResponseWriter, r *http.Request, params SsoAdminStepupCallbackParams)
 	// What the SSO admin step-up would request, without making a write
 	// (GET /api/admin/sso/stepup/options)
-	GetSsoStepupOptions(w http.ResponseWriter, r *http.Request)
+	GetSsoStepupOptions(w http.ResponseWriter, r *http.Request, params GetSsoStepupOptionsParams)
 	// Delete the SSO provider for the caller's org domain
 	// (DELETE /api/admin/sso/{domain})
 	DeleteSsoProvider(w http.ResponseWriter, r *http.Request, domain string)
@@ -5898,6 +6419,15 @@ type ServerInterface interface {
 	// List users in the caller's organization
 	// (GET /api/org/members)
 	ListOrgMembers(w http.ResponseWriter, r *http.Request)
+	// Read the caller's organisation's AI configuration
+	// (GET /api/organization/ai)
+	GetOrganizationAI(w http.ResponseWriter, r *http.Request)
+	// Change the caller's organisation's AI configuration (proven administrators only)
+	// (PATCH /api/organization/ai)
+	PatchOrganizationAI(w http.ResponseWriter, r *http.Request)
+	// Confirm that my AI requests may go to my organisation's AI provider account
+	// (POST /api/organization/ai/consent)
+	ConfirmOrganizationAI(w http.ResponseWriter, r *http.Request)
 	// List the caller's personal calendars
 	// (GET /api/personal-calendars)
 	ListPersonalCalendars(w http.ResponseWriter, r *http.Request)
@@ -6054,7 +6584,7 @@ func (_ Unimplemented) CreateSsoProvider(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Begin an admin step-up for an SSO write
+// Begin an admin step-up for an SSO write or an organisation-AI change
 // (GET /api/admin/sso/stepup)
 func (_ Unimplemented) StartSsoAdminStepup(w http.ResponseWriter, r *http.Request, params StartSsoAdminStepupParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -6068,7 +6598,7 @@ func (_ Unimplemented) SsoAdminStepupCallback(w http.ResponseWriter, r *http.Req
 
 // What the SSO admin step-up would request, without making a write
 // (GET /api/admin/sso/stepup/options)
-func (_ Unimplemented) GetSsoStepupOptions(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) GetSsoStepupOptions(w http.ResponseWriter, r *http.Request, params GetSsoStepupOptionsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6510,6 +7040,24 @@ func (_ Unimplemented) ListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Read the caller's organisation's AI configuration
+// (GET /api/organization/ai)
+func (_ Unimplemented) GetOrganizationAI(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Change the caller's organisation's AI configuration (proven administrators only)
+// (PATCH /api/organization/ai)
+func (_ Unimplemented) PatchOrganizationAI(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Confirm that my AI requests may go to my organisation's AI provider account
+// (POST /api/organization/ai/consent)
+func (_ Unimplemented) ConfirmOrganizationAI(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // List the caller's personal calendars
 // (GET /api/personal-calendars)
 func (_ Unimplemented) ListPersonalCalendars(w http.ResponseWriter, r *http.Request) {
@@ -6870,6 +7418,14 @@ func (siw *ServerInterfaceWrapper) StartSsoAdminStepup(w http.ResponseWriter, r 
 		return
 	}
 
+	// ------------- Optional query parameter "purpose" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "purpose", r.URL.Query(), &params.Purpose)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "purpose", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.StartSsoAdminStepup(w, r, params)
 	}))
@@ -6935,6 +7491,8 @@ func (siw *ServerInterfaceWrapper) SsoAdminStepupCallback(w http.ResponseWriter,
 // GetSsoStepupOptions operation middleware
 func (siw *ServerInterfaceWrapper) GetSsoStepupOptions(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
@@ -6943,8 +7501,19 @@ func (siw *ServerInterfaceWrapper) GetSsoStepupOptions(w http.ResponseWriter, r 
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetSsoStepupOptionsParams
+
+	// ------------- Optional query parameter "purpose" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "purpose", r.URL.Query(), &params.Purpose)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "purpose", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetSsoStepupOptions(w, r)
+		siw.Handler.GetSsoStepupOptions(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9276,6 +9845,72 @@ func (siw *ServerInterfaceWrapper) ListOrgMembers(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetOrganizationAI operation middleware
+func (siw *ServerInterfaceWrapper) GetOrganizationAI(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetOrganizationAI(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PatchOrganizationAI operation middleware
+func (siw *ServerInterfaceWrapper) PatchOrganizationAI(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PatchOrganizationAI(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ConfirmOrganizationAI operation middleware
+func (siw *ServerInterfaceWrapper) ConfirmOrganizationAI(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConfirmOrganizationAI(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListPersonalCalendars operation middleware
 func (siw *ServerInterfaceWrapper) ListPersonalCalendars(w http.ResponseWriter, r *http.Request) {
 
@@ -11010,6 +11645,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/api/org/members", wrapper.ListOrgMembers)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/organization/ai", wrapper.GetOrganizationAI)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/api/organization/ai", wrapper.PatchOrganizationAI)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/api/organization/ai/consent", wrapper.ConfirmOrganizationAI)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/personal-calendars", wrapper.ListPersonalCalendars)
 	})
 	r.Group(func(r chi.Router) {
@@ -11425,6 +12069,7 @@ func (response SsoAdminStepupCallback500JSONResponse) VisitSsoAdminStepupCallbac
 }
 
 type GetSsoStepupOptionsRequestObject struct {
+	Params GetSsoStepupOptionsParams
 }
 
 type GetSsoStepupOptionsResponseObject interface {
@@ -11436,6 +12081,15 @@ type GetSsoStepupOptions200JSONResponse SsoStepupOptions
 func (response GetSsoStepupOptions200JSONResponse) VisitGetSsoStepupOptionsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetSsoStepupOptions400JSONResponse ErrorResponse
+
+func (response GetSsoStepupOptions400JSONResponse) VisitGetSsoStepupOptionsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -14765,6 +15419,167 @@ func (response ListOrgMembers500JSONResponse) VisitListOrgMembersResponse(w http
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetOrganizationAIRequestObject struct {
+}
+
+type GetOrganizationAIResponseObject interface {
+	VisitGetOrganizationAIResponse(w http.ResponseWriter) error
+}
+
+type GetOrganizationAI200JSONResponse OrganizationAIConfiguration
+
+func (response GetOrganizationAI200JSONResponse) VisitGetOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetOrganizationAI401TextResponse PlainTextError
+
+func (response GetOrganizationAI401TextResponse) VisitGetOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type GetOrganizationAI403JSONResponse SsoWriteMembershipRequired
+
+func (response GetOrganizationAI403JSONResponse) VisitGetOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetOrganizationAI500JSONResponse SchedulingErrorResponse
+
+func (response GetOrganizationAI500JSONResponse) VisitGetOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PatchOrganizationAIRequestObject struct {
+	Body *PatchOrganizationAIJSONRequestBody
+}
+
+type PatchOrganizationAIResponseObject interface {
+	VisitPatchOrganizationAIResponse(w http.ResponseWriter) error
+}
+
+type PatchOrganizationAI200JSONResponse OrganizationAIConfiguration
+
+func (response PatchOrganizationAI200JSONResponse) VisitPatchOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PatchOrganizationAI400JSONResponse SchedulingErrorResponse
+
+func (response PatchOrganizationAI400JSONResponse) VisitPatchOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PatchOrganizationAI401TextResponse PlainTextError
+
+func (response PatchOrganizationAI401TextResponse) VisitPatchOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type PatchOrganizationAI403JSONResponse OrganizationAIWriteForbiddenResponse
+
+func (response PatchOrganizationAI403JSONResponse) VisitPatchOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PatchOrganizationAI500JSONResponse SchedulingErrorResponse
+
+func (response PatchOrganizationAI500JSONResponse) VisitPatchOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmOrganizationAIRequestObject struct {
+	Body *ConfirmOrganizationAIJSONRequestBody
+}
+
+type ConfirmOrganizationAIResponseObject interface {
+	VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error
+}
+
+type ConfirmOrganizationAI200JSONResponse AIStatus
+
+func (response ConfirmOrganizationAI200JSONResponse) VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmOrganizationAI400JSONResponse SchedulingErrorResponse
+
+func (response ConfirmOrganizationAI400JSONResponse) VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmOrganizationAI401TextResponse PlainTextError
+
+func (response ConfirmOrganizationAI401TextResponse) VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type ConfirmOrganizationAI403JSONResponse SsoWriteMembershipRequired
+
+func (response ConfirmOrganizationAI403JSONResponse) VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmOrganizationAI409JSONResponse OrganizationAIConsentConflict
+
+func (response ConfirmOrganizationAI409JSONResponse) VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ConfirmOrganizationAI500JSONResponse SchedulingErrorResponse
+
+func (response ConfirmOrganizationAI500JSONResponse) VisitConfirmOrganizationAIResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListPersonalCalendarsRequestObject struct {
 }
 
@@ -17032,7 +17847,7 @@ type StrictServerInterface interface {
 	// Create or replace the OIDC SSO configuration for the caller's org domain
 	// (POST /api/admin/sso)
 	CreateSsoProvider(ctx context.Context, request CreateSsoProviderRequestObject) (CreateSsoProviderResponseObject, error)
-	// Begin an admin step-up for an SSO write
+	// Begin an admin step-up for an SSO write or an organisation-AI change
 	// (GET /api/admin/sso/stepup)
 	StartSsoAdminStepup(ctx context.Context, request StartSsoAdminStepupRequestObject) (StartSsoAdminStepupResponseObject, error)
 	// Finish an admin step-up and record its outcome
@@ -17260,6 +18075,15 @@ type StrictServerInterface interface {
 	// List users in the caller's organization
 	// (GET /api/org/members)
 	ListOrgMembers(ctx context.Context, request ListOrgMembersRequestObject) (ListOrgMembersResponseObject, error)
+	// Read the caller's organisation's AI configuration
+	// (GET /api/organization/ai)
+	GetOrganizationAI(ctx context.Context, request GetOrganizationAIRequestObject) (GetOrganizationAIResponseObject, error)
+	// Change the caller's organisation's AI configuration (proven administrators only)
+	// (PATCH /api/organization/ai)
+	PatchOrganizationAI(ctx context.Context, request PatchOrganizationAIRequestObject) (PatchOrganizationAIResponseObject, error)
+	// Confirm that my AI requests may go to my organisation's AI provider account
+	// (POST /api/organization/ai/consent)
+	ConfirmOrganizationAI(ctx context.Context, request ConfirmOrganizationAIRequestObject) (ConfirmOrganizationAIResponseObject, error)
 	// List the caller's personal calendars
 	// (GET /api/personal-calendars)
 	ListPersonalCalendars(ctx context.Context, request ListPersonalCalendarsRequestObject) (ListPersonalCalendarsResponseObject, error)
@@ -17537,8 +18361,10 @@ func (sh *strictHandler) SsoAdminStepupCallback(w http.ResponseWriter, r *http.R
 }
 
 // GetSsoStepupOptions operation middleware
-func (sh *strictHandler) GetSsoStepupOptions(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) GetSsoStepupOptions(w http.ResponseWriter, r *http.Request, params GetSsoStepupOptionsParams) {
 	var request GetSsoStepupOptionsRequestObject
+
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.GetSsoStepupOptions(ctx, request.(GetSsoStepupOptionsRequestObject))
@@ -19538,6 +20364,92 @@ func (sh *strictHandler) ListOrgMembers(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListOrgMembersResponseObject); ok {
 		if err := validResponse.VisitListOrgMembersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetOrganizationAI operation middleware
+func (sh *strictHandler) GetOrganizationAI(w http.ResponseWriter, r *http.Request) {
+	var request GetOrganizationAIRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetOrganizationAI(ctx, request.(GetOrganizationAIRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetOrganizationAI")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetOrganizationAIResponseObject); ok {
+		if err := validResponse.VisitGetOrganizationAIResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PatchOrganizationAI operation middleware
+func (sh *strictHandler) PatchOrganizationAI(w http.ResponseWriter, r *http.Request) {
+	var request PatchOrganizationAIRequestObject
+
+	var body PatchOrganizationAIJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PatchOrganizationAI(ctx, request.(PatchOrganizationAIRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PatchOrganizationAI")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PatchOrganizationAIResponseObject); ok {
+		if err := validResponse.VisitPatchOrganizationAIResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ConfirmOrganizationAI operation middleware
+func (sh *strictHandler) ConfirmOrganizationAI(w http.ResponseWriter, r *http.Request) {
+	var request ConfirmOrganizationAIRequestObject
+
+	var body ConfirmOrganizationAIJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConfirmOrganizationAI(ctx, request.(ConfirmOrganizationAIRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConfirmOrganizationAI")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConfirmOrganizationAIResponseObject); ok {
+		if err := validResponse.VisitConfirmOrganizationAIResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **124**
+- operations: **127**
 - generated: **6**
-- handwritten: **118**
+- handwritten: **121**
 
 ## Register
 
@@ -137,6 +137,9 @@ from the contract and any edit is reported as drift.
 | refreshMeetingBrief               | POST   | /api/meetings/{event_id}/brief/refresh          | meeting-briefs   | handwritten | |
 | confirmNaturalLanguage            | POST   | /api/nlp/confirm                                | nlp              | handwritten | |
 | parseNaturalLanguage              | POST   | /api/nlp/parse                                  | nlp              | handwritten | |
+| getOrganizationAI                 | GET    | /api/organization/ai                            | organization-ai  | handwritten | NEW-llm-bring-your-own Part 2: new in the contract; not served yet. Stage 4 implements it on the generated strict wrapper (factory README §4) and flips this row to generated. |
+| patchOrganizationAI               | PATCH  | /api/organization/ai                            | organization-ai  | handwritten | NEW-llm-bring-your-own Part 2: new in the contract; not served yet. Stage 4 implements it on the generated strict wrapper (factory README §4) and flips this row to generated. |
+| confirmOrganizationAI             | POST   | /api/organization/ai/consent                    | organization-ai  | handwritten | NEW-llm-bring-your-own Part 2: new in the contract; not served yet. Stage 4 implements it on the generated strict wrapper (factory README §4) and flips this row to generated. |
 | previewCompression                | POST   | /api/schedule/compress                          | schedule         | handwritten | |
 | applyCompression                  | POST   | /api/schedule/compress/apply                    | schedule         | handwritten | |
 | createScheduledMeeting            | POST   | /api/schedule/create                            | schedule         | handwritten | |

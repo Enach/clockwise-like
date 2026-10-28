@@ -59,6 +59,13 @@
 
 ## 0. Scope and split
 
+> **Part 2 has its own spec since 2026-10-28:**
+> `docs/specs/NEW-llm-bring-your-own-part2.md`. It supersedes this file's
+> Part 2 acceptance criteria (AC-22 to AC-31, AC-36, AC-38, AC-41, the Part 2
+> rows of AC-40) and the Part 2 clauses of §3, records the owner's O-11, O-12
+> and O-13 as acceptance criteria, and maps the old AC numbers to the new ones
+> (its §4.0). Part 1's text here is unchanged.
+
 The acceptance list is too large for one reviewable PR pair. It splits into two
 PR pairs (api + web each) under this one spec. Part 1 can land alone; Part 2
 needs Part 1 and PAC-50.

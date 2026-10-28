@@ -433,6 +433,15 @@ paths:
         unchanged: 200 `{"intent":"unknown","error":"<sentence>"}`, with no
         `not_configured`, and nothing sent.
 
+        **Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`).** In
+        rows 4 and 9 the request uses the caller's organisation's
+        configuration and nothing of the caller's (parent D-18). In rows 5
+        and 10 the caller has not confirmed the organisation's current
+        configuration: the answer is the not-configured 200 and nothing is
+        sent until they confirm in Paceday (owner O-13; confirmOrganizationAI).
+        The MCP tool `clockwise_parse_command` receives the same body; no MCP
+        tool confirms (spec P2-AC-33).
+
         API-080 is fixed here (spec AC-35, D-20): a result with no time range
         carries neither `range_start` nor `range_end`, never
         `0001-01-01T00:00:00Z`.
@@ -460,6 +469,15 @@ paths:
                       reason: nothing_configured
                       enablers: [user]
                       message: 'AI features are off: no AI provider is set up. Add your own API key in Settings.'
+                organizationUnconfirmed:
+                  summary: (Part 2) row 5, the organisation uses OpenAI and the caller has not confirmed
+                  value:
+                    intent: unknown
+                    error: 'AI features are off until you confirm: your organisation provides AI through OpenAI. Your text and meeting details (titles, attendee emails, Slack and Notion excerpts) are sent to your organisation''s AI provider account, which its administrators can access outside Paceday. Confirm in Paceday to turn AI on.'
+                    not_configured:
+                      reason: organization_unconfirmed
+                      enablers: [user]
+                      message: 'AI features are off until you confirm: your organisation provides AI through OpenAI. Your text and meeting details (titles, attendee emails, Slack and Notion excerpts) are sent to your organisation''s AI provider account, which its administrators can access outside Paceday. Confirm in Paceday to turn AI on.'
         '400':
           description: '`missing text field` - JSON error shape (writeError).'
           content:
@@ -621,11 +639,12 @@ paths:
           `unsupported`, `unsupported` is a 400 (contract challenge
           2026-10-28, blocking 1).
         * **`organization`**: decided as a request of a caller who follows
-          their organisation. Before Part 2 of the spec no organisation
-          configuration exists, so this is always the 409
-          `nothing_configured`. A submitted `llmModel` or `llmApiKey` is never
-          combined with an organisation configuration and is not sent (spec
-          D-18, D-19).
+          their organisation (rows 4-6). In row 4 the probe tests the
+          organisation's configuration exactly as the caller's requests use
+          it: its provider, model, destination and key, nothing of the
+          caller's (spec D-18). A submitted `llmModel` or `llmApiKey` is never
+          combined with an organisation configuration: in rows 4 and 9 it is
+          the 400 below, and nothing is sent (spec P2-AC-28).
         * **Absent**: the caller's SAVED choice, decided exactly as their parse
           and brief refresh would decide it (spec §3 table, AC-40). When the
           saved choice is a provider, a submitted `llmModel` / `llmApiKey`
@@ -633,10 +652,27 @@ paths:
           not (`""`, `organization`, `unsupported`), the answer is that row's
           409, and a submitted key is sent nowhere.
 
-        **Order of decisions.** (1) The body's shape: the 400. (2) Which
-        configuration, as above: when there is none, the 409 and nothing is
-        sent. (3) The destination check: the 422 and nothing sent. (4) The
-        request: the 200 or the 502. Step 2 precedes step 3, so a caller with no
+        **NEW-llm-bring-your-own Part 2 (spec
+        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.5).** Naming a
+        provider always probes the caller's OWN configuration for it, even
+        when it is the organisation's provider: naming a provider never
+        selects the organisation's key (spec P2-D6; this replaces the parent
+        spec's "names exactly the organisation's provider" clause). The
+        organisation's configuration is probed only by `{}` (saved choice in
+        rows 4 or 9) or `{"llmProvider":"organization"}`, and then the 200's
+        `configuration` is `organization`. While the caller's organisation
+        forbids personal keys (owner O-12), a probe that names a provider or
+        carries `llmApiKey` is the 409 `personal_keys_forbidden` with
+        `enablers: [organization_admin]`, and nothing is sent (P2-AC-20).
+        A caller whose decided row is 5, 10 or 11 gets that row's 409.
+
+        **Order of decisions.** (1) The body's shape: the 400. (1a, Part 2)
+        Personal keys forbidden and the body names a provider or carries
+        `llmApiKey`: the 409. (2) Which configuration, as above: when there is
+        none, the 409 and nothing is sent; (2a, Part 2) when it is the
+        organisation's (rows 4, 9) and the body carries `llmModel` or
+        `llmApiKey`, the 400. (3) The destination check: the 422 and nothing
+        sent. (4) The request: the 200 or the 502. Step 2 precedes step 3, so a caller with no
         key whose stored destination would also be refused gets the 409
         `needs_key`, not the 422: by the spec's table only a configured caller
         sends anything, so only a configured caller's destination is checked.
@@ -728,6 +764,10 @@ paths:
             `llmProvider: "unsupported"` when the caller's saved choice does
             not read as `unsupported` (message
             `llmProvider unsupported can be probed only when it is your saved choice`);
+            (Part 2) `llmModel` or `llmApiKey` when the probe decided on the
+            organisation's configuration (rows 4 and 9; message
+            `llmModel and llmApiKey cannot be used with your organisation's AI configuration`),
+            nothing sent;
             or a body carrying any property other than
             `llmProvider`, `llmModel` and `llmApiKey`
             (`additionalProperties: false`). The last case is how a caller
@@ -744,9 +784,10 @@ paths:
         '409':
           description: >
             NEW-llm-bring-your-own. AI is not configured for the configuration
-            this probe decided on (spec §3 table, rows 1, 3 and 5-8; before
-            Part 2 only rows 1, 3, 6 and 8 occur). Nothing was sent to any
-            host. `error` is a non-empty sentence describing THE PROBED CHOICE:
+            this probe decided on (table on AINotConfigured, rows 1, 3, 5-8, 10
+            and 11), or (Part 2) the probe named a provider or carried a key
+            while the caller's organisation forbids personal keys. Nothing was
+            sent to any host. `error` is a non-empty sentence describing THE PROBED CHOICE:
             why it cannot be used and who can fix it (a client that reads only
             `error`, as the web settings page did before this change, renders
             it); `notConfigured` carries the same facts for a client to act on.
@@ -792,6 +833,14 @@ paths:
                       reason: provider_removed
                       enablers: [user]
                       message: 'AI features are off: Ollama is no longer supported. Choose another provider in Settings.'
+                personalKeyForbidden:
+                  summary: '(Part 2) {"llmProvider":"openai"} while the organisation forbids personal keys'
+                  value:
+                    error: 'Your organisation does not allow personal API keys, so OpenAI cannot be tested. An administrator of your organisation can change this.'
+                    notConfigured:
+                      reason: personal_keys_forbidden
+                      enablers: [organization_admin]
+                      message: 'Your organisation does not allow personal API keys, so OpenAI cannot be tested. An administrator of your organisation can change this.'
         '422':
           description: >
             PAC-66 and PAC-66-B. The configuration is set up, but the probe
@@ -851,6 +900,334 @@ paths:
             Sentry only (PAC-21). There is no credential acquisition step any more, so
             no 502 comes from loading a deployment credential. It is never used for a
             destination refusal (422) or for "AI not configured" (409).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+
+  /api/organization/ai:
+    get:
+      operationId: getOrganizationAI
+      tags: [organization-ai]
+      summary: Read the caller's organisation's AI configuration
+      description: >
+        NEW-llm-bring-your-own Part 2 (spec
+        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.2, P2-AC-7). The
+        organisation is the caller's, never a parameter, so no caller can
+        name another organisation (P2-AC-8).
+
+        **Every member reads the same bytes.** The answer depends only on the
+        organisation's stored configuration, never on the caller: not on
+        whether the caller is an administrator (Paceday stores no admin role;
+        PAC-50's proof exists only around a write), not on whether the caller
+        holds a live grant, is on the break-glass list, has confirmed, or just
+        made the last change (parent spec D-7, P2-AC-7). Per-caller state
+        (whether the caller has confirmed the current version) is on the
+        caller's settings read (`AIStatus`), not here.
+
+        The key is NEVER returned (owner O-7, PAC-24): `keySet` is the only
+        thing a reader learns about it. An organisation that never set a
+        configuration answers `configured: false`, `keySet: false`,
+        `personalKeysAllowed: true`, `configurationVersion: 0` and no
+        `provider`.
+
+        Checks: membership (403), then 200. Read-only: nothing is consumed,
+        written or recorded.
+      responses:
+        '200':
+          description: The organisation's AI configuration, without the key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAIConfiguration'
+              examples:
+                configured:
+                  value:
+                    configured: true
+                    provider: openai
+                    model: gpt-4o-mini
+                    baseUrl: ''
+                    keySet: true
+                    personalKeysAllowed: true
+                    configurationVersion: 3
+                    updatedAt: '2026-11-02T09:14:00Z'
+                    changeableBy: organization_admin
+                neverSet:
+                  value:
+                    configured: false
+                    keySet: false
+                    personalKeysAllowed: true
+                    configurationVersion: 0
+                    changeableBy: organization_admin
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: >
+            The caller has no organisation (`org membership required`, also
+            when the user lookup fails) or its organisation row is gone (`org
+            not found`). The body is SsoWriteMembershipRequired, the schema of
+            every membership 403 (PAC-50). A client shows no organisation AI
+            section to such a caller (spec P2-AC-9, P2-AC-30); it knows in
+            advance from `Settings.aiStatus.inOrganization`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
+        '500':
+          description: >-
+            The configuration could not be read. Body: `{"error":"internal error"}`. The
+            detail is written to the server log and Sentry only (PAC-21).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+    patch:
+      operationId: patchOrganizationAI
+      tags: [organization-ai]
+      summary: Change the caller's organisation's AI configuration (proven administrators only)
+      description: >
+        NEW-llm-bring-your-own Part 2 (spec §3.2, P2-AC-1 to P2-AC-6,
+        P2-AC-17; owner O-11, O-12). MERGE against the caller's
+        organisation's configuration, with the rules on
+        OrganizationAIConfigurationUpdate. The answer is the re-read
+        configuration, byte-identical to what any member's getOrganizationAI
+        returns right after (P2-AC-7).
+
+        **Who may change it (owner O-11: PAC-50's admin proof, repeated per
+        change).** Exactly PAC-50's write gate (`docs/specs/PAC-50.md` §4.2)
+        with its own grant purpose:
+
+        1. Membership: no organisation or its row gone is the 403
+           SsoWriteMembershipRequired, before anything else (break-glass
+           included).
+
+        2. The body: every 400 below, before any proof is looked at, so a
+           refused body leaves a live grant unconsumed (P2-AC-4).
+
+        3. Authorisation, the last step before the write: the caller's newest
+           live grant for (caller, caller's organisation) **whose purpose is
+           `llm_org_key_write`** is consumed in one statement; a grant of any
+           other purpose (`sso_write`) is never selected and stays live, and
+           an SSO write never consumes an `llm_org_key_write` grant (PAC-50
+           AC-27, P2-AC-2). Without such a grant: an address on the
+           deployment's break-glass list (`PACEDAY_ADMIN_EMAILS`, compared
+           case-insensitively) whose session JWT was issued less than 10
+           minutes ago, and not more than one minute in the future, is
+           authorised without a grant (PAC-50 AC-14a); the same address with
+           an older session is the 403
+           OrganizationAIWriteFreshLoginRequired; anyone else is the 403
+           OrganizationAIWriteStepupRequired. One grant authorises one
+           change, so a second change needs a new step-up (owner O-11).
+
+        4. The write. A storage failure after step 3 is the 500, the
+           configuration is unchanged and the grant stays consumed (P2-AC-5).
+
+        Being a team owner, or having made the last change, proves nothing.
+        Every successful change is recorded for operators (who, when,
+        `stepup` or `breakglass`, the names of the properties that changed;
+        never the key; P2-AC-6). No API reads that record.
+
+        **What a change does to members** (spec §3.1): `configurationVersion`
+        advances by one when the change alters `provider`, the key, or any
+        destination property (`baseUrl`, `azureEndpoint`, `azureDeployment`,
+        `azureApiVersion`, `awsRegion`), including removing them; members who
+        follow the organisation, or are made to by `personalKeysAllowed:
+        false`, must then confirm again before anything is sent to it (spec
+        P2-D4, P2-AC-23). A change of only `model` and/or
+        `personalKeysAllowed` does not advance it.
+
+        Approved destinations: the organisation's `baseUrl`, `azureEndpoint`
+        and `awsRegion` are checked on write with exactly the rules of
+        patchSettings for a user's (PAC-66, PAC-66-B, owner O-10 path
+        prefixes), for the organisation's provider, and again on every send
+        (`testLLMConnection`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationAIConfigurationUpdate'
+            examples:
+              setOpenAI:
+                value:
+                  provider: openai
+                  apiKey: sk-example-not-a-real-key
+              forbidPersonalKeys:
+                value:
+                  personalKeysAllowed: false
+              removeKey:
+                value:
+                  apiKey: ''
+              removeAll:
+                value:
+                  provider: ''
+      responses:
+        '200':
+          description: The re-read configuration, without the key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAIConfiguration'
+        '400':
+          description: >
+            The body is refused and nothing is stored; a live grant is not
+            consumed (P2-AC-4). JSON error shape (writeError). Messages:
+            `invalid JSON` (unreadable, or not an object, or `null`);
+            `unknown property: <name>`;
+            `invalid JSON: <property> has the wrong type`;
+            `<property> must not be null`;
+            `send at least one property to change`;
+            `provider must be one of: "", openai, anthropic, azure_openai, bedrock, vertex`;
+            `apiKey is required when provider changes` (spec P2-D7: a key is
+            never carried from one provider to another);
+            `apiKey requires a provider` (a non-empty key while the
+            configuration has, and the body sets, no provider);
+            `provider "" removes the whole configuration; send no other property with it`;
+            `<property> does not apply to <provider>` (for example
+            `azureEndpoint` with `openai`; spec §3.2: refused, not ignored);
+            and the destination messages of patchSettings for `baseUrl`,
+            `azureEndpoint` and `awsRegion`, naming this body's property.
+            Writes validate only what they change: a destination value equal to
+            the stored one is not re-checked. The response never contains the
+            submitted or a stored key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: >
+            Not permitted, configuration unchanged (P2-AC-1, P2-AC-2,
+            P2-AC-17). Exactly one variant of
+            OrganizationAIWriteForbiddenResponse, told apart by `error`:
+            `org membership required` / `org not found` (no organisation;
+            no step-up offered); `organization_ai_write_requires_admin_stepup`
+            (with how to start the step-up for this purpose; a live grant of
+            another purpose is left unconsumed); or
+            `organization_ai_write_requires_fresh_login` (a break-glass
+            address with a stale session). 403 because the request is
+            understood and the caller is not permitted (RFC 9110 §15.5.4),
+            as PAC-50.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAIWriteForbiddenResponse'
+        '500':
+          description: >-
+            The proof could not be checked, or the change could not be stored or
+            re-read. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21). When it happens after the grant was
+            consumed, the grant stays consumed and the configuration is unchanged
+            (P2-AC-5).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+
+  /api/organization/ai/consent:
+    post:
+      operationId: confirmOrganizationAI
+      tags: [organization-ai]
+      summary: Confirm that my AI requests may go to my organisation's AI provider account
+      description: >
+        NEW-llm-bring-your-own Part 2 (spec §3.4, P2-AC-22 to P2-AC-25; owner
+        O-13: tell and ask once, nothing is sent before the user confirms).
+        The caller confirms the organisation's configuration at
+        `configurationVersion`, the version they were shown (from
+        getOrganizationAI). Recorded for (caller, caller's organisation): a
+        later confirmation of a newer version replaces it; confirming the
+        current version again is accepted and changes nothing.
+
+        Before calling this, a client tells the user, naming the
+        organisation's `provider`, that their text and meeting details (event
+        titles, attendee emails, and the Slack and Notion excerpts used for
+        briefs) are sent to their organisation's AI provider account, which
+        its administrators can **access** outside Paceday (owner O-13: the
+        wording says "access", never "read"). The client calls this only on
+        the user's explicit confirmation. Choosing "Use my organisation's AI"
+        in Settings shows the same notice and counts as confirming (the
+        client calls this, then patchSettings with `llmProvider:
+        organization`).
+
+        The confirmation is what lets rows 4 and 9 of the table on
+        AINotConfigured send anything; it does not change the caller's stored
+        choice. It confirms nobody else (P2-AC-25). No MCP tool calls it (spec
+        P2-D9).
+
+        Checks: body (400), membership (403), then the organisation's
+        current state (409), then 200.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationAIConsentRequest'
+      responses:
+        '200':
+          description: >
+            Recorded. The caller's AI status afterwards, as the settings read
+            would give it: for a caller who follows the organisation (or whose
+            organisation forbids personal keys) it is now `configured: true`
+            with `configuration: organization`; for a caller on their own
+            provider with personal keys allowed, or on "off", it is unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIStatus'
+        '400':
+          description: >
+            `invalid request: send {"configurationVersion": <the version you were shown>}`
+            for an unreadable body, a body that is not an object, a missing or
+            non-integer `configurationVersion`, a value below 1, or any other
+            property. Nothing is recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulingErrorResponse'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: >
+            No organisation (`org membership required`) or its row is gone
+            (`org not found`): SsoWriteMembershipRequired. Nothing recorded
+            (P2-AC-9).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
+        '409':
+          description: >
+            Nothing is recorded (P2-AC-24). `reason`
+            `organization_not_configured`: the organisation's configuration is
+            not complete, so there is nothing to confirm.
+            `configuration_changed`: `configurationVersion` is not the current
+            one (an administrator changed the configuration after the caller
+            was shown it). `organization` carries the current configuration
+            so the client can show the notice again with what is true now.
+            409 because the request is well formed and conflicts with the
+            current state of the organisation's configuration (RFC 9110
+            §15.5.10).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationAIConsentConflict'
+        '500':
+          description: >-
+            Storage failure. Body: `{"error":"internal error"}`. The detail is written to
+            the server log and Sentry only (PAC-21). Nothing is recorded.
           content:
             application/json:
               schema:
@@ -1005,8 +1382,13 @@ paths:
         * `llmApiKeysSet`, `llmUnboundApiKeySet` and `aiStatus` are read-only
           and, like `llmApiKeySet`, accepted and ignored on write.
         * Nothing here reads, writes or reveals an organisation's
-          configuration or key (Part 2 of the spec adds those as separate
-          operations).
+          configuration or key: that is getOrganizationAI and
+          patchOrganizationAI (Part 2). Writing `llmProvider: organization`
+          does not confirm the organisation's configuration
+          (confirmOrganizationAI does). While the caller's organisation
+          forbids personal keys, choosing a provider and writing a key for it
+          are accepted and stored, and that key is never sent (spec P2-D8,
+          P2-AC-21).
 
         Before PAC-24 there was no PATCH; the only write was a full-replace PUT
         that persisted every omitted field as its Go zero value (API-004).
@@ -1851,9 +2233,10 @@ components:
             means the caller's saved choice. A provider name selects that
             provider, the caller's own stored destination values for it, and
             the submitted key or else the key bound to it; never a key bound
-            to another provider. `""` is the 409 `off`. `organization` is
-            decided as a follower's request (before Part 2: the 409
-            `nothing_configured`). `unsupported` is accepted only when the
+            to another provider (and, while the caller's organisation forbids
+            personal keys, the 409 `personal_keys_forbidden`). `""` is the 409
+            `off`. `organization` is decided as a follower's request (rows 4-6;
+            in row 4 it tests the organisation's configuration). `unsupported` is accepted only when the
             caller's saved choice reads as `unsupported` and is then decided
             as the saved choice (the row 7/8 409, a submitted key sent
             nowhere); otherwise it is a 400. `ollama` is not in the set
@@ -1899,7 +2282,13 @@ components:
             NEW-llm-bring-your-own (a probe with no provider is the 409). It is
             what tells a client which configuration the result is about. It
             never carries the key.
-      required: [ok, response, provider]
+        configuration:
+          type: string
+          enum: [own, organization]
+          description: >
+            NEW-llm-bring-your-own Part 2. `organization` when the probe tested
+            the organisation's configuration (rows 4 and 9), `own` otherwise.
+      required: [ok, response, provider, configuration]
       additionalProperties: false
 
     LLMDestinationRefusal:
@@ -1952,34 +2341,52 @@ components:
       description: |
         NEW-llm-bring-your-own. Why AI is not configured for a caller, and who
         can change that. One row of the table in
-        `docs/specs/NEW-llm-bring-your-own.md` §3, decided from the caller's
-        stored choice at the moment of the request, rows evaluated top to
-        bottom:
+        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1 (Part 2; rows 1-8
+        are the parent spec's, rows 9-11 are new), decided from the caller's
+        stored choice and their organisation's configuration at the moment of
+        the request. Rows are evaluated IN THE ORDER LISTED (9-11 right after
+        1). "Complete": the organisation's configuration is `configured`
+        (OrganizationAIConfiguration). "Forbids": its `personalKeysAllowed` is
+        false. "Confirmed": the caller confirmed its current
+        `configurationVersion` (confirmOrganizationAI).
 
         | Row | Stored choice | Condition | `reason` | `enablers` |
         |---|---|---|---|---|
         | 1 | `""` (off) | - | `off` | user |
-        | 2 | a provider | a key bound to it | (configured) | - |
+        | 9 | a provider, or `unsupported` | forbids; complete; confirmed | (configured: organisation) | - |
+        | 10 | a provider, or `unsupported` | forbids; complete; not confirmed | `personal_keys_forbidden` | user |
+        | 11 | a provider, or `unsupported` | forbids; not complete | `personal_keys_forbidden` | organization_admin |
+        | 2 | a provider | a key bound to it | (configured: own) | - |
         | 3 | a provider | no key bound to it | `needs_key` (+ `provider`) | user |
-        | 4 | `organization` | organisation complete, user confirmed (Part 2) | (configured) | - |
-        | 5 | `organization` | organisation complete, not confirmed (Part 2) | `organization_unconfirmed` | user |
-        | 6 | `organization` | no organisation, or it is not complete | `nothing_configured` | user; from Part 2, also organization_admin when in an organisation |
-        | 7 | `unsupported` (Ollama) | organisation complete (Part 2) | `provider_removed_organization_available` | user |
-        | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user; from Part 2, also organization_admin when in an organisation |
+        | 4 | `organization` | complete; confirmed | (configured: organisation) | - |
+        | 5 | `organization` | complete; not confirmed | `organization_unconfirmed` | user |
+        | 6 | `organization` | no organisation, or not complete | `nothing_configured` | user, plus organization_admin in an organisation; organization_admin only when it forbids |
+        | 7 | `unsupported` (Ollama) | complete | `provider_removed_organization_available` | user |
+        | 8 | `unsupported` (Ollama) | otherwise | `provider_removed` | user, plus organization_admin in an organisation |
 
-        The same caller state gives the same `reason` on parse, brief refresh,
-        the probe naming nothing, and the settings read (spec AC-40). Before
-        Part 2 of the spec (the organisation-wide configuration) only `off`,
-        `needs_key`, `nothing_configured` and `provider_removed` occur; the
-        other two values are in the set now so that a client written against
-        this revision needs no change when Part 2 lands. A stored `bedrock`,
+        The same caller state gives the same `reason` and `enablers` on parse,
+        brief refresh, the probe naming nothing, and the settings read (spec
+        P2-AC-29). Row 1 wins over everything: "off" is never overridden by
+        the organisation (parent D-9, P2-AC-16). While the organisation
+        forbids personal keys, no personal key, stored or submitted, is ever
+        sent (owner O-12); the caller's stored choice and keys are not
+        rewritten, so allowing personal keys again puts the caller back in
+        row 2 or 3. `organization_unconfirmed` and `personal_keys_forbidden`
+        with `enablers: [user]` mean the caller can turn AI on in one step by
+        confirming (owner O-13; nothing is sent before). A stored `bedrock`,
         `azure_openai` or `vertex` choice is a supported provider: with no key
         bound it is `needs_key`, never a removed-provider reason (spec D-17).
+
+        A probe can also give `personal_keys_forbidden` with `enablers:
+        [organization_admin]` when it names a provider or carries a key while
+        the organisation forbids personal keys (see testLLMConnection).
         Carries no key, and nothing about any key beyond the facts above.
+        Before Part 2 only `off`, `needs_key`, `nothing_configured` and
+        `provider_removed` occurred, always with `enablers: [user]`.
       properties:
         reason:
           type: string
-          enum: ['off', needs_key, organization_unconfirmed, nothing_configured, provider_removed_organization_available, provider_removed]
+          enum: ['off', needs_key, organization_unconfirmed, nothing_configured, provider_removed_organization_available, provider_removed, personal_keys_forbidden]
         provider:
           type: string
           enum: [openai, anthropic, azure_openai, bedrock, vertex]
@@ -1992,15 +2399,15 @@ components:
             type: string
             enum: [user, organization_admin]
           description: >
-            Who can turn AI on for this caller: `user` (the caller, in
-            Settings) is present in every answer before Part 2 of the spec.
-            Before Part 2 it is the only value: no organisation administrator
-            can configure AI yet, so no answer names one (spec revision 2).
-            From Part 2, `organization_admin` (an administrator of the
-            caller's organisation) is added in rows 6 and 8 when the caller
-            belongs to an organisation; Part 2 may also produce answers
-            without `user` (owner answer O-12, personal keys forbidden).
-            Never names a person.
+            Who can turn AI on for this caller, by the table above: `user`
+            (the caller, in Settings or by confirming) and/or
+            `organization_admin` (an administrator of the caller's
+            organisation, who can change its configuration with PAC-50's
+            proof). `organization_admin` appears only for a caller who belongs
+            to an organisation. It is the ONLY value in row 11, in row 6 when
+            the organisation forbids personal keys, and in a probe refused for
+            naming a personal provider or key while forbidden. Never names a
+            person. (Before Part 2 it was `[user]` in every answer.)
         message:
           type: string
           minLength: 1
@@ -2013,8 +2420,14 @@ components:
             choice or carried `llmApiKey`, it describes only the probed choice
             ("Anthropic needs an API key") and never says AI features are off,
             which may be false for the caller (see `testLLMConnection`).
-            Wording is not contractual beyond that, and it never carries a
-            key.
+            For `organization_unconfirmed` and for `personal_keys_forbidden`
+            with `enablers: [user]` it says that the caller's text and meeting
+            details would be sent to their organisation's AI provider account,
+            which its administrators can access outside Paceday, and that
+            nothing is sent until they confirm in Paceday (owner O-13). No
+            message, in any row, contains the words "read", "reads" or "see"
+            (spec P2-AC-26). Wording is not contractual beyond that, and it
+            never carries a key.
       required: [reason, enablers, message]
       additionalProperties: false
 
@@ -2043,21 +2456,30 @@ components:
         NEW-llm-bring-your-own. Read-only summary on the settings document of
         whether AI works for the caller right now, by the same table as
         `AINotConfigured` (spec AC-8). Exactly one of `provider` and
-        `notConfigured` is present: `provider` exactly when `configured` is
-        true, `notConfigured` exactly when `configured` is false (rows 1, 3,
-        5-8), so a client always has the reason and the enablers to render the
-        notice of spec AC-21. It does not check the destination: a
+        `notConfigured` is present: `provider` (with `configuration`) exactly
+        when `configured` is true, `notConfigured` exactly when `configured`
+        is false (rows 1, 3, 5-8, 10, 11), so a client always has the reason
+        and the enablers to render the notice of spec AC-21. Also the 200 of
+        confirmOrganizationAI (Part 2). It does not check the destination: a
         configured caller whose stored destination is refused is
         `configured: true` and gets the 422 / refusal sentence when a request
         is attempted.
       properties:
         configured:
           type: boolean
-          description: True exactly in rows 2 and 4.
+          description: True exactly in rows 2, 4 and 9.
         provider:
           type: string
           enum: [openai, anthropic, azure_openai, bedrock, vertex]
           description: Present exactly when `configured` is true; the provider requests go to.
+        configuration:
+          type: string
+          enum: [own, organization]
+          description: >
+            NEW-llm-bring-your-own Part 2. Present exactly when `configured` is
+            true: `own` in row 2 (the caller's provider, key and destination),
+            `organization` in rows 4 and 9 (the organisation's, and nothing of
+            the caller's, parent D-18).
         inOrganization:
           type: boolean
           description: >
@@ -2091,6 +2513,214 @@ components:
         vertex:
           type: boolean
       required: [openai, anthropic, azure_openai, bedrock, vertex]
+      additionalProperties: false
+
+    # ------------------------------------------------- organisation AI (Part 2)
+
+    OrganizationAIConfiguration:
+      type: object
+      description: |
+        NEW-llm-bring-your-own Part 2 (spec §3.2, parent D-7). The
+        organisation's AI configuration as every member reads it, identical
+        for every member (getOrganizationAI, and the 200 of
+        patchOrganizationAI). NEVER carries the key: `keySet` is the only fact
+        about it.
+
+        `configured` is true exactly when the configuration is complete: a
+        `provider`, a key for it, and for `azure_openai` a non-empty
+        `azureEndpoint` and `azureDeployment` (every other value has a
+        default: `model` the provider's default model, `baseUrl` the vendor's
+        public host, `azureApiVersion` the default API version, `awsRegion`
+        `us-east-1`). Only a complete configuration can be used (rows 4 and 9
+        of the table on AINotConfigured) or confirmed (confirmOrganizationAI).
+
+        Destination properties appear only for the provider they apply to:
+        `baseUrl` for `openai` and `anthropic`; `azureEndpoint`,
+        `azureDeployment` and `azureApiVersion` for `azure_openai`;
+        `awsRegion` for `bedrock`; none for `vertex`. `model` is the model for
+        `openai`, `anthropic`, `bedrock` and `vertex` (absent for
+        `azure_openai`, whose deployment names it). An empty string means the
+        default. All are absent when `provider` is absent.
+      required: [configured, keySet, personalKeysAllowed, configurationVersion, changeableBy]
+      properties:
+        configured:
+          type: boolean
+        provider:
+          type: string
+          enum: [openai, anthropic, azure_openai, bedrock, vertex]
+          description: Present exactly when a provider is set.
+        model:
+          type: string
+        baseUrl:
+          type: string
+          description: '`openai` / `anthropic` only. `""` is the vendor''s public host.'
+        azureEndpoint:
+          type: string
+        azureDeployment:
+          type: string
+        azureApiVersion:
+          type: string
+        awsRegion:
+          type: string
+        keySet:
+          type: boolean
+          description: Whether a key bound to `provider` is stored. Never the key.
+        personalKeysAllowed:
+          type: boolean
+          description: >
+            Owner O-12. `true` (the default) means a member's own provider and
+            key take precedence for that member (rows 2-3). `false` means no
+            member's personal key is sent: members other than those who chose
+            "off" use this configuration once they confirm it (rows 9-11).
+        configurationVersion:
+          type: integer
+          minimum: 0
+          description: >
+            `0` when no configuration was ever set. Advances by one on every
+            change of `provider`, the key or a destination property (spec
+            P2-D4), never otherwise. A member's confirmation is for one
+            version (confirmOrganizationAI).
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the configuration last changed. Absent when it never was set.
+        changeableBy:
+          type: string
+          const: organization_admin
+          description: >
+            Who can change this: an administrator of the organisation proven
+            per change by PAC-50's step-up (purpose `llm_org_key_write`) or the
+            deployment's break-glass list. Never names a person.
+      additionalProperties: false
+
+    OrganizationAIConfigurationUpdate:
+      type: object
+      description: |
+        NEW-llm-bring-your-own Part 2. Body of patchOrganizationAI. MERGE:
+        an absent property is unchanged; a present one is set to exactly that
+        value; `null` is a 400. At least one property.
+
+        * `provider` set to a provider DIFFERENT from the stored one replaces
+          the whole configuration: `apiKey` (non-empty) is required, and every
+          property not in the body takes its default (`""`). A key is never
+          carried from one provider to another (spec P2-D7).
+        * `provider: ""` removes the whole configuration, key included. No
+          other property may be sent with it (400), so the removal is
+          unambiguous; the stored `personalKeysAllowed` is kept.
+        * `apiKey: ""` removes only the key (the configuration is then not
+          complete; followers answer `nothing_configured`, P2-AC-13). A
+          non-empty `apiKey` replaces the key for the provider after this
+          write; with no provider stored or sent it is a 400.
+        * A destination property that does not apply to the provider after
+          this write is a 400 (`<property> does not apply to <provider>`),
+          not ignored.
+        * `personalKeysAllowed` may be changed whether or not the
+          configuration is complete (spec P2-D3).
+      minProperties: 1
+      properties:
+        provider:
+          type: string
+          enum: ['', openai, anthropic, azure_openai, bedrock, vertex]
+        model:
+          type: string
+        apiKey:
+          type: string
+          writeOnly: true
+          description: Never returned, by any operation, in any status (PAC-24, owner O-7).
+        baseUrl:
+          type: string
+        azureEndpoint:
+          type: string
+        azureDeployment:
+          type: string
+        azureApiVersion:
+          type: string
+        awsRegion:
+          type: string
+        personalKeysAllowed:
+          type: boolean
+      additionalProperties: false
+
+    OrganizationAIWriteForbiddenResponse:
+      description: |
+        The 403 of patchOrganizationAI (NEW-llm-bring-your-own Part 2), the
+        shapes of PAC-50's SsoWriteForbiddenResponse for this purpose.
+        Exactly one variant applies, told apart by `error`; all keep the
+        shared `{error}` envelope.
+      oneOf:
+        - $ref: '#/components/schemas/SsoWriteMembershipRequired'
+        - $ref: '#/components/schemas/OrganizationAIWriteStepupRequired'
+        - $ref: '#/components/schemas/OrganizationAIWriteFreshLoginRequired'
+
+    OrganizationAIWriteStepupRequired:
+      type: object
+      description: |
+        A member with no live `llm_org_key_write` grant who is not a
+        break-glass address. As PAC-50's SsoWriteStepupRequired: the step-up
+        is optional; before navigating, the client explains `without_stepup`
+        and `stepup_scopes` and lets the user decline. If the user goes
+        ahead, the client asks which provider administers the organisation
+        (only keys of `stepup_scopes`) and navigates the browser to
+        `stepup_url` with `?provider=<p>&purpose=<stepup_purpose>`. The
+        landing page then carries `&purpose=llm_org_key_write`. A live
+        `sso_write` grant the caller may hold was not consumed.
+      required: [error, stepup_url, stepup_purpose, stepup_scopes, without_stepup]
+      properties:
+        error:
+          type: string
+          const: organization_ai_write_requires_admin_stepup
+        stepup_url:
+          $ref: '#/components/schemas/SsoStepupUrl'
+        stepup_purpose:
+          type: string
+          const: llm_org_key_write
+          description: The `purpose` query value the client sends to startSsoAdminStepup.
+        stepup_scopes:
+          $ref: '#/components/schemas/SsoStepupScopes'
+        without_stepup:
+          $ref: '#/components/schemas/SsoWithoutStepup'
+      additionalProperties: false
+
+    OrganizationAIWriteFreshLoginRequired:
+      type: object
+      description: |
+        The caller's email is on the break-glass list but the session JWT was
+        issued 10 minutes ago or more, or more than one minute in the future
+        (PAC-50 AC-14a). The client sends the user through sign-in again; an
+        `llm_org_key_write` grant also satisfies the gate.
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: organization_ai_write_requires_fresh_login
+      additionalProperties: false
+
+    OrganizationAIConsentRequest:
+      type: object
+      description: Body of confirmOrganizationAI.
+      required: [configurationVersion]
+      properties:
+        configurationVersion:
+          type: integer
+          minimum: 1
+          description: The `configurationVersion` of the configuration the user was shown and confirmed.
+      additionalProperties: false
+
+    OrganizationAIConsentConflict:
+      type: object
+      description: >
+        409 of confirmOrganizationAI: nothing recorded. A superset of the
+        JSON error shape.
+      required: [error, reason, organization]
+      properties:
+        error:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          enum: [organization_not_configured, configuration_changed]
+        organization:
+          $ref: '#/components/schemas/OrganizationAIConfiguration'
       additionalProperties: false
 
     # -------------------------------------------------------------- settings
@@ -2400,13 +3030,15 @@ components:
             `""` before this change stays off and never follows the
             organisation (spec AC-17, D-9).
             `organization`: use my organisation's AI (rows 4-6). The stored
-            default for an account created after this change (owner decision
-            O-5); before Part 2 of the spec there is no organisation
-            configuration, so it reads as `nothing_configured`. Accepted on
-            write whether or not the caller belongs to an organisation (for a
-            caller with none it is row 6 with `enablers: [user]`).
+            default for an account created after Part 1 (owner decision
+            O-5). Part 2: requests then use the organisation's configuration
+            once it is complete and the caller has confirmed it
+            (confirmOrganizationAI). Accepted on write whether or not the
+            caller belongs to an organisation (for a caller with none it is
+            row 6 with `enablers: [user]`).
             `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`: the
-            caller's own key-based provider (rows 2-3). A row stored on
+            caller's own key-based provider (rows 2-3; rows 9-11 while the
+            caller's organisation forbids personal keys, Part 2). A row stored on
             `bedrock`, `azure_openai` or `vertex` before this change keeps that
             choice and its stored destination values, and needs a key (spec
             AC-8, AC-40).

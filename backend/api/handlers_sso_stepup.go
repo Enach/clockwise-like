@@ -283,9 +283,15 @@ func (h *ssoHandlers) stepupRequired() stepupRequiredBody {
 
 // getStepupOptions answers getSsoStepupOptions through the generated strict
 // wrapper (factory §4; contracts/openapi/MIGRATION.md).
+//
+// NEW-llm-bring-your-own Part 2's contract adds an optional `purpose` query
+// parameter to this operation. Until Part 2's stage 4 serves it, the
+// parameter is not read: the empty params keep today's answer (the
+// `sso_write` options) for every request, exactly as before the contract
+// change.
 func (h *ssoHandlers) getStepupOptions(w http.ResponseWriter, r *http.Request) {
 	gen.NewStrictHandlerWithOptions(&generatedServer{db: h.ah.db, sso: h},
-		[]gen.StrictMiddlewareFunc{withRequest}, strictOptions).GetSsoStepupOptions(w, r)
+		[]gen.StrictMiddlewareFunc{withRequest}, strictOptions).GetSsoStepupOptions(w, r, gen.GetSsoStepupOptionsParams{})
 }
 
 // GetSsoStepupOptions is getSsoStepupOptions (contract revision 8, spec §9
