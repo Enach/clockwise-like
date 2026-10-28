@@ -168,3 +168,18 @@ func TestMissingIndexIsAnError(t *testing.T) {
 		t.Fatal("expected an error for a root without index.html")
 	}
 }
+
+// Without </head> the API-base script tag cannot be injected; the server
+// must refuse to start rather than serve a page that silently ignores
+// API_BASE_URL (review of #245, non-blocking d).
+func TestIndexWithoutHeadIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html><body>no head</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, apiBase := range []string{"", "https://api.example.test/api"} {
+		if _, err := newHandler(dir, apiBase); err == nil {
+			t.Errorf("API_BASE_URL=%q: expected an error for an index.html without </head>", apiBase)
+		}
+	}
+}

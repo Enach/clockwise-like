@@ -4,7 +4,6 @@ package nginxtest
 // docs/specs/NEW-deploy-hardening.md (rev 2) it falsifies.
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -179,7 +178,7 @@ func TestCSPDirectives(t *testing.T) {
 		"default-src":     {"'self'"},
 		"script-src":      {"'self'"}, // no 'unsafe-inline', no 'unsafe-eval'
 		"style-src":       {"'self'", "'unsafe-inline'", "https://fonts.googleapis.com"},
-		"font-src":        {"'self'", "https://fonts.gstatic.com"},
+		"font-src":        {"'self'", "data:", "https://fonts.gstatic.com"}, // FullCalendar embeds its icon font (fcicons) as data:
 		"img-src":         {"'self'", "data:", "https://*.googleusercontent.com"},
 		"connect-src":     {"'self'", defaultSentryOrigin},
 		"object-src":      {"'none'"},
@@ -234,17 +233,45 @@ func TestCSPConnectSrc(t *testing.T) {
 func TestInvalidSettingsRefuseToStart(t *testing.T) {
 	t.Parallel()
 	stub := startStub(t)
-	for what, env := range map[string]map[string]string{
+	// "STUB" is replaced by the stub's name, so an injected value that the
+	// render step wrongly accepts still yields a config nginx -t would load:
+	// the refusal must come from the validation, not from a broken config.
+	nl, cr, tab := string(rune(10)), string(rune(13)), string(rune(9))
+	cases := map[string]map[string]string{
 		"directive injection in extras": {"NGINX_CSP_CONNECT_ORIGINS": "https://a.test; script-src *"},
 		"wildcard origin":               {"NGINX_CSP_CONNECT_ORIGINS": "https://*.example.test"},
 		"origin with a path":            {"NGINX_CSP_SENTRY_ORIGIN": "https://o1.ingest.sentry.io/api"},
 		"quote in sentry origin":        {"NGINX_CSP_SENTRY_ORIGIN": "https://x.test'"},
 		"proxy that is not an address":  {"NGINX_TRUSTED_PROXIES": "proxy.example.test"},
 		"upstream without a port":       {"NGINX_BACKEND_UPSTREAM": "backend"},
-	} {
+		// Review of #245: grep matches line by line, so a valid first line
+		// used to carry anything after a newline into the generated config.
+		"newline in sentry origin":       {"NGINX_CSP_SENTRY_ORIGIN": "https://ok.test" + nl + "script-src *"},
+		"newline in API_BASE_URL":        {"API_BASE_URL": "https://api.test/api" + nl + "; script-src *"},
+		"newline in backend upstream":    {"NGINX_BACKEND_UPSTREAM": "STUB:8080" + nl},
+		"newline in frontend upstream":   {"NGINX_FRONTEND_UPSTREAM": "STUB:8081" + nl},
+		"newline in extras":              {"NGINX_CSP_CONNECT_ORIGINS": "https://a.test" + nl + "https://b.test"},
+		"newline in trusted proxies":     {"NGINX_TRUSTED_PROXIES": "10.0.0.1" + nl + "10.0.0.2"},
+		"CR then newline, sentry origin": {"NGINX_CSP_SENTRY_ORIGIN": "https://ok.test" + nl + cr},
+		"CR then newline, upstream":      {"NGINX_BACKEND_UPSTREAM": "STUB:8080" + nl + cr},
+		"CR in sentry origin":            {"NGINX_CSP_SENTRY_ORIGIN": "https://ok.test" + cr},
+		"CR in API_BASE_URL":             {"API_BASE_URL": "https://api.test/api" + cr},
+		"CR in backend upstream":         {"NGINX_BACKEND_UPSTREAM": "STUB:8080" + cr},
+		"CR in frontend upstream":        {"NGINX_FRONTEND_UPSTREAM": "STUB:8081" + cr},
+		"CR in extras":                   {"NGINX_CSP_CONNECT_ORIGINS": "https://a.test" + cr},
+		"CR in trusted proxies":          {"NGINX_TRUSTED_PROXIES": "10.0.0.1" + cr},
+		"tab in sentry origin":           {"NGINX_CSP_SENTRY_ORIGIN": "https://ok.test" + tab},
+		"IPv4 /0 trusts everyone":        {"NGINX_TRUSTED_PROXIES": "0.0.0.0/0"},
+		"IPv6 /0 trusts everyone":        {"NGINX_TRUSTED_PROXIES": "::/0"},
+		"/0 among others":                {"NGINX_TRUSTED_PROXIES": "10.0.0.1, 10.0.0.0/00"},
+	}
+	for what, env := range cases {
+		for k, v := range env {
+			env[k] = strings.ReplaceAll(v, "STUB", stub)
+		}
 		out, err := runNginxOnce(t, stub, env, "nginx", "-t")
 		if err == nil {
-			t.Errorf("%s: started with %v; want a refusal\n%s", what, env, out)
+			t.Errorf("%s: started with %q; want a refusal\n%s", what, env, out)
 		}
 	}
 }
@@ -287,11 +314,6 @@ func lastFor(t *testing.T, stub, uri string) Recorded {
 
 func header(r Recorded, k string) string { return strings.Join(r.Header[k], ",") }
 
-func lastXFF(r Recorded) string {
-	parts := strings.Split(header(r, "X-Forwarded-For"), ",")
-	return strings.TrimSpace(parts[len(parts)-1])
-}
-
 func TestTrustedProxyForwardsRealClient(t *testing.T) {
 	t.Parallel()
 	stub := startStub(t)
@@ -304,8 +326,19 @@ func TestTrustedProxyForwardsRealClient(t *testing.T) {
 	if v := header(got, "X-Real-Ip"); v != realClient {
 		t.Errorf("X-Real-IP = %q, want %q", v, realClient)
 	}
-	if v := lastXFF(got); v != realClient {
-		t.Errorf("X-Forwarded-For %q: last entry %q, want %q", header(got, "X-Forwarded-For"), v, realClient)
+	// The chain as P sent it, plus P itself: the client appears once and the
+	// proxy hop is kept (review of #245, non-blocking b).
+	if v, want := header(got, "X-Forwarded-For"), forgedClient+", "+realClient+", "+proxy; v != want {
+		t.Errorf("X-Forwarded-For = %q, want %q", v, want)
+	}
+	// A trusted proxy that sends no chain: the proxy is the client.
+	sendOne(t, proxy, "http://"+n+"/api/b5-nochain")
+	nochain := lastFor(t, stub, "/api/b5-nochain")
+	if v := header(nochain, "X-Forwarded-For"); v != proxy {
+		t.Errorf("no incoming chain: X-Forwarded-For = %q, want %q", v, proxy)
+	}
+	if v := header(nochain, "X-Real-Ip"); v != proxy {
+		t.Errorf("no incoming chain: X-Real-IP = %q, want %q", v, proxy)
 	}
 	if v := header(got, "X-Forwarded-Proto"); v != "https" {
 		t.Errorf("X-Forwarded-Proto = %q, want https", v)
@@ -382,9 +415,10 @@ func TestOversizedAPIBodyIsJSON413(t *testing.T) {
 	if ct := one(t, "413", r, "Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type %q, want application/json", ct)
 	}
-	var body map[string]string
-	if err := json.Unmarshal([]byte(r.Body), &body); err != nil || body["error"] == "" || len(body) != 1 {
-		t.Errorf("body %q is not the backend's {\"error\": ...} shape", r.Body)
+	// Byte-for-byte what the backend's writeError (json.Encoder) writes for
+	// its own 413: the body the Part A contract binds nginx to.
+	if want := `{"error":"request body too large"}` + "\n"; r.Body != want {
+		t.Errorf("body %q, want %q", r.Body, want)
 	}
 	for _, rec := range requestsSeen(t, stub) {
 		if rec.URI == "/api/too-big" {

@@ -33,6 +33,11 @@ func newHandler(root, apiBase string) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The script tag goes before </head>. A bundle without one would serve a
+	// page that silently ignores API_BASE_URL, so refuse to start instead.
+	if !bytes.Contains(raw, []byte("</head>")) {
+		return nil, fmt.Errorf("%s has no </head>: cannot inject the runtime configuration script", filepath.Join(root, "index.html"))
+	}
 
 	rootIndex := raw
 	runtimeConfig := []byte("// no runtime configuration\n")

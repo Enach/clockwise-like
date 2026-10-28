@@ -95,12 +95,9 @@ Trust boundaries (numbered for STRIDE table below):
 
 8. **🟡 No `Secure` flag on the demo / mock-mode flags in `sessionStorage`** (frontend). Low impact (booleans, not secrets) but documented.
 
-
-
-10. **🟠 Database backups contain users' provider credentials** (asset, PAC-81 F-D5). OAuth refresh tokens and user LLM keys are stored unencrypted, so every `pg_dump` is as sensitive as the live database: store backups with the `.env` secrets, as secrets. Open; encryption at rest is a follow-up ticket.
-
 9. **🟠 Public booking time is never validated against availability** (B7, API-094). Any start past the link's minimum notice that does not overlap the link's own bookings is accepted and written to the hosts' calendars, including over busy time, outside the link's hours and arbitrarily far ahead. Open; needs its own spec and PAC issue.
 
+10. **🟠 Database backups contain users' provider credentials** (asset, PAC-81 F-D5). OAuth refresh tokens and user LLM keys are stored unencrypted, so every `pg_dump` is as sensitive as the live database: store backups with the `.env` secrets, as secrets. Open; encryption at rest is a follow-up ticket.
 
 ## 7. Out of scope (and why)
 

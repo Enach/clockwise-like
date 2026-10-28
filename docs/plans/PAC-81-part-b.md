@@ -41,7 +41,10 @@ directive per list item; no defaults for unset variables).
   | `API_BASE_URL` | empty | The same variable the frontend service reads. When it is an absolute URL its origin is added to `connect-src` (cross-origin API, AC-B4). |
   | `NGINX_BACKEND_UPSTREAM` / `NGINX_FRONTEND_UPSTREAM` | `backend:8080` / `frontend:80` | Upstream `host:port`. Needed so the e2e injection variant (AC-B3(b)) and the integration tests can point the shipped config at another upstream without a second config file. |
   Origins must be `http(s)://host[:port]` (no path, no wildcard, no quote or
-  `;`), proxies must be IP/CIDR literals, upstreams `host:port`.
+  `;`), proxies must be IP/CIDR literals other than `/0`, upstreams
+  `host:port`. Every raw value is refused first if it contains any control
+  character (newline, CR, tab, ...): grep matches line by line, so a valid
+  first line would otherwise carry the rest into the config (review of #245).
 - The three compose files that run nginx (`docker-compose.yml`,
   `docker-compose.prod.yml`, `e2e/docker-compose.e2e.yml`) change only their
   nginx service: the render script mount, `entrypoint`/`command`, and the
@@ -59,9 +62,15 @@ directive per list item; no defaults for unset variables).
 - `geo $realip_remote_addr $paceday_peer_trusted` (the socket peer, before
   real-IP rewriting): 1 for a listed peer, else 0.
 - `X-Real-IP $remote_addr` (the real client after rewriting);
-  `X-Forwarded-For`: `$proxy_add_x_forwarded_for` from a trusted peer (last
-  entry is the client), otherwise just `$remote_addr` (a forged chain from an
-  untrusted peer is dropped); `X-Forwarded-Proto`: `https` only when a trusted
+  `X-Forwarded-For`: from a trusted peer, the chain as received plus that
+  peer's own address (`$http_x_forwarded_for, $realip_remote_addr`; just the
+  peer when it sent no chain), so every hop is recorded and the client appears
+  once; otherwise just `$remote_addr` (a forged chain from an untrusted peer
+  is dropped). *Review of #245:* `$proxy_add_x_forwarded_for` appended the
+  client a second time after the real-IP rewrite. AC-B5's wording "whose last
+  entry is C" assumed that; the client C is now the entry the proxy appended
+  and the proxy P is last, which is the usual X-Forwarded-For convention. The
+  backend never reads this header (spec §6); `X-Forwarded-Proto`: `https` only when a trusted
   peer said `https`, else `http`.
 - Access log format `paceday`: real client, method, path **without the query
   string** (`$uri`, consistent with spec §6 for the backend log), status,
@@ -77,7 +86,7 @@ with `proxy_hide_header`, because the backend's `http.Error` already sets
 hidden too: it is the proxy's (D-1).
 
 CSP: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'
-https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com;
+https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com;
 img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'
 <sentry> <api origin> <extras>; object-src 'none'; base-uri 'self';
 form-action 'self'; frame-ancestors 'none'`.
@@ -178,3 +187,29 @@ by allowing `'unsafe-eval'`.
   no `proxy_hide_header X-Content-Type-Options`, forwarded scheme/chain
   believed from any peer, health path logged, no JSON `error_page 413`,
   `proxy_read_timeout 60s`. Each was caught by the test named for its AC.
+
+### Spec deviation: `font-src` allows `data:` (D-8 lists `'self' https://fonts.gstatic.com`)
+
+The reviewer of the web's Zod-jitless PR (Enach/smart-calendar-flow#139) loaded
+the real web build under this CSP. Every page load reported a `font-src`
+violation: FullCalendar injects its icon font `fcicons` as
+`url("data:application/x-font-ttf;…")`, so without `data:` the calendar
+icons are missing and the e2e zero-violation guard fails. `data:` only, no
+wildcard. A `data:` font carries no script, and `img-src` already allows
+`data:`.
+
+The web build was grepped for every other `data:` / `blob:` use
+(#139 head `d552113`, `vite build`):
+- `font-src`: the `fcicons` font above is the only one.
+- `connect-src`: `new Request("data:,")` in Sentry's fetch-support probe. It
+  constructs a request and never fetches it, so no violation.
+- `blob:`: appears only as a string in a URL-scheme list. The one
+  `URL.createObjectURL` is the `.ics` download (`<a download>` click), a
+  navigation/download that no fetch directive governs.
+- None: workers, media, `data:` images in CSS (`img-src` allows `data:` anyway).
+
+## 6. Merge order
+
+The companion web PR that sets Zod's `jitless` mode (finding §4) must merge
+before this PR: with this CSP enforced and Zod probing `new Function`, every
+browser test fails the zero-violation guard.

@@ -69,8 +69,10 @@ test.describe('PAC-81 AC-B1/AC-B2: the nginx edge on the real stack', () => {
     });
     expect(res.status()).toBe(413);
     expect(res.headers()['content-type']).toBe('application/json');
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(Object.keys(body)).toEqual(['error']);
+    // The exact body of the backend's own 413 (writeError's json.Encoder output,
+    // trailing newline included): binding merge condition of the PAC-81 Part A
+    // contract.
+    expect(await res.text()).toBe('{"error":"request body too large"}' + String.fromCharCode(10));
     assertEdgeHeaders(res, '413');
   });
 });
