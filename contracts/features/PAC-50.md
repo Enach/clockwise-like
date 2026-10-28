@@ -2718,3 +2718,57 @@ $ git show f71a91a:contracts/openapi/openapi.yaml | sha256sum
 
 `api-gate`, `web-gate` and `e2e-gate` are run on #212 and the web PR after
 they merge this revision; their results are recorded in those PRs, not here.
+
+## Challenge, revision 8.1 — 2026-10-28
+
+**Verdict**: accept
+
+Scope: `git diff edcbe72 c61d3e0` (round-6 non-blocking N1-N6), read against
+`main`'s PAC-22 decoder and against #212 at 96f24c7.
+
+### Requests wrongly permitted
+None. `POST /api/admin/sso` with `{"domain":null,"provider_name":"x","provider_type":"oidc","oidc_issuer":"https://i","oidc_client_id":"c","oidc_client_secret":"s"}`
+→ 400 `domain, provider_name and provider_type are required`; with
+`"oidc_client_secret":null` → 400 `oidc_client_secret must not be empty`. Both
+are what `main`'s `decodeSSOProviderWrite` does (null into `string` is "", into
+`*string` is nil with the key present), and #212 keeps that decoder unchanged
+apart from the unknown-property step (N1).
+
+### Responses the client cannot handle
+None. `startSsoAdminStepup` 403 moves from `ErrorResponse` to
+`SsoWriteMembershipRequired`; the bytes are the same (`{"error":"org membership required"}`),
+and no hand-written consumer reads it (N4). The web types at
+smart-calendar-flow 4166329 regenerate from this bundle with no drift
+(`scripts/openapi-gen.sh --check` rc=0 against 96f24c7's bundle).
+
+### Consumers affected
+- backend/api/pac22_sso_secrets_test.go (N2): adapted on #212 by giving each
+  writer a live `sso_write` grant. Three PAC-22 assertions change, not one as
+  consumersAffected and spec §9 D-15(2) say: the suffix-rule 403 becomes
+  `provider_domain_mismatch`; case-variant secret keys become 400
+  `unknown property: <name>` (step 2c, stricter, stored secret still asserted
+  unchanged); an upper-case domain now replaces the lower-case row keeping its
+  secret (the contract's lower-casing). Each is required by this contract and
+  none weakens PAC-22's guarantee. Non-blocking: correct the wording in the
+  next revision.
+
+### Contract/implementation divergences
+None found on #212 at 96f24c7: grant `purpose TEXT NOT NULL` with no default,
+index (user_id, org_id, purpose, issued_at DESC), consume matching
+`purpose = 'sso_write'`, the callback issuing `sso_write` (N5, AC-27, tested in
+both directions); spec §4.2 step 4b matches D-14, with the stored-row 400 before
+the consume and the store-time 400 after it (N3, tested); `setSsoProviderState`
+not routed; the web names and offers no suspend or resume (N6, tested).
+
+### Uncertainties not actually resolved
+None introduced.
+
+### Verified clean
+- The API surface changes only in descriptions and in the start 403 `$ref`.
+  `git show c61d3e0:contracts/openapi/openapi.yaml | sha256sum` =
+  2f030a44…efc2 = contractHash (same at f71a91a).
+- Checks on #212 96f24c7 (which carries this bundle unchanged):
+  openapi_assemble --check rc=0, openapi_migration_report --check rc=0,
+  openapi_gen_go --check rc=0, go build rc=0, go vet rc=0.
+- Not run by this challenger: DB-backed tests, api-gate, e2e-gate (no
+  database or Docker on this host).
