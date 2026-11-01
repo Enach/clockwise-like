@@ -418,15 +418,14 @@ func TestPAC71_AC47_ConnectStoreAfterABindingIsCreditedToNobody(t *testing.T) {
 			s0 := sessionCookie(t, a, 0)
 			_, state := startConnect(t, r, c.start, s0)
 			var henryAccess string
-			connectBeforeStoreHook = func() {
-				connectBeforeStoreHook = nil
+			setConnectBeforeStoreHook(t, func() {
+				connectBeforeStoreHook.Store(nil)
 				uid, gen := sessionOf(t, pac71Google(t, googleProfile(pac71GoogleID(), "henry@"+d, true, d)))
 				if uid != a || gen != 1 {
 					t.Fatalf("binding reached %s gen %d", uid, gen)
 				}
 				henryAccess = readAccount(t, a).googleAccess
-			}
-			t.Cleanup(func() { connectBeforeStoreHook = nil })
+			})
 			rec := finishConnect(t, r, c.callback, state, s0, "code=c1")
 			assertNotCredited(t, rec, c.cookie)
 			st := readAccount(t, a)
@@ -447,9 +446,10 @@ func TestPAC71_ConnectCallbackAtTheBudgetIsNotCredited(t *testing.T) {
 	r.Use(budget.Middleware(150*time.Millisecond, nil))
 	r.Get("/api/auth/callback", ah.callback)
 	a := createTestUser(t, "budget-"+uuid.NewString()[:8]+"@example.com")
-	release := make(chan struct{})
-	connectBeforeStoreHook = func() { <-release } // the store waits past the budget
-	t.Cleanup(func() { connectBeforeStoreHook = nil })
+	release, returned := make(chan struct{}), make(chan struct{})
+	// The store waits past the budget; returned tells the test the handler
+	// has left the hook, so cleanup never races the handler goroutine.
+	setConnectBeforeStoreHook(t, func() { <-release; close(returned) })
 	req := connectCallbackRequest(t, pac71Secret, "/api/auth/callback", googleConnectCookie, connectProviderGoogle, a, 0, a, 0, "c1")
 	rec := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -457,9 +457,17 @@ func TestPAC71_ConnectCallbackAtTheBudgetIsNotCredited(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	close(release)
 	<-done
+	<-returned
 	assertNotCredited(t, rec, googleConnectCookie)
 	time.Sleep(100 * time.Millisecond) // a handler that ignored the budget would store now
 	if readAccount(t, a).googleAccess != "" {
 		t.Fatal("a credential was stored after the budget answered")
 	}
+}
+
+// setConnectBeforeStoreHook installs the connect store seam for one test.
+func setConnectBeforeStoreHook(t *testing.T, fn func()) {
+	t.Helper()
+	connectBeforeStoreHook.Store(&fn)
+	t.Cleanup(func() { connectBeforeStoreHook.Store(nil) })
 }

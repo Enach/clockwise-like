@@ -32,6 +32,10 @@ type msVerifierBench struct {
 	paths atomic.Int64
 	v     *MicrosoftIDTokenVerifier
 	now   time.Time
+	// rotated publishes the key under a second kid, "k2" (a rotation);
+	// gate, when set, holds every keys response until it is closed.
+	rotated atomic.Bool
+	gate    atomic.Pointer[chan struct{}]
 }
 
 func newMSVerifierBench(t *testing.T) *msVerifierBench {
@@ -46,11 +50,18 @@ func newMSVerifierBench(t *testing.T) *msVerifierBench {
 		tid := strings.TrimPrefix(r.URL.Path, "/keys/")
 		c, _ := b.hits.LoadOrStore(tid, &atomic.Int64{})
 		c.(*atomic.Int64).Add(1)
+		if g := b.gate.Load(); g != nil {
+			<-*g
+		}
 		enc := base64.RawURLEncoding
-		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{
-			map[string]any{"kty": "RSA", "kid": "k1", "n": enc.EncodeToString(k.N.Bytes()), "e": enc.EncodeToString(big.NewInt(int64(k.E)).Bytes())},
-			map[string]any{"kty": "EC", "kid": "ec"},
-		}})
+		rsaKey := func(kid string) any {
+			return map[string]any{"kty": "RSA", "kid": kid, "n": enc.EncodeToString(k.N.Bytes()), "e": enc.EncodeToString(big.NewInt(int64(k.E)).Bytes())}
+		}
+		keys := []any{rsaKey("k1"), map[string]any{"kty": "EC", "kid": "ec"}}
+		if b.rotated.Load() {
+			keys = append(keys, rsaKey("k2"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": keys})
 	}))
 	t.Cleanup(b.srv.Close)
 	prev := MicrosoftKeysURL
@@ -110,6 +121,21 @@ func TestPAC71_MicrosoftIDToken_AcceptsAValidTokenAndPinsTheTenant(t *testing.T)
 	})
 	if _, err := b.v.Verify(context.Background(), tok, "client", "n"); err != nil {
 		t.Fatalf("one-element aud within skew: %v", err)
+	}
+	// The issuer names the token's tenant; the tenant part is compared
+	// case-insensitively, the rest exactly.
+	for iss, ok := range map[string]bool{
+		"https://login.microsoftonline.com/" + strings.ToLower(tid) + "/v2.0": true,
+		"https://login.microsoftonline.com/" + guid(7) + "/v2.0":              false,
+		"https://LOGIN.microsoftonline.com/" + tid + "/v2.0":                  false,
+		"https://login.microsoftonline.com/" + tid + "/v2.0/":                 false,
+		"https://login.microsoftonline.com/" + tid:                            false,
+		"https://login.microsoftonline.com//v2.0":                             false,
+	} {
+		tok := b.token(t, tid, func(_, c map[string]any) { c["iss"] = iss })
+		if _, err := b.v.Verify(context.Background(), tok, "client", "n"); (err == nil) != ok {
+			t.Errorf("iss %q: err = %v, want accepted=%v", iss, err, ok)
+		}
 	}
 }
 
@@ -248,5 +274,85 @@ func TestPAC71_MicrosoftIDToken_KeysEndpointFailures(t *testing.T) {
 	}
 	if !IsGUID(MicrosoftConsumerTenant) || IsGUID("common") {
 		t.Fatal("IsGUID")
+	}
+}
+
+// A key rotation: 32 sign-ins at once carry the new kid. One fetch is made
+// (single flight: the others wait for it rather than being refused as
+// rate-limited), and every one of them is accepted once the kid is published.
+func TestPAC71_MicrosoftIDToken_RotationIsSingleFlight(t *testing.T) {
+	b := newMSVerifierBench(t)
+	tid := guid(42)
+	ctx := context.Background()
+	if _, err := b.v.Verify(ctx, b.token(t, tid, nil), "client", "n"); err != nil {
+		t.Fatal(err)
+	}
+	b.rotated.Store(true)
+	gate := make(chan struct{})
+	b.gate.Store(&gate)
+	rotatedTok := b.token(t, tid, func(h, _ map[string]any) { h["kid"] = "k2" })
+
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := b.v.Verify(ctx, rotatedTok, "client", "n"); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	// Let the requests reach the verifier while the one fetch is held.
+	deadline := time.Now().Add(5 * time.Second)
+	for b.fetchesFor(tid) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("a sign-in during the rotation was refused: %v", err)
+	}
+	if got := b.fetchesFor(tid); got != 2 {
+		t.Fatalf("keys fetched %d times, want 1 initial + 1 for the rotation", got)
+	}
+	// The once-a-minute limit still holds for a new fetch.
+	unknown := b.token(t, tid, func(h, _ map[string]any) { h["kid"] = "k3" })
+	_, _ = b.v.Verify(ctx, unknown, "client", "n")
+	if b.fetchesFor(tid) != 2 {
+		t.Fatal("a refetch within the minute after the rotation was not rate-limited")
+	}
+}
+
+// A waiter whose own request ends stops waiting; the fetch still completes for
+// the others.
+func TestPAC71_MicrosoftIDToken_WaiterRespectsItsContext(t *testing.T) {
+	b := newMSVerifierBench(t)
+	tid := guid(43)
+	gate := make(chan struct{})
+	b.gate.Store(&gate)
+	tok := b.token(t, tid, nil)
+	first := make(chan error, 1)
+	go func() {
+		_, err := b.v.Verify(context.Background(), tok, "client", "n")
+		first <- err
+	}()
+	for b.fetchesFor(tid) < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := b.v.Verify(ctx, tok, "client", "n"); !errors.Is(err, ErrMicrosoftIDToken) {
+		t.Fatalf("waiter err = %v", err)
+	}
+	close(gate)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if b.fetchesFor(tid) != 1 {
+		t.Fatal("the waiter started its own fetch")
 	}
 }

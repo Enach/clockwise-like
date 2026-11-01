@@ -2528,29 +2528,33 @@ paths:
         \ Part A; keys are cached per\n     tenant for up to 24 hours; an unknown `kid` triggers at most\
         \ one\n     refetch per tenant per minute; at most 1000 tenants are cached,\n     the least recently\
         \ used evicted first. The first fetch for a\n     tenant that is not cached (new, expired after\
-        \ 24 hours, or\n     evicted) is not subject to the per-minute refetch limit. A fetch\n     that\
-        \ errors or exceeds the limit, or a `kid` still unknown after\n     the refetch or while that\
-        \ tenant's refetch is rate-limited, is\n     REFUSED);\n   - `iss` equals exactly `https://login.microsoftonline.com/{tid}/v2.0`\n\
-        \     with the token's own `tid`, and `ver` is `2.0`;\n   - `aud` is either the string `MICROSOFT_CLIENT_ID`,\
-        \ or a JSON\n     array of exactly one element that is that string; any other\n     shape or value\
-        \ (another client, an extra audience, an empty\n     array) is REFUSED (revision 3.1);\n   - `oid`\
-        \ is present and a GUID (canonical 8-4-4-4-12 hex); absent\n     or malformed is REFUSED (revision\
-        \ 3.1, owner OQ-9: the object\n     id comes from the signed token);\n   - `exp` is in the future\
-        \ and `nbf`, when present, is not\n     (60 seconds of clock skew allowed);\n   - `nonce` equals\
-        \ the lowercase hex SHA-256 of the `state` that\n     matched `ms_oauth_state` (step 1), binding\
-        \ the token to this\n     browser's sign-in request.\n   The tenant is the token's `tid`. CLASSIFICATION:\
-        \ a `tid` equal to\n   `9188040d-6c67-4c5b-b112-36a304b66dad` (Microsoft's documented\n   tenant\
-        \ for every personal Microsoft account) is a PERSONAL\n   account and is REFUSED here, before\
-        \ `/me` or `/organization` is\n   read (owner, 2026-11-01: personal Microsoft sign-in waits for\n\
-        \   follow-up PAC-77; spec AC-5, AC-11c). Any other GUID `tid` is a\n   WORK account in that tenant,\
-        \ with object id = the token's `oid`.\n   The ID token's `sub`, `email`, `preferred_username`\
-        \ and `name`\n   are not used.\n3. Graph `GET /v1.0/me?$select=id,mail,displayName` with the access\n\
-        \   token. Unreadable, or no `mail`: the sign-in failure state (a)\n   below, nothing saved (PAC-35,\
-        \ unchanged). OBJECT-ID CROSS-CHECK\n   (revision 3.1, owner OQ-9, mandatory): `/me`'s `id`, read\
-        \ with the\n   access token of the same token response as the verified ID token,\n   must equal\
-        \ the token's `oid` (case-insensitive GUID); anything\n   else is REFUSED (spec AC-11b). The identity\
-        \ is authority\n   (`microsoft`, tenant from step 2) + object id (`oid` from step 2).\n4. EVIDENCE\
-        \ for `mail` (spec §3 evidence table, AC-51): Graph\n   `GET /v1.0/organization?$select=id,verifiedDomains`\
+        \ 24 hours, or\n     evicted) is not subject to the per-minute refetch limit. Fetches\n     are\
+        \ single-flight per tenant: a request that needs a tenant's\n     keys while a fetch of them is\
+        \ in flight waits for that fetch\n     (within its own request) instead of starting another or\
+        \ being\n     refused as rate-limited. A fetch that errors or exceeds the\n     limit, or a `kid`\
+        \ still unknown after the refetch or while that\n     tenant's refetch is rate-limited, is REFUSED);\n\
+        \   - `iss` is `https://login.microsoftonline.com/{tid}/v2.0` with the\n     token's own `tid`:\
+        \ scheme, host and path compared exactly, the\n     `{tid}` part compared case-insensitively (a\
+        \ GUID's hex digits\n     may come in either case); and `ver` is `2.0`;\n   - `aud` is either\
+        \ the string `MICROSOFT_CLIENT_ID`, or a JSON\n     array of exactly one element that is that\
+        \ string; any other\n     shape or value (another client, an extra audience, an empty\n     array)\
+        \ is REFUSED (revision 3.1);\n   - `oid` is present and a GUID (canonical 8-4-4-4-12 hex); absent\n\
+        \     or malformed is REFUSED (revision 3.1, owner OQ-9: the object\n     id comes from the signed\
+        \ token);\n   - `exp` is in the future and `nbf`, when present, is not\n     (60 seconds of clock\
+        \ skew allowed);\n   - `nonce` equals the lowercase hex SHA-256 of the `state` that\n     matched\
+        \ `ms_oauth_state` (step 1), binding the token to this\n     browser's sign-in request.\n   The\
+        \ tenant is the token's `tid`. CLASSIFICATION: a `tid` equal to\n   `9188040d-6c67-4c5b-b112-36a304b66dad`\
+        \ (Microsoft's documented\n   tenant for every personal Microsoft account) is a PERSONAL\n   account\
+        \ and is REFUSED here, before `/me` or `/organization` is\n   read (owner, 2026-11-01: personal\
+        \ Microsoft sign-in waits for\n   follow-up PAC-77; spec AC-5, AC-11c). Any other GUID `tid` is\
+        \ a\n   WORK account in that tenant, with object id = the token's `oid`.\n   The ID token's `sub`,\
+        \ `email`, `preferred_username` and `name`\n   are not used.\n3. Graph `GET /v1.0/me?$select=id,mail,displayName`\
+        \ with the access\n   token. Unreadable, or no `mail`: the sign-in failure state (a)\n   below,\
+        \ nothing saved (PAC-35, unchanged). OBJECT-ID CROSS-CHECK\n   (revision 3.1, owner OQ-9, mandatory):\
+        \ `/me`'s `id`, read with the\n   access token of the same token response as the verified ID token,\n\
+        \   must equal the token's `oid` (case-insensitive GUID); anything\n   else is REFUSED (spec AC-11b).\
+        \ The identity is authority\n   (`microsoft`, tenant from step 2) + object id (`oid` from step\
+        \ 2).\n4. EVIDENCE for `mail` (spec §3 evidence table, AC-51): Graph\n   `GET /v1.0/organization?$select=id,verifiedDomains`\
         \ with the same\n   access token (documented least-privileged delegated permission:\n   `User.Read`,\
         \ already granted). AUTHORITATIVE only when the answer\n   is a 200 whose `value` holds exactly\
         \ one entry, that entry's `id`\n   equals the step-2 tenant (case-insensitive), and an entry of\

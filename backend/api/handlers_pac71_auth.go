@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Enach/paceday/backend/api/gen"
@@ -49,9 +50,11 @@ const (
 
 // Test seams. connectBeforeStoreHook runs between the connect's generation
 // check (step 3) and its credential store (step 6), the interleaving point of
-// spec AC-47; connectNow is the clock the connect state is stamped with.
+// spec AC-47; it is atomic because a handler behind the request budget can
+// still be running when a test's cleanup clears it. connectNow is the clock
+// the connect state is stamped with.
 var (
-	connectBeforeStoreHook func()
+	connectBeforeStoreHook atomic.Pointer[func()]
 	connectNow             = time.Now
 	// microsoftGraphOrganizationURL is the tenant source (contract §3 item 1).
 	microsoftGraphOrganizationURL = "https://graph.microsoft.com/v1.0/organization?$select=id,verifiedDomains"
@@ -571,8 +574,8 @@ func (h *authHandlers) connectCallback(w http.ResponseWriter, r *http.Request, f
 		writeServerError(w, r, "connect: token exchange failed", err, http.StatusInternalServerError)
 		return
 	}
-	if connectBeforeStoreHook != nil {
-		connectBeforeStoreHook()
+	if hook := connectBeforeStoreHook.Load(); hook != nil {
+		(*hook)()
 	}
 	// PAC-81: from here the handler owns the answer (budget.Commit); a budget
 	// that already answered not_credited means nothing is stored.

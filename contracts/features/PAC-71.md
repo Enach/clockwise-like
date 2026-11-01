@@ -595,3 +595,13 @@ The two editorial items of "Challenge, revision 3.1", applied when the backend i
 2. `auth.yaml` callback step 2 now states that the first key fetch for a tenant that is not cached is not subject to the per-minute refetch limit. A tenant is not cached when it is new, expired after 24 hours, or evicted.
 
 Bundle hash after this change: see manifest `contractHash` (`contractHashHistory` records the step). Only a description changed, so `backend/api/gen` and `MIGRATION.md` regenerate byte-identical.
+
+### Review of #242 @ ea9bd9a (approve-with-comments)
+
+Three clarifications from the implementation review. None widens what is accepted, beyond the case of the tenant id in `iss`.
+
+1. `auth.yaml` callback step 2: key fetches are single-flight per tenant. A request that needs a tenant's keys while a fetch of them is in flight waits for that fetch, within its own request, instead of being refused as rate-limited. A key rotation costs one fetch, however many sign-ins arrive at once. The once-a-minute limit on a new refetch is unchanged.
+2. `auth.yaml` callback step 2: the `iss` comparison is exact for the scheme, host and path. The `{tid}` part is compared case-insensitively, because a GUID's hex digits may come in either case.
+3. The manifest allows the migration to take the next free number after main's latest at merge time (`NNN_identity_binding`, up and down renamed together). It adds a merge condition: no two migrations share a version, and this one's version is greater than main's latest. PAC-72 has the same rule; whichever merges second renumbers.
+
+Bundle hash: see manifest `contractHash`. Only a description changed, so `backend/api/gen` and `MIGRATION.md` regenerate byte-identical.

@@ -476,12 +476,17 @@ paths:
              refetch per tenant per minute; at most 1000 tenants are cached,
              the least recently used evicted first. The first fetch for a
              tenant that is not cached (new, expired after 24 hours, or
-             evicted) is not subject to the per-minute refetch limit. A fetch
-             that errors or exceeds the limit, or a `kid` still unknown after
-             the refetch or while that tenant's refetch is rate-limited, is
-             REFUSED);
-           - `iss` equals exactly `https://login.microsoftonline.com/{tid}/v2.0`
-             with the token's own `tid`, and `ver` is `2.0`;
+             evicted) is not subject to the per-minute refetch limit. Fetches
+             are single-flight per tenant: a request that needs a tenant's
+             keys while a fetch of them is in flight waits for that fetch
+             (within its own request) instead of starting another or being
+             refused as rate-limited. A fetch that errors or exceeds the
+             limit, or a `kid` still unknown after the refetch or while that
+             tenant's refetch is rate-limited, is REFUSED);
+           - `iss` is `https://login.microsoftonline.com/{tid}/v2.0` with the
+             token's own `tid`: scheme, host and path compared exactly, the
+             `{tid}` part compared case-insensitively (a GUID's hex digits
+             may come in either case); and `ver` is `2.0`;
            - `aud` is either the string `MICROSOFT_CLIENT_ID`, or a JSON
              array of exactly one element that is that string; any other
              shape or value (another client, an extra audience, an empty

@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -69,15 +70,27 @@ type MicrosoftIdentity struct {
 // tenant: kept up to 24 hours, refetched at most once a minute on an unknown
 // kid, at most 1000 tenants with the least recently used evicted first. The
 // first fetch for a tenant that is not cached (new, expired or evicted) is
-// not subject to the once-a-minute limit. Safe for concurrent use.
+// not subject to the once-a-minute limit. Fetches are single-flight per
+// tenant: a request that needs the tenant's keys while a fetch for them is in
+// flight waits for that fetch instead of starting one or being refused, so a
+// key rotation costs one fetch however many sign-ins arrive at once. Safe for
+// concurrent use.
 type MicrosoftIDTokenVerifier struct {
 	HTTPClient *http.Client
 	Now        func() time.Time
 
 	mu      sync.Mutex
 	tenants map[string]*list.Element // tid -> element holding *msTenantKeys
+	flights map[string]*msFlight     // tid -> the fetch in flight
 	lru     *list.List               // front = most recently used
 	fetches int                      // number of key fetches made (for tests)
+}
+
+// msFlight is one key fetch in flight; done closes when keys/err are set.
+type msFlight struct {
+	done chan struct{}
+	keys map[string]*rsa.PublicKey
+	err  error
 }
 
 type msTenantKeys struct {
@@ -90,9 +103,10 @@ type msTenantKeys struct {
 // NewMicrosoftIDTokenVerifier returns a verifier with an empty cache.
 func NewMicrosoftIDTokenVerifier() *MicrosoftIDTokenVerifier {
 	return &MicrosoftIDTokenVerifier{
-		Now:        time.Now,
-		tenants:    map[string]*list.Element{},
-		lru:        list.New(),
+		Now:     time.Now,
+		tenants: map[string]*list.Element{},
+		flights: map[string]*msFlight{},
+		lru:     list.New(),
 	}
 }
 
@@ -160,7 +174,7 @@ func (v *MicrosoftIDTokenVerifier) Verify(ctx context.Context, raw, clientID, no
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig); err != nil {
 		return nil, idTokenErr("signature does not verify")
 	}
-	if c.Iss != "https://login.microsoftonline.com/"+c.Tid+"/v2.0" {
+	if !issuerNames(c.Iss, tid) {
 		return nil, idTokenErr("iss %q does not name the token's tenant", c.Iss)
 	}
 	if c.Ver != "2.0" {
@@ -186,10 +200,22 @@ func (v *MicrosoftIDTokenVerifier) Verify(ctx context.Context, raw, clientID, no
 			return nil, idTokenErr("not yet valid")
 		}
 	}
-	if nonce == "" || c.Nonce != nonce {
+	if nonce == "" || subtle.ConstantTimeCompare([]byte(c.Nonce), []byte(nonce)) != 1 {
 		return nil, idTokenErr("nonce does not match the request")
 	}
 	return &MicrosoftIdentity{TenantID: tid, ObjectID: strings.ToLower(c.Oid)}, nil
+}
+
+// issuerNames reports whether iss is the v2.0 issuer of tenant tid
+// (lower-case): "https://login.microsoftonline.com/" + tid + "/v2.0", with the
+// scheme, host and path compared exactly and the tenant part compared
+// case-insensitively (a GUID's hex digits may come in either case).
+func issuerNames(iss, tid string) bool {
+	const prefix, suffix = "https://login.microsoftonline.com/", "/v2.0"
+	if !strings.HasPrefix(iss, prefix) || !strings.HasSuffix(iss, suffix) || len(iss) < len(prefix)+len(suffix) {
+		return false
+	}
+	return strings.EqualFold(iss[len(prefix):len(iss)-len(suffix)], tid)
 }
 
 func decodeSegment(seg string, dst any) error {
@@ -219,33 +245,60 @@ func audienceIs(raw json.RawMessage, clientID string) bool {
 
 // key returns the tenant's key kid, fetching the tenant's keys when they are
 // not cached or older than 24 h, and refetching at most once a minute when
-// kid is unknown.
+// kid is unknown. A request that finds a fetch for the tenant in flight waits
+// for it (single flight) and then looks kid up in what it returned.
 func (v *MicrosoftIDTokenVerifier) key(ctx context.Context, tid, kid string) (*rsa.PublicKey, error) {
 	now := v.Now()
 	v.mu.Lock()
 	entry := v.lookup(tid)
-	if entry != nil && now.Sub(entry.fetchedAt) < msKeysTTL {
+	fresh := entry != nil && now.Sub(entry.fetchedAt) < msKeysTTL
+	if fresh {
 		if k, ok := entry.keys[kid]; ok {
 			v.mu.Unlock()
 			return k, nil
 		}
+	}
+	if f, ok := v.flights[tid]; ok {
+		v.mu.Unlock()
+		select {
+		case <-f.done:
+		case <-ctx.Done():
+			return nil, idTokenErr("waiting for the tenant's keys: %v", ctx.Err())
+		}
+		return pick(f.keys, f.err, kid)
+	}
+	if fresh {
 		if !entry.lastRefetch.IsZero() && now.Sub(entry.lastRefetch) < msKeysRefetchPeriod {
 			v.mu.Unlock()
 			return nil, idTokenErr("kid %q unknown and the tenant's refetch is rate-limited", kid)
 		}
 		entry.lastRefetch = now
 	}
+	f := &msFlight{done: make(chan struct{})}
+	v.flights[tid] = f
 	v.mu.Unlock()
 
-	keys, err := v.fetch(ctx, tid)
+	// The fetch serves every request waiting on it, so it does not end with
+	// this request's context; it is bounded by the identity-provider limit.
+	keys, err := v.fetch(context.WithoutCancel(ctx), tid)
+
+	v.mu.Lock()
+	if err == nil {
+		e := v.store(tid, keys, now)
+		if fresh {
+			e.lastRefetch = entry.lastRefetch
+		}
+	}
+	f.keys, f.err = keys, err
+	delete(v.flights, tid)
+	close(f.done)
+	v.mu.Unlock()
+	return pick(keys, err, kid)
+}
+
+func pick(keys map[string]*rsa.PublicKey, err error, kid string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
-	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	e := v.store(tid, keys, now)
-	if entry != nil {
-		e.lastRefetch = entry.lastRefetch
 	}
 	k, ok := keys[kid]
 	if !ok {
