@@ -40,6 +40,8 @@
  * UI journeys raced for the same 09:00 slot and the loser failed.
  */
 
+import type { Page } from '@playwright/test';
+
 import { test, expect } from '../fixtures';
 import { fake } from '../fake';
 import { BOOKING_HOSTS, CONNECTED, LINKS, MISSING_SLUG, OFFERABLE_LINK } from '../seed/ids';
@@ -556,6 +558,12 @@ test.describe('public booking — only an offered start books (PAC-72)', () => {
  *
  * Page time is advanced to 131 s after the request started: past nginx's
  * 130 s read timeout, below the client's 135 s bound (CLIENT_REQUEST_BOUND_MS).
+ * The margin must not depend on real time (a loaded runner, the real
+ * route.fetch round trip, the assertions): once the held request has
+ * arrived the page clock is PAUSED, page time is advanced by exact amounts
+ * from the page time the request was intercepted at, the answer is released
+ * and delivered while still paused (the bound's timer cannot fire), and only
+ * then does the clock resume.
  *
  * Isolation: these journeys use this file's hosts (BOOKING_HOSTS.ui and .api)
  * on days no other journey here uses (bookingDay(6) and (7)) and, for the
@@ -567,6 +575,18 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
   /** Brings the held request to 131 s of page time in total. */
   const TO_131_S_MS = 131_000 - PAST_STILL_WORKING_MS;
   const NO_TIMES = /no time available|no available times/i;
+
+  /**
+   * Pause the page clock (it runs in real time since page.clock.install())
+   * and return the page time elapsed since `since`, a page Date.now() read
+   * when the request was intercepted. pauseAt must not be in the page's past,
+   * hence the second of headroom; it is counted in the returned value.
+   */
+  async function pauseClock(page: Page, since: number): Promise<number> {
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(now + 1_000);
+    return (await page.evaluate(() => Date.now())) - since;
+  }
 
   /** A promise the route handler waits on, and the function that opens it. */
   function gate(): { wait: Promise<void>; open: () => void } {
@@ -615,9 +635,11 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       const release = gate();
       const arrived = gate();
       let served: { slots: Array<{ start: string }> } | undefined;
+      let startedAt: number | undefined;
       await page.route(
         (url) => url.pathname === `/api/book/${slug}/slots`,
         async (route) => {
+          startedAt ??= await page.evaluate(() => Date.now());
           const res = await route.fetch();
           served = (await res.json()) as { slots: Array<{ start: string }> };
           arrived.open();
@@ -639,7 +661,9 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       expect(served!.slots.map((s) => instant(s.start))).toEqual(expected);
 
       // Waiting: nothing invented, no "no times", no error.
-      await page.clock.fastForward(PAST_STILL_WORKING_MS);
+      const elapsed = await pauseClock(page, startedAt!);
+      expect(elapsed, 'page time before the clock paused').toBeLessThan(PAST_STILL_WORKING_MS);
+      await page.clock.fastForward(PAST_STILL_WORKING_MS - elapsed);
       await expect(page.getByTestId('still-working')).toBeVisible();
       await expect(slotButtons(page)).toHaveCount(0);
       await expect(page.getByText(NO_TIMES)).toHaveCount(0);
@@ -651,7 +675,12 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       await expect(page.getByText(NO_TIMES)).toHaveCount(0);
       await expect(page.getByTestId('api-error')).toHaveCount(0);
 
+      // Delivered while paused; the clock resumes only once the page has the
+      // answer, so no real time is added before the 135 s bound is cleared.
+      const answered = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/book/${slug}/slots`);
       release.open();
+      await answered;
+      await page.clock.resume();
       await expect(slotButtons(page)).toHaveText([/^11:00\sAM$/, /^11:15\sAM$/, /^11:30\sAM$/]);
       await expect(page.getByTestId('still-working')).toHaveCount(0);
       await expect(page.getByText(NO_TIMES)).toHaveCount(0);
@@ -722,12 +751,14 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       }
     });
     let status: number | undefined;
+    let startedAt: number | undefined;
     await page.route(
       (url) => url.pathname === `/api/book/${slug}`,
       async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         // The booking reaches the server once, sent from here; the page's own
         // request is still seen exactly once by page.on('request').
+        startedAt ??= await page.evaluate(() => Date.now());
         const res = await route.fetch();
         status = res.status();
         arrived.open();
@@ -751,7 +782,9 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       expect(status).toBe(201);
 
       // Held: the page keeps waiting, says so, and claims nothing.
-      await page.clock.fastForward(PAST_STILL_WORKING_MS);
+      const elapsed = await pauseClock(page, startedAt!);
+      expect(elapsed, 'page time before the clock paused').toBeLessThan(PAST_STILL_WORKING_MS);
+      await page.clock.fastForward(PAST_STILL_WORKING_MS - elapsed);
       await expect(page.getByTestId('still-working')).toBeVisible();
       await expect(page.getByRole('heading', { name: /you are confirmed/i })).toHaveCount(0);
       await expect(page.getByTestId('api-error')).toHaveCount(0);
@@ -760,7 +793,12 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       await expect(page.getByRole('heading', { name: /you are confirmed/i })).toHaveCount(0);
       await expect(page.getByTestId('api-error')).toHaveCount(0);
 
+      const answered = page.waitForResponse(
+        (r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/api/book/${slug}`,
+      );
       release.open();
+      await answered;
+      await page.clock.resume();
       await expect(page.getByRole('heading', { name: /you are confirmed/i })).toBeVisible();
       await expect(page.getByText(bookerEmail)).toBeVisible();
       await assertNotDemo(page);
