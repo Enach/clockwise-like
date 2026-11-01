@@ -2,7 +2,8 @@
 //
 // It runs inside a container on the test network, in one of two modes:
 //
-//	stub upstream   two recording upstreams (backend :8080, frontend :8081) and
+//	stub upstream   three recording upstreams (backend :8080, frontend :8081,
+//	                MCP :8082, PAC-81 Part C) and
 //	                a control port (:9000) that reports what they received and
 //	                how many TCP connections each accepted.
 //	stub client     sends HTTP requests from the container's own address (so
@@ -72,7 +73,7 @@ func (r *recorder) snapshot() []Recorded {
 
 func runUpstream() {
 	rec := &recorder{}
-	var backendConns, frontendConns atomic.Int64
+	var backendConns, frontendConns, mcpConns atomic.Int64
 
 	serve := func(addr string, conns *atomic.Int64, h http.Handler) {
 		srv := &http.Server{
@@ -124,6 +125,8 @@ func runUpstream() {
 			w.Header().Set("Referrer-Policy", "unsafe-url")
 			w.Header().Set("Strict-Transport-Security", "max-age=1")
 			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		case path == "/api/stream":
+			stream(w)
 		case strings.HasPrefix(path, "/api/redirect"):
 			http.Redirect(w, r, "/api/health", http.StatusFound)
 		default:
@@ -142,19 +145,60 @@ func runUpstream() {
 		_, _ = io.WriteString(w, `<!doctype html><html><head></head><body><div id="root"></div></body></html>`)
 	}))
 
+	// PAC-81 Part C: the MCP SSE server stand-in. /mcp/stream sends one event
+	// at once and a second 3 s later, so a buffering proxy shows up as a late
+	// first byte.
+	serve(":8082", &mcpConns, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		record("mcp", r)
+		if r.URL.Path == "/mcp/stream" {
+			stream(w)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/mcp/sleep/") {
+			// An idle event stream: headers at once, the body after d.
+			d, err := time.ParseDuration(strings.TrimPrefix(r.URL.Path, "/mcp/sleep/"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(d)
+			_, _ = io.WriteString(w, "event: late\ndata: "+d.String()+"\n\n")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"upstream": "mcp"})
+	}))
+
 	ctl := http.NewServeMux()
 	ctl.HandleFunc("/requests", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rec.snapshot())
 	})
 	ctl.HandleFunc("/conns", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]int64{
-			"backend": backendConns.Load(), "frontend": frontendConns.Load(),
+			"backend": backendConns.Load(), "frontend": frontendConns.Load(), "mcp": mcpConns.Load(),
 		})
 	})
 	if err := http.ListenAndServe(":9000", ctl); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// stream writes an SSE event, flushes, waits 3 s and writes another.
+func stream(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "event: first\ndata: 1\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	time.Sleep(3 * time.Second)
+	_, _ = io.WriteString(w, "event: second\ndata: 2\n\n")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -169,6 +213,10 @@ type Response struct {
 	Header map[string][]string `json:"header"`
 	Body   string              `json:"body"`
 	Error  string              `json:"error,omitempty"`
+	// FirstByteMs and TotalMs: time from sending to the first body byte and
+	// to the end of the body (PAC-81 Part C, streaming through nginx).
+	FirstByteMs int64 `json:"first_byte_ms"`
+	TotalMs     int64 `json:"total_ms"`
 }
 
 type headerFlags []string
@@ -219,14 +267,28 @@ func runClient(args []string) int {
 			}
 			req.Header.Add(k, v)
 		}
+		start := time.Now()
 		res, err := client.Do(req)
 		if err != nil {
 			out = append(out, Response{Error: err.Error()})
 			continue
 		}
-		b, _ := io.ReadAll(res.Body)
+		var first int64 = -1
+		var buf bytes.Buffer
+		chunk := make([]byte, 4096)
+		for {
+			n, rerr := res.Body.Read(chunk)
+			if n > 0 && first < 0 {
+				first = time.Since(start).Milliseconds()
+			}
+			buf.Write(chunk[:n])
+			if rerr != nil {
+				break
+			}
+		}
 		_ = res.Body.Close()
-		out = append(out, Response{Status: res.StatusCode, Header: res.Header, Body: string(b)})
+		out = append(out, Response{Status: res.StatusCode, Header: res.Header, Body: buf.String(),
+			FirstByteMs: first, TotalMs: time.Since(start).Milliseconds()})
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -1,0 +1,54 @@
+# MCP server, opt-in (PAC-81 Part C; owner decision Q-O1, 2026-11-01).
+#
+# Enable MCP by adding this file to the production one:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.mcp.yml up -d
+#
+# or, so that every `docker compose` command includes it, in .env:
+#
+#   COMPOSE_FILE=docker-compose.prod.yml:docker-compose.mcp.yml
+#
+# (on Windows hosts the separator is `;`, or set COMPOSE_PATH_SEPARATOR).
+#
+# The MCP server then runs with the SSE transport and publishes NO port: it is
+# reachable only through nginx, at https://<public host>/mcp/sse, behind the
+# TLS proxy. Every request must carry `Authorization: Bearer <MCP_AUTH_TOKEN>`.
+# Without a token (unset or empty) `docker compose config` and `up` stop here,
+# naming MCP_AUTH_TOKEN, before any container is created.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  mcp-server:
+    image: enach/paceday-mcp:${PACEDAY_VERSION:?PACEDAY_VERSION is required - the exact Paceday image version to run (see .env.example)}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BACKEND_URL:    http://backend:8080
+      MCP_TRANSPORT:  sse
+      MCP_PORT:       "3001"
+      # nginx serves it at /mcp/ without rewriting the path.
+      MCP_BASE_PATH:  /mcp
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN is required when MCP is enabled (docker-compose.mcp.yml) - generate one with openssl rand -hex 32}
+    healthcheck:
+      test: ["CMD", "/mcp-server", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
+    stop_grace_period: 50s
+    logging: *logging
+
+  nginx:
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    environment:
+      NGINX_MCP_UPSTREAM: mcp-server:3001

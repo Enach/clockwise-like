@@ -13,3 +13,7 @@ nginx/** text eol=lf
 # Shell scripts run under bash or sh; CRLF breaks them (PAC-81 Part D). This
 # covers scripts/ops/*.sh and every other *.sh in the repository.
 *.sh text eol=lf
+
+# PAC-81 Part C: the compose files are read by tests that match YAML text;
+# keep them LF on every platform (review of #248).
+docker-compose*.yml text eol=lf
