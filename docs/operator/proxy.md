@@ -6,23 +6,21 @@ the job of a proxy you run in front of it (Caddy, Traefik, an nginx of your
 own, a cloud load balancer). This page lists what that proxy must do. It is
 part of PAC-81 (spec `NEW-deploy-hardening`, AC-D2).
 
-PAC-81 Part A (backend timeouts, request budget, graceful shutdown,
-readiness) and Part B (the nginx edge: headers, CSP, trusted proxy, timeouts,
-`/nginx-health`) have shipped. Passages marked **added by Part C** describe
-PAC-81 work that is not on `main` yet; until it ships, the "today" sentence
-next to them applies.
+PAC-81 Parts A (backend timeouts, request budget, graceful shutdown,
+readiness), B (the nginx edge: headers, CSP, trusted proxy, timeouts,
+`/nginx-health`) and C (compose: pinned images, health checks, bind address,
+MCP through the public origin, the framable booking page) have shipped.
 
 ```
 browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80) ──▶ backend :8080
-                                                          └──▶ frontend :80
+                                                          ├──▶ frontend :80
+                                                          └──▶ MCP :3001 (/mcp/, only when enabled)
 ```
 
 ## 1. Terminate TLS and set HSTS
 
 - The proxy holds the certificate and terminates TLS. Paceday mounts no
-  certificate and listens on no 443 that matters (the `443:443` mapping and
-  `TLS_CERT_DIR` mount in today's compose file are unused; Part C removes
-  them, AC-C1).
+  certificate and publishes no 443.
 - The proxy sets **`Strict-Transport-Security: max-age=31536000; includeSubDomains`**
   on every HTTPS response. Do not add `preload` unless you have decided to
   submit the domain to the browsers' preload list: it is hard to undo.
@@ -34,7 +32,13 @@ browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80)
   `X-Content-Type-Options: nosniff`) are set by Paceday's nginx on every
   response (PAC-81 Part B). Do not set them, or a second CSP, at the proxy: a
   second policy can only narrow the first and breaks the app in ways that
-  are hard to trace. nginx never sends HSTS. The CSP's operator settings are
+  are hard to trace. nginx never sends HSTS.
+- **Framing.** The public booking page `/book/<slug>` may be embedded in an
+  `<iframe>` by any site (owner decision PAC-81 Q-O2): nginx sends it
+  `frame-ancestors *` and no `X-Frame-Options`. Every other page is
+  unframeable (`frame-ancestors 'none'`, `X-Frame-Options: DENY`). A proxy
+  that adds its own `X-Frame-Options` or `frame-ancestors` breaks embedding
+  of the booking page: do not. The CSP's operator settings are
   `NGINX_CSP_SENTRY_ORIGIN` and `NGINX_CSP_CONNECT_ORIGINS` (`.env.example`).
 
 ## 2. Forward the client address and scheme
@@ -108,22 +112,33 @@ your proxy.
 The web app aborts its own API calls after 4 s regardless (spec F-W1); these
 bounds protect the server, they do not make long calls succeed in the browser.
 
+**MCP, when enabled** (`docker-compose.mcp.yml`): `GET /mcp/sse` is a
+long-lived event stream that can stay idle for minutes. nginx lets it idle for
+up to 1 h on `/mcp/` (no buffering). Your proxy must not buffer responses on
+`/mcp/` and should allow a long idle/read timeout there (an hour, or as long
+as your clients keep sessions open); with a shorter one the stream is cut
+and the MCP client has to reconnect. Cloudflare's 100 s limit cuts idle
+streams. The proxy must pass the `Authorization` header through unchanged.
+
 ## 5. Only the proxy may reach nginx
 
 nginx's published port must be reachable **only from your proxy**: anyone who
 reaches it directly skips TLS, HSTS and your proxy's own protections.
 
-- Proxy on the same host: bind nginx to loopback, `127.0.0.1:80:80`. The
-  setting that makes the bind address configurable is **added by Part C**
-  (AC-C9); today edit the `ports:` line of `docker-compose.prod.yml`
-  (`"80:80"` → `"127.0.0.1:80:80"`) or block port 80 in the host firewall.
-  Remember (§3) that nginx then still sees the bridge gateway as the peer, not
+- Proxy on the same host: set **`NGINX_BIND_ADDRESS=127.0.0.1`**
+  (`.env.example`) so nginx's port is published on loopback only. An IPv6
+  address goes in brackets: `NGINX_BIND_ADDRESS=[::1]`. If the
+  proxy itself listens on port 80, also set **`NGINX_HTTP_PORT`** to a free
+  port (e.g. `8081`) and point the proxy at `127.0.0.1:<that port>`. Remember
+  (§3) that nginx then still sees the bridge gateway as the peer, not
   `127.0.0.1`.
-- Proxy on another host: firewall port 80 to the proxy's address only.
-- The MCP server: today the production compose file publishes it on port
-  3001 of every interface. Firewall 3001, or remove the `mcp-server` service.
-  Making it opt-in and loopback-only is **added by Part C** (AC-C4, owner
-  default Q-O1); it is never meant to be exposed through the proxy.
+- Proxy on another host: leave `NGINX_BIND_ADDRESS` empty (every interface)
+  and firewall nginx's port to the proxy's address only.
+- The MCP server publishes no port. When enabled (`docker-compose.mcp.yml`)
+  it is reached through your proxy and nginx at `https://<your host>/mcp/sse`
+  with `Authorization: Bearer <MCP_AUTH_TOKEN>` (owner decision PAC-81 Q-O1);
+  route `/mcp/` to nginx like every other path. You may restrict `/mcp/` to
+  known client addresses at your proxy.
 - Postgres and the backend publish no port; keep it that way.
 
 ## 6. Health checks on the proxy
@@ -143,7 +158,7 @@ it checks the whole path:
 - **Edge liveness** — `GET /nginx-health` (PAC-81 Part B, shipped). nginx
   answers 200 itself, without calling any upstream and without logging, so it
   says only that nginx is up. Use it for the proxy's check of the nginx
-  container (or for Part C's container health check), not as the stack's
+  container (the compose health check uses it too), not as the stack's
   readiness.
 - **Backend liveness** — `GET /api/health` answers `200 {"status":"ok",…}`
   whenever the backend process is up, without checking the database. Do not
@@ -157,8 +172,9 @@ it checks the whole path:
 2. `X-Forwarded-For` appended and `X-Forwarded-Proto: https` sent.
 3. `NGINX_TRUSTED_PROXIES` = your proxy's address — the bridge gateway when
    the proxy is on the same host.
-4. Proxy idle/read timeout > 130 s.
-5. nginx's port reachable only from the proxy (`127.0.0.1` bind on the same
-   host); MCP's 3001 not exposed.
+4. Proxy idle/read timeout > 130 s; on `/mcp/` (if MCP is enabled) no
+   buffering and a long idle timeout.
+5. nginx's port reachable only from the proxy (`NGINX_BIND_ADDRESS=127.0.0.1`
+   on the same host); no extra framing headers at the proxy.
 6. Proxy health check through nginx: `GET /api/ready` to take the stack out
    of rotation, and `/nginx-health` for nginx itself.

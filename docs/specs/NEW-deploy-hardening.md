@@ -2121,3 +2121,32 @@ calendar fails (provider error, own-limit timeout, not connected) gives "no
 slot" and "409, no row". Team availability keeps its "treated as free" test.
 The contract is revision 2.1 (descriptions of `getPublicBookingSlots` and
 `createPublicBooking`; `contracts/features/PAC-81-part-a.md`).
+
+## Revision 3.3 — 2026-11-01, owner answers Q-O1 and Q-O2
+
+Recorded by the Part C implementer at the coordinator's request
+(`docs/plans/PAC-81-part-c.md` §1). The product owner answered on 2026-11-01;
+the answers are binding and supersede the factory defaults below. Q-O3
+(daily backup, 14 days) confirms Part D as shipped; Q-O4 (no outbox) confirms
+the default.
+
+- **Q-O1 (b): MCP is reachable through the public site.** It stays opt-in
+  (AC-C4's mechanism rule and AC-C5 unchanged) and always requires
+  `MCP_AUTH_TOKEN`. When enabled it is served by nginx on the public origin,
+  behind the operator's TLS proxy, at `location /mcp/` proxied to the MCP SSE
+  server without rewriting the path, with streaming-safe settings
+  (`proxy_buffering off`, no cache, a read timeout long enough for an idle SSE
+  stream: 1 h). The MCP container publishes **no** host port. This replaces
+  D-12's "loopback only" and AC-C4's "publishes only on `127.0.0.1`"; §5's
+  "MCP over the public origin" and its §10 follow-up move into Part C. The
+  MCP server gains an optional base path so its `endpoint` event points back
+  to `/mcp/message` on the public origin instead of `http://0.0.0.0:<port>`
+  (F-C3). With MCP off, `/mcp/` answers 404 and never reaches the SPA.
+- **Q-O2: only the public booking page may be framed.** The public booking
+  page is the web route `/book/:slug` (`smart-calendar-flow` `src/App.tsx`);
+  nginx matches `^/book/[^/]+/?$`. Those responses carry `frame-ancestors *`
+  in the CSP and **no** `X-Frame-Options`; every other response keeps
+  `frame-ancestors 'none'` and `X-Frame-Options: DENY` (D-8, AC-B2/B3 amended
+  for that route only). The page's own API calls (`/api/book/…`) are not
+  documents and keep the default headers. Part B's nginx config changes in
+  Part C, with its tests.

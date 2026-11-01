@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -101,9 +102,19 @@ func setup() error {
 		}
 	}
 
+	// PAC-81 Part C: by default the suite runs the exact nginx image the
+	// production compose file pins, so it tests what ships.
 	nginxImage = os.Getenv("PACEDAY_NGINX_IMAGE")
 	if nginxImage == "" {
-		nginxImage = "nginx:alpine"
+		prod, err := os.ReadFile(filepath.Join(repoRoot, "docker-compose.prod.yml"))
+		if err != nil {
+			return err
+		}
+		m := regexp.MustCompile(`(?m)^\s*image:\s*(nginx:\S+)\s*$`).FindSubmatch(prod)
+		if m == nil {
+			return fmt.Errorf("no nginx image in docker-compose.prod.yml")
+		}
+		nginxImage = string(m[1])
 	}
 
 	stubDir, err = os.MkdirTemp("", "paceday-nginx-stub-")
@@ -272,6 +283,9 @@ type Response struct {
 	Header map[string][]string `json:"header"`
 	Body   string              `json:"body"`
 	Error  string              `json:"error,omitempty"`
+	// Timings of the stub client (PAC-81 Part C).
+	FirstByteMs int64 `json:"first_byte_ms"`
+	TotalMs     int64 `json:"total_ms"`
 }
 
 // Recorded mirrors stub.Recorded.

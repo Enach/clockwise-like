@@ -89,6 +89,14 @@ export const CONNECTED = {
     token: 'e2e-rejected-work',
     label: 'rejected-work',
   },
+  /** PAC-72 AC-20: hosts OFFERABLE_LINK; tests/public-booking.spec.ts owns its calendar. */
+  offerable: {
+    id: 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3',
+    email: 'e2e.offerable@paceday.test',
+    name: 'E2E Offerable Host',
+    token: 'e2e-offerable-work',
+    label: 'offerable-work',
+  },
 } as const;
 
 /**
@@ -244,6 +252,17 @@ export const SEAM_LINK = {
 } as const;
 
 /**
+ * Hosted by CONNECTED.offerable alone (PAC-72 AC-20): Monday to Friday,
+ * 09:00-12:00 UTC, 30 minutes, no notice.
+ */
+export const OFFERABLE_LINK = {
+  id: 'c9999999-9999-4999-8999-999999999999',
+  slug: 'e2e-offerable-30min',
+  title: 'E2E Offerable Link',
+  hostUserId: CONNECTED.offerable.id,
+} as const;
+
+/**
  * PAC-81 Part B, AC-B3 (tests/csp.spec.ts). Each host owns one link and shows
  * its avatar on that link's public booking page. The image is never fetched
  * from the internet: the test intercepts the request. Connected through the
@@ -282,6 +301,7 @@ export const ACCEPTED_CREDENTIALS = [
     CONNECTED.focus,
     CONNECTED.manager,
     CONNECTED.seam,
+    CONNECTED.offerable,
     DISCONNECTING,
     ...Object.values(BOOKING_HOSTS),
     ...Object.values(AVATAR_HOSTS),
@@ -315,6 +335,7 @@ export const SEEDED_USER_IDS: readonly string[] = [
 export const SEEDED_LINK_IDS: readonly string[] = [
   ...Object.values(LINKS).map((l) => l.id),
   SEAM_LINK.id,
+  OFFERABLE_LINK.id,
   ...Object.values(AVATAR_HOSTS).map((u) => u.link.id),
 ];
 

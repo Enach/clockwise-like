@@ -66,7 +66,7 @@ func collectShellEnvReads(name, text string) map[string]string {
 }
 
 // composeFiles are the files that may consume a variable themselves.
-var composeFiles = []string{"docker-compose.yml", "docker-compose.prod.yml", "docker-compose.dev.yml", "e2e/docker-compose.e2e.yml"}
+var composeFiles = []string{"docker-compose.yml", "docker-compose.prod.yml", "docker-compose.mcp.yml", "docker-compose.dev.yml", "e2e/docker-compose.e2e.yml"}
 
 // envNotInReference lists variables a service reads that are deliberately not
 // in .env.example, each with the reason. Nothing else may be missing.
@@ -381,7 +381,8 @@ func readRepoFile(t *testing.T, rel string) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	return string(raw)
+	// Line endings depend on the checkout (core.autocrlf); the checks do not.
+	return strings.ReplaceAll(string(raw), "\r\n", "\n")
 }
 
 // AC-D1: every variable read is documented; every documented variable is used.

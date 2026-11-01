@@ -213,7 +213,7 @@ func migrationDirty(t *testing.T, db *sql.DB) bool {
 // keptByDown are tables a down migration deliberately keeps, each with its
 // reason; their facts are left out of the down-to-005 comparison only.
 var keptByDown = map[string]string{
-	"operator_audit": "PAC-71 spec section 7: the audit of operator steps survives a rollback (032_identity_binding.down.sql keeps it; its up uses IF NOT EXISTS)",
+	"operator_audit": "PAC-71 spec section 7: the audit of operator steps survives a rollback (033_identity_binding.down.sql keeps it; its up uses IF NOT EXISTS)",
 }
 
 func withoutKeptByDown(diff []string) []string {

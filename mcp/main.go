@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -42,8 +43,12 @@ func main() {
 		if port == "" {
 			port = "3001"
 		}
-		sseServer := server.NewSSEServer(s, server.WithBaseURL(fmt.Sprintf("http://0.0.0.0:%s", port)))
-		log.Printf("MCP SSE server listening on :%s (auth required)", port)
+		basePath, err := sseBasePath(os.Getenv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		sseServer := newSSE(s, port, basePath)
+		log.Printf("MCP SSE server listening on :%s, SSE at %s/sse (auth required)", port, basePath)
 		if err := newServer(":"+port, routes(sseServer, token), defaultTimeouts).ListenAndServe(); err != nil {
 			log.Fatal(err)
 		}
@@ -52,6 +57,36 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+}
+
+// sseBasePath reads MCP_BASE_PATH (PAC-81 Part C, owner decision Q-O1): the
+// path prefix under which a reverse proxy serves the SSE server on the public
+// origin, e.g. /mcp behind nginx's location /mcp/. Empty means the root, as
+// before. It must be an absolute path of plain segments.
+func sseBasePath(getenv func(string) string) (string, error) {
+	raw := getenv("MCP_BASE_PATH")
+	if raw == "" {
+		return "", nil
+	}
+	p := strings.TrimSuffix(raw, "/")
+	if !basePathPattern.MatchString(p) || strings.Contains("/"+p+"/", "/../") || strings.Contains("/"+p+"/", "/./") {
+		return "", fmt.Errorf("MCP_BASE_PATH must be an absolute path such as /mcp, got %q", raw)
+	}
+	return p, nil
+}
+
+var basePathPattern = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
+
+// newSSE builds the SSE transport. With a base path the SSE and message
+// endpoints live under it and the endpoint event carries a relative URL
+// (<base>/message?sessionId=…), which a client resolves against the URL it
+// connected to: behind the public origin that is the public origin itself.
+// Without one the behaviour is unchanged.
+func newSSE(s *server.MCPServer, port, basePath string) *server.SSEServer {
+	if basePath == "" {
+		return server.NewSSEServer(s, server.WithBaseURL(fmt.Sprintf("http://0.0.0.0:%s", port)))
+	}
+	return server.NewSSEServer(s, server.WithStaticBasePath(basePath), server.WithUseFullURLForMessageEndpoint(false))
 }
 
 // bearerAuth wraps next with a constant-time `Authorization: Bearer <token>` check.

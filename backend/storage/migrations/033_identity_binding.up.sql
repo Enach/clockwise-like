@@ -1,4 +1,4 @@
--- 032_identity_binding.up.sql — PAC-71 (spec docs/specs/PAC-71.md §3, §7;
+-- 033_identity_binding.up.sql — PAC-71 (spec docs/specs/PAC-71.md §3, §7;
 -- contract contracts/features/PAC-71.md §5–§9; plan docs/plans/PAC-71.md §2).
 --
 -- An account belongs to the identity bound to it, not to an address. This
@@ -8,7 +8,8 @@
 -- stays unbound (unconfirmed, generation 0) until its first sign-in under
 -- migration rule (a) or (b), or an operator step (AC-18). No row is deleted.
 --
--- Numbered 032, the next free version after main's 031_llm_org_ai (PAC-73 part 2).
+-- Numbered 033, the next free version after main's 032_scheduling_link_horizon_refusal (PAC-72;
+-- written as 032 and renumbered at merge, contract mergeConditions).
 -- Rows the pre-PAC-71 API inserts between this migration and the API deploy
 -- (contract §14 step 1) get the column defaults below, so the new API treats
 -- them as unbound legacy accounts.

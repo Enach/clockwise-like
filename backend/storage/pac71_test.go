@@ -15,7 +15,7 @@ import (
 
 // PAC-71 storage: emptiness (rule (b), contract §6), session generation
 // primitives, sign-in resolution edges, the operator procedure (AC-44,
-// AC-49) and migration 032 (AC-18).
+// AC-49) and migration 033 (AC-18).
 
 func pac71User(t *testing.T, db *sql.DB, email, providerID string) uuid.UUID {
 	t.Helper()
@@ -472,11 +472,11 @@ func TestPAC71_AC44_AdvanceAllGenerations(t *testing.T) {
 	}
 }
 
-// AC-18 and spec §7: migration 032 deletes nothing and binds nobody; its down
+// AC-18 and spec §7: migration 033 deletes nothing and binds nobody; its down
 // migration keeps the operator audit; up -> down -> up works.
-func TestPAC71_Migration032_AC18_UpDownUp(t *testing.T) {
+func TestPAC71_Migration033_AC18_UpDownUp(t *testing.T) {
 	db, to := migrationTestDB(t)
-	to(31)
+	to(32)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	u1 := seedMigrationUser(t, db, "henry@acme.test", base)
 	seedMigrationUser(t, db, "x@acme.test", base.Add(time.Hour))
@@ -488,7 +488,7 @@ func TestPAC71_Migration032_AC18_UpDownUp(t *testing.T) {
 	}
 	u0, s0 := count()
 
-	to(32)
+	to(33)
 	if u, s := count(); u != u0 || s != s0 {
 		t.Fatal("rows changed")
 	}
@@ -504,7 +504,7 @@ func TestPAC71_Migration032_AC18_UpDownUp(t *testing.T) {
 	}
 	mustExec(t, db, `INSERT INTO operator_audit (action, operator, reason) VALUES ('advance_all', 'op', 'test')`)
 
-	to(31)
+	to(32)
 	var col int
 	_ = db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('session_generation', 'address_standing', 'email_key')`).Scan(&col)
 	if col != 0 {
@@ -514,7 +514,7 @@ func TestPAC71_Migration032_AC18_UpDownUp(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM operator_audit`).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("operator audit not kept: %d %v", audits, err)
 	}
-	to(32)
+	to(33)
 	if err := db.QueryRow(`SELECT count(*) FROM operator_audit`).Scan(&audits); err != nil || audits != 1 {
 		t.Fatal("re-apply lost the audit")
 	}

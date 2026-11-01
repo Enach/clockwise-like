@@ -1,4 +1,4 @@
--- 032_identity_binding.down.sql — PAC-71 rollback (spec §7, contract rollback).
+-- 033_identity_binding.down.sql — PAC-71 rollback (spec §7, contract rollback).
 -- Drops the bindings, the address standings, the session generations and the
 -- case-insensitive key. Accounts, credentials, memberships and settings are
 -- untouched. operator_audit is deliberately KEPT: the audit of operator steps

@@ -17,7 +17,7 @@ docker compose -f docker-compose.prod.yml exec backend /paceday-operator <comman
 (Outside a container: `DATABASE_URL=... go run ./cmd/paceday-operator <command> ...` from
 `backend/`.) The steps have no API route, web page or MCP tool. Every run writes an `operator_audit` row (operator,
 time, account, previous and new identity, evidence, what was removed, reason); a rollback of
-migration 032 keeps that table.
+migration 033 keeps that table.
 
 ## 1. Find the account
 

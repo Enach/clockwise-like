@@ -110,6 +110,31 @@ const (
 	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
 )
 
+// Defines values for BookingRefusalMessage.
+const (
+	BookingRefusalMessageGeneric  BookingRefusalMessage = "generic"
+	BookingRefusalMessageSpecific BookingRefusalMessage = "specific"
+)
+
+// Defines values for BookingRefusalReason.
+const (
+	BeyondHorizon    BookingRefusalReason = "beyond_horizon"
+	HostBusy         BookingRefusalReason = "host_busy"
+	OutsideLinkHours BookingRefusalReason = "outside_link_hours"
+	Taken            BookingRefusalReason = "taken"
+	TooSoon          BookingRefusalReason = "too_soon"
+)
+
+// Defines values for BookingSlotUnavailableErrorError.
+const (
+	AHostIsBusyAtThatTime              BookingSlotUnavailableErrorError = "a host is busy at that time"
+	SlotIsAlreadyBooked                BookingSlotUnavailableErrorError = "slot is already booked"
+	SlotIsBeyondTheLinksBookingHorizon BookingSlotUnavailableErrorError = "slot is beyond the link's booking horizon"
+	SlotIsNoLongerAvailable            BookingSlotUnavailableErrorError = "slot is no longer available"
+	SlotIsOutsideTheLinksDaysOrHours   BookingSlotUnavailableErrorError = "slot is outside the link's days or hours"
+	SlotIsTooSoon                      BookingSlotUnavailableErrorError = "slot is too soon"
+)
+
 // Defines values for Cadence.
 const (
 	CadenceBiweekly Cadence = "biweekly"
@@ -177,6 +202,12 @@ const (
 	ConferenceProviderStatusProviderGoogleMeet ConferenceProviderStatusProvider = "google_meet"
 	ConferenceProviderStatusProviderTeams      ConferenceProviderStatusProvider = "teams"
 	ConferenceProviderStatusProviderZoom       ConferenceProviderStatusProvider = "zoom"
+)
+
+// Defines values for CreateSchedulingLinkRequestRefusalMessage.
+const (
+	CreateSchedulingLinkRequestRefusalMessageGeneric  CreateSchedulingLinkRequestRefusalMessage = "generic"
+	CreateSchedulingLinkRequestRefusalMessageSpecific CreateSchedulingLinkRequestRefusalMessage = "specific"
 )
 
 // Defines values for CreateSchedulingLinkRequestUsageType.
@@ -623,6 +654,12 @@ const (
 	Owner  TeamMemberRole = "owner"
 )
 
+// Defines values for UpdateSchedulingLinkRequestRefusalMessage.
+const (
+	Generic  UpdateSchedulingLinkRequestRefusalMessage = "generic"
+	Specific UpdateSchedulingLinkRequestRefusalMessage = "specific"
+)
+
 // Defines values for UpdateSchedulingLinkRequestUsageType.
 const (
 	UpdateSchedulingLinkRequestUsageTypeRecurring UpdateSchedulingLinkRequestUsageType = "recurring"
@@ -1018,6 +1055,23 @@ type BookingRateLimitError struct {
 // BookingRateLimitErrorError defines model for BookingRateLimitError.Error.
 type BookingRateLimitErrorError string
 
+// BookingRefusalMessage The link owner's choice of 409 body for refused public bookings (PAC-72 revision 2, owner decisions D-2/D-5). `generic`: one message, "slot is no longer available", for every refusal, revealing nothing about the hosts' calendars. `specific`: the reason (see `BookingRefusalReason`), which tells a visitor, for example, that a host is busy at that time.
+type BookingRefusalMessage string
+
+// BookingRefusalReason Why `createPublicBooking` refused a start (PAC-72 revision 2). Sent only when the link's `refusal_message` is `specific`. Precedence when several hold: `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`, `host_busy`. `outside_link_hours` covers a day not among the link's days, a start or end outside its daily window and a start off the 15-minute grid. `taken` is a non-cancelled booking on this same link; `host_busy` is any other busy time of an accepted host (calendar event widened by buffers, focus block, booking on another link, unreadable calendar per D-6) or a link with no accepted host.
+type BookingRefusalReason string
+
+// BookingSlotUnavailableError The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default): exactly `{"error":"slot is no longer available"}`, no `reason` key, whatever rule failed. `specific`: both keys, `reason` naming the first failed rule and `error` the one text paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` - "slot is outside the link's days or hours"; `beyond_horizon` - "slot is beyond the link's booking horizon"; `host_busy` - "a host is busy at that time"; `taken` - "slot is already booked". "slot is no longer available" never carries a `reason`, and a specific text never appears without its `reason`. The pairing is not expressible in this schema (no `oneOf`, see contracts/features/PAC-72.md); it is asserted by the implementation's tests, which compare the exact (error, reason) pair for every cause. Written by api.writeError (generic) or the same envelope plus `reason` (specific).
+type BookingSlotUnavailableError struct {
+	Error BookingSlotUnavailableErrorError `json:"error"`
+
+	// Reason Why `createPublicBooking` refused a start (PAC-72 revision 2). Sent only when the link's `refusal_message` is `specific`. Precedence when several hold: `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`, `host_busy`. `outside_link_hours` covers a day not among the link's days, a start or end outside its daily window and a start off the 15-minute grid. `taken` is a non-cancelled booking on this same link; `host_busy` is any other busy time of an accepted host (calendar event widened by buffers, focus block, booking on another link, unreadable calendar per D-6) or a link with no accepted host.
+	Reason *BookingRefusalReason `json:"reason,omitempty"`
+}
+
+// BookingSlotUnavailableErrorError defines model for BookingSlotUnavailableError.Error.
+type BookingSlotUnavailableErrorError string
+
 // Cadence 1:1 cadence. "none" disables gap detection for that member.
 type Cadence string
 
@@ -1251,16 +1305,16 @@ type CreateConferenceRequest struct {
 
 // CreatePublicBookingRequest Anonymous request body of POST /api/book/{slug}. `name`, `email` and `start` are required by the handler; `end`, `duration` and `duration_minutes` are three overlapping ways to express the length.
 type CreatePublicBookingRequest struct {
-	// Duration Minutes. Takes precedence over `duration_minutes` when both are sent. This is the field the frontend actually populates.
+	// Duration Minutes. Takes precedence over `duration_minutes` whenever it is present and not null, even when it is 0. A requested length of 0 or null counts as not sent: with `end` no length comparison is made, without `end` the fallback below applies (so `"duration":0` with `"duration_minutes":60` books the fallback length, not 60). This is the field the frontend actually populates.
 	Duration *int `json:"duration"`
 
-	// DurationMinutes Minutes. Overridden by `duration` when both are present. When neither is sent and `end` is absent, the length falls back to durations[0] (else 30). The resolved value must be in the link's duration set, else 400.
+	// DurationMinutes Minutes. Overridden by `duration` when that is present and not null. When no length is sent (both absent or null, or the one that applies is 0) and `end` is absent, the length falls back to durations[0] (else 30). The resolved value must be in the link's duration set, else 400.
 	DurationMinutes *int `json:"duration_minutes"`
 
 	// Email Trimmed; must be non-empty after trimming. Never validated as an email address.
 	Email string `json:"email"`
 
-	// End RFC3339, optional. When present it wins: the resulting length must equal `duration`/`duration_minutes` if either was also sent, else 400. When absent, end = start + resolved duration.
+	// End RFC3339, optional. When present it wins: end - start must be exactly the requested length in minutes if one was sent (else 400 "duration does not match end time"); the requested length is `duration` when it is present and not null, else `duration_minutes`, and a requested length of 0 or null counts as not sent (no comparison is made). The length must be exactly a whole number of minutes that is one of the link's durations (else 400 "invalid duration"); a length with seconds or a fraction is never rounded. When absent, end = start + resolved duration.
 	End *time.Time `json:"end,omitempty"`
 
 	// Name Trimmed; must be non-empty after trimming.
@@ -1269,14 +1323,16 @@ type CreatePublicBookingRequest struct {
 	// Notes Free text; no length limit enforced.
 	Notes *string `json:"notes,omitempty"`
 
-	// Start RFC3339. Must be at least `min_notice_minutes` in the future, else 422.
+	// Start RFC3339, any UTC offset; compared as an instant. Must be the start of a slot `getPublicBookingSlots` would offer now for this link and the resolved duration (on the 15-minute grid, zero seconds, within the link's days, window and booking horizon in the link's zone, at least `min_notice_minutes` ahead, every accepted host free), else 409.
 	Start time.Time `json:"start"`
 }
 
 // CreateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two accepted spellings; the canonical one wins when both are sent. Nothing is required at the JSON level, but validation rejects an empty title.
 type CreateSchedulingLinkRequest struct {
-	BufferAfter  *int `json:"buffer_after,omitempty"`
-	BufferBefore *int `json:"buffer_before,omitempty"`
+	// BookingHorizonDays PAC-72 revision 2 (owner decision D-1). Absent or null means 60. Outside 1..365 is a 422 "booking_horizon_days must be between 1 and 365".
+	BookingHorizonDays *int `json:"booking_horizon_days"`
+	BufferAfter        *int `json:"buffer_after,omitempty"`
+	BufferBefore       *int `json:"buffer_before,omitempty"`
 
 	// CoHostEmails Emails are lowercased and trimmed, then resolved to existing accounts and added as `pending` hosts. Addresses with no account are skipped silently - the response gives no indication that an invite was dropped.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
@@ -1296,6 +1352,9 @@ type CreateSchedulingLinkRequest struct {
 	// MaxUses Required and must be positive when usage_type is `recurring`. Ignored (forced to null) otherwise.
 	MaxUses          *int `json:"max_uses"`
 	MinNoticeMinutes *int `json:"min_notice_minutes,omitempty"`
+
+	// RefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent or null means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
+	RefusalMessage *CreateSchedulingLinkRequestRefusalMessage `json:"refusal_message"`
 
 	// Slug Normalised to lowercase alphanumerics and dashes. When it normalises to the empty string a slug is generated from the owner's name plus the first duration.
 	Slug *string `json:"slug,omitempty"`
@@ -1318,6 +1377,9 @@ type CreateSchedulingLinkRequest struct {
 	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00".
 	WindowStartTime *string `json:"window_start_time,omitempty"`
 }
+
+// CreateSchedulingLinkRequestRefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent or null means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
+type CreateSchedulingLinkRequestRefusalMessage string
 
 // CreateSchedulingLinkRequestUsageType Lowercased and trimmed before validation; an empty string becomes `reusable`.
 type CreateSchedulingLinkRequestUsageType string
@@ -2755,7 +2817,7 @@ type PublicHost struct {
 	Name *string `json:"name,omitempty"`
 }
 
-// PublicLinkCoverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the slots are computed without that host's calendar; a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
+// PublicLinkCoverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the host's calendar cannot be read, so that host is busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without that host's calendar); a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 type PublicLinkCoverage struct {
 	Checked int `json:"checked"`
 	Total   int `json:"total"`
@@ -2763,7 +2825,10 @@ type PublicLinkCoverage struct {
 
 // PublicLinkInfo backend/api/handlers_booking.go publicLinkDTO.
 type PublicLinkInfo struct {
-	// Coverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the slots are computed without that host's calendar; a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
+	// BookingHorizonDays The link's booking horizon (PAC-72 revision 2, owner decision D-1): today (in `time_zone`) and the next `booking_horizon_days` - 1 days can be listed and booked; later dates offer no slot.
+	BookingHorizonDays int `json:"booking_horizon_days"`
+
+	// Coverage How many accepted hosts had a STORED Google calendar token when the page was rendered. `total` counts accepted hosts whose user record resolved; `checked` counts those among them for whom a Google token row loads, whether or not that token still works. Nothing is renewed or tested to compute it. A host whose Google credential is dead, including one whose loss Paceday has recorded (PAC-67), still counts as checked, while the host's calendar cannot be read, so that host is busy and no slot is offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were computed without that host's calendar); a host with no Google token row at all (for example one on Outlook) is not counted as checked. This is deliberate: counting only usable tokens would tell every visitor with the link that a host's connection is dead (spec PAC-67 D-14, AC-28). Before PAC-67 this description said "a usable OAuth token", which was not what the server counted (factory section 7.2). Always present, even as {0,0}.
 	Coverage PublicLinkCoverage `json:"coverage"`
 
 	// Durations Allowed meeting lengths in minutes, straight from the link's duration_options column.
@@ -2773,7 +2838,10 @@ type PublicLinkInfo struct {
 	Hosts            []PublicHost `json:"hosts"`
 	MinNoticeMinutes int          `json:"min_notice_minutes"`
 	Slug             string       `json:"slug"`
-	Title            string       `json:"title"`
+
+	// TimeZone IANA name of the zone the link's days, hours, "today" and booking horizon are evaluated in (PAC-72 revision 2, owner decision D-9): the link owner's profile time zone, or `UTC` when the owner has no settings row or its stored name is not a loadable IANA zone. It is the zone actually used by `getPublicBookingSlots` and `createPublicBooking` for this link at the time of the read, so a booking page can show times in it by default (display and the visitor's zone switcher are PAC-88). Never empty. Disclosed to anyone who has the link, on every link: owner decision D-9 makes the owner's zone the page's default display. A failed read of the owner's settings is the operation's 500, never `UTC`.
+	TimeZone string `json:"time_zone"`
+	Title    string `json:"title"`
 
 	// UsageType Defaults to `reusable` when the stored value is empty.
 	UsageType PublicLinkInfoUsageType `json:"usage_type"`
@@ -2784,7 +2852,7 @@ type PublicLinkInfoUsageType string
 
 // PublicSlotsResponse Both keys are always present. Exactly one is populated depending on whether the `date` query parameter was supplied.
 type PublicSlotsResponse struct {
-	// AvailableDates Populated only when `date` was omitted; YYYY-MM-DD strings for days within the next 60 that have at least one bookable slot. Otherwise the empty array.
+	// AvailableDates Populated only when `date` was omitted; YYYY-MM-DD strings (calendar days in the link's zone, `PublicLinkInfo.time_zone`), in ascending order, for days within the link's booking horizon (today in that zone and the next `booking_horizon_days` - 1 days) that are among the link's `days_of_week` and have at least one offered slot. Otherwise the empty array.
 	AvailableDates []openapi_types.Date `json:"available_dates"`
 
 	// Slots Populated only when `date` was given; otherwise the empty array.
@@ -2935,9 +3003,12 @@ type SchedulingErrorResponse struct {
 
 // SchedulingLink backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`, `window_start` vs `window_start_time`).
 type SchedulingLink struct {
-	Active       bool `json:"active"`
-	BufferAfter  int  `json:"buffer_after"`
-	BufferBefore int  `json:"buffer_before"`
+	Active bool `json:"active"`
+
+	// BookingHorizonDays How many days ahead the link can be booked, counting today in the link's zone (PAC-72 revision 2, owner decision D-1). 60 for every link created before PAC-72 revision 2 and for any link created without it.
+	BookingHorizonDays int `json:"booking_horizon_days"`
+	BufferAfter        int `json:"buffer_after"`
+	BufferBefore       int `json:"buffer_before"`
 
 	// CreatedAt UTC, Go layout "2006-01-02T15:04:05.000Z07:00" (millisecond precision).
 	CreatedAt time.Time `json:"created_at"`
@@ -2961,8 +3032,14 @@ type SchedulingLink struct {
 	MyStatus *SchedulingLinkMyStatus `json:"my_status,omitempty"`
 	OwnerId  openapi_types.UUID      `json:"owner_id"`
 
+	// RefusalMessage The link owner's choice of 409 body for refused public bookings (PAC-72 revision 2, owner decisions D-2/D-5). `generic`: one message, "slot is no longer available", for every refusal, revealing nothing about the hosts' calendars. `specific`: the reason (see `BookingRefusalReason`), which tells a visitor, for example, that a host is busy at that time.
+	RefusalMessage BookingRefusalMessage `json:"refusal_message"`
+
 	// Slug Lowercase alphanumerics separated by single dashes (normalizeSlug).
-	Slug      string                  `json:"slug"`
+	Slug string `json:"slug"`
+
+	// TimeZone Read-only. The zone the link's days and hours are evaluated in: the owner's profile time zone, `UTC` when the owner has none (PAC-72 revision 2, owner decision D-9). Not stored on the link; it follows the owner's settings, so changing the owner's time zone moves the link's hours with it. Same value as `PublicLinkInfo.time_zone`.
+	TimeZone  string                  `json:"time_zone"`
 	Title     string                  `json:"title"`
 	UsageType SchedulingLinkUsageType `json:"usage_type"`
 
@@ -4046,9 +4123,12 @@ type TeamSlotList struct {
 // UpdateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkPatch. Scalars are Go pointers, so an absent key leaves the stored value alone; slices are plain slices, so an absent key and an explicit `null` are indistinguishable and both mean "leave unchanged", while `[]` means "clear" (and then usually fails 422).
 type UpdateSchedulingLinkRequest struct {
 	// Active Setting false is the same soft-deactivation that DELETE performs.
-	Active       *bool `json:"active"`
-	BufferAfter  *int  `json:"buffer_after"`
-	BufferBefore *int  `json:"buffer_before"`
+	Active *bool `json:"active"`
+
+	// BookingHorizonDays PAC-72 revision 2. Absent or null leaves the stored value; outside 1..365 is a 422 "booking_horizon_days must be between 1 and 365". A shorter horizon refuses later starts from then on; bookings already made beyond it are kept.
+	BookingHorizonDays *int `json:"booking_horizon_days"`
+	BufferAfter        *int `json:"buffer_after"`
+	BufferBefore       *int `json:"buffer_before"`
 
 	// CoHostEmails When present, the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Unknown emails are skipped silently.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
@@ -4065,6 +4145,9 @@ type UpdateSchedulingLinkRequest struct {
 	MaxUses          *int `json:"max_uses"`
 	MinNoticeMinutes *int `json:"min_notice_minutes"`
 
+	// RefusalMessage PAC-72 revision 2, see `BookingRefusalMessage`. Absent or null leaves the stored value; any other value is a 422 "refusal_message must be generic or specific".
+	RefusalMessage *UpdateSchedulingLinkRequestRefusalMessage `json:"refusal_message"`
+
 	// Slug Normalised. If it normalises to empty the request is a 422 "slug cannot be empty".
 	Slug      *string                               `json:"slug"`
 	Title     *string                               `json:"title"`
@@ -4078,6 +4161,9 @@ type UpdateSchedulingLinkRequest struct {
 	WindowStart     *string `json:"window_start"`
 	WindowStartTime *string `json:"window_start_time"`
 }
+
+// UpdateSchedulingLinkRequestRefusalMessage PAC-72 revision 2, see `BookingRefusalMessage`. Absent or null leaves the stored value; any other value is a 422 "refusal_message must be generic or specific".
+type UpdateSchedulingLinkRequestRefusalMessage string
 
 // UpdateSchedulingLinkRequestUsageType defines model for UpdateSchedulingLinkRequest.UsageType.
 type UpdateSchedulingLinkRequestUsageType string
@@ -4460,7 +4546,7 @@ type HandleZoomOAuthCallbackParams struct {
 
 // GetPublicBookingSlotsParams defines parameters for GetPublicBookingSlots.
 type GetPublicBookingSlotsParams struct {
-	// Date Day to enumerate, parsed with Go layout "2006-01-02". Omit for the 60-day availability summary.
+	// Date Day to enumerate, parsed with Go layout "2006-01-02" as a calendar day in the link's zone (`PublicLinkInfo.time_zone`, PAC-72 revision 2). A day outside the link's booking horizon (before today in that zone, or after today + `booking_horizon_days` - 1) answers 200 with no slots. Omit for the availability summary over the whole horizon.
 	Date *openapi_types.Date `form:"date,omitempty" json:"date,omitempty"`
 
 	// Duration Meeting length in minutes. Must be one of the link's `durations` (or exactly 30 when the link has none). Default is `durations[0]`, else 30.
@@ -13561,7 +13647,7 @@ func (response CreatePublicBooking404JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type CreatePublicBooking409JSONResponse BookingError
+type CreatePublicBooking409JSONResponse BookingSlotUnavailableError
 
 func (response CreatePublicBooking409JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -13575,15 +13661,6 @@ type CreatePublicBooking410JSONResponse BookingError
 func (response CreatePublicBooking410JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(410)
-
-	return json.NewEncoder(w).Encode(response)
-}
-
-type CreatePublicBooking422JSONResponse BookingError
-
-func (response CreatePublicBooking422JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(422)
 
 	return json.NewEncoder(w).Encode(response)
 }

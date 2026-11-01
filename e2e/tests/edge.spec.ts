@@ -4,6 +4,10 @@
  * The integration tests in nginx/test cover these against a stub upstream;
  * this file checks the same properties with the real backend and the real
  * frontend bundle behind the shipped nginx config.
+ *
+ * PAC-81 Part C (owner decision Q-O2): the public booking page /book/<slug>
+ * is the one framable response (frame-ancestors *, no X-Frame-Options), so it
+ * is checked on its own below and the SPA deep-link sample is another route.
  */
 import type { APIResponse } from '@playwright/test';
 
@@ -38,7 +42,7 @@ test.describe('PAC-81 AC-B1/AC-B2: the nginx edge on the real stack', () => {
 
     const cases: Array<[string, string, number]> = [
       ['SPA page', '/', 200],
-      ['SPA deep link (fallback)', `/book/${LINKS.uiBooking.slug}`, 200],
+      ['SPA deep link (fallback)', '/app/links/some/deep/link', 200],
       ['API JSON', '/api/health', 200],
       ['API error', `/api/book/e2e-no-such-link-ever`, 404],
       ['nginx health', '/nginx-health', 200],
@@ -59,6 +63,23 @@ test.describe('PAC-81 AC-B1/AC-B2: the nginx edge on the real stack', () => {
     const assetRes = await get(asset!);
     expect(assetRes.status()).toBe(200);
     assertEdgeHeaders(assetRes, 'static asset');
+  });
+
+  test('the public booking page: the same headers, except that any site may frame it (Q-O2)', async ({ request }) => {
+    for (const headers of [undefined, { 'X-Forwarded-Proto': 'https' }]) {
+      const res = await request.get(`${BASE_URL}/book/${LINKS.uiBooking.slug}`, { maxRedirects: 0, headers });
+      const what = `booking page ${JSON.stringify(headers)}`;
+      expect(res.status(), what).toBe(200);
+      expect(headerValues(res, 'X-Content-Type-Options'), what).toEqual(['nosniff']);
+      expect(headerValues(res, 'X-Frame-Options'), what).toEqual([]);
+      expect(headerValues(res, 'Referrer-Policy'), what).toEqual(['strict-origin-when-cross-origin']);
+      const csp = headerValues(res, 'Content-Security-Policy');
+      expect(csp, what).toHaveLength(1);
+      expect(csp[0], what).toMatch(/(^|;)\s*frame-ancestors \*\s*(;|$)/);
+      expect(csp[0], what).not.toContain("frame-ancestors 'none'");
+      expect(csp[0], what).toMatch(/(^|;)\s*script-src 'self'\s*(;|$)/);
+      expect(headerValues(res, 'Strict-Transport-Security'), what).toEqual([]);
+    }
   });
 
   test("nginx's own 413 is the backend's JSON shape and carries the headers", async ({ request }) => {
