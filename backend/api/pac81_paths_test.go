@@ -289,6 +289,12 @@ func TestPAC81_SlotListingCutIs503(t *testing.T) {
 			eng.calls = 2 // the first call is the cut one
 		}
 		bh := newBookingHandlersWithEngine(sharedTestDB, eng)
+		if strings.Contains(path, "date=") {
+			// PAC-72 R21.5: the listed date must be inside the link's
+			// horizon (60 days), or the listing answers 200 before any
+			// host is read; a fixed clock the day before keeps it there.
+			bh.now = func() time.Time { return time.Date(2030, 1, 6, 12, 0, 0, 0, time.UTC) }
+		}
 		r := chi.NewRouter()
 		r.Get("/api/book/{slug}/slots", bh.getSlots)
 		rec := serveAt(r, http.MethodGet, path, "")

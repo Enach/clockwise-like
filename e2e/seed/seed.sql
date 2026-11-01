@@ -100,7 +100,10 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'e2e.host.api@paceday.test',     'E2E API Booking Host', '', 'google', 'e2e-host-api'),
   ('e3e3e3e3-e3e3-4e3e-8e3e-e3e3e3e3e3e3', 'e2e.host.author@paceday.test',  'E2E Link Author',      '', 'google', 'e2e-host-author'),
   ('e4e4e4e4-e4e4-4e4e-8e4e-e4e4e4e4e4e4', 'e2e.host.timefmt@paceday.test', 'E2E Time Format Host', '', 'google', 'e2e-host-timefmt'),
-  ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e.host.d6@paceday.test',      'E2E D-6 Host',         '', 'google', 'e2e-host-d6');
+  ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e.host.d6@paceday.test',      'E2E D-6 Host',         '', 'google', 'e2e-host-d6'),
+  -- PAC-72 AC-20: hosts the offerable-start link; its calendar holds the event
+  -- an unoffered start overlaps.
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e.offerable@paceday.test', 'E2E Offerable Host',      '', 'google', 'e2e-offerable');
 
 -- ON DELETE CASCADE from users removes these on the next run.
 INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
@@ -117,7 +120,8 @@ INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar
   ('e4e4e4e4-e4e4-4e4e-8e4e-e4e4e4e4e4e4', 'e2e-host-timefmt-work',   'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e-host-d6-work',        'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'e2e-avatar-google-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
-  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'e2e-avatar-foreign-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'e2e-avatar-foreign-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e-offerable-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
 
 -- AC-25: a google personal calendar for the seam user. credentials_json is an
 -- oauth2.Token as backend/calendar/personal_reader.go tokenFromJSON reads it.
@@ -146,7 +150,12 @@ VALUES
   ('77777777-7777-4777-8777-777777777777', 'UTC', '09:00', '18:00', 240, 'google'),
   ('88888888-8888-4888-8888-888888888888', 'UTC', '09:00', '18:00', 240, 'google'),
   ('99999999-9999-4999-8999-999999999999', 'UTC', '09:00', '18:00', 240, 'google'),
-  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'UTC', '09:00', '18:00', 240, 'google')
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'UTC', '09:00', '18:00', 240, 'google'),
+  -- PAC-72 revision 2 (D-9): OFFERABLE_LINK's owner. A link's days and hours
+  -- are in its owner's profile zone; this owner's is stored explicitly (UTC,
+  -- so the journeys' UTC instants keep their meaning) to exercise the read of
+  -- a real settings row. Owners without a row are UTC as well (A-4).
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'UTC', '09:00', '18:00', 240, 'google')
 ON CONFLICT (user_id) DO UPDATE SET
   timezone = EXCLUDED.timezone,
   work_start = EXCLUDED.work_start,
@@ -290,7 +299,12 @@ VALUES
   -- connected (USERS.betaReport): no slot, every booking 409.
   ('c8888888-8888-4888-8888-888888888888', 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5',
    'e2e-d6-unreadable-30min', 'E2E D-6 Unreadable Co-host', '{30}', '{1,2,3,4,5}',
-   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true);
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
+  -- PAC-72 AC-20: hosted by the offerable host alone, whose calendar is on the
+  -- stand-in, so an event there makes a start unofferable.
+  ('c9999999-9999-4999-8999-999999999999', 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3',
+   'e2e-offerable-30min', 'E2E Offerable Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '12:00', 0, 0, 0, 'reusable', NULL, true);
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
 -- with no accepted host renders with zero hosts and zero coverage. The UI and
@@ -305,7 +319,8 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('c6666666-6666-4666-8666-666666666666', 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'accepted', NOW()),
   ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'accepted', NOW()),
   ('c8888888-8888-4888-8888-888888888888', 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'accepted', NOW()),
-  ('c8888888-8888-4888-8888-888888888888', '44444444-4444-4444-8444-444444444444', 'accepted', NOW());
+  ('c8888888-8888-4888-8888-888888888888', '44444444-4444-4444-8444-444444444444', 'accepted', NOW()),
+  ('c9999999-9999-4999-8999-999999999999', 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.

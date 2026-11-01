@@ -83,14 +83,54 @@ func useFakeClock(t *testing.T) *fakeClock {
 }
 
 // countingBookingFlow is a goroutine-safe BookingFlow that counts the bookings
-// it confirms (each one stands for a written booking).
+// it confirms (each one stands for a written booking). Without fixed slots
+// every host is free all day: it offers the link's whole window (PAC-72: a
+// booking must be a slot the listing offers).
 type countingBookingFlow struct {
 	confirmed atomic.Int64
 	slots     []engine.AvailableSlot
 }
 
-func (f *countingBookingFlow) CollectiveSlots(_ context.Context, _ *storage.SchedulingLink, _ time.Time, _ int) ([]engine.AvailableSlot, error) {
-	return f.slots, nil
+func (f *countingBookingFlow) CollectiveSlots(_ context.Context, link *storage.SchedulingLink, date time.Time, duration int) ([]engine.AvailableSlot, error) {
+	if f.slots != nil {
+		return f.slots, nil
+	}
+	return allFreeSlots(link, date, duration), nil
+}
+
+// allFreeSlots is the link's window on date, every 15 minutes, as
+// CollectiveSlots offers it when no host is busy.
+func allFreeSlots(link *storage.SchedulingLink, date time.Time, duration int) []engine.AvailableSlot {
+	at := func(hhmm string) time.Time { // "09:00" or "09:00:00"
+		var h, m int
+		_, _ = fmt.Sscanf(hhmm, "%d:%d", &h, &m)
+		return time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, time.UTC)
+	}
+	end := at(link.WindowEnd)
+	d := time.Duration(duration) * time.Minute
+	out := []engine.AvailableSlot{}
+	for s := at(link.WindowStart); !s.Add(d).After(end); s = s.Add(15 * time.Minute) {
+		out = append(out, engine.AvailableSlot{Start: s, End: s.Add(d)})
+	}
+	return out
+}
+
+// offerableStarts returns n distinct, non-overlapping 30-minute starts that a
+// createPublicBookingLink link (Monday to Friday, 09:00-17:00, no notice)
+// offers when its host is free: every half hour from 09:00 to 16:30 on the
+// weekdays from futureBookingStart's day on, all inside the 60-day horizon.
+func offerableStarts(n int) []time.Time {
+	day := futureBookingStart().Truncate(24 * time.Hour)
+	out := make([]time.Time, 0, n)
+	for len(out) < n {
+		if wd := day.Weekday(); wd != time.Saturday && wd != time.Sunday {
+			for m := 9 * 60; m <= 16*60+30 && len(out) < n; m += 30 {
+				out = append(out, day.Add(time.Duration(m)*time.Minute))
+			}
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+	return out
 }
 
 func (f *countingBookingFlow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes string) (*storage.Booking, error) {
@@ -280,15 +320,17 @@ func TestCreateBooking_RateLimited(t *testing.T) {
 	r := setupPublicBookingRoutes(t, eng)
 	c := useFakeClock(t)
 
-	start := futureBookingStart()
+	// PAC-72: 21 distinct starts the link offers, so every one of the first
+	// 20 must be a 201 (never a 409).
+	starts := offerableStarts(21)
 	for i := 0; i < 20; i++ {
-		got := doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(start.Add(time.Duration(i)*time.Hour)), peerA, nil)
+		got := doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(starts[i]), peerA, nil)
 		if got.code != http.StatusCreated {
 			t.Fatalf("booking %d: status = %d, want 201; body: %s", i+1, got.code, got.body)
 		}
 	}
 	c.advance(4 * time.Minute)
-	got := doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(start.Add(21*time.Hour)), peerA, nil)
+	got := doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(starts[20]), peerA, nil)
 	secs := assertRateLimited(t, got, 600)
 	if secs != 360 {
 		t.Fatalf("Retry-After = %d, want 360 (6 minutes left)", secs)
@@ -298,7 +340,7 @@ func TestCreateBooking_RateLimited(t *testing.T) {
 	}
 
 	c.advance(6*time.Minute + time.Second)
-	got = doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(start.Add(21*time.Hour)), peerA, nil)
+	got = doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(starts[20]), peerA, nil)
 	if got.code != http.StatusCreated {
 		t.Fatalf("after the window: status = %d, want 201; body: %s", got.code, got.body)
 	}
@@ -460,14 +502,16 @@ func TestCreateBooking_ConcurrentBurstCannotOvershoot(t *testing.T) {
 	r := setupPublicBookingRoutes(t, eng)
 
 	const k = 60
-	start := futureBookingStart()
+	// PAC-72: starts the link offers, so "at most 20 got past the limiter" is
+	// a statement about 201s.
+	starts := offerableStarts(k)
 	results := make([]limitedResponse, k)
 	var wg sync.WaitGroup
 	for i := 0; i < k; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i] = doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(start.Add(time.Duration(i)*time.Hour)), peerA, nil)
+			results[i] = doPublic(t, r, http.MethodPost, "/api/book/"+link.Slug, bookingBody(starts[i]), peerA, nil)
 		}(i)
 	}
 	wg.Wait()

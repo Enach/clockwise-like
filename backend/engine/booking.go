@@ -37,6 +37,39 @@ type AvailableSlot struct {
 type BookingEngine struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	// Reads are the storage reads behind a host's busy time. The zero value
+	// uses the storage package; tests replace one read to inject a storage
+	// failure (PAC-72 AC-17).
+	Reads BookingReads
+}
+
+// BookingReads are the storage reads CollectiveSlots makes. A nil field means
+// the storage package function of the same purpose.
+type BookingReads struct {
+	AcceptedHosts func(db storage.DBTX, linkID uuid.UUID) ([]*storage.LinkHost, error)
+	FocusBlocks   func(db storage.DBTX, userID uuid.UUID, weekStart time.Time) ([]storage.FocusBlock, error)
+	HostBookings  func(db storage.DBTX, userID uuid.UUID, start, end time.Time) ([]time.Time, error)
+}
+
+func (r BookingReads) acceptedHosts(db storage.DBTX, linkID uuid.UUID) ([]*storage.LinkHost, error) {
+	if r.AcceptedHosts != nil {
+		return r.AcceptedHosts(db, linkID)
+	}
+	return storage.GetAcceptedHosts(db, linkID)
+}
+
+func (r BookingReads) focusBlocks(db storage.DBTX, userID uuid.UUID, weekStart time.Time) ([]storage.FocusBlock, error) {
+	if r.FocusBlocks != nil {
+		return r.FocusBlocks(db, userID, weekStart)
+	}
+	return storage.ListFocusBlocksForUserWeek(db, userID, weekStart)
+}
+
+func (r BookingReads) hostBookings(db storage.DBTX, userID uuid.UUID, start, end time.Time) ([]time.Time, error) {
+	if r.HostBookings != nil {
+		return r.HostBookings(db, userID, start, end)
+	}
+	return storage.GetBusyBookingsForUser(db, userID, start, end)
 }
 
 // --- Slug generation -------------------------------------------------------
@@ -79,37 +112,58 @@ func slugify(s string) string {
 
 // --- Collective availability -----------------------------------------------
 
-// CollectiveSlots returns time slots where ALL accepted hosts are simultaneously free.
+// CollectiveSlots returns time slots where ALL accepted hosts are simultaneously
+// free: the link's grid slots on date's calendar day (GridSlots, in date's
+// location, which is the link's zone, PAC-72 D-9), minus busy time. It is the
+// busy-time half of the offerable-start rule that the
+// public slot listing and the public booking share (PAC-72): a link with no
+// accepted host offers nothing (D-10), and a storage failure while reading the
+// hosts, a host's focus blocks or the bookings on a host's links is an error,
+// never "free" (D-7).
 //
 // PAC-81 AC-A18: each host's read (credential renewal plus one calendar
-// list) runs on the bounded per-item pool. A host whose calendar fails with a
-// provider error, is not connected, or times out on its own limit is
-// treated as free, as before. A host not read because of the budget, or cut
-// by it, makes the whole listing a budget error (503), never a slot list that
-// silently ignores that host.
+// list) runs on the bounded per-item pool. Owner decision PAC-72 D-6
+// (2026-11-01): a host whose calendar fails with a provider error, is not
+// connected, or times out on its own limit is busy for the whole window. A
+// host not read because of the budget, or cut by it, makes the whole listing
+// a budget error (503), never a slot list that silently ignores that host.
 func (e *BookingEngine) CollectiveSlots(
 	ctx context.Context,
 	link *storage.SchedulingLink,
 	date time.Time,
 	durationMinutes int,
 ) ([]AvailableSlot, error) {
-	hosts, err := storage.GetAcceptedHosts(storage.Bind(ctx, e.DB), link.ID)
+	hosts, err := e.Reads.acceptedHosts(storage.Bind(ctx, e.DB), link.ID)
 	if err != nil {
 		return nil, err
 	}
+	if len(hosts) == 0 {
+		return []AvailableSlot{}, nil
+	}
 
-	// Parse link window for the given date.
-	windowStart := parseTime(link.WindowStart, date)
-	windowEnd := parseTime(link.WindowEnd, date)
+	// The link's window on date's calendar day, in the link's zone, with the
+	// daylight-saving edge rules (PAC-72 R21.2).
+	windowStart, windowEnd, ok := LinkWindow(link, date)
+	if !ok {
+		return []AvailableSlot{}, nil
+	}
 
 	// Collect merged busy intervals across all accepted hosts. Owner
 	// decision PAC-72 D-6 (2026-11-01): a host whose calendar cannot be read
 	// (not connected, provider error, or its own per-call timeout) is busy
 	// for the whole window, so no collective slot needing that host is
 	// offered. A host the budget did not reach is the 503 (peritem).
+	// A storage failure (PAC-72 D-7) is kept apart from an unreadable
+	// calendar: it fails the listing instead of making the host busy.
 	perHost := make([][]interval, len(hosts))
+	storeErr := make([]error, len(hosts))
 	if err := peritem.Run(ctx, len(hosts), peritem.Read, HostReadLimit(), func(callCtx context.Context, i int) error {
 		busy, err := e.hostBusy(callCtx, ctx, hosts[i].UserID, windowStart, windowEnd, link)
+		var se *storageReadError
+		if errors.As(err, &se) {
+			storeErr[i] = err
+			return err
+		}
 		if err != nil {
 			perHost[i] = []interval{{start: windowStart, end: windowEnd}}
 			return err
@@ -119,20 +173,22 @@ func (e *BookingEngine) CollectiveSlots(
 	}); err != nil {
 		return nil, err
 	}
+	for _, err := range storeErr {
+		if err != nil {
+			return nil, err
+		}
+	}
 	var allBusy []interval
 	for _, busy := range perHost {
 		allBusy = append(allBusy, busy...)
 	}
 	merged := mergeIntervals(allBusy)
 
-	// Candidate slots every 15 minutes.
-	dur := time.Duration(durationMinutes) * time.Minute
-	var slots []AvailableSlot
-	for t := windowStart; t.Add(dur).Before(windowEnd) || t.Add(dur).Equal(windowEnd); t = t.Add(15 * time.Minute) {
-		slotEnd := t.Add(dur)
-		iv := interval{start: t, end: slotEnd}
-		if !overlapsMerged(iv, merged) {
-			slots = append(slots, AvailableSlot{Start: t, End: slotEnd})
+	// Candidate slots on the 15-minute wall-clock grid.
+	slots := make([]AvailableSlot, 0)
+	for _, c := range GridSlots(link, date, durationMinutes) {
+		if !overlapsMerged(interval{start: c.Start, end: c.End}, merged) {
+			slots = append(slots, c)
 		}
 	}
 	return slots, nil
@@ -145,6 +201,13 @@ func HostReadLimit() time.Duration {
 	return l.Identity + l.Provider
 }
 
+// storageReadError marks a host's busy-time read that failed in storage, not
+// in the calendar provider: an error, never "busy" or "free" (PAC-72 D-7).
+type storageReadError struct{ err error }
+
+func (e *storageReadError) Error() string { return e.err.Error() }
+func (e *storageReadError) Unwrap() error { return e.err }
+
 // ErrHostCalendarUnreadable is returned by ConfirmBooking when an accepted
 // host's calendar cannot be read: owner decision PAC-72 D-6, the booking is
 // refused with the existing 409 and nothing is written.
@@ -155,7 +218,8 @@ var ErrHostCalendarUnreadable = errors.New("a host's calendar could not be read"
 // slow calendar never leaves the host's existing bookings out of busy time.
 // The error is non-nil when the host's calendar could not be read (no
 // connection, provider error, own timeout): the caller treats the host as
-// busy (PAC-72 D-6).
+// busy (PAC-72 D-6). A storage read failure is a *storageReadError, which the
+// caller returns as an error instead (PAC-72 D-7).
 func (e *BookingEngine) hostBusy(
 	ctx, dbCtx context.Context,
 	userID uuid.UUID,
@@ -199,19 +263,22 @@ func (e *BookingEngine) hostBusy(
 	// Focus blocks from DB.
 	// Only this host's focus blocks (PAC-64): another user's focus time does
 	// not make this host busy.
-	blocks, err := storage.ListFocusBlocksForUserWeek(db, userID, start)
-	if err == nil {
-		for _, fb := range blocks {
-			busy = append(busy, interval{start: fb.StartTime, end: fb.EndTime})
-		}
+	blocks, err := e.Reads.focusBlocks(db, userID, start)
+	if err != nil {
+		return nil, &storageReadError{fmt.Errorf("focus blocks: %w", err)}
+	}
+	for _, fb := range blocks {
+		busy = append(busy, interval{start: fb.StartTime, end: fb.EndTime})
 	}
 
-	// Existing confirmed bookings for this user.
-	times, err := storage.GetConfirmedBookingsForUser(db, userID, start, end)
-	if err == nil {
-		for i := 0; i+1 < len(times); i += 2 {
-			busy = append(busy, interval{start: times[i], end: times[i+1]})
-		}
+	// Bookings that are not cancelled, on any link this user hosts (PAC-72
+	// D-11).
+	times, err := e.Reads.hostBookings(db, userID, start, end)
+	if err != nil {
+		return nil, &storageReadError{fmt.Errorf("host bookings: %w", err)}
+	}
+	for i := 0; i+1 < len(times); i += 2 {
+		busy = append(busy, interval{start: times[i], end: times[i+1]})
 	}
 
 	return busy, nil
@@ -264,7 +331,10 @@ func (e *BookingEngine) calendarClientForUser(ctx, dbCtx context.Context, userID
 // --- Booking flow ----------------------------------------------------------
 
 // ConfirmBooking saves the booking, then creates the host calendar events
-// and sends the confirmation email.
+// and sends the confirmation email. Whether a readable host calendar is busy
+// at the slot is not checked here: the caller books only a start
+// CollectiveSlots offers (the public booking handler's offerable-start rule,
+// PAC-72).
 //
 // PAC-81 AC-A19 (spec F-12): the budget is checked once, immediately before
 // the insert is sent. If it has already answered, nothing is written and the
