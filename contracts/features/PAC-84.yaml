@@ -1,0 +1,155 @@
+{
+  "featureId": "PAC-84",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-84/encrypt-stored-provider-credentials-and-api-keys-at-rest",
+  "status": "draft",
+  "contractRevision": "3.1 (unchanged: PAC-84 changes no HTTP operation)",
+  "contractHash": "a15d981e14f5bd8e5dbc1ff206952a8dbcd9e02d160dcc2ee31135b9808ee472",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main 953f96e and on this branch (byte-identical: git diff origin/main -- contracts shows only these two files). Same value as PAC-72 revision 3.1. Reproduce with: `python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml`. If main's bundle moves before PAC-84 merges, the stage-4 PR records main's new hash here and changes nothing else in this field: PAC-84 must not alter the bundle.",
+  "contractDoc": "contracts/features/PAC-84.md",
+  "specDoc": "docs/specs/PAC-84.md (challenged accept-with-changes 2026-11-01, C-1..C-19 applied; owner Q-1..Q-3 answered 2026-11-01; branch factory/pac-84-spec at 3d776ba)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "interfaceKind": "No HTTP change. The executable interface of this feature is non-HTTP and is pinned in contracts/features/PAC-84.md: ciphertext envelope and associated data (section 3), data-key table and wrap format (section 4), environment grammar and start order (section 5), Go package backend/internal/secretbox (section 6), migration (section 7), paceday-operator encryption subcommands (section 8), error and log text (section 9), backup.sh refusal (section 10), test key sources (section 11).",
+  "mergeAfter": "factory/pac-84-spec (contained in this branch). Preferred order: PAC-71 (#242) first; either order is specified (contract section 7.3).",
+
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/internal/secretbox (new package) and backend/internal/secretbox/secretboxtest (test helper)",
+        "backend/storage (secret-bearing reads and writes, the data-key table, conversion, status, rotation, decrypt-all, reset, downgrade)",
+        "backend/storage/migrations/NNN_encryption_at_rest.{up,down}.sql where NNN is the next free number at merge time (033 if PAC-71 has not merged, else 034 or later); no other migration",
+        "backend/auth (token_store.go, microsoft_oauth.go, credential_lifecycle.go: sealing and decryption-failure classification)",
+        "backend/api (only to map a decryption failure as contract section 9.3 says; no response shape changes)",
+        "backend/engine, backend/calendar, backend/conference, backend/nlp (per-item skip and classification of decryption failures)",
+        "backend/config (DecideEncryptionKeys; env_reference_test.go)",
+        "backend/main.go (start order, contract section 5.3)",
+        "backend/cmd/paceday-operator (encryption subcommands; created by this work if PAC-71 has not merged)",
+        "backend/internal/testdb (installing a test keyring)",
+        "docker-compose.yml, docker-compose.prod.yml, e2e/docker-compose.e2e.yml (key source only, contract section 11)",
+        ".env.example, .gitignore (encryption.env)",
+        "scripts/ops/backup.sh, scripts/ops/rehearse-backup-restore.sh and their tests",
+        "e2e/tests, e2e/lib, e2e/seed (seed may keep plain values)",
+        "docs/runbook.md, docs/security.md (:15, :78, :90, :102), README.md (development key)",
+        "docs/plans/PAC-84.md",
+        "contracts/features/PAC-84.{md,yaml} (contractHash field only, if main's bundle moved)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** (no HTTP change; any bundle diff is a contract defect, back to stage 2)",
+        "backend/api/gen (generated)",
+        "any other migration, including PAC-71's 033 (except renumbering this work's own pair)",
+        "mcp/ (no database access)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [],
+      "forbiddenPaths": [
+        "every path: no web change (spec challenge 'Consumers this breaks': smart-calendar-flow none). src/api/generated is NOT regenerated because the bundle does not change."
+      ]
+    }
+  },
+
+  "operationsAdded": [],
+  "operationsChanged": [],
+  "operationsNotChanged": [
+    { "operationId": "every operation that needs a stored secret to act (calendar reads/writes, createMeetingLink and other conferencing calls, daily recap send, parseNaturalLanguage and other AI calls, ssoOidcStart/ssoOidcCallback, public booking)", "reason": "Each already documents the shared 500 InternalError ({\"error\":\"internal error\"}); a decryption failure lands there (AC-16). Checked: the 20 operations without a documented 500 (getSsoStepupOptions, recomputeAnalytics, startGoogleOAuth, logout, getCurrentUser, startMicrosoftOAuth, getAuthStatus, startZoomOAuth, reoptimizeHabits, listHabitTemplates, getHealth, getIntegrationAvailability, disconnectNotion, connectNotion, getNotionStatus, disconnectSlack, connectSlack, getSlackStatus, removeManagerTeamMember, getReadiness) either use no stored secret, run it in a detached unit (recompute, reoptimize: 202/200 before any read), or are status/disconnect paths whose answer is unchanged (AC-16b, AC-16c)." },
+    { "operationId": "getAuthStatus, getSlackStatus, getNotionStatus, conferencing provider listing, settings GET (llmApiKeySet etc.), SSO provider list (hasOidcClientSecret)", "reason": "AC-16b: existing mapping kept; presence = stored value non-empty, no decryption." },
+    { "operationId": "listPersonalCalendars, getSettings, updateSettings, disconnect operations", "reason": "AC-16c: no new status. One undecryptable value never fails the list, the settings read or the save; disconnect stays 200. S5/S6 are returned to their owner with the same value (AC-19b)." },
+    { "operationId": "getPublicBookingSlots, createPublicBooking", "reason": "AC-18: a decryption failure is an unreadable host (busy, PAC-72 D-6), not a storage failure (D-7); the existing 200/409 apply." }
+  ],
+  "componentsChanged": [],
+
+  "nonHttpInterface": {
+    "envelope": "pdenc:1:<data key id>:<base64url-nopad(nonce12 || ciphertext || tag16)>, AES-256-GCM, empty stays empty, NULL stays NULL (contract 3.1)",
+    "aad": "\"paceday/secret\" 0x00, 0x01, lp16(table), lp16(column), u8 n, n x (lp16(name), lp16(value)); row identity per contract 3.3 (sso_providers by id, personal_calendars by id, settings by user_id, oauth_tokens by user_id+calendar_id, workspace_connections by user_id+provider, org_ai_configurations by org_id)",
+    "dataKeys": "table encryption_data_keys (id, state active|retired, kek_id, wrapped 60 bytes, created_at, wrapped_at, retired_at); one active (partial unique index); wrap AAD \"paceday/dek\" 0x00, 0x01, u32 id, lp16(kek_id) (contract 4)",
+    "env": "PACEDAY_ENCRYPTION_KEY=<id>:<std base64 of 32 bytes>; PACEDAY_ENCRYPTION_KEY_PREVIOUS=comma list, at most 8; id ^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$ (contract 5)",
+    "goPackage": "backend/internal/secretbox (contract 6)",
+    "operator": "paceday-operator encryption status|convert|rotate-data-key|decrypt-all|reset-lost-key|downgrade-schema; exit codes 0 ok, 1 failed, 2 usage, 3 plain remain (status --check), 4 key refused, 5 lock held, 6 backend running (contract 8)",
+    "auditActions": ["encryption_convert", "encryption_rotate_data_key", "encryption_decrypt_all", "encryption_reset_lost_key", "encryption_downgrade_schema"]
+  },
+
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-84-spec, then the stage-4 PR",
+    "assembler": "py -3 scripts/openapi_assemble.py --check -> rc 0, OK: bundle is in sync (106 paths)",
+    "migrationRegister": "py -3 scripts/openapi_migration_report.py --check -> rc 0, OK: MIGRATION.md covers all 128 operations (10 generated)",
+    "goGen": "bash scripts/openapi_gen_go.sh --check -> rc 0, OK: backend/api/gen matches the contract",
+    "webGate": "Not applicable: bundle unchanged, nothing to regenerate.",
+    "stage4": "make verify in clockwise-like with no developer-supplied key (AC-28); the PR body states the bundle sha256 is unchanged.",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+
+  "acceptanceTests": [
+    "AC-1  [e2e] canary in every inventory secret via its normal write path (S4, S11 by legacy seed + conversion); pg_dump plain SQL contains no canary (as-is, base64, hex, any 12-char substring) and no key in those encodings.",
+    "AC-2  [e2e] AC-1 dump restored: same key -> every canary reads back through its read path; no key or another key -> refuses (AC-8, AC-9).",
+    "AC-3  [unit] same value sealed twice -> two different stored values, neither equal to nor containing the value.",
+    "AC-4  [ops] backup set holds no active or previous key; backup.sh exits 2 naming docs/runbook.md \"Encryption key\", writes no file and creates no directory, when the env file has a non-empty PACEDAY_ENCRYPTION_KEY or PACEDAY_ENCRYPTION_KEY_PREVIOUS line; commented or empty lines do not trigger (contract 10).",
+    "AC-5  [unit] value copied by SQL between two users / two orgs / two columns of one row / two calendars of one user -> secretbox.ErrDecrypt, plaintext never returned or used; request behaves per AC-16.",
+    "AC-6  [unit] any single byte of the stored text changed (prefix, version, data key id, body) -> ErrDecrypt, never altered plaintext.",
+    "AC-7  [unit] '' stored as '', NULL microsoft_tokens stays NULL; PAC-67 'renewal does not re-store after disconnect' and 'empty refresh token keeps the stored one' tests pass unchanged.",
+    "AC-8  [e2e] no key -> exit non-zero before listening, before any cron and before conversion; message contains 'refusing to start', PACEDAY_ENCRYPTION_KEY and docs/runbook.md \"Encryption key\"; on a fresh DB and on an encrypted one. (Missing key refuses before the database is opened, contract 5.3.)",
+    "AC-8b [e2e] startup.spec BOOTABLE carries E2E test key; every refusal case names its own variable and not PACEDAY_ENCRYPTION_KEY; production-reference boot adds the e2e key explicitly and asserts docker-compose.prod.yml's backend declares env_file encryption.env and does not name the key variables in environment:.",
+    "AC-9  [unit+e2e] wrong key / malformed key (not 32 bytes, bad id, bad base64) -> refuses before listening; message names the problem and key ids, contains no key material in any AC-1 encoding.",
+    "AC-10 [unit] a data key wrapped by an id neither active nor previous -> refuses naming that id.",
+    "AC-11 [unit+e2e] K2 active, K1 previous, restart -> every data key re-wrapped under K2 in one transaction at start; status shows 0 data keys under K1; restart with K2 alone reads every secret; 0 inventory rows changed.",
+    "AC-11b [unit] rotate-data-key --retire N: a new active data key; running backends switch within 30 s (heartbeat active_dek); values under N re-encrypted in batches (resumable); status shows 0 values under N; second run with the same --retire N reports 0 changes.",
+    "AC-12 [e2e flow, unit 'no other column'] pre-upgrade plain canaries: backend serves at once, reads correct throughout, one conversion run leaves 0 plain values; every other column of each converted row (incl. oauth_tokens.updated_at, settings.updated_at, workspace_connections.connected_at, sso_providers.updated_at, org_ai_configurations.configuration_version/.updated_at) unchanged.",
+    "AC-13 [unit] conversion read a row, user writes a new value before the conversion's update -> user's value stays (xmin compare).",
+    "AC-14 [unit] conversion killed part-way -> next start completes it; no value double-encrypted; second full run changes 0 rows.",
+    "AC-15 [unit] plain value written by SQL into an encrypted deployment -> reads, counted plain by status, encrypted by the next conversion run.",
+    "AC-16 [unit] act path with an undecryptable secret -> 500 {\"error\":\"internal error\"}; log line of contract 9.2 with table, column, row, data key id, user id, no value; credential not deleted, not marked lost, no connection_lost activity, no provider call.",
+    "AC-16b [unit] status/presence paths answer as today: calendar/Slack/Notion/conferencing status not connected/not usable; write-only *Set/has* flags still true.",
+    "AC-16c [unit] (a) settings GET and PATCH succeed, other fields unaffected, the undecryptable secret written back byte-identical or not written; (b) reconnect / re-enter / empty value replaces it; (c) disconnect 200, no provider call, Zoom revocation 'unconfirmed'; (d) personal calendar list shows the other calendars; the bad one can be deleted.",
+    "AC-17 [unit] each cron skips only the user/item whose secret fails, with the AC-16 log line; others processed.",
+    "AC-18 [unit] public booking host whose credential fails to decrypt -> busy (D-6), never free, never the D-7 500; free/busy service degrades to unknown.",
+    "AC-19 [unit] captured logs and error-reporter transport over AC-1/5/6/9/12/16 and operator runs contain no canary, no key, no stored ciphertext.",
+    "AC-19b [unit] PAC-22/PAC-24/PAC-73 write-only tests pass unchanged; S5/S6 returned to their owner unchanged in value.",
+    "AC-19c [unit] Postgres statement log (log_statement=all, log_min_duration_statement=0) during convert and rotate-data-key contains no canary.",
+    "AC-20 [unit] encryption status prints per column empty/plain/encrypted counts and encrypted per data key, data keys with state, wrapping key id and age; exit 0; no value, no key; --check exits 3 while any plain value remains.",
+    "AC-21 [unit] convert, rotate-data-key, decrypt-all, reset-lost-key, downgrade-schema refuse (exit 2) without --operator and --reason; each writes one operator_audit row with its action and counts; second run reports 0 changes.",
+    "AC-21b [unit] two of {backend conversion, convert, rotate-data-key, decrypt-all, reset-lost-key} at once -> one runs; the operator one exits 5 naming the holder's application_name and pid; the backend one retries every 60 s; no value under an unrecorded data key, none double-encrypted.",
+    "AC-21c [unit] decrypt-all / reset-lost-key with a backend heartbeat seen in the last 90 s -> exit 6 naming docs/runbook.md \"Encryption key - stop the backend first\", nothing changed; a backend starting while one of them holds the lock refuses to start.",
+    "AC-21d [unit] free-address, reassign, advance-all and encryption status run with no key; convert and rotate-data-key exit 4 without a valid active key; reset-lost-key needs only the new key and exits 4 if any configured key opens a stored data key.",
+    "AC-22 [unit] down step with any encrypted value or data key -> fails, nothing changed, message names 'paceday-operator encryption decrypt-all'; after decrypt-all, downgrade-schema succeeds; schema equals pre-up schema except operator_audit (kept, CHECK kept widened); every column holds its original plaintext.",
+    "AC-23 [unit] reset-lost-key --confirm-lost-key with a new key: S1 and S7 rows deleted; S2/S3 as RemoveMicrosoftCredential/RemoveZoomCredential (conferencing back to meet); credential losses for removed credentials cleared; S4/S5 rows holding encrypted values disabled and emptied; S6, S8, S9, S10, S11 emptied; every data key removed, one new active data key under the new key; plain values untouched; audit counts per secret; backend starts with the new key.",
+    "AC-24 [unit] .env.example has #: lines for PACEDAY_ENCRYPTION_KEY, PACEDAY_ENCRYPTION_KEY_PREVIOUS (no value line) and E2E_ENCRYPTION_KEY; SECRETS paragraph says the key is kept apart from the backup set; env_reference_test passes.",
+    "AC-25 [ops] runbook section \"Encryption key\"; rehearsal generates its key outside the backup directory, proves a seeded credential reads back through the backend after restore (not by raw column), and a restore booted with another key refuses.",
+    "AC-26 [unit] Keyring.Unwraps() == number of data keys after start and after serving requests plus one cron tick; BenchmarkOpenSettingsRow (9 secrets, no I/O) < 1 ms/op.",
+    "AC-27 [unit] two processes start on a fresh DB with the same key -> exactly one active data key; values written by either readable by both.",
+    "AC-28 [e2e] make verify passes with no developer key; dev compose refuses without encryption.env exactly like production (backend message); .env.example and README say how to generate a development key."
+  ],
+
+  "resolvesFindings": ["PAC-81 F-D5 (dumps hold provider credentials in plain text)", "docs/security.md open risks 4 and 10"],
+  "resolvesUncertain": [],
+  "doesNotResolve": [
+    "Team invitation tokens (hash follow-up, spec section 10).",
+    "KMS-backed key-encryption key (follow-up; secretbox keeps the KEK behind one unwrap/wrap seam, contract 6).",
+    "Plain values in pre-upgrade backups, dead tuples and WAL (age out; spec section 5)."
+  ],
+
+  "consumersAffected": [
+    { "consumer": "Enach/smart-calendar-flow", "breaks": "no", "detail": "No operation changes; no regeneration." },
+    { "consumer": "mcp", "breaks": "no", "detail": "No database access; calls only HTTP operations whose shapes are unchanged." },
+    { "consumer": "e2e/tests/startup.spec.ts (BOOTABLE, production-reference boot)", "breaks": "yes", "detail": "Updated in the stage-4 PR per AC-8b (contract 11)." },
+    { "consumer": "e2e/tests/llm-bring-your-own.spec.ts:313-330", "breaks": "yes", "detail": "Raw column read after start; must read through the API or classify the stored value as encrypted." },
+    { "consumer": "scripts/ops/rehearse-backup-restore.sh:132,164-166,212", "breaks": "yes", "detail": "Boot env gains the key; raw comparison replaced (AC-25)." },
+    { "consumer": "scripts/ops/backup.sh", "breaks": "yes (by design)", "detail": "Refuses an env file holding a key (AC-4)." },
+    { "consumer": "docker-compose.yml, docker-compose.prod.yml, e2e/docker-compose.e2e.yml, operators' deployments", "breaks": "yes", "detail": "Backend refuses to start until encryption.env exists beside .env with PACEDAY_ENCRYPTION_KEY. Release notes and runbook must say so before the upgrade." },
+    { "consumer": "Go tests that insert or compare inventory columns by SQL (23 _test.go files)", "breaks": "some", "detail": "Inserting plain still reads (D-7); raw comparisons after a write must decrypt via secretboxtest or compare through the read path." },
+    { "consumer": "PAC-71 (#242) storage/operator.go SQL removals", "breaks": "no", "detail": "Writes '' / NULL, which stay empty (AC-7)." }
+  ],
+
+  "mergeInterplay": [
+    "PAC-71 (#242): migration number and operator_audit per contract 7.3 (one migration text works in either order). If PAC-84 merges first it creates backend/cmd/paceday-operator with only the encryption subcommands and the operator_audit table; PAC-71 rebases, renumbers its migration to the next free number, and its CREATE TABLE IF NOT EXISTS operator_audit becomes a no-op that keeps the widened CHECK. Overlapping files listed in spec section 6 are resolved by whichever merges second."
+  ],
+
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "The stage-4 PR leaves contracts/openapi/openapi.yaml byte-identical to main's (sha256 recorded in the PR body).",
+    "Release notes: operators must create encryption.env (mode 600, beside .env, outside the backup set) before upgrading, or the backend refuses to start; rollback after the conversion is decrypt-all + downgrade-schema or a restore, never an image swap (spec section 7)."
+  ],
+
+  "rollback": "Before the conversion has run: image-only rollback. After: either restore the pre-deploy backup, or stop the backend, paceday-operator encryption decrypt-all, paceday-operator encryption downgrade-schema, start the previous image (never the new image in between). downgrade-schema refuses while anything is encrypted; it drops encryption_data_keys, encryption_backend_heartbeats and the sequence, and keeps operator_audit with its widened CHECK. No HTTP contract revision to revert."
+}
