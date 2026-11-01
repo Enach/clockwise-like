@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"golang.org/x/oauth2"
 )
 
@@ -53,7 +54,7 @@ func (c *OutlookClient) doJSON(ctx context.Context, method, url string, body int
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.ProviderClient().Do(req)
 	if err != nil {
 		return err
 	}

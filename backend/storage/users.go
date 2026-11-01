@@ -18,7 +18,7 @@ type User struct {
 	CreatedAt time.Time  `json:"createdAt"`
 }
 
-func UpsertUser(db *sql.DB, email, name, avatarURL, provider, providerID string) (*User, error) {
+func UpsertUser(db DBTX, email, name, avatarURL, provider, providerID string) (*User, error) {
 	row := db.QueryRow(`
 		INSERT INTO users (email, name, avatar_url, provider, provider_id, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())
@@ -34,7 +34,7 @@ func UpsertUser(db *sql.DB, email, name, avatarURL, provider, providerID string)
 	return u, row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &u.CreatedAt)
 }
 
-func GetUserByEmail(db *sql.DB, email string) (*User, error) {
+func GetUserByEmail(db DBTX, email string) (*User, error) {
 	row := db.QueryRow(`
 		SELECT id, email, name, avatar_url, provider, org_id, created_at
 		FROM users WHERE email = $1
@@ -54,7 +54,7 @@ func GetUserByEmail(db *sql.DB, email string) (*User, error) {
 	return u, nil
 }
 
-func GetUserByID(db *sql.DB, id uuid.UUID) (*User, error) {
+func GetUserByID(db DBTX, id uuid.UUID) (*User, error) {
 	row := db.QueryRow(`
 		SELECT id, email, name, avatar_url, provider, org_id, created_at
 		FROM users WHERE id = $1

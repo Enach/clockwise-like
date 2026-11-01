@@ -39,7 +39,7 @@ type HabitOccurrence struct {
 
 // --- Habit CRUD ------------------------------------------------------------
 
-func CreateHabit(db *sql.DB, h *Habit) (*Habit, error) {
+func CreateHabit(db DBTX, h *Habit) (*Habit, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO habits (user_id, title, duration_minutes, days_of_week, window_start, window_end, priority, color)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
@@ -49,7 +49,7 @@ func CreateHabit(db *sql.DB, h *Habit) (*Habit, error) {
 	return scanHabit(row)
 }
 
-func GetHabitByID(db *sql.DB, id uuid.UUID) (*Habit, error) {
+func GetHabitByID(db DBTX, id uuid.UUID) (*Habit, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, user_id, title, duration_minutes, days_of_week, window_start, window_end, priority, color, active, created_at
 		FROM habits WHERE id = $1
@@ -57,7 +57,7 @@ func GetHabitByID(db *sql.DB, id uuid.UUID) (*Habit, error) {
 	return scanHabit(row)
 }
 
-func ListHabitsByUser(db *sql.DB, userID uuid.UUID) ([]*Habit, error) {
+func ListHabitsByUser(db DBTX, userID uuid.UUID) ([]*Habit, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, user_id, title, duration_minutes, days_of_week, window_start, window_end, priority, color, active, created_at
 		FROM habits WHERE user_id = $1 ORDER BY priority DESC, created_at ASC
@@ -69,7 +69,7 @@ func ListHabitsByUser(db *sql.DB, userID uuid.UUID) ([]*Habit, error) {
 	return scanHabits(rows)
 }
 
-func ListActiveHabitsByUser(db *sql.DB, userID uuid.UUID) ([]*Habit, error) {
+func ListActiveHabitsByUser(db DBTX, userID uuid.UUID) ([]*Habit, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, user_id, title, duration_minutes, days_of_week, window_start, window_end, priority, color, active, created_at
 		FROM habits WHERE user_id = $1 AND active = true ORDER BY priority DESC, created_at ASC
@@ -81,7 +81,7 @@ func ListActiveHabitsByUser(db *sql.DB, userID uuid.UUID) ([]*Habit, error) {
 	return scanHabits(rows)
 }
 
-func UpdateHabit(db *sql.DB, id uuid.UUID, h *Habit) (*Habit, error) {
+func UpdateHabit(db DBTX, id uuid.UUID, h *Habit) (*Habit, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE habits SET
 			title = $2, duration_minutes = $3, days_of_week = $4,
@@ -93,7 +93,7 @@ func UpdateHabit(db *sql.DB, id uuid.UUID, h *Habit) (*Habit, error) {
 	return scanHabit(row)
 }
 
-func DeactivateHabit(db *sql.DB, id uuid.UUID) error {
+func DeactivateHabit(db DBTX, id uuid.UUID) error {
 	_, err := db.ExecContext(context.Background(),
 		`UPDATE habits SET active = false WHERE id = $1`, id)
 	return err
@@ -146,7 +146,7 @@ func int64SliceToInt(s pq.Int64Array) []int {
 // --- HabitOccurrence CRUD -------------------------------------------------
 
 // UpsertHabitOccurrence creates or replaces the occurrence for a (habit, date) pair.
-func UpsertHabitOccurrence(db *sql.DB, o *HabitOccurrence) (*HabitOccurrence, error) {
+func UpsertHabitOccurrence(db DBTX, o *HabitOccurrence) (*HabitOccurrence, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO habit_occurrences (habit_id, scheduled_date, start_time, end_time, status, calendar_event_id)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -161,7 +161,7 @@ func UpsertHabitOccurrence(db *sql.DB, o *HabitOccurrence) (*HabitOccurrence, er
 	return scanOccurrence(row)
 }
 
-func ListHabitOccurrences(db *sql.DB, habitID uuid.UUID, from, to time.Time) ([]*HabitOccurrence, error) {
+func ListHabitOccurrences(db DBTX, habitID uuid.UUID, from, to time.Time) ([]*HabitOccurrence, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, habit_id, scheduled_date, start_time, end_time, status, calendar_event_id, created_at
 		FROM habit_occurrences
@@ -184,7 +184,7 @@ func ListHabitOccurrences(db *sql.DB, habitID uuid.UUID, from, to time.Time) ([]
 }
 
 // UpdateHabitOccurrenceStatus changes the status of an occurrence owned by userID.
-func UpdateHabitOccurrenceStatus(db *sql.DB, occurrenceID, habitID, userID uuid.UUID, status string) (*HabitOccurrence, error) {
+func UpdateHabitOccurrenceStatus(db DBTX, occurrenceID, habitID, userID uuid.UUID, status string) (*HabitOccurrence, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE habit_occurrences ho
 		SET status = $4
@@ -198,7 +198,7 @@ func UpdateHabitOccurrenceStatus(db *sql.DB, occurrenceID, habitID, userID uuid.
 
 // ListScheduledOccurrencesForDay returns all scheduled habit_occurrences on a date.
 // Used to build busy intervals when scheduling other habits.
-func ListScheduledOccurrencesForDay(db *sql.DB, userID uuid.UUID, date time.Time) ([]*HabitOccurrence, error) {
+func ListScheduledOccurrencesForDay(db DBTX, userID uuid.UUID, date time.Time) ([]*HabitOccurrence, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT ho.id, ho.habit_id, ho.scheduled_date, ho.start_time, ho.end_time,
 		       ho.status, ho.calendar_event_id, ho.created_at

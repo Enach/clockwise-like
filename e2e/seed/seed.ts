@@ -18,10 +18,12 @@ import { exec, query, waitForSchema, closePool } from '../db';
 import { isoDate, mondayOf, DAY_MS } from '../lib/dates';
 import {
   AVATAR_HOSTS,
+  BOOKING_HOSTS,
   CONNECTED,
   DISCONNECTING,
   LINKS,
   PERSONAL_CALENDAR,
+  SEEDED_ACCEPTED_HOST_ROWS,
   SEEDED_LINK_IDS,
   SEEDED_USER_IDS,
   TEAMS,
@@ -111,7 +113,15 @@ async function verify(): Promise<void> {
       `SELECT 1 FROM scheduling_link_hosts
         WHERE status = 'accepted' AND link_id = ANY($1::uuid[])`,
       [SEEDED_LINK_IDS],
-      SEEDED_LINK_IDS.length,
+      SEEDED_ACCEPTED_HOST_ROWS,
+    ],
+    // PAC-72 D-6: the D-6 link's second host is exactly the unconnected one.
+    [
+      'the D-6 link has its unconnected co-host',
+      `SELECT 1 FROM scheduling_link_hosts
+        WHERE link_id = $1 AND user_id = $2 AND status = 'accepted'`,
+      [LINKS.unreadableCoHost.id, LINKS.unreadableCoHost.coHostUserId],
+      1,
     ],
     // PAC-81 AC-B3: each avatar host is stored with the avatar its page shows.
     [
@@ -133,14 +143,24 @@ async function verify(): Promise<void> {
     ],
     ['analytics weeks', 'SELECT 1 FROM analytics_weeks WHERE user_id = ANY($1::uuid[])',
       [[USERS.alphaReport.id, USERS.betaReport.id]], 4],
-    // No oauth token for any seeded user is a LOAD-BEARING invariant: it is
-    // what makes every calendar code path take its fast "not connected" branch
-    // instead of trying to reach the blackholed googleapis.com.
+    // No oauth token for the four USERS is a LOAD-BEARING invariant: it is
+    // what makes their calendar code paths take the fast "not connected"
+    // branch (AC-24) instead of trying to reach the blackholed googleapis.com,
+    // and what makes USERS.betaReport the unreadable co-host of PAC-72 D-6.
     [
-      'no oauth tokens (intentional)',
+      'no oauth tokens for the unconnected users (intentional)',
       'SELECT 1 FROM oauth_tokens WHERE user_id = ANY($1::uuid[])',
-      [[...Object.values(USERS), ...Object.values(AVATAR_HOSTS)].map((u) => u.id)],
+      [Object.values(USERS).map((u) => u.id)],
       0,
+    ],
+    // PAC-72 D-6: every host of a bookable link is connected through the
+    // stand-in, each credential far from expiry (as for CONNECTED).
+    [
+      'booking and avatar hosts have one unexpired token each',
+      `SELECT 1 FROM oauth_tokens
+        WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
+      [[...Object.values(BOOKING_HOSTS), ...Object.values(AVATAR_HOSTS)].map((u) => u.id)],
+      Object.keys(BOOKING_HOSTS).length + Object.keys(AVATAR_HOSTS).length,
     ],
     // PAC-43: exactly the connected users have a credential, each one far
     // from expiry (a refresh would leave the test host — see seed.sql).

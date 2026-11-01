@@ -4,8 +4,9 @@ How to run the production stack (`docker-compose.prod.yml`): settings, deploy
 order, rollback, backups and restore. Part of PAC-81 (spec
 `NEW-deploy-hardening`, Part D: AC-D3, AC-D4, AC-D6).
 
-Passages marked **added by Part A/B/C** describe PAC-81 work that is not on
+Passages marked **added by Part C** describe PAC-81 work that is not on
 `main` yet; until it ships, the "today" instruction next to them applies.
+Parts A (backend process), B (nginx edge) and D (this runbook) have shipped.
 
 Related documents:
 
@@ -48,12 +49,15 @@ Always in this order. `compose` below means
    service's `pg_isready` health check passes.
 4. **Start the backend** — `compose up -d backend`. It runs every pending
    migration (up only) **before** it starts listening.
-5. **Wait for readiness** — the backend's readiness check and container
-   health check are **added by Part A and Part C** (AC-A11, AC-C3; health check
-   start period 120 s, because migrations run first). Today, wait for
-   `compose logs backend` to print `server listening on :8080`; a
-   `failed to open database` / `run migrations` line instead means the
-   migration failed: go to [Rollback](#rollback).
+5. **Wait for readiness** — the backend listens only after its migrations,
+   then `GET /api/ready` answers `200 {"status":"ready"}` (PAC-81 Part A,
+   AC-A11). Check it through your proxy, or inside the container with
+   `compose exec backend /server health` (exit 0 = ready; the binary's
+   health mode needs no database and no secret). The container health check
+   that runs it (start period 120 s) is **added by Part C** (AC-C3); until
+   then, check by hand. A `failed to open database` / `run migrations` line in
+   `compose logs backend` instead means the migration failed: go to
+   [Rollback](#rollback).
 6. **Start the rest** — `compose up -d` (frontend, nginx, MCP). Check through
    your proxy: `curl -fsS https://<your host>/api/health`.
 
@@ -158,17 +162,19 @@ it, then the steps above.
 
 Paceday runs one backend; a deploy is not zero-downtime (spec §5).
 
-- **Added by Part A** (AC-A6/A7, Part C's 50 s stop grace): on stop the
-  backend first reports not-ready for 5 s while still serving, then stops
-  accepting connections and lets in-flight requests, background jobs and
-  emails finish for up to 30 s; work that cannot finish is cancelled and
-  logged by name. Requests arriving during the restart get an error from nginx
-  for the few seconds the new backend needs to start (longer if it migrates).
-  A booking confirmation email still sending after the drain is logged with
-  the booking id and not resent (owner default Q-O4).
-- **Today**, the backend has no graceful shutdown: requests in flight when it
-  stops are cut, and an email being sent is lost silently. Deploy at a quiet
-  time.
+- On SIGTERM or SIGINT (PAC-81 Part A, AC-A6/A7) the backend first answers
+  `/api/ready` with 503 for 5 s while still serving, then stops accepting
+  connections and lets in-flight requests, background jobs and emails finish
+  for up to 30 s. Work that cannot finish is cancelled, given 5 s to return,
+  and logged one line per unit (`shutdown: abandoned <kind> <id> …`, never an
+  email address). The pool closes after that, and the process exits 0 when
+  everything finished in the drain, 1 otherwise. The whole sequence takes at
+  most about 43 s. Docker's default stop grace is 10 s, so until Part C sets
+  50 s (**added by Part C**), stop with `compose stop -t 50 backend`.
+- Requests arriving during the restart get an error from nginx for the few
+  seconds the new backend needs to start (longer if it migrates). A booking
+  confirmation email still sending after the drain is logged with the booking
+  id and not resent (owner default Q-O4).
 
 ## Backups
 
@@ -252,7 +258,7 @@ failed database still exists, see
      nothing for a restore of the latest dump);
    - a session that existed before the backup still works (sign-in is not
      needed; an open browser stays signed in);
-   - `curl -fsS https://<your host>/api/health` (readiness once Part A ships).
+   - `curl -fsS https://<your host>/api/ready`.
 
 ### Rehearsing a restore
 

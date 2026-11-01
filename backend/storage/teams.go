@@ -50,7 +50,7 @@ type NoMeetingZone struct {
 
 // --- Teams ---
 
-func CreateTeam(db *sql.DB, name string, createdBy uuid.UUID) (*Team, error) {
+func CreateTeam(db DBTX, name string, createdBy uuid.UUID) (*Team, error) {
 	row := db.QueryRow(`
 		INSERT INTO teams (name, created_by) VALUES ($1, $2)
 		RETURNING id, org_id, name, created_by, created_at`,
@@ -63,7 +63,7 @@ func GetTeam(db *sql.DB, id uuid.UUID) (*Team, error) {
 	return scanTeam(row)
 }
 
-func ListTeamsForUser(db *sql.DB, userID uuid.UUID) ([]*Team, error) {
+func ListTeamsForUser(db DBTX, userID uuid.UUID) ([]*Team, error) {
 	rows, err := db.Query(`
 		SELECT DISTINCT t.id, t.org_id, t.name, t.created_by, t.created_at
 		FROM teams t
@@ -85,12 +85,12 @@ func ListTeamsForUser(db *sql.DB, userID uuid.UUID) ([]*Team, error) {
 	return teams, rows.Err()
 }
 
-func RenameTeam(db *sql.DB, id uuid.UUID, name string) error {
+func RenameTeam(db DBTX, id uuid.UUID, name string) error {
 	_, err := db.Exec(`UPDATE teams SET name = $1 WHERE id = $2`, name, id)
 	return err
 }
 
-func DeleteTeam(db *sql.DB, id uuid.UUID) error {
+func DeleteTeam(db DBTX, id uuid.UUID) error {
 	_, err := db.Exec(`DELETE FROM teams WHERE id = $1`, id)
 	return err
 }
@@ -119,7 +119,7 @@ func scanTeamRow(rows *sql.Rows) (*Team, error) {
 
 // --- Team members ---
 
-func AddTeamMember(db *sql.DB, teamID, userID uuid.UUID, role string) error {
+func AddTeamMember(db DBTX, teamID, userID uuid.UUID, role string) error {
 	_, err := db.Exec(`
 		INSERT INTO team_members (team_id, user_id, role)
 		VALUES ($1, $2, $3)
@@ -128,7 +128,7 @@ func AddTeamMember(db *sql.DB, teamID, userID uuid.UUID, role string) error {
 	return err
 }
 
-func RemoveTeamMember(db *sql.DB, teamID, userID uuid.UUID) error {
+func RemoveTeamMember(db DBTX, teamID, userID uuid.UUID) error {
 	_, err := db.Exec(`DELETE FROM team_members WHERE team_id = $1 AND user_id = $2`, teamID, userID)
 	return err
 }
@@ -143,7 +143,7 @@ var ErrLastOwner = errors.New("the team owner cannot be removed")
 // is a no-op. The team row is locked for the transaction, so concurrent
 // removals on one team are serialised and no interleaving of them can leave
 // the team with zero owners (PAC-25 D-6).
-func RemoveTeamMemberKeepingOwner(db *sql.DB, teamID, userID uuid.UUID) (err error) {
+func RemoveTeamMemberKeepingOwner(db DBTX, teamID, userID uuid.UUID) (err error) {
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
@@ -187,7 +187,7 @@ func RemoveTeamMemberKeepingOwner(db *sql.DB, teamID, userID uuid.UUID) (err err
 	return err
 }
 
-func GetTeamMember(db *sql.DB, teamID, userID uuid.UUID) (*TeamMember, error) {
+func GetTeamMember(db DBTX, teamID, userID uuid.UUID) (*TeamMember, error) {
 	row := db.QueryRow(`
 		SELECT tm.team_id, tm.user_id, tm.role, tm.joined_at,
 		       COALESCE(u.name,''), COALESCE(u.email,'')
@@ -202,7 +202,7 @@ func GetTeamMember(db *sql.DB, teamID, userID uuid.UUID) (*TeamMember, error) {
 	return &m, nil
 }
 
-func ListTeamMembers(db *sql.DB, teamID uuid.UUID) ([]*TeamMember, error) {
+func ListTeamMembers(db DBTX, teamID uuid.UUID) ([]*TeamMember, error) {
 	rows, err := db.Query(`
 		SELECT tm.team_id, tm.user_id, tm.role, tm.joined_at,
 		       COALESCE(u.name,''), COALESCE(u.email,'')
@@ -227,7 +227,7 @@ func ListTeamMembers(db *sql.DB, teamID uuid.UUID) ([]*TeamMember, error) {
 
 // --- Invites ---
 
-func CreateTeamInvite(db *sql.DB, teamID uuid.UUID, inviteeEmail string, invitedBy uuid.UUID) (*TeamInvite, error) {
+func CreateTeamInvite(db DBTX, teamID uuid.UUID, inviteeEmail string, invitedBy uuid.UUID) (*TeamInvite, error) {
 	token := uuid.New().String()
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 	row := db.QueryRow(`
@@ -238,19 +238,19 @@ func CreateTeamInvite(db *sql.DB, teamID uuid.UUID, inviteeEmail string, invited
 	return scanInvite(row)
 }
 
-func GetTeamInviteByToken(db *sql.DB, token string) (*TeamInvite, error) {
+func GetTeamInviteByToken(db DBTX, token string) (*TeamInvite, error) {
 	row := db.QueryRow(`
 		SELECT id, team_id, invitee_email, invited_by, token, status, created_at, expires_at
 		FROM team_invites WHERE token = $1`, token)
 	return scanInvite(row)
 }
 
-func AcceptTeamInvite(db *sql.DB, inviteID uuid.UUID) error {
+func AcceptTeamInvite(db DBTX, inviteID uuid.UUID) error {
 	_, err := db.Exec(`UPDATE team_invites SET status = 'accepted' WHERE id = $1`, inviteID)
 	return err
 }
 
-func ExpireOldInvites(db *sql.DB) error {
+func ExpireOldInvites(db DBTX) error {
 	_, err := db.Exec(`UPDATE team_invites SET status = 'expired' WHERE status = 'pending' AND expires_at < NOW()`)
 	return err
 }
@@ -266,7 +266,7 @@ func scanInvite(row *sql.Row) (*TeamInvite, error) {
 
 // --- No-meeting zones ---
 
-func CreateNoMeetingZone(db *sql.DB, teamID uuid.UUID, dayOfWeek int, startTime, endTime, label string) (*NoMeetingZone, error) {
+func CreateNoMeetingZone(db DBTX, teamID uuid.UUID, dayOfWeek int, startTime, endTime, label string) (*NoMeetingZone, error) {
 	row := db.QueryRow(`
 		INSERT INTO no_meeting_zones (team_id, day_of_week, start_time, end_time, label)
 		VALUES ($1, $2, $3, $4, $5)
@@ -275,7 +275,7 @@ func CreateNoMeetingZone(db *sql.DB, teamID uuid.UUID, dayOfWeek int, startTime,
 	return scanZone(row)
 }
 
-func ListNoMeetingZones(db *sql.DB, teamID uuid.UUID) ([]*NoMeetingZone, error) {
+func ListNoMeetingZones(db DBTX, teamID uuid.UUID) ([]*NoMeetingZone, error) {
 	rows, err := db.Query(`
 		SELECT id, team_id, day_of_week, start_time, end_time, label, created_at
 		FROM no_meeting_zones WHERE team_id = $1 ORDER BY day_of_week, start_time`, teamID)
@@ -294,7 +294,7 @@ func ListNoMeetingZones(db *sql.DB, teamID uuid.UUID) ([]*NoMeetingZone, error) 
 	return zones, rows.Err()
 }
 
-func UpdateNoMeetingZone(db *sql.DB, id, teamID uuid.UUID, dayOfWeek int, startTime, endTime, label string) (*NoMeetingZone, error) {
+func UpdateNoMeetingZone(db DBTX, id, teamID uuid.UUID, dayOfWeek int, startTime, endTime, label string) (*NoMeetingZone, error) {
 	row := db.QueryRow(`
 		UPDATE no_meeting_zones
 		SET day_of_week = $3, start_time = $4, end_time = $5, label = $6
@@ -304,7 +304,7 @@ func UpdateNoMeetingZone(db *sql.DB, id, teamID uuid.UUID, dayOfWeek int, startT
 	return scanZone(row)
 }
 
-func DeleteNoMeetingZone(db *sql.DB, id, teamID uuid.UUID) error {
+func DeleteNoMeetingZone(db DBTX, id, teamID uuid.UUID) error {
 	_, err := db.Exec(`DELETE FROM no_meeting_zones WHERE id = $1 AND team_id = $2`, id, teamID)
 	return err
 }
@@ -322,7 +322,7 @@ func scanZone(row *sql.Row) (*NoMeetingZone, error) {
 // memberID belongs to. It is the gate for showing one Paceday user's minutes to
 // another: per-person analytics are only ever visible to an owner of a team
 // the person is on (PAC-60).
-func OwnsTeamWithMember(db *sql.DB, ownerID, memberID uuid.UUID) (bool, error) {
+func OwnsTeamWithMember(db DBTX, ownerID, memberID uuid.UUID) (bool, error) {
 	var ok bool
 	err := db.QueryRow(`
 		SELECT EXISTS (

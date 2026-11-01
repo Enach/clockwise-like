@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"time"
 
 	"github.com/Enach/paceday/backend/domain"
@@ -15,7 +14,7 @@ type Org struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func UpsertOrg(db *sql.DB, domain, name string) (*Org, error) {
+func UpsertOrg(db DBTX, domain, name string) (*Org, error) {
 	row := db.QueryRow(`
 		INSERT INTO organizations (name, domain)
 		VALUES ($1, $2)
@@ -26,20 +25,20 @@ func UpsertOrg(db *sql.DB, domain, name string) (*Org, error) {
 	return o, row.Scan(&o.ID, &o.Name, &o.Domain, &o.CreatedAt)
 }
 
-func GetOrgByID(db *sql.DB, id uuid.UUID) (*Org, error) {
+func GetOrgByID(db DBTX, id uuid.UUID) (*Org, error) {
 	row := db.QueryRow(`SELECT id, name, domain, created_at FROM organizations WHERE id = $1`, id)
 	o := &Org{}
 	return o, row.Scan(&o.ID, &o.Name, &o.Domain, &o.CreatedAt)
 }
 
-func SetUserOrg(db *sql.DB, userID, orgID uuid.UUID) error {
+func SetUserOrg(db DBTX, userID, orgID uuid.UUID) error {
 	_, err := db.Exec(`UPDATE users SET org_id = $1 WHERE id = $2`, orgID, userID)
 	return err
 }
 
 // AssociateUserWithOrg derives the org from the user's email domain and links them.
 // No-op for generic provider domains (gmail.com, outlook.com, etc.).
-func AssociateUserWithOrg(db *sql.DB, userID uuid.UUID, email string) error {
+func AssociateUserWithOrg(db DBTX, userID uuid.UUID, email string) error {
 	d := domain.ExtractDomain(email)
 	if d == "" || domain.IsGenericDomain(d) {
 		return nil
@@ -52,7 +51,7 @@ func AssociateUserWithOrg(db *sql.DB, userID uuid.UUID, email string) error {
 }
 
 // GetOrgMembers returns all users belonging to an organization.
-func GetOrgMembers(db *sql.DB, orgID uuid.UUID) ([]*User, error) {
+func GetOrgMembers(db DBTX, orgID uuid.UUID) ([]*User, error) {
 	rows, err := db.Query(`
 		SELECT id, email, name, avatar_url, provider, org_id, created_at
 		FROM users WHERE org_id = $1 ORDER BY created_at

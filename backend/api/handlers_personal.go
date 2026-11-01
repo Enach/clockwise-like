@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -142,8 +144,8 @@ func (h *personalHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *personalHandlers) ownedCalendar(id int64, userID uuid.UUID) (*storage.PersonalCalendar, error) {
-	cal, err := storage.GetPersonalCalendar(h.db, id)
+func (h *personalHandlers) ownedCalendar(ctx context.Context, id int64, userID uuid.UUID) (*storage.PersonalCalendar, error) {
+	cal, err := storage.GetPersonalCalendar(storage.Bind(ctx, h.db), id)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +161,7 @@ func (h *personalHandlers) preview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	if _, err := h.ownedCalendar(id, userIDFromCtx(r.Context())); err != nil {
+	if _, err := h.ownedCalendar(r.Context(), id, userIDFromCtx(r.Context())); err != nil {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return
 	}
@@ -184,19 +186,25 @@ func (h *personalHandlers) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := userIDFromCtx(r.Context())
-	if _, err := h.ownedCalendar(id, userID); err != nil {
+	if _, err := h.ownedCalendar(r.Context(), id, userID); err != nil {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return
 	}
-	if err := h.blocker.Sync(r.Context(), id); err != nil {
+	// PAC-81 AC-A17: a sync the budget stopped early answers the budget's
+	// 503 and does not stamp last_synced_at; a re-run finishes it.
+	if err := h.blocker.Sync(r.Context(), id); budgetCut(err) {
+		budget.WriteExpired(w)
+		return
+	} else if err != nil {
 		writeCalendarFailure(w, r, "sync", err)
 		return
 	}
-	if err := storage.MarkPersonalCalendarSynced(h.db, id, userID); err != nil {
+	db := storage.Bind(r.Context(), h.db)
+	if err := storage.MarkPersonalCalendarSynced(db, id, userID); err != nil {
 		writeServerError(w, r, "mark synced", err, http.StatusInternalServerError)
 		return
 	}
-	cal, err := storage.GetPersonalCalendar(h.db, id)
+	cal, err := storage.GetPersonalCalendar(db, id)
 	if err != nil || cal == nil || cal.UserID != userID {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return

@@ -2,13 +2,13 @@ package auth
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -61,7 +61,7 @@ func IsPermanentRefusal(err error) bool {
 // starts a loss, writes one connection_lost entry to the owner's own log
 // (best effort, like every activity entry: spec D-16). The entry names only
 // the provider: never the requester, never token material.
-func RecordLoss(db *sql.DB, owner uuid.UUID, provider string) {
+func RecordLoss(db storage.DBTX, owner uuid.UUID, provider string) {
 	started, err := storage.RecordCredentialLoss(db, owner, provider)
 	if err != nil {
 		log.Printf("credential: %s loss for user %s not recorded: %v", provider, owner, err)
@@ -95,7 +95,7 @@ func ownerLock(provider string, owner uuid.UUID) *sync.Mutex {
 
 type renewingSource struct {
 	ctx      context.Context
-	db       *sql.DB
+	db       storage.DBTX
 	owner    uuid.UUID
 	provider string
 	cfg      *oauth2.Config
@@ -145,7 +145,7 @@ func (s *renewingSource) Token() (*oauth2.Token, error) {
 	}
 
 	refresh := s.cur.RefreshToken
-	renewed, err := s.cfg.TokenSource(s.ctx, &oauth2.Token{RefreshToken: refresh}).Token()
+	renewed, err := s.cfg.TokenSource(outbound.WithIdentityClient(s.ctx), &oauth2.Token{RefreshToken: refresh}).Token()
 	if err != nil {
 		if !IsPermanentRefusal(err) {
 			return nil, fmt.Errorf("%s: renew credential: %w", s.provider, err)
@@ -175,13 +175,13 @@ func copyToken(t *oauth2.Token) *oauth2.Token {
 
 // UserTokenSource renews owner's stored Google credential (PAC-67). It is the
 // only way a Google calendar client is built from a stored credential.
-func UserTokenSource(ctx context.Context, db *sql.DB, cfg *oauth2.Config, owner uuid.UUID, tok *oauth2.Token) oauth2.TokenSource {
+func UserTokenSource(ctx context.Context, db storage.DBTX, cfg *oauth2.Config, owner uuid.UUID, tok *oauth2.Token) oauth2.TokenSource {
 	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialGoogle, cfg: cfg, store: googleStore{db, owner}, cur: tok}
 }
 
 // MicrosoftTokenSource renews owner's stored Outlook (Microsoft) credential.
 // A nil cfg (Microsoft not configured) cannot renew: a temporary failure.
-func MicrosoftTokenSource(ctx context.Context, db *sql.DB, cfg *MicrosoftConfig, owner uuid.UUID, tok *oauth2.Token) oauth2.TokenSource {
+func MicrosoftTokenSource(ctx context.Context, db storage.DBTX, cfg *MicrosoftConfig, owner uuid.UUID, tok *oauth2.Token) oauth2.TokenSource {
 	var oc *oauth2.Config
 	if cfg != nil {
 		oc = cfg.oauthConfig()
@@ -191,7 +191,7 @@ func MicrosoftTokenSource(ctx context.Context, db *sql.DB, cfg *MicrosoftConfig,
 
 // ZoomTokenSource renews owner's stored Zoom credential. cfg is Zoom's token
 // endpoint with client credentials in Basic auth; nil cannot renew.
-func ZoomTokenSource(ctx context.Context, db *sql.DB, cfg *oauth2.Config, owner uuid.UUID, cred *storage.ZoomCredential) oauth2.TokenSource {
+func ZoomTokenSource(ctx context.Context, db storage.DBTX, cfg *oauth2.Config, owner uuid.UUID, cred *storage.ZoomCredential) oauth2.TokenSource {
 	return &renewingSource{ctx: ctx, db: db, owner: owner, provider: storage.CredentialZoom, cfg: cfg, store: zoomStore{db, owner}, cur: zoomToken(cred), zeroExpiryIsExpired: true}
 }
 
@@ -207,7 +207,7 @@ func zoomToken(c *storage.ZoomCredential) *oauth2.Token {
 }
 
 type googleStore struct {
-	db    *sql.DB
+	db    storage.DBTX
 	owner uuid.UUID
 }
 
@@ -215,7 +215,7 @@ func (g googleStore) load() (*oauth2.Token, error) { return LoadUserToken(g.db, 
 func (g googleStore) save(t *oauth2.Token) error   { return UpdateUserToken(g.db, g.owner, t) }
 
 type microsoftStore struct {
-	db    *sql.DB
+	db    storage.DBTX
 	owner uuid.UUID
 }
 
@@ -229,7 +229,7 @@ func (m microsoftStore) save(t *oauth2.Token) error {
 }
 
 type zoomStore struct {
-	db    *sql.DB
+	db    storage.DBTX
 	owner uuid.UUID
 }
 

@@ -1,13 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
@@ -102,10 +107,113 @@ func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 	}
 }
 
+// loggingMiddleware writes exactly one access-log line per request (PAC-81
+// AC-A13): method, the matched route pattern (never the raw path, which can
+// carry an invite token, and never the query string), the status actually
+// written ("-" when nothing was written, e.g. the client went away), the
+// duration, and the client address as the abuse limits resolve it
+// (TRUSTED_PROXIES and X-Real-IP). It sits outside every middleware that can
+// write or replace a status, so a replaced status and the budget's 503 are
+// what it records.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		sw := &statusWriter{ResponseWriter: w}
+		defer func() {
+			status := "-"
+			if sw.status != 0 {
+				status = strconv.Itoa(sw.status)
+			}
+			p := recover()
+			if p != nil {
+				status = "panic"
+			}
+			accessLogf("%s %s %s %s client=%s", r.Method, routeOf(r), status, time.Since(start), clientIP(r, trustedProxies))
+			if p != nil {
+				panic(p)
+			}
+		}()
+		next.ServeHTTP(sw, r)
 	})
+}
+
+// routeMux is the router whose patterns the access log reports
+// (RegisterRoutes sets it). Matching on a fresh route context reads nothing
+// the handler goroutine writes, so a request the budget answered while its
+// handler still runs is logged without a data race.
+var routeMux atomic.Pointer[chi.Mux]
+
+// routeOf is r's route pattern, "unmatched" when no route matches, or the
+// path when no router is registered (handlers tested without one).
+func routeOf(r *http.Request) string {
+	mx := routeMux.Load()
+	if mx == nil {
+		return r.URL.Path
+	}
+	rctx := chi.NewRouteContext()
+	if mx.Match(rctx, r.Method, r.URL.Path) {
+		if p := rctx.RoutePattern(); p != "" {
+			return p
+		}
+	}
+	return "unmatched"
+}
+
+// accessLogf is the access log's writer (a test seam).
+var accessLogf = log.Printf
+
+// statusWriter records the first status written to the client.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// maxRequestBody is the largest request body the backend accepts (PAC-81
+// AC-A12, D-7): 1 MiB, the same as nginx.
+const maxRequestBody = 1 << 20
+
+// bodyCapMiddleware answers 413 {"error":"request body too large"} before
+// the handler runs when the body is over the cap: a declared Content-Length
+// over it, or a body that reads past it. A body of exactly the cap is passed
+// on. Bodies are read here, bounded by the cap, so the handler sees the
+// whole body or never runs.
+func bodyCapMiddleware(limit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength > limit {
+				writeError(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if r.Body != nil && r.Body != http.NoBody {
+				b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+				if int64(len(b)) > limit {
+					writeError(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				if err != nil {
+					writeError(w, "invalid request body", http.StatusBadRequest)
+					return
+				}
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(bytes.NewReader(b))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
