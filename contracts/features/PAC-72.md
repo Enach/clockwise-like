@@ -511,8 +511,8 @@ merge resolutions are recorded in the merge commit message. Only
 | Migration `032_scheduling_link_horizon_refusal` | Adds `booking_horizon_days INTEGER NOT NULL DEFAULT 60 CHECK 1..365` and `refusal_message TEXT NOT NULL DEFAULT 'generic' CHECK IN (generic, specific)`. The down migration drops both and **destroys data** (first line says so, per PAC-81 Part D) | D-1, D-2/D-5 |
 
 The manifest lists every operation. One more point: `getSchedulingLink`,
-`listSchedulingLinks` and the accept/leave responses that return
-`SchedulingLink` change shape only through the schema.
+`listSchedulingLinks` change shape only through the schema (corrected in
+revision 3.1: only create, get, update and list return `SchedulingLink`).
 
 ### R2-C.2 Decisions and rejected alternatives
 
@@ -707,3 +707,54 @@ and migration 032 at `936fd32`. Spec findings are in `docs/specs/PAC-72.md`
 - DST is testable offline: Go's zoneinfo on dev machines, `tzdata` in
   `backend/Dockerfile:3`; `time.LoadLocation` is already PAC-24's validation
   (`backend/api/handlers_settings.go:310`).
+
+## Revision 3.1 — challenge answers 2026-11-01
+
+This revision answers "Challenge, revision 3 — 2026-11-01" above
+(accept-with-changes, 2 blocking findings). It also covers the contract side
+of spec "Revision 2.1 — challenge answers 2026-11-01". In the manifest it is
+`contractRevision` "3.1". As before, only
+`contracts/openapi/paths/booking.yaml` and the migration's comments change by
+hand. The bundle, `MIGRATION.md` and `backend/api/gen` are regenerated.
+
+### R31-T What changed and why
+
+| # | Finding | Change |
+|---|---|---|
+| B1 | Migration 032 is also used by PAC-71, and the manifest forbade renumbering | The manifest now allows this one migration to take **the next free number after main's latest at merge time**, renaming up and down together. It adds a merge condition: at merge, `backend/storage/migrations` has no two files with one version, and this migration's number is greater than main's latest. The comments in the up and down files no longer claim "032" / "returns to 031" as final. PAC-71 gets the same allowance (coordinator) |
+| B2 | No contracted answer for a failed read of the owner's settings | The 500 of `getPublicLinkInfo`, `getPublicBookingSlots` (both modes), `createPublicBooking` ("booking conflict check failed"), `createSchedulingLink`, `getSchedulingLink`, `listSchedulingLinks` and `updateSchedulingLink` now states it, never the UTC fallback. The `createPublicBooking` description separates "no settings row" (UTC) from "read failed" (500) |
+| Div-2 | Duplicated fragment in the `createPublicBooking` 500 text | Removed. PAC-81's tail ("A 500 … does NOT prove …") is unchanged |
+| Div-3 / spec citation | R2-C.1 said accept/leave return `SchedulingLink` | Corrected below: only create, get, update and list (through `SchedulingLinkListResponse`) return it |
+| Wrongly permitted 1 | `booking_horizon_days: null` on create was rejected by the schema but read as absent by the server | `booking_horizon_days` and `refusal_message` on create are now `nullable`, and null means absent (60 / `generic`). Contract and server agree |
+| Responses 1 | The text/reason pairing lives only in the description | `BookingSlotUnavailableError` says the implementation's tests assert the exact (error, reason) pair for every cause (spec AC-35) |
+| Spec NB2 | Co-hosts never agreed to "specific" | Owner-decided A-1, with that consequence (spec R21.4) |
+| Spec NB3 | `time_zone` discloses the owner's zone | `PublicLinkInfo.time_zone` and the booking description say it is shown to anyone with the link, per D-9 |
+| Spec NB4 | 365-day horizon vs PAC-81's 90 s budget | `getPublicBookingSlots` says the date-less mode ends in the 503 with a long horizon, never truncated. Explicit-date per day is recommended. PAC-88 follow-up (spec R21.6) |
+| Spec NB5 | Cheap refusals vs a storage 500 | The booking description states the order: zone, then horizon/hours/notice with no busy-time read, then busy time |
+| Spec NB6 | Window edges on daylight-saving days | Defined in the booking description |
+| Spec B2 | Past-day start | Defined: never `beyond_horizon`; `too_soon` unless `outside_link_hours` comes first |
+
+### R31.2 Correction to R2-C.1
+
+R2-C.1 said "the accept/leave responses that return `SchedulingLink`". That
+is wrong. Only these return `SchedulingLink`:
+
+- `createSchedulingLink` (201);
+- `getSchedulingLink` (200);
+- `updateSchedulingLink` (200);
+- `listSchedulingLinks` (200, through `SchedulingLinkListResponse`).
+
+`leaveSchedulingLink` answers 204, and the accept/decline operations return
+`SchedulingLinkInviteResponse`.
+
+### R31.3 Gate results
+
+| Check | rc |
+|---|---|
+| `python3 scripts/openapi_assemble.py --check` | 0 |
+| `python3 scripts/openapi_migration_report.py --check` | 0 |
+| `scripts/openapi_gen_go.sh --check` | 0 |
+| `cd backend && go build ./... && go vet ./...` | 0 |
+
+Not run: Go tests (no database on this machine; the challenger's run on
+PostgreSQL 16 is the reference), the web types check and e2e.

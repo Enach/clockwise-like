@@ -1,7 +1,7 @@
 # Spec — PAC-72: Public booking accepts only a start the slot listing would offer
 
 - **Linear**: https://linear.app/paceday/issue/PAC-72/public-booking-never-checks-host-availability-the-links-hours-or-a
-- **Status**: draft (revision 2, owner answers 2026-11-01; to be challenged). Challenged accept-with-changes at `d9be46b`; revision 1 applied, see "Revision — 2026-10-28"; revision 2, see "Revision 2 — owner answers 2026-11-01", supersedes D-1, D-2/D-5, D-6 and D-9 and every section they touch
+- **Status**: revision 2.1 (challenge of revision 2 answered, see "Revision 2.1 — challenge answers 2026-11-01"; A-1..A-4 owner-decided 2026-11-01). Earlier: challenged accept-with-changes at `d9be46b`; revision 1 ("Revision — 2026-10-28"); revision 2 ("Revision 2 — owner answers 2026-11-01"), challenged accept-with-changes at `1a1e21b`
 - **Author**: spec-author
 - **Inherited scope**:
   - **API-094** (medium, Confirmed, `docs/factory/api-audit.md:352`), on
@@ -1371,3 +1371,229 @@ The backend Go suite was run against a throwaway PostgreSQL 16 container
   id collides.
 - The AC-17d flips (api and engine) are justified by D-6 and match PAC-81's own
   tests; the merged handler keeps PAC-81's budget 503 on all three paths.
+
+## Revision 2.1 — challenge answers 2026-11-01
+
+This revision answers "Challenge, revision 2 — 2026-11-01" above
+(accept-with-changes, 4 blocking findings) and applies the owner's
+confirmation of A-1 to A-4 (owner-decisions.md, 2026-11-01). Where this
+section and R2.x disagree, **this section wins**.
+
+### R2.1-T What changed and why
+
+| # | Finding | Change in this revision |
+|---|---|---|
+| B1 | AC-31's spring example contradicts itself. 00:45Z is 01:45 CET, which is on the grid | AC-31 replaced (R21.3). Off-grid 00:50Z → 409. 01:45 CET (00:45Z) is listed and books 201 |
+| B2 | No pair proves that outside the hours beats too soon. A past-day start had no stated reason | AC-35 gets that pair. A past-day start is `too_soon`, or `outside_link_hours` when that comes first; never `beyond_horizon` (R21.2, AC-37) |
+| B3 | A failed read of the owner's settings was not specified | It is a server error everywhere, never the UTC fallback (D-7). New AC-38 covers listing (both modes), booking and the link reads |
+| B4 | R2.6 said PAC-81's tests stay green unchanged. `TestPAC81_SlotListingCutIs503` fails | R2.6 replaced (R21.5). That test is amended to a date inside the horizon, together with the two engine tests |
+| NB1 | Migration 032 clashes with PAC-71's 032 | R2.7 amended. The migration takes the next free number at merge time. The contract manifest carries the merge condition |
+| NB2 | Co-hosts did not agree to "specific" | A-1 is owner-decided. The consequence for co-hosts is stated (R21.4) |
+| NB3 | The zone is disclosed on every link | Stated in R21.2 as the owner's decision (D-9) |
+| NB4 | A 365-day horizon against the 90 s budget in the date-less listing | Stated: the date-less listing ends in the 503, never a truncated list (AC-39). PAC-88 follow-up noted (R21.6) |
+| NB5 | Cheap refusals vs a storage 500 under "specific" | Order of evaluation stated: the zone first, then the cheap checks, then busy time (R21.2) |
+| NB6 | Window edges on a daylight-saving day | Defined (R21.2). AC-31 covers both edge cases |
+| NB7 | AC-28(c)/(d) do not tell the zones apart | AC-28 tightened (R21.3) |
+| NB8 | `e2e/lib/dates.ts` comment says "in UTC" | Corrected in this commit (wording only) |
+| Owner | A-1..A-4 confirmed 2026-11-01 | Marked owner-decided. A-5..A-7 stay factory-assumed (R21.4) |
+
+### R21.2 Desired behaviour, additions
+
+**Reading the owner's settings fails.** If the owner has **no** settings row,
+or the stored zone name does not load, the link uses UTC (A-4). A **failed
+read** is different: a storage error is not "no settings". It never falls back
+to UTC, because that would silently move a non-UTC owner's hours (D-7, fail
+closed). The answers are:
+
+- booking: a server error, nothing written;
+- listing with a date, and listing without a date: a server error for the
+  whole request, never a list with days left out;
+- the public link read and the owner's link reads: a server error.
+
+**Order of evaluation.** For a booking, the owner's zone is read first. Then
+the checks that need no host data run, in the precedence order:
+
+1. the horizon;
+2. the days, hours and grid;
+3. the notice.
+
+A start one of them refuses is refused with that reason, without reading any
+host's busy time. A storage failure on busy time therefore cannot turn such a
+start into a server error. The listing already does the same: it answers a
+date outside the horizon before reading any host. Only a start that passes all
+three reads busy time, and gets "taken", "host busy", the server error (D-7)
+or the 503 (PAC-81).
+
+**A start on a day before today** (in the link's zone) is never "beyond the
+horizon". That reason names the far edge, which is what a visitor can act on
+by picking an earlier date. A past start is always before now plus the notice,
+so it is "too soon", unless "outside the link's days or hours" comes first in
+the precedence. "Too soon" tells the visitor the true thing, that the time
+has passed. "Beyond the horizon" would tell them to pick an earlier date,
+which is wrong.
+
+**Window edges on a daylight-saving day.**
+
+- An edge of the daily window (opening or closing time) that does not exist
+  that day is taken at the instant of the change, the first instant after the
+  gap. So the window never grows.
+- An edge that falls in a repeated hour is taken at its first occurrence.
+- The 15-minute grid stays counted in wall time from the opening time.
+- Slot starts follow A-6.
+
+**The zone is visible to anyone with the link.** The public link read
+discloses the owner's profile zone to any visitor, on every link. This is the
+owner's decision D-9 ("the booking page shows the host's zone by default"),
+not a factory choice. A link owner who does not want their zone visible has
+no way to hide it in PAC-72. That would be a separate setting.
+
+**Long horizons and the date-less listing.** The date-less listing checks
+every day of the horizon within one request budget. With a long horizon (up
+to 365) or slow calendars it can run out of budget. It then answers PAC-81's
+503, never a list cut short at the days it reached. A client that needs a
+long range lists the dates it shows one at a time.
+
+### R21.3 Acceptance criteria, amended and added
+
+**AC-28 (replaces R2.3's AC-28).** Setup:
+
+- the server process runs in UTC+10;
+- the link owner's profile zone is America/New_York;
+- the link is open Monday to Friday 09:00–17:00, with 30-minute slots;
+- the clock is fixed at **Monday 2030-07-01 22:30 New York (EDT, UTC−4)**,
+  which is **Tuesday 02:30Z**.
+
+Expected:
+
+- (a) The explicit-date listing for Tuesday 2030-07-02 returns slots 13:00Z to
+  20:30Z (09:00–16:30 EDT).
+- (b) A booking at 13:00Z on 2030-07-02 is 201.
+- (c) A booking at 09:00Z on 2030-07-02 (05:00 EDT, inside the window under
+  the UTC rule) is 409.
+- (d) A booking at 20:30Z on Friday 2030-07-05 (16:30 EDT, outside the window
+  under the UTC rule) is 201.
+- (e) The date-less listing's first date is 2030-07-02. Monday 2030-07-01 is
+  "today" in New York, but its window has passed, so it has no slot. Its
+  dates are New York calendar days.
+- (f) The same with the clock at Monday 2030-01-07 22:30 EST (Tuesday
+  03:30Z): (a) gives 14:00Z–21:30Z, and a booking at 09:00Z (04:00 EST) is 409.
+
+(c), (d) and (f) each fail under the old UTC rule.  [unit]
+
+**AC-31 (replaces R2.3's AC-31).** An owner in Europe/Paris, a link open
+every day 01:00–04:00 with 15-minute slots of 15 minutes. On the spring change
+day, 2030-03-31 (clocks go from 02:00 CET to 03:00 CEST at 01:00Z):
+
+- 01:45 CET (00:45Z) is listed and books 201;
+- no slot is listed at 02:00, 02:15, 02:30 or 02:45 Paris;
+- 03:00 CEST (01:00Z) is listed;
+- a booking at 00:50Z (01:50 CET, off the grid) is 409.
+
+On the autumn change day, 2030-10-27 (03:00 CEST goes back to 02:00 CET at
+01:00Z):
+
+- each of 02:00, 02:15, 02:30 and 02:45 is listed exactly once, at its first
+  occurrence (00:00Z, 00:15Z, 00:30Z, 00:45Z);
+- a booking at the second occurrence of 02:00 (01:00Z) is 409.
+
+Every listed start books (201). Window edges:
+
+- a link open 02:30–04:00 opens at 01:00Z on the spring day, so its first
+  slot is 03:00 CEST and nothing earlier;
+- a link open 01:00–02:30 closes at 01:00Z on the spring day, so its last
+  15-minute slot is 01:45 CET.
+
+[unit]
+
+**AC-35 (amended).** In addition to the pairs in R2.3:
+
+- a start that is both inside the notice and outside the link's hours (link
+  open 09:00–17:00, notice 120 minutes, clock 08:00, start 08:30) has the
+  reason `outside_link_hours`.
+
+The tests assert the **exact pair** of message text and reason for every
+cause. Generic text without a reason, and each specific text with its own
+reason, never mixed.  [unit]
+
+**AC-37 (new).** Given a link with specific refusals, a start on yesterday's
+date (link zone) inside the window on a link day has the reason `too_soon`.
+The same start on a day the link is not open has the reason
+`outside_link_hours`. Neither is `beyond_horizon`, and nothing is written.
+[unit]
+
+**AC-38 (new).** Given a link whose owner's settings read fails with a
+storage error (injected, owner zone Asia/Tokyo):
+
+- the booking of a start that would be offered in Tokyo is a server error,
+  and nothing is written;
+- the explicit-date listing is a server error;
+- the date-less listing is a server error, not a list;
+- the public link read is a server error;
+- the owner's link reads (create, get, list, update) are server errors.
+
+In no case is UTC used or reported. The same start against a link whose owner
+**has no settings row** is evaluated in UTC (A-4, AC-30).
+[unit] [contract]
+
+**AC-39 (new).** Given a link with a 365-day horizon and a calendar fake that
+answers slowly enough that the request budget runs out partway, when the
+date-less listing is read, then the answer is PAC-81's 503, never a 200 with
+fewer dates.  [unit]
+
+**AC-40 (new).** Given a link with specific refusals whose busy-time storage
+read fails, when a start beyond the horizon, outside the hours or inside the
+notice is booked, then the answer is the 409 with that reason, not the server
+error (order of evaluation).  [unit]
+
+### R21.4 Assumptions, now split
+
+**Owner-decided (2026-11-01):**
+
+- **A-1.** The refusal-message setting is the link owner's, per link, default
+  generic. *Consequence, accepted with this decision:* on a collective link,
+  the owner alone chooses "specific". A co-host never agreed to it. Under
+  "specific", a visitor can learn that some host was busy at a time ("host
+  busy" vs "taken"), and that covers a co-host's calendar too. The co-host
+  can see the setting, because the link they share shows it, but cannot
+  change it. Giving co-hosts a say would be a separate feature.
+- **A-2.** A collective link uses the link owner's zone. Co-hosts' zones and
+  working hours are ignored.
+- **A-3.** The horizon is 1..365 days, default 60, and existing links get 60.
+- **A-4.** An owner with no profile zone (no settings row, or a name that
+  does not load) gets UTC, shown as UTC. A failed **read** is not covered by
+  A-4: it is the server error (R21.2).
+
+**Still factory-assumed (OQ-7 now covers only these):** A-5 (reasons,
+precedence; past start = too soon, R21.2), A-6 (daylight-saving starts, plus
+the window edges of R21.2), A-7 (zone read per request, never stored).
+
+### R21.5 What must not change, corrected (replaces R2.6's last paragraph)
+
+PAC-81 Part A's behaviour stays as it is. Its tests keep their assertions.
+One PAC-81 test needs its **input** moved, and the implementer amends it
+together with PAC-72's own:
+
+- `TestPAC81_SlotListingCutIs503` (`backend/api/pac81_paths_test.go:284`)
+  lists `date=2030-01-07`, now beyond the horizon. PAC-72 answers 200 before
+  reading any host, which is correct. The test moves to a date inside the
+  horizon under a fixed clock, and its 503 assertions are unchanged.
+- `TestPAC72_CollectiveSlots_PendingBookingOnAnotherLinkIsBusy` and
+  `TestPAC72_CollectiveSlots_StorageFailureIsAnError/{focus_blocks,bookings}`
+  (`backend/engine/pac72_collective_slots_test.go`) use hosts with no
+  calendar credential. Those hosts are busy under D-6. The tests move onto a
+  connected fake calendar; for the storage-failure case the calendar must be
+  readable.
+
+The challenger ran the full suite: nothing else fails.
+
+### R21.6 Rollback and follow-ups, amended
+
+- **R2.7, migration number.** The migration is written as 032, the next free
+  number on main at `48f6c60`. PAC-71 also adds a 032. The migration takes
+  **the next free number after main's latest at merge time**, and its up and
+  down files are renamed together. Its down step returns the database to the
+  version before it. The manifest carries this as a merge condition.
+- **Follow-up for PAC-88.** The date picker must not rely on the date-less
+  listing for horizons longer than the request budget can check. Either it
+  lists the dates it shows one at a time, or a bounded range mode is added.
+  To be filed with PAC-88; it does not block PAC-72.

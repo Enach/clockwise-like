@@ -42,7 +42,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: 'Storage failure. Body: {"error":"internal error"}'
+          description: >-
+            Storage failure. Body: {"error":"internal error"}. Includes a failed
+            read of the link owner's settings, needed for `time_zone` (PAC-72
+            revision 3.1): never answered with the UTC fallback.
           content:
             application/json:
               schema:
@@ -100,11 +103,28 @@ paths:
         is the link OWNER's profile time zone (`settings.timezone`), whoever
         the co-hosts are and whatever zone the server process runs in; when the
         owner has no settings row or the stored name is not a loadable IANA
-        zone, the zone is UTC. Days, hours, the grid, "today" and the horizon
-        are all evaluated in that zone, as wall-clock times: a wall time that
-        does not exist on a daylight-saving change day is not offered, and a
-        wall time that occurs twice is offered once, at its first occurrence.
-        The zone used is exposed as `PublicLinkInfo.time_zone`. `start` is
+        zone, the zone is UTC. A failed READ of the owner's settings (a
+        storage error) is not "no settings row": it is the 500 and nothing is
+        written, never the UTC fallback (PAC-72 revision 3.1, D-7). Days,
+        hours, the grid, "today" and the horizon are all evaluated in that
+        zone, as wall-clock times: a slot start whose wall time does not exist
+        on a daylight-saving change day is not offered, and a wall time that
+        occurs twice is offered once, at its first occurrence. Window edges on
+        such a day: a `window_start_time` or `window_end_time` that does not
+        exist that day is taken at the instant of the change (the first
+        existing instant after the gap), so the window never grows; an edge in
+        a repeated hour is taken at its first occurrence; the 15-minute grid
+        stays counted in wall time from `window_start_time`. The zone used is
+        exposed as `PublicLinkInfo.time_zone`, to anyone who has the link
+        (owner decision D-9 makes it the page's default display). Order of
+        evaluation: the owner's zone is read first; a start refused by the
+        horizon, the days/hours/grid or the notice is refused with that reason
+        without reading any host's busy time, so a storage failure on busy
+        time cannot turn such a start into a 500 (the listing likewise answers
+        a date outside the horizon before any host read). A start on a day
+        before today (link zone) is not `beyond_horizon` (that names the far
+        edge only); it is always inside the notice, so it is `too_soon` unless
+        `outside_link_hours` comes first. `start` is
         compared as an instant, so any UTC offset denoting a grid instant is
         the same start; the stored and returned start and end are exactly the
         slot's, in UTC. A start the rule does not offer answers 409 and nothing
@@ -229,11 +249,13 @@ paths:
         '500':
           description: >-
             Storage or engine failure. `error` is one of "internal error" or "booking
-            Storage or engine failure. `error` is one of "internal error" or "booking
             conflict check failed". "booking conflict check failed" is the answer
             when busy time cannot be gathered from storage (the link's accepted
             hosts, a host's focus blocks, or the bookings on any link a host owns
-            or co-hosts); nothing is written and the answer is never 409. A host
+            or co-hosts) or when the link owner's settings (the link's zone)
+            cannot be read; nothing is written and the answer is never 409, and a
+            failed settings read is never answered with the UTC fallback
+            (PAC-72 revision 3.1, D-7). A host
             whose external calendar cannot be read is not a 500 (it is busy: the
             409, D-6). The detail is written to the server log and Sentry only
             (PAC-21). A 500 from this operation does NOT prove that no booking was
@@ -285,7 +307,11 @@ paths:
         no slot and no date in both modes. When busy time cannot be gathered from
         storage (the link's accepted hosts, a host's focus blocks, or the bookings
         on any link a host owns or co-hosts), the explicit-date mode answers 500
-        and the date-less mode omits that day.
+        and the date-less mode omits that day. The date-less mode reads every day
+        of the horizon (up to 365) under the one request budget; with a long
+        horizon or slow calendars it ends in the 503 below, never in a list
+        truncated to the days it reached (PAC-72 revision 3.1). Clients needing
+        a long range should use the explicit-date mode per visible day.
         Hosts (PAC-81, spec AC-A18): each accepted host's calendar is read on at
         most 4 concurrent reads per request, each limited to its own 15 s (shortened
         to the budget left minus a 10 s stop margin). A host whose calendar cannot be
@@ -374,7 +400,10 @@ paths:
         '500':
           description: >-
             Storage or engine failure, including, with `date` only, busy time that
-            cannot be gathered from storage for that day (PAC-72). Body:
+            cannot be gathered from storage for that day (PAC-72), and, in both
+            modes, a failed read of the link owner's settings (the link's zone;
+            PAC-72 revision 3.1): the whole request is this 500, never the UTC
+            fallback and never a list with days omitted. Body:
             {"error":"internal error"}
           content:
             application/json:
@@ -535,8 +564,10 @@ paths:
         '500':
           description: >-
             `error` is one of "user not found", "slug generation failed", "slug check
-            failed" or "internal error" (insert or owner-host insert failed). The detail is
-            written to the server log and Sentry only (PAC-21).
+            failed" or "internal error" (insert or owner-host insert failed, or the
+            owner's settings, needed for `time_zone`, could not be read; PAC-72
+            revision 3.1, never the UTC fallback). The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -555,7 +586,10 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"internal error"}'
+          description: >-
+            Body: {"error":"internal error"}. Includes a failed read of an owner's
+            settings, needed for each link's `time_zone` (PAC-72 revision 3.1),
+            never the UTC fallback.
           content:
             application/json:
               schema:
@@ -788,7 +822,9 @@ paths:
         '500':
           description: >-
             Body: {"error":"internal error"}. A storage error on the link lookup, on the
-            caller's host-status lookup, or on the roster read (PAC-25 C-2).
+            caller's host-status lookup, on the roster read (PAC-25 C-2), or on the
+            read of the owner's settings needed for `time_zone` (PAC-72 revision
+            3.1, never the UTC fallback).
           content:
             application/json:
               schema:
@@ -847,8 +883,10 @@ paths:
           $ref: '#/components/responses/SchedulingLinkValidationError'
         '500':
           description: >-
-            `error` is "internal error" (lookup or update failed) or "slug check failed".
-            The detail is written to the server log and Sentry only (PAC-21).
+            `error` is "internal error" (lookup or update failed, or the owner's
+            settings, needed for `time_zone`, could not be read; PAC-72 revision 3.1,
+            never the UTC fallback) or "slug check failed". The detail is written to
+            the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -1692,7 +1730,10 @@ components:
         beyond the link's booking horizon"; `host_busy` - "a host is busy at
         that time"; `taken` - "slot is already booked". "slot is no longer
         available" never carries a `reason`, and a specific text never appears
-        without its `reason`. Written by api.writeError (generic) or the same
+        without its `reason`. The pairing is not expressible in this schema
+        (no `oneOf`, see contracts/features/PAC-72.md); it is asserted by the
+        implementation's tests, which compare the exact (error, reason) pair
+        for every cause. Written by api.writeError (generic) or the same
         envelope plus `reason` (specific).
       required: [error]
       additionalProperties: false
@@ -1816,7 +1857,10 @@ components:
             the zone actually used by `getPublicBookingSlots` and
             `createPublicBooking` for this link at the time of the read, so a
             booking page can show times in it by default (display and the
-            visitor's zone switcher are PAC-88). Never empty.
+            visitor's zone switcher are PAC-88). Never empty. Disclosed to anyone
+            who has the link, on every link: owner decision D-9 makes the
+            owner's zone the page's default display. A failed read of the
+            owner's settings is the operation's 500, never `UTC`.
           example: Europe/Paris
         booking_horizon_days:
           type: integer
@@ -2196,19 +2240,22 @@ components:
           default: 0
         booking_horizon_days:
           type: integer
+          nullable: true
           minimum: 1
           maximum: 365
           default: 60
           description: >-
-            PAC-72 revision 2 (owner decision D-1). Absent means 60. Outside
-            1..365 is a 422 "booking_horizon_days must be between 1 and 365".
+            PAC-72 revision 2 (owner decision D-1). Absent or null means 60.
+            Outside 1..365 is a 422 "booking_horizon_days must be between 1 and
+            365".
         refusal_message:
           type: string
+          nullable: true
           enum: [generic, specific]
           default: generic
           description: >-
             PAC-72 revision 2 (owner decisions D-2/D-5), see
-            `BookingRefusalMessage`. Absent means `generic`. Any other value is
+            `BookingRefusalMessage`. Absent or null means `generic`. Any other value is
             a 422 "refusal_message must be generic or specific".
         usage_type:
           type: string

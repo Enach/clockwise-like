@@ -1,6 +1,12 @@
--- 032_scheduling_link_horizon_refusal.up.sql — PAC-72 revision 2
+-- scheduling_link_horizon_refusal.up.sql — PAC-72 revision 2
 -- (docs/specs/PAC-72.md "Revision 2 — owner answers 2026-11-01",
 -- contracts/features/PAC-72.md, owner decisions D-1 and D-2/D-5).
+--
+-- NUMBER NOT FINAL (contract revision 3.1): 032 is the next free number on
+-- main at 48f6c60, but PAC-71 also adds a 032. This migration takes the next
+-- free number after main's latest at merge time and is renamed (up and down)
+-- if needed; the manifest's merge condition checks that no two migrations
+-- share a version.
 --
 -- * booking_horizon_days: how many days ahead a link can be booked, counting
 --   today in the link owner's profile time zone (D-1: a per-link setting,

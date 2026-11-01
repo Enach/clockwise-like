@@ -1055,7 +1055,7 @@ type BookingRefusalMessage string
 // BookingRefusalReason Why `createPublicBooking` refused a start (PAC-72 revision 2). Sent only when the link's `refusal_message` is `specific`. Precedence when several hold: `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`, `host_busy`. `outside_link_hours` covers a day not among the link's days, a start or end outside its daily window and a start off the 15-minute grid. `taken` is a non-cancelled booking on this same link; `host_busy` is any other busy time of an accepted host (calendar event widened by buffers, focus block, booking on another link, unreadable calendar per D-6) or a link with no accepted host.
 type BookingRefusalReason string
 
-// BookingSlotUnavailableError The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default): exactly `{"error":"slot is no longer available"}`, no `reason` key, whatever rule failed. `specific`: both keys, `reason` naming the first failed rule and `error` the one text paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` - "slot is outside the link's days or hours"; `beyond_horizon` - "slot is beyond the link's booking horizon"; `host_busy` - "a host is busy at that time"; `taken` - "slot is already booked". "slot is no longer available" never carries a `reason`, and a specific text never appears without its `reason`. Written by api.writeError (generic) or the same envelope plus `reason` (specific).
+// BookingSlotUnavailableError The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default): exactly `{"error":"slot is no longer available"}`, no `reason` key, whatever rule failed. `specific`: both keys, `reason` naming the first failed rule and `error` the one text paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` - "slot is outside the link's days or hours"; `beyond_horizon` - "slot is beyond the link's booking horizon"; `host_busy` - "a host is busy at that time"; `taken` - "slot is already booked". "slot is no longer available" never carries a `reason`, and a specific text never appears without its `reason`. The pairing is not expressible in this schema (no `oneOf`, see contracts/features/PAC-72.md); it is asserted by the implementation's tests, which compare the exact (error, reason) pair for every cause. Written by api.writeError (generic) or the same envelope plus `reason` (specific).
 type BookingSlotUnavailableError struct {
 	Error BookingSlotUnavailableErrorError `json:"error"`
 
@@ -1311,8 +1311,8 @@ type CreatePublicBookingRequest struct {
 
 // CreateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two accepted spellings; the canonical one wins when both are sent. Nothing is required at the JSON level, but validation rejects an empty title.
 type CreateSchedulingLinkRequest struct {
-	// BookingHorizonDays PAC-72 revision 2 (owner decision D-1). Absent means 60. Outside 1..365 is a 422 "booking_horizon_days must be between 1 and 365".
-	BookingHorizonDays *int `json:"booking_horizon_days,omitempty"`
+	// BookingHorizonDays PAC-72 revision 2 (owner decision D-1). Absent or null means 60. Outside 1..365 is a 422 "booking_horizon_days must be between 1 and 365".
+	BookingHorizonDays *int `json:"booking_horizon_days"`
 	BufferAfter        *int `json:"buffer_after,omitempty"`
 	BufferBefore       *int `json:"buffer_before,omitempty"`
 
@@ -1335,8 +1335,8 @@ type CreateSchedulingLinkRequest struct {
 	MaxUses          *int `json:"max_uses"`
 	MinNoticeMinutes *int `json:"min_notice_minutes,omitempty"`
 
-	// RefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
-	RefusalMessage *CreateSchedulingLinkRequestRefusalMessage `json:"refusal_message,omitempty"`
+	// RefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent or null means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
+	RefusalMessage *CreateSchedulingLinkRequestRefusalMessage `json:"refusal_message"`
 
 	// Slug Normalised to lowercase alphanumerics and dashes. When it normalises to the empty string a slug is generated from the owner's name plus the first duration.
 	Slug *string `json:"slug,omitempty"`
@@ -1360,7 +1360,7 @@ type CreateSchedulingLinkRequest struct {
 	WindowStartTime *string `json:"window_start_time,omitempty"`
 }
 
-// CreateSchedulingLinkRequestRefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
+// CreateSchedulingLinkRequestRefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent or null means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
 type CreateSchedulingLinkRequestRefusalMessage string
 
 // CreateSchedulingLinkRequestUsageType Lowercased and trimmed before validation; an empty string becomes `reusable`.
@@ -2781,7 +2781,7 @@ type PublicLinkInfo struct {
 	MinNoticeMinutes int          `json:"min_notice_minutes"`
 	Slug             string       `json:"slug"`
 
-	// TimeZone IANA name of the zone the link's days, hours, "today" and booking horizon are evaluated in (PAC-72 revision 2, owner decision D-9): the link owner's profile time zone, or `UTC` when the owner has no settings row or its stored name is not a loadable IANA zone. It is the zone actually used by `getPublicBookingSlots` and `createPublicBooking` for this link at the time of the read, so a booking page can show times in it by default (display and the visitor's zone switcher are PAC-88). Never empty.
+	// TimeZone IANA name of the zone the link's days, hours, "today" and booking horizon are evaluated in (PAC-72 revision 2, owner decision D-9): the link owner's profile time zone, or `UTC` when the owner has no settings row or its stored name is not a loadable IANA zone. It is the zone actually used by `getPublicBookingSlots` and `createPublicBooking` for this link at the time of the read, so a booking page can show times in it by default (display and the visitor's zone switcher are PAC-88). Never empty. Disclosed to anyone who has the link, on every link: owner decision D-9 makes the owner's zone the page's default display. A failed read of the owner's settings is the operation's 500, never `UTC`.
 	TimeZone string `json:"time_zone"`
 	Title    string `json:"title"`
 

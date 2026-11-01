@@ -33,8 +33,10 @@ export function mondayOf(d: Date): Date {
  *
  * Weekday-ness is required: every seeded link is open Monday to Friday, and
  * since PAC-72 the slot listing and the booking honour the link's days of the
- * week (in UTC) and a 60-day horizon, so a weekend or a day past today + 59
- * offers no slot and refuses every booking with 409.
+ * week, in the link owner's profile time zone (UTC for every seeded owner,
+ * which has no settings row or `UTC`), and the link's horizon (60 days for
+ * every seeded link), so a weekend or a day past today + 59 offers no slot and
+ * refuses every booking with 409.
  */
 export function nextBookableWeekday(minDaysAhead = 7, now = new Date()): Date {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
