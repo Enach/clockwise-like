@@ -1743,3 +1743,40 @@ Applies the owner's OQ-9 answer (`.claude/factory/owner-decisions.md`, 2026-11-0
 **Acceptance-criterion ledger (revision 5.1).** Revised: AC-11 (scope string), AC-11b (object-id cases), AC-44 (release-record sentence removed), AC-51 (case (iv)). Every other criterion is unchanged.
 
 **Questions left for the owner.** OQ-1 (F1 only) and OQ-3 item 4 (unmanaged Microsoft directories, release-noted). OQ-9 is decided.
+
+## Challenge, revision 5.1 — 2026-11-01
+
+**Verdict**: accept
+
+Scope: confirming round on the delta `4264e4f..dc754be` (the "Revision 5.1" table, 5.1-1 to 5.1-6), against revision 5 as accepted by "Challenge, revision 5". Owner OQ-9 answer checked against `.claude/factory/owner-decisions.md` (2026-11-01: "add `profile` too"; `/me` `id` must equal `oid`; no other new scope).
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+None new. Revision 5.1 introduces no new criterion that cannot be falsified and no new path that writes on a refusal.
+
+### Revision 5 items, checked
+
+- OQ-9 applied: the Microsoft sign-in scope is exactly `openid profile Calendars.ReadWrite User.Read offline_access`, in that order, in §3 "Identities" and constraints, §6 (PAC-50 AC-24 test and PAC-68 AC-15/D-5), AC-11 and D-14. `email` stays excluded; Google is unchanged. The connect start keeps `Calendars.ReadWrite User.Read offline_access` (`auth.yaml:694`).
+- The object id comes from the signed ID token and is required (§3 "Identities", "The Microsoft tenant fails closed"; D-1). AC-11b replaces "stage 2 names the comparison" with two falsifiable cases: no or malformed `oid`, and profile identifier different from `oid`. Both are refusals with nothing written.
+- NB1: AC-51 case (iv) added (non-empty legacy account, recorded identifier O1, refused under rule (a), stays unbound, generation unchanged).
+- NB2: §5 "One-time consent" now covers tenants with user consent disabled (administrator must grant `openid` and `profile`), release-noted.
+- NB3: §5 "Sign-ins in flight at deploy" added (no ID token, refused under AC-11b, user signs in again), release-noted.
+- NB4: AC-44's release-record sentence moved to §3 "Sessions" as a release condition; AC-44 is now purely the `[unit]` assertion.
+
+### Criteria I could not falsify
+
+None new.
+
+### Citations I checked and found wrong
+
+None.
+
+### Consumers this breaks
+
+None beyond those already listed: `backend/auth/pac50_signin_scopes_test.go` (expected Microsoft string becomes the revision 5.1 string; it compares the joined string in order), PAC-47 and PAC-68 Microsoft fixtures (ID token now also carries `oid`).
+
+**Ready for implementation: yes** (together with contract revision 3.1, challenged in `contracts/features/PAC-71.md`).

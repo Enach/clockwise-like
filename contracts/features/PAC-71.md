@@ -542,3 +542,47 @@ Bundle hash at this revision: `943e2166ba595269b70dac8d789b0e1c9d4a147eb962eb021
 | 3.1-10 | Contract challenge r3 divergence 1: sign-in does **not** reuse the step-up verifier (`backend/auth/stepup.go:103`, which uses `/common` keys; `:245`, which rejects `tid` only on `/?#`). Sign-in gets its own tenant-pinned verifier: canonical GUID `tid` before any fetch, then per-tenant keys. Moving the step-up onto that verifier is recommended but out of PAC-71's scope. It is not a vulnerability today, since Microsoft serves the same keys at both URLs. It is recorded as candidate follow-up `stepupVerifierTenantPinned`, for the orchestrator to decide whether to file. | Callback step 2; §3 item 1; manifest `followUps`, backend merge condition. |
 
 **Alternative rejected in this revision.** Keep `/me` `id` as the object-id source with `oid` optional. Rejected: once `profile` is requested, Microsoft documents `oid` in the ID token. Taking it from the signed token and requiring `/me` to agree makes both sources mandatory, and so fails closed on any disagreement, which is what the owner asked for.
+
+## Challenge, revision 3.1 — 2026-11-01
+
+**Verdict**: accept
+
+Scope: confirming round on the delta `4264e4f..dc754be` ("Revision 3.1", items 3.1-1 to 3.1-10), against revision 3 as accepted by "Challenge, revision 3". Only `auth.yaml` descriptions changed; no schema, parameter or response changed.
+
+### Requests wrongly permitted
+
+None. Step 2 now refuses: `oid` absent or not a canonical GUID; `aud` other than the string `MICROSOFT_CLIENT_ID` or a one-element array of exactly it (an empty array, an extra audience and another client all refused); an unknown `kid` after the refetch or while that tenant's refetch is rate-limited; a key fetch that errors or exceeds 10 s. Step 3 refuses whenever `/me` `id` differs from `oid` (mandatory, no longer "when present"). `tid` is still checked as a canonical GUID before any fetch, so no unverified value reaches a URL.
+
+**The 1000-tenant LRU (availability only, acceptable).** The `id_token` is only ever read from the token response of a code exchange that the server makes with its own client secret over TLS; the callback never accepts a caller-supplied token. To place tenant X in the cache, an attacker therefore needs a real, consented sign-in by an account of tenant X against this client. Evicting a real tenant takes about 1000 such sign-ins from distinct tenants between two of that tenant's sign-ins. Eviction is not a refusal: the next sign-in of the evicted tenant is a cache miss and fetches the keys again (a first fetch, not a `kid` refetch). It is refused only if that fetch fails or exceeds 10 s, which is the same exposure as a cold cache after a restart. The per-minute refetch limit cannot be triggered against a real tenant either, because an unknown `kid` needs a Microsoft-signed token from that tenant. So the worst case is extra key fetches and latency, not a wrong identity and not a targeted lockout. No change required.
+
+### Responses the client cannot handle
+
+None new. Every new refusal is the existing `302 <FRONTEND_URL>/?error=signin_refused`.
+
+### Consumers affected
+
+- `backend/auth/pac50_signin_scopes_test.go:31-32`: Microsoft expected string becomes `openid profile Calendars.ReadWrite User.Read offline_access` (joined, in order, `:63`). Listed in §11.
+- No generated-code or web consumer: bundle changes are descriptions only; `backend/api/gen` and `MIGRATION.md` regenerate byte-identical.
+
+### Contract/implementation divergences
+
+None new. Divergence 1 of revision 3 is resolved by 3.1-10: sign-in gets its own tenant-pinned verifier and does not reuse `backend/auth/stepup.go:103`/`:245`; the step-up move is recorded as candidate follow-up `stepupVerifierTenantPinned`.
+
+### Uncertainties not actually resolved
+
+None blocking. Two editorial items for the implementer, neither changes behaviour:
+
+1. **§1 summary row is stale.** The `microsoftOAuthCallback` row in §1 (line 16) still says "Object id = Graph `/me` `id` (cross-checked against an ID-token `oid` when present)". The fragment (`auth.yaml` steps 2 and 3), §3 item 1, the manifest `microsoftObjectId` and 3.1-2 all say `oid` is required and `/me` `id` must equal it. The fragment is normative; fix the row when next touched.
+2. **Cache miss vs refetch.** Step 2 rate-limits only the refetch on an unknown `kid`. It is implied, not stated, that the first fetch for a tenant that is not cached (new or evicted) is not subject to that limit. The implementation should treat it that way, and a unit test can pin it (evict, then sign in, expect a fetch and success).
+
+### Verified clean
+
+- Scope string exact and ordered on `startMicrosoftOAuth` (description and Location, `auth.yaml:386`, `:410`) and in callback step 1 (`:454`); manifest `microsoftSignInScope`; connect unchanged (`auth.yaml:694`, `startMicrosoftConnect` requests neither `openid` nor `profile`).
+- `oid` required from the ID token, canonical GUID; `/me` `id` must equal it (case-insensitive GUID); identity = (`microsoft`, `tid`) + `oid`.
+- Contract challenge r3 items 2-4 and divergence 1 applied (3.1-7 to 3.1-10); spec challenge r5 NB1-NB4 carried into the manifest (AC-51, release merge condition, §14 steps 2 and 4, AC-44).
+- `py -3 scripts/openapi_assemble.py --check`: OK, bundle in sync (107 paths).
+- `py -3 scripts/openapi_migration_report.py --check`: OK, 129 operations (11 generated).
+- `bash scripts/openapi_gen_go.sh --check`: OK, `backend/api/gen` matches.
+- `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` = `943e2166ba595269b70dac8d789b0e1c9d4a147eb962eb021441b574e864195d` = manifest `contractHash`.
+
+**Ready for implementation: yes.**
