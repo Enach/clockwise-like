@@ -1248,3 +1248,126 @@ so reverting it is code-only.
   the contract, but A-1, A-2 and A-5 shape the API.
 - **OQ-3, OQ-5:** unchanged. OQ-5 (date picker) now has the data it needs (the
   reported horizon and zone) and moves to PAC-88.
+
+## Challenge, revision 2 — 2026-11-01
+
+Scope: "Revision 2 — owner answers 2026-11-01" (R2.1–R2.8) at `936fd32`, the
+merge `0e45c60` (`git show --remerge-diff`), and
+`git diff 48f6c60 936fd32`. Owner answers of 2026-11-01 are binding; readings
+A-1..A-7 are being confirmed with the owner and are not treated as defects.
+The backend Go suite was run against a throwaway PostgreSQL 16 container
+(`PACEDAY_TEST_DATABASE_URL`), which revision 2 could not do.
+
+**Verdict**: accept-with-changes
+
+### Blocking
+1. **AC-31's spring case contradicts itself.** The Paris spring change is at
+   01:00Z. `00:45Z` is 01:45 CET: it exists, it is on the 15-minute grid from
+   01:00, and a 15-minute slot there ends at 01:00Z (03:00 CEST), inside the
+   window. By R2.2 it is listed, so "every listed start books (201)" and "a
+   booking at 00:45Z is 409" cannot both hold. Every UTC instant maps to an
+   existing wall time, so no on-grid instant can play the role the clause
+   wants. *Resolves:* replace the 409 example with an instant off the grid (for
+   example 00:50Z), and add that 01:45 CET (00:45Z) is listed and books.
+2. **The refusal precedence is not falsifiable as a whole, and one cause has
+   no defined place.** AC-35 pins three pairs (horizon > days, too soon > taken,
+   taken > host busy). No pair pins **outside_link_hours > too_soon**: an
+   implementation checking horizon, notice, hours, taken, host passes every AC
+   and violates R2.2. Separately, a start on a day **before today** in the
+   link's zone is both outside "today..today+N−1" and inside any notice; R2.2
+   does not say whether that is `beyond_horizon` or `too_soon`. *Resolves:* add
+   to AC-35 a start both inside the notice and outside the hours (expects
+   `outside_link_hours`), and state, with an AC, the reason for a past start.
+3. **A failed read of the owner's zone is unspecified.** R2.2 defines "no
+   settings row" and "unknown zone name" as UTC. It does not say what happens
+   when the settings read itself fails (storage error). Falling back to UTC
+   there would silently move a non-UTC owner's hours and accept bookings at
+   times the owner never opened, the opposite of D-7 (storage failure fails
+   closed). The only storage helper today, `storage.GetOrCreateSettingsByUser`
+   (`backend/storage/settings.go:266`), also inserts, which AC-30 forbids, so
+   the implementer writes a new read and must know its error answer.
+   *Resolves:* state that a settings read error is a server error (booking 500,
+   nothing written; explicit-date listing 500; date-less listing 500 or no
+   dates; public and owner link reads 500), never the UTC fallback; add an AC.
+4. **R2.6 is false as written: a PAC-81 test does not "stay green unchanged".**
+   `TestPAC81_SlotListingCutIs503` (`backend/api/pac81_paths_test.go:284`) fails
+   on this branch: `GET /api/book/{slug}/slots?date=2030-01-07` answers
+   `200 {"available_dates":[],"slots":[]}` instead of 503, because 2030-01-07 is
+   beyond the horizon and PAC-72 answers before any host is read. PAC-72's
+   behaviour is right; the test's date is what is wrong. *Resolves:* R2.6 names
+   this test among those the implementer amends (date inside the horizon under
+   a fixed clock; the 503 assertion unchanged). R2.6's two known engine
+   failures were confirmed (`TestPAC72_CollectiveSlots_PendingBookingOnAnotherLinkIsBusy`,
+   `TestPAC72_CollectiveSlots_StorageFailureIsAnError/{focus_blocks,bookings}`);
+   nothing else in `go test ./...` fails.
+
+### Non-blocking
+1. **Migration 032 clashes with PAC-71.** `impl/pac-71-identity-binding-backend`
+   (and `factory/pac-71-rev5`) add `032_identity_binding.{up,down}.sql`. The
+   runner (`backend/storage/db.go:39`, golang-migrate `iofs`) refuses two files
+   with one version, so the backend stops starting once both merge. R2.7 should
+   say the migration takes the next free number at merge time; the contract
+   challenge makes this blocking for the manifest.
+2. **Co-hosts did not opt in.** On a collective link the owner's `specific`
+   setting tells a visitor that some host had other busy time (`host_busy` vs
+   `taken`). The co-host consented to nothing. Co-hosts can see the setting (it
+   is on `SchedulingLink`, which shared links return). Add to OQ-7 with A-1.
+3. **The zone is disclosed on every link, not opt-in.** `PublicLinkInfo.time_zone`
+   tells any anonymous visitor the owner's profile zone. D-9 ("the booking page
+   shows the host's zone by default") implies it, so it is the owner's choice,
+   but R2.2 should say so explicitly.
+4. **A 365-day horizon and the date-less listing.** The date-less mode probes
+   every day of the horizon, each with per-host provider reads, under the 90 s
+   request budget (`backend/api/routes.go:15`). At 365 days that predictably
+   ends in PAC-81's 503. The shipped web never calls the date-less mode
+   (`smart-calendar-flow/src/api/schedulingLinks.ts` `getPublicSlots` returns
+   early without a date), but R2.5 hands the date picker to PAC-88. State the
+   expectation (or a bound) before PAC-88 relies on it.
+5. **Cheap refusals vs a storage 500 under `specific`.** Horizon, days/hours
+   and notice need no storage read. R2.2 does not say whether such a start with
+   a failing storage read is the 409 with its reason or the 500. (The listing
+   already answers an out-of-horizon date with 200 before any read.)
+6. **Window bounds on a DST day.** A-6 covers slot starts. A `window_start` or
+   `window_end` that does not exist that day (for example 02:30 Paris in spring)
+   is not defined; Go's `time.Date` normalises it forward, which would widen the
+   window.
+7. AC-28(c) says "05:00 New York"; true only in summer (04:00 EST in winter).
+   AC-28(d) also passes under the old UTC rule (Saturday is not a link day in
+   either zone); (e) is what actually distinguishes the zone.
+8. `e2e/lib/dates.ts` comment says the link's days are "in UTC"; true for every
+   seeded owner, not the rule.
+
+### Criteria I could not falsify
+- The full precedence order of R2.2 (Blocking 2).
+- AC-31's spring clause as written (Blocking 1): no implementation can pass it.
+
+### Citations I checked and found wrong
+- R2.6 "Its [PAC-81's] tests stay green unchanged" — `TestPAC81_SlotListingCutIs503`
+  fails on this branch (Blocking 4).
+- Contract R2-C.1 "the accept/leave responses that return `SchedulingLink`" —
+  only `createSchedulingLink`, `getSchedulingLink`, `updateSchedulingLink` and
+  (through `SchedulingLinkListResponse`) `listSchedulingLinks` return it;
+  `leaveSchedulingLink` is a 204.
+- Verified correct: `engine/booking.go:154-172` (unreadable host busy for the
+  window, storage error kept apart), `engine/booking.go:355-379`
+  (`ErrHostCalendarUnreadable`), `api/handlers_booking.go:411-415` (409), the
+  cited PAC-81 tests and the e2e "an unreadable host calendar" describe.
+
+### Consumers this breaks
+- None in the shipped web: it uses hand-written types (`src/api/types.ts`),
+  never runtime-parses `SchedulingLink` / `PublicLinkInfo` with the generated
+  strict zod, and its PATCH (`src/api/schedulingLinks.ts` `backendLinkBody`)
+  omits the new keys, so editing a link keeps its horizon and refusal setting.
+  On a 409 it shows `error` verbatim (`src/pages/PublicBooking.tsx:186`), so the
+  `specific` texts appear with no web change.
+- `mcp/` does not call these operations.
+- e2e: no assertion breaks; every seeded owner is UTC or has no settings row.
+
+### Merge `0e45c60`
+- e2e seed renumbering is consistent: `b3b3…` is in `CONNECTED` (so in
+  `SEEDED_USER_IDS`) and in `ACCEPTED_CREDENTIALS`; `c9999…` is in
+  `SEEDED_LINK_IDS`; seed.sql adds one user, one token, one link and one
+  accepted-host row, so `SEEDED_ACCEPTED_HOST_ROWS = links + 1` still holds. No
+  id collides.
+- The AC-17d flips (api and engine) are justified by D-6 and match PAC-81's own
+  tests; the merged handler keeps PAC-81's budget 503 on all three paths.

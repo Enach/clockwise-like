@@ -597,3 +597,113 @@ Recorded in the commit and the Linear comment. The checks are:
 
 Not run: the web generated-types check, Go tests (no database on this
 machine), and e2e.
+
+## Challenge, revision 3 — 2026-11-01
+
+Scope: contract revision "3" (section "Revision 2 — owner answers
+2026-11-01"), `contracts/openapi/paths/booking.yaml`, the bundle, the manifest
+and migration 032 at `936fd32`. Spec findings are in `docs/specs/PAC-72.md`
+"Challenge, revision 2 — 2026-11-01".
+
+**Verdict**: accept-with-changes
+
+### Blocking
+1. **Migration number 032 is taken twice, and the manifest forbids the fix.**
+   `origin/impl/pac-71-identity-binding-backend` and `origin/factory/pac-71-rev5`
+   both add `backend/storage/migrations/032_identity_binding.{up,down}.sql`. The
+   runner (`backend/storage/db.go:39`, golang-migrate `iofs`) fails on a
+   duplicate version, so whichever of PAC-71 / PAC-72 merges second leaves a
+   backend that does not start. The manifest's `allowedPaths` names exactly
+   `032_scheduling_link_horizon_refusal` and `forbiddenPaths` forbids "any other
+   migration", so the implementer may not renumber. A staging database that
+   applied one 032 would also silently skip the other. *Resolves:* the manifest
+   allows "the next free migration number at merge time" for this one
+   migration; the down file's "returns to 031" follows the number; PAC-71's
+   manifest needs the same allowance.
+2. **The settings-read error has no contracted answer** (spec Blocking 3).
+   `PublicLinkInfo.time_zone` says "UTC when the owner has no settings row or
+   its stored name is not a loadable IANA zone"; a storage error is neither.
+   *Resolves:* `getPublicLinkInfo`, `getPublicBookingSlots`,
+   `createPublicBooking` and the `SchedulingLink` reads state that a failed read
+   of the owner's settings is their existing 500, never the UTC fallback.
+
+### Requests wrongly permitted
+1. `POST /api/scheduling-links` with `{"title":"x","booking_horizon_days":null}`
+   — rejected by the schema (the create field is not nullable), while a Go
+   `*int` decoder reads it as absent (60). Server more lenient than the
+   contract; harmless. Pin it in the AC-26 tests or declare it nullable.
+2. `PATCH /api/scheduling-links/{id}` with `{"refusal_message":null}` —
+   permitted, means unchanged (stated). `nullable` + `enum` without `null` is
+   this file's existing convention (`usage_type`), not new.
+   No request was found that the schema permits and the specified server must
+   reject: `booking_horizon_days` is `type: integer`, `minimum: 1`,
+   `maximum: 365`; `refusal_message` an enum; both objects
+   `additionalProperties: false`.
+
+### Responses the client cannot handle
+1. `createPublicBooking` 409 may, per the schema, return
+   `{"error":"slot is too soon","reason":"taken"}` or
+   `{"error":"slot is no longer available","reason":"host_busy"}`: the pairing
+   lives only in the description. The rejected `oneOf` alternative was rejected
+   for a real reason (oapi-codegen unions), so non-blocking; AC-34/AC-35 must
+   assert the exact pairs. The shipped web shows `error` verbatim
+   (`smart-calendar-flow/src/pages/PublicBooking.tsx:186`) and ignores `reason`.
+2. Nothing the shipped web cannot render: it never runtime-parses
+   `SchedulingLink`/`PublicLinkInfo` (the generated `z.strictObject` at
+   `src/api/generated/schemas.ts:380,428` is unused for these), and its own
+   types ignore extra keys.
+
+### Consumers affected
+- smart-calendar-flow `src/api/schedulingLinks.ts:544-559` — the PATCH body
+  built by `backendLinkBody` omits the new keys, so a web edit leaves
+  `booking_horizon_days` / `refusal_message` unchanged. Correct.
+- smart-calendar-flow `src/api/generated` — regenerated types gain required
+  keys; no hand-written fixture on `origin/main` is typed as the generated
+  `SchedulingLink` or `PublicLinkInfo`, so `tsc` should not break.
+- `mcp/` — no scheduling-link or booking calls (`mcp/tools.go`).
+- `e2e/` — no openapi response validation; seeded owners are UTC or have no
+  settings row; no test changes an owner's zone.
+
+### Contract/implementation divergences
+1. Expected until the build stage (`mergeAfter` covers it): the server sends
+   none of `time_zone`, `booking_horizon_days`, `refusal_message`, and still uses
+   `const bookingHorizonDays = 60` (`backend/api/handlers_booking.go:148`).
+2. **Merge artifact in contract text.** The `createPublicBooking` 500
+   description begins `Storage or engine failure. ... "internal error" or
+   "booking Storage or engine failure. ... "internal error" or "booking
+   conflict check failed"`: a fragment is duplicated. Non-blocking; fix the
+   sentence (PAC-81's tail "A 500 from this operation does NOT prove..." is
+   intact).
+3. R2-C.1's "accept/leave responses that return `SchedulingLink`" is wrong:
+   only create/get/update and the list return it.
+
+### Uncertainties not actually resolved
+1. A-1 (who owns the refusal setting) and the co-host consent it implies on a
+   collective link — owner confirmation pending (OQ-7); not a contract defect.
+
+### Verified clean
+- `python3 scripts/openapi_assemble.py --check` → `OK: bundle is in sync (106 paths)`;
+  `python3 scripts/openapi_migration_report.py --check` → `OK: MIGRATION.md covers all 128 operations (10 generated)`;
+  `scripts/openapi_gen_go.sh --check` → `OK: backend/api/gen matches the contract`;
+  `go build ./... && go vet ./...` clean.
+- `sha256sum contracts/openapi/openapi.yaml` =
+  `ba36269f24210ac4e09009eab59f64855b4805f6802c77fbaeb6c6251b8f3780`, equal to
+  the manifest's `contractHash`.
+- PAC-81 Part A's `getPublicBookingSlots` text ("Hosts (PAC-81, spec AC-A18)"
+  through the rate-limit paragraph) is identical to `48f6c60`; the 503 and 429
+  responses of both operations are identical to `48f6c60`. The booking
+  description's D-6 paragraph was reworded on purpose (R2-C.2), same meaning
+  plus `host_busy`.
+- Specific-reason disclosure is opt-in per link (column `DEFAULT 'generic'`,
+  create default `generic`, every existing row `generic`). Precedence puts
+  horizon, hours and notice before anything host-dependent, so a visitor
+  cannot probe a host's calendar outside the link's offered window. An
+  unreadable calendar and a hostless link both read `host_busy`, so an outage
+  is not disclosed.
+- Migration 032 up/down: `go test ./storage/` (including the step-by-step down
+  test from latest to 005 and back up) passes on PostgreSQL 16; the down file's
+  first line says it destroys data.
+- Owner-only update of the new fields: `updateSchedulingLink` keeps its 403.
+- DST is testable offline: Go's zoneinfo on dev machines, `tzdata` in
+  `backend/Dockerfile:3`; `time.LoadLocation` is already PAC-24's validation
+  (`backend/api/handlers_settings.go:310`).
