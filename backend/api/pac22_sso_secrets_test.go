@@ -5,14 +5,22 @@ package api
 // projection; createSsoProvider validates at entry and keeps an omitted client
 // secret only where it would be sent (spec v3.4, contract revision 1.3).
 //
-// setSsoProviderState and the PAC-50 write authorization are not here: the
-// contract says the transition is not implementable before PAC-50 merges
-// (spec D-5, D-6), so AC-9, AC-10, AC-12's server half, AC-15, AC-16, AC-17
-// and AC-19 to AC-21 wait for it. A suspended configuration is arranged
-// through storage where a criterion needs one (AC-11, AC-28).
+// setSsoProviderState is not here: the contract says the transition is not
+// implementable before PAC-50 merges (spec D-5, D-6), so AC-9, AC-10, AC-12's
+// server half, AC-15, AC-16, AC-17 and AC-19 to AC-21 wait for it. A
+// suspended configuration is arranged through storage where a criterion
+// needs one (AC-11, AC-28).
+//
+// PAC-50 (contract revision 8.1, N2): every SSO write is now behind PAC-50's
+// gate, so the handler is built through newSSOHandlers and every write this
+// file sends is made by a caller holding a live sso_write step-up grant
+// (pac22Do). The PAC-50 gate itself is tested in pac50_*_test.go; what is
+// asserted here is PAC-22's: the projection, the 400s and their order, the
+// kept-secret rules and the interleaving.
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +30,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/storage"
@@ -71,7 +80,7 @@ func pac22NewOrg(t *testing.T) pac22Org {
 
 func pac22Router(t *testing.T) http.Handler {
 	t.Helper()
-	h := &ssoHandlers{ah: &authHandlers{db: openTestDB(t), jwtSecret: "test-secret", frontendURL: "http://frontend.test"}}
+	h := newSSOHandlers(&authHandlers{db: openTestDB(t), jwtSecret: "test-secret", frontendURL: "http://frontend.test"}, ssoOptions{})
 	r := chi.NewRouter()
 	r.Post("/api/admin/sso", h.createSSOProvider)
 	r.Get("/api/admin/sso", h.listSSOProviders)
@@ -88,11 +97,30 @@ func pac22Do(t *testing.T, method, path string, user uuid.UUID, body string) *ht
 	} else {
 		rd = strings.NewReader("")
 	}
+	if method == http.MethodPost || method == http.MethodDelete {
+		pac22GrantFor(t, user)
+	}
 	req := httptest.NewRequest(method, path, rd)
 	req = withUser(req, user)
 	rec := httptest.NewRecorder()
 	pac22Router(t).ServeHTTP(rec, req)
 	return rec
+}
+
+// pac22GrantFor gives an org member a live sso_write step-up grant, as a
+// successful PAC-50 step-up would, so the write that follows passes PAC-50's
+// authorization step. A caller with no org gets none (the membership 403
+// comes first anyway).
+func pac22GrantFor(t *testing.T, user uuid.UUID) {
+	t.Helper()
+	db := openTestDB(t)
+	u, err := storage.GetUserByID(db, user)
+	if err != nil || u == nil || u.OrgID == nil {
+		return
+	}
+	if _, err := storage.IssueSSOStepupGrant(context.Background(), db, u.ID, *u.OrgID, "google", storage.SSOGrantPurposeSSOWrite, time.Now()); err != nil {
+		t.Fatalf("issue step-up grant: %v", err)
+	}
 }
 
 func pac22JSON(t *testing.T, v map[string]any) string {
@@ -546,14 +574,15 @@ func TestPAC22_MembershipIsCheckedBeforeTheBody(t *testing.T) {
 }
 
 func TestPAC22_ValidationRunsBeforeTheDomainMatch(t *testing.T) {
-	// Checks 1-5 come before "can only configure SSO for your own domain".
+	// Checks 1-5 come before the domain 403 (PAC-50: provider_domain_mismatch,
+	// which replaced "can only configure SSO for your own domain").
 	org := pac22NewOrg(t)
 	rec := pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID,
 		pac22JSON(t, pac22Body("someone-else.test", "https://i", "c", map[string]any{"oidc_client_secret": ""})))
 	pac22AssertError(t, rec, http.StatusBadRequest, "oidc_client_secret must not be empty")
 	rec = pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID,
 		pac22JSON(t, pac22Body("someone-else.test", "https://i", "c", nil)))
-	pac22AssertError(t, rec, http.StatusForbidden, "can only configure SSO for your own domain")
+	pac22AssertError(t, rec, http.StatusForbidden, "provider_domain_mismatch")
 }
 
 func TestPAC22_StoredSAMLRowStaysReadableAndRemovable(t *testing.T) {
@@ -661,20 +690,22 @@ func TestPAC22_CaseVariantSecretKeyIsNotTheSecret(t *testing.T) {
 
 	base := pac22JSON(t, pac22Body(org.domain, idp.srv.URL, idp.clientID, nil))
 	withTail := func(tail string) string { return strings.TrimSuffix(base, "}") + "," + tail + "}" }
-	cases := map[string]string{
-		"upper case, empty":           withTail(`"OIDC_CLIENT_SECRET":""`),
-		"upper case, null":            withTail(`"OIDC_CLIENT_SECRET":null`),
-		"mixed case, other value":     withTail(`"Oidc_Client_Secret":"` + pac22Secret(t) + `"`),
-		"exact then variant, empty":   withTail(`"oidc_client_secret":"` + s1 + `","OIDC_CLIENT_SECRET":""`),
-		"exact then variant, a value": withTail(`"oidc_client_secret":"` + s1 + `","OIDC_CLIENT_SECRET":"` + pac22Secret(t) + `"`),
+	// PAC-50 (contract revision 8, createSsoProvider step 2c): a case variant
+	// of a property name is an undeclared property, so it is now refused with
+	// 400 `unknown property: <name>` instead of being ignored. PAC-22's
+	// guarantee holds more strictly: a variant never becomes the secret, the
+	// stored secret is unchanged, and sign-in still works.
+	cases := map[string]struct{ body, name string }{
+		"upper case, empty":           {withTail(`"OIDC_CLIENT_SECRET":""`), "OIDC_CLIENT_SECRET"},
+		"upper case, null":            {withTail(`"OIDC_CLIENT_SECRET":null`), "OIDC_CLIENT_SECRET"},
+		"mixed case, other value":     {withTail(`"Oidc_Client_Secret":"` + pac22Secret(t) + `"`), "Oidc_Client_Secret"},
+		"exact then variant, empty":   {withTail(`"oidc_client_secret":"` + s1 + `","OIDC_CLIENT_SECRET":""`), "OIDC_CLIENT_SECRET"},
+		"exact then variant, a value": {withTail(`"oidc_client_secret":"` + s1 + `","OIDC_CLIENT_SECRET":"` + pac22Secret(t) + `"`), "OIDC_CLIENT_SECRET"},
 	}
-	for name, body := range cases {
-		rec := pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID, body)
+	for name, c := range cases {
+		rec := pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID, c.body)
 		pac22AssertNoSecret(t, rec, s1)
-		p := pac22DecodeCreated(t, rec)
-		if !p.HasOidcClientSecret {
-			t.Errorf("%s: has_oidc_client_secret = false after the write", name)
-		}
+		pac22AssertError(t, rec, http.StatusBadRequest, "unknown property: "+c.name)
 		if stored := pac22Stored(t, org.domain); stored == nil || stored.OIDCClientSecret != s1 {
 			t.Errorf("%s: the stored secret changed", name)
 		}
@@ -688,7 +719,7 @@ func TestPAC22_CaseVariantSecretKeyIsNotTheSecret(t *testing.T) {
 	body := pac22JSON(t, pac22Body(other.domain, "https://i", "c", nil))
 	body = strings.TrimSuffix(body, "}") + `,"OIDC_CLIENT_SECRET":"` + pac22Secret(t) + `"}`
 	pac22AssertError(t, pac22Do(t, http.MethodPost, "/api/admin/sso", other.userID, body),
-		http.StatusBadRequest, "oidc_client_secret is required")
+		http.StatusBadRequest, "unknown property: OIDC_CLIENT_SECRET")
 	pac22AssertUnchanged(t, nil, pac22Stored(t, other.domain))
 }
 
@@ -772,17 +803,29 @@ func TestPAC22_NothingToKeepIsRefused(t *testing.T) {
 		pac22AssertNoSecret(t, rec, s)
 		pac22AssertUnchanged(t, before, pac22Stored(t, org.domain))
 	})
-	t.Run("the key is the domain as submitted", func(t *testing.T) {
-		// Check 6 reads the row the write would be stored under: an upper-case
-		// domain never borrows the lower-case row's secret.
+	t.Run("the key is the domain the write is stored under", func(t *testing.T) {
+		// Check 6 reads the row the write would be stored under. Since PAC-50
+		// that is the row under the lower-cased domain (contract revision 8,
+		// createSsoProvider step 4, which PAC-22's own text anticipated): an
+		// upper-case domain is a replace of that one row and keeps its secret;
+		// no second row exists under another casing.
 		org := pac22NewOrg(t)
+		s := pac22Secret(t)
 		pac22Store(t, &storage.SSOProvider{Domain: org.domain, ProviderName: "Okta", ProviderType: "oidc", Enabled: true,
-			OIDCIssuer: "https://i", OIDCClientID: "c", OIDCClientSecret: pac22Secret(t)})
+			OIDCIssuer: "https://i", OIDCClientID: "c", OIDCClientSecret: s})
 		upper := strings.ToUpper(org.domain)
-		pac22AssertError(t, pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID, pac22JSON(t, pac22Body(upper, "https://i", "c", nil))),
-			http.StatusBadRequest, msg)
-		if pac22Stored(t, upper) != nil {
-			t.Fatal("a row was created under the upper-case domain with a borrowed secret")
+		rec := pac22Do(t, http.MethodPost, "/api/admin/sso", org.userID, pac22JSON(t, pac22Body(upper, "https://i", "c", nil)))
+		got := pac22DecodeCreated(t, rec)
+		pac22AssertNoSecret(t, rec, s)
+		if got.Domain != org.domain || !got.HasOidcClientSecret {
+			t.Fatalf("replace under the upper-case domain = %+v; want the lower-case row with its secret kept", got)
+		}
+		var n int
+		if err := openTestDB(t).QueryRow(`SELECT count(*) FROM sso_providers WHERE lower(domain) = $1`, org.domain).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("rows under any casing = %d, %v; want 1", n, err)
+		}
+		if stored := pac22Stored(t, org.domain); stored.OIDCClientSecret != s {
+			t.Fatal("the kept secret changed")
 		}
 	})
 }

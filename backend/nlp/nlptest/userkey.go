@@ -13,18 +13,17 @@ import (
 // UserKey is the sentinel key of the user-key providers (PAC-66-B AC-B16).
 const UserKey = "sk-sentinel-user-key-pac66b"
 
-// UserDestinations installs the operator's approved destinations for openai,
-// anthropic and ollama, given as the raw values of the three variables
-// (PAC-66-B), and a fresh Recorder as the transport of those three clients,
-// for the duration of t. A malformed value fails the test: a test Given must
-// say exactly what it approves.
-func UserDestinations(t testing.TB, openai, anthropic, ollama string) *Recorder {
+// UserDestinations installs the operator's approved destinations for openai
+// and anthropic, given as the raw values of the two variables (PAC-66-B,
+// gateway prefixes since NEW-llm-bring-your-own), and a fresh Recorder as the
+// transport of those two clients, for the duration of t. A malformed value
+// fails the test: a test Given must say exactly what it approves.
+func UserDestinations(t testing.TB, openai, anthropic string) *Recorder {
 	t.Helper()
 	d, notices := config.DecideLLMUserDestinations(func(k string) string {
 		return map[string]string{
 			config.EnvLLMApprovedHostsOpenAI:    openai,
 			config.EnvLLMApprovedHostsAnthropic: anthropic,
-			config.EnvLLMApprovedOriginsOllama:  ollama,
 		}[k]
 	})
 	if len(notices) > 0 {

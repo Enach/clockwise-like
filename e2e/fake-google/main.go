@@ -70,6 +70,7 @@ func NewServer(store *Store) *Server {
 	s := &Server{store: store, mux: http.NewServeMux()}
 	s.mux.HandleFunc(apiRoot, s.product)
 	s.registerFixture()
+	s.registerIdP() // PAC-50: the SSO admin step-up's identity provider (idp.go)
 	return s
 }
 

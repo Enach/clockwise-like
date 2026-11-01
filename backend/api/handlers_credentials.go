@@ -16,6 +16,7 @@ import (
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/conference"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
@@ -27,8 +28,13 @@ import (
 // hand-written (contracts/openapi/MIGRATION.md).
 type generatedServer struct {
 	gen.StrictServerInterface
-	db *sql.DB
-	ch *conferencingHandlers
+	db  *sql.DB
+	ch  *conferencingHandlers
+	sso *ssoHandlers // getSsoStepupOptions only (PAC-50)
+	// orgAI serves the organisation AI operations (PAC-73 Part 2).
+	orgAI *orgAIHandlers
+	// ready serves getReadiness (PAC-81 Part A).
+	ready *readiness
 }
 
 type requestKey struct{}
@@ -152,7 +158,7 @@ func revokeZoom(ctx context.Context, removed string) bool {
 		if cred.RefreshToken == "" || clientID == "" {
 			return false
 		}
-		renewed, err := conference.ZoomOAuthConfig(clientID, secret).TokenSource(ctx, &oauth2.Token{RefreshToken: cred.RefreshToken}).Token()
+		renewed, err := conference.ZoomOAuthConfig(clientID, secret).TokenSource(outbound.WithIdentityClient(ctx), &oauth2.Token{RefreshToken: cred.RefreshToken}).Token()
 		if err != nil {
 			if r := requestFrom(ctx); r != nil {
 				logServerError(r, "disconnect zoom: renew for revocation", err, http.StatusOK)

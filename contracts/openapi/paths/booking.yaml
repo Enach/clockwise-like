@@ -60,7 +60,7 @@ paths:
         atomically, as the very first step of the handler: before the link
         lookup, before the body is read and before any validation, so every
         request counts whatever it would otherwise have answered (201, 400, 404,
-        409, 410 or 500), and a refused request answers 429 even for an
+        409, 410, 500 or 503), and a refused request answers 429 even for an
         unknown slug and never writes a booking. Concurrent requests cannot
         exceed the limit. The count is per client across all links, not per
         link or per host, and is separate from the slot-listing budget of
@@ -92,27 +92,43 @@ paths:
         and events are read only for the daily window), no focus block, and no
         booking that is not `cancelled` (pending or confirmed) on any link the
         host owns or co-hosts, this link included; (4) the start is at least
-        `min_notice_minutes` after the request is handled; (5) the start's UTC
-        date is today (UTC) or one of the next 59 days, a fixed 60-day booking
-        horizon (no per-link horizon exists); (6) the link has at least one
-        accepted host. Days, hours and the horizon are evaluated in UTC
-        whatever zone the server process runs in. `start` is compared as an
-        instant, so another UTC offset denoting a grid instant is the same
-        start; the stored and returned start and end are exactly the slot's,
-        in UTC. A start the rule does not offer answers 409 with the single
-        body `{"error":"slot is no longer available"}`, whatever rule failed,
-        and nothing is written: no booking row, no calendar event, no email.
-        The 409 check runs after the 429, 404, 410 and 400 checks. A host
-        whose external calendar cannot be read (not connected, provider error,
-        refused credential) is treated as free for calendar events, as the
-        listing does, and the booking proceeds if the rest of the rule offers
-        the slot; a storage failure while reading the link's accepted hosts, a
-        host's focus blocks or the bookings on the hosts' links answers 500
-        and writes nothing, never 409. Not guaranteed: two concurrent requests
-        for the same or overlapping starts can both pass the check before
-        either is written (no storage-level exclusion; out of scope for
-        PAC-72). Still open (API-051, owned by PAC-40): `uses_count` is
-        recomputed from live bookings, so cancelling a booking re-opens an
+        `min_notice_minutes` after the request is handled; (5) the start's
+        date in the link's zone is today (in that zone) or one of the next
+        `booking_horizon_days` - 1 days (PAC-72 revision 2, owner decision D-1:
+        a per-link setting, 1..365, default 60); (6) the link has at least one
+        accepted host. The link's zone (PAC-72 revision 2, owner decision D-9)
+        is the link OWNER's profile time zone (`settings.timezone`), whoever
+        the co-hosts are and whatever zone the server process runs in; when the
+        owner has no settings row or the stored name is not a loadable IANA
+        zone, the zone is UTC. Days, hours, the grid, "today" and the horizon
+        are all evaluated in that zone, as wall-clock times: a wall time that
+        does not exist on a daylight-saving change day is not offered, and a
+        wall time that occurs twice is offered once, at its first occurrence.
+        The zone used is exposed as `PublicLinkInfo.time_zone`. `start` is
+        compared as an instant, so any UTC offset denoting a grid instant is
+        the same start; the stored and returned start and end are exactly the
+        slot's, in UTC. A start the rule does not offer answers 409 and nothing
+        is written: no booking row, no calendar event, no email. The 409 body
+        depends on the link's `refusal_message` setting (PAC-72 revision 2,
+        owner decisions D-2/D-5): `generic` (the default) answers the single
+        body `{"error":"slot is no longer available"}` whatever rule failed;
+        `specific` answers one reason, see the 409 response. The 409 check runs
+        after the 429, 404, 410 and 400 checks. Host calendars must be readable
+        (owner decision PAC-72 D-6, 2026-11-01, as implemented by PAC-81 Part
+        A): each accepted host's calendar is read for the slot's day window
+        (at most 4 concurrent reads, each limited as on
+        `getPublicBookingSlots`); a host whose calendar cannot be read (not
+        connected, a provider error, a refused credential, or its own time
+        limit) is busy for the whole window, so the slot is not offered and the
+        booking is refused with the 409 (reason `host_busy`); nothing is
+        written. A host not read because the request budget ran out is the
+        503, never a 409. A storage failure while reading the link's accepted
+        hosts, a host's focus blocks or the bookings on the hosts' links
+        answers 500 and writes nothing, never 409. Not guaranteed: two
+        concurrent requests for the same or overlapping starts can both pass
+        the check before either is written (no storage-level exclusion; out of
+        scope for PAC-72). Still open (API-051, owned by PAC-40): `uses_count`
+        is recomputed from live bookings, so cancelling a booking re-opens an
         exhausted single-use link. When the start is accepted, the booking row
         is saved, then a calendar event (with
         the booker email as a guest) is attempted on each accepted host's
@@ -130,9 +146,22 @@ paths:
       responses:
         '201':
           description: >-
-            Booking confirmed. The stored and returned `start` and `end` equal
-            the offered slot exactly (in UTC). Host calendar events are attempted
-            best effort, as described above.
+            Booking saved (PAC-81, spec AC-A19). The stored and returned `start`
+            and `end` equal the offered slot exactly, in UTC (PAC-72). Once the
+            booking row is saved,
+            the host calendar events (best effort, as described above) and the
+            confirmation email are completed as one unit that does not depend on
+            this request: it has its own per-call time limits, and a deploy waits
+            for it within the drain (an abandoned unit is logged with the booking
+            id and the hosts done and not done). The server waits for that unit
+            only until the request budget runs out, then answers this 201 anyway,
+            so a host's calendar event may be written after the response. The
+            body is the same either way and carries no event data. With
+            responsive calendars every host event exists when the 201 is sent, as
+            before. A retry behaves as before PAC-81: 409 when the start is no
+            longer offered (the retried booking itself now occupies it), 410
+            when the link is exhausted; no request returns another request's
+            booking.
           content:
             application/json:
               schema:
@@ -166,17 +195,25 @@ paths:
         '409':
           description: >-
             The start is not one `getPublicBookingSlots` would offer now (PAC-72).
-            Causes, all answered with the same body so a refusal does not reveal
-            which rule failed: an accepted host is busy (a calendar event, widened
-            by the link's buffers; a focus block; or a pending or confirmed
-            booking on any link the host owns or co-hosts, this link included);
+            Nothing is written. Causes and, when the link's `refusal_message` is
+            `specific`, the `reason` each one answers: the start's date (link
+            zone) is after today + `booking_horizon_days` - 1 (`beyond_horizon`);
             the start is on a day not in the link's `days_of_week`, outside its
-            daily window, off the 15-minute grid counted from `window_start_time`
-            (including any non-zero seconds or fraction), or start + duration
-            ends after `window_end_time`; the start's UTC date is after today + 59
-            days (the 60-day booking horizon); the start is inside
-            `min_notice_minutes`; or the link has no accepted host. Nothing is
-            written.
+            daily window, off the 15-minute grid counted from
+            `window_start_time` (including any non-zero seconds or fraction), or
+            start + duration ends after `window_end_time` (`outside_link_hours`);
+            the start is inside `min_notice_minutes` (`too_soon`); a booking
+            that is not cancelled on THIS link overlaps the slot (`taken`); an
+            accepted host is busy - a calendar event widened by the link's
+            buffers, a focus block, a pending or confirmed booking on another
+            link the host owns or co-hosts, a calendar that could not be read
+            (D-6) - or the link has no accepted host (`host_busy`). When several
+            causes hold, the reason is the first in this order:
+            `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`,
+            `host_busy`. With `refusal_message` `generic` (the default) the body
+            is always exactly `{"error":"slot is no longer available"}` and has
+            no `reason`, so a refusal does not reveal which rule failed. The
+            setting is read when the request is handled.
           content:
             application/json:
               schema:
@@ -192,16 +229,36 @@ paths:
         '500':
           description: >-
             Storage or engine failure. `error` is one of "internal error" or "booking
+            Storage or engine failure. `error` is one of "internal error" or "booking
             conflict check failed". "booking conflict check failed" is the answer
             when busy time cannot be gathered from storage (the link's accepted
             hosts, a host's focus blocks, or the bookings on any link a host owns
             or co-hosts); nothing is written and the answer is never 409. A host
-            whose external calendar cannot be read is not a 500 (treated as free).
-            The detail is written to the server log and Sentry only (PAC-21).
+            whose external calendar cannot be read is not a 500 (it is busy: the
+            409, D-6). The detail is written to the server log and Sentry only
+            (PAC-21). A 500 from this operation does NOT prove that no booking was
+            saved: when the insert was sent and its result is lost (for example the
+            database connection drops), the outcome is unknown and the answer is
+            this 500 (PAC-81 contract revision 2). Only the 503 proves that nothing
+            was saved.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          description: >-
+            The request budget ran out BEFORE the booking insert was sent (PAC-81,
+            spec AC-A2, AC-A19; contract revision 2). From the moment the insert
+            is sent this request is never answered with this 503: the server
+            waits for the insert's own result (bounded by the insert's own
+            duration, not by the budget) and answers 201 if the row was saved, or
+            the 500 if the insert failed. So this 503 proves that no booking was
+            saved for this request (no calendar event, no email), and a client
+            may retry it. Shared body `{"error":"request timed out"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
 
   /api/book/{slug}/slots:
     get:
@@ -210,22 +267,40 @@ paths:
       summary: Available slots for a date, or the list of dates that have any slot.
       description: >-
         Two distinct modes. With `date`: `slots` is populated and `available_dates` is
-        always the empty array. Without `date`: the handler probes the 60-day booking
-        horizon, today (UTC) and the next 59 days, and returns in `available_dates` the
-        days that have at least one offered slot, with `slots` always the empty array.
-        Both keys are always present in both modes. A slot is offered by the same rule
-        `createPublicBooking` accepts (PAC-72; see that operation for the six parts):
-        duration, link days and daily window on the 15-minute grid, every accepted host
-        free, minimum notice, horizon, at least one accepted host. Days, hours and the
-        horizon are evaluated in UTC whatever zone the server process runs in. A day not
-        in the link's `days_of_week` offers no slot. An explicit `date` before today or
-        after today + 59 days answers 200 with `slots: []`, exactly like a fully booked
-        day, never an error; a link with no accepted host answers 200 with no slot and
-        no date in both modes. When busy time cannot be gathered from storage (the
-        link's accepted hosts, a host's focus blocks, or the bookings on any link a host
-        owns or co-hosts), the explicit-date mode answers 500 and the date-less mode
-        omits that day; a host whose external calendar cannot be read is treated as
-        free in both modes.
+        always the empty array. Without `date`: the handler probes the link's booking
+        horizon, today and the next `booking_horizon_days` - 1 days in the link's
+        zone, and returns in `available_dates` the days that have at least one
+        offered slot, with `slots` always the empty array. Both keys are always
+        present in both modes. A slot is offered by the same rule
+        `createPublicBooking` accepts (PAC-72; see that operation for the six parts
+        and the link's zone): duration, link days and daily window on the 15-minute
+        grid, every accepted host free, minimum notice, horizon, at least one
+        accepted host. Days, hours, "today" and the horizon are evaluated in the
+        link's zone (the link owner's profile time zone, UTC when it has none; the
+        zone used is `PublicLinkInfo.time_zone`), whatever zone the server process
+        runs in; slot instants are returned in UTC. A day not in the link's
+        `days_of_week` offers no slot. An explicit `date` before today or after the
+        horizon's last day answers 200 with `slots: []`, exactly like a fully
+        booked day, never an error; a link with no accepted host answers 200 with
+        no slot and no date in both modes. When busy time cannot be gathered from
+        storage (the link's accepted hosts, a host's focus blocks, or the bookings
+        on any link a host owns or co-hosts), the explicit-date mode answers 500
+        and the date-less mode omits that day.
+        Hosts (PAC-81, spec AC-A18): each accepted host's calendar is read on at
+        most 4 concurrent reads per request, each limited to its own 15 s (shortened
+        to the budget left minus a 10 s stop margin). A host whose calendar cannot be
+        read is BUSY for the whole requested window (owner decision PAC-72 D-6,
+        2026-11-01; it replaces the earlier "treated as free"): not connected, a
+        provider error, or a read that fails on its own time limit. Every link is
+        collective (every accepted host must be free; there is no round-robin or
+        any-host kind), so a link with such a host offers no slot for that date,
+        and without `date` that day is not listed; the answer is still a 200. A
+        host that was not read because the request budget ran out (a read not
+        started at the stop margin, or cut short by the budget) is neither free
+        nor busy: the answer is the 503. A read that hits a deadline shortened by the budget (budget left minus
+        the margin was below 15 s) counts as cut short by the budget, not as failing
+        on its own limit: the answer is the 503, never a 200 that silently omits that host or,
+        without `date`, a day. Neither mode has a partial shape.
         Rate limited per client (NEW-booking-rate-limit), separately from and more
         loosely than `createPublicBooking`: at most 120 requests per client per
         fixed 1-minute window, with or without `date`. The limit is checked and the
@@ -248,10 +323,11 @@ paths:
           in: query
           required: false
           description: >-
-            Day to enumerate, parsed with Go layout "2006-01-02" as a UTC calendar
-            day. A day outside the 60-day booking horizon (before today UTC, or after
-            today + 59 days) answers 200 with no slots. Omit for the 60-day
-            availability summary.
+            Day to enumerate, parsed with Go layout "2006-01-02" as a calendar day
+            in the link's zone (`PublicLinkInfo.time_zone`, PAC-72 revision 2). A
+            day outside the link's booking horizon (before today in that zone, or
+            after today + `booking_horizon_days` - 1) answers 200 with no slots.
+            Omit for the availability summary over the whole horizon.
           schema:
             type: string
             format: date
@@ -304,6 +380,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          $ref: '#/components/responses/RequestBudgetExpired'
 
   # ---------------------------------------------------------------------------
   # PUBLIC Zoom OAuth (routes.go:37-38, inside /api/auth but OUTSIDE the
@@ -1562,7 +1640,9 @@ components:
         before window_end"; "buffers must be zero or positive"; "min_notice_minutes
         must be zero or positive"; "usage_type must be reusable, recurring, or
         single_use"; "max_uses must be set to a positive integer for recurring links";
-        "slug cannot be empty" (PATCH only).
+        "slug cannot be empty" (PATCH only); "booking_horizon_days must be
+        between 1 and 365"; "refusal_message must be generic or specific"
+        (both PAC-72 revision 2).
       content:
         application/json:
           schema:
@@ -1602,16 +1682,56 @@ components:
     BookingSlotUnavailableError:
       type: object
       description: >-
-        The `BookingError` envelope with its one possible 409 message pinned
-        (PAC-72): every start `createPublicBooking` refuses because the slot
-        listing would not offer it carries this exact body, whatever rule
-        failed. Written by api.writeError.
+        The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the
+        link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5).
+        `generic` (the default): exactly `{"error":"slot is no longer
+        available"}`, no `reason` key, whatever rule failed. `specific`: both
+        keys, `reason` naming the first failed rule and `error` the one text
+        paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` -
+        "slot is outside the link's days or hours"; `beyond_horizon` - "slot is
+        beyond the link's booking horizon"; `host_busy` - "a host is busy at
+        that time"; `taken` - "slot is already booked". "slot is no longer
+        available" never carries a `reason`, and a specific text never appears
+        without its `reason`. Written by api.writeError (generic) or the same
+        envelope plus `reason` (specific).
       required: [error]
       additionalProperties: false
       properties:
         error:
           type: string
-          enum: ['slot is no longer available']
+          enum:
+            - 'slot is no longer available'
+            - 'slot is too soon'
+            - "slot is outside the link's days or hours"
+            - "slot is beyond the link's booking horizon"
+            - 'a host is busy at that time'
+            - 'slot is already booked'
+        reason:
+          $ref: '#/components/schemas/BookingRefusalReason'
+
+    BookingRefusalReason:
+      type: string
+      description: >-
+        Why `createPublicBooking` refused a start (PAC-72 revision 2). Sent only
+        when the link's `refusal_message` is `specific`. Precedence when several
+        hold: `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`,
+        `host_busy`. `outside_link_hours` covers a day not among the link's
+        days, a start or end outside its daily window and a start off the
+        15-minute grid. `taken` is a non-cancelled booking on this same link;
+        `host_busy` is any other busy time of an accepted host (calendar event
+        widened by buffers, focus block, booking on another link, unreadable
+        calendar per D-6) or a link with no accepted host.
+      enum: [too_soon, outside_link_hours, beyond_horizon, host_busy, taken]
+
+    BookingRefusalMessage:
+      type: string
+      description: >-
+        The link owner's choice of 409 body for refused public bookings (PAC-72
+        revision 2, owner decisions D-2/D-5). `generic`: one message, "slot is
+        no longer available", for every refusal, revealing nothing about the
+        hosts' calendars. `specific`: the reason (see `BookingRefusalReason`),
+        which tells a visitor, for example, that a host is busy at that time.
+      enum: [generic, specific]
 
     # ---- Public booking ------------------------------------------------------
 
@@ -1640,7 +1760,9 @@ components:
         whether or not that token still works. Nothing is renewed or tested to
         compute it. A host whose Google credential is dead, including one whose
         loss Paceday has recorded (PAC-67), still counts as checked, while the
-        slots are computed without that host's calendar; a host with no Google
+        host's calendar cannot be read, so that host is busy and no slot is
+        offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were
+        computed without that host's calendar); a host with no Google
         token row at all (for example one on Outlook) is not counted as checked.
         This is deliberate: counting only usable tokens would tell every visitor
         with the link that a host's connection is dead (spec PAC-67 D-14, AC-28).
@@ -1657,7 +1779,9 @@ components:
     PublicLinkInfo:
       type: object
       description: backend/api/handlers_booking.go publicLinkDTO.
-      required: [slug, title, durations, hosts, min_notice_minutes, usage_type, coverage]
+      required:
+        [slug, title, durations, hosts, min_notice_minutes, usage_type, coverage,
+         time_zone, booking_horizon_days]
       additionalProperties: false
       properties:
         slug:
@@ -1682,6 +1806,26 @@ components:
           enum: [reusable, recurring, single_use]
         coverage:
           $ref: '#/components/schemas/PublicLinkCoverage'
+        time_zone:
+          type: string
+          description: >-
+            IANA name of the zone the link's days, hours, "today" and booking
+            horizon are evaluated in (PAC-72 revision 2, owner decision D-9):
+            the link owner's profile time zone, or `UTC` when the owner has no
+            settings row or its stored name is not a loadable IANA zone. It is
+            the zone actually used by `getPublicBookingSlots` and
+            `createPublicBooking` for this link at the time of the read, so a
+            booking page can show times in it by default (display and the
+            visitor's zone switcher are PAC-88). Never empty.
+          example: Europe/Paris
+        booking_horizon_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            The link's booking horizon (PAC-72 revision 2, owner decision D-1):
+            today (in `time_zone`) and the next `booking_horizon_days` - 1 days
+            can be listed and booked; later dates offer no slot.
 
     PublicBookingSlot:
       type: object
@@ -1712,10 +1856,12 @@ components:
         available_dates:
           type: array
           description: >-
-            Populated only when `date` was omitted; YYYY-MM-DD strings (UTC calendar
-            days), in ascending order, for days within the 60-day booking horizon
-            (today UTC and the next 59 days) that are among the link's `days_of_week`
-            and have at least one offered slot. Otherwise the empty array.
+            Populated only when `date` was omitted; YYYY-MM-DD strings (calendar
+            days in the link's zone, `PublicLinkInfo.time_zone`), in ascending
+            order, for days within the link's booking horizon (today in that zone
+            and the next `booking_horizon_days` - 1 days) that are among the
+            link's `days_of_week` and have at least one offered slot. Otherwise
+            the empty array.
           items:
             type: string
             format: date
@@ -1744,8 +1890,8 @@ components:
             RFC3339, any UTC offset; compared as an instant. Must be the start of a
             slot `getPublicBookingSlots` would offer now for this link and the
             resolved duration (on the 15-minute grid, zero seconds, within the link's
-            days, window and 60-day horizon, at least `min_notice_minutes` ahead,
-            every accepted host free), else 409.
+            days, window and booking horizon in the link's zone, at least
+            `min_notice_minutes` ahead, every accepted host free), else 409.
         end:
           type: string
           format: date-time
@@ -1865,7 +2011,8 @@ components:
       required:
         [id, owner_id, title, slug, durations, days, window_start, window_end,
          buffer_before, buffer_after, min_notice_minutes, usage_type, uses_count,
-         active, hosts, created_at, is_owner]
+         active, hosts, created_at, is_owner, booking_horizon_days,
+         refusal_message, time_zone]
       additionalProperties: false
       properties:
         id:
@@ -1908,6 +2055,26 @@ components:
         min_notice_minutes:
           type: integer
           minimum: 0
+        booking_horizon_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            How many days ahead the link can be booked, counting today in the
+            link's zone (PAC-72 revision 2, owner decision D-1). 60 for every
+            link created before PAC-72 revision 2 and for any link created
+            without it.
+        refusal_message:
+          $ref: '#/components/schemas/BookingRefusalMessage'
+        time_zone:
+          type: string
+          description: >-
+            Read-only. The zone the link's days and hours are evaluated in: the
+            owner's profile time zone, `UTC` when the owner has none (PAC-72
+            revision 2, owner decision D-9). Not stored on the link; it follows
+            the owner's settings, so changing the owner's time zone moves the
+            link's hours with it. Same value as `PublicLinkInfo.time_zone`.
+          example: Europe/Paris
         usage_type:
           type: string
           enum: [reusable, recurring, single_use]
@@ -2027,6 +2194,22 @@ components:
           type: integer
           minimum: 0
           default: 0
+        booking_horizon_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 60
+          description: >-
+            PAC-72 revision 2 (owner decision D-1). Absent means 60. Outside
+            1..365 is a 422 "booking_horizon_days must be between 1 and 365".
+        refusal_message:
+          type: string
+          enum: [generic, specific]
+          default: generic
+          description: >-
+            PAC-72 revision 2 (owner decisions D-2/D-5), see
+            `BookingRefusalMessage`. Absent means `generic`. Any other value is
+            a 422 "refusal_message must be generic or specific".
         usage_type:
           type: string
           enum: [reusable, recurring, single_use]
@@ -2109,6 +2292,24 @@ components:
           type: integer
           nullable: true
           minimum: 0
+        booking_horizon_days:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 365
+          description: >-
+            PAC-72 revision 2. Absent or null leaves the stored value; outside
+            1..365 is a 422 "booking_horizon_days must be between 1 and 365".
+            A shorter horizon refuses later starts from then on; bookings
+            already made beyond it are kept.
+        refusal_message:
+          type: string
+          nullable: true
+          enum: [generic, specific]
+          description: >-
+            PAC-72 revision 2, see `BookingRefusalMessage`. Absent or null
+            leaves the stored value; any other value is a 422
+            "refusal_message must be generic or specific".
         usage_type:
           type: string
           nullable: true

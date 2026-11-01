@@ -590,8 +590,8 @@ func TestPAC72_ListingDaysAndHorizon(t *testing.T) {
 
 // AC-17a-c: busy time that cannot be gathered from storage is a server error
 // for the booking (nothing written) and the explicit-date listing, and drops
-// the day from the date-less listing; never a 409. AC-17d: an unreadable
-// external calendar keeps today's tolerance.
+// the day from the date-less listing; never a 409. AC-17d (revision 2, D-6): an
+// unreadable external calendar makes the host busy.
 func TestPAC72_UnreadableBusyTime(t *testing.T) {
 	boom := errors.New("injected storage failure")
 	target := pac72Tue
@@ -602,12 +602,12 @@ func TestPAC72_UnreadableBusyTime(t *testing.T) {
 		reads func(host uuid.UUID) engine.BookingReads
 	}{
 		{"AC-17a accepted hosts", func(uuid.UUID) engine.BookingReads {
-			return engine.BookingReads{AcceptedHosts: func(db *sql.DB, linkID uuid.UUID) ([]*storage.LinkHost, error) {
+			return engine.BookingReads{AcceptedHosts: func(db storage.DBTX, linkID uuid.UUID) ([]*storage.LinkHost, error) {
 				return nil, boom
 			}}
 		}},
 		{"AC-17b focus blocks of host A", func(host uuid.UUID) engine.BookingReads {
-			return engine.BookingReads{FocusBlocks: func(db *sql.DB, user uuid.UUID, weekStart time.Time) ([]storage.FocusBlock, error) {
+			return engine.BookingReads{FocusBlocks: func(db storage.DBTX, user uuid.UUID, weekStart time.Time) ([]storage.FocusBlock, error) {
 				if user == host && isTarget(weekStart) {
 					return nil, boom
 				}
@@ -615,7 +615,7 @@ func TestPAC72_UnreadableBusyTime(t *testing.T) {
 			}}
 		}},
 		{"AC-17c bookings on host A's links", func(host uuid.UUID) engine.BookingReads {
-			return engine.BookingReads{HostBookings: func(db *sql.DB, user uuid.UUID, s, e time.Time) ([]time.Time, error) {
+			return engine.BookingReads{HostBookings: func(db storage.DBTX, user uuid.UUID, s, e time.Time) ([]time.Time, error) {
 				if user == host && isTarget(s) {
 					return nil, boom
 				}
@@ -660,18 +660,22 @@ func TestPAC72_UnreadableBusyTime(t *testing.T) {
 		})
 	}
 
+	// AC-17d as amended by spec revision 2 (owner decision D-6, 2026-11-01,
+	// implemented on main by PAC-81 Part A): an unreadable external calendar
+	// makes the host busy, so the slot is not offered and the booking is the
+	// 409 with nothing written.
 	t.Run("AC-17d external calendar", func(t *testing.T) {
 		b := newPAC72Bench(t, pac72At(pac72Mon, "06:00"))
 		owner, bearer := b.host("pac72-17d@example.com")
 		unconnected := createTestUser(t, "pac72-17d-unconnected@example.com")
 		link := b.link("pac72-17d", owner, nil, owner, unconnected)
 		b.cal.setFailing(bearer)
-		if got := b.slots(link.Slug, "2030-01-08", 30); got.code != http.StatusOK || !got.offers(start) {
-			t.Errorf("listing = %d %v, want 10:00 offered", got.code, got.starts())
+		if got := b.slots(link.Slug, "2030-01-08", 30); got.code != http.StatusOK || got.offers(start) {
+			t.Errorf("listing = %d %v, want 10:00 not offered (D-6)", got.code, got.starts())
 		}
-		if code, body := b.book(link.Slug, start, 30); code != http.StatusCreated {
-			t.Errorf("booking = %d %s, want 201", code, body)
-		}
+		before := b.written()
+		code, body := b.book(link.Slug, start, 30)
+		b.refused("AC-17d", code, body, before)
 	})
 }
 

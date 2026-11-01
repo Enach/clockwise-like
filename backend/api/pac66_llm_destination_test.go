@@ -16,18 +16,26 @@ import (
 	"github.com/google/uuid"
 )
 
-// PAC-66: the deployment's cloud identity goes only to hosts the operator
-// approved, on every path that sends it (probe, parse, meeting-brief
-// refresh), and the settings write refuses unapproved destinations. Every
-// test runs with the spec's sentinel credential and recording transport
-// (nlptest.Ambient), so the pre-PAC-66 code would have sent each refused
-// request.
+// PAC-66: the key for Azure OpenAI, Vertex and Bedrock goes only to hosts the
+// operator approved, on every path that sends it (probe, parse, meeting-brief
+// refresh), and the settings write refuses unapproved destinations.
+//
+// NEW-llm-bring-your-own: these providers no longer use the deployment's
+// cloud identity; they send only a key the user bound to them. "Not
+// configured" (no key) is decided before the destination (contract §6), so
+// every refusal case here binds a key to the provider, which keeps the 422
+// pinned (contract C-1: replaced, not skipped); the keyless siblings are the
+// 409 needs_key (byok_test.go).
 
 const (
 	pac66Azure    = "my-resource.openai.azure.com"
 	pac66VertexEU = "europe-west4-aiplatform.googleapis.com"
 	pac66Attacker = "attacker.example"
+	pac66Key      = "sk-pac66-sentinel-user-key"
 )
+
+// keyed binds the sentinel key to the stored provider.
+func keyed(s *storage.Settings) { s.LLMAPIKeys.Set(s.LLMProvider, pac66Key) }
 
 type pac66 struct {
 	t    *testing.T
@@ -115,11 +123,12 @@ func (p *pac66) noRequests(what string) {
 	}
 }
 
-// noLeak is AC-11: no sentinel credential, and a non-empty error sentence.
+// noLeak is AC-11: no key and no ambient credential, and a non-empty error
+// sentence.
 func noLeak(t *testing.T, what, body, sentence string) {
 	t.Helper()
-	if leaks := nlptest.Leaks(body); len(leaks) > 0 {
-		t.Errorf("%s: the body carries the deployment credential %v: %s", what, leaks, body)
+	if leaks := nlptest.Leaks(body); len(leaks) > 0 || strings.Contains(body, pac66Key) {
+		t.Errorf("%s: the body carries a credential %v: %s", what, leaks, body)
 	}
 	if strings.TrimSpace(sentence) == "" {
 		t.Errorf("%s: empty error sentence: %s", what, body)
@@ -157,7 +166,10 @@ func (p *pac66) refused422(w *httptest.ResponseRecorder, reason, property string
 
 func TestPAC66_ProbeRefusesAnUnapprovedStoredEndpoint(t *testing.T) { // AC-1, AC-9, AC-11
 	p := newPAC66(t, "pac66-ac1@example.com", map[string][]string{"azure_openai": {pac66Azure}},
-		func(s *storage.Settings) { s.LLMProvider, s.AzureEndpoint = "azure_openai", "https://"+pac66Attacker })
+		func(s *storage.Settings) {
+			s.LLMProvider, s.AzureEndpoint = "azure_openai", "https://"+pac66Attacker
+			keyed(s)
+		})
 	w := p.probe(`{}`)
 	p.refused422(w, nlp.ReasonDestinationNotApproved, "azureEndpoint")
 	if !strings.Contains(w.Body.String(), "not an approved") {
@@ -166,18 +178,18 @@ func TestPAC66_ProbeRefusesAnUnapprovedStoredEndpoint(t *testing.T) { // AC-1, A
 	p.noRequests("probe")
 }
 
-func TestPAC66_ProbeRefusesAnAuthorityChangingVertexLocation(t *testing.T) { // AC-2
-	p := newPAC66(t, "pac66-ac2@example.com", map[string][]string{"vertex": {pac66VertexEU}},
-		func(s *storage.Settings) { s.LLMProvider, s.GCPLocation = "vertex", pac66Attacker+"/x" })
-	p.refused422(p.probe(`{}`), nlp.ReasonDestinationNotApproved, "gcpLocation")
-	p.noRequests("probe")
-}
+// TestPAC66_ProbeRefusesAnAuthorityChangingVertexLocation is replaced by
+// contract C-1's vertex case (byok_test.go): Vertex express mode has no
+// location, so no stored value can move its authority; its only destination
+// is aiplatform.googleapis.com, and a deployment that did not approve it gets
+// provider_not_enabled.
 
 func TestPAC66_ProbeRefusesAProviderWithNothingApproved(t *testing.T) { // AC-4
 	for _, provider := range []string{"azure_openai", "vertex", "bedrock"} {
 		t.Run(provider, func(t *testing.T) {
 			p := newPAC66(t, "pac66-ac4-"+provider+"@example.com", nil, func(s *storage.Settings) {
-				s.LLMProvider, s.AzureEndpoint, s.GCPLocation, s.AWSRegion = provider, "https://"+pac66Azure, "europe-west4", "eu-west-1"
+				s.LLMProvider, s.AzureEndpoint, s.AWSRegion = provider, "https://"+pac66Azure, "eu-west-1"
+				keyed(s)
 			})
 			w := p.probe(`{}`)
 			p.refused422(w, nlp.ReasonProviderNotEnabled, "")
@@ -192,7 +204,7 @@ func TestPAC66_ProbeRefusesAProviderWithNothingApproved(t *testing.T) { // AC-4
 func TestPAC66_SettingsWriteRefusesUnapprovedDestinations(t *testing.T) { // AC-5, AC-7
 	p := newPAC66(t, "pac66-ac5@example.com", map[string][]string{"azure_openai": {pac66Azure}, "vertex": {pac66VertexEU}},
 		func(s *storage.Settings) {
-			s.LLMProvider, s.AzureEndpoint, s.GCPLocation, s.AWSRegion = "openai", "https://"+pac66Azure, "europe-west4", "eu-west-1"
+			s.LLMProvider, s.AzureEndpoint, s.AWSRegion = "openai", "https://"+pac66Azure, "eu-west-1"
 		})
 	before := p.settings()
 	for body, msg := range map[string]string{
@@ -200,8 +212,6 @@ func TestPAC66_SettingsWriteRefusesUnapprovedDestinations(t *testing.T) { // AC-
 		`{"azureEndpoint":"http://` + pac66Azure + `"}`:                                nlp.MsgAzureEndpointNotApproved,
 		`{"azureEndpoint":"https://` + pac66Azure + `:8443"}`:                          nlp.MsgAzureEndpointNotApproved,
 		`{"azureEndpoint":"https://x@` + pac66Azure + `"}`:                             nlp.MsgAzureEndpointNotApproved,
-		`{"gcpLocation":"attacker.example/x"}`:                                         nlp.MsgGCPLocationNotApproved,
-		`{"gcpLocation":"us-central1"}`:                                                nlp.MsgGCPLocationNotApproved,
 		`{"awsRegion":"attacker.example#"}`:                                            nlp.MsgAWSRegionInvalid,
 		`{"workStart":"10:00","azureEndpoint":"https://` + pac66Attacker + `/openai"}`: nlp.MsgAzureEndpointNotApproved,
 	} {
@@ -211,7 +221,7 @@ func TestPAC66_SettingsWriteRefusesUnapprovedDestinations(t *testing.T) { // AC-
 		}
 	}
 	after := p.settings()
-	if after.AzureEndpoint != before.AzureEndpoint || after.GCPLocation != before.GCPLocation ||
+	if after.AzureEndpoint != before.AzureEndpoint ||
 		after.AWSRegion != before.AWSRegion || after.WorkStart != before.WorkStart {
 		t.Errorf("a refused write changed the stored settings: before %+v after %+v", before, after)
 	}
@@ -220,29 +230,28 @@ func TestPAC66_SettingsWriteRefusesUnapprovedDestinations(t *testing.T) { // AC-
 
 func TestPAC66_SettingsWriteWithNothingApproved(t *testing.T) { // AC-5 (not enabled), AC-15
 	p := newPAC66(t, "pac66-ac15@example.com", nil, func(s *storage.Settings) {
-		s.AzureEndpoint, s.GCPLocation, s.AWSRegion = "https://"+pac66Attacker, pac66Attacker+"/x", "attacker.example#"
+		s.AzureEndpoint, s.AWSRegion = "https://"+pac66Attacker, "attacker.example#"
 	})
 	for body, msg := range map[string]string{
 		`{"azureEndpoint":"https://` + pac66Azure + `"}`: nlp.MsgAzureEndpointNotEnabled,
-		`{"gcpLocation":"europe-west4"}`:                 nlp.MsgGCPLocationNotEnabled,
 	} {
 		if w := p.patch(body); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), msg) {
 			t.Errorf("PATCH %s: %d %s, want 400 %q", body, w.Code, w.Body.String(), msg)
 		}
 	}
 	// Clearing is always accepted, so a user can undo a bad value (D-3).
-	if w := p.patch(`{"azureEndpoint":"","gcpLocation":"","awsRegion":""}`); w.Code != http.StatusOK {
+	if w := p.patch(`{"azureEndpoint":"","awsRegion":""}`); w.Code != http.StatusOK {
 		t.Fatalf("clearing: %d %s, want 200", w.Code, w.Body.String())
 	}
-	if s := p.settings(); s.AzureEndpoint != "" || s.GCPLocation != "" || s.AWSRegion != "" {
-		t.Errorf("after clearing: %q %q %q, want all empty", s.AzureEndpoint, s.GCPLocation, s.AWSRegion)
+	if s := p.settings(); s.AzureEndpoint != "" || s.AWSRegion != "" {
+		t.Errorf("after clearing: %q %q, want both empty", s.AzureEndpoint, s.AWSRegion)
 	}
 	p.noRequests("settings write")
 }
 
 func TestPAC66_ApprovedWriteThenProbeSendsOnce(t *testing.T) { // AC-6
 	p := newPAC66(t, "pac66-ac6@example.com", map[string][]string{"azure_openai": {pac66Azure}}, nil)
-	if w := p.patch(`{"llmProvider":"azure_openai","azureEndpoint":"https://` + pac66Azure + `","azureDeployment":"gpt"}`); w.Code != http.StatusOK {
+	if w := p.patch(`{"llmProvider":"azure_openai","azureEndpoint":"https://` + pac66Azure + `","azureDeployment":"gpt","llmApiKey":"` + pac66Key + `"}`); w.Code != http.StatusOK {
 		t.Fatalf("PATCH approved endpoint: %d %s", w.Code, w.Body.String())
 	}
 	w := p.probe(`{}`)
@@ -258,14 +267,20 @@ func TestPAC66_ApprovedWriteThenProbeSendsOnce(t *testing.T) { // AC-6
 
 func TestPAC66_ProbeRefusesAnInsecureStoredEndpoint(t *testing.T) { // AC-7
 	p := newPAC66(t, "pac66-ac7@example.com", map[string][]string{"azure_openai": {pac66Azure}},
-		func(s *storage.Settings) { s.LLMProvider, s.AzureEndpoint = "azure_openai", "http://"+pac66Azure })
+		func(s *storage.Settings) {
+			s.LLMProvider, s.AzureEndpoint = "azure_openai", "http://"+pac66Azure
+			keyed(s)
+		})
 	p.refused422(p.probe(`{}`), nlp.ReasonDestinationNotApproved, "azureEndpoint")
 	p.noRequests("probe")
 }
 
 func TestPAC66_ProbeReportsARedirectAsAProviderFailure(t *testing.T) { // AC-8
 	p := newPAC66(t, "pac66-ac8@example.com", map[string][]string{"azure_openai": {pac66Azure}},
-		func(s *storage.Settings) { s.LLMProvider, s.AzureEndpoint = "azure_openai", "https://"+pac66Azure })
+		func(s *storage.Settings) {
+			s.LLMProvider, s.AzureEndpoint = "azure_openai", "https://"+pac66Azure
+			keyed(s)
+		})
 	p.rec.Answer = func(r *http.Request) *http.Response {
 		return nlptest.Response(r, http.StatusFound, "", http.Header{"Location": {"https://sub." + pac66Azure + "/steal"}})
 	}
@@ -282,12 +297,14 @@ func TestPAC66_ProbeReportsARedirectAsAProviderFailure(t *testing.T) { // AC-8
 
 func TestPAC66_EveryPathRefusesAStoredUnapprovedDestination(t *testing.T) { // AC-3, AC-9, AC-13, AC-14
 	for _, tc := range []struct {
-		provider string
-		stored   func(*storage.Settings)
+		provider         string
+		stored           func(*storage.Settings)
+		reason, property string
 	}{
-		{"azure_openai", func(s *storage.Settings) { s.AzureEndpoint = "https://" + pac66Attacker }},
-		{"vertex", func(s *storage.Settings) { s.GCPLocation = pac66Attacker + "#" }},
-		{"bedrock", func(s *storage.Settings) { s.AWSRegion = "eu-west-1" }},
+		{"azure_openai", func(s *storage.Settings) { s.AzureEndpoint = "https://" + pac66Attacker }, nlp.ReasonDestinationNotApproved, "azureEndpoint"},
+		// Vertex express has one destination; only a regional host approved.
+		{"vertex", func(*storage.Settings) {}, nlp.ReasonProviderNotEnabled, ""},
+		{"bedrock", func(s *storage.Settings) { s.AWSRegion = "eu-west-1" }, nlp.ReasonDestinationNotApproved, "awsRegion"},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {
 			approved := map[string][]string{
@@ -296,6 +313,7 @@ func TestPAC66_EveryPathRefusesAStoredUnapprovedDestination(t *testing.T) { // A
 			p := newPAC66(t, "pac66-paths-"+tc.provider+"@example.com", approved, func(s *storage.Settings) {
 				s.LLMProvider = tc.provider
 				tc.stored(s)
+				keyed(s)
 			})
 
 			// Parse: 200 JSON, intent unknown, an error sentence (AC-13).
@@ -305,7 +323,7 @@ func TestPAC66_EveryPathRefusesAStoredUnapprovedDestination(t *testing.T) { // A
 			}
 			var parsed struct{ Intent, Error string }
 			_ = json.Unmarshal(w.Body.Bytes(), &parsed)
-			if parsed.Intent != "unknown" || !strings.Contains(parsed.Error, "approved") {
+			if parsed.Intent != "unknown" || !strings.Contains(parsed.Error, "approve") {
 				t.Errorf("parse body = %s, want intent unknown and a not-approved sentence", w.Body.String())
 			}
 			noLeak(t, "parse", w.Body.String(), parsed.Error)
@@ -317,7 +335,7 @@ func TestPAC66_EveryPathRefusesAStoredUnapprovedDestination(t *testing.T) { // A
 				BriefText string `json:"brief_text"`
 			}
 			_ = json.Unmarshal(w.Body.Bytes(), &brief)
-			if w.Code != http.StatusOK || brief.Status != "failed" || !strings.Contains(brief.BriefText, "approved") {
+			if w.Code != http.StatusOK || brief.Status != "failed" || !strings.Contains(brief.BriefText, "approve") {
 				t.Errorf("refresh = %d %s, want 200 failed with a not-approved sentence", w.Code, w.Body.String())
 			}
 			noLeak(t, "brief refresh", w.Body.String(), brief.BriefText)
@@ -332,8 +350,7 @@ func TestPAC66_EveryPathRefusesAStoredUnapprovedDestination(t *testing.T) { // A
 			}
 
 			// Probe: 422 (AC-9).
-			p.refused422(p.probe(`{}`), nlp.ReasonDestinationNotApproved, map[string]string{
-				"azure_openai": "azureEndpoint", "vertex": "gcpLocation", "bedrock": "awsRegion"}[tc.provider])
+			p.refused422(p.probe(`{}`), tc.reason, tc.property)
 
 			p.noRequests("parse, brief refresh and probe")
 
@@ -347,7 +364,10 @@ func TestPAC66_EveryPathRefusesAStoredUnapprovedDestination(t *testing.T) { // A
 
 func TestPAC66_ParseAndBriefSayNotEnabled(t *testing.T) { // AC-13, AC-14 (nothing approved)
 	p := newPAC66(t, "pac66-notenabled@example.com", nil,
-		func(s *storage.Settings) { s.LLMProvider, s.AzureEndpoint = "azure_openai", "https://"+pac66Azure })
+		func(s *storage.Settings) {
+			s.LLMProvider, s.AzureEndpoint = "azure_openai", "https://"+pac66Azure
+			keyed(s)
+		})
 	w := p.parse()
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "not enabled on this deployment") {
 		t.Errorf("parse = %d %s, want 200 with a not-enabled sentence", w.Code, w.Body.String())
@@ -361,7 +381,10 @@ func TestPAC66_ParseAndBriefSayNotEnabled(t *testing.T) { // AC-13, AC-14 (nothi
 
 func TestPAC66_ProviderSwitchIsAcceptedAndRefusedAtSendTime(t *testing.T) { // AC-17
 	p := newPAC66(t, "pac66-ac17@example.com", map[string][]string{"azure_openai": {pac66Azure}},
-		func(s *storage.Settings) { s.LLMProvider, s.AzureEndpoint = "openai", "https://"+pac66Attacker })
+		func(s *storage.Settings) {
+			s.LLMProvider, s.AzureEndpoint = "openai", "https://"+pac66Attacker
+			s.LLMAPIKeys.Set("azure_openai", pac66Key)
+		})
 	if w := p.patch(`{"llmProvider":"azure_openai"}`); w.Code != http.StatusOK {
 		t.Fatalf("provider-only switch = %d %s, want 200", w.Code, w.Body.String())
 	}
@@ -379,8 +402,7 @@ func TestPAC66_ProbeChecksTheProviderItUses(t *testing.T) { // AC-18
 	}{
 		{"a/azure", "azure_openai", map[string][]string{"azure_openai": {pac66Azure}},
 			func(s *storage.Settings) { s.AzureEndpoint = "https://" + pac66Attacker }, nlp.ReasonDestinationNotApproved, "azureEndpoint"},
-		{"a/vertex", "vertex", map[string][]string{"vertex": {pac66VertexEU}},
-			func(s *storage.Settings) { s.GCPLocation = pac66Attacker + "/x" }, nlp.ReasonDestinationNotApproved, "gcpLocation"},
+		{"a/vertex", "vertex", map[string][]string{"vertex": {pac66VertexEU}}, nil, nlp.ReasonProviderNotEnabled, ""},
 		{"a/bedrock", "bedrock", map[string][]string{"bedrock": {"bedrock-runtime.us-east-1.amazonaws.com"}},
 			func(s *storage.Settings) { s.AWSRegion = "eu-west-1" }, nlp.ReasonDestinationNotApproved, "awsRegion"},
 		{"b/azure", "azure_openai", map[string][]string{"vertex": {pac66Azure}},
@@ -397,7 +419,11 @@ func TestPAC66_ProbeChecksTheProviderItUses(t *testing.T) { // AC-18
 			t.Run(tc.name+"/saved-"+saved, func(t *testing.T) {
 				p := newPAC66(t, "pac66-ac18-"+strings.ReplaceAll(tc.name, "/", "-")+"-"+saved+"@example.com", tc.approved,
 					func(s *storage.Settings) {
-						s.LLMProvider, s.LLMAPIKey = saved, "sk-user-key"
+						s.LLMProvider = saved
+						s.LLMAPIKeys.Set(saved, "sk-user-key")
+						// The probe uses only the key bound to the provider it
+						// names (spec D-19), so that provider has one too.
+						s.LLMAPIKeys.Set(tc.provider, pac66Key)
 						if tc.stored != nil {
 							tc.stored(s)
 						}
@@ -412,16 +438,13 @@ func TestPAC66_ProbeChecksTheProviderItUses(t *testing.T) { // AC-18
 	}
 }
 
-func TestPAC66_ProbeEmptyDefaultsResolveToTheDefaultRegion(t *testing.T) { // AC-16, AC-19 at the probe
-	p := newPAC66(t, "pac66-ac16@example.com", map[string][]string{"vertex": {pac66VertexEU}},
-		func(s *storage.Settings) { s.LLMProvider = "vertex" })
-	p.refused422(p.probe(`{}`), nlp.ReasonDestinationNotApproved, "gcpLocation")
-
+func TestPAC66_ProbeEmptyRegionIsUSEast1NotTheDeploymentRegion(t *testing.T) { // AC-19 at the probe
+	// The Vertex half (empty location) has no successor: express mode has no
+	// location (contract C-1 covers its destination).
 	q := newPAC66(t, "pac66-ac19@example.com", map[string][]string{"bedrock": {"bedrock-runtime.eu-west-1.amazonaws.com"}},
-		func(s *storage.Settings) { s.LLMProvider = "bedrock" })
+		func(s *storage.Settings) { s.LLMProvider, s.AWSRegion = "bedrock", ""; keyed(s) })
 	t.Setenv("AWS_REGION", "eu-west-1")
 	q.refused422(q.probe(`{}`), nlp.ReasonDestinationNotApproved, "awsRegion")
-	p.noRequests("probe")
 	q.noRequests("probe")
 }
 
@@ -432,7 +455,10 @@ func TestPAC66_ProbeEmptyAzureEndpointIsNotSet(t *testing.T) { // AC-20
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := newPAC66(t, "pac66-ac20-"+strings.ReplaceAll(name, " ", "")+"@example.com", map[string][]string{"azure_openai": {pac66Azure}},
-				func(s *storage.Settings) { s.LLMProvider, s.AzureEndpoint = tc.saved, "" })
+				func(s *storage.Settings) {
+					s.LLMProvider, s.AzureEndpoint = tc.saved, ""
+					s.LLMAPIKeys.Set("azure_openai", pac66Key)
+				})
 			w := p.probe(tc.body)
 			p.refused422(w, nlp.ReasonDestinationNotSet, "azureEndpoint")
 			if !strings.Contains(w.Body.String(), "not set") {
@@ -444,43 +470,24 @@ func TestPAC66_ProbeEmptyAzureEndpointIsNotSet(t *testing.T) { // AC-20
 }
 
 // §6 as narrowed by PAC-66-B §B6: the Anthropic case is superseded by AC-B2
-// and AC-B6 (a user-chosen http://127.0.0.1 destination is now refused); the
-// Ollama case keeps its 200 under AC-B9's Given (the test server's origin is
-// approved for Ollama). The ambient transport still records nothing.
-func TestPAC66_UserKeyAndKeylessProbesUnchanged(t *testing.T) {
+// and AC-B6 (a user-chosen http://127.0.0.1 destination is now refused). The
+// Ollama case is gone with Ollama (NEW-llm-bring-your-own AC-10 replaces it:
+// an Ollama account is "AI not configured", byok_test.go). The cloud
+// transport still records nothing.
+func TestPAC66_UserKeyProbeUnchanged(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/v1/messages":
-			_, _ = w.Write([]byte(`{"content":[{"text":"hi from anthropic"}]}`))
-		case "/api/chat":
-			_, _ = w.Write([]byte(`{"message":{"content":"hi from ollama"}}`))
-		default:
-			http.NotFound(w, r)
-		}
+		_, _ = w.Write([]byte(`{"content":[{"text":"hi from anthropic"}]}`))
 	}))
 	defer provider.Close()
-	for name, stored := range map[string]func(*storage.Settings){
-		"anthropic": func(s *storage.Settings) {
-			s.LLMProvider, s.LLMAPIKey, s.LLMBaseURL = "anthropic", "sk-ant", provider.URL
-		},
-		"ollama": func(s *storage.Settings) { s.LLMProvider, s.OllamaBaseURL = "ollama", provider.URL },
-	} {
-		t.Run(name, func(t *testing.T) {
-			p := newPAC66(t, "pac66-userkey-"+name+"@example.com", nil, stored)
-			// Ollama Given (§B6): the test server's origin is approved for
-			// ollama, and the user-key clients use the real network.
-			_ = nlptest.UserDestinations(t, "", "", provider.URL)
-			t.Cleanup(nlp.SetUserTransport(nil))
-			w := p.probe(`{}`)
-			if name == "anthropic" {
-				p.refused422(w, nlp.ReasonDestinationNotApproved, "llmBaseUrl") // PAC-66-B AC-B2, AC-B6
-			} else if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "hi from "+name) {
-				t.Errorf("probe = %d %s, want 200 with the provider's answer", w.Code, w.Body.String())
-			}
-			p.noRequests("ambient transport")
-		})
-	}
+	p := newPAC66(t, "pac66-userkey-anthropic@example.com", nil, func(s *storage.Settings) {
+		s.LLMProvider, s.LLMBaseURL = "anthropic", provider.URL
+		s.LLMAPIKeys.Set("anthropic", "sk-ant")
+	})
+	_ = nlptest.UserDestinations(t, "", "")
+	t.Cleanup(nlp.SetUserTransport(nil))
+	p.refused422(p.probe(`{}`), nlp.ReasonDestinationNotApproved, "llmBaseUrl") // PAC-66-B AC-B2, AC-B6
+	p.noRequests("cloud transport")
 }
 
 // The probe body still cannot carry a destination (PAC-24), ambient or not.

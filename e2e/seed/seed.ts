@@ -17,12 +17,15 @@ import { dirname, join } from 'node:path';
 import { exec, query, waitForSchema, closePool } from '../db';
 import { isoDate, mondayOf, DAY_MS } from '../lib/dates';
 import {
+  AVATAR_HOSTS,
+  BOOKING_HOSTS,
   CONNECTED,
   DISCONNECTING,
   LINKS,
-  OFFERABLE_LINK,
   PERSONAL_CALENDAR,
-  SEAM_LINK,
+  SEEDED_ACCEPTED_HOST_ROWS,
+  SEEDED_LINK_IDS,
+  SEEDED_USER_IDS,
   TEAMS,
   USERS,
 } from './ids';
@@ -59,8 +62,33 @@ export async function seed(): Promise<void> {
  * failure three files away instead of a clear seeding failure here.
  */
 async function verify(): Promise<void> {
+  const problems: string[] = [];
+
+  // Exactly the seeded users and links, by id: the expected sets come from
+  // seed/ids.ts, so a fixture added there and in seed.sql needs no count
+  // updated here, and a row in one but not the other fails.
+  const exactSets: Array<[string, string, unknown[], readonly string[]]> = [
+    ['users', 'SELECT id::text AS id FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], SEEDED_USER_IDS],
+    ['scheduling links', 'SELECT id::text AS id FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], SEEDED_LINK_IDS],
+  ];
+  for (const [label, sql, params, expected] of exactSets) {
+    const found = (await query<{ id: string }>(sql, params)).map((r) => r.id).sort();
+    const want = [...expected].sort();
+    if (new Set(want).size !== want.length) {
+      problems.push(`${label}: seed/ids.ts lists an id twice`);
+    }
+    const missing = want.filter((id) => !found.includes(id));
+    const extra = found.filter((id) => !want.includes(id));
+    if (missing.length > 0 || extra.length > 0) {
+      problems.push(
+        `${label}: expected ${want.length} row(s), found ${found.length}` +
+          (missing.length ? `; missing ${missing.join(', ')}` : '') +
+          (extra.length ? `; not in seed/ids.ts ${extra.join(', ')}` : ''),
+      );
+    }
+  }
+
   const checks: Array<[string, string, unknown[], number]> = [
-    ['users', 'SELECT 1 FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], 11],
     ['teams', 'SELECT 1 FROM teams WHERE name LIKE $1', ['E2E %'], 4],
     [
       'team members',
@@ -80,22 +108,32 @@ async function verify(): Promise<void> {
       [USERS.primary.id],
       2,
     ],
-    ['scheduling links', 'SELECT 1 FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], 6],
     [
       'accepted hosts',
       `SELECT 1 FROM scheduling_link_hosts
         WHERE status = 'accepted' AND link_id = ANY($1::uuid[])`,
+      [SEEDED_LINK_IDS],
+      SEEDED_ACCEPTED_HOST_ROWS,
+    ],
+    // PAC-72 D-6: the D-6 link's second host is exactly the unconnected one.
+    [
+      'the D-6 link has its unconnected co-host',
+      `SELECT 1 FROM scheduling_link_hosts
+        WHERE link_id = $1 AND user_id = $2 AND status = 'accepted'`,
+      [LINKS.unreadableCoHost.id, LINKS.unreadableCoHost.coHostUserId],
+      1,
+    ],
+    // PAC-81 AC-B3: each avatar host is stored with the avatar its page shows.
+    [
+      'avatar hosts carry their avatar URLs',
+      'SELECT 1 FROM users WHERE (id, avatar_url) IN (($1::uuid, $2), ($3::uuid, $4))',
       [
-        [
-          LINKS.uiBooking.id,
-          LINKS.apiBooking.id,
-          LINKS.exhausted.id,
-          LINKS.owned.id,
-          SEAM_LINK.id,
-          OFFERABLE_LINK.id,
-        ],
+        AVATAR_HOSTS.google.id,
+        AVATAR_HOSTS.google.avatarUrl,
+        AVATAR_HOSTS.foreign.id,
+        AVATAR_HOSTS.foreign.avatarUrl,
       ],
-      6,
+      2,
     ],
     [
       'exhausting booking',
@@ -105,14 +143,24 @@ async function verify(): Promise<void> {
     ],
     ['analytics weeks', 'SELECT 1 FROM analytics_weeks WHERE user_id = ANY($1::uuid[])',
       [[USERS.alphaReport.id, USERS.betaReport.id]], 4],
-    // No oauth token for any seeded user is a LOAD-BEARING invariant: it is
-    // what makes every calendar code path take its fast "not connected" branch
-    // instead of trying to reach the blackholed googleapis.com.
+    // No oauth token for the four USERS is a LOAD-BEARING invariant: it is
+    // what makes their calendar code paths take the fast "not connected"
+    // branch (AC-24) instead of trying to reach the blackholed googleapis.com,
+    // and what makes USERS.betaReport the unreadable co-host of PAC-72 D-6.
     [
-      'no oauth tokens (intentional)',
+      'no oauth tokens for the unconnected users (intentional)',
       'SELECT 1 FROM oauth_tokens WHERE user_id = ANY($1::uuid[])',
-      [[USERS.primary.id, USERS.second.id, USERS.alphaReport.id, USERS.betaReport.id]],
+      [Object.values(USERS).map((u) => u.id)],
       0,
+    ],
+    // PAC-72 D-6: every host of a bookable link is connected through the
+    // stand-in, each credential far from expiry (as for CONNECTED).
+    [
+      'booking and avatar hosts have one unexpired token each',
+      `SELECT 1 FROM oauth_tokens
+        WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
+      [[...Object.values(BOOKING_HOSTS), ...Object.values(AVATAR_HOSTS)].map((u) => u.id)],
+      Object.keys(BOOKING_HOSTS).length + Object.keys(AVATAR_HOSTS).length,
     ],
     // PAC-43: exactly the connected users have a credential, each one far
     // from expiry (a refresh would leave the test host — see seed.sql).
@@ -149,7 +197,6 @@ async function verify(): Promise<void> {
     ['no focus blocks', 'SELECT 1 FROM focus_blocks', [], 0],
   ];
 
-  const problems: string[] = [];
   for (const [label, sql, params, expected] of checks) {
     const rows = await query(sql, params);
     if (rows.length !== expected) {

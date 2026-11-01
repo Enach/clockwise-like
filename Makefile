@@ -26,7 +26,7 @@ VERIFY_DIR := $(ROOT)/.verify
 # These are RATCHETS. Raise one when coverage rises; never lower one to turn a
 # red run green. Closing the backend's gap to 75% is tracked as work, not as a
 # number in this file.
-BACKEND_COVERAGE_MIN ?= 57
+BACKEND_COVERAGE_MIN ?= 64
 MCP_COVERAGE_MIN ?= 75
 
 # Versions are pinned in one place so an agent that hits a missing tool is told
@@ -150,6 +150,10 @@ test:
 	cd $(ROOT)/mcp && GONOSUMDB='*' GOFLAGS='-mod=mod' go test ./...
 	@echo "-> test e2e/fake-google (the PAC-43 calendar stand-in and sink)"
 	cd $(ROOT)/e2e/fake-google && go vet ./... && go test ./...
+	@echo "-> test docker/fileserver (PAC-81 Part B: API-base injection without inline script)"
+	cd $(ROOT)/docker/fileserver && go vet ./... && go test ./...
+	@echo "-> test nginx (PAC-81 Part B: the shipped edge config against a stub upstream, in docker; ~2.5 min)"
+	cd $(ROOT)/nginx/test && go vet ./... && go test -timeout 15m ./...
 
 ## The same suites with coverage profiles, gated
 coverage:

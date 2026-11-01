@@ -106,9 +106,9 @@ func TestPAC72_CollectiveSlots_StorageFailureIsAnError(t *testing.T) {
 	boom := errors.New("injected storage failure")
 
 	for name, reads := range map[string]BookingReads{
-		"accepted hosts": {AcceptedHosts: func(*sql.DB, uuid.UUID) ([]*storage.LinkHost, error) { return nil, boom }},
-		"focus blocks":   {FocusBlocks: func(*sql.DB, uuid.UUID, time.Time) ([]storage.FocusBlock, error) { return nil, boom }},
-		"bookings":       {HostBookings: func(*sql.DB, uuid.UUID, time.Time, time.Time) ([]time.Time, error) { return nil, boom }},
+		"accepted hosts": {AcceptedHosts: func(storage.DBTX, uuid.UUID) ([]*storage.LinkHost, error) { return nil, boom }},
+		"focus blocks":   {FocusBlocks: func(storage.DBTX, uuid.UUID, time.Time) ([]storage.FocusBlock, error) { return nil, boom }},
+		"bookings":       {HostBookings: func(storage.DBTX, uuid.UUID, time.Time, time.Time) ([]time.Time, error) { return nil, boom }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			slots, err := (&BookingEngine{DB: db, Reads: reads}).CollectiveSlots(context.Background(), link, pac72Monday, 30)
@@ -119,9 +119,10 @@ func TestPAC72_CollectiveSlots_StorageFailureIsAnError(t *testing.T) {
 	}
 }
 
-// D-6 / AC-17d: a host whose external calendar cannot be read (here: no
-// credential at all) is still treated as free for calendar events.
-func TestPAC72_CollectiveSlots_UnreadableCalendarIsFree(t *testing.T) {
+// D-6 / AC-17d as amended by spec revision 2 (owner decision 2026-11-01,
+// implemented on main by PAC-81 Part A): a host whose external calendar
+// cannot be read (here: no credential at all) is busy for the whole window.
+func TestPAC72_CollectiveSlots_UnreadableCalendarIsBusy(t *testing.T) {
 	db := openTestDB(t)
 	host := pac72EngineUser(t, db, "pac72-e-nocal@example.com")
 	link := pac72EngineLink(t, db, host, "pac72-e-nocal", host)
@@ -130,8 +131,7 @@ func TestPAC72_CollectiveSlots_UnreadableCalendarIsFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectiveSlots: %v", err)
 	}
-	// 09:00 to 11:30 every 15 minutes: the whole window.
-	if len(slots) != 11 {
-		t.Fatalf("offered %d slots, want the whole window (11)", len(slots))
+	if len(slots) != 0 {
+		t.Fatalf("offered %d slots, want none: the host is busy (D-6)", len(slots))
 	}
 }

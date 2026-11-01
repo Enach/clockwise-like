@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/storage"
+	"golang.org/x/oauth2"
 )
 
 // PAC-64: a host's booking slots are blocked by the host's own focus blocks
@@ -22,6 +24,14 @@ func TestCollectiveSlots_BlocksOnlyTheHostsFocusAndBookings(t *testing.T) {
 	}
 	host := mk("pac64-host@example.com")
 	other := mk("pac64-other@example.com")
+	// PAC-72 D-6 (owner, 2026-11-01): a host whose calendar cannot be read
+	// is busy all day, so the host needs a readable (empty) calendar here.
+	g := newGoogleStub(t)
+	tok := "tok-" + host.ID.String()
+	if err := auth.UpsertUserToken(db, host.ID, &oauth2.Token{AccessToken: tok, RefreshToken: "r", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	g.set(tok, stubBehaviour{})
 
 	link, err := storage.CreateSchedulingLink(db, &storage.SchedulingLink{
 		OwnerUserID: host.ID, Slug: "pac64-slots", Title: "PAC-64 slots", DurationOptions: []int{30},

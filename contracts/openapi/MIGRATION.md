@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **121**
-- generated: **5**
-- handwritten: **116**
+- operations: **128**
+- generated: **10**
+- handwritten: **118**
 
 ## Register
 
@@ -54,6 +54,9 @@ from the contract and any edit is reported as drift.
 | getAnalyticsWeek                  | GET    | /api/analytics/week                             | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `date` with 400, which this operation does not declare, where the handler falls back (to today). |
 | listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | generated   | PAC-22: response modified; implemented as generatedServer.ListSsoProviders (backend/api/handlers_sso.go), mounted through the generated strict wrapper. |
 | createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | PAC-22: request and response modified, kept handwritten. Moving it is a contract change: the generated binder cannot tell an absent `oidc_client_secret` from a `null` one (both decode to nil; the contract keeps the first and refuses the second), never sees the SAML properties the contract refuses by name, and answers an undecodable body with its own message instead of `invalid JSON`. |
+| startSsoAdminStepup               | GET    | /api/admin/sso/stepup                           | auth             | handwritten | |
+| ssoAdminStepupCallback            | GET    | /api/admin/sso/stepup/callback                  | auth             | handwritten | |
+| getSsoStepupOptions               | GET    | /api/admin/sso/stepup/options                   | auth             | generated   | PAC-50: new (contract revision 8); implemented as generatedServer.GetSsoStepupOptions (backend/api/handlers_sso_stepup.go), mounted through the generated strict wrapper. |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
 | setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | PAC-22: a new operation, so its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
 | googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | |
@@ -134,6 +137,10 @@ from the contract and any edit is reported as drift.
 | refreshMeetingBrief               | POST   | /api/meetings/{event_id}/brief/refresh          | meeting-briefs   | handwritten | |
 | confirmNaturalLanguage            | POST   | /api/nlp/confirm                                | nlp              | handwritten | |
 | parseNaturalLanguage              | POST   | /api/nlp/parse                                  | nlp              | handwritten | |
+| getReadiness                      | GET    | /api/ready                                      | ops              | generated   | PAC-81 Part A: new; implemented as generatedServer.GetReadiness (backend/api/readiness.go), mounted through the generated strict wrapper. |
+| getOrganizationAI                 | GET    | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
+| patchOrganizationAI               | PATCH  | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
+| confirmOrganizationAI             | POST   | /api/organization/ai/consent                    | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
 | previewCompression                | POST   | /api/schedule/compress                          | schedule         | handwritten | |
 | applyCompression                  | POST   | /api/schedule/compress/apply                    | schedule         | handwritten | |
 | createScheduledMeeting            | POST   | /api/schedule/create                            | schedule         | handwritten | |

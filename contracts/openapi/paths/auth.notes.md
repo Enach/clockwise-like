@@ -1,6 +1,6 @@
 # Domain notes: auth
 
-Companion to `auth.yaml`. 16 operations documented.
+Companion to `auth.yaml`. 20 operations documented (16, plus `setSsoProviderState` added by PAC-22, plus 3 added by PAC-50; see (d)).
 
 Sources read: `backend/api/routes.go`, `middleware.go`, `handlers_auth.go`,
 `handlers_sso.go`, `handlers_me.go`, `handlers_health.go`,
@@ -180,3 +180,38 @@ because the code is unambiguous, but where the code may not be the intent:
   (PAC-39, #215) is stated in the `bearerAuth` / `cookieAuth` descriptions.
 - `503` on the Microsoft routes is JSON while the neighbouring `400`/`500` on
   the same handler are text/plain. Pick one before clients start branching.
+
+---
+
+## (d) PAC-50 (stage 2, 2026-10-25)
+
+What changed in `auth.yaml`, and what of the above it settles. The reasoning is
+in `contracts/features/PAC-50.md`; the decisions it records are in
+`docs/specs/PAC-50.md` §9.
+
+- `createSsoProvider` and `deleteSsoProvider` document the write gate: membership
+  (403), body shape with undeclared properties rejected (400, create only),
+  exact case-insensitive domain (403 `provider_domain_mismatch`, owner decision
+  2026-10-27, replacing the suffix rule and its free-text 403), then a consumed
+  step-up grant or break-glass with a fresh session (403
+  `SsoWriteForbiddenResponse`, whose step-up variant also carries
+  `stepup_scopes` and `without_stepup` so the client can explain the optional
+  step-up before navigating). Delete of an absent row is a
+  404 (settles (b)(11), API-067).
+- Three operations added: `startSsoAdminStepup` (`GET /api/admin/sso/stepup`),
+  `ssoAdminStepupCallback` (`GET /api/admin/sso/stepup/callback`) and, since
+  contract revision 8, `getSsoStepupOptions` (`GET /api/admin/sso/stepup/options`,
+  the step-up's values without a write, for the Settings entry point).
+- Since contract revision 8 (PAC-22 merged): PAC-22's `setSsoProviderState`
+  is the third SSO write behind the gate (403 `SsoWriteForbiddenResponse`), and
+  PAC-22's create checks sit inside the gate: body 400s (with PAC-50's
+  `unknown property`), domain 403, PAC-22's stored-row 400, then authorization.
+- The two `x-uncertain` rows of (c) on `SsoProviderCreateRequest` (U-21) and
+  `SsoProviderResponse` (U-22) were resolved by PAC-50's revisions 1-7 by
+  determination against the pre-PAC-22 handler; PAC-22 has since replaced both
+  (see (c)), and contract revision 8 describes PAC-22's request and
+  `SsoProvider` response with PAC-50's `unknown property` refusal and
+  lower-cased `domain` added.
+- Still open after PAC-50: (a)(7): the SSO operations still have no
+  hand-written web consumer apart from the Settings step-up entry point
+  (spec AC-25). (b)(9)/(b)(10) (API-060, API-066) are PAC-22's, now on `main`.

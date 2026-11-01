@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
@@ -97,10 +99,10 @@ func (h *bookingHandlers) publicLink(link *storage.SchedulingLink) publicLinkDTO
 	return dto
 }
 
-func (h *bookingHandlers) confirmation(link *storage.SchedulingLink, booking *storage.Booking) bookingConfirmationDTO {
+func (h *bookingHandlers) confirmation(db storage.DBTX, link *storage.SchedulingLink, booking *storage.Booking) bookingConfirmationDTO {
 	dto := bookingConfirmationDTO{ID: booking.ID.String(), LinkSlug: link.Slug, Title: link.Title, Start: booking.StartTime.UTC().Format(time.RFC3339), End: booking.EndTime.UTC().Format(time.RFC3339), DurationMinutes: int(booking.EndTime.Sub(booking.StartTime).Minutes()), Hosts: []publicHostDTO{}, BookerName: booking.BookerName, BookerEmail: booking.BookerEmail, Notes: booking.Notes}
-	for _, host := range func() []*storage.LinkHost { hosts, _ := storage.GetAcceptedHosts(h.db, link.ID); return hosts }() {
-		if user, err := storage.GetUserByID(h.db, host.UserID); err == nil && user != nil {
+	for _, host := range func() []*storage.LinkHost { hosts, _ := storage.GetAcceptedHosts(db, link.ID); return hosts }() {
+		if user, err := storage.GetUserByID(db, host.UserID); err == nil && user != nil {
 			dto.Hosts = append(dto.Hosts, publicHostDTO{Email: user.Email, Name: user.Name, AvatarURL: user.AvatarURL})
 		}
 	}
@@ -202,7 +204,9 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 	if !allowPublicBooking(w, r, bookingSlotsLimiter) {
 		return
 	}
-	link, err := storage.GetSchedulingLinkBySlug(h.db, chi.URLParam(r, "slug"))
+	// PAC-81 AC-A9: every database call waits for a pooled connection only
+	// until the budget ends.
+	link, err := storage.GetSchedulingLinkBySlug(storage.Bind(r.Context(), h.db), chi.URLParam(r, "slug"))
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
@@ -236,7 +240,16 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 		for i := 0; i < bookingHorizonDays; i++ {
 			date := today.AddDate(0, 0, i)
 			slots, e := h.offeredSlots(r.Context(), link, date, duration, now)
-			if e == nil && len(slots) > 0 {
+			if e != nil {
+				// PAC-81 AC-A2: a budget cut or an ended request is a 503,
+				// never a truncated list of dates.
+				if budgetCut(e) || r.Context().Err() != nil {
+					budget.WriteExpired(w)
+					return
+				}
+				continue
+			}
+			if len(slots) > 0 {
 				days = append(days, date.Format("2006-01-02"))
 			}
 		}
@@ -250,6 +263,10 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	available, err := h.offeredSlots(r.Context(), link, date, duration, now)
+	if budgetCut(err) {
+		budget.WriteExpired(w) // AC-A18: a host not read, never a partial 200
+		return
+	}
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
@@ -265,7 +282,10 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	if !allowPublicBooking(w, r, bookingCreateLimiter) {
 		return
 	}
-	link, err := storage.GetSchedulingLinkBySlug(h.db, chi.URLParam(r, "slug"))
+	// PAC-81 AC-A9: reads before the insert wait for a pooled connection
+	// only until the budget ends.
+	db := storage.Bind(r.Context(), h.db)
+	link, err := storage.GetSchedulingLinkBySlug(db, chi.URLParam(r, "slug"))
 	if err != nil {
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
@@ -352,6 +372,10 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	// 409, and nothing is written. Busy time that cannot be gathered is a 500,
 	// never a 409.
 	offered, err := h.offeredSlots(r.Context(), link, start, requestedDuration, h.now())
+	if budgetCut(err) {
+		budget.WriteExpired(w) // AC-A18: a host not read is the 503, never a 409
+		return
+	}
 	if err != nil {
 		logServerError(r, "booking conflict check", err, http.StatusInternalServerError)
 		writeError(w, "booking conflict check failed", http.StatusInternalServerError)
@@ -370,19 +394,36 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	}
 	// The rule already counts this link's own bookings as busy; this check is
 	// kept as a second guard on the same link.
-	if conflict, e := storage.HasOverlappingBooking(h.db, link.ID, slot.Start, slot.End); e != nil {
+	if conflict, e := storage.HasOverlappingBooking(db, link.ID, slot.Start, slot.End); e != nil {
 		writeError(w, "booking conflict check failed", http.StatusInternalServerError)
 		return
 	} else if conflict {
 		writeError(w, errSlotUnavailable, http.StatusConflict)
 		return
 	}
+	// PAC-81 AC-A19: 503 only when the budget ran out before the insert was
+	// sent (nothing saved); once sent, the insert's own result is 201 or 500.
 	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, slot.Start, slot.End, body.Notes)
+	if errors.Is(err, budget.ErrExpired) {
+		budget.WriteExpired(w)
+		return
+	}
+	if errors.Is(err, engine.ErrHostCalendarUnreadable) {
+		// PAC-72 D-6: an unreadable host calendar counts as busy.
+		writeError(w, errSlotUnavailable, http.StatusConflict)
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "booking failed", err, http.StatusInternalServerError)
 		return
 	}
+	// The booking is saved: the answer is the 201, past the budget if need be.
+	saved := storage.Bind(context.WithoutCancel(r.Context()), h.db)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(h.confirmation(link, booking))
+	_ = json.NewEncoder(w).Encode(h.confirmation(saved, link, booking))
 }
+
+// budgetCut reports whether err means the request budget cut the work short
+// (PAC-81 AC-A17, AC-A18): the answer is the shared 503.
+func budgetCut(err error) bool { return errors.Is(err, budget.ErrExpired) }

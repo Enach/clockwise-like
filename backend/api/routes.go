@@ -2,23 +2,46 @@ package api
 
 import (
 	"database/sql"
+	"net/http"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
 )
 
+// requestBudget is the handler budget (a test seam; 90 s in production).
+var requestBudget = budget.Default
+
+// trackRequest makes every handler goroutine a shutdown unit, so one still
+// blocked after its response (a context-free database call) is awaited by
+// the drain and logged if abandoned (PAC-81 AC-A7).
+func trackRequest(r *http.Request) func() {
+	return lifecycle.Default().Track(lifecycle.Unit{Kind: "request", ID: r.Method + " " + r.URL.Path})
+}
+
 func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin, frontendURL string) {
+	// The access log reports this router's route patterns (PAC-81 AC-A13).
+	routeMux.Store(r)
 	// Sentry panic reporting must be the outermost middleware so it observes
 	// panics from every handler and inner middleware. It repanics, so a panic
 	// still becomes a 500 exactly as before (contract §3, §5). When Sentry was
 	// not initialized (no DSN), the hub is a no-op and this is transparent.
 	r.Use(sentryMiddleware())
-	r.Use(corsMiddleware(allowedOrigin))
+	// PAC-81 Part A, outer to inner: the access log records the status
+	// actually sent (AC-A13); the body cap answers 413 before any handler
+	// (AC-A12); the budget answers 503 for a handler still running at 90 s
+	// and tracks every handler goroutine for the shutdown (AC-A2, AC-A7).
 	r.Use(loggingMiddleware)
+	r.Use(corsMiddleware(allowedOrigin))
+	r.Use(bodyCapMiddleware(maxRequestBody))
+	r.Use(budget.Middleware(requestBudget, trackRequest))
 
 	r.Get("/api/health", healthHandler)
+	// Readiness (getReadiness): no auth, no abuse limit, single-flight ping.
+	r.Get("/api/ready", readinessHandler(newReadiness(db)))
 
 	// Public booking routes — no JWT required
 	bh := newBookingHandlers(db, oauthConfig)
@@ -28,7 +51,7 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 
 	// Public auth routes — no JWT required
 	ah := &authHandlers{oauthConfig: oauthConfig, db: db, jwtSecret: jwtSecret, frontendURL: frontendURL}
-	ssoh := &ssoHandlers{ah: ah}
+	ssoh := newSSOHandlers(ah, ssoOptionsFromEnv())
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Get("/google", ah.startOAuth)
 		r.Get("/callback", ah.callback)
@@ -170,11 +193,14 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Post("/{id}/leave", slh.leaveLink)
 		})
 
-		r.Route("/api/admin/sso", func(r chi.Router) {
-			r.Post("/", ssoh.createSSOProvider)
-			r.Get("/", ssoh.listSSOProviders)
-			r.Delete("/{domain}", ssoh.deleteSSOProvider)
-		})
+		// PAC-50: writes are gated (handlers_sso_stepup.go); the step-up start
+		// and callback live under the same prefix, behind the session.
+		r.Route("/api/admin/sso", ssoh.mountAdmin)
+
+		// PAC-73 Part 2: the organisation's AI configuration (read by every
+		// member, changed with PAC-50's proof for this purpose, confirmed by
+		// each member).
+		r.Route("/api/organization/ai", newOrgAIHandlers(db, ssoh).mount)
 
 		fbh := newFreeBusyHandlers(db, oauthConfig)
 		r.Post("/api/freebusy", fbh.query)

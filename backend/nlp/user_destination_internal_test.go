@@ -12,18 +12,15 @@ import (
 	"github.com/Enach/paceday/backend/config"
 )
 
-// approveOllamaOrigin is the spec's Ollama Given (PAC-66-B §B6): the
-// operator's configuration for the test approves origin for ollama only.
-func approveOllamaOrigin(t *testing.T, origin string) {
+// approveGateways is the operator's configuration for the test: openai and
+// anthropic entries as the raw variable values.
+func approveGateways(t *testing.T, openai, anthropic string) {
 	t.Helper()
 	d, notices := config.DecideLLMUserDestinations(func(k string) string {
-		if k == config.EnvLLMApprovedOriginsOllama {
-			return origin
-		}
-		return ""
+		return map[string]string{config.EnvLLMApprovedHostsOpenAI: openai, config.EnvLLMApprovedHostsAnthropic: anthropic}[k]
 	})
 	if len(notices) > 0 {
-		t.Fatalf("malformed test origin: %v", notices)
+		t.Fatalf("malformed test configuration: %v", notices)
 	}
 	t.Cleanup(SetUserDestinations(d))
 }
@@ -46,11 +43,11 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // The user-key transport is the last line: whatever built the URL, a request
-// that is not exactly the provider's chat operation on an approved
-// destination is refused at the moment of sending (spec §B3).
+// that is not exactly the provider's chat operation, under an approved path
+// prefix, on an approved destination is refused at the moment of sending.
 func TestUserOnlyTransport_RefusesAtTheMomentOfSending(t *testing.T) {
 	inner := &countingTransport{}
-	approveOllamaOrigin(t, "http://ollama:11434")
+	approveGateways(t, "https://gw.example/openai", "")
 	t.Cleanup(SetUserTransport(inner))
 	for _, tc := range []struct {
 		provider, target, host string
@@ -58,16 +55,18 @@ func TestUserOnlyTransport_RefusesAtTheMomentOfSending(t *testing.T) {
 	}{
 		{ProviderOpenAI, "https://api.openai.com/v1/chat/completions", "", true},
 		{ProviderAnthropic, "https://api.anthropic.com/v1/messages", "", true},
-		{ProviderOllama, "http://ollama:11434/api/chat", "", true},
+		{ProviderOpenAI, "https://gw.example/openai/v1/chat/completions", "", true},
+		{ProviderOpenAI, "https://gw.example/v1/chat/completions", "", false},
+		{ProviderOpenAI, "https://gw.example/openai/x/v1/chat/completions", "", false},
+		{ProviderOpenAI, "https://gw.example/OPENAI/v1/chat/completions", "", false},
+		{ProviderAnthropic, "https://gw.example/openai/v1/messages", "", false},
 		{ProviderOpenAI, "https://api.openai.com/v1/models", "", false},
 		{ProviderOpenAI, "https://api.openai.com/v1/chat/completions?x=1", "", false},
 		{ProviderOpenAI, "http://api.openai.com/v1/chat/completions", "", false},
 		{ProviderOpenAI, "https://api.anthropic.com/v1/chat/completions", "", false},
 		{ProviderOpenAI, "https://api.openai.com/v1/chat/completions", "attacker.example", false},
 		{ProviderAnthropic, "https://u:p@api.anthropic.com/v1/messages", "", false},
-		{ProviderOllama, "http://ollama:11434/api/pull", "", false},
-		{ProviderOllama, "http://ollama:11435/api/chat", "", false},
-		{ProviderOllama, "https://api.openai.com/api/chat", "", false},
+		{"ollama", "http://ollama:11434/api/chat", "", false},
 	} {
 		before := inner.n
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, tc.target, strings.NewReader("{}"))
@@ -92,7 +91,7 @@ func TestUserOnlyTransport_RefusesAtTheMomentOfSending(t *testing.T) {
 }
 
 // Before main installs a configuration, only the vendors' public hosts are
-// approved and ollama is not enabled (fail closed, D-B1).
+// approved (fail closed, D-B1).
 func TestNoUserConfigurationApprovesOnlyPublicHosts(t *testing.T) {
 	t.Cleanup(SetUserDestinations(config.LLMUserDestinations{}))
 	if err := (&OpenAIClient{APIKey: "k"}).CheckDestination(context.Background()); err != nil {
@@ -102,7 +101,7 @@ func TestNoUserConfigurationApprovesOnlyPublicHosts(t *testing.T) {
 		t.Errorf("anthropic public host refused with no configuration: %v", err)
 	}
 	var r *DestinationRefusal
-	if err := (&OllamaClient{BaseURL: "http://localhost:11434"}).CheckDestination(context.Background()); !errors.As(err, &r) || r.Reason != ReasonProviderNotEnabled {
-		t.Errorf("ollama with no configuration: %v, want provider_not_enabled", err)
+	if err := (&OpenAIClient{APIKey: "k", BaseURL: "https://gw.example"}).CheckDestination(context.Background()); !errors.As(err, &r) {
+		t.Errorf("a gateway with no configuration: %v, want a refusal", err)
 	}
 }

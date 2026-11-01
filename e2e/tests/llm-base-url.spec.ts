@@ -1,12 +1,13 @@
 /**
- * PAC-66-B AC-B17: a user-set OpenAI or Ollama base URL cannot make the server
- * send a request to another service on the stack's network.
+ * PAC-66-B AC-B17: a user-set OpenAI base URL cannot make the server send a
+ * request to another service on the stack's network.
  *
- * The compose stack approves no Ollama origin and no extra OpenAI or Anthropic
- * host (docker-compose.e2e.yml sets none of PACEDAY_LLM_APPROVED_HOSTS_OPENAI,
- * _ANTHROPIC or PACEDAY_LLM_APPROVED_ORIGINS_OLLAMA). The database is
- * reachable from the backend at postgres:5432, which stands in for any
- * internal service. On the stack this test observes responses, not requests:
+ * The compose stack approves no extra OpenAI or Anthropic host
+ * (docker-compose.e2e.yml sets neither PACEDAY_LLM_APPROVED_HOSTS_OPENAI nor
+ * _ANTHROPIC). The database is reachable from the backend at postgres:5432,
+ * which stands in for any internal service. NEW-llm-bring-your-own replaced the
+ * Ollama half: an account stored on Ollama is "AI not configured" with reason
+ * provider_removed, and "ollama" is no longer a value a client may name. On the stack this test observes responses, not requests:
  * that a refusal sends zero requests, and that exactly one request reaches an
  * approved destination, is proven at unit level
  * (backend/api/pac66b_base_url_test.go, backend/nlp/user_destination_test.go)
@@ -44,24 +45,37 @@ test.describe('PAC-66-B — approved destinations for user-set base URLs', () =>
     expect((await refused.json()).error).toMatch(/^llmBaseUrl /);
     expect(await (await api.get('/api/settings')).json()).toMatchObject({ llmBaseUrl: before });
 
-    // As a value stored before PAC-66-B would be: both base URLs forced, so the
-    // forced address is the effective destination of ollama and of openai.
-    await query('UPDATE settings SET llm_base_url = $1, ollama_base_url = $1 WHERE user_id = $2', [INTERNAL, user.id]);
-
-    const ollama = await api.post('/api/llm/test', { llmProvider: 'ollama' });
-    expect(ollama.status(), await ollama.text()).toBe(422);
-    expect(ollama.headers()['content-type']).toContain('application/json');
-    const ollamaBody = await ollama.json();
-    expect(ollamaBody).toMatchObject({ reason: 'provider_not_enabled' });
-    expect(ollamaBody.error).toContain('not enabled on this deployment');
+    // As a value stored before PAC-66-B would be: the base URL forced, so the
+    // forced address is the effective destination of openai.
+    await query('UPDATE settings SET llm_base_url = $1 WHERE user_id = $2', [INTERNAL, user.id]);
 
     const openai = await api.post('/api/llm/test', { llmProvider: 'openai' });
     expect(openai.status(), await openai.text()).toBe(422);
     const openaiBody = await openai.json();
     expect(openaiBody).toMatchObject({ reason: 'destination_not_approved', property: 'llmBaseUrl' });
     expect(openaiBody.error).toContain('not an approved');
-    for (const body of [ollamaBody, openaiBody]) {
-      expect(JSON.stringify(body)).not.toContain(KEY);
+    expect(JSON.stringify(openaiBody)).not.toContain(KEY);
+  });
+
+  // Replaces the Ollama probe case (spec D-11, NEW-llm-bring-your-own AC-10).
+  test('AC-10: an account stored on Ollama is not configured, and ollama cannot be named', async ({ apiAs }) => {
+    const user = await freshUser();
+    const api = apiAs(user);
+    expect((await api.get('/api/settings')).status()).toBe(200);
+    await query("UPDATE settings SET llm_provider = 'ollama', llm_base_url = $1, ollama_base_url = $1 WHERE user_id = $2", [INTERNAL, user.id]);
+
+    for (const body of [{}, { llmProvider: 'unsupported', llmModel: '' }]) {
+      const probe = await api.post('/api/llm/test', body);
+      expect(probe.status(), await probe.text()).toBe(409);
+      expect((await probe.json()).notConfigured).toMatchObject({ reason: 'provider_removed' });
     }
+    const named = await api.post('/api/llm/test', { llmProvider: 'ollama' });
+    expect(named.status(), await named.text()).toBe(400);
+
+    const parse = await api.post('/api/nlp/parse', { text: 'meet bob tomorrow' });
+    expect(parse.status(), await parse.text()).toBe(200);
+    const parsed = await parse.json();
+    expect(parsed).toMatchObject({ intent: 'unknown', not_configured: { reason: 'provider_removed' } });
+    expect(parsed.error).toContain('Ollama is no longer supported');
   });
 });

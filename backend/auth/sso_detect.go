@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/domain"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 )
 
@@ -86,7 +87,7 @@ func isMicrosoftTenant(ctx context.Context, d string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.IdentityClient().Do(req)
 	if err != nil {
 		cacheTenant(d, false)
 		return false, err
