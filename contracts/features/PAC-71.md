@@ -1,7 +1,7 @@
 # Contract — PAC-71: bind accounts to the provider identity, not the email
 
-- **Spec**: `docs/specs/PAC-71.md`, revision 4, accepted (challenge revision 4, verdict accept, 0 blocking, `e0c0ebd`).
-- **Contract revision**: 2 (answers challenge revision 1; see "Revision 2" at the end). **Status**: draft, awaiting `contract-challenger`.
+- **Spec**: `docs/specs/PAC-71.md`, revision 5 (owner answers 2026-11-01; awaiting `spec-challenger`). Revision 4 was accepted (challenge revision 4, verdict accept, 0 blocking, `e0c0ebd`).
+- **Contract revision**: 3 (applies the owner answers of 2026-11-01; see "Revision 3" at the end). Revision 2 answered challenge revision 1. **Status**: draft, awaiting `contract-challenger`.
 - **Manifest**: `contracts/features/PAC-71.yaml`.
 - **Fragments edited**: `contracts/openapi/paths/auth.yaml` (most of it), `booking.yaml`, `teams.yaml`, `habits.yaml`, `calendar.yaml`, `scheduling.yaml`. The bundle, `backend/api/gen/paceday.gen.go` and `contracts/openapi/MIGRATION.md` are regenerated.
 - **Verified against**: `clockwise-like` `origin/main` `ae5c2cf` (merged into this branch; no change), `smart-calendar-flow` `origin/main` `eea0cf6` (read with `git show` only). No provider endpoint was called (§3 says what that leaves open).
@@ -13,11 +13,11 @@ This document says **why** the interface has this shape. The fragments say **wha
 | Operation | Change |
 |---|---|
 | `googleOAuthCallback` `GET /api/auth/callback` | Two branches, chosen only by which state cookie matches `state`. **Sign-in**: account chosen by identity (`google` + userinfo `id`), evidence from `verified_email`/`hd`, migration rules (a)/(b), new fixed refusal redirect `<FRONTEND_URL>/?error=signin_refused`. **Connect**: credited `/auth/callback?provider=google&connect=credited`, credited to nobody `/?connect=not_credited`, including when the provider returns no `code` (the user cancelled). `code` becomes optional and the provider's `error` parameter is documented (revision 2). |
-| `microsoftOAuthCallback` `GET /api/auth/microsoft/callback` | Same two branches. Sign-in adds Graph `/organization` (tenant, classification, evidence); tenant unobtainable or account not classifiable as work is the refusal. Connect reads neither `/me` nor `/organization` and never changes the work calendar. |
+| `microsoftOAuthCallback` `GET /api/auth/microsoft/callback` | Same two branches. Sign-in (revision 3) verifies the token response's signed ID token and takes the tenant from its `tid`; the consumer tenant `9188040d-6c67-4c5b-b112-36a304b66dad` is a personal account and is refused until PAC-77; an ID token that does not check is the refusal. Object id = Graph `/me` `id` (cross-checked against an ID-token `oid` when present). Graph `/organization` gives verified-domain evidence only; its failure is NONE evidence, never a refusal by itself. Connect reads neither `/me`, `/organization` nor an ID token and never changes the work calendar. |
 | `ssoOidcCallback` `GET /api/auth/callback/oidc/{domain}` | Identity = verified `iss` + `sub`. A carried address is always refused (SSO never reaches or binds an existing account). Same refusal redirect. No connect branch. |
 | `startGoogleConnect` `POST /api/auth/google/connect` | **New.** Protected. 200 `ConnectStartResponse {authorize_url}` + `google_connect_state` cookie. Never redirects. |
 | `startMicrosoftConnect` `POST /api/auth/microsoft/connect` | **New.** Same, `ms_connect_state`; 503 when Microsoft is not configured. |
-| `startGoogleOAuth`, `startMicrosoftOAuth` | Description only: sign-in starts only; never a connect. |
+| `startGoogleOAuth`, `startMicrosoftOAuth` | Sign-in starts only; never a connect. Revision 3: `startMicrosoftOAuth`'s scope is exactly `openid Calendars.ReadWrite User.Read offline_access` and it sends `nonce` = hex SHA-256 of the state (description and Location text only). `startGoogleOAuth` unchanged. |
 | Every protected operation (114) | Session `gen` claim; stale generation is the existing 401; generation unreadable is a 500 `{"error":"internal error"}`. 31 operations that declared no 401 and 15 that declared no 500 now declare them. |
 | `getAuthStatus` | Its "200 on internal failure" fallback no longer covers a stale generation (401) or an unreadable generation (500). |
 | `getCurrentUser` | `CurrentUserResponse.addressStanding` (`domain_confirmed` / `unconfirmed`), required. |
@@ -47,14 +47,15 @@ No call was made at this stage. Each item says whether it is from documentation,
 
 | OQ-3 item | Contract choice | Basis | Open? |
 |---|---|---|---|
-| 1. Microsoft tenant | Graph `GET /v1.0/organization?$select=id,verifiedDomains` with the sign-in access token. Work account ⇔ 200 with exactly one entry, GUID `id`, and GUID `/me` `id`. Tenant = entry `id`, object id = `/me` `id`. | Graph documents `User.Read` as the least-privileged delegated permission for listing the organization (from documentation, not called). The PAC-50 step-up already reads the same resource (`stepup.go:290`). | The plan records one call under exactly today's scopes with a work account in a development tenant before stage 4 merges (merge condition). |
-| 1. Alternatives | **Rejected** (i) the `tid` claim of the Graph access token: Microsoft documents access tokens as opaque to the client and their format may change or be encrypted, so a contract cannot pin behaviour to it. **Rejected** (ii) `client_info` (`uid`, `utid`) from the v2 token endpoint: it is what MSAL requests internally, and is not documented in the protocol reference for confidential web clients. | — | Not adopted, so PAC-68's verified-domain lookup and the tenant come from the same call. A failure of that call refuses Microsoft sign-in (spec D-23, owner question OQ-8, factory default: accept). |
-| 2. Personal-account classification | **No positive personal signal is adopted.** Anything not classified as work by item 1 is refused. Graph refusing `/organization` for a personal account is a refusal, not a classification. | Fail closed (spec AC-5, AC-11b). | Follow-up **PAC-77** (https://linear.app/paceday/issue/PAC-77) is due. Under this contract a personal Microsoft account cannot sign in or sign up, and an **existing** account whose only sign-in is a personal Microsoft account is **locked out** until PAC-77 ships (Google cannot rescue it: rule (a) needs a Google-format identifier, rule (b) AUTHORITATIVE evidence). Recovery meanwhile is the operator's "unbind and reassign" (§9), or another sign-in method once F1 or PAC-77 provides one. A personal account can still be **connected** as a calendar (the connect reads neither `/me` nor `/organization`). Whether this may ship before PAC-77 is an **open owner question** (default: acceptable, release-noted; §12). |
-| 3. Personal-account address evidence | Moot under item 2: none. | — | With PAC-77. |
+| 1. Microsoft tenant (revision 3, owner OQ-8) | The signed ID token's `tid`. Sign-in requests exactly `openid Calendars.ReadWrite User.Read offline_access`; the token response's `id_token` must be RS256, `tid` a GUID (checked before any fetch), signed by a key in `https://login.microsoftonline.com/{tid}/discovery/v2.0/keys`, `iss` = `https://login.microsoftonline.com/{tid}/v2.0`, `ver` `2.0`, `aud` = `MICROSOFT_CLIENT_ID`, unexpired, `nonce` = hex SHA-256 of the matched state. Object id = Graph `/me` `id` (GUID), with an ID-token `oid`, when present, required to equal it. | Microsoft's ID token claims reference (read 2026-11-01): `tid` is the tenant GUID, with `9188040d-6c67-4c5b-b112-36a304b66dad` for personal accounts; `iss` identifies the tenant and ends in `/v2.0`; `aud` must be validated against the application id; `nonce` must match the request; `oid` is Graph's user `id`, but **the `profile` scope is required to receive it**. Hence the `/me` source for the object id (OQ-9 below). | Merge condition 2 (i) records a sign-in ID token under exactly the new scope set (whether `oid` is present) and its `tid` against `/organization` `id`. **OQ-9 (owner, not blocking, default applied):** the owner asked for `oid` from the ID token; under `openid` alone Microsoft does not document it there, and adding `profile` is excluded by "no other new scope". Default: `/me` `id` from the same token response, cross-checked against `oid` when present. Alternative: add `profile` (user consent only) so `oid` is signed. |
+| 1. Graph `/organization` (revision 3) | Kept **only** for verified-domain evidence (AUTHORITATIVE, PAC-68 membership): AUTHORITATIVE iff 200, exactly one entry, entry `id` = the ID-token `tid`, `verifiedDomains` names the mail domain. Anything else is NONE evidence, logged, **never a refusal by itself**. | Verified domains are not in the ID token, and no other answer under these scopes carries them. `User.Read` is the documented least-privileged permission (from documentation, not called). | A bound identity signs in through an `/organization` outage (not joined); new Microsoft sign-ups and Microsoft migration bindings are refused for NONE evidence until it recovers (spec AC-51). |
+| 1. Alternatives (revision 2, kept for the record) | Revision 2 rejected the access token's `tid` (opaque to the client) and `client_info` (MSAL-internal). Revision 3 rejects revision 2's choice too: `/organization` as the tenant source tied identity to a second, unsigned call, so its outage refused every Microsoft sign-in. The signed ID token is the documented OpenID Connect way to learn the tenant and became available once the owner allowed `openid`. | — | — |
+| 2. Personal-account classification (revision 3) | **Positive signal adopted:** ID-token `tid` = `9188040d-6c67-4c5b-b112-36a304b66dad` is a personal account, refused at sign-in before `/me` or `/organization` is read. | Microsoft's ID token claims reference (documented personal-account tenant). Owner 2026-11-01: personal Microsoft sign-in waits for PAC-77, release-noted. | Follow-up **PAC-77** (https://linear.app/paceday/issue/PAC-77) restores it and now starts with the signal; it decides the personal identifier and address evidence. Until then a personal Microsoft account cannot sign in or sign up, and an **existing** account whose only sign-in is a personal Microsoft account is **locked out** (Google cannot rescue it: rule (a) needs a Google-format identifier, rule (b) AUTHORITATIVE evidence). Recovery meanwhile is the operator's "unbind and reassign" (§9), or another sign-in method once F1 or PAC-77 provides one. A personal account can still be **connected** as a calendar (the connect reads neither `/me`, `/organization` nor an ID token). **Owner-decided** (§12). |
+| 3. Personal-account address evidence | Moot: personal accounts are refused. | — | With PAC-77. |
 | 4. Unmanaged ("viral") directories | Microsoft tenant evidence is treated as authoritative (spec default). | Not established. Microsoft has restricted creating unmanaged directories, but this contract does not rely on that. | **Open.** Residual release-noted (spec §5 "Provider evidence"). Merge condition 2 asks the plan to look (documentation or the recorded call). If it shows that such a directory can list a domain in `verifiedDomains` and cannot be told apart, it becomes the owner question the spec describes. |
 | 5. Google | v2 userinfo under `userinfo.email` returns `id`, `email`, `verified_email` and, for Workspace accounts, `hd`; `id` is the stable subject and equals the OpenID `sub` the step-up sees. | From memory of Google's documentation, not called. | The plan records one call with a Workspace test account. If `hd` is absent under `userinfo.email` alone, Workspace users get MAILBOX evidence. That is the safe direction: new accounts are created unconfirmed, and rule (b) refuses. It is release-noted, not a takeover. **`id` = step-up `sub` is a hard merge condition** (§8): for the same Workspace account the plan records both values and asserts equality. |
 | 6. Identifier formats for rule (a) | Google `^[0-9]{1,255}$`. Microsoft work object id: a GUID, compared case-insensitively. The two are disjoint, so a recorded value can never match both. An SSO subject never qualifies under (a). | Graph object ids are GUIDs. Google account ids are decimal strings (from documentation). | — |
-| 7. Microsoft object id across flows (added in revision 2) | The bound object id is Graph `/me` `id` (sign-in step 2). Step-up check 4b compares it with the step-up ID token's `oid`. Both are documented as the directory object id of the user. | From documentation, not called. | **Hard merge condition** (§8): for the same work account the plan records `/me` `id` and the step-up `oid` and asserts equality. |
+| 7. Microsoft object id across flows (added in revision 2) | The bound object id is Graph `/me` `id` (sign-in step 3 since revision 3). Step-up check 4b compares it with the step-up ID token's `oid` (the step-up requests `profile`, so its token carries `oid`). Both are documented as the directory object id of the user. | From documentation, not called. | **Hard merge condition 2, restated** (§8): for the same work account the plan records the ID token `oid` (step-up, and sign-in if present) and Graph `/me` `id` and asserts equality. |
 
 ## 4. Connect: a POST that answers JSON, a state bound to (user, generation, browser), and the existing callback URLs
 
@@ -181,7 +182,7 @@ The granting and keeping sites keep their statuses and shapes. Each operation's 
 
 Freeing an address, "unbind and reassign", and the one-time "advance every account's session generation" are run by the deployment's operator on the server (spec §3 "Operator procedure", D-25, AC-49). **No OpenAPI operation exists for any of them, and none may be added.** AC-49's contract half is falsifiable on the bundle: no operation writes or replaces a binding. The plan names the command, for example a `backend/cmd/...` binary with three subcommands, and where its audit records live so that a down migration keeps them (spec §7).
 
-**OQ-6 needs no contract decision.** The "advance every account" command exists either way. Whether a release runs it is the owner's call at stage 7. AC-44 is conditional on that answer.
+**OQ-6 is decided (owner, 2026-11-01: yes).** The "advance every account" command runs once at the PAC-71 release, after both deploys (§14); AC-44 is unconditional. No contract change follows: it is still an operator command, not HTTP.
 
 ## 10. Inherited findings and uncertainties (factory §7.1)
 
@@ -193,12 +194,12 @@ Freeing an address, "unbind and reassign", and the one-time "advance every accou
 
 See the manifest's `consumersAffected`. In summary:
 - **`clockwise-like` tests that must change**:
-  - `pac35_auth_flows_test.go`: the fixtures gain a Google verified flag and a Microsoft `/organization` answer; the assertions are kept (AC-8).
+  - `pac35_auth_flows_test.go`: the fixtures gain a Google verified flag and, for Microsoft (revision 3), a signed ID token served with a test key as the tenant's keys plus an `/organization` answer; the assertions are kept (AC-8).
   - `pac35_auth_flows_test.go:756-785` `TestPAC35_CurrentUser_EveryDocumentedStatus`: the strict decode (`DisallowUnknownFields`, `:779`) is kept, the decoded struct gains `AddressStanding`, and a 500 sub-test (generation unreadable) is added, because `getCurrentUser` now documents a 500.
   - `pac21_4xx_bodies_test.go:193` and `pac67_world_test.go:224` (used by `pac67_conferencing_test.go:107`, `:592`): the pinned Teams texts change to the revision-2 wording (§1).
   - `pac67_conferencing_test.go` `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller`: becomes a connect or a bound sign-in.
   - Every test that relies on an address resolving to a user created by `createTestUser`. Such users are unbound, so their standing is unconfirmed. This covers team-invite acceptance, co-host invites, manager add and import, and the break-glass tests (`handlers_teams_test.go`, `handlers_scheduling_links_test.go`, `handlers_manager_test.go`, `pac50_sso_gate_test.go`/`pac50_sso_helpers_test.go`, `pac26_wire_keys_test.go`, `pac21_error_bodies_test.go`). The plan adds a domain-confirmed fixture.
-  - `pac50_signin_scopes_test.go` must pass **unchanged**.
+  - `pac50_signin_scopes_test.go` (PAC-50 AC-24) is **amended** in one place (revision 3, owner 2026-11-01): the Microsoft sign-in set becomes `openid Calendars.ReadWrite User.Read offline_access`. The Google and OIDC sets and the no-step-up / no-admin-consent assertions are unchanged.
 - **e2e**:
   - `e2e/auth.ts`: its sessions without `gen` keep working at generation 0. A test after a generation advance must mint `gen`.
   - The seed users (`e2e/seed/seed.sql`) are unconfirmed, so the e2e journeys that accept invites or add co-hosts (`team-invite-analytics.spec.ts`, `scheduling-links.spec.ts`, `manager-team.spec.ts`, `sso-stepup.spec.ts` break-glass) need seeded domain-confirmed standing.
@@ -211,7 +212,7 @@ See the manifest's `consumersAffected`. In summary:
   - The generated types are regenerated.
 - **Specs**:
   - PAC-47 AC-3i (a)–(c), AC-3j, AC-3k, AC-3l.
-  - PAC-68 AC-9, AC-15 and D-4/D-5 (spec §6). The tenant source is now `/organization`, the same call as PAC-68's lookup.
+  - PAC-68 AC-9, AC-15 and D-4/D-5 (spec §6, revised r5). The tenant now comes from the signed ID token, so PAC-68's verified-domain lookup failing means "signed in, not joined" for a bound identity again; AC-15/D-5 allow `openid` for Microsoft only.
 - **`mcp/`**: unaffected. Its HTTP client (`mcp/client.go:68-88`) sends **no** credential to the API, so every protected operation it calls (about 16 in `mcp/tools.go`, not only `getAuthStatus`) is answered as it is today for a request without a session. `MCP_AUTH_TOKEN` (`mcp/main.go:29`) guards MCP's own SSE listener and is never forwarded. Nothing in it reads `gen`, `addressStanding` or the callbacks.
 
 ## 12. Decisions: owner vs factory
@@ -219,14 +220,15 @@ See the manifest's `consumersAffected`. In summary:
 | Decision | Source |
 |---|---|
 | Identity = Google `id`; Microsoft (tid, oid) | **Owner** (PAC-68 OQ-1) |
-| Sign-in keeps exactly today's scopes | **Owner** (PAC-68 OQ-2; PAC-50 AC-24) |
+| Sign-in keeps today's scopes, plus `openid` for Microsoft only (revision 3); PAC-50 AC-24's test amended | **Owner** (PAC-68 OQ-2; PAC-50 AC-24; 2026-11-01 OQ-8) |
 | No new work-calendar reset; connect never sets `outlook` | **Owner** (PAC-47 vs PAC-67 OQ-13) |
 | OQ-1: a connect never adds a sign-in method | Factory guidance for this ticket; **owner open** for F1 (default: only through an explicit step) |
-| OQ-2: SSO never reaches an existing member | **Owner open**, factory default "no", applied |
-| OQ-8: a `/organization` failure refuses Microsoft sign-in | **Owner open**, factory default "accept", applied |
-| OQ-6: sign everyone out at deploy | **Owner, no default**. The contract ships the operator command and leaves its use to the release |
-| Personal Microsoft accounts cannot sign in or sign up, and existing ones are locked out, until PAC-77 | **Owner open** (owner-decisions.md, asked 2026-10-28: "acceptable, or must PAC-77 ship with PAC-71?"), default "acceptable, release-noted", applied |
-| Tenant source `/organization`; no positive personal-account signal | **Factory-assumed** (§3) |
+| OQ-2: SSO never reaches an existing member | **Owner** ("no", 2026-11-01) |
+| OQ-8: tenant (and object id where issued) from the signed ID token; `/organization` is evidence only, its failure never refuses | **Owner** (2026-11-01, "use the industry approach") |
+| OQ-6: sign everyone out at deploy | **Owner** ("yes", 2026-11-01): the release runs the operator command |
+| Personal Microsoft accounts cannot sign in or sign up, and existing ones are locked out, until PAC-77; recognised by the consumer `tid` | **Owner** ("acceptable, release-noted", 2026-11-01) |
+| Object id from `/me` under `openid` alone, cross-checked with an ID-token `oid` when present (OQ-9) | **Factory default**, owner question open (§3 item 1) |
+| Nonce = hex SHA-256 of the state; key cache per tenant; 60 s skew | **Factory-assumed** (§3, `auth.yaml`) |
 | Refusal `/?error=signin_refused`; connect outcomes `connect=credited` / `connect=not_credited` | **Factory-assumed** (§2, §4) |
 | Connect start = POST with JSON `authorize_url`; same callback URLs, branch by state cookie | **Factory-assumed** (§4) |
 | JWT claim `gen`, initial 0; absent = 0 | **Factory-assumed** (§5) |
@@ -248,7 +250,7 @@ See the manifest's `consumersAffected`. In summary:
 1. The migration runs first (bindings, standings, generations; every account at generation 0, so every existing session stays valid).
 2. Then the API. Between the API deploy and the web deploy, the shipped web's four connect controls still navigate to the sign-in start (`api.authConnectUrl`, `client.ts:1181`). Under PAC-71 that is a sign-in: it refuses, or reaches the account bound to the provider identity and replaces the session. Keep that window short, and release-note it.
 3. Then the web app. Deploying the web first would break connect, because its POST starts would answer 404 until the API exists.
-4. The operator runs "advance every account" only if the owner answers OQ-6 with yes, after both deploys.
+4. The operator runs "advance every account" after both deploys (owner, OQ-6 yes, 2026-11-01). The release is complete only when it has run.
 
 Rollback reverses this order (manifest `rollback`): the web first, then the API.
 
@@ -408,3 +410,27 @@ Every pin of the old strings is listed: `handlers_conferencing.go:38`, `handlers
 ### Verified clean
 
 The optional `code` / `error` delta (A1-A5): no new branch selection, no cookie-clearing by a third party, no oracle, sign-in behaviour unchanged and matching the handler; the generated-type change has no handwritten reference and no runtime path. The Teams text change: every pin listed, no web, MCP or e2e consumer. The CORS invariant text matches `corsMiddleware`. The MCP correction matches `mcp/client.go`. B1-B3 closed. Gates and `contractHash` reproduced.
+
+## Revision 3 — 2026-11-01, owner answers
+
+Applies the owner's answers of 2026-11-01 (`.claude/factory/owner-decisions.md`) and spec revision 5. Nothing else changes. The challenge records above are kept unchanged.
+
+Bundle hash at this revision: `2bce17ff28b4603396741505d8da461ddf2af6121bed470204e3bb0df2bc0098` (manifest `contractHash`). Fragment edited: `contracts/openapi/paths/auth.yaml` (descriptions of `startMicrosoftOAuth`, `microsoftOAuthCallback`, `startMicrosoftConnect`). No path, parameter, status, header name or schema changed, so `backend/api/gen` and `MIGRATION.md` regenerate byte-identical.
+
+| Change | Where |
+|---|---|
+| Microsoft sign-in scope is exactly `openid Calendars.ReadWrite User.Read offline_access` (owner OQ-8: `openid` only, user consent, never admin consent). Google sign-in, Google connect and Microsoft connect keep their scopes: Google needs no ID token (no tenant; its `id`, `verified_email` and `hd` already come from v2 userinfo, and `id` = step-up `sub` is a merge condition, not a scope question); a connect identifies nobody. | `startMicrosoftOAuth`, `startMicrosoftConnect`; manifest `interfaceChoicesMadeHere.microsoftSignInScope`. |
+| The sign-in start sends `nonce` = lowercase hex SHA-256 of the `ms_oauth_state` value, binding the ID token to the browser's request without a new cookie. | `startMicrosoftOAuth` Location; callback step 2. |
+| Tenant from the signed ID token: RS256 only; `tid` a GUID before any key fetch; signature against `https://login.microsoftonline.com/{tid}/discovery/v2.0/keys`; `iss` = `https://login.microsoftonline.com/{tid}/v2.0`; `ver` `2.0`; `aud` = `MICROSOFT_CLIENT_ID`; `exp`/`nbf`; `nonce`. Any failure, including unreadable keys, is the refusal. | `microsoftOAuthCallback` SIGN-IN step 2; §3 item 1. |
+| Personal accounts recognised by `tid` = `9188040d-6c67-4c5b-b112-36a304b66dad` and refused before `/me` or `/organization` (owner: wait for PAC-77). Noted for PAC-77: it starts with the signal. | Step 2; §3 item 2; manifest `followUps.PAC-77`. |
+| Object id = Graph `/me` `id` from the same token response, cross-checked against an ID-token `oid` when present. Microsoft documents `oid` in ID tokens as needing `profile`, which the owner's "no other new scope" excludes, so this is recorded as owner question OQ-9 (default applied, not blocking). | Step 3; §3 item 1; §12; manifest `ownerQuestionsOpen`. |
+| Graph `/organization` is no longer an identity dependency. It is kept for verified-domain evidence only; its failure, or an `id` other than the token's `tid`, is NONE evidence (logged), never a refusal by itself. Bound users sign in through an outage (PAC-68: not joined); new sign-ups and migration bindings are refused for NONE evidence. | Step 4; §3 item 1; spec AC-51. |
+| OQ-6 yes: the release runs "advance every account"; AC-44 unconditional. OQ-2 no and personal-Microsoft "acceptable" moved from open questions to owner decisions. | §9, §12, §14; manifest `ownerDecisionsApplied`, `ownerQuestionsOpen`, `mergeConditions` (release). |
+| PAC-50 AC-24's scope test is amended (Microsoft set gains `openid`), listed as a consumer that breaks. | §11; manifest `consumersAffected`, backend merge condition. |
+| Merge condition 2 restated: Google step-up `sub` = v2 userinfo `id`; Microsoft ID token `oid` = Graph `/me` `id`; plus the sign-in ID token's `tid` = `/organization` `id` and whether it carries `oid`, recorded under the new scopes. | Manifest `mergeConditions`; §3 items 1 and 7. |
+
+**Alternative rejected in this revision.** Keep `/organization` as the tenant source and use the ID token only as a cross-check. Rejected: the owner chose the ID token as the source, and keeping `/organization` for identity would keep its outage refusing every bound Microsoft user, which is the cost the owner's answer removes. A second rejected alternative is reading `oid` from the ID token as the only object-id source: under `openid` alone Microsoft does not document it there, so bound identities could become unrecognisable. That is OQ-9.
+
+### Gates run at this revision
+
+See the manifest `gatesRun` (each command with its exit code), recorded when the branch was pushed.
