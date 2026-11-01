@@ -151,7 +151,6 @@ VALUES
   ('88888888-8888-4888-8888-888888888888', 'UTC', '09:00', '18:00', 240, 'google'),
   ('99999999-9999-4999-8999-999999999999', 'UTC', '09:00', '18:00', 240, 'google'),
   ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'UTC', '09:00', '18:00', 240, 'google'),
-  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'UTC', '09:00', '18:00', 240, 'google'),
   -- PAC-72 revision 2 (D-9): OFFERABLE_LINK's owner. A link's days and hours
   -- are in its owner's profile zone; this owner's is stored explicitly (UTC,
   -- so the journeys' UTC instants keep their meaning) to exercise the read of
@@ -183,8 +182,7 @@ INSERT INTO user_profiles (user_id, is_manager, detected_at, analytics_shared_wi
   ('77777777-7777-4777-8777-777777777777', true,  '2024-01-01T00:00:00Z', true),
   ('88888888-8888-4888-8888-888888888888', true,  '2024-01-01T00:00:00Z', true),
   ('99999999-9999-4999-8999-999999999999', false, '2024-01-01T00:00:00Z', true),
-  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', false, '2024-01-01T00:00:00Z', true),
-  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', false, '2024-01-01T00:00:00Z', true)
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', false, '2024-01-01T00:00:00Z', true)
 ON CONFLICT (user_id) DO UPDATE SET
   is_manager = EXCLUDED.is_manager,
   detected_at = EXCLUDED.detected_at,
