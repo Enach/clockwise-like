@@ -4,7 +4,8 @@
 - **Status**: draft (challenged 2026-11-01, accept-with-changes); revision 2,
   2026-11-01: owner answer to OQ-1 applied (demo only in non-production
   builds, §3.3, D-11, AC-15c/AC-30); OQ-4 resolved by the contract
-  (`contracts/features/PAC-83.md` §5)
+  (`contracts/features/PAC-83.md` §5); revision 2.1, 2026-11-02: contract
+  challenge (AC-15d added, AC-22b/AC-28/AC-29 widened, see the last section)
 - **Author**: spec-author
 - **Inherited scope**: none. `docs/factory/api-audit.md` has no open finding on
   client timeouts or preview data. PAC-81 Part A recorded this as follow-up
@@ -262,9 +263,10 @@ calendars, events, request log, redirect) but no latency or drop control.
 - **Lovable agent instructions** (web repo). `AGENTS.md:13` ("Preserve
   explicit mock/preview fallback behavior"), `docs/lovable-prompts/00-global-context.md:13`,
   `01-real-api-first.md:14,26`, `05-conferencing.md:19`, `07-manager-team.md:36`,
-  `08-final-qa.md:30` and `09-current-issues-and-scheduling-preferences.md:94`
-  tell the Lovable agent, which edits this repo, to keep the unreachable-
-  backend fallback. Left as is, they direct a later Lovable edit to put it
+  `08-final-qa.md:30`, `09-current-issues-and-scheduling-preferences.md:94`,
+  `10-qa-hardening.md:35` and `.lovable/plan.md:4` (contract challenge,
+  2026-11-02) tell the Lovable agent, which edits this repo, to keep the
+  unreachable-backend fallback. Left as is, they direct a later Lovable edit to put it
   back.
 - **MCP server** (clockwise-like `mcp/`): its backend client
   (`mcp/client.go:19`) has no client timeout and no mock fallback. Not
@@ -362,8 +364,10 @@ starts the real OAuth hand-off.
 *Which builds are non-production.* The web is built by Vite; a build's
 **mode** decides. A build in mode `production` — `vite build` / `npm run
 build`, which is what the shipped Paceday web image runs
-(clockwise-like `docker/frontend.dockerfile`, also used by the e2e stack),
-and what a Lovable "publish" runs — is a production build. Every other mode
+(clockwise-like `docker/frontend.dockerfile`, also used by the e2e stack) —
+is a production build. (What a Lovable "publish" runs is not visible from
+either repo; it is not a Paceday deployment, and the rule is checked on the
+image, AC-30.) Every other mode
 is non-production: the Vite dev server (`vite`, mode `development`, which
 is what the Lovable preview runs), `vite build --mode development`
 (`npm run build:dev`) and the unit-test runner (mode `test`). No runtime
@@ -541,6 +545,12 @@ error of any AC-14 failure, then the error view contains no demo entry
 control and no text mentioning a demo; the entry control is present on the
 initial view.  [unit]
 
+AC-15d. Given the production value of the build flag (the unit tests stub
+it to false, contract §4.1), then the sign-in dialog renders no demo entry
+control in its initial or error view, and a tab whose session storage
+carries the demo-session flag left by a non-production build shows no demo
+data, no demo label, and sends its calls to the server.  [unit]
+
 AC-30. Given the web built in production mode (`npm run build`), then the
 built files contain no demo entry control, no demo label, no demo data and
 no code that sets the demo session (checked by searching the built bundle
@@ -589,10 +599,12 @@ any 5xx whose body is not JSON (502/504 HTML from nginx, a proxy's HTML 503
 or 524), then the same "may have been saved" message as AC-21 is shown.
 [unit]
 
-AC-22b. Given the booking is answered with a 503 whose JSON body is not
-`RequestBudgetExpiredError` (e.g. `{"error":"service unavailable"}`), then the
-page does not say "the booking was not made"; it shows the "may have been
-saved" message.  [unit]
+AC-22b. Given the booking is answered with any other 5xx that has a JSON
+body — a 503 whose body is not `RequestBudgetExpiredError` (e.g.
+`{"error":"service unavailable"}`), or a proxy's JSON 502/504 (e.g.
+`{"message":"An invalid response was received from the upstream server"}`)
+— then the page does not say "the booking was not made"; it shows the "may
+have been saved" message.  [unit]
 
 AC-23. Given the server answers the booking with the budget 503, then the
 page says the booking was not made and the booker may try again; exactly one
@@ -617,12 +629,13 @@ had a problem" and no raw HTML.  [unit]
 **Guards outside the product code**
 
 AC-28. In clockwise-like, `assertNotDemo` (`e2e/fixtures.ts`) fails when the
-web shows its demo label or its "can't reach" banner (by stable test id, not
-an English sentence), and still fails on the manager seed names. Shown by a
+web shows its demo label, its "can't reach" banner or an inline "can't
+reach" error (by stable test id, not an English sentence), and still fails
+on the manager seed names. Shown by a
 guard self-test that renders each state and expects the guard to fail.
 [e2e]
 
-AC-29. `AGENTS.md` and `docs/lovable-prompts/*` in the web repo contain no
+AC-29. `AGENTS.md`, `.lovable/plan.md` and `docs/lovable-prompts/*` in the web repo contain no
 instruction to fall back to mock/preview data when the backend is
 unreachable (a grep for "fallback" in those files finds only the explicit-demo
 wording).  [doc check in the PR]
@@ -777,3 +790,23 @@ see revision 2 below.*
   added; OQ-1 marked answered.
 - OQ-4 resolved by the contract: browser-level interception for the e2e ACs,
   no server test hook; the gap (server-side slowness) is PAC-81's tests'.
+
+## Contract challenge — 2026-11-02 (spec changes)
+
+The contract challenge (`contracts/features/PAC-83.md`, "Challenge —
+2026-11-02", accept-with-changes) changed this spec only where an AC or a
+fact was wrong or missing:
+
+| # | Severity | Change |
+|---|---|---|
+| K-1 | major | AC-22b widened to every JSON 5xx other than the budget 503 (a proxy's JSON 502/504 had no defined booking outcome). |
+| K-2 | major | AC-15d added: the production value of the build flag is unit-tested (vitest's `define` is a runtime global, so it can be stubbed to `false`); before, only the bundle grep and one e2e assertion ran that path. |
+| K-3 | minor | §2.6 / AC-29: two more Lovable instruction files keep the fallback (`10-qa-hardening.md:35`, `.lovable/plan.md:4`). |
+| K-4 | minor | AC-28: the e2e guard also fails on an inline "can't reach" error, so a test asserting only an absence cannot pass against a dead backend. |
+| K-5 | minor | §3.3: the claim that a Lovable publish is a production-mode build is not verifiable from the repos and is not relied on; the production rule is checked on the shipped image. |
+
+The contract (not this spec) also now pins: the client bound covers the
+body; `apiFetch` throws on a non-JSON 2xx (today `/auth/me` answered by
+`index.html` signs the user out, against §6); a failed pre-sign-in check is
+not cached; the AC-7 registry walks `teamsApi.remote` / `managerApi.remote`;
+the merge of this contract and the web's regenerated types in one window.

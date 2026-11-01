@@ -4,7 +4,9 @@
 - **Spec**: `docs/specs/PAC-83.md`, revision 2 (challenge 2026-11-01
   accept-with-changes at `c14a968`; revision 2 applies the owner's answer to
   OQ-1, 2026-11-01, and routes OQ-4 to this contract).
-- **Stage**: contract-author, revision 1, 2026-11-01. Next: contract-challenger.
+- **Stage**: contract-author, revision 1, 2026-11-01; contract-challenger
+  2026-11-02, accept-with-changes applied as revision 1.1 (see the
+  challenge section at the end). OpenAPI unchanged by the challenge.
 - **Manifest**: `contracts/features/PAC-83.yaml`.
 - **Shape of this ticket**: the product change is in the web
   (Enach/smart-calendar-flow). The HTTP interface it relies on already exists
@@ -116,6 +118,20 @@ The web may rely on exactly these facts, and on nothing else about 5xx/413.
   `Content-Type` does not contain `application/json` **or** its body does not
   parse as JSON. A gateway error never proves anything about what the server
   did.
+- Other non-JSON 5xx sources, same rule (challenge 2026-11-02): a handler
+  **panic** is re-raised past every middleware (`sentryMiddleware` and
+  `loggingMiddleware` re-panic; there is no recoverer), so `net/http` closes
+  the connection without an answer and the browser gets nginx's 502 HTML —
+  after a booking insert that panic means "may have been saved", which the
+  rule gives. Under the Vite dev server (Lovable preview, local dev) a
+  backend that is down or closes the connection yields the dev proxy's
+  `text/plain` 500, also a gateway error.
+- A proxy or API gateway may answer a 5xx **with a JSON body of its own**
+  (e.g. Kong's `{"message": ...}` 502/504). That is not a gateway error by
+  this rule; it is an `ApiHttpError`. For reads and non-booking writes it
+  gets today's mapping; for booking create every 5xx other than the budget
+  503 is "may have been saved" (§2.4, §3.3), so no false "not made" can
+  come from it.
 
 ### 2.4 Booking create (`POST /api/book/{slug}`, `createPublicBooking`)
 
@@ -125,7 +141,7 @@ The web may rely on exactly these facts, and on nothing else about 5xx/413.
 | `400` / `404` / `409` / `410` / `422` / `429` | today's handling (`PublicBooking.tsx:183-196`), unchanged |
 | `500` JSON (`BookingError`) | **outcome unknown** ("may have been saved"): the contract says a 500 does not prove nothing was saved |
 | `503` + `RequestBudgetExpiredError` | **not made**: the only answer that proves no booking was saved; the booker may press Book again |
-| `503` with any other JSON body | outcome unknown (not the budget answer) |
+| any other 5xx with a JSON body (`503` that is not the budget body, a proxy's JSON `502`/`504`) | outcome unknown (not the budget answer) |
 | gateway error (§2.3), no answer within the client bound, network failure, non-JSON 2xx | outcome unknown |
 
 After the insert is sent the server waits for it with no bound of its own
@@ -156,6 +172,32 @@ the same classes.
 `NETWORK_TIMEOUT_MS` (4 s) and the 2 s bound in `checkApiAvailability` are
 removed. No per-operation shorter deadline exists.
 
+How the bounds are applied (binding, challenge 2026-11-02):
+
+- Each bound is armed with `setTimeout` (never `AbortSignal.timeout()`), so
+  vitest fake timers (AC-3, AC-4) and Playwright's `page.clock` (§5.3)
+  control it; `AbortSignal.timeout` is driven by neither.
+- The bound covers the **whole exchange**, headers and body: the timer is
+  cleared only after the body has been read and parsed. Today's
+  `requestApi` clears it when `fetch` resolves on the headers
+  (`client.ts:604-606`), leaving the body read unbounded. A 2xx whose body
+  cannot be read or parsed as JSON within the bound is
+  `ApiUnreachableError("non-json")` (or `"timeout"`), never a raw
+  `SyntaxError`.
+- `apiFetch` (`src/lib/api.ts`) throws the same classes as `requestApi`
+  and keeps its two special cases: `204` resolves to `undefined`; and every
+  error class it throws for an HTTP answer carries `.status` (and `.data`),
+  because `AuthContext.refresh` decides "signed out" on `status` 401/403
+  (`AuthContext.tsx:63-77`). A non-JSON 2xx other than 204 now throws
+  `ApiUnreachableError("non-json")`: today it resolves to `undefined`
+  (`api.ts:95`), which `refresh` turns into `null` and so **signs the user
+  out** when `/api/auth/me` is answered by the SPA's `index.html` — the
+  opposite of spec §6.
+- `checkApiAvailability` does not cache a failed result: today the first
+  answer is cached for the page (`api.ts:25-29`), so after one failure the
+  sign-in "retry" of spec §3.4 could never succeed. A success may stay
+  cached; a failure is re-probed on the next call.
+
 ### 3.2 Classes
 
 | Class | Thrown when | Notes |
@@ -183,7 +225,17 @@ Predicates (exported): `isBudgetExpired(e)` (§2.1 rule on an
 | budget | "This took too long and was stopped. Try again." `retry: true` | same text + " Refresh to check whether it was applied." `retry: false` | "Your booking was not made because the service was too slow. You can try again." `retry: false` (the booker presses Book) |
 | too-large | n/a | "This is too large to send." + what to shorten (caller-supplied) `retry: false` | same |
 | lost | "Can't reach Paceday right now. Check your connection and try again." `retry: true` | "Paceday didn't confirm this. It may or may not have been applied — refresh to check before trying again." `retry: false` | "We couldn't confirm your booking. It may have been saved — check your email for a confirmation before booking again." `retry: false` |
-| http | today's `apiErrorMessage` mapping (unchanged), except a booking 500 → the booking "lost" text | same | 500 → booking "lost" text; 4xx today's handling |
+| http | today's `apiErrorMessage` mapping (unchanged) | same | **every 5xx** (500, a non-budget JSON 503, a proxy's JSON 502/504) → booking "lost" text; 4xx today's handling |
+
+**The effect is per operation, never derived from the HTTP method**
+(challenge 2026-11-02). Several reads are POSTs: `api.freebusy`,
+`api.scheduleSuggest`, `api.compressionPreview`, `api.nlpParse`,
+`api.llmTest` (a provider probe). Their budget 503 is the read
+text with retry (contract: "a read (slot listing, team availability, parse)
+stored nothing"); deriving the effect from `POST` would tell the user to
+"refresh to check whether it was applied" after a parse. The effect of each
+operation is recorded next to its AC-7 sample (§3.5), so a new operation
+cannot be added without choosing one.
 
 The English strings are the spec's (§3.4, §3.5) and are exported as
 constants so tests and e2e read them from one place. `apiErrorMessage` never
@@ -205,22 +257,47 @@ outside a demo, and the "Backend not reachable — showing demo data" /
 
 ```ts
 export const API_OPERATIONS = {
-  api, schedulingLinksApi, teamsApi, teamInvitesApi, managerApi,
+  api, schedulingLinksApi, teamInvitesApi,
+  teams: teamsApi.remote, manager: managerApi.remote,
   standalone: { fetchSsoStepupOptions, fetchOrganizationAI, patchOrganizationAI,
                 chooseOrganizationAIChoice, confirmOrganizationAI },
 } as const;
 ```
 
+Why `teamsApi.remote` / `managerApi.remote` and not the objects themselves
+(challenge 2026-11-02): on `origin/main` the top level of `teamsApi`
+(`teams.ts:487`) and `managerApi` (`manager.ts:616`) is a **synchronous
+local-storage store** (`paceday:teams:v1`, `paceday:manager:v1`) that makes
+no request; the server calls are under `.remote` (`teamsRemote`,
+`managerRemote`). Walking the top level would find one object member and a
+dozen methods with nothing to intercept. The store is also **not demo
+code**: production pages read it directly — `teamsApi.currentUserEmail()`
+(`FindATimeTab.tsx:64`, `ProtectedHoursTab.tsx:664`) and
+`managerApi.getProfile()/setProfile()` (`Onboarding.tsx:33`,
+`Settings.tsx:812-820`). It stays outside `src/demo/` (§4.2); only the seeds
+(`SEED_MEMBERS`, seeded teams) and the mock branches move. Its methods are
+listed in `NOT_OPERATIONS` with the reason "local store, no request".
+Members of `api` that build a URL and make no request (`authConnectUrl`,
+`zoomConnectUrl`) are in `NOT_OPERATIONS` too; `api.health` is excluded from
+AC-7 and covered by AC-8 (its failure drives the banner, it has no caller
+data to invent). `manager.ts` re-exports `api` (`manager.ts:757`): the
+coverage scan dedupes exports by identity, so the re-export is not a second,
+unregistered `api`.
+
 AC-7's test (`src/api/noInventedData.test.ts`) iterates
 `Object.entries` of every group, so the operation list is derived, not
 hand-kept. It needs sample arguments per operation (`OPERATION_SAMPLES`,
-keyed `"<group>.<name>"`); the test fails when an operation has no sample
+keyed `"<group>.<name>"`, each with its `effect`: `read` | `write` |
+`booking`); the test fails when an operation has no sample
 **and** when a sample names an operation that no longer exists. A second
 check scans the module namespaces of `src/api/client.ts`,
-`schedulingLinks.ts`, `teams.ts` and `manager.ts`: every exported function
-and every exported object named `api` or `*Api` must be either registered in
+`schedulingLinks.ts`, `teams.ts` and `manager.ts`: every exported function,
+and every function-valued member (one level down, and through `.remote`) of
+every exported object named `api` or `*Api`, must be either registered in
 `API_OPERATIONS` or listed in `NOT_OPERATIONS` (pure helpers such as
-`apiErrorMessage`, `validateTeamName`); an unlisted export fails the test.
+`apiErrorMessage`, `validateTeamName`, the local-store methods above); an
+unlisted one fails the test. `requestApi` itself is in `NOT_OPERATIONS`
+(it is the transport the operations share; AC-3 tests it directly).
 For every operation and each of: fetch rejection, no answer within
 `CLIENT_REQUEST_BOUND_MS` (fake timers), non-JSON 2xx — the call rejects with
 `ApiUnreachableError`, no mock value is returned, and a second call reaches
@@ -238,7 +315,24 @@ the fake server.
 - Values: `vite` dev server (Lovable preview, local dev) → `true`;
   `vite build --mode development` (`npm run build:dev`) → `true`;
   `vite build` / `npm run build` (the shipped image,
-  `docker/frontend.dockerfile`, the e2e stack, a Lovable publish) → `false`.
+  `docker/frontend.dockerfile`, the e2e stack) → `false`.
+- Evidence and its limit (challenge 2026-11-02). That the Lovable preview is
+  the dev server in mode `development` is supported by the repo: the
+  `vite.config.ts` server block (`host "::"`, port 8080) and
+  `componentTagger()` enabled only when `mode === "development"` are
+  Lovable's preview conventions. What a Lovable **publish** runs is not
+  visible from either repo (third-party write-ups say `npm run build`, no
+  first-party source found). It does not matter for the owner's rule: the
+  only Paceday production artifact is the image built by
+  `docker/frontend.dockerfile:11` (`npm run build`), which AC-30 checks; a
+  Lovable-hosted publish is not a Paceday deployment (it has no `/api`).
+- In vitest the flag is **a runtime global, not a compile-time
+  replacement** (verified with vitest 4.1.12: a `define` in
+  `vitest.config.ts` is read through `globalThis`, and
+  `vi.stubGlobal("__PACEDAY_DEMO_BUILD__", false)` flips it for code
+  imported before the stub). So production-path unit tests are possible and
+  required (spec AC-15d): they stub the flag to `false` and must not rely on
+  a module-level copy of it (§4.2 already forbids one).
 - No runtime input changes it: no env var read at runtime, no
   `window.__…__` injected by the fileserver, no URL parameter, no storage key.
 
@@ -250,13 +344,30 @@ the fake server.
   `SEED_MEMBERS` in `manager.ts`, `src/lib/demoData.ts`, `mockZoomConnect`,
   `loginDemo`, the demo label and the entry control.
 - Outside `src/demo/`, demo code is reached **only** by a dynamic
-  `import("@/demo/…")` inside `if (__PACEDAY_DEMO_BUILD__) { … }` with the
-  literal flag in the condition (not through a wrapper function), so the
-  production build eliminates the branch and never emits the chunk.
+  `import("@/demo/…")` in a branch whose condition is the literal flag:
+  `if (__PACEDAY_DEMO_BUILD__) { … }`, an early
+  `if (!__PACEDAY_DEMO_BUILD__) return …;`, `__PACEDAY_DEMO_BUILD__ && …`
+  or `__PACEDAY_DEMO_BUILD__ ? lazy(() => import(…)) : null` (for a React
+  component). Never through a wrapper function or a constant holding the
+  flag. Verified on the repo's toolchain (Vite 8.1.6, which bundles with
+  Rolldown 1.1.5, not Rollup): each literal form above removes the branch
+  and the demo chunk is **not emitted** in mode `production`; a wrapper
+  (`const isDemoBuild = () => __PACEDAY_DEMO_BUILD__`) **leaks the whole
+  chunk** into the production output. The bundle check (§4.3) is what
+  catches a leak; the form rule is how not to cause one.
+- Strings that are demo-only but live in shared components (the
+  "Zoom connected (demo)" toast in `ConferencingSection.tsx`, the
+  `paceday:demo` key now exported as `DEMO_SESSION_KEY` from `client.ts:91`,
+  `isDemoSession`) move under `src/demo/` or sit inside a literal-flag
+  branch; otherwise they are markers in the production bundle and §4.3
+  fails.
 - Lint: `eslint.config.js` `no-restricted-imports` forbids static imports of
   `@/demo/*` and `src/demo/*` from any file outside `src/demo/`.
 - `src/demo/index.ts` exports `DEMO_BUNDLE_MARKER = "paceday-demo-bundle-v1"`,
-  referenced by the demo entry so the marker is in every demo chunk.
+  and the demo label renders it (`data-demo-bundle={DEMO_BUNDLE_MARKER}`).
+  It must be **used in rendered output**, not merely exported or imported:
+  the development build is minified and tree-shaken like the production one,
+  so an unused export disappears from it and the positive control fails.
 - The demo data path is keyed on the demo session (`paceday:demo`) alone
   (spec D-9); a production build neither reads nor sets that key.
 
@@ -265,14 +376,18 @@ the fake server.
 `scripts/check-demo-absent.mjs`, run by a new web Makefile target
 `demo-check`, added to `make verify` after `test`:
 
-1. `vite build --outDir <tmp>/prod` (mode production) and
-   `vite build --mode development --outDir <tmp>/dev`.
+1. `vite build --outDir <tmp>/prod --emptyOutDir` (mode production) and
+   `vite build --mode development --outDir <tmp>/dev --emptyOutDir`
+   (`--emptyOutDir` because the directories are outside the project root,
+   where Vite otherwise refuses to clear them).
 2. Search every file under `<tmp>/prod` for these markers; any hit fails:
    `paceday-demo-bundle-v1`, `paceday:demo`, `data-testid="demo-entry"` /
    `"demo-entry"`, `"demo-label"`, `intro-chat`, `product-deepdive`,
    `Sarah Chen`, `Miguel Alvarez`, `Priya Nair`, `Zoom connected (demo)`.
-3. Positive control: `paceday-demo-bundle-v1` must be found under
-   `<tmp>/dev`; absent → fail (the check would be vacuous).
+3. Positive control: **every** marker of step 2 must be found under
+   `<tmp>/dev`; any marker absent there → fail. Checking only the sentinel
+   would let a stale marker (renamed seed, reworded toast) pass vacuously in
+   step 2 forever.
 
 `clockwise:mock-mode` is deliberately **not** a marker: the production build
 must contain it to clear a leftover flag (AC-9).
@@ -311,7 +426,13 @@ same clockwise-like PR.
 `getByTestId('demo-label')`, `getByTestId('server-unreachable-banner')`, the
 old sentence `/Backend not reachable — showing demo data/i` (kept so the
 guard works against the old and the new web while the two merges are not
-simultaneous, spec §7), and the manager seed names. A guard self-test
+simultaneous, spec §7), the manager seed names, and (challenge
+2026-11-02) `[data-testid="api-error"][data-error-kind="lost"]`: with the
+fallback gone, an unreachable backend no longer shows invented data but an
+inline "can't reach" error, and a test that only asserts something is
+*absent* (an empty list, no conflict) would otherwise pass against a dead
+backend. Tests that provoke a lost answer on purpose (AC-10) do not call the
+guard while it is on screen. A guard self-test
 (`e2e/tests/guard-self-test.spec.ts`) uses `page.setContent` with each marker
 in turn (no web needed) and expects `assertNotDemo` to fail for each, and to
 pass on a page with none. AC-30's e2e half: on the sign-in screen served by
@@ -322,9 +443,33 @@ the e2e stack (the production image), `getByTestId('demo-entry')` has count 0.
 Mechanism: Playwright request interception in the test, against the real
 compose stack. No test hook in the server, nginx or fake-google.
 
+What this does and does not test (challenge 2026-11-02): holding an answer
+in the browser proves the web **does not give up early** (the 4 s abort is
+gone) and renders a late answer correctly. It cannot prove the 135 s bound
+itself in real time (a test would wait over two minutes, past the suite's
+60 s `timeout`, `e2e/playwright.config.ts:26`); the bound's value is AC-3's,
+with vitest fake timers. Two rules make the e2e scenarios deterministic and
+short:
+
+- The route handler holds the answer on a **test-controlled promise**
+  (released by the test), not on a fixed `setTimeout` in the handler, so the
+  test decides when the answer arrives after asserting the waiting state.
+- The page's own clock may be advanced instead of waiting in real time:
+  `page.clock.install()` before `page.goto`, then
+  `page.clock.fastForward(9_000)` to show `still-working` and
+  `page.clock.fastForward(131_000)` (past nginx's 130 s, below the 135 s
+  bound) to show the page is still waiting, then release the answer. This
+  works only because §3.1 requires the bounds to be `setTimeout`s. The
+  scenario's real duration is then seconds; the ACs' "after 20 s / 30 s"
+  are page time. A real-time hold is also acceptable if it fits the test's
+  raised `test.setTimeout`.
+- `route.fetch()` sends the real request from Playwright, not from the
+  page: `page.on('request')` still sees the browser's request exactly once,
+  which is what AC-24 counts.
+
 - **AC-5** (slots after 20 s): `page.route` on `GET **/api/book/<slug>/slots*`
-  → `const res = await route.fetch()` (the real server answers), wait 20 s,
-  `route.fulfill({ response: res })`. Assert during the wait: no
+  → `const res = await route.fetch()` (the real server answers), hold until
+  the test releases (≥ 20 s of page time), `route.fulfill({ response: res })`. Assert during the wait: no
   "no available times", `still-working` visible after 8 s; after: the real
   slots. `test.setTimeout` raised (default is 60 s).
 - **AC-10** (link info fails once): `page.route` on `GET **/api/book/<slug>`
@@ -333,8 +478,8 @@ compose stack. No test hook in the server, nginx or fake-google.
   `api-error[data-error-kind=lost]` and no "Link not found"; press
   `api-error-retry` → the real link; reload → the real link.
 - **AC-24** (201 after 30 s): `page.route` on `POST **/api/book/<slug>` →
-  `route.fetch()` sends the booking once, wait 30 s, fulfill with the real
-  201. Count booking POSTs seen by `page.on('request')` = 1, then
+  `route.fetch()` sends the booking once, hold (≥ 30 s of page time),
+  fulfill with the real 201. Count booking POSTs seen by `page.on('request')` = 1, then
   `e2e/db.ts` `queryOne` on the bookings table = exactly one row for the link.
 
 **Gap, stated**: the e2e ACs exercise the browser receiving real answers
@@ -395,9 +540,176 @@ and the web's handling of the 503/413/502/504 answers by the `[unit]` ACs.
 
 1. This branch (`factory/pac-83-spec`: spec rev 2 + this contract) after the
    contract-challenger accepts.
+   **Together with it** (challenge 2026-11-02): a web PR that only
+   regenerates `src/api/generated` from this bundle (`make openapi
+   CONTRACT=…`, the PAC-42/PAC-67 "web-types" pattern). The new paragraph is
+   emitted into `types.ts` as JSDoc (the existing paragraph already is,
+   `types.ts:6580`), and both gates compare against the sibling checkout:
+   the web's `make openapi-check` against `../clockwise-like`, and the api's
+   `make openapi-check` web half against `../smart-calendar-flow`. Merging
+   this branch first and regenerating later would turn every web PR's
+   `make verify` red in between; merging the types first would turn the
+   api's red. Both merges go in the same window.
 2. The clockwise-like e2e PR (guard + self-test + TESTIDS + AC-5/10/24/30
    scenarios + `docs/operator/proxy.md` sentence) and the web PR, in either
    order: the guard accepts both webs (§5.2). The AC-5/10/24/30 scenarios
    pass only against the new web, so they land with or after it (or are
    marked `test.fixme` naming PAC-83 until the web image is published).
-3. The web PR regenerates `src/api/generated` from this bundle.
+
+## Challenge — 2026-11-02
+
+Contract-challenger, against `factory/pac-83-spec` @ `47af532`,
+clockwise-like `origin/main` @ `953f96e`, smart-calendar-flow `origin/main`
+@ `8966115` (read with `git show`). **Verdict: accept-with-changes**, with
+the changes applied above as revision 1.1 (contract prose, manifest, spec).
+The OpenAPI fragments are unchanged, so `contractHash` stays `c477dbe3…`
+(recomputed from the committed bundle).
+
+### Responses the client cannot handle (as the contract stood)
+
+1. `createPublicBooking` answered by an API gateway in front of nginx with
+   `502 Content-Type: application/json {"message":"An invalid response was received from the upstream server"}`
+   (Kong's default). This is not a gateway error by §2.3 (it is JSON), not the
+   budget body, and not a 500. §3.3's booking `http` cell named only "500 → lost
+   text", so a JSON 502/504 fell to an unspecified path. Fix applied: §2.4 /
+   §3.3 now say every 5xx on booking create other than the budget 503 is "may have
+   been saved". Spec AC-22b widened.
+2. `GET /api/auth/me` answered `200 Content-Type: text/html` (`index.html`,
+   a misrouted proxy): `apiFetch` returns `undefined` (`src/lib/api.ts:95`),
+   `AuthContext.refresh` maps it to `null` (`AuthContext.tsx:57`) and signs
+   the user out, which contradicts spec §6. The contract said `apiFetch`
+   "throws the same classes" without saying a non-JSON 2xx is one of them.
+   Fix applied: §3.1 pins `ApiUnreachableError("non-json")` for it, leaves
+   204 unchanged, and keeps `.status` on HTTP errors.
+3. Any 2xx whose headers arrive within the bound and whose body then stalls:
+   `requestApi` clears the timer when `fetch` resolves on headers
+   (`client.ts:604-606`), so `res.json()` waits forever. Spec §3.1's promise
+   that "a dead connection does not spin forever" is false for the body. A
+   truncated JSON body throws a bare `SyntaxError` that no predicate
+   classifies. Fix applied: §3.1 makes the bound cover the body; an
+   unreadable 2xx body is `ApiUnreachableError`.
+4. Budget 503 on `POST /api/nlp/parse` (a read that is a POST): with the
+   effect left implicit, an implementation keyed on the method shows "Refresh
+   to check whether it was applied" after a parse. Fix applied: §3.3 makes the
+   effect per operation, recorded with the AC-7 sample, and lists the POST reads.
+
+### Interfaces that could not be built as written
+
+1. **AC-7 registry**: `API_OPERATIONS = { …, teamsApi, managerApi }` walks
+   the local-storage stores (`teams.ts:487`, `manager.ts:616`: `list()`,
+   `getProfile()`, … — no request) and finds the real calls only under
+   `.remote`. Fix applied: §3.5 registers `teamsApi.remote` and
+   `managerApi.remote`; lists store methods, URL builders and `requestApi`
+   in `NOT_OPERATIONS`; moves `api.health` to AC-8; dedupes the re-export
+   (`manager.ts:757`).
+2. **Demo layout**: §4.2 moved "the teams mocks" and the manager store
+   under `src/demo/`, but production pages read the stores directly
+   (`FindATimeTab.tsx:64`, `ProtectedHoursTab.tsx:664`, `Onboarding.tsx:33`,
+   `Settings.tsx:812-820`). A static import is lint-forbidden and a dynamic
+   one would make these synchronous reads async. Fix applied: §3.5/§4.2 keep
+   the store; seeds and mock branches move.
+3. **Bundle check positive control** looked only for the sentinel. A
+   renamed seed name or reworded toast leaves a marker that is never present
+   anywhere, so step 2 passes vacuously for it. A sentinel that is only
+   exported is also tree-shaken out of the (minified) development build. Fix
+   applied: §4.3 requires every marker to appear in the dev build; §4.2 has
+   the sentinel rendered.
+4. **Guard forms**: "inside `if (…)` with the literal flag" excluded the
+   forms a React component needs (`flag ? lazy(…) : null`, `flag && …`).
+   Measured on Vite 8.1.6 / Rolldown 1.1.5 in a scratch project: `if`,
+   early-return, `&&`, ternary and `import.meta.env.MODE !==
+   "production"` all drop the dynamic chunk in production. A wrapper
+   function emits the chunk with the seed names in it. §4.2 now lists the
+   allowed forms with that evidence.
+5. **Production path untested in unit tests**: vitest defines the flag
+   `true`, and only the bundle grep and one e2e assertion ran the `false`
+   path. Measured: under vitest 4.1.12 a `define` is a `globalThis` value
+   and `vi.stubGlobal(…, false)` flips it. Fix applied: §4.1 + spec AC-15d.
+6. **e2e timing (OQ-4)**: "wait 20 s / 30 s in the route handler" proves
+   the 4 s abort is gone, never the 135 s bound (that would take two minutes
+   of real time, over the 60 s test timeout). Fix applied: §5.3 states the
+   limit, holds the answer on a test-controlled promise, and allows
+   `page.clock.fastForward` to cross 8 s and 131 s of page time. §3.1
+   requires bounds armed with `setTimeout`, not `AbortSignal.timeout`,
+   because neither vitest's fake timers nor `page.clock` drive the latter.
+7. **Sign-in retry could never succeed**: `checkApiAvailability` caches its
+   first result for the page (`src/lib/api.ts:25-29`). Fix applied: §3.1
+   stops caching a failure.
+
+### Consumers affected (missed)
+
+- smart-calendar-flow `docs/lovable-prompts/10-qa-hardening.md:35` ("Only
+  an unreachable backend may use the existing preview fallback") and
+  `.lovable/plan.md:4` ("graceful mock-data fallback so the Lovable preview
+  is fully interactive") also tell the Lovable agent to keep the
+  fallback. Spec §2.6/AC-29 named neither. Added to the spec and to the
+  manifest's allowed paths.
+- e2e `assertNotDemo`: once the fallback is gone, an unreachable backend
+  shows an inline "can't reach" error instead of invented data, and a test
+  that asserts only an absence would pass against it. §5.2 adds the `lost`
+  `api-error` to the guard.
+
+### Merge order (blocking for the merge, not the design)
+
+The description paragraph lands in the web's `types.ts` JSDoc
+(`types.ts:6580` carries its sibling paragraph today). Both repos'
+`openapi-check` compare against the sibling checkout's main, so "contract
+first, web regenerates later" makes the web gate red in between. §8 now
+requires a types-only web PR merged in the same window.
+
+### Contract/implementation divergences
+
+None in the server claims. Checked:
+
+- **Booking budget 503 = not saved**: `budget.Commit` (`budget.go:73-85`)
+  returns false once the middleware has set `expired`. `ConfirmBooking`
+  acquires the insert's connection under the budget (`booking.go:389-394`;
+  a pool wait ends in `ErrExpired`), commits (`:396`), and only then sends
+  the insert on `context.WithoutCancel` (`:400`). The handler writes the
+  budget 503 only for an `ErrExpired` raised before commit
+  (`handlers_booking.go:371`, `:396`). After commit the middleware waits
+  (`budget.go:200-204`) and the answer is 201 or 500. Before commit the
+  only thing written is, at most, a host's refreshed OAuth token, never a
+  booking.
+- **Ladder**: `budget.Default = 90 * time.Second` (`budget.go:32`);
+  `WriteTimeout 120 s`, `ReadTimeout 30 s` (`lifecycle.go:207`; the fileserver
+  has the same, `docker/fileserver/main.go:40-43`); nginx
+  `proxy_read_timeout 130s` (`nginx.conf:66-67`). The upstreams have a
+  single server each (`paceday-render.sh:151-156`), so nginx neither
+  retries nor answers "no live upstreams" 502. Measured with Go 1.25.5:
+  `ReadTimeout` does **not** cancel a handler's context after the request
+  body is read (a 4 s handler under a 2 s ReadTimeout finished normally),
+  so the 30 s does not cut long requests short.
+- **Long operations**: NL parse (2 × 30 s AI) + suggest, team
+  availability, collective slots, personal sync and focus runs all run
+  under the 90 s budget and end in the budget 503 at worst. Only two
+  answers can come after 90 s: a committed booking (201/500) and the
+  step-up callback (`handlers_sso_stepup.go:662`), which is a browser
+  navigation answered by redirect, not a `fetch`. Nothing a `fetch` waits
+  for runs past 130 s; nginx's 504 answers it first.
+- **413**: backend `bodyCapMiddleware` (`middleware.go:191-219`) and nginx
+  `@api_body_too_large` (`nginx.conf`, `default_type application/json`,
+  body `{"error":"request body too large"}\n`) agree. An operator proxy's or
+  Cloudflare's HTML 413 still has status 413, so it shows "too large".
+  Recognising by status alone is correct.
+- **Other JSON 503s** (Zoom/Microsoft/step-up/Slack/Notion "not
+  configured", readiness `not ready`) all fail `RequestBudgetExpiredError`
+  (enum `request timed out`), so body recognition cannot misfire.
+
+### Verified clean
+
+- `contractHash`: `git show 47af532:contracts/openapi/openapi.yaml |
+  sha256sum` = `c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346`.
+  The challenge changes no fragment, so no regeneration was needed.
+- Manifest conventions match PAC-72 / PAC-81 Part A (featureId, hash and
+  `contractHashOf`, repositories with allowed/forbidden paths, gates,
+  acceptanceTests, consumersAffected, mergeConditions, rollback).
+  `backend/api/gen` is unaffected (description only), and so is MIGRATION.md
+  coverage (no operation added or changed).
+- Alternatives 2 (header), 3 (status alone), 5 (runtime switch) and 7–8
+  (fake-google / nginx test hooks) are rejected for real reasons. I could
+  not construct a case where status-alone recognition of 413 misleads.
+- The e2e stack builds the web from `docker/frontend.dockerfile`
+  (`e2e/docker-compose.e2e.yml:212-214`, `npm run build`, mode
+  `production`), so AC-30's e2e half observes a production build.
+- MCP (`mcp/client.go`) has its own client and is unaffected.
