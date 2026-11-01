@@ -51,14 +51,14 @@ func ClearCredentialLoss(db Querier, userID uuid.UUID, provider string) error {
 
 // IsCredentialLost reports whether userID's credential for provider is
 // recorded as lost.
-func IsCredentialLost(db *sql.DB, userID uuid.UUID, provider string) (bool, error) {
+func IsCredentialLost(db DBTX, userID uuid.UUID, provider string) (bool, error) {
 	var lost bool
 	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM credential_losses WHERE user_id = $1 AND provider = $2)`, userID, provider).Scan(&lost)
 	return lost, err
 }
 
 // CredentialLosses returns the providers whose credential userID has lost.
-func CredentialLosses(db *sql.DB, userID uuid.UUID) (map[string]bool, error) {
+func CredentialLosses(db DBTX, userID uuid.UUID) (map[string]bool, error) {
 	rows, err := db.Query(`SELECT provider FROM credential_losses WHERE user_id = $1`, userID)
 	if err != nil {
 		return nil, err

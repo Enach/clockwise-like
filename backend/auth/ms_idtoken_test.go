@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Enach/paceday/backend/internal/outbound"
 )
 
 // PAC-71 Microsoft sign-in ID-token verifier (contract revision 3.1): unit
@@ -236,9 +238,9 @@ func TestPAC71_MicrosoftIDToken_KeysEndpointFailures(t *testing.T) {
 			srv := httptest.NewServer(h)
 			t.Cleanup(srv.Close)
 			MicrosoftKeysURL = func(string) string { return srv.URL }
-			prev := MicrosoftKeysFetchTimeout
-			MicrosoftKeysFetchTimeout = 50 * time.Millisecond
-			t.Cleanup(func() { MicrosoftKeysFetchTimeout = prev })
+			lim := outbound.Current()
+			lim.Identity = 50 * time.Millisecond // stands in for 10 s
+			t.Cleanup(outbound.SetForTest(lim))
 			if _, err := b.v.Verify(context.Background(), b.token(t, guid(9), nil), "client", "n"); !errors.Is(err, ErrMicrosoftIDToken) {
 				t.Fatalf("err = %v", err)
 			}

@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	googlecalendar "google.golang.org/api/calendar/v3"
@@ -29,7 +30,7 @@ func GetAuthURL(config *oauth2.Config, state, loginHint string) string {
 }
 
 func ExchangeCode(ctx context.Context, config *oauth2.Config, code string) (*oauth2.Token, error) {
-	return config.Exchange(ctx, code)
+	return config.Exchange(outbound.WithIdentityClient(ctx), code)
 }
 
 func TokenSource(ctx context.Context, config *oauth2.Config, token *oauth2.Token) oauth2.TokenSource {

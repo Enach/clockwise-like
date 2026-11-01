@@ -10,6 +10,7 @@ import (
 
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -189,7 +190,12 @@ func (h *personalHandlers) sync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return
 	}
-	if err := h.blocker.Sync(r.Context(), id); err != nil {
+	// PAC-81 AC-A17: a sync the budget stopped early answers the budget's
+	// 503 and does not stamp last_synced_at; a re-run finishes it.
+	if err := h.blocker.Sync(r.Context(), id); budgetCut(err) {
+		budget.WriteExpired(w)
+		return
+	} else if err != nil {
 		writeCalendarFailure(w, r, "sync", err)
 		return
 	}

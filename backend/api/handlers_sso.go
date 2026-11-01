@@ -15,6 +15,7 @@ import (
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/domain"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 )
@@ -101,6 +102,9 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 // --- GET /api/auth/callback/oidc/{domain} (public) --------------------------
 
 func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	// PAC-81 AC-A2: at the budget, the sign-in failure redirect.
+	budget.OnExpiry(r.Context(), h.ah.signInExpired)
+	db := storage.Bind(r.Context(), h.ah.db)
 	d := chi.URLParam(r, "domain")
 
 	stateCookie, err := r.Cookie("sso_state")
@@ -115,7 +119,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	setCookie(w, &http.Cookie{Name: "sso_state", MaxAge: -1, Path: "/"})
 
-	provider, err := storage.GetSSOProviderByDomain(h.ah.db, d)
+	provider, err := storage.GetSSOProviderByDomain(db, d)
 	if err != nil || provider == nil {
 		writeError(w, "SSO not configured for this domain", http.StatusNotFound)
 		return
@@ -165,7 +169,7 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = provider.OIDCIssuer
 	}
-	res, err := storage.ResolveSignIn(r.Context(), h.ah.db, storage.SignInRequest{
+	res, err := storage.ResolveSignIn(r.Context(), db, storage.SignInRequest{
 		Identity:      storage.Identity{Provider: storage.IdentityOIDC, Tenant: issuer, Subject: userInfo.Sub},
 		Email:         userInfo.Email,
 		Name:          userInfo.Name,

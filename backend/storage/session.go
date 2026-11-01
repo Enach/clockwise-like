@@ -155,10 +155,11 @@ func recheck(ctx context.Context, tx Querier, userID uuid.UUID, gen int64, g *Se
 // ErrStaleSession is returned; if the generation cannot be read the guard is
 // marked unavailable. Without a guard (no session: scheduled jobs, public
 // pages, other accounts' data) fn runs directly against db.
-func WithSessionGeneration(ctx context.Context, db *sql.DB, fn func(q Querier) error) error {
+func WithSessionGeneration(ctx context.Context, db DBTX, fn func(q Querier) error) error {
 	g := SessionGuardFrom(ctx)
 	if g == nil {
-		return fn(db)
+		// PAC-81 AC-A9: the pool wait ends with the context.
+		return fn(Bind(ctx, db))
 	}
 	if GuardedCallHook != nil {
 		GuardedCallHook(ctx)
@@ -169,11 +170,11 @@ func WithSessionGeneration(ctx context.Context, db *sql.DB, fn func(q Querier) e
 // WithGeneration runs fn in one transaction that first re-confirms, under a
 // row lock, that userID is still at generation gen. It is the store step of a
 // connect (contract §4 step 6, spec AC-47): ErrStaleSession when it moved.
-func WithGeneration(ctx context.Context, db *sql.DB, userID uuid.UUID, gen int64, fn func(q Querier) error) error {
+func WithGeneration(ctx context.Context, db DBTX, userID uuid.UUID, gen int64, fn func(q Querier) error) error {
 	return withGenerationTx(ctx, db, userID, gen, nil, fn)
 }
 
-func withGenerationTx(ctx context.Context, db *sql.DB, userID uuid.UUID, gen int64, g *SessionGuard, fn func(q Querier) error) error {
+func withGenerationTx(ctx context.Context, db DBTX, userID uuid.UUID, gen int64, g *SessionGuard, fn func(q Querier) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		if g != nil {
@@ -204,7 +205,7 @@ func beginOn(q Querier) (*sql.Tx, *txScope, error) {
 	switch v := q.(type) {
 	case *sql.Tx:
 		return v, &txScope{tx: v}, nil
-	case *sql.DB:
+	case interface{ Begin() (*sql.Tx, error) }: // *sql.DB and PAC-81's bound DBTX
 		tx, err := v.Begin()
 		if err != nil {
 			return nil, nil, err

@@ -95,7 +95,7 @@ func refuse(cause string, account uuid.UUID, kind string) (*SignInResult, error)
 
 // ResolveSignIn applies the sign-in rule to req. A *RefusalError is a
 // refusal; any other error is a failure to create or bind (nothing written).
-func ResolveSignIn(ctx context.Context, db *sql.DB, req SignInRequest) (*SignInResult, error) {
+func ResolveSignIn(ctx context.Context, db DBTX, req SignInRequest) (*SignInResult, error) {
 	req.Email = strings.TrimSpace(req.Email)
 	if req.Identity.Subject == "" || req.Identity.Provider == "" {
 		return refuse("the provider answer carries no subject", uuid.Nil, "")
@@ -177,7 +177,7 @@ func migrationRule(q Querier, c Carrier, req SignInRequest) (SignInHow, string, 
 // between the lookup and the session), stores the credential and reads the
 // generation the session carries. The stored address and standing are never
 // changed (spec D-7).
-func reachBound(ctx context.Context, db *sql.DB, uid uuid.UUID, req SignInRequest) (*SignInResult, error) {
+func reachBound(ctx context.Context, db DBTX, uid uuid.UUID, req SignInRequest) (*SignInResult, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -213,7 +213,7 @@ func reachBound(ctx context.Context, db *sql.DB, uid uuid.UUID, req SignInReques
 // lock the account (after every request lease on it has ended), re-check every
 // condition under the lock, write the binding, the standing and the recorded
 // identifier, advance the generation, store the credential; all or nothing.
-func bindLegacy(ctx context.Context, db *sql.DB, c Carrier, how SignInHow, req SignInRequest) (*SignInResult, error) {
+func bindLegacy(ctx context.Context, db DBTX, c Carrier, how SignInHow, req SignInRequest) (*SignInResult, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -286,7 +286,7 @@ func bindLegacy(ctx context.Context, db *sql.DB, c Carrier, how SignInHow, req S
 // createAccount is rule 5: a new account bound to the identity, atomic
 // against a concurrent creation for the same address in any letter case
 // (users_email_key_unique) or for the same identity.
-func createAccount(ctx context.Context, db *sql.DB, req SignInRequest) (*SignInResult, error) {
+func createAccount(ctx context.Context, db DBTX, req SignInRequest) (*SignInResult, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -334,7 +334,7 @@ func createAccount(ctx context.Context, db *sql.DB, req SignInRequest) (*SignInR
 	return finish(db, uid, gen, SignInCreated)
 }
 
-func finish(db *sql.DB, uid uuid.UUID, gen int64, how SignInHow) (*SignInResult, error) {
+func finish(db DBTX, uid uuid.UUID, gen int64, how SignInHow) (*SignInResult, error) {
 	u, err := GetUserByID(db, uid)
 	if err != nil {
 		return nil, err

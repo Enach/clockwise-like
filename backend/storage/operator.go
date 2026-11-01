@@ -76,7 +76,7 @@ func applyRemovals(tx *sql.Tx, id uuid.UUID, rs []removal) ([]string, error) {
 
 // lockForOperator starts an operator transaction on an account: it waits for
 // every request lease on the account, then locks its row.
-func lockForOperator(ctx context.Context, db *sql.DB, id uuid.UUID) (*sql.Tx, string, error) {
+func lockForOperator(ctx context.Context, db DBTX, id uuid.UUID) (*sql.Tx, string, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", err
@@ -123,7 +123,7 @@ func audit(tx *sql.Tx, action string, run OperatorRun, account *uuid.UUID, email
 // every stored credential, connection and key is removed. The generation
 // advances, ending every session and every connect in flight. The binding is
 // kept. Audited.
-func FreeAddress(ctx context.Context, db *sql.DB, id uuid.UUID, squatter bool, run OperatorRun) (string, error) {
+func FreeAddress(ctx context.Context, db DBTX, id uuid.UUID, squatter bool, run OperatorRun) (string, error) {
 	if err := run.validate(); err != nil {
 		return "", err
 	}
@@ -197,7 +197,7 @@ type ReassignResult struct {
 // subject, every calendar credential removed unless kept, the named other
 // data removed, the generation advanced. Data the account holds is otherwise
 // unchanged. Audited.
-func ReassignAccount(ctx context.Context, db *sql.DB, req ReassignRequest) (*ReassignResult, error) {
+func ReassignAccount(ctx context.Context, db DBTX, req ReassignRequest) (*ReassignResult, error) {
 	if err := req.Run.validate(); err != nil {
 		return nil, err
 	}
@@ -269,7 +269,7 @@ func ReassignAccount(ctx context.Context, db *sql.DB, req ReassignRequest) (*Rea
 // every account's generation advances by one, so every existing session gets
 // 401 on its next request. Nothing else changes. Audited once. Whether a
 // release runs it is the owner's decision.
-func AdvanceAllGenerations(ctx context.Context, db *sql.DB, run OperatorRun) (int64, error) {
+func AdvanceAllGenerations(ctx context.Context, db DBTX, run OperatorRun) (int64, error) {
 	if err := run.validate(); err != nil {
 		return 0, err
 	}

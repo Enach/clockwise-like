@@ -340,14 +340,15 @@ func TestPAC67_PublicBookingWithARefusedHost(t *testing.T) {
 			t.Errorf("slots = %s, want %s", got, baseSlots)
 		}
 	}
-	// Booking is saved and confirmed as today when the host's calendar cannot
-	// be written (201, the confirmation names the host), with no event write.
+	// Owner decision PAC-72 D-6 (2026-11-01, applied by PAC-81 Part A): a
+	// host whose calendar cannot be read counts as busy, so the booking is
+	// refused with the existing 409 and nothing is written (it was a 201
+	// confirmation before D-6). Still no event write and no "lost" in the body.
 	inserts := w.cal.insertCount()
 	for i := 1; i <= 2; i++ {
 		code, got := book(fmt.Sprintf("v%d@example.com", i), i)
-		hosts, _ := got["hosts"].([]any)
-		if code != http.StatusCreated || got["title"] != "PAC-67 AC-28" || len(hosts) != 1 || strings.Contains(fmt.Sprint(got), "lost") {
-			t.Errorf("booking %d = %d %v, want today's 201 confirmation", i, code, got)
+		if code != http.StatusConflict || got["error"] != "slot is no longer available" || strings.Contains(fmt.Sprint(got), "lost") {
+			t.Errorf("booking %d = %d %v, want the 409 (PAC-72 D-6)", i, code, got)
 		}
 	}
 	if w.cal.insertCount() != inserts {

@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +17,7 @@ import (
 // plain function.
 
 // GetOrCreateSettingsByUserCtx carries D2–D5 for the request.
-func GetOrCreateSettingsByUserCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (s *Settings, err error) {
+func GetOrCreateSettingsByUserCtx(ctx context.Context, db DBTX, userID uuid.UUID) (s *Settings, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		s, err = GetOrCreateSettingsByUser(q, userID)
 		return err
@@ -29,14 +28,14 @@ func GetOrCreateSettingsByUserCtx(ctx context.Context, db *sql.DB, userID uuid.U
 // SaveSettingsForUserCtx is SaveSettingsForUser under the re-check (AI keys,
 // AI destination and every preference: spec AC-46/AC-47 "sets a personal AI
 // key").
-func SaveSettingsForUserCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, s *Settings) error {
+func SaveSettingsForUserCtx(ctx context.Context, db DBTX, userID uuid.UUID, s *Settings) error {
 	return WithSessionGeneration(ctx, db, func(q Querier) error {
 		return SaveSettingsForUserAt(q, userID, s, time.Now())
 	})
 }
 
 // GetWorkspaceConnectionCtx carries D6 (Slack, Notion) for the request.
-func GetWorkspaceConnectionCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, provider string) (c *WorkspaceConnection, err error) {
+func GetWorkspaceConnectionCtx(ctx context.Context, db DBTX, userID uuid.UUID, provider string) (c *WorkspaceConnection, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		c, err = GetWorkspaceConnection(q, userID, provider)
 		return err
@@ -46,14 +45,14 @@ func GetWorkspaceConnectionCtx(ctx context.Context, db *sql.DB, userID uuid.UUID
 
 // UpsertWorkspaceConnectionCtx stores a Slack or Notion connection under the
 // re-check (spec AC-46/AC-47 "completes a Slack connection").
-func UpsertWorkspaceConnectionCtx(ctx context.Context, db *sql.DB, c *WorkspaceConnection) error {
+func UpsertWorkspaceConnectionCtx(ctx context.Context, db DBTX, c *WorkspaceConnection) error {
 	return WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertWorkspaceConnection(q, c)
 	})
 }
 
 // ListPersonalCalendarsByUserCtx carries D7 for the request.
-func ListPersonalCalendarsByUserCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (out []PersonalCalendar, err error) {
+func ListPersonalCalendarsByUserCtx(ctx context.Context, db DBTX, userID uuid.UUID) (out []PersonalCalendar, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		out, err = ListPersonalCalendarsByUser(q, userID)
 		return err
@@ -62,7 +61,7 @@ func ListPersonalCalendarsByUserCtx(ctx context.Context, db *sql.DB, userID uuid
 }
 
 // GetPersonalCalendarCtx carries D7 (the calendar's URL and credentials).
-func GetPersonalCalendarCtx(ctx context.Context, db *sql.DB, id int64) (c *PersonalCalendar, err error) {
+func GetPersonalCalendarCtx(ctx context.Context, db DBTX, id int64) (c *PersonalCalendar, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		c, err = GetPersonalCalendar(q, id)
 		return err
@@ -71,7 +70,7 @@ func GetPersonalCalendarCtx(ctx context.Context, db *sql.DB, id int64) (c *Perso
 }
 
 // InsertPersonalCalendarCtx stores a personal calendar under the re-check.
-func InsertPersonalCalendarCtx(ctx context.Context, db *sql.DB, c *PersonalCalendar) (id int64, err error) {
+func InsertPersonalCalendarCtx(ctx context.Context, db DBTX, c *PersonalCalendar) (id int64, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		id, err = InsertPersonalCalendar(q, c)
 		return err
@@ -80,7 +79,7 @@ func InsertPersonalCalendarCtx(ctx context.Context, db *sql.DB, c *PersonalCalen
 }
 
 // LoadZoomCredentialCtx carries the Zoom half of D2.
-func LoadZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (c *ZoomCredential, err error) {
+func LoadZoomCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID) (c *ZoomCredential, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		c, err = LoadZoomCredential(q, userID)
 		return err
@@ -90,7 +89,7 @@ func LoadZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (c
 
 // CreateTeamCtx creates a team under the re-check (spec AC-46/AC-47
 // "creates a team").
-func CreateTeamCtx(ctx context.Context, db *sql.DB, name string, createdBy uuid.UUID) (t *Team, err error) {
+func CreateTeamCtx(ctx context.Context, db DBTX, name string, createdBy uuid.UUID) (t *Team, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		t, err = CreateTeam(q, name, createdBy)
 		return err
@@ -100,7 +99,7 @@ func CreateTeamCtx(ctx context.Context, db *sql.DB, name string, createdBy uuid.
 
 // RespondToHostInviteCtx answers a co-host invitation under the re-check
 // (spec AC-46/AC-47 "accepts a co-host invitation").
-func RespondToHostInviteCtx(ctx context.Context, db *sql.DB, linkID, userID uuid.UUID, status string) (matched bool, err error) {
+func RespondToHostInviteCtx(ctx context.Context, db DBTX, linkID, userID uuid.UUID, status string) (matched bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		matched, err = RespondToHostInvite(q, linkID, userID, status)
 		return err
@@ -110,7 +109,7 @@ func RespondToHostInviteCtx(ctx context.Context, db *sql.DB, linkID, userID uuid
 
 // ConsumeSSOStepupGrant spends a step-up grant (D14) under the re-check: an
 // older-generation session never spends a grant issued after a binding.
-func ConsumeSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, purpose string, now time.Time) (id uuid.UUID, ok bool, err error) {
+func ConsumeSSOStepupGrant(ctx context.Context, db DBTX, userID, orgID uuid.UUID, purpose string, now time.Time) (id uuid.UUID, ok bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		id, ok, err = consumeSSOStepupGrant(ctx, q, userID, orgID, purpose, now)
 		return err
@@ -120,7 +119,7 @@ func ConsumeSSOStepupGrant(ctx context.Context, db *sql.DB, userID, orgID uuid.U
 
 // DeleteOrgAIConfirmations removes the account's org-AI confirmations under
 // the re-check.
-func DeleteOrgAIConfirmations(ctx context.Context, db *sql.DB, userID uuid.UUID) error {
+func DeleteOrgAIConfirmations(ctx context.Context, db DBTX, userID uuid.UUID) error {
 	return WithSessionGeneration(ctx, db, func(q Querier) error {
 		return deleteOrgAIConfirmations(ctx, q, userID)
 	})

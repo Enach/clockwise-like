@@ -19,6 +19,8 @@ import (
 	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/domain"
+	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -124,6 +126,9 @@ func (h *authHandlers) signInRefused(w http.ResponseWriter, r *http.Request, err
 // callback is googleOAuthCallback: the state cookie that matches `state`
 // chooses the CONNECT or the SIGN-IN branch; a session never does.
 func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
+	// PAC-81 AC-A2: at the budget a sign-in ends on its failure redirect (the
+	// connect branch replaces this with its own not_credited answer).
+	budget.OnExpiry(r.Context(), h.signInExpired)
 	state := r.URL.Query().Get("state")
 	if c, err := r.Cookie(googleConnectCookie); err == nil && c.Value != "" && c.Value == state {
 		h.connectCallback(w, r, connectFlow{
@@ -154,7 +159,7 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "userinfo failed", err, http.StatusInternalServerError)
 		return
 	}
-	res, err := storage.ResolveSignIn(r.Context(), h.db, storage.SignInRequest{
+	res, err := storage.ResolveSignIn(r.Context(), storage.Bind(r.Context(), h.db), storage.SignInRequest{
 		Identity:      storage.Identity{Provider: storage.IdentityGoogle, Subject: strings.TrimSpace(info.ID)},
 		Email:         info.Email,
 		Name:          info.Name,
@@ -189,6 +194,7 @@ func (h *authHandlers) callback(w http.ResponseWriter, r *http.Request) {
 
 // microsoftCallback is microsoftOAuthCallback.
 func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request) {
+	budget.OnExpiry(r.Context(), h.signInExpired) // PAC-81 AC-A2, as Google
 	state := r.URL.Query().Get("state")
 	if c, err := r.Cookie(msConnectCookie); err == nil && c.Value != "" && c.Value == state {
 		cfg := microsoftConfig()
@@ -274,7 +280,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	tenant := id.TenantID
-	res, err := storage.ResolveSignIn(r.Context(), h.db, storage.SignInRequest{
+	res, err := storage.ResolveSignIn(r.Context(), storage.Bind(r.Context(), h.db), storage.SignInRequest{
 		Identity: storage.Identity{
 			Provider: storage.IdentityMicrosoft,
 			Tenant:   strings.ToLower(tenant),
@@ -315,7 +321,7 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 // one entry: the tenant id and its verified domain names.
 func fetchMicrosoftOrganization(ctx context.Context, token *oauth2.Token) (string, []string, error) {
 	client := oauth2.NewClient(ctx, oauth2.StaticTokenSource(token))
-	client.Timeout = 5 * time.Second
+	client.Timeout = outbound.Current().Identity
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, microsoftGraphOrganizationURL, nil)
 	if err != nil {
 		return "", nil, err
@@ -508,6 +514,10 @@ type connectFlow struct {
 // expires the connect cookie, so a state is used at most once.
 func (h *authHandlers) connectCallback(w http.ResponseWriter, r *http.Request, f connectFlow) {
 	expireConnectCookie(w, f.cookie)
+	// PAC-81 Part A contract: a connect callback that reaches the request
+	// budget is credited to nobody, with its connect cookie expired; never
+	// signin_refused or auth_failed.
+	budget.OnExpiry(r.Context(), h.connectExpired(f.cookie))
 	notCredited := func(why string) {
 		log.Printf("pac71: %s connect credited to nobody: %s", f.provider, why)
 		http.Redirect(w, r, h.frontendURL+connectNotCreditedPath, http.StatusFound)
@@ -564,6 +574,11 @@ func (h *authHandlers) connectCallback(w http.ResponseWriter, r *http.Request, f
 	if connectBeforeStoreHook != nil {
 		connectBeforeStoreHook()
 	}
+	// PAC-81: from here the handler owns the answer (budget.Commit); a budget
+	// that already answered not_credited means nothing is stored.
+	if !budget.Commit(r.Context()) {
+		return
+	}
 	// Step 6: store only while the generation is still the start's.
 	err = storage.WithGeneration(r.Context(), h.db, st.User, st.Gen, func(q storage.Querier) error {
 		return f.store(q, st.User, tok)
@@ -582,3 +597,15 @@ func (h *authHandlers) connectCallback(w http.ResponseWriter, r *http.Request, f
 // microsoftIDTokens is the sign-in ID-token verifier (one process-wide key
 // cache). A test seam: tests replace it with a fresh verifier.
 var microsoftIDTokens = auth.NewMicrosoftIDTokenVerifier()
+
+// connectExpired is the connect branch's answer at the request budget
+// (PAC-81 Part A): 302 to not_credited with the connect cookie expired,
+// auth_token untouched. Whatever the store may still do runs in its own
+// generation-checked transaction, so a late store is never half-credited.
+func (h *authHandlers) connectExpired(cookie string) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logServerError(r, "connect callback", budget.ErrExpired, http.StatusFound)
+		expireConnectCookie(w, cookie)
+		http.Redirect(w, r, h.frontendURL+connectNotCreditedPath, http.StatusFound)
+	}
+}

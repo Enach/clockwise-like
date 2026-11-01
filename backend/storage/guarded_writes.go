@@ -8,14 +8,13 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 // AcceptTeamInviteCtx is AcceptTeamInvite under the in-request re-check (PAC-71, contract §5).
-func AcceptTeamInviteCtx(ctx context.Context, db *sql.DB, inviteID uuid.UUID) (err error) {
+func AcceptTeamInviteCtx(ctx context.Context, db DBTX, inviteID uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return AcceptTeamInvite(q, inviteID)
 	})
@@ -23,7 +22,7 @@ func AcceptTeamInviteCtx(ctx context.Context, db *sql.DB, inviteID uuid.UUID) (e
 }
 
 // AddLinkHostCtx is AddLinkHost under the in-request re-check (PAC-71, contract §5).
-func AddLinkHostCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, userID uuid.UUID, status string) (r0 *LinkHost, err error) {
+func AddLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID, status string) (r0 *LinkHost, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = AddLinkHost(q, linkID, userID, status)
@@ -33,7 +32,7 @@ func AddLinkHostCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, userID uu
 }
 
 // AddTeamMemberCtx is AddTeamMember under the in-request re-check (PAC-71, contract §5).
-func AddTeamMemberCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, userID uuid.UUID, role string) (err error) {
+func AddTeamMemberCtx(ctx context.Context, db DBTX, teamID uuid.UUID, userID uuid.UUID, role string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return AddTeamMember(q, teamID, userID, role)
 	})
@@ -41,7 +40,7 @@ func AddTeamMemberCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, userID 
 }
 
 // ConfirmManagerTeamMembersCtx is ConfirmManagerTeamMembers under the in-request re-check (PAC-71, contract §5).
-func ConfirmManagerTeamMembersCtx(ctx context.Context, db *sql.DB, managerID uuid.UUID, teamID uuid.UUID, emails []string) (r0 int, r1 int, r2 int, err error) {
+func ConfirmManagerTeamMembersCtx(ctx context.Context, db DBTX, managerID uuid.UUID, teamID uuid.UUID, emails []string) (r0 int, r1 int, r2 int, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, r1, r2, e = ConfirmManagerTeamMembers(q, managerID, teamID, emails)
@@ -51,7 +50,7 @@ func ConfirmManagerTeamMembersCtx(ctx context.Context, db *sql.DB, managerID uui
 }
 
 // CreateHabitCtx is CreateHabit under the in-request re-check (PAC-71, contract §5).
-func CreateHabitCtx(ctx context.Context, db *sql.DB, h *Habit) (r0 *Habit, err error) {
+func CreateHabitCtx(ctx context.Context, db DBTX, h *Habit) (r0 *Habit, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = CreateHabit(q, h)
@@ -61,7 +60,7 @@ func CreateHabitCtx(ctx context.Context, db *sql.DB, h *Habit) (r0 *Habit, err e
 }
 
 // CreateNoMeetingZoneCtx is CreateNoMeetingZone under the in-request re-check (PAC-71, contract §5).
-func CreateNoMeetingZoneCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, dayOfWeek int, startTime string, endTime string, label string) (r0 *NoMeetingZone, err error) {
+func CreateNoMeetingZoneCtx(ctx context.Context, db DBTX, teamID uuid.UUID, dayOfWeek int, startTime string, endTime string, label string) (r0 *NoMeetingZone, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = CreateNoMeetingZone(q, teamID, dayOfWeek, startTime, endTime, label)
@@ -71,7 +70,7 @@ func CreateNoMeetingZoneCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, d
 }
 
 // CreateSchedulingLinkCtx is CreateSchedulingLink under the in-request re-check (PAC-71, contract §5).
-func CreateSchedulingLinkCtx(ctx context.Context, db *sql.DB, l *SchedulingLink) (r0 *SchedulingLink, err error) {
+func CreateSchedulingLinkCtx(ctx context.Context, db DBTX, l *SchedulingLink) (r0 *SchedulingLink, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = CreateSchedulingLink(q, l)
@@ -81,7 +80,7 @@ func CreateSchedulingLinkCtx(ctx context.Context, db *sql.DB, l *SchedulingLink)
 }
 
 // CreateTeamInviteCtx is CreateTeamInvite under the in-request re-check (PAC-71, contract §5).
-func CreateTeamInviteCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, inviteeEmail string, invitedBy uuid.UUID) (r0 *TeamInvite, err error) {
+func CreateTeamInviteCtx(ctx context.Context, db DBTX, teamID uuid.UUID, inviteeEmail string, invitedBy uuid.UUID) (r0 *TeamInvite, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = CreateTeamInvite(q, teamID, inviteeEmail, invitedBy)
@@ -91,7 +90,7 @@ func CreateTeamInviteCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, invi
 }
 
 // DeactivateHabitCtx is DeactivateHabit under the in-request re-check (PAC-71, contract §5).
-func DeactivateHabitCtx(ctx context.Context, db *sql.DB, id uuid.UUID) (err error) {
+func DeactivateHabitCtx(ctx context.Context, db DBTX, id uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeactivateHabit(q, id)
 	})
@@ -99,7 +98,7 @@ func DeactivateHabitCtx(ctx context.Context, db *sql.DB, id uuid.UUID) (err erro
 }
 
 // DeleteFocusBlockCtx is DeleteFocusBlock under the in-request re-check (PAC-71, contract §5).
-func DeleteFocusBlockCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, googleEventID string) (err error) {
+func DeleteFocusBlockCtx(ctx context.Context, db DBTX, userID uuid.UUID, googleEventID string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeleteFocusBlock(q, userID, googleEventID)
 	})
@@ -107,7 +106,7 @@ func DeleteFocusBlockCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, goog
 }
 
 // DeleteManagerTeamMemberByEmailCtx is DeleteManagerTeamMemberByEmail under the in-request re-check (PAC-71, contract §5).
-func DeleteManagerTeamMemberByEmailCtx(ctx context.Context, db *sql.DB, managerID uuid.UUID, email string) (err error) {
+func DeleteManagerTeamMemberByEmailCtx(ctx context.Context, db DBTX, managerID uuid.UUID, email string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeleteManagerTeamMemberByEmail(q, managerID, email)
 	})
@@ -115,7 +114,7 @@ func DeleteManagerTeamMemberByEmailCtx(ctx context.Context, db *sql.DB, managerI
 }
 
 // DeleteNoMeetingZoneCtx is DeleteNoMeetingZone under the in-request re-check (PAC-71, contract §5).
-func DeleteNoMeetingZoneCtx(ctx context.Context, db *sql.DB, id uuid.UUID, teamID uuid.UUID) (err error) {
+func DeleteNoMeetingZoneCtx(ctx context.Context, db DBTX, id uuid.UUID, teamID uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeleteNoMeetingZone(q, id, teamID)
 	})
@@ -123,7 +122,7 @@ func DeleteNoMeetingZoneCtx(ctx context.Context, db *sql.DB, id uuid.UUID, teamI
 }
 
 // DeletePersonalBlockerCtx is DeletePersonalBlocker under the in-request re-check (PAC-71, contract §5).
-func DeletePersonalBlockerCtx(ctx context.Context, db *sql.DB, calID int64, personalEventID string) (err error) {
+func DeletePersonalBlockerCtx(ctx context.Context, db DBTX, calID int64, personalEventID string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeletePersonalBlocker(q, calID, personalEventID)
 	})
@@ -131,7 +130,7 @@ func DeletePersonalBlockerCtx(ctx context.Context, db *sql.DB, calID int64, pers
 }
 
 // DeletePersonalCalendarForUserCtx is DeletePersonalCalendarForUser under the in-request re-check (PAC-71, contract §5).
-func DeletePersonalCalendarForUserCtx(ctx context.Context, db *sql.DB, id int64, userID uuid.UUID) (r0 bool, err error) {
+func DeletePersonalCalendarForUserCtx(ctx context.Context, db DBTX, id int64, userID uuid.UUID) (r0 bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = DeletePersonalCalendarForUser(q, id, userID)
@@ -141,7 +140,7 @@ func DeletePersonalCalendarForUserCtx(ctx context.Context, db *sql.DB, id int64,
 }
 
 // DeleteSchedulingLinkCtx is DeleteSchedulingLink under the in-request re-check (PAC-71, contract §5).
-func DeleteSchedulingLinkCtx(ctx context.Context, db *sql.DB, id uuid.UUID) (err error) {
+func DeleteSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeleteSchedulingLink(q, id)
 	})
@@ -149,7 +148,7 @@ func DeleteSchedulingLinkCtx(ctx context.Context, db *sql.DB, id uuid.UUID) (err
 }
 
 // DeleteTeamCtx is DeleteTeam under the in-request re-check (PAC-71, contract §5).
-func DeleteTeamCtx(ctx context.Context, db *sql.DB, id uuid.UUID) (err error) {
+func DeleteTeamCtx(ctx context.Context, db DBTX, id uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeleteTeam(q, id)
 	})
@@ -157,7 +156,7 @@ func DeleteTeamCtx(ctx context.Context, db *sql.DB, id uuid.UUID) (err error) {
 }
 
 // DeleteWorkspaceConnectionCtx is DeleteWorkspaceConnection under the in-request re-check (PAC-71, contract §5).
-func DeleteWorkspaceConnectionCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, provider string) (err error) {
+func DeleteWorkspaceConnectionCtx(ctx context.Context, db DBTX, userID uuid.UUID, provider string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return DeleteWorkspaceConnection(q, userID, provider)
 	})
@@ -165,7 +164,7 @@ func DeleteWorkspaceConnectionCtx(ctx context.Context, db *sql.DB, userID uuid.U
 }
 
 // InviteLinkHostCtx is InviteLinkHost under the in-request re-check (PAC-71, contract §5).
-func InviteLinkHostCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, userID uuid.UUID) (r0 *LinkHost, r1 bool, err error) {
+func InviteLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID) (r0 *LinkHost, r1 bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, r1, e = InviteLinkHost(q, linkID, userID)
@@ -175,7 +174,7 @@ func InviteLinkHostCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, userID
 }
 
 // MarkPersonalCalendarSyncedCtx is MarkPersonalCalendarSynced under the in-request re-check (PAC-71, contract §5).
-func MarkPersonalCalendarSyncedCtx(ctx context.Context, db *sql.DB, id int64, userID uuid.UUID) (err error) {
+func MarkPersonalCalendarSyncedCtx(ctx context.Context, db DBTX, id int64, userID uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return MarkPersonalCalendarSynced(q, id, userID)
 	})
@@ -183,7 +182,7 @@ func MarkPersonalCalendarSyncedCtx(ctx context.Context, db *sql.DB, id int64, us
 }
 
 // PatchManagerTeamMemberCtx is PatchManagerTeamMember under the in-request re-check (PAC-71, contract §5).
-func PatchManagerTeamMemberCtx(ctx context.Context, db *sql.DB, managerID uuid.UUID, email string, displayName string, cadence string, customDays *int) (err error) {
+func PatchManagerTeamMemberCtx(ctx context.Context, db DBTX, managerID uuid.UUID, email string, displayName string, cadence string, customDays *int) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return PatchManagerTeamMember(q, managerID, email, displayName, cadence, customDays)
 	})
@@ -191,7 +190,7 @@ func PatchManagerTeamMemberCtx(ctx context.Context, db *sql.DB, managerID uuid.U
 }
 
 // PatchManagerTeamMemberForTeamCtx is PatchManagerTeamMemberForTeam under the in-request re-check (PAC-71, contract §5).
-func PatchManagerTeamMemberForTeamCtx(ctx context.Context, db *sql.DB, managerID uuid.UUID, teamID uuid.UUID, email string, displayName string, cadence string, customDays *int) (err error) {
+func PatchManagerTeamMemberForTeamCtx(ctx context.Context, db DBTX, managerID uuid.UUID, teamID uuid.UUID, email string, displayName string, cadence string, customDays *int) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return PatchManagerTeamMemberForTeam(q, managerID, teamID, email, displayName, cadence, customDays)
 	})
@@ -199,7 +198,7 @@ func PatchManagerTeamMemberForTeamCtx(ctx context.Context, db *sql.DB, managerID
 }
 
 // RecordCredentialLossCtx is RecordCredentialLoss under the in-request re-check (PAC-71, contract §5).
-func RecordCredentialLossCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, provider string) (r0 bool, err error) {
+func RecordCredentialLossCtx(ctx context.Context, db DBTX, userID uuid.UUID, provider string) (r0 bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = RecordCredentialLoss(q, userID, provider)
@@ -209,7 +208,7 @@ func RecordCredentialLossCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, 
 }
 
 // RemoveLinkHostCtx is RemoveLinkHost under the in-request re-check (PAC-71, contract §5).
-func RemoveLinkHostCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, userID uuid.UUID) (r0 bool, err error) {
+func RemoveLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID) (r0 bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = RemoveLinkHost(q, linkID, userID)
@@ -219,7 +218,7 @@ func RemoveLinkHostCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, userID
 }
 
 // RemoveLinkHostsExceptCtx is RemoveLinkHostsExcept under the in-request re-check (PAC-71, contract §5).
-func RemoveLinkHostsExceptCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID, ownerID uuid.UUID, keep []uuid.UUID) (err error) {
+func RemoveLinkHostsExceptCtx(ctx context.Context, db DBTX, linkID uuid.UUID, ownerID uuid.UUID, keep []uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return RemoveLinkHostsExcept(q, linkID, ownerID, keep)
 	})
@@ -227,7 +226,7 @@ func RemoveLinkHostsExceptCtx(ctx context.Context, db *sql.DB, linkID uuid.UUID,
 }
 
 // RemoveMicrosoftCredentialCtx is RemoveMicrosoftCredential under the in-request re-check (PAC-71, contract §5).
-func RemoveMicrosoftCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (r0 string, err error) {
+func RemoveMicrosoftCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID) (r0 string, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = RemoveMicrosoftCredential(q, userID)
@@ -237,7 +236,7 @@ func RemoveMicrosoftCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.U
 }
 
 // RemoveTeamMemberCtx is RemoveTeamMember under the in-request re-check (PAC-71, contract §5).
-func RemoveTeamMemberCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, userID uuid.UUID) (err error) {
+func RemoveTeamMemberCtx(ctx context.Context, db DBTX, teamID uuid.UUID, userID uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return RemoveTeamMember(q, teamID, userID)
 	})
@@ -245,7 +244,7 @@ func RemoveTeamMemberCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, user
 }
 
 // RemoveTeamMemberKeepingOwnerCtx is RemoveTeamMemberKeepingOwner under the in-request re-check (PAC-71, contract §5).
-func RemoveTeamMemberKeepingOwnerCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, userID uuid.UUID) (err error) {
+func RemoveTeamMemberKeepingOwnerCtx(ctx context.Context, db DBTX, teamID uuid.UUID, userID uuid.UUID) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return RemoveTeamMemberKeepingOwner(q, teamID, userID)
 	})
@@ -253,7 +252,7 @@ func RemoveTeamMemberKeepingOwnerCtx(ctx context.Context, db *sql.DB, teamID uui
 }
 
 // RemoveZoomCredentialCtx is RemoveZoomCredential under the in-request re-check (PAC-71, contract §5).
-func RemoveZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (r0 string, err error) {
+func RemoveZoomCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID) (r0 string, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = RemoveZoomCredential(q, userID)
@@ -263,7 +262,7 @@ func RemoveZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) 
 }
 
 // RenameTeamCtx is RenameTeam under the in-request re-check (PAC-71, contract §5).
-func RenameTeamCtx(ctx context.Context, db *sql.DB, id uuid.UUID, name string) (err error) {
+func RenameTeamCtx(ctx context.Context, db DBTX, id uuid.UUID, name string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return RenameTeam(q, id, name)
 	})
@@ -271,7 +270,7 @@ func RenameTeamCtx(ctx context.Context, db *sql.DB, id uuid.UUID, name string) (
 }
 
 // SaveFocusBlockCtx is SaveFocusBlock under the in-request re-check (PAC-71, contract §5).
-func SaveFocusBlockCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, googleEventID string, date string, start time.Time, end time.Time) (err error) {
+func SaveFocusBlockCtx(ctx context.Context, db DBTX, userID uuid.UUID, googleEventID string, date string, start time.Time, end time.Time) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return SaveFocusBlock(q, userID, googleEventID, date, start, end)
 	})
@@ -279,7 +278,7 @@ func SaveFocusBlockCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, google
 }
 
 // SaveRecapSettingsForUserCtx is SaveRecapSettingsForUser under the in-request re-check (PAC-71, contract §5).
-func SaveRecapSettingsForUserCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, s *Settings) (err error) {
+func SaveRecapSettingsForUserCtx(ctx context.Context, db DBTX, userID uuid.UUID, s *Settings) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return SaveRecapSettingsForUser(q, userID, s)
 	})
@@ -287,7 +286,7 @@ func SaveRecapSettingsForUserCtx(ctx context.Context, db *sql.DB, userID uuid.UU
 }
 
 // SaveZoomCredentialCtx is SaveZoomCredential under the in-request re-check (PAC-71, contract §5).
-func SaveZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, c ZoomCredential) (err error) {
+func SaveZoomCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID, c ZoomCredential) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return SaveZoomCredential(q, userID, c)
 	})
@@ -295,7 +294,7 @@ func SaveZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, c 
 }
 
 // UnassignManagerTeamMemberCtx is UnassignManagerTeamMember under the in-request re-check (PAC-71, contract §5).
-func UnassignManagerTeamMemberCtx(ctx context.Context, db *sql.DB, managerID uuid.UUID, teamID uuid.UUID, email string) (err error) {
+func UnassignManagerTeamMemberCtx(ctx context.Context, db DBTX, managerID uuid.UUID, teamID uuid.UUID, email string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UnassignManagerTeamMember(q, managerID, teamID, email)
 	})
@@ -303,7 +302,7 @@ func UnassignManagerTeamMemberCtx(ctx context.Context, db *sql.DB, managerID uui
 }
 
 // UpdateHabitCtx is UpdateHabit under the in-request re-check (PAC-71, contract §5).
-func UpdateHabitCtx(ctx context.Context, db *sql.DB, id uuid.UUID, h *Habit) (r0 *Habit, err error) {
+func UpdateHabitCtx(ctx context.Context, db DBTX, id uuid.UUID, h *Habit) (r0 *Habit, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpdateHabit(q, id, h)
@@ -313,7 +312,7 @@ func UpdateHabitCtx(ctx context.Context, db *sql.DB, id uuid.UUID, h *Habit) (r0
 }
 
 // UpdateHabitOccurrenceStatusCtx is UpdateHabitOccurrenceStatus under the in-request re-check (PAC-71, contract §5).
-func UpdateHabitOccurrenceStatusCtx(ctx context.Context, db *sql.DB, occurrenceID uuid.UUID, habitID uuid.UUID, userID uuid.UUID, status string) (r0 *HabitOccurrence, err error) {
+func UpdateHabitOccurrenceStatusCtx(ctx context.Context, db DBTX, occurrenceID uuid.UUID, habitID uuid.UUID, userID uuid.UUID, status string) (r0 *HabitOccurrence, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpdateHabitOccurrenceStatus(q, occurrenceID, habitID, userID, status)
@@ -323,7 +322,7 @@ func UpdateHabitOccurrenceStatusCtx(ctx context.Context, db *sql.DB, occurrenceI
 }
 
 // UpdateMicrosoftCredentialCtx is UpdateMicrosoftCredential under the in-request re-check (PAC-71, contract §5).
-func UpdateMicrosoftCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, record string) (err error) {
+func UpdateMicrosoftCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID, record string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpdateMicrosoftCredential(q, userID, record)
 	})
@@ -331,7 +330,7 @@ func UpdateMicrosoftCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.U
 }
 
 // UpdateNoMeetingZoneCtx is UpdateNoMeetingZone under the in-request re-check (PAC-71, contract §5).
-func UpdateNoMeetingZoneCtx(ctx context.Context, db *sql.DB, id uuid.UUID, teamID uuid.UUID, dayOfWeek int, startTime string, endTime string, label string) (r0 *NoMeetingZone, err error) {
+func UpdateNoMeetingZoneCtx(ctx context.Context, db DBTX, id uuid.UUID, teamID uuid.UUID, dayOfWeek int, startTime string, endTime string, label string) (r0 *NoMeetingZone, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpdateNoMeetingZone(q, id, teamID, dayOfWeek, startTime, endTime, label)
@@ -341,7 +340,7 @@ func UpdateNoMeetingZoneCtx(ctx context.Context, db *sql.DB, id uuid.UUID, teamI
 }
 
 // UpdatePersonalCalendarCtx is UpdatePersonalCalendar under the in-request re-check (PAC-71, contract §5).
-func UpdatePersonalCalendarCtx(ctx context.Context, db *sql.DB, id int64, userID uuid.UUID, name *string, url *string, enabled *bool) (r0 *PersonalCalendar, err error) {
+func UpdatePersonalCalendarCtx(ctx context.Context, db DBTX, id int64, userID uuid.UUID, name *string, url *string, enabled *bool) (r0 *PersonalCalendar, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpdatePersonalCalendar(q, id, userID, name, url, enabled)
@@ -351,7 +350,7 @@ func UpdatePersonalCalendarCtx(ctx context.Context, db *sql.DB, id int64, userID
 }
 
 // UpdateSchedulingLinkCtx is UpdateSchedulingLink under the in-request re-check (PAC-71, contract §5).
-func UpdateSchedulingLinkCtx(ctx context.Context, db *sql.DB, id uuid.UUID, l *SchedulingLink) (r0 *SchedulingLink, err error) {
+func UpdateSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink) (r0 *SchedulingLink, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpdateSchedulingLink(q, id, l)
@@ -361,7 +360,7 @@ func UpdateSchedulingLinkCtx(ctx context.Context, db *sql.DB, id uuid.UUID, l *S
 }
 
 // UpdateZoomCredentialCtx is UpdateZoomCredential under the in-request re-check (PAC-71, contract §5).
-func UpdateZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, c ZoomCredential) (err error) {
+func UpdateZoomCredentialCtx(ctx context.Context, db DBTX, userID uuid.UUID, c ZoomCredential) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpdateZoomCredential(q, userID, c)
 	})
@@ -369,7 +368,7 @@ func UpdateZoomCredentialCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, 
 }
 
 // UpsertAnalyticsWeekCtx is UpsertAnalyticsWeek under the in-request re-check (PAC-71, contract §5).
-func UpsertAnalyticsWeekCtx(ctx context.Context, db *sql.DB, a *AnalyticsWeek) (r0 *AnalyticsWeek, err error) {
+func UpsertAnalyticsWeekCtx(ctx context.Context, db DBTX, a *AnalyticsWeek) (r0 *AnalyticsWeek, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpsertAnalyticsWeek(q, a)
@@ -379,7 +378,7 @@ func UpsertAnalyticsWeekCtx(ctx context.Context, db *sql.DB, a *AnalyticsWeek) (
 }
 
 // UpsertHabitOccurrenceCtx is UpsertHabitOccurrence under the in-request re-check (PAC-71, contract §5).
-func UpsertHabitOccurrenceCtx(ctx context.Context, db *sql.DB, o *HabitOccurrence) (r0 *HabitOccurrence, err error) {
+func UpsertHabitOccurrenceCtx(ctx context.Context, db DBTX, o *HabitOccurrence) (r0 *HabitOccurrence, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = UpsertHabitOccurrence(q, o)
@@ -389,7 +388,7 @@ func UpsertHabitOccurrenceCtx(ctx context.Context, db *sql.DB, o *HabitOccurrenc
 }
 
 // UpsertManagerTeamMemberCtx is UpsertManagerTeamMember under the in-request re-check (PAC-71, contract §5).
-func UpsertManagerTeamMemberCtx(ctx context.Context, db *sql.DB, m *ManagerTeamMember) (err error) {
+func UpsertManagerTeamMemberCtx(ctx context.Context, db DBTX, m *ManagerTeamMember) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertManagerTeamMember(q, m)
 	})
@@ -397,7 +396,7 @@ func UpsertManagerTeamMemberCtx(ctx context.Context, db *sql.DB, m *ManagerTeamM
 }
 
 // UpsertManagerTeamMemberForTeamCtx is UpsertManagerTeamMemberForTeam under the in-request re-check (PAC-71, contract §5).
-func UpsertManagerTeamMemberForTeamCtx(ctx context.Context, db *sql.DB, teamID uuid.UUID, m *ManagerTeamMember) (err error) {
+func UpsertManagerTeamMemberForTeamCtx(ctx context.Context, db DBTX, teamID uuid.UUID, m *ManagerTeamMember) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertManagerTeamMemberForTeam(q, teamID, m)
 	})
@@ -405,7 +404,7 @@ func UpsertManagerTeamMemberForTeamCtx(ctx context.Context, db *sql.DB, teamID u
 }
 
 // UpsertMeetingBriefCtx is UpsertMeetingBrief under the in-request re-check (PAC-71, contract §5).
-func UpsertMeetingBriefCtx(ctx context.Context, db *sql.DB, b *MeetingBrief) (err error) {
+func UpsertMeetingBriefCtx(ctx context.Context, db DBTX, b *MeetingBrief) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertMeetingBrief(q, b)
 	})
@@ -413,7 +412,7 @@ func UpsertMeetingBriefCtx(ctx context.Context, db *sql.DB, b *MeetingBrief) (er
 }
 
 // UpsertOneOnOneOccurrenceCtx is UpsertOneOnOneOccurrence under the in-request re-check (PAC-71, contract §5).
-func UpsertOneOnOneOccurrenceCtx(ctx context.Context, db *sql.DB, managerID uuid.UUID, memberEmail string, calendarEventID string, occurredAt time.Time) (err error) {
+func UpsertOneOnOneOccurrenceCtx(ctx context.Context, db DBTX, managerID uuid.UUID, memberEmail string, calendarEventID string, occurredAt time.Time) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertOneOnOneOccurrence(q, managerID, memberEmail, calendarEventID, occurredAt)
 	})
@@ -421,7 +420,7 @@ func UpsertOneOnOneOccurrenceCtx(ctx context.Context, db *sql.DB, managerID uuid
 }
 
 // UpsertPersonalBlockerCtx is UpsertPersonalBlocker under the in-request re-check (PAC-71, contract §5).
-func UpsertPersonalBlockerCtx(ctx context.Context, db *sql.DB, calID int64, personalEventID string, workEventID string) (err error) {
+func UpsertPersonalBlockerCtx(ctx context.Context, db DBTX, calID int64, personalEventID string, workEventID string) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertPersonalBlocker(q, calID, personalEventID, workEventID)
 	})
@@ -429,7 +428,7 @@ func UpsertPersonalBlockerCtx(ctx context.Context, db *sql.DB, calID int64, pers
 }
 
 // UpsertTeamAnalyticsCtx is UpsertTeamAnalytics under the in-request re-check (PAC-71, contract §5).
-func UpsertTeamAnalyticsCtx(ctx context.Context, db *sql.DB, r *TeamAnalyticsRow) (err error) {
+func UpsertTeamAnalyticsCtx(ctx context.Context, db DBTX, r *TeamAnalyticsRow) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertTeamAnalytics(q, r)
 	})
@@ -437,7 +436,7 @@ func UpsertTeamAnalyticsCtx(ctx context.Context, db *sql.DB, r *TeamAnalyticsRow
 }
 
 // UpsertUserProfileCtx is UpsertUserProfile under the in-request re-check (PAC-71, contract §5).
-func UpsertUserProfileCtx(ctx context.Context, db *sql.DB, p *UserProfile) (err error) {
+func UpsertUserProfileCtx(ctx context.Context, db DBTX, p *UserProfile) (err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
 		return UpsertUserProfile(q, p)
 	})
@@ -445,7 +444,7 @@ func UpsertUserProfileCtx(ctx context.Context, db *sql.DB, p *UserProfile) (err 
 }
 
 // WriteAuditLogCtx is WriteAuditLog under the in-request re-check (PAC-71, contract §5).
-func WriteAuditLogCtx(ctx context.Context, db *sql.DB, userID uuid.UUID, action string, details string) {
+func WriteAuditLogCtx(ctx context.Context, db DBTX, userID uuid.UUID, action string, details string) {
 	_ = WithSessionGeneration(ctx, db, func(q Querier) error {
 		WriteAuditLog(q, userID, action, details)
 		return nil

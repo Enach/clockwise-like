@@ -9,8 +9,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -432,5 +434,32 @@ func TestPAC71_AC47_ConnectStoreAfterABindingIsCreditedToNobody(t *testing.T) {
 				t.Fatalf("A = %+v, want Henry's Google credential only", st)
 			}
 		})
+	}
+}
+
+// PAC-81 Part A x PAC-71: a connect callback that reaches the request budget
+// answers 302 /?connect=not_credited with the connect cookie expired (never
+// signin_refused or auth_failed), and nothing is stored.
+func TestPAC71_ConnectCallbackAtTheBudgetIsNotCredited(t *testing.T) {
+	p := newConnectProvider(t)
+	ah := &authHandlers{db: openTestDB(t), jwtSecret: pac71Secret, frontendURL: pac35Frontend, oauthConfig: p.googleConfig()}
+	r := chi.NewRouter()
+	r.Use(budget.Middleware(150*time.Millisecond, nil))
+	r.Get("/api/auth/callback", ah.callback)
+	a := createTestUser(t, "budget-"+uuid.NewString()[:8]+"@example.com")
+	release := make(chan struct{})
+	connectBeforeStoreHook = func() { <-release } // the store waits past the budget
+	t.Cleanup(func() { connectBeforeStoreHook = nil })
+	req := connectCallbackRequest(t, pac71Secret, "/api/auth/callback", googleConnectCookie, connectProviderGoogle, a, 0, a, 0, "c1")
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { r.ServeHTTP(rec, req); close(done) }()
+	time.Sleep(400 * time.Millisecond)
+	close(release)
+	<-done
+	assertNotCredited(t, rec, googleConnectCookie)
+	time.Sleep(100 * time.Millisecond) // a handler that ignored the budget would store now
+	if readAccount(t, a).googleAccess != "" {
+		t.Fatal("a credential was stored after the budget answered")
 	}
 }

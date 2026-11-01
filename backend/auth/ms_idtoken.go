@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Enach/paceday/backend/internal/outbound"
 )
 
 // PAC-71 Microsoft sign-in ID-token verifier (contract revision 3.1,
@@ -30,17 +32,14 @@ import (
 // personal Microsoft account.
 const MicrosoftConsumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad"
 
-// Limits of the key cache and fetch (contract revision 3.1, 3.1-7 and 3.1-8).
+// Limits of the key cache (contract revision 3.1, 3.1-8). Each fetch is bounded
+// by the identity-provider class of PAC-81 Part A (outbound, 10 s; 3.1-7).
 const (
 	msKeysTTL           = 24 * time.Hour
 	msKeysRefetchPeriod = time.Minute
 	msKeysMaxTenants    = 1000
 	msClockSkew         = 60 * time.Second
 )
-
-// MicrosoftKeysFetchTimeout bounds each keys fetch (the identity-provider
-// class of PAC-81 Part A). A variable only so a test can shorten it.
-var MicrosoftKeysFetchTimeout = 10 * time.Second
 
 // MicrosoftKeysURL is the published keys document of a tenant. A test seam:
 // tests point it at a stub serving a test key.
@@ -91,7 +90,6 @@ type msTenantKeys struct {
 // NewMicrosoftIDTokenVerifier returns a verifier with an empty cache.
 func NewMicrosoftIDTokenVerifier() *MicrosoftIDTokenVerifier {
 	return &MicrosoftIDTokenVerifier{
-		HTTPClient: &http.Client{},
 		Now:        time.Now,
 		tenants:    map[string]*list.Element{},
 		lru:        list.New(),
@@ -307,13 +305,18 @@ func (v *MicrosoftIDTokenVerifier) fetch(ctx context.Context, tid string) (map[s
 	v.mu.Lock()
 	v.fetches++
 	v.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, MicrosoftKeysFetchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, outbound.Current().Identity)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, MicrosoftKeysURL(tid), nil)
 	if err != nil {
 		return nil, idTokenErr("keys request: %v", err)
 	}
-	resp, err := v.HTTPClient.Do(req)
+	client := v.HTTPClient
+	if client == nil {
+		// PAC-81 Part A: the identity-provider class, 10 s.
+		client = outbound.IdentityClient()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, idTokenErr("keys fetch: %v", err)
 	}

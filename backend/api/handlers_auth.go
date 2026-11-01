@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
@@ -52,6 +53,13 @@ var errNoSigningSecret = errors.New("session signing secret is empty")
 // nor expired, so a session the browser already holds is kept.
 func (h *authHandlers) signInFailed(w http.ResponseWriter, r *http.Request, op string, err error) {
 	logServerError(r, op, err, http.StatusFound)
+	http.Redirect(w, r, h.frontendURL+signInFailurePath, http.StatusFound)
+}
+
+// signInExpired is the sign-in callbacks' budget answer (PAC-81 AC-A2): the
+// existing failure redirect. Whatever was saved before is kept.
+func (h *authHandlers) signInExpired(w http.ResponseWriter, r *http.Request) {
+	logServerError(r, "sign-in callback", budget.ErrExpired, http.StatusFound)
 	http.Redirect(w, r, h.frontendURL+signInFailurePath, http.StatusFound)
 }
 

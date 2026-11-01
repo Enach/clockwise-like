@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/Enach/paceday/backend/config"
+	"github.com/Enach/paceday/backend/internal/outbound"
 )
 
 // PAC-66, as changed by NEW-llm-bring-your-own: the user's key for Azure
@@ -200,6 +201,7 @@ func cloudHTTPClient(provider string) *http.Client {
 		inner = http.DefaultTransport
 	}
 	return &http.Client{
+		Timeout:       outbound.Current().LLM, // PAC-81 AC-A3: 30 s per LLM call
 		Transport:     &approvedOnlyTransport{provider: provider, inner: inner},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect },
 	}

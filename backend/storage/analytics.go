@@ -82,7 +82,7 @@ func UpsertAnalyticsWeek(db Querier, a *AnalyticsWeek) (*AnalyticsWeek, error) {
 	return scanAnalyticsWeek(row)
 }
 
-func GetAnalyticsWeek(db *sql.DB, userID uuid.UUID, weekStart time.Time) (*AnalyticsWeek, error) {
+func GetAnalyticsWeek(db DBTX, userID uuid.UUID, weekStart time.Time) (*AnalyticsWeek, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, user_id, week_start, total_working_minutes,
 			meeting_minutes, focus_minutes, habit_minutes, buffer_minutes,
@@ -94,7 +94,7 @@ func GetAnalyticsWeek(db *sql.DB, userID uuid.UUID, weekStart time.Time) (*Analy
 	return scanAnalyticsWeek(row)
 }
 
-func ListAnalyticsTrends(db *sql.DB, userID uuid.UUID, limit int) ([]*AnalyticsWeek, error) {
+func ListAnalyticsTrends(db DBTX, userID uuid.UUID, limit int) ([]*AnalyticsWeek, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, user_id, week_start, total_working_minutes,
 			meeting_minutes, focus_minutes, habit_minutes, buffer_minutes,

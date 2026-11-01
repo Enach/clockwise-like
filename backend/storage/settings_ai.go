@@ -142,7 +142,7 @@ type AIStatus struct {
 }
 
 // UserInOrganization reports whether userID belongs to an organisation.
-func UserInOrganization(db *sql.DB, userID uuid.UUID) (bool, error) {
+func UserInOrganization(db DBTX, userID uuid.UUID) (bool, error) {
 	var in bool
 	err := db.QueryRow(`SELECT org_id IS NOT NULL FROM users WHERE id = $1`, userID).Scan(&in)
 	if err == sql.ErrNoRows {

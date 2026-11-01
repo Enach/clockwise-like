@@ -47,7 +47,7 @@ func scanSSOProvider(s interface{ Scan(...any) error }) (*SSOProvider, error) {
 
 // GetSSOProviderByDomain returns the enabled provider for domain, compared
 // lower-cased (PAC-50: rows are stored lower-cased and unique on lower(domain)).
-func GetSSOProviderByDomain(db *sql.DB, domain string) (*SSOProvider, error) {
+func GetSSOProviderByDomain(db DBTX, domain string) (*SSOProvider, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT `+ssoProviderCols+`
 		FROM sso_providers
@@ -59,7 +59,7 @@ func GetSSOProviderByDomain(db *sql.DB, domain string) (*SSOProvider, error) {
 // GetSSOProviderByDomainAnyState returns the configuration stored under
 // this domain, active or suspended (PAC-22), compared lower-cased (PAC-50:
 // rows are stored lower-cased and unique on lower(domain)).
-func GetSSOProviderByDomainAnyState(db *sql.DB, domain string) (*SSOProvider, error) {
+func GetSSOProviderByDomainAnyState(db DBTX, domain string) (*SSOProvider, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT `+ssoProviderCols+`
 		FROM sso_providers
@@ -70,7 +70,7 @@ func GetSSOProviderByDomainAnyState(db *sql.DB, domain string) (*SSOProvider, er
 
 // UpsertSSOProvider writes p, keyed on the lower-cased domain, without
 // recording it. The admin API writes through SaveOIDCProviderRecorded.
-func UpsertSSOProvider(db *sql.DB, p *SSOProvider) (*SSOProvider, error) {
+func UpsertSSOProvider(db DBTX, p *SSOProvider) (*SSOProvider, error) {
 	stored, _, err := upsertSSOProvider(context.Background(), db, p)
 	return stored, err
 }
@@ -157,7 +157,7 @@ type OIDCProviderWrite struct {
 // SaveOIDCProvider stores an OIDC configuration under the lower-cased
 // w.Domain (PAC-50) without recording it. The admin API writes through
 // SaveOIDCProviderRecorded.
-func SaveOIDCProvider(db *sql.DB, w OIDCProviderWrite) (*SSOProvider, error) {
+func SaveOIDCProvider(db DBTX, w OIDCProviderWrite) (*SSOProvider, error) {
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -294,7 +294,7 @@ func ListSSOProvidersByOrg(db *sql.DB, orgID uuid.UUID) ([]*SSOProvider, error) 
 	return out, rows.Err()
 }
 
-func DeleteSSOProvider(db *sql.DB, domain string) error {
+func DeleteSSOProvider(db DBTX, domain string) error {
 	_, err := db.ExecContext(context.Background(),
 		`DELETE FROM sso_providers WHERE lower(domain) = lower($1)`, domain)
 	return err

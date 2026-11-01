@@ -184,7 +184,7 @@ type SSOStepupOutcome struct {
 // RecordSSOStepupOutcome records a step-up outcome and, when granted, pins the
 // tenant and issues the grant, all in one transaction: if any part fails,
 // nothing is issued (spec Decisions, D-4). A denied outcome returns a nil grant.
-func RecordSSOStepupOutcome(ctx context.Context, db *sql.DB, o SSOStepupOutcome) (*SSOStepupGrant, error) {
+func RecordSSOStepupOutcome(ctx context.Context, db DBTX, o SSOStepupOutcome) (*SSOStepupGrant, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	// PAC-71 in-request re-check, in this transaction.
 	if err == nil {

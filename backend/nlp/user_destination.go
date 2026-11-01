@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Enach/paceday/backend/config"
+	"github.com/Enach/paceday/backend/internal/outbound"
 )
 
 // PAC-66-B, as changed by NEW-llm-bring-your-own: a user-set base URL for
@@ -143,6 +144,7 @@ func userHTTPClient(provider string) *http.Client {
 		inner = http.DefaultTransport
 	}
 	return &http.Client{
+		Timeout:       outbound.Current().LLM, // PAC-81 AC-A3: 30 s per LLM call
 		Transport:     &userOnlyTransport{provider: provider, inner: inner},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errUserRedirect },
 	}

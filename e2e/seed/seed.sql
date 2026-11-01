@@ -66,6 +66,15 @@ DELETE FROM users WHERE email LIKE 'e2e.%@paceday.test';
 -- only an invalid token, and a refresh would go to oauth2.googleapis.com,
 -- which is mapped to the recording sink — an AC-23 failure that would look
 -- like a broken seam.
+--
+-- PAC-81 Part A, owner decision PAC-72 D-6 (2026-11-01): a public booking
+-- link's host whose calendar cannot be read counts as BUSY, so a link hosted
+-- by an unconnected user offers no slot and refuses bookings (409). The
+-- bookable links are therefore hosted by the e1…–e5… users (seed/ids.ts
+-- BOOKING_HOSTS) and the avatar hosts, all connected through the stand-in
+-- like the 5… users; the four 1…–4… users keep no credential (AC-24) and
+-- host no bookable link (the exhausted link answers 410 before any calendar
+-- read; the owned link is never booked).
 
 INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('11111111-1111-4111-8111-111111111111', 'e2e.primary@paceday.test', 'E2E Primary Owner',  '', 'google', 'e2e-primary'),
@@ -85,7 +94,13 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'e2e.avatar.google@paceday.test',  'E2E Avatar Google',
    'https://lh3.googleusercontent.com/a/e2e-avatar-google=s96-c', 'google', 'e2e-avatar-google'),
   ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'e2e.avatar.foreign@paceday.test', 'E2E Avatar Foreign',
-   'https://avatars.e2e-not-allowed.test/e2e-avatar-foreign.png', 'google', 'e2e-avatar-foreign');
+   'https://avatars.e2e-not-allowed.test/e2e-avatar-foreign.png', 'google', 'e2e-avatar-foreign'),
+  -- PAC-72 D-6: connected hosts of the bookable links (seed/ids.ts BOOKING_HOSTS).
+  ('e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1', 'e2e.host.ui@paceday.test',      'E2E UI Booking Host',  '', 'google', 'e2e-host-ui'),
+  ('e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'e2e.host.api@paceday.test',     'E2E API Booking Host', '', 'google', 'e2e-host-api'),
+  ('e3e3e3e3-e3e3-4e3e-8e3e-e3e3e3e3e3e3', 'e2e.host.author@paceday.test',  'E2E Link Author',      '', 'google', 'e2e-host-author'),
+  ('e4e4e4e4-e4e4-4e4e-8e4e-e4e4e4e4e4e4', 'e2e.host.timefmt@paceday.test', 'E2E Time Format Host', '', 'google', 'e2e-host-timefmt'),
+  ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e.host.d6@paceday.test',      'E2E D-6 Host',         '', 'google', 'e2e-host-d6');
 
 -- PAC-71: every seeded user is bound to a Google identity with authoritative
 -- evidence, so its address is domain-confirmed and the journeys that resolve an
@@ -103,7 +118,15 @@ INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar
   ('77777777-7777-4777-8777-777777777777', 'e2e-manager-work',   'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('88888888-8888-4888-8888-888888888888', 'e2e-seam-work',      'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('99999999-9999-4999-8999-999999999999', 'e2e-rejected-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
-  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e-disconnect-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+  ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'e2e-disconnect-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  -- PAC-72 D-6: the booking and avatar hosts (seed/ids.ts ACCEPTED_CREDENTIALS).
+  ('e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1', 'e2e-host-ui-work',        'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'e2e-host-api-work',       'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('e3e3e3e3-e3e3-4e3e-8e3e-e3e3e3e3e3e3', 'e2e-host-author-work',    'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('e4e4e4e4-e4e4-4e4e-8e4e-e4e4e4e4e4e4', 'e2e-host-timefmt-work',   'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e-host-d6-work',        'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'e2e-avatar-google-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'e2e-avatar-foreign-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
 
 -- AC-25: a google personal calendar for the seam user. credentials_json is an
 -- oauth2.Token as backend/calendar/personal_reader.go tokenFromJSON reads it.
@@ -271,18 +294,27 @@ VALUES
    '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
   ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2',
    'e2e-avatar-foreign-30min', 'E2E Avatar Foreign Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true),
+  -- PAC-72 D-6: a collective link with a co-host whose calendar is not
+  -- connected (USERS.betaReport): no slot, every booking 409.
+  ('c8888888-8888-4888-8888-888888888888', 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5',
+   'e2e-d6-unreadable-30min', 'E2E D-6 Unreadable Co-host', '{30}', '{1,2,3,4,5}',
    '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true);
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
--- with no accepted host renders with zero hosts and zero coverage.
+-- with no accepted host renders with zero hosts and zero coverage. The UI and
+-- API booking links are owned by the primary and second users but hosted by
+-- connected users (PAC-72 D-6; seed/ids.ts BOOKING_HOSTS).
 INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUES
-  ('c1111111-1111-4111-8111-111111111111', '11111111-1111-4111-8111-111111111111', 'accepted', NOW()),
-  ('c2222222-2222-4222-8222-222222222222', '22222222-2222-4222-8222-222222222222', 'accepted', NOW()),
+  ('c1111111-1111-4111-8111-111111111111', 'e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1', 'accepted', NOW()),
+  ('c2222222-2222-4222-8222-222222222222', 'e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'accepted', NOW()),
   ('c3333333-3333-4333-8333-333333333333', '33333333-3333-4333-8333-333333333333', 'accepted', NOW()),
   ('c4444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111', 'accepted', NOW()),
   ('c5555555-5555-4555-8555-555555555555', '88888888-8888-4888-8888-888888888888', 'accepted', NOW()),
   ('c6666666-6666-4666-8666-666666666666', 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'accepted', NOW()),
-  ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'accepted', NOW());
+  ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'accepted', NOW()),
+  ('c8888888-8888-4888-8888-888888888888', 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'accepted', NOW()),
+  ('c8888888-8888-4888-8888-888888888888', '44444444-4444-4444-8444-444444444444', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.

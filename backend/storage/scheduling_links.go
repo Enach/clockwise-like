@@ -93,7 +93,7 @@ func CreateSchedulingLink(db Querier, l *SchedulingLink) (*SchedulingLink, error
 	return scanSchedulingLink(row)
 }
 
-func GetSchedulingLinkBySlug(db *sql.DB, slug string) (*SchedulingLink, error) {
+func GetSchedulingLinkBySlug(db DBTX, slug string) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
@@ -105,7 +105,7 @@ func GetSchedulingLinkBySlug(db *sql.DB, slug string) (*SchedulingLink, error) {
 	return scanSchedulingLink(row)
 }
 
-func GetSchedulingLinkByID(db *sql.DB, id uuid.UUID) (*SchedulingLink, error) {
+func GetSchedulingLinkByID(db DBTX, id uuid.UUID) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
@@ -117,7 +117,7 @@ func GetSchedulingLinkByID(db *sql.DB, id uuid.UUID) (*SchedulingLink, error) {
 	return scanSchedulingLink(row)
 }
 
-func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink, error) {
+func ListSchedulingLinksByUser(db DBTX, userID uuid.UUID) ([]*SchedulingLink, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT DISTINCT sl.id, sl.owner_user_id, sl.slug, sl.title,
 			sl.duration_options, sl.days_of_week,
@@ -257,7 +257,7 @@ func RemoveLinkHostsExcept(db Querier, linkID, ownerID uuid.UUID, keep []uuid.UU
 	return err
 }
 
-func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
+func GetLinkHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
 		FROM scheduling_link_hosts WHERE link_id = $1 ORDER BY invited_at
@@ -280,7 +280,7 @@ func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 // GetLinkHostStatus returns the user's own host status on the link. found is
 // false, with a nil error, when the user has no host row on it; any other
 // failure is returned so a caller can tell "no row" from "could not read".
-func GetLinkHostStatus(db *sql.DB, linkID, userID uuid.UUID) (status string, found bool, err error) {
+func GetLinkHostStatus(db DBTX, linkID, userID uuid.UUID) (status string, found bool, err error) {
 	err = db.QueryRowContext(context.Background(), `
 		SELECT status FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
 	`, linkID, userID).Scan(&status)
@@ -293,7 +293,7 @@ func GetLinkHostStatus(db *sql.DB, linkID, userID uuid.UUID) (status string, fou
 	return status, true, nil
 }
 
-func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
+func GetAcceptedHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
 		FROM scheduling_link_hosts WHERE link_id = $1 AND status = 'accepted'
@@ -313,7 +313,7 @@ func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
-func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error) {
+func GetPendingInvitesForUser(db DBTX, userID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
 		FROM scheduling_link_hosts WHERE user_id = $1 AND status = 'pending'
@@ -392,7 +392,7 @@ func scanLinkHostRow(rows *sql.Rows) (*LinkHost, error) {
 
 // --- Booking CRUD ----------------------------------------------------------
 
-func CreateBooking(db *sql.DB, b *Booking) (*Booking, error) {
+func CreateBooking(db DBTX, b *Booking) (*Booking, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
 		VALUES ($1,$2,$3,$4,$5,$6)
@@ -401,7 +401,7 @@ func CreateBooking(db *sql.DB, b *Booking) (*Booking, error) {
 	return scanBooking(row)
 }
 
-func HasOverlappingBooking(db *sql.DB, linkID uuid.UUID, start, end time.Time) (bool, error) {
+func HasOverlappingBooking(db DBTX, linkID uuid.UUID, start, end time.Time) (bool, error) {
 	var exists bool
 	err := db.QueryRowContext(context.Background(), `
 		SELECT EXISTS(SELECT 1 FROM bookings
@@ -410,7 +410,7 @@ func HasOverlappingBooking(db *sql.DB, linkID uuid.UUID, start, end time.Time) (
 	return exists, err
 }
 
-func GetBookingsByLink(db *sql.DB, linkID uuid.UUID) ([]*Booking, error) {
+func GetBookingsByLink(db DBTX, linkID uuid.UUID) ([]*Booking, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
 		FROM bookings WHERE link_id = $1 ORDER BY start_time DESC
@@ -439,7 +439,7 @@ func GetBookingsByLink(db *sql.DB, linkID uuid.UUID) ([]*Booking, error) {
 // created for the booking (booking_events), so a host with no calendar
 // connected, or whose event creation failed, is still busy at a booked time
 // (PAC-64).
-func GetConfirmedBookingsForUser(db *sql.DB, userID uuid.UUID, start, end time.Time) ([]time.Time, error) {
+func GetConfirmedBookingsForUser(db DBTX, userID uuid.UUID, start, end time.Time) ([]time.Time, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT b.start_time, b.end_time
 		FROM bookings b
@@ -481,7 +481,7 @@ func scanBooking(row *sql.Row) (*Booking, error) {
 
 // --- BookingEvent CRUD -----------------------------------------------------
 
-func SaveBookingEvent(db *sql.DB, bookingID, userID uuid.UUID, calEventID string) error {
+func SaveBookingEvent(db DBTX, bookingID, userID uuid.UUID, calEventID string) error {
 	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO booking_events (booking_id, user_id, calendar_event_id)
 		VALUES ($1, $2, $3)
@@ -491,7 +491,7 @@ func SaveBookingEvent(db *sql.DB, bookingID, userID uuid.UUID, calEventID string
 
 // --- Slug helpers -----------------------------------------------------------
 
-func SlugExists(db *sql.DB, slug string) (bool, error) {
+func SlugExists(db DBTX, slug string) (bool, error) {
 	var exists bool
 	err := db.QueryRowContext(context.Background(),
 		`SELECT EXISTS(SELECT 1 FROM scheduling_links WHERE slug = $1)`, slug).Scan(&exists)

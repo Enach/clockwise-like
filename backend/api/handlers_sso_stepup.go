@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -84,7 +86,8 @@ func (s dbSSOStore) deleteProvider(ctx context.Context, d string, actor, org uui
 }
 
 func (s dbSSOStore) recordStepup(ctx context.Context, o storage.SSOStepupOutcome) (*storage.SSOStepupGrant, error) {
-	return storage.RecordSSOStepupOutcome(ctx, s.ah.db, o)
+	// A connection reserved by the callback (PAC-81) is used when present.
+	return storage.RecordSSOStepupOutcome(ctx, storage.Reserved(ctx, s.ah.db), o)
 }
 
 func (s dbSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error) {
@@ -150,6 +153,12 @@ func newSSOHandlers(ah *authHandlers, o ssoOptions) *ssoHandlers {
 		},
 	}
 	h.store = dbSSOStore{ah: ah}
+	// PAC-81 AC-A2: before check 0 the answer is state_mismatch, including
+	// while requireAuth reads the session generation (PAC-71).
+	preAuthExpiry.Store(stepupCallbackPath, func(w http.ResponseWriter, r *http.Request) {
+		logServerError(r, "sso step-up callback", budget.ErrExpired, http.StatusFound)
+		http.Redirect(w, r, h.stepupTarget("", reasonStateMismatch), http.StatusFound)
+	})
 	return h
 }
 
@@ -514,6 +523,10 @@ func (h *ssoHandlers) startStepup(w http.ResponseWriter, r *http.Request) {
 
 func (h *ssoHandlers) stepupCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// PAC-81 AC-A2: at the budget, the denied redirect: state_mismatch
+	// until check 0 (state and organisation) completes, then the reason of
+	// the check that is running. Step 5 (the record) is waited for.
+	h.stepupExpiry(ctx, "", reasonStateMismatch)
 	user, err := storage.GetUserByID(h.ah.db, userIDFromCtx(ctx))
 	if err != nil || user == nil {
 		// requireAuth answers a missing session; this is a session whose user
@@ -545,6 +558,15 @@ func (h *ssoHandlers) stepupCallback(w http.ResponseWriter, r *http.Request) {
 	h.finishStepup(w, r, user, &org.ID, provider, purpose, reason, pin)
 }
 
+// stepupExpiry registers the denied redirect with reason as the budget's
+// answer for this callback (PAC-81 AC-A2).
+func (h *ssoHandlers) stepupExpiry(ctx context.Context, purpose, reason string) {
+	budget.OnExpiry(ctx, func(w http.ResponseWriter, r *http.Request) {
+		logServerError(r, "sso step-up callback", budget.ErrExpired, http.StatusFound)
+		http.Redirect(w, r, h.stepupTarget(purpose, reason), http.StatusFound)
+	})
+}
+
 // checkStepup runs callback steps 1–4 and returns the denial reason ("" when
 // granted) and, for Microsoft, the tenant to pin.
 func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *storage.User, org *storage.Org, st *stepupState) (string, string) {
@@ -553,6 +575,8 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 	if p == nil || q.Get("error") != "" || q.Get("code") == "" {
 		return reasonTokenInvalid, ""
 	}
+	running := func(reason string) { h.stepupExpiry(ctx, st.purpose(), reason) }
+	running(reasonTokenInvalid)
 	id, err := p.Exchange(ctx, q.Get("code"), st.Nonce)
 	if err != nil {
 		log.Printf("sso step-up: %s exchange for user %s: %v", st.Provider, user.ID, err)
@@ -573,6 +597,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		if !id.EmailVerified || !strings.EqualFold(id.Email, sessEmail) {
 			return reasonEmailMismatch, ""
 		}
+		running(reasonNotAdmin)
 		admin, err := p.GoogleIsAdmin(ctx, id.AccessToken, id.Email)
 		if err != nil || !admin {
 			return reasonNotAdmin, ""
@@ -583,6 +608,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		return "", ""
 	}
 
+	running(reasonTIDMismatch)
 	tid, verified, err := p.MicrosoftOrganization(ctx, id.AccessToken)
 	if err != nil || tid == "" || tid != id.TenantID || !containsFold(verified, org.Domain) {
 		return reasonTIDMismatch, ""
@@ -598,6 +624,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		return reasonEmailMismatch, ""
 	}
 	roles := id.WIDs
+	running(reasonNotAdmin)
 	if !id.WIDsPresent {
 		if roles, err = p.MicrosoftDirectoryRoles(ctx, id.AccessToken); err != nil {
 			return reasonNotAdmin, ""
@@ -630,16 +657,44 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 		UserID: user.ID, OrgID: orgID, Provider: provider,
 		Granted: reason == "", Reason: reason, PinTenant: pin, Purpose: purpose, Now: h.clock.Now(),
 	}
-	_, err := h.store.recordStepup(r.Context(), o)
+	// PAC-81: the record's connection is acquired while the budget still
+	// bounds the wait; step 5, once started, is then waited for whatever the
+	// budget. If the budget already answered (denied), nothing is recorded.
+	var reserved *sql.Conn
+	if h.ah.db != nil {
+		c, err := h.ah.db.Conn(r.Context())
+		if err != nil {
+			if r.Context().Err() != nil {
+				return // the budget answers
+			}
+			writeServerError(w, r, "sso step-up record", err, http.StatusInternalServerError)
+			return
+		}
+		reserved = c
+		defer func() { _ = reserved.Close() }()
+	}
+	if !budget.Commit(r.Context()) {
+		return
+	}
+	recordCtx := context.WithoutCancel(r.Context())
+	if reserved != nil {
+		recordCtx = storage.WithReserved(recordCtx, storage.BindConn(recordCtx, reserved))
+	}
+	_, err := h.store.recordStepup(recordCtx, o)
 	if errors.Is(err, storage.ErrTenantPinned) {
 		// Pinned to another tenant between the check and the write.
 		o.Granted, o.Reason, o.PinTenant, reason = false, reasonTIDChanged, "", reasonTIDChanged
-		_, err = h.store.recordStepup(r.Context(), o)
+		_, err = h.store.recordStepup(recordCtx, o)
 	}
 	if err != nil {
 		writeServerError(w, r, "sso step-up record", err, http.StatusInternalServerError)
 		return
 	}
+	http.Redirect(w, r, h.stepupTarget(purpose, reason), http.StatusFound)
+}
+
+// stepupTarget is the settings landing for an outcome ("" reason: granted).
+func (h *ssoHandlers) stepupTarget(purpose, reason string) string {
 	target := h.ah.frontendURL + "/settings?stepup=granted"
 	if reason != "" {
 		target = h.ah.frontendURL + "/settings?stepup=denied&reason=" + reason
@@ -647,7 +702,7 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 	if purpose == storage.SSOGrantPurposeLLMOrgKeyWrite {
 		target += "&purpose=" + storage.SSOGrantPurposeLLMOrgKeyWrite
 	}
-	http.Redirect(w, r, target, http.StatusFound)
+	return target
 }
 
 // breakGlassAccount is PAC-71's break-glass rule (spec §3 "PAC-50 admin

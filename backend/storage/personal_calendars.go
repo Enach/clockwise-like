@@ -28,7 +28,7 @@ type PersonalBlocker struct {
 	CreatedAt          time.Time
 }
 
-func ListPersonalCalendars(db *sql.DB) ([]PersonalCalendar, error) {
+func ListPersonalCalendars(db DBTX) ([]PersonalCalendar, error) {
 	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at FROM personal_calendars ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -94,12 +94,12 @@ func MarkPersonalCalendarSynced(db Querier, id int64, userID uuid.UUID) error {
 	return err
 }
 
-func DeletePersonalCalendar(db *sql.DB, id int64) error {
+func DeletePersonalCalendar(db DBTX, id int64) error {
 	_, err := db.Exec(`DELETE FROM personal_calendars WHERE id = $1`, id)
 	return err
 }
 
-func GetPersonalBlocker(db *sql.DB, calID int64, eventID string) (*PersonalBlocker, error) {
+func GetPersonalBlocker(db DBTX, calID int64, eventID string) (*PersonalBlocker, error) {
 	row := db.QueryRow(
 		`SELECT id, personal_calendar_id, personal_event_id, work_event_id, created_at FROM personal_blockers WHERE personal_calendar_id = $1 AND personal_event_id = $2`,
 		calID, eventID,
@@ -123,7 +123,7 @@ func UpsertPersonalBlocker(db Querier, calID int64, personalEventID, workEventID
 	return err
 }
 
-func ListPersonalBlockers(db *sql.DB, calID int64) ([]PersonalBlocker, error) {
+func ListPersonalBlockers(db DBTX, calID int64) ([]PersonalBlocker, error) {
 	rows, err := db.Query(
 		`SELECT id, personal_calendar_id, personal_event_id, work_event_id, created_at FROM personal_blockers WHERE personal_calendar_id = $1`,
 		calID,
@@ -154,7 +154,7 @@ func DeletePersonalBlocker(db Querier, calID int64, personalEventID string) erro
 // SaveZoomTokens stores userID's Zoom credential on their own settings row
 // and makes Zoom their conferencing provider (PAC-24). It stores no expiry;
 // the Zoom connect callback uses SaveZoomCredential, which does (PAC-67).
-func SaveZoomTokens(db *sql.DB, userID uuid.UUID, accessToken, refreshToken string) error {
+func SaveZoomTokens(db DBTX, userID uuid.UUID, accessToken, refreshToken string) error {
 	return SaveZoomCredential(db, userID, ZoomCredential{AccessToken: accessToken, RefreshToken: refreshToken})
 }
 
@@ -183,7 +183,7 @@ func ListPersonalCalendarsByUser(db Querier, userID uuid.UUID) ([]PersonalCalend
 // ListUsersWithPersonalCalendars returns the distinct user IDs that own at
 // least one personal calendar. Used by the personal-blocker cron to fan out
 // per user. Empty slice when nobody has connected a personal calendar.
-func ListUsersWithPersonalCalendars(db *sql.DB) ([]uuid.UUID, error) {
+func ListUsersWithPersonalCalendars(db DBTX) ([]uuid.UUID, error) {
 	rows, err := db.Query(`SELECT DISTINCT user_id FROM personal_calendars WHERE enabled = TRUE`)
 	if err != nil {
 		return nil, err

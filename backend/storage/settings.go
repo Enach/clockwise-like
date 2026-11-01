@@ -309,7 +309,7 @@ func GetOrCreateSettingsByUser(db Querier, userID uuid.UUID) (*Settings, error) 
 // no other user's. The calendar and conferencing credentials
 // (microsoft_tokens, zoom_tokens) are not written here: they have their own
 // writers.
-func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+func SaveSettingsForUser(db DBTX, userID uuid.UUID, s *Settings) error {
 	return SaveSettingsForUserAt(db, userID, s, time.Now())
 }
 
@@ -492,7 +492,7 @@ type AutoScheduleCandidate struct {
 // ListAutoScheduleCandidates returns exactly the users whose own settings row
 // has auto_schedule_enabled, in a stable order (the row's creation order).
 // Values are returned as stored; the scheduler validates them.
-func ListAutoScheduleCandidates(db *sql.DB) ([]AutoScheduleCandidate, error) {
+func ListAutoScheduleCandidates(db DBTX) ([]AutoScheduleCandidate, error) {
 	rows, err := db.Query(`SELECT user_id, auto_schedule_cron, timezone, auto_schedule_last_run
 		FROM settings
 		WHERE auto_schedule_enabled = TRUE
@@ -519,7 +519,7 @@ func ListAutoScheduleCandidates(db *sql.DB) ([]AutoScheduleCandidate, error) {
 
 // GetAutoScheduleLastRun returns userID's watermark, or nil when it is null or
 // the user has no settings row.
-func GetAutoScheduleLastRun(db *sql.DB, userID uuid.UUID) (*time.Time, error) {
+func GetAutoScheduleLastRun(db DBTX, userID uuid.UUID) (*time.Time, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("GetAutoScheduleLastRun: userID is required")
 	}
@@ -540,7 +540,7 @@ func GetAutoScheduleLastRun(db *sql.DB, userID uuid.UUID) (*time.Time, error) {
 // observed (nil meaning null). It reports whether it did. The scheduler calls
 // it before every run, so a save that disabled the feature or reset the
 // watermark between the listing and the run wins, and no slot runs twice.
-func AdvanceAutoScheduleWatermark(db *sql.DB, userID uuid.UUID, observed *time.Time, to time.Time) (bool, error) {
+func AdvanceAutoScheduleWatermark(db DBTX, userID uuid.UUID, observed *time.Time, to time.Time) (bool, error) {
 	if userID == uuid.Nil {
 		return false, fmt.Errorf("AdvanceAutoScheduleWatermark: userID is required")
 	}
@@ -561,7 +561,7 @@ func AdvanceAutoScheduleWatermark(db *sql.DB, userID uuid.UUID, observed *time.T
 }
 
 // ListUsersWithAutoDecline returns users whose automatic outside-hours decline is enabled.
-func ListUsersWithAutoDecline(db *sql.DB) ([]uuid.UUID, error) {
+func ListUsersWithAutoDecline(db DBTX) ([]uuid.UUID, error) {
 	rows, err := db.Query(`SELECT user_id FROM settings WHERE user_id IS NOT NULL AND auto_decline_outside_working_hours = TRUE`)
 	if err != nil {
 		return nil, err

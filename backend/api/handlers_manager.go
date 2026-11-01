@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -94,14 +95,14 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 	if body.IsManager && p.DetectedAt == nil {
 		// Trigger detection async
 		eng := h.newEngine()
-		// PAC-71: keep the session guard (not cancellation) so detection's
-		// token load and roster writes are re-checked, as analytics and habits do.
-		bgCtx := context.WithoutCancel(r.Context())
-		go func() {
-			ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
+		// PAC-81 AC-A6: a tracked unit, awaited by the drain (own 30 s).
+		// PAC-71: GoFrom keeps the request's values, so the session guard
+		// stays: detection's token load and roster writes are re-checked.
+		lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) {
+			ctx, cancel := context.WithTimeout(work, 30*time.Second)
 			defer cancel()
 			_, _ = eng.DetectTeam(ctx, userID)
-		}()
+		})
 	}
 	_ = storage.UpsertUserProfileCtx(r.Context(), h.db, p)
 

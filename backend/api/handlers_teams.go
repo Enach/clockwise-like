@@ -1,10 +1,15 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
+	"github.com/Enach/paceday/backend/internal/outbound"
+	"log"
 	"net/http"
 	"net/smtp"
 	"os"
@@ -14,6 +19,7 @@ import (
 
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
+	"github.com/getsentry/sentry-go"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -214,7 +220,14 @@ func (h *teamHandlers) inviteMember(w http.ResponseWriter, r *http.Request) {
 	if team != nil {
 		teamName = team.Name
 	}
-	go sendTeamInviteEmail(invite.InviteeEmail, inviterName, teamName, invite.Token)
+	// PAC-81 AC-A6/A8: a tracked unit, awaited by the drain; a failure is
+	// logged with the invite id and reported, never retried (D-15).
+	inviteID, to, token := invite.ID.String(), invite.InviteeEmail, invite.Token
+	lifecycle.Go(lifecycle.Unit{Kind: "team-invite-email", ID: inviteID}, func(context.Context) {
+		if err := sendTeamInviteEmail(to, inviterName, teamName, token); err != nil {
+			reportEmailFailure("team invite", "invite", inviteID, err)
+		}
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -526,6 +539,10 @@ func (h *teamHandlers) availability(w http.ResponseWriter, r *http.Request) {
 
 	eng := h.availabilityEngine
 	slots, err := eng.FindSlots(r.Context(), teamID, day, durationMinutes)
+	if budgetCut(err) {
+		budget.WriteExpired(w) // PAC-81 AC-A18: a member not read, never a partial 200
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "availability", err, http.StatusInternalServerError)
 		return
@@ -624,7 +641,7 @@ func apiWeekday(storageDay int) int {
 	return storageDay
 }
 
-func sendTeamInviteEmail(to, inviterName, teamName, token string) {
+func sendTeamInviteEmail(to, inviterName, teamName, token string) error {
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
 	smtpUser := os.Getenv("SMTP_USER")
@@ -633,7 +650,7 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) {
 	baseURL := os.Getenv("BASE_URL")
 
 	if smtpHost == "" || smtpFrom == "" {
-		return
+		return nil
 	}
 	if smtpPort == "" {
 		smtpPort = "587"
@@ -653,7 +670,18 @@ func sendTeamInviteEmail(to, inviterName, teamName, token string) {
 	if smtpUser != "" {
 		auth = smtp.PlainAuth("", smtpUser, smtpPass, smtpHost)
 	}
-	_ = smtp.SendMail(smtpHost+":"+smtpPort, auth, smtpFrom, []string{to}, []byte(msg))
+	return sendMail(smtpHost+":"+smtpPort, auth, smtpFrom, []string{to}, []byte(msg))
+}
+
+// sendMail is the SMTP sender (a test seam): one 15 s deadline, dial to QUIT.
+var sendMail = outbound.SendMail
+
+// reportEmailFailure logs a failed email at error level with its record id
+// (never the address) and reports it to error monitoring when configured.
+func reportEmailFailure(what, idKind, id string, err error) {
+	msg := outbound.RedactAddresses(err.Error())
+	log.Printf("ERROR: %s email failed for %s %s: %s", what, idKind, id, msg)
+	sentry.CaptureException(fmt.Errorf("%s email failed for %s %s: %s", what, idKind, id, msg))
 }
 
 // holdsConfirmed reports whether userID holds email domain-confirmed (PAC-71

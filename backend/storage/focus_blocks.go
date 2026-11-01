@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"log"
 	"time"
 
@@ -28,7 +27,7 @@ func SaveFocusBlock(db Querier, userID uuid.UUID, googleEventID, date string, st
 // weekStart, never nil. Every reader goes through this: focus blocks belong to
 // the user whose calendar holds them. Blocks saved before owners were recorded (user_id NULL) belong to
 // nobody and are not returned.
-func ListFocusBlocksForUserWeek(db *sql.DB, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
+func ListFocusBlocksForUserWeek(db DBTX, userID uuid.UUID, weekStart time.Time) ([]FocusBlock, error) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
 	rows, err := db.Query(`
 		SELECT id, google_event_id, start_time, end_time, date, created_at
@@ -62,7 +61,7 @@ func DeleteFocusBlock(db Querier, userID uuid.UUID, googleEventID string) error 
 }
 
 // FocusMinutesForDay sums the minutes of userID's focus blocks on date.
-func FocusMinutesForDay(db *sql.DB, userID uuid.UUID, date string) (int, error) {
+func FocusMinutesForDay(db DBTX, userID uuid.UUID, date string) (int, error) {
 	row := db.QueryRow(`
 		SELECT COALESCE(SUM(
 			EXTRACT(EPOCH FROM (end_time - start_time)) / 60

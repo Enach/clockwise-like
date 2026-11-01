@@ -6,10 +6,11 @@ the job of a proxy you run in front of it (Caddy, Traefik, an nginx of your
 own, a cloud load balancer). This page lists what that proxy must do. It is
 part of PAC-81 (spec `NEW-deploy-hardening`, AC-D2).
 
-PAC-81 Part B (the nginx edge: headers, CSP, trusted proxy, timeouts,
-`/nginx-health`) has shipped. Passages marked **added by Part A** or
-**added by Part C** describe PAC-81 work that is not on `main` yet; until it
-ships, the "today" sentence next to them applies.
+PAC-81 Part A (backend timeouts, request budget, graceful shutdown,
+readiness) and Part B (the nginx edge: headers, CSP, trusted proxy, timeouts,
+`/nginx-health`) have shipped. Passages marked **added by Part C** describe
+PAC-81 work that is not on `main` yet; until it ships, the "today" sentence
+next to them applies.
 
 ```
 browser ──HTTPS──▶ your proxy ──HTTP──▶ nginx (compose, :80) ──▶ backend :8080
@@ -93,16 +94,16 @@ that the innermost one fires first and the backend returns its own error:
 backend handler budget 90 s < backend write backstop 120 s < nginx 130 s <
 your proxy.
 
-- nginx's 130 s upstream read/send timeout has shipped (PAC-81 Part B). The
-  backend's 90 s budget and 120 s write backstop are **added by Part A**; until
-  then the backend has no timeouts of its own and nginx's 130 s is the first
-  bound to fire. A proxy timeout above 130 s is correct both now and after
-  Part A.
+- nginx's 130 s upstream read/send timeout (Part B) and the backend's 90 s
+  handler budget and 120 s write backstop (Part A) have shipped. A request
+  still running at 90 s gets the backend's own
+  `503 {"error":"request timed out"}`, well before nginx or your proxy give up.
+  The backend also bounds request headers (10 s) and whole requests (30 s).
 - Example: an AWS Application Load Balancer's default idle timeout is 60 s —
   too short; raise it to at least 135 s. Cloudflare's proxied-request timeout
   (100 s on most plans) is also too short for the longest legitimate requests.
 - Keep-alive to nginx: any value is fine; Paceday's backend keeps idle
-  connections 120 s (added by Part A).
+  connections 120 s.
 
 The web app aborts its own API calls after 4 s regardless (spec F-W1); these
 bounds protect the server, they do not make long calls succeed in the browser.
@@ -130,9 +131,12 @@ reaches it directly skips TLS, HSTS and your proxy's own protections.
 Configure the proxy's (or load balancer's) health check **through nginx**, so
 it checks the whole path:
 
-- **Backend readiness** — **added by Part A** (AC-A11; its path is set by
-  Part A's contract). It answers 503 while the database is unreachable or
-  shutdown has begun, and success otherwise. Check it through nginx, so that
+- **Backend readiness** — `GET /api/ready` (PAC-81 Part A, AC-A11):
+  `200 {"status":"ready"}` when the database answers a ping within 2 s, else
+  `503 {"error":"not ready"}` within 3 s. It also answers 503 for the first 5 s
+  after SIGTERM while the backend is still serving. Concurrent checks share
+  one database ping, and you may restrict `/api/ready` to your health
+  checker's address at your proxy (docs/security.md, B8). Check it through nginx, so that
   the check covers the whole path: during a deploy it turns 503 a few seconds
   before the backend stops accepting connections, so the proxy stops sending
   traffic first. This is the check that should take the stack out of rotation.
@@ -141,11 +145,10 @@ it checks the whole path:
   says only that nginx is up. Use it for the proxy's check of the nginx
   container (or for Part C's container health check), not as the stack's
   readiness.
-- **Until Part A ships**, there is no backend readiness: use `GET /api/health`
-  through nginx to take the stack out of rotation. It answers
-  `200 {"status":"ok",…}` whenever the backend process is up (backend liveness
-  only; it does not check the database). Interval 5–10 s, 2–3 failures to mark
-  down.
+- **Backend liveness** — `GET /api/health` answers `200 {"status":"ok",…}`
+  whenever the backend process is up, without checking the database. Do not
+  use it to take the stack out of rotation; use `/api/ready`. Interval 5–10 s,
+  2–3 failures to mark down.
 
 ## Checklist
 
@@ -157,6 +160,5 @@ it checks the whole path:
 4. Proxy idle/read timeout > 130 s.
 5. nginx's port reachable only from the proxy (`127.0.0.1` bind on the same
    host); MCP's 3001 not exposed.
-6. Proxy health check through nginx: backend readiness (added by Part A;
-   `/api/health` until then) to take the stack out of rotation, and
-   `/nginx-health` for nginx itself.
+6. Proxy health check through nginx: `GET /api/ready` to take the stack out
+   of rotation, and `/nginx-health` for nginx itself.

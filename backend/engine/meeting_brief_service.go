@@ -23,9 +23,11 @@ type LLMCompleter interface {
 	Complete(ctx context.Context, systemPrompt, userMessage string) (string, error)
 }
 
+// slackAPIBase is the Slack Web API (a test seam; production never changes it).
+var slackAPIBase = "https://slack.com/api"
+
 const (
 	briefCacheTTL    = 24 * time.Hour
-	slackAPIBase     = "https://slack.com/api"
 	notionAPIBase    = "https://api.notion.com/v1"
 	maxSlackMessages = 10
 	maxNotionPages   = 8

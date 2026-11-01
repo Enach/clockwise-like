@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 )
 
@@ -152,9 +153,9 @@ func TestPAC71_AC11b_IDTokenFailuresAreRefusedInEveryCase(t *testing.T) {
 }
 
 func TestPAC71_AC11b_KeysFetchBeyondTheLimitIsRefused(t *testing.T) {
-	prev := auth.MicrosoftKeysFetchTimeout
-	auth.MicrosoftKeysFetchTimeout = 50 * time.Millisecond // stands in for 10 s
-	t.Cleanup(func() { auth.MicrosoftKeysFetchTimeout = prev })
+	lim := outbound.Current()
+	lim.Identity = 50 * time.Millisecond // stands in for 10 s
+	t.Cleanup(outbound.SetForTest(lim))
 	d := pac71Domain()
 	r := msRun{tid: pac71GUID(), oid: pac71GUID(), mail: "slow@" + d, keys: func(k *msKeysStub) { k.delay = 300 * time.Millisecond }}
 	assertRefused(t, r.do(t))

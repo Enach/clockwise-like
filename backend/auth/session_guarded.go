@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"database/sql"
 
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
@@ -14,7 +13,7 @@ import (
 // ctx carries the request's session guard (storage.WithSessionGeneration).
 
 // LoadUserTokenCtx is LoadUserToken (D1) for the request in ctx.
-func LoadUserTokenCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (t *oauth2.Token, err error) {
+func LoadUserTokenCtx(ctx context.Context, db storage.DBTX, userID uuid.UUID) (t *oauth2.Token, err error) {
 	if userID == uuid.Nil {
 		return nil, ErrNoUser
 	}
@@ -26,7 +25,7 @@ func LoadUserTokenCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (t *oau
 }
 
 // LoadMicrosoftTokenCtx is LoadMicrosoftToken (D2) for the request in ctx.
-func LoadMicrosoftTokenCtx(ctx context.Context, db *sql.DB, userID uuid.UUID) (t *oauth2.Token, err error) {
+func LoadMicrosoftTokenCtx(ctx context.Context, db storage.DBTX, userID uuid.UUID) (t *oauth2.Token, err error) {
 	err = storage.WithSessionGeneration(ctx, db, func(q storage.Querier) error {
 		t, err = LoadMicrosoftToken(q, userID)
 		return err
