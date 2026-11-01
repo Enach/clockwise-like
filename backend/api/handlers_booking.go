@@ -328,6 +328,11 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		budget.WriteExpired(w)
 		return
 	}
+	if errors.Is(err, engine.ErrHostCalendarUnreadable) {
+		// PAC-72 D-6: an unreadable host calendar counts as busy.
+		writeError(w, "slot is no longer available", http.StatusConflict)
+		return
+	}
 	if err != nil {
 		writeServerError(w, r, "booking failed", err, http.StatusInternalServerError)
 		return

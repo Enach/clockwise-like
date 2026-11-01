@@ -109,6 +109,13 @@ func (fc *FocusCron) tick(at time.Time) bool {
 		return true
 	}
 	for _, c := range candidates {
+		// PAC-81: once the drain has ended (or shutdown cancelled the work),
+		// stop before advancing anyone's watermark: a user whose run never
+		// happened must stay due for the next tick after restart.
+		if lifecycle.Default().Context().Err() != nil {
+			fc.logf("focus scheduler: tick at %s stopped by shutdown", at.Format(time.RFC3339))
+			return true
+		}
 		fc.consider(c, at)
 	}
 	return true
@@ -139,6 +146,9 @@ func (fc *FocusCron) consider(c storage.AutoScheduleCandidate, at time.Time) {
 		return
 	}
 
+	if lifecycle.Default().Context().Err() != nil {
+		return // shutting down: leave the watermark for the next run
+	}
 	advanced, err := storage.AdvanceAutoScheduleWatermark(fc.db, c.UserID, c.LastRun, at)
 	if err != nil {
 		fc.logf("focus scheduler: advancing the watermark for user %s: %v", c.UserID, err)

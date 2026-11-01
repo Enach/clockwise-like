@@ -68,6 +68,12 @@ const (
 	// Create calls need their full limit plus the margin to start, and then
 	// run to their own limit, detached from the request's cancellation.
 	Create
+	// Detached calls belong to work that already left the request (a
+	// booking's completion unit): they are not gated by the budget or the
+	// drain deadline; each gets its own limit under ctx, whose hard
+	// cancellation at the end of the drain is the only cut. An item not
+	// started because ctx ended is reported as not started.
+	Detached
 )
 
 // Remaining is the time left before the budget or the drain ends; ok is false
@@ -139,6 +145,12 @@ func Run(ctx context.Context, n int, mode Mode, limit time.Duration, fn func(ctx
 func runOne(ctx context.Context, mode Mode, limit, margin time.Duration, i int, fn func(context.Context, int) error) bool {
 	if ctx.Err() != nil {
 		return false
+	}
+	if mode == Detached {
+		callCtx, cancel := context.WithTimeout(ctx, limit)
+		defer cancel()
+		_ = fn(callCtx, i)
+		return true
 	}
 	remaining, bounded := Remaining(ctx)
 	if bounded && remaining <= margin {

@@ -6,10 +6,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
@@ -105,29 +108,55 @@ func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 }
 
 // loggingMiddleware writes exactly one access-log line per request (PAC-81
-// AC-A13): method, path without the query string (it can carry codes and
-// tokens), the status actually sent on the wire, duration, and the client
-// address as the abuse limits resolve it (TRUSTED_PROXIES and X-Real-IP).
-// It sits outside every middleware that can write or replace a status, so a
-// replaced status and the budget's 503 are what it records.
+// AC-A13): method, the matched route pattern (never the raw path, which can
+// carry an invite token, and never the query string), the status actually
+// written ("-" when nothing was written, e.g. the client went away), the
+// duration, and the client address as the abuse limits resolve it
+// (TRUSTED_PROXIES and X-Real-IP). It sits outside every middleware that can
+// write or replace a status, so a replaced status and the budget's 503 are
+// what it records.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
 		defer func() {
-			status := sw.status
-			if status == 0 {
-				status = http.StatusOK // nothing written: net/http sends 200
+			status := "-"
+			if sw.status != 0 {
+				status = strconv.Itoa(sw.status)
 			}
-			if p := recover(); p != nil {
-				status = http.StatusInternalServerError
-				accessLogf("%s %s %d %s client=%s", r.Method, r.URL.Path, status, time.Since(start), clientIP(r, trustedProxies))
+			p := recover()
+			if p != nil {
+				status = "panic"
+			}
+			accessLogf("%s %s %s %s client=%s", r.Method, routeOf(r), status, time.Since(start), clientIP(r, trustedProxies))
+			if p != nil {
 				panic(p)
 			}
-			accessLogf("%s %s %d %s client=%s", r.Method, r.URL.Path, status, time.Since(start), clientIP(r, trustedProxies))
 		}()
 		next.ServeHTTP(sw, r)
 	})
+}
+
+// routeMux is the router whose patterns the access log reports
+// (RegisterRoutes sets it). Matching on a fresh route context reads nothing
+// the handler goroutine writes, so a request the budget answered while its
+// handler still runs is logged without a data race.
+var routeMux atomic.Pointer[chi.Mux]
+
+// routeOf is r's route pattern, "unmatched" when no route matches, or the
+// path when no router is registered (handlers tested without one).
+func routeOf(r *http.Request) string {
+	mx := routeMux.Load()
+	if mx == nil {
+		return r.URL.Path
+	}
+	rctx := chi.NewRouteContext()
+	if mx.Match(rctx, r.Method, r.URL.Path) {
+		if p := rctx.RoutePattern(); p != "" {
+			return p
+		}
+	}
+	return "unmatched"
 }
 
 // accessLogf is the access log's writer (a test seam).

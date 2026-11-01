@@ -43,8 +43,9 @@ func pac81Scale(t *testing.T) {
 
 // behaviour of the Google stub for one user's token.
 type stubBehaviour struct {
-	delay  time.Duration
-	status int // non-zero: answer this error status
+	delay       time.Duration
+	createDelay time.Duration // extra delay on creates only
+	status      int           // non-zero: answer this error status
 }
 
 // googleStub is a Google Calendar API stand-in keyed by bearer token.
@@ -90,8 +91,12 @@ func (g *googleStub) serve(w http.ResponseWriter, r *http.Request) {
 		g.createAt = append(g.createAt, time.Now())
 	}
 	g.mu.Unlock()
+	d := b.delay
+	if r.Method == http.MethodPost {
+		d += b.createDelay
+	}
 	select {
-	case <-time.After(b.delay):
+	case <-time.After(d):
 	case <-r.Context().Done():
 		return
 	}
@@ -196,9 +201,11 @@ func TestPAC81_Slots3HostsComplete(t *testing.T) {
 	}
 }
 
-// One host failing with a provider error: today's 200 without that host;
-// one host timing out on its own limit: treated as free (200).
-func TestPAC81_HostProviderErrorAndOwnLimitTreatedFree(t *testing.T) {
+// Owner decision PAC-72 D-6 (2026-11-01, overrides AC-A18's "treated as
+// free" on this path): a host whose calendar fails with a provider error,
+// times out on its own limit, or is not connected is busy for the whole
+// window, so no collective slot is offered; it is not a 503.
+func TestPAC81_HostProviderErrorAndOwnLimitTreatedBusy(t *testing.T) {
 	pac81Scale(t)
 	db := openTestDB(t)
 	g := newGoogleStub(t)
@@ -208,10 +215,73 @@ func TestPAC81_HostProviderErrorAndOwnLimitTreatedFree(t *testing.T) {
 	g.set(okTok, stubBehaviour{})
 	g.set(badTok, stubBehaviour{status: http.StatusInternalServerError})
 	g.set(slowTok, stubBehaviour{delay: time.Hour}) // fails on its own 150 ms limit
-	link := pac81Link(t, db, []uuid.UUID{ok, bad, slow})
+	none, _ := pac81User(t, db, "unconnected@pac81.test")
+	if err := auth.DeleteUserToken(db, none); err != nil {
+		t.Fatal(err)
+	}
+	day := nextWeekday(time.Now())
+	eng := &BookingEngine{DB: db}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	slots, err := (&BookingEngine{DB: db}).CollectiveSlots(ctx, link, nextWeekday(time.Now()), 30)
+	if slots, err := eng.CollectiveSlots(ctx, pac81Link(t, db, []uuid.UUID{ok}), day, 30); err != nil || len(slots) == 0 {
+		t.Fatalf("readable host alone: slots %d err %v", len(slots), err)
+	}
+	for name, host := range map[string]uuid.UUID{"provider error": bad, "own-limit timeout": slow, "not connected": none} {
+		slots, err := eng.CollectiveSlots(ctx, pac81Link(t, db, []uuid.UUID{ok, host}), day, 30)
+		if err != nil {
+			t.Fatalf("%s: got %v, want no error", name, err)
+		}
+		if len(slots) != 0 {
+			t.Fatalf("%s: %d slots offered with a host whose calendar could not be read", name, len(slots))
+		}
+	}
+}
+
+// PAC-72 D-6 on booking: an unreadable host calendar refuses the booking
+// (the handler's 409) and writes nothing.
+func TestPAC81_BookingUnreadableHostIsRefused(t *testing.T) {
+	pac81Scale(t)
+	db := openTestDB(t)
+	g := newGoogleStub(t)
+	ok, okTok := pac81User(t, db, "book-ok@pac81.test")
+	bad, badTok := pac81User(t, db, "book-bad@pac81.test")
+	g.set(okTok, stubBehaviour{})
+	g.set(badTok, stubBehaviour{status: http.StatusInternalServerError})
+	link := pac81Link(t, db, []uuid.UUID{ok, bad})
+	start := nextWeekday(time.Now()).Add(10 * time.Hour)
+	_, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "")
+	if !errors.Is(err, ErrHostCalendarUnreadable) {
+		t.Fatalf("got %v, want ErrHostCalendarUnreadable", err)
+	}
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM bookings WHERE link_id = $1`, link.ID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d bookings written", n)
+	}
+	if total, _ := g.createCount(); total != 0 {
+		t.Fatalf("%d host events created", total)
+	}
+}
+
+// Team availability is not covered by D-6: a member whose calendar cannot be
+// read (provider error, own-limit timeout) is still treated as free.
+func TestPAC81_TeamAvailabilityUnreadableMemberTreatedFree(t *testing.T) {
+	pac81Scale(t)
+	db := openTestDB(t)
+	g := newGoogleStub(t)
+	team := pac81Team(t, db, g, 1, 0)
+	bad, badTok := pac81User(t, db, "team-bad@pac81.test")
+	slow, slowTok := pac81User(t, db, "team-slow@pac81.test")
+	g.set(badTok, stubBehaviour{status: http.StatusInternalServerError})
+	g.set(slowTok, stubBehaviour{delay: time.Hour})
+	for _, id := range []uuid.UUID{bad, slow} {
+		if err := storage.AddTeamMember(db, team, id, "member"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	slots, err := (&TeamAvailabilityEngine{DB: db}).FindSlots(ctx, team, nextWeekday(time.Now()), 30)
 	if err != nil || len(slots) == 0 {
 		t.Fatalf("slots %d err %v", len(slots), err)
 	}
@@ -435,8 +505,8 @@ func TestPAC81_BookingBudgetAfterCommitCompletesInBackground(t *testing.T) {
 	slow1, s1 := pac81User(t, db, "slow1@pac81.test")
 	slow2, s2 := pac81User(t, db, "slow2@pac81.test")
 	g.set(fastTok, stubBehaviour{})
-	g.set(s1, stubBehaviour{delay: 600 * time.Millisecond})
-	g.set(s2, stubBehaviour{delay: 600 * time.Millisecond})
+	g.set(s1, stubBehaviour{createDelay: 600 * time.Millisecond})
+	g.set(s2, stubBehaviour{createDelay: 600 * time.Millisecond})
 	link := pac81Link(t, db, []uuid.UUID{fast, slow1, slow2})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -479,7 +549,7 @@ func TestPAC81_BookingCompletionAbandonedAtDrainIsLogged(t *testing.T) {
 	fast, fastTok := pac81User(t, db, "drain-fast@pac81.test")
 	slow, slowTok := pac81User(t, db, "drain-slow@pac81.test")
 	g.set(fastTok, stubBehaviour{})
-	g.set(slowTok, stubBehaviour{delay: time.Hour})
+	g.set(slowTok, stubBehaviour{createDelay: time.Hour})
 	link := pac81Link(t, db, []uuid.UUID{fast, slow})
 
 	var buf bytes.Buffer
@@ -489,6 +559,14 @@ func TestPAC81_BookingCompletionAbandonedAtDrainIsLogged(t *testing.T) {
 		defer bufMu.Unlock()
 		fmt.Fprintf(&buf, f+"\n", a...)
 	})()
+	// The unit's own log line goes to the standard logger.
+	prevOut := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		bufMu.Lock()
+		defer bufMu.Unlock()
+		return buf.Write(p)
+	}))
+	defer log.SetOutput(prevOut)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := nextWeekday(time.Now()).Add(11 * time.Hour)
@@ -503,9 +581,15 @@ func TestPAC81_BookingCompletionAbandonedAtDrainIsLogged(t *testing.T) {
 	bufMu.Lock()
 	out := buf.String()
 	bufMu.Unlock()
-	want := fmt.Sprintf("abandoned booking-completion %s (hosts done: [%s]; hosts not done: [%s]", booking.ID, fast, slow)
-	if !strings.Contains(out, want) {
-		t.Fatalf("log %q lacks %q", out, want)
+	// At the end of the drain the slow create is cancelled; the unit then
+	// either returns within the grace and logs the host it could not
+	// complete, or is abandoned and logged by the shutdown. Both name the
+	// booking and the hosts done and not done.
+	hosts := fmt.Sprintf("(hosts done: [%s]; hosts not done: [%s]", fast, slow)
+	skipped := fmt.Sprintf("booking %s: not every host event was created %s", booking.ID, hosts)
+	abandoned := fmt.Sprintf("abandoned booking-completion %s %s", booking.ID, hosts)
+	if !strings.Contains(out, skipped) && !strings.Contains(out, abandoned) {
+		t.Fatalf("log %q names neither %q nor %q", out, skipped, abandoned)
 	}
 	if strings.Contains(out, "@") {
 		t.Fatalf("an email address was logged: %q", out)
@@ -566,3 +650,7 @@ func TestPAC81_BookingBudgetBeforeInsertWritesNothing(t *testing.T) {
 		t.Fatalf("%d bookings written", n)
 	}
 }
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

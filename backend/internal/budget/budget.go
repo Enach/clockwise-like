@@ -15,13 +15,17 @@
 package budget
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/getsentry/sentry-go"
 )
 
 // Default is the handler budget (spec section 3, D-4).
@@ -152,8 +156,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				answered := st.expired
 				st.mu.Unlock()
 				if answered {
-					// Nobody is left to re-raise it to: log it.
+					// Nobody is left to re-raise it to: log it and report it.
 					log.Printf("budget: %s %s panicked after the budget answered: %v", r.Method, r.URL.Path, p)
+					sentry.CurrentHub().Recover(p)
 					return
 				}
 				panicked <- p
@@ -258,5 +263,25 @@ func (w *writer) Write(b []byte) (int, error) {
 	return w.dst.Write(b)
 }
 
-// Unwrap lets http.ResponseController reach the connection.
-func (w *writer) Unwrap() http.ResponseWriter { return w.dst }
+// Flush flushes the response under the same lock as every write, and does
+// nothing once the budget has answered. The raw writer is never exposed
+// (no Unwrap), so a handler cannot write around the budget.
+func (w *writer) Flush() {
+	w.st.mu.Lock()
+	defer w.st.mu.Unlock()
+	if !w.begin() {
+		return
+	}
+	if f, ok := w.dst.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// ErrHijackRefused is returned by Hijack: no route behind the budget takes
+// over its connection.
+var ErrHijackRefused = errors.New("budget: hijacking the connection is not supported behind the request budget")
+
+// Hijack is refused (see ErrHijackRefused).
+func (w *writer) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, ErrHijackRefused
+}

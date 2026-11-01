@@ -590,3 +590,24 @@ None claimed (`resolvesUncertain` and `resolvesFindings` are empty).
   branch.
 - The B8 text and the `getReadiness` description agree (single flight, one
   connection, operators may restrict at their proxy, liveness stays open).
+
+## Revision 2.1 — 2026-11-01 (owner decision PAC-72 D-6)
+
+Author: backend implementer, at the coordinator's request, applying the
+product owner's decision recorded in the factory's owner decisions
+(PAC-72 D-6, 2026-11-01): a host calendar that cannot be read counts as
+busy, never as free, for collective public slot listing and public booking.
+It overrides AC-A18's "treated as free" on those two paths only.
+
+| Operation | Change (description only; no shape change) |
+|---|---|
+| `getPublicBookingSlots` | An unreadable host (not connected, provider error, own-limit timeout) is busy for the whole requested window: no slot needing that host is offered, still a 200. All links are collective (every accepted host must be free); no round-robin or any-host kind exists. A host the budget did not reach is still the 503. |
+| `createPublicBooking` | Before the insert, each accepted host's calendar is read for the requested time on the per-item pool. An unreadable host calendar is the existing 409 (its description now names this case), with nothing written. A host the budget did not reach is the 503. Whether a readable calendar is busy at that time stays API-094 (PAC-72). |
+| `getTeamAvailability` | Unchanged: the internal team view is not covered by D-6, and an unreadable member is still treated as free. |
+
+The bundle changed. The new sha256 is
+`470bd2c1d8627f795e127d1d86436a084901cc16f412a251688acfc2d7710727`; revision 2's
+was `ffcc55cc…e70e`. The generated Go is unchanged, because only descriptions
+changed. The web types in Enach/smart-calendar-flow#140 need regenerating
+from this bundle. `assemble --check`, `migration --check` and
+`gen_go --check` return rc 0.

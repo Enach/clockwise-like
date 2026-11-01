@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net/smtp"
@@ -101,12 +102,17 @@ func (e *BookingEngine) CollectiveSlots(
 	windowStart := parseTime(link.WindowStart, date)
 	windowEnd := parseTime(link.WindowEnd, date)
 
-	// Collect merged busy intervals across all accepted hosts.
+	// Collect merged busy intervals across all accepted hosts. Owner
+	// decision PAC-72 D-6 (2026-11-01): a host whose calendar cannot be read
+	// (not connected, provider error, or its own per-call timeout) is busy
+	// for the whole window, so no collective slot needing that host is
+	// offered. A host the budget did not reach is the 503 (peritem).
 	perHost := make([][]interval, len(hosts))
 	if err := peritem.Run(ctx, len(hosts), peritem.Read, HostReadLimit(), func(callCtx context.Context, i int) error {
-		busy, err := e.hostBusy(callCtx, hosts[i].UserID, windowStart, windowEnd, link)
+		busy, err := e.hostBusy(callCtx, ctx, hosts[i].UserID, windowStart, windowEnd, link)
 		if err != nil {
-			return err // tolerate per-host errors
+			perHost[i] = []interval{{start: windowStart, end: windowEnd}}
+			return err
 		}
 		perHost[i] = busy
 		return nil
@@ -139,28 +145,42 @@ func HostReadLimit() time.Duration {
 	return l.Identity + l.Provider
 }
 
+// ErrHostCalendarUnreadable is returned by ConfirmBooking when an accepted
+// host's calendar cannot be read: owner decision PAC-72 D-6, the booking is
+// refused with the existing 409 and nothing is written.
+var ErrHostCalendarUnreadable = errors.New("a host's calendar could not be read")
+
+// hostBusy reads one host's busy time. The calendar call runs on ctx (the
+// per-item deadline); the database reads run on dbCtx (the request), so a
+// slow calendar never leaves the host's existing bookings out of busy time.
+// The error is non-nil when the host's calendar could not be read (no
+// connection, provider error, own timeout): the caller treats the host as
+// busy (PAC-72 D-6).
 func (e *BookingEngine) hostBusy(
-	ctx context.Context,
+	ctx, dbCtx context.Context,
 	userID uuid.UUID,
 	start, end time.Time,
 	link *storage.SchedulingLink,
 ) ([]interval, error) {
 	var busy []interval
-	db := storage.Bind(ctx, e.DB)
+	db := storage.Bind(dbCtx, e.DB)
 
 	// Calendar events from Google/Outlook.
-	if calClient, err := e.calendarClientForUser(ctx, userID); err == nil {
-		events, err := calClient.ListEvents(ctx, calClient.CalendarID, start, end)
-		if err == nil {
-			for _, ev := range events {
-				if ev.Transparency == "transparent" {
-					continue
-				}
-				s, e2 := parseEventTime(ev)
-				if !s.IsZero() && !e2.IsZero() {
-					busy = append(busy, interval{start: s, end: e2})
-				}
-			}
+	calClient, err := e.calendarClientForUser(ctx, dbCtx, userID)
+	if err != nil {
+		return nil, err
+	}
+	events, err := calClient.ListEvents(ctx, calClient.CalendarID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	for _, ev := range events {
+		if ev.Transparency == "transparent" {
+			continue
+		}
+		s, e2 := parseEventTime(ev)
+		if !s.IsZero() && !e2.IsZero() {
+			busy = append(busy, interval{start: s, end: e2})
 		}
 	}
 
@@ -228,8 +248,10 @@ func parseEventTime(ev *googlecalendar.Event) (time.Time, time.Time) {
 	return parse(ev.Start.DateTime), parse(ev.End.DateTime)
 }
 
-func (e *BookingEngine) calendarClientForUser(ctx context.Context, userID uuid.UUID) (*calendar.CalendarClient, error) {
-	db := storage.Bind(ctx, e.DB)
+// calendarClientForUser builds the host's client: the token is read on dbCtx,
+// the calendar (and any renewal) runs on ctx.
+func (e *BookingEngine) calendarClientForUser(ctx, dbCtx context.Context, userID uuid.UUID) (*calendar.CalendarClient, error) {
+	db := storage.Bind(dbCtx, e.DB)
 	token, err := auth.LoadUserToken(db, userID)
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("no token for user %s", userID)
@@ -265,10 +287,47 @@ func (e *BookingEngine) ConfirmBooking(
 		return nil, fmt.Errorf("get hosts: %w", err)
 	}
 
+	// PAC-72 D-6 (owner, 2026-11-01): every accepted host's calendar must be
+	// readable for the slot, or the booking is refused (409) and nothing is
+	// written. The reads run on the per-item pool (AC-A18): a host the budget
+	// did not reach is the 503. Whether a readable calendar is busy at the
+	// slot stays PAC-72's check (API-094).
+	unreadable := make([]bool, len(hosts))
+	if err := peritem.Run(ctx, len(hosts), peritem.Read, HostReadLimit(), func(callCtx context.Context, i int) error {
+		calClient, err := e.calendarClientForUser(callCtx, ctx, hosts[i].UserID)
+		if err == nil {
+			_, err = calClient.ListEvents(callCtx, calClient.CalendarID, start, end)
+		}
+		unreadable[i] = err != nil
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	for _, u := range unreadable {
+		if u {
+			return nil, ErrHostCalendarUnreadable
+		}
+	}
+
+	// The insert's connection is acquired while the budget still bounds the
+	// wait (a saturated pool ends in the 503 with nothing written); only
+	// then does the request commit, and the insert itself runs to its own
+	// result on that connection.
+	if beforeBookingConn != nil {
+		beforeBookingConn()
+	}
+	conn, err := e.DB.Conn(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, budget.ErrExpired
+		}
+		return nil, fmt.Errorf("booking connection: %w", err)
+	}
 	if !budget.Commit(ctx) {
+		_ = conn.Close()
 		return nil, budget.ErrExpired
 	}
-	booking, err := storage.CreateBooking(storage.Bind(context.WithoutCancel(ctx), e.DB), &storage.Booking{
+	booking, err := storage.CreateBooking(storage.BindConn(context.WithoutCancel(ctx), conn), &storage.Booking{
 		LinkID:      link.ID,
 		BookerName:  bookerName,
 		BookerEmail: bookerEmail,
@@ -276,6 +335,7 @@ func (e *BookingEngine) ConfirmBooking(
 		EndTime:     end,
 		Notes:       notes,
 	})
+	_ = conn.Close() // released before the completion unit needs the pool
 	if err != nil {
 		return nil, fmt.Errorf("create booking: %w", err)
 	}
@@ -287,6 +347,10 @@ func (e *BookingEngine) ConfirmBooking(
 	}
 	return booking, nil
 }
+
+// beforeBookingConn is a test seam: it runs just before the insert's
+// connection is acquired.
+var beforeBookingConn func()
 
 // completion is the post-commit unit's progress, read by its abandonment
 // log line (AC-A7, AC-A19): hosts done and not done, by user id.
@@ -301,6 +365,14 @@ func (c *completion) markHost(id uuid.UUID) {
 	c.mu.Lock()
 	c.done[id] = true
 	c.mu.Unlock()
+}
+
+// summary is detail plus whether every host is done.
+func (c *completion) summary() (string, bool) {
+	c.mu.Lock()
+	all := len(c.done) == len(c.hosts)
+	c.mu.Unlock()
+	return c.detail(), all
 }
 
 func (c *completion) detail() string {
@@ -359,9 +431,12 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 	}
 
 	start, end := booking.StartTime, booking.EndTime
-	_ = peritem.Run(ctx, len(events), peritem.Create, HostReadLimit(), func(callCtx context.Context, i int) error {
+	// The host events are not gated by the drain deadline (a booking saved
+	// during the drain still gets them): each call has its own limit, and
+	// only the drain's hard cancellation cuts them (AC-A7 then logs the unit).
+	_ = peritem.Run(ctx, len(events), peritem.Detached, HostReadLimit(), func(callCtx context.Context, i int) error {
 		he := events[i]
-		calClient, err := e.calendarClientForUser(callCtx, he.userID)
+		calClient, err := e.calendarClientForUser(callCtx, ctx, he.userID)
 		if err != nil {
 			prog.markHost(he.userID) // not connected: nothing to create
 			return err
@@ -382,6 +457,11 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 		prog.markHost(he.userID)
 		return nil
 	})
+
+	if d, all := prog.summary(); !all {
+		log.Printf("ERROR: booking %s: not every host event was created (%s)", booking.ID, d)
+		sentry.CaptureException(fmt.Errorf("booking %s: not every host event was created (%s)", booking.ID, d))
+	}
 
 	// The confirmation email (AC-A8): a failure is logged with the booking
 	// id and reported, never retried (D-15).

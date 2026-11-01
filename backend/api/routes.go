@@ -23,6 +23,8 @@ func trackRequest(r *http.Request) func() {
 }
 
 func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecret, allowedOrigin, frontendURL string) {
+	// The access log reports this router's route patterns (PAC-81 AC-A13).
+	routeMux.Store(r)
 	// Sentry panic reporting must be the outermost middleware so it observes
 	// panics from every handler and inner middleware. It repanics, so a panic
 	// still becomes a 500 exactly as before (contract §3, §5). When Sentry was

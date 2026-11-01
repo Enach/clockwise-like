@@ -120,6 +120,9 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	_ = insertRecapSend(s.DB, rec)
 }
 
+// recapUserTimeout bounds one user's recap send (a test seam).
+var recapUserTimeout = 55 * time.Second
+
 // RunAll iterates all users with recap_enabled and calls RunForUser.
 // Called every minute by the cron in main.go.
 func (s *DailyRecapService) RunAll(ctx context.Context) {
@@ -143,11 +146,12 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 		}
 		id, name := u.id, u.name
 		// Each per-user send is a tracked unit, awaited by the drain.
+		// Its own context: the group's (cancelled at the end of the drain)
+		// with its own limit, not the cron run's, which ends as soon as
+		// RunAll returns, right after the last user's send starts.
 		lifecycle.Go(lifecycle.Unit{Kind: "daily-recap", ID: id.String()}, func(work context.Context) {
-			runCtx, cancel := context.WithCancel(ctx)
+			runCtx, cancel := context.WithTimeout(work, recapUserTimeout)
 			defer cancel()
-			stop := context.AfterFunc(work, cancel)
-			defer stop()
 			s.RunForUser(runCtx, id, name)
 		})
 	}

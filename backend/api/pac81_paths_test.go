@@ -27,6 +27,7 @@ import (
 	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/internal/outbound"
+	"github.com/Enach/paceday/backend/internal/peritem"
 	"github.com/Enach/paceday/backend/nlp"
 	"github.com/Enach/paceday/backend/nlp/nlptest"
 	"github.com/Enach/paceday/backend/storage"
@@ -71,10 +72,38 @@ func pac81Addr() string {
 	return fmt.Sprintf("198.18.%d.%d:4000", (n/250)%250, n%250+1)
 }
 
-// pac81Link seeds a link with one accepted host (no calendar: no events).
+// pac81Calendar stands in for Google Calendar: lists answer listStatus (200
+// with no events when 0), creates always succeed.
+func pac81Calendar(t *testing.T, listStatus int) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"ev-` + uuid.NewString()[:6] + `"}`))
+			return
+		}
+		if listStatus != 0 {
+			w.WriteHeader(listStatus)
+			_, _ = w.Write([]byte(`{"error":{"code":500,"message":"stub"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	calendar.Configure(config.CalendarEndpoint{BaseURL: srv.URL + config.CalendarAPIRoot, Guard: true})
+	t.Cleanup(func() { calendar.Configure(config.ProductionCalendarEndpoint()) })
+}
+
+// pac81Link seeds a link with one accepted host whose calendar is connected
+// (PAC-72 D-6: an unreadable host calendar would make every slot busy) and
+// answered by a readable stand-in.
 func pac81Link(t *testing.T) *storage.SchedulingLink {
 	t.Helper()
+	pac81Calendar(t, 0)
 	host := createTestUser(t, "pac81-host-"+uuid.NewString()[:8]+"@example.com")
+	if err := auth.UpsertUserToken(sharedTestDB, host, &oauth2.Token{AccessToken: "a", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
 	link, err := storage.CreateSchedulingLink(sharedTestDB, &storage.SchedulingLink{
 		OwnerUserID: host, Slug: "pac81-" + uuid.NewString()[:8], Title: "Intro",
 		DurationOptions: []int{30}, DaysOfWeek: []int{0, 1, 2, 3, 4, 5, 6}, WindowStart: "00:00", WindowEnd: "23:45",
@@ -120,6 +149,8 @@ func withBudget(t *testing.T, d time.Duration) {
 	prev := requestBudget
 	requestBudget = d
 	t.Cleanup(func() { requestBudget = prev })
+	// The per-item stop margin scales with the budget (10 s of 90 s).
+	t.Cleanup(peritem.SetForTest(peritem.Settings{Workers: 4, Margin: d / 9}))
 }
 
 func fullRouter(t *testing.T) *chi.Mux {
@@ -478,18 +509,8 @@ func pac81NamedPaths(t *testing.T) []pac81Path {
 	link := pac81Link(t)
 	day := time.Now().UTC().Add(72 * time.Hour).Format("2006-01-02")
 
-	// A stub Google calendar for the personal sync's work calendar.
-	gsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodPost {
-			_, _ = w.Write([]byte(`{"id":"ev-` + uuid.NewString()[:6] + `"}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"items":[]}`))
-	}))
-	t.Cleanup(gsrv.Close)
-	calendar.Configure(config.CalendarEndpoint{BaseURL: gsrv.URL + config.CalendarAPIRoot, Guard: true})
-	t.Cleanup(func() { calendar.Configure(config.ProductionCalendarEndpoint()) })
+	// pac81Link installed a stub Google calendar; the personal sync's work
+	// calendar uses it too.
 	syncUser := createTestUser(t, "pac81-sync-"+uuid.NewString()[:6]+"@example.com")
 	if err := auth.UpsertUserToken(sharedTestDB, syncUser, &oauth2.Token{AccessToken: "a", RefreshToken: "r", Expiry: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
@@ -684,5 +705,56 @@ func TestPAC81_PersonalSyncBudgetCutIs503NotStamped(t *testing.T) {
 	}
 	if cal.LastSyncedAt != nil {
 		t.Fatal("last_synced_at stamped after a budget cut")
+	}
+}
+
+// PAC-72 D-6 (owner, 2026-11-01): a host whose calendar cannot be read makes
+// the booking the existing 409, with nothing written; a dated listing offers
+// no slot needing that host (and is not a 503).
+func TestPAC81_UnreadableHostCalendarIsBusy(t *testing.T) {
+	pac81Group(t)
+	link := pac81Link(t)
+	pac81Calendar(t, http.StatusInternalServerError)
+	r := bookingRouter(sharedTestDB)
+	rec := serveAt(r, http.MethodPost, "/api/book/"+link.Slug, pac81BookingBody("Busy", pac81Start(60)))
+	if rec.Code != http.StatusConflict || rec.Body.String() != "{\"error\":\"slot is no longer available\"}\n" {
+		t.Fatalf("booking: %d %q", rec.Code, rec.Body.String())
+	}
+	if bookingCount(t, link.ID) != 0 {
+		t.Fatal("a booking was written")
+	}
+	day := time.Now().UTC().Add(72 * time.Hour).Format("2006-01-02")
+	rec = serveAt(r, http.MethodGet, "/api/book/"+link.Slug+"/slots?date="+day, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"slots":[]`) {
+		t.Fatalf("slots: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// AC-A13 (review of #247): the access log reports the route pattern, never
+// the raw path (an invite token), and "-" when nothing was written.
+func TestPAC81_AccessLogRoutePatternAndNothingWritten(t *testing.T) {
+	l := captureAccessLog(t)
+	r := chi.NewRouter()
+	RegisterRoutes(r, sharedTestDB, &oauth2.Config{}, "secret", "http://app.test", "http://app.test")
+	serveAt(r, http.MethodGet, "/api/teams/invites/SECRET-INVITE-TOKEN", "")
+	found := false
+	for _, line := range l.lines {
+		if strings.Contains(line, "SECRET-INVITE-TOKEN") {
+			t.Fatalf("token logged: %q", line)
+		}
+		found = found || strings.Contains(line, "GET /api/teams/invites/{token} ")
+	}
+	if !found {
+		t.Fatalf("no pattern line: %v", l.lines)
+	}
+	l.lines = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is gone before anything is written
+	req := httptest.NewRequest(http.MethodPost, "/api/nlp/parse", nil).WithContext(ctx)
+	loggingMiddleware(budget.Middleware(time.Second, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))).ServeHTTP(httptest.NewRecorder(), req)
+	if len(l.lines) != 1 || !strings.Contains(l.lines[0], "POST /api/nlp/parse - ") {
+		t.Fatalf("lines %v", l.lines)
 	}
 }

@@ -238,3 +238,37 @@ func (s *syncBuf) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
+
+// Review of #247: the raw writer is never exposed; Flush goes through the
+// lock and is a no-op after the budget answered; Hijack is refused.
+func TestWriterFlushHijackNoUnwrap(t *testing.T) {
+	flushed := make(chan bool, 1)
+	rec := serve(t, time.Second, func(w http.ResponseWriter, _ *http.Request) {
+		if _, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
+			t.Error("the budget writer exposes the raw writer")
+		}
+		if _, _, err := w.(http.Hijacker).Hijack(); !errors.Is(err, ErrHijackRefused) {
+			t.Errorf("hijack: %v", err)
+		}
+		_, _ = w.Write([]byte("a"))
+		w.(http.Flusher).Flush()
+		flushed <- true
+	})
+	<-flushed
+	if !rec.Flushed || rec.Body.String() != "a" {
+		t.Fatalf("flushed %v body %q", rec.Flushed, rec.Body.String())
+	}
+	done := make(chan struct{})
+	rec = serve(t, 10*time.Millisecond, func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		<-r.Context().Done()
+		for !Expired(r.Context()) {
+			time.Sleep(time.Millisecond)
+		}
+		w.(http.Flusher).Flush()
+	})
+	<-done
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("late flush changed the answer: %d", rec.Code)
+	}
+}

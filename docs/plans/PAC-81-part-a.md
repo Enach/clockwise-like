@@ -170,3 +170,63 @@ the compiled binary. The PR states this.
 - Container health check wiring, grace periods, compose (Part C), nginx (Part B).
 - Context-free database calls off the AC-A9 paths stay context-free (spec §3:
   only the response is bounded there).
+
+## 5. Review of #247 (request changes at a518431) and owner decision PAC-72 D-6
+
+Blocking:
+1. **Booking committed during the drain.** Host-event creates are no longer
+   gated by the drain deadline (25 + 10 s never fits in the 30 s drain).
+   They use `peritem.Detached`: each call has its own limit, and only the
+   drain's hard cancellation cuts them. When any host's event was not created,
+   the unit logs the booking id with the hosts done and not done, and reports
+   it to Sentry. Tests: `engine.TestPAC81_BookingCommittedDuringDrainCreatesHostEvents`
+   (the bounds are scaled so that limit + margin is longer than the drain; it
+   fails with the old Create mode) and `engine.TestPAC81_BookingSkippedHostIsLogged`.
+2. **Recap.** Each per-user unit runs on the group's context with its own 55 s
+   limit, not on the cron run's context, which ends when `RunAll` returns.
+   Test: `engine.TestPAC81_RecapOnlyUserIsSent` (one user, Slack stub).
+3. **Pool wait after commit.** The insert's connection is acquired with the
+   request context before `budget.Commit`. If that fails at the budget, the
+   answer is the 503 and nothing is written. The insert then runs without
+   cancellation on that connection (`storage.BindConn`), and the connection
+   is released before the completion unit runs. The step-up record does the
+   same (`storage.WithReserved` / `Reserved`).
+   Test: `engine.TestPAC81_BookingPoolSaturatedBeforeInsertIs503`.
+
+Non-blocking items applied:
+- **Per-item reads.** `hostBusy` and `memberBusy` read the database on the
+  request context; the calendar call keeps the per-item deadline.
+- **Client guard.** `TestNoUnboundedHTTPClient` now also catches
+  `http.Get/Post/Head/PostForm`, `http.Client{` without `&`,
+  `new(http.Client)`, and oauth2 clients without a Timeout on the next line.
+- **Budget writer.** It no longer has `Unwrap`. `Flush` goes through the
+  lock and does nothing once the budget has answered; `Hijack` is refused.
+  A panic after the budget has answered is sent to Sentry.
+- **Access log.** It logs the chi route pattern, matched on a fresh route
+  context so it does not race the handler goroutine, never the raw path. It
+  logs `-` when nothing was written.
+- **Focus cron.** It stops before advancing a watermark once shutdown has
+  cancelled the work.
+- **Contract manifest.** The allowed paths now cover the docs and files this
+  PR touches.
+
+Owner decision PAC-72 D-6 (2026-11-01): an unreadable host calendar is
+busy.
+- **Slot listing.** The host is busy for the whole window, so no slot is
+  offered.
+- **Booking.** It is a 409 and nothing is written.
+- **Team availability.** It keeps "treated as free".
+- **Spec and contract.** The spec has Revision 3.2. The contract is at
+  revision 2.1 (descriptions only), with the new `contractHash` `470bd2c1…0727`.
+- **Tests changed to match:**
+  - `engine.TestPAC81_HostProviderErrorAndOwnLimitTreatedBusy`,
+    `TestPAC81_BookingUnreadableHostIsRefused` and
+    `TestPAC81_TeamAvailabilityUnreadableMemberTreatedFree`.
+  - `api.TestPAC81_UnreadableHostCalendarIsBusy`.
+  - The Givens of `TestCollectiveSlots_BlocksOnlyTheHostsFocusAndBookings`
+    (PAC-64) and `TestPAC67_PublicBookingWithARefusedHost` (PAC-67): the
+    first now gives its host a readable calendar; the second now expects the
+    409 where it expected a 201.
+- **Not done here: e2e.** The e2e seed deliberately leaves the public-booking
+  hosts unconnected, so under D-6 those journeys find no slots and get a 409.
+  The e2e seed must connect those hosts through the fake-google stand-in.

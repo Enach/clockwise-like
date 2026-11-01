@@ -2091,3 +2091,33 @@ review (Enach/clockwise-like#245). Two corrections; no other AC changes.
   as received plus P's own address (`F, C, P`), so the client C is no longer its
   last entry. Nothing reads `X-Forwarded-For`; the backend uses only `X-Real-IP`
   from trusted peers (section 6 unchanged).
+
+## Revision 3.2 — 2026-11-01, owner decision PAC-72 D-6
+
+Recorded by the Part A implementer at the coordinator's request. The product
+owner decided on PAC-72 D-6 (2026-11-01): a host calendar that cannot be read
+counts as busy, never as free. Unreadable means any of: the host's calendar
+is not connected, the provider returns an error, or the read fails on its
+own per-call time limit.
+
+- **Collective public slot listing.** This overrides AC-A18's "treated as
+  free" for this path. A host whose calendar cannot be read is busy for the
+  whole requested window, so no collective slot needing that host is
+  offered. Every scheduling link is collective (every accepted host must be
+  free); no round-robin or any-host link kind exists, so nothing else
+  applies. The answer is still a 200. A host the budget did not reach is
+  still AC-A18's 503.
+- **Public booking.** Before the insert, each accepted host's calendar is
+  read for the requested time (AC-A18's per-item rule). If any host's
+  calendar cannot be read, the booking is refused with the existing 409
+  `{"error":"slot is no longer available"}` and nothing is written. Whether a
+  readable calendar is busy at that time is still PAC-72's check (API-094).
+- **Team availability.** The internal team view is not covered by D-6. A
+  member whose calendar cannot be read is still treated as free, as AC-A18
+  states.
+
+AC-A18's tests change to match. On slot listing and booking, a host whose
+calendar fails (provider error, own-limit timeout, not connected) gives "no
+slot" and "409, no row". Team availability keeps its "treated as free" test.
+The contract is revision 2.1 (descriptions of `getPublicBookingSlots` and
+`createPublicBooking`; `contracts/features/PAC-81-part-a.md`).

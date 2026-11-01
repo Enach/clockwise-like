@@ -79,7 +79,7 @@ func (e *TeamAvailabilityEngine) FindSlots(ctx context.Context, teamID uuid.UUID
 	// because of the budget, or cut by it, is a budget error (503).
 	mdata := make([]memberBusyData, len(members))
 	if err := peritem.Run(ctx, len(members), peritem.Read, HostReadLimit(), func(callCtx context.Context, i int) error {
-		mdata[i] = e.memberBusy(callCtx, members[i].UserID, day, dayStart, dayEnd)
+		mdata[i] = e.memberBusy(callCtx, ctx, members[i].UserID, day, dayStart, dayEnd)
 		return nil
 	}); err != nil {
 		return nil, err
@@ -121,9 +121,11 @@ func (e *TeamAvailabilityEngine) FindSlots(ctx context.Context, teamID uuid.UUID
 	return slots, nil
 }
 
-// memberBusy reads one member's busy time and focus blocks for the day.
-func (e *TeamAvailabilityEngine) memberBusy(ctx context.Context, userID uuid.UUID, day, dayStart, dayEnd time.Time) memberBusyData {
-	db := storage.Bind(ctx, e.DB)
+// memberBusy reads one member's busy time and focus blocks for the day. The
+// calendar runs on ctx (the per-item deadline); the database reads on dbCtx
+// (the request), so focus blocks are never left out by a slow calendar.
+func (e *TeamAvailabilityEngine) memberBusy(ctx, dbCtx context.Context, userID uuid.UUID, day, dayStart, dayEnd time.Time) memberBusyData {
+	db := storage.Bind(dbCtx, e.DB)
 	var md memberBusyData
 
 	// Per-member calendar access.

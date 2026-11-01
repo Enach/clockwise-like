@@ -79,7 +79,15 @@ paths:
         checked against the hosts' availability, the link's days or hours, or
         any upper date bound. The only time checks are the minimum notice (422)
         and overlap with this link's own non-cancelled bookings (409); any other
-        start is accepted. The booking row is saved, then a calendar event (with
+        start is accepted. Host calendars must be readable (owner decision
+        PAC-72 D-6, 2026-11-01): before the booking is saved, each accepted
+        host's calendar is read for the requested time (at most 4 concurrent
+        reads, each limited as on `getPublicBookingSlots`). A host whose calendar
+        cannot be read (not connected, a provider error, or its own time limit)
+        counts as busy and the booking is refused with the 409; nothing is
+        written. A host not read because the request budget ran out is the 503.
+        Whether a readable calendar is busy at that time is still not checked
+        (API-094). The booking row is saved, then a calendar event (with
         the booker email as a guest) is attempted on each accepted host's
         calendar, best effort: a host whose user record or calendar client
         cannot be loaded is skipped and a failed event creation is ignored, so a
@@ -132,7 +140,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '409':
-          description: 'An overlapping non-cancelled booking already exists. Body: {"error":"slot is no longer available"}'
+          description: >-
+            An overlapping non-cancelled booking already exists, or (owner
+            decision PAC-72 D-6) an accepted host's calendar could not be read.
+            Nothing is written. Body: {"error":"slot is no longer available"}
           content:
             application/json:
               schema:
@@ -192,12 +203,15 @@ paths:
         Hosts (PAC-81, spec AC-A18): each accepted host's calendar is read on at
         most 4 concurrent reads per request, each limited to its own 15 s (shortened
         to the budget left minus a 10 s stop margin). A host whose calendar cannot be
-        read is treated as free: not connected, a provider error, or (new with
-        PAC-81) a read that fails on its own time limit, so a host whose calendar
-        answers too slowly now looks free where before the request waited for it. A
+        read is BUSY for the whole requested window (owner decision PAC-72 D-6,
+        2026-11-01; it replaces the earlier "treated as free"): not connected, a
+        provider error, or a read that fails on its own time limit. Every link is
+        collective (every accepted host must be free; there is no round-robin or
+        any-host kind), so a link with such a host offers no slot for that date,
+        and without `date` that day is not listed; the answer is still a 200. A
         host that was not read because the request budget ran out (a read not
-        started at the stop margin, or cut short by the budget) is never treated as
-        free. A read that hits a deadline shortened by the budget (budget left minus
+        started at the stop margin, or cut short by the budget) is neither free
+        nor busy: the answer is the 503. A read that hits a deadline shortened by the budget (budget left minus
         the margin was below 15 s) counts as cut short by the budget, not as failing
         on its own limit: the answer is the 503, never a 200 that silently omits that host or,
         without `date`, a day. Neither mode has a partial shape.
