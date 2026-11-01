@@ -123,6 +123,11 @@ func TestPublicBookingLinkInfoContract(t *testing.T) {
 	if len(got.Durations) != 2 || len(got.Hosts) != 1 || got.Hosts[0].Email != "public-link-owner@example.com" {
 		t.Fatalf("public link = %+v, want durations and owner host", got)
 	}
+	// PAC-72 AC-32: the zone in use (UTC: the owner has no settings) and the
+	// link's horizon (60 by default).
+	if got.TimeZone != "UTC" || got.BookingHorizonDays != 60 {
+		t.Fatalf("public link zone/horizon = %q/%d, want UTC/60", got.TimeZone, got.BookingHorizonDays)
+	}
 }
 
 func TestPublicBookingSlotsContract(t *testing.T) {
@@ -140,8 +145,11 @@ func TestPublicBookingSlotsContract(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
-	if !eng.slotsDate.Equal(day) || eng.slotsDuration != 30 {
-		t.Fatalf("engine call = %v duration %d, want %v and 30", eng.slotsDate, eng.slotsDuration, day)
+	// PAC-72 revision 2 (D-9): the engine gets the calendar day in the link's
+	// zone (UTC here, the owner has no settings), as a time on that day
+	// (noon, whose wall clock always exists).
+	if want := day.Add(12 * time.Hour); !eng.slotsDate.Equal(want) || eng.slotsDate.Location() != time.UTC || eng.slotsDuration != 30 {
+		t.Fatalf("engine call = %v duration %d, want %v and 30", eng.slotsDate, eng.slotsDuration, want)
 	}
 	var got struct {
 		Slots          []engine.AvailableSlot `json:"slots"`

@@ -18,6 +18,9 @@ import (
 type schedulingLinkHandlers struct {
 	bookEng *engine.BookingEngine
 	db      *sql.DB
+	// ownerZone reads a link owner's profile zone for SchedulingLink.time_zone
+	// (PAC-72 D-9); nil is storage.GetUserTimezone. Tests inject a failure.
+	ownerZone ownerZoneReader
 }
 
 func newSchedulingLinkHandlers(db *sql.DB, oauthConfig *oauth2.Config) *schedulingLinkHandlers {
@@ -49,6 +52,11 @@ type schedulingLinkDTO struct {
 	CreatedAt        string              `json:"created_at"`
 	IsOwner          bool                `json:"is_owner"`
 	MyStatus         string              `json:"my_status,omitempty"`
+	// PAC-72 revision 2: the link's horizon (D-1), refusal setting (D-2/D-5)
+	// and the zone its days and hours are evaluated in (D-9, read-only).
+	BookingHorizonDays int    `json:"booking_horizon_days"`
+	RefusalMessage     string `json:"refusal_message"`
+	TimeZone           string `json:"time_zone"`
 }
 
 type schedulingHostDTO struct {
@@ -85,6 +93,9 @@ type schedulingLinkInput struct {
 	UsageType        string   `json:"usage_type"`
 	MaxUses          *int     `json:"max_uses"`
 	CoHostEmails     []string `json:"co_host_emails"`
+	// PAC-72 revision 2: absent or null means 60 / generic.
+	BookingHorizonDays *int    `json:"booking_horizon_days"`
+	RefusalMessage     *string `json:"refusal_message"`
 }
 
 type schedulingLinkPatch struct {
@@ -105,6 +116,9 @@ type schedulingLinkPatch struct {
 	MaxUses          *int     `json:"max_uses"`
 	Active           *bool    `json:"active"`
 	CoHostEmails     []string `json:"co_host_emails"`
+	// PAC-72 revision 2: absent or null leaves the stored value.
+	BookingHorizonDays *int    `json:"booking_horizon_days"`
+	RefusalMessage     *string `json:"refusal_message"`
 }
 
 func dayNames(days []int) []string {
@@ -193,6 +207,13 @@ func (in schedulingLinkInput) normalized() (storage.SchedulingLink, error) {
 		DurationOptions: durations, DaysOfWeek: days, WindowStart: start, WindowEnd: end,
 		BufferBefore: in.BufferBefore, BufferAfter: in.BufferAfter,
 		MinNoticeMinutes: in.MinNoticeMinutes, UsageType: in.UsageType, MaxUses: in.MaxUses,
+		BookingHorizonDays: storage.DefaultBookingHorizonDays, RefusalMessage: storage.RefusalGeneric,
+	}
+	if in.BookingHorizonDays != nil {
+		link.BookingHorizonDays = *in.BookingHorizonDays
+	}
+	if in.RefusalMessage != nil {
+		link.RefusalMessage = *in.RefusalMessage
 	}
 	if err := validateSchedulingLink(&link); err != nil {
 		return storage.SchedulingLink{}, err
@@ -267,13 +288,21 @@ func validateSchedulingLink(link *storage.SchedulingLink) *httpError {
 	} else {
 		link.MaxUses = nil
 	}
+	// PAC-72 revision 2 (D-1, A-3): 1..365 days.
+	if link.BookingHorizonDays < 1 || link.BookingHorizonDays > 365 {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "booking_horizon_days must be between 1 and 365"}
+	}
+	// PAC-72 revision 2 (D-2/D-5, A-1).
+	if link.RefusalMessage != storage.RefusalGeneric && link.RefusalMessage != storage.RefusalSpecific {
+		return &httpError{Code: http.StatusUnprocessableEntity, Msg: "refusal_message must be generic or specific"}
+	}
 	link.WindowStart = start.Format("15:04")
 	link.WindowEnd = end.Format("15:04")
 	return nil
 }
 
-func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {
-	dto, _ := buildSchedulingLinkDTO(db, link, viewer, includeHosts, false)
+func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, includeHosts bool) schedulingLinkDTO {
+	dto, _ := buildSchedulingLinkDTO(db, link, loc, viewer, includeHosts, false)
 	return dto
 }
 
@@ -282,14 +311,21 @@ func toSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.U
 // instead of degrading to an emptied roster or a host without an email: the
 // single-link read answers 500 for it (PAC-25 C-2). Without strict, the error
 // is always nil and the roster degrades as it always has.
-func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uuid.UUID, includeHosts, strict bool) (schedulingLinkDTO, error) {
+//
+// loc is the link's zone, read from the owner's settings by the caller
+// (linkLocation): a failed read is the caller's 500 (PAC-72 revision 2.1).
+func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID, includeHosts, strict bool) (schedulingLinkDTO, error) {
 	dto := schedulingLinkDTO{
 		ID: link.ID.String(), OwnerID: link.OwnerUserID.String(), Title: link.Title, Slug: link.Slug,
 		Durations: link.DurationOptions, Days: dayNames(link.DaysOfWeek), WindowStart: link.WindowStart,
 		WindowEnd: link.WindowEnd, BufferBefore: link.BufferBefore, BufferAfter: link.BufferAfter,
 		MinNoticeMinutes: link.MinNoticeMinutes, UsageType: link.UsageType, MaxUses: link.MaxUses,
 		UsesCount: link.UsesCount, Active: link.Active, CreatedAt: link.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
-		IsOwner: link.OwnerUserID == viewer,
+		IsOwner:            link.OwnerUserID == viewer,
+		BookingHorizonDays: horizonDays(link), RefusalMessage: link.RefusalMessage, TimeZone: loc.String(),
+	}
+	if dto.RefusalMessage == "" {
+		dto.RefusalMessage = storage.RefusalGeneric
 	}
 	if dto.UsageType == "" {
 		dto.UsageType = "reusable"
@@ -323,9 +359,16 @@ func buildSchedulingLinkDTO(db *sql.DB, link *storage.SchedulingLink, viewer uui
 	return dto, nil
 }
 
-func (h *schedulingLinkHandlers) writeLink(w http.ResponseWriter, link *storage.SchedulingLink, viewer uuid.UUID) {
+func (h *schedulingLinkHandlers) writeLink(w http.ResponseWriter, link *storage.SchedulingLink, loc *time.Location, viewer uuid.UUID) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toSchedulingLinkDTO(h.db, link, viewer, true))
+	_ = json.NewEncoder(w).Encode(toSchedulingLinkDTO(h.db, link, loc, viewer, true))
+}
+
+// zoneOf reads the link owner's zone for SchedulingLink.time_zone (PAC-72
+// D-9). The error is a failed settings read, which the caller answers 500,
+// never UTC (revision 2.1).
+func (h *schedulingLinkHandlers) zoneOf(ownerID uuid.UUID) (*time.Location, error) {
+	return linkLocation(h.db, h.ownerZone, ownerID)
 }
 
 // POST /api/scheduling-links
@@ -345,6 +388,13 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	owner, err := storage.GetUserByID(h.db, userID)
 	if err != nil || owner == nil {
 		writeError(w, "user not found", http.StatusInternalServerError)
+		return
+	}
+	// The response's time_zone is the caller's zone; read before anything is
+	// written, so a failed read creates no link (PAC-72 revision 2.1).
+	loc, err := h.zoneOf(userID)
+	if err != nil {
+		writeServerError(w, r, "create link zone", err, http.StatusInternalServerError)
 		return
 	}
 	if link.Slug == "" {
@@ -383,7 +433,7 @@ func (h *schedulingLinkHandlers) createLink(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	h.writeLink(w, created, userID)
+	h.writeLink(w, created, loc, userID)
 }
 
 // GET /api/scheduling-links
@@ -395,8 +445,19 @@ func (h *schedulingLinkHandlers) listLinks(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	owned, shared := []schedulingLinkDTO{}, []schedulingLinkDTO{}
+	zones := map[uuid.UUID]*time.Location{}
 	for _, link := range links {
-		dto := toSchedulingLinkDTO(h.db, link, userID, true)
+		loc, ok := zones[link.OwnerUserID]
+		if !ok {
+			// A failed read of any listed link owner's zone (a shared
+			// link's owner included) fails the list (PAC-72 AC-38).
+			if loc, err = h.zoneOf(link.OwnerUserID); err != nil {
+				writeServerError(w, r, "list links zone", err, http.StatusInternalServerError)
+				return
+			}
+			zones[link.OwnerUserID] = loc
+		}
+		dto := toSchedulingLinkDTO(h.db, link, loc, userID, true)
 		if dto.IsOwner {
 			owned = append(owned, dto)
 		} else {
@@ -438,7 +499,12 @@ func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	dto, err := buildSchedulingLinkDTO(h.db, link, userID, true, true)
+	loc, err := h.zoneOf(link.OwnerUserID)
+	if err != nil {
+		writeServerError(w, r, "getLink zone", err, http.StatusInternalServerError)
+		return
+	}
+	dto, err := buildSchedulingLinkDTO(h.db, link, loc, userID, true, true)
 	if err != nil {
 		writeServerError(w, r, "getLink roster", err, http.StatusInternalServerError)
 		return
@@ -522,12 +588,25 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 	if patch.Active != nil {
 		updated.Active = *patch.Active
 	}
+	if patch.BookingHorizonDays != nil {
+		updated.BookingHorizonDays = *patch.BookingHorizonDays
+	}
+	if patch.RefusalMessage != nil {
+		updated.RefusalMessage = *patch.RefusalMessage
+	}
 	if slugPatched && updated.Slug == "" {
 		writeError(w, "slug cannot be empty", http.StatusUnprocessableEntity)
 		return
 	}
 	if validationErr := validateSchedulingLink(&updated); validationErr != nil {
 		writeError(w, validationErr.Msg, validationErr.Code)
+		return
+	}
+	// Read before the update, so a failed read changes nothing (PAC-72
+	// revision 2.1).
+	loc, err := h.zoneOf(existing.OwnerUserID)
+	if err != nil {
+		writeServerError(w, r, "update link zone", err, http.StatusInternalServerError)
 		return
 	}
 	if updated.Slug != existing.Slug {
@@ -561,7 +640,7 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
-	h.writeLink(w, result, userID)
+	h.writeLink(w, result, loc, userID)
 }
 
 // DELETE /api/scheduling-links/{id}

@@ -66,9 +66,12 @@ func TestPAC72_CollectiveSlots_NoAcceptedHostOffersNothing(t *testing.T) {
 }
 
 // D-11 / AC-4b: a pending booking on another link the host hosts is busy time.
+// Spec R21.5: the host has a connected, readable calendar (the PAC-81 stub);
+// a host with none is busy all day under D-6.
 func TestPAC72_CollectiveSlots_PendingBookingOnAnotherLinkIsBusy(t *testing.T) {
 	db := openTestDB(t)
-	host := pac72EngineUser(t, db, "pac72-e-pending@example.com")
+	newGoogleStub(t)
+	host, _ := pac81User(t, db, "pac72-e-pending@example.com")
 	link := pac72EngineLink(t, db, host, "pac72-e-pending-this", host)
 	other := pac72EngineLink(t, db, host, "pac72-e-pending-other", host)
 	at := pac72Monday.Add(10 * time.Hour)
@@ -98,10 +101,12 @@ func TestPAC72_CollectiveSlots_PendingBookingOnAnotherLinkIsBusy(t *testing.T) {
 }
 
 // D-7 / AC-17b, AC-17c: a storage failure while reading a host's focus blocks
-// or bookings is an error, never "the host is free".
+// or bookings is an error, never "the host is free". Spec R21.5: the host's
+// calendar is connected and readable, or D-6 (busy) would answer first.
 func TestPAC72_CollectiveSlots_StorageFailureIsAnError(t *testing.T) {
 	db := openTestDB(t)
-	host := pac72EngineUser(t, db, "pac72-e-storage@example.com")
+	newGoogleStub(t)
+	host, _ := pac81User(t, db, "pac72-e-storage@example.com")
 	link := pac72EngineLink(t, db, host, "pac72-e-storage", host)
 	boom := errors.New("injected storage failure")
 

@@ -29,7 +29,23 @@ type SchedulingLink struct {
 	Active           bool        `json:"active"`
 	CreatedAt        time.Time   `json:"created_at"`
 	Hosts            []*LinkHost `json:"hosts,omitempty"`
+	// BookingHorizonDays is how many days ahead the link can be booked,
+	// counting today in the link's zone (PAC-72 D-1): 1..365, default 60.
+	BookingHorizonDays int `json:"booking_horizon_days"`
+	// RefusalMessage is the link owner's choice of 409 body (PAC-72
+	// D-2/D-5): "generic" (default) or "specific".
+	RefusalMessage string `json:"refusal_message"`
 }
+
+// DefaultBookingHorizonDays is the horizon of a link created without one and
+// of every link that existed before PAC-72 revision 2.
+const DefaultBookingHorizonDays = 60
+
+// RefusalGeneric and RefusalSpecific are the two refusal_message values.
+const (
+	RefusalGeneric  = "generic"
+	RefusalSpecific = "specific"
+)
 
 // LinkHost is one accepted or pending co-host on a scheduling link.
 type LinkHost struct {
@@ -75,21 +91,27 @@ func CreateSchedulingLink(db DBTX, l *SchedulingLink) (*SchedulingLink, error) {
 	if len(l.DaysOfWeek) == 0 {
 		l.DaysOfWeek = []int{1, 2, 3, 4, 5}
 	}
+	if l.BookingHorizonDays == 0 {
+		l.BookingHorizonDays = DefaultBookingHorizonDays
+	}
+	if l.RefusalMessage == "" {
+		l.RefusalMessage = RefusalGeneric
+	}
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_links
 			(owner_user_id, slug, title, duration_options, days_of_week,
 			 window_start_time, window_end_time, buffer_before, buffer_after,
-             min_notice_minutes, usage_type, max_uses)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             min_notice_minutes, usage_type, max_uses, booking_horizon_days, refusal_message)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 	`, l.OwnerUserID, l.Slug, l.Title,
 		pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
 		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter,
-		l.MinNoticeMinutes, l.UsageType, l.MaxUses)
+		l.MinNoticeMinutes, l.UsageType, l.MaxUses, l.BookingHorizonDays, l.RefusalMessage)
 	return scanSchedulingLink(row)
 }
 
@@ -99,7 +121,7 @@ func GetSchedulingLinkBySlug(db DBTX, slug string) (*SchedulingLink, error) {
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 		FROM scheduling_links WHERE slug = $1 AND active = true
 	`, slug)
 	return scanSchedulingLink(row)
@@ -111,7 +133,7 @@ func GetSchedulingLinkByID(db DBTX, id uuid.UUID) (*SchedulingLink, error) {
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 		FROM scheduling_links WHERE id = $1
 	`, id)
 	return scanSchedulingLink(row)
@@ -124,7 +146,7 @@ func ListSchedulingLinksByUser(db DBTX, userID uuid.UUID) ([]*SchedulingLink, er
 			sl.window_start_time, sl.window_end_time,
 			sl.buffer_before, sl.buffer_after, sl.min_notice_minutes, sl.usage_type, sl.max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id AND b.status <> 'cancelled'),
-            sl.active, sl.created_at
+            sl.active, sl.created_at, sl.booking_horizon_days, sl.refusal_message
 		FROM scheduling_links sl
 		LEFT JOIN scheduling_link_hosts slh ON slh.link_id = sl.id
 		WHERE sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted')
@@ -137,22 +159,27 @@ func ListSchedulingLinksByUser(db DBTX, userID uuid.UUID) ([]*SchedulingLink, er
 	return scanSchedulingLinks(rows)
 }
 
+// UpdateSchedulingLink writes l over link id. A zero BookingHorizonDays or an
+// empty RefusalMessage keeps the stored value (PAC-72: callers that predate
+// those settings never reset them).
 func UpdateSchedulingLink(db DBTX, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE scheduling_links SET
 			slug = $2, title = $3, duration_options = $4, days_of_week = $5,
 			window_start_time = $6, window_end_time = $7,
 			buffer_before = $8, buffer_after = $9, min_notice_minutes = $10,
-            usage_type = $11, max_uses = $12, active = $13
+            usage_type = $11, max_uses = $12, active = $13,
+            booking_horizon_days = COALESCE(NULLIF($14, 0), booking_horizon_days),
+            refusal_message = COALESCE(NULLIF($15, ''), refusal_message)
 		WHERE id = $1
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 	`, id, l.Slug, l.Title, pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
 		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter, l.MinNoticeMinutes,
-		l.UsageType, l.MaxUses, l.Active)
+		l.UsageType, l.MaxUses, l.Active, l.BookingHorizonDays, l.RefusalMessage)
 	return scanSchedulingLink(row)
 }
 
@@ -170,7 +197,7 @@ func scanSchedulingLink(row *sql.Row) (*SchedulingLink, error) {
 		&durOpts, &daysOfWeek,
 		&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
 		&l.MinNoticeMinutes, &l.UsageType, &l.MaxUses, &l.UsesCount,
-		&l.Active, &l.CreatedAt,
+		&l.Active, &l.CreatedAt, &l.BookingHorizonDays, &l.RefusalMessage,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -193,7 +220,7 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 			&durOpts, &daysOfWeek,
 			&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
 			&l.MinNoticeMinutes, &l.UsageType, &l.MaxUses, &l.UsesCount,
-			&l.Active, &l.CreatedAt,
+			&l.Active, &l.CreatedAt, &l.BookingHorizonDays, &l.RefusalMessage,
 		); err != nil {
 			return nil, err
 		}

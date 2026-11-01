@@ -113,8 +113,9 @@ func slugify(s string) string {
 // --- Collective availability -----------------------------------------------
 
 // CollectiveSlots returns time slots where ALL accepted hosts are simultaneously
-// free, every 15 minutes from the link's window start on date, in date's
-// location. It is the busy-time half of the offerable-start rule that the
+// free: the link's grid slots on date's calendar day (GridSlots, in date's
+// location, which is the link's zone, PAC-72 D-9), minus busy time. It is the
+// busy-time half of the offerable-start rule that the
 // public slot listing and the public booking share (PAC-72): a link with no
 // accepted host offers nothing (D-10), and a storage failure while reading the
 // hosts, a host's focus blocks or the bookings on a host's links is an error,
@@ -140,9 +141,12 @@ func (e *BookingEngine) CollectiveSlots(
 		return []AvailableSlot{}, nil
 	}
 
-	// Parse link window for the given date.
-	windowStart := parseTime(link.WindowStart, date)
-	windowEnd := parseTime(link.WindowEnd, date)
+	// The link's window on date's calendar day, in the link's zone, with the
+	// daylight-saving edge rules (PAC-72 R21.2).
+	windowStart, windowEnd, ok := LinkWindow(link, date)
+	if !ok {
+		return []AvailableSlot{}, nil
+	}
 
 	// Collect merged busy intervals across all accepted hosts. Owner
 	// decision PAC-72 D-6 (2026-11-01): a host whose calendar cannot be read
@@ -180,14 +184,11 @@ func (e *BookingEngine) CollectiveSlots(
 	}
 	merged := mergeIntervals(allBusy)
 
-	// Candidate slots every 15 minutes.
-	dur := time.Duration(durationMinutes) * time.Minute
-	var slots []AvailableSlot
-	for t := windowStart; t.Add(dur).Before(windowEnd) || t.Add(dur).Equal(windowEnd); t = t.Add(15 * time.Minute) {
-		slotEnd := t.Add(dur)
-		iv := interval{start: t, end: slotEnd}
-		if !overlapsMerged(iv, merged) {
-			slots = append(slots, AvailableSlot{Start: t, End: slotEnd})
+	// Candidate slots on the 15-minute wall-clock grid.
+	slots := make([]AvailableSlot, 0)
+	for _, c := range GridSlots(link, date, durationMinutes) {
+		if !overlapsMerged(interval{start: c.Start, end: c.End}, merged) {
+			slots = append(slots, c)
 		}
 	}
 	return slots, nil

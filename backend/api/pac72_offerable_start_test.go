@@ -55,6 +55,8 @@ type pac72Calendar struct {
 	events  map[string][]pac72Event
 	failing map[string]bool
 	inserts map[string]int
+	// delay is how long every events.list takes (PAC-72 AC-39).
+	delay time.Duration
 }
 
 type pac72Event struct {
@@ -74,7 +76,15 @@ func newPAC72Calendar(t *testing.T) *pac72Calendar {
 			c.inserts[bearer]++
 		}
 		evs := append([]pac72Event(nil), c.events[bearer]...)
+		delay := c.delay
 		c.mu.Unlock()
+		if delay > 0 && !isInsert {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if fail {
 			w.WriteHeader(http.StatusServiceUnavailable)
