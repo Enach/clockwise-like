@@ -16,7 +16,17 @@ import { dirname, join } from 'node:path';
 
 import { exec, query, waitForSchema, closePool } from '../db';
 import { isoDate, mondayOf, DAY_MS } from '../lib/dates';
-import { CONNECTED, DISCONNECTING, LINKS, PERSONAL_CALENDAR, SEAM_LINK, TEAMS, USERS } from './ids';
+import {
+  AVATAR_HOSTS,
+  CONNECTED,
+  DISCONNECTING,
+  LINKS,
+  PERSONAL_CALENDAR,
+  SEEDED_LINK_IDS,
+  SEEDED_USER_IDS,
+  TEAMS,
+  USERS,
+} from './ids';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -50,8 +60,33 @@ export async function seed(): Promise<void> {
  * failure three files away instead of a clear seeding failure here.
  */
 async function verify(): Promise<void> {
+  const problems: string[] = [];
+
+  // Exactly the seeded users and links, by id: the expected sets come from
+  // seed/ids.ts, so a fixture added there and in seed.sql needs no count
+  // updated here, and a row in one but not the other fails.
+  const exactSets: Array<[string, string, unknown[], readonly string[]]> = [
+    ['users', 'SELECT id::text AS id FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], SEEDED_USER_IDS],
+    ['scheduling links', 'SELECT id::text AS id FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], SEEDED_LINK_IDS],
+  ];
+  for (const [label, sql, params, expected] of exactSets) {
+    const found = (await query<{ id: string }>(sql, params)).map((r) => r.id).sort();
+    const want = [...expected].sort();
+    if (new Set(want).size !== want.length) {
+      problems.push(`${label}: seed/ids.ts lists an id twice`);
+    }
+    const missing = want.filter((id) => !found.includes(id));
+    const extra = found.filter((id) => !want.includes(id));
+    if (missing.length > 0 || extra.length > 0) {
+      problems.push(
+        `${label}: expected ${want.length} row(s), found ${found.length}` +
+          (missing.length ? `; missing ${missing.join(', ')}` : '') +
+          (extra.length ? `; not in seed/ids.ts ${extra.join(', ')}` : ''),
+      );
+    }
+  }
+
   const checks: Array<[string, string, unknown[], number]> = [
-    ['users', 'SELECT 1 FROM users WHERE email LIKE $1', ['e2e.%@paceday.test'], 10],
     ['teams', 'SELECT 1 FROM teams WHERE name LIKE $1', ['E2E %'], 4],
     [
       'team members',
@@ -71,13 +106,24 @@ async function verify(): Promise<void> {
       [USERS.primary.id],
       2,
     ],
-    ['scheduling links', 'SELECT 1 FROM scheduling_links WHERE slug LIKE $1', ['e2e-%'], 5],
     [
       'accepted hosts',
       `SELECT 1 FROM scheduling_link_hosts
         WHERE status = 'accepted' AND link_id = ANY($1::uuid[])`,
-      [[LINKS.uiBooking.id, LINKS.apiBooking.id, LINKS.exhausted.id, LINKS.owned.id, SEAM_LINK.id]],
-      5,
+      [SEEDED_LINK_IDS],
+      SEEDED_LINK_IDS.length,
+    ],
+    // PAC-81 AC-B3: each avatar host is stored with the avatar its page shows.
+    [
+      'avatar hosts carry their avatar URLs',
+      'SELECT 1 FROM users WHERE (id, avatar_url) IN (($1::uuid, $2), ($3::uuid, $4))',
+      [
+        AVATAR_HOSTS.google.id,
+        AVATAR_HOSTS.google.avatarUrl,
+        AVATAR_HOSTS.foreign.id,
+        AVATAR_HOSTS.foreign.avatarUrl,
+      ],
+      2,
     ],
     [
       'exhausting booking',
@@ -93,7 +139,7 @@ async function verify(): Promise<void> {
     [
       'no oauth tokens (intentional)',
       'SELECT 1 FROM oauth_tokens WHERE user_id = ANY($1::uuid[])',
-      [[USERS.primary.id, USERS.second.id, USERS.alphaReport.id, USERS.betaReport.id]],
+      [[...Object.values(USERS), ...Object.values(AVATAR_HOSTS)].map((u) => u.id)],
       0,
     ],
     // PAC-43: exactly the connected users have a credential, each one far
@@ -131,7 +177,6 @@ async function verify(): Promise<void> {
     ['no focus blocks', 'SELECT 1 FROM focus_blocks', [], 0],
   ];
 
-  const problems: string[] = [];
   for (const [label, sql, params, expected] of checks) {
     const rows = await query(sql, params);
     if (rows.length !== expected) {
