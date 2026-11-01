@@ -151,7 +151,12 @@ VALUES
   ('88888888-8888-4888-8888-888888888888', 'UTC', '09:00', '18:00', 240, 'google'),
   ('99999999-9999-4999-8999-999999999999', 'UTC', '09:00', '18:00', 240, 'google'),
   ('a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1', 'UTC', '09:00', '18:00', 240, 'google'),
-  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'UTC', '09:00', '18:00', 240, 'google')
+  ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'UTC', '09:00', '18:00', 240, 'google'),
+  -- PAC-72 revision 2 (D-9): OFFERABLE_LINK's owner. A link's days and hours
+  -- are in its owner's profile zone; this owner's is stored explicitly (UTC,
+  -- so the journeys' UTC instants keep their meaning) to exercise the read of
+  -- a real settings row. Owners without a row are UTC as well (A-4).
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'UTC', '09:00', '18:00', 240, 'google')
 ON CONFLICT (user_id) DO UPDATE SET
   timezone = EXCLUDED.timezone,
   work_start = EXCLUDED.work_start,

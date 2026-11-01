@@ -73,6 +73,12 @@ test.describe('public booking — link info', () => {
     // coverage.checked counts hosts with an oauth token: the one host has one,
     // so 1 total / 1 checked (it was 1 / 0 while the host was unconnected).
     expect(body.coverage).toEqual({ total: 1, checked: 1 });
+
+    // PAC-72 revision 2 (AC-32): the zone the link's days and hours are in
+    // (its owner's profile zone, UTC here) and the link's horizon (60 for
+    // every seeded link, the migration's default).
+    expect(body.time_zone).toBe('UTC');
+    expect(body.booking_horizon_days).toBe(60);
   });
 
   test('answers 404 for a slug that does not exist', async ({ api }) => {
@@ -390,6 +396,10 @@ test.describe('public booking — an unreadable host calendar (PAC-72 D-6)', () 
  * Google. This journey owns that calendar and that link.
  */
 test.describe('public booking — only an offered start books (PAC-72)', () => {
+  // Both journeys own CONNECTED.offerable's calendar and OFFERABLE_LINK's
+  // refusal setting: they must not run at the same time (fullyParallel).
+  test.describe.configure({ mode: 'serial' });
+
   test('books an offered slot and refuses a start the host is busy at, writing nothing', async ({
     api,
     db,
@@ -460,6 +470,67 @@ test.describe('public booking — only an offered start books (PAC-72)', () => {
       expect(refusedRequests.some((r) => r.operation === 'events.list')).toBe(true);
       expect(refusedRequests.filter((r) => r.operation === 'events.insert')).toHaveLength(0);
     } finally {
+      await db.deleteBookingsByBooker(bookerPrefix);
+      await fake.clearCalendar(host.email);
+    }
+  });
+
+  /**
+   * PAC-72 revision 2, AC-20 addition (owner decisions D-2/D-5, A-1): the
+   * link owner switches the link to specific refusal reasons; the same start
+   * over the host's meeting is then refused with the "host busy" reason and
+   * its paired text, still writing nothing. The link is switched back to the
+   * default (generic) at the end, so the journey above keeps its body.
+   */
+  test('a link switched to specific reasons refuses a busy start with host_busy', async ({
+    api,
+    apiAs,
+    db,
+  }) => {
+    const host = CONNECTED.offerable;
+    const owner = apiAs(host);
+    const day = bookingDay(1);
+    const bookerPrefix = `e2e.booker.specific.${Date.now()}`;
+    await fake.clearCalendar(host.email);
+    try {
+      await fake.seedEvents(host.email, [
+        {
+          summary: 'E2E PAC-72 host meeting (specific)',
+          start: { dateTime: atUtc(day, '10:00') },
+          end: { dateTime: atUtc(day, '10:30') },
+        },
+      ]);
+      const patched = await owner.patch(`/api/scheduling-links/${OFFERABLE_LINK.id}`, {
+        refusal_message: 'specific',
+      });
+      expect(patched.status()).toBe(200);
+      expect(await patched.json()).toMatchObject({
+        refusal_message: 'specific',
+        booking_horizon_days: 60,
+        time_zone: 'UTC',
+      });
+
+      const mark = await fake.mark();
+      const refused = await api.post(`/api/book/${OFFERABLE_LINK.slug}`, {
+        name: 'E2E Specific Booker',
+        email: `${bookerPrefix}.busy@paceday.test`,
+        start: atUtc(day, '10:00'),
+        end: atUtc(day, '10:30'),
+      });
+      expect(refused.status()).toBe(409);
+      expect(await refused.json()).toEqual({
+        error: 'a host is busy at that time',
+        reason: 'host_busy',
+      });
+      const rows = await db.query(
+        'SELECT 1 FROM bookings WHERE link_id = $1 AND start_time = $2',
+        [OFFERABLE_LINK.id, atUtc(day, '10:00')],
+      );
+      expect(rows).toHaveLength(0);
+      const requests = await fake.requests(mark, host.label);
+      expect(requests.filter((r) => r.operation === 'events.insert')).toHaveLength(0);
+    } finally {
+      await owner.patch(`/api/scheduling-links/${OFFERABLE_LINK.id}`, { refusal_message: 'generic' });
       await db.deleteBookingsByBooker(bookerPrefix);
       await fake.clearCalendar(host.email);
     }

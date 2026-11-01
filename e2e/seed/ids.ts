@@ -262,6 +262,7 @@ export const OFFERABLE_LINK = {
   hostUserId: CONNECTED.offerable.id,
 } as const;
 
+/**
  * PAC-81 Part B, AC-B3 (tests/csp.spec.ts). Each host owns one link and shows
  * its avatar on that link's public booking page. The image is never fetched
  * from the internet: the test intercepts the request. Connected through the
