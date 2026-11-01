@@ -1,32 +1,34 @@
 /**
  * Anonymous public booking — the highest-value journey in this suite.
  *
- * It is the one significant flow that is FULLY reachable with no calendar
- * provider at all, which was verified by reading the handlers rather than
- * assumed:
+ * PAC-81 Part A, owner decision PAC-72 D-6 (2026-11-01): a host whose calendar
+ * cannot be read counts as BUSY. The links booked here are therefore hosted by
+ * users connected through the calendar stand-in (seed/ids.ts BOOKING_HOSTS):
  *
  *   GET  /api/book/{slug}        api/handlers_booking.go getLinkInfo — pure
  *                                database: the link, its accepted hosts, and a
  *                                coverage count derived from whether each host
  *                                has an oauth token. No calendar call.
  *   GET  /api/book/{slug}/slots  -> engine.BookingEngine.CollectiveSlots ->
- *                                hostBusy(). hostBusy calls
- *                                calendarClientForUser() first, which returns
- *                                an error immediately when the host has no
- *                                oauth_tokens row; the `if err == nil` guard
- *                                then skips the whole calendar branch. Busy
- *                                time comes only from focus_blocks and
- *                                confirmed bookings, both seeded.
- *   POST /api/book/{slug}        -> engine.ConfirmBooking. The booking row is
- *                                written BEFORE any calendar work, and the
- *                                per-host event creation is inside a loop that
- *                                `continue`s on error. Confirmation email is
- *                                skipped because SMTP_HOST is unset.
+ *                                hostBusy(): the host's calendar is read on
+ *                                the stand-in (empty unless a booking wrote an
+ *                                event), plus focus_blocks and confirmed
+ *                                bookings from the database.
+ *   POST /api/book/{slug}        -> engine.ConfirmBooking: every host calendar
+ *                                is read first (D-6), the booking row is
+ *                                written, then each host's event is created on
+ *                                the stand-in. Confirmation email is skipped
+ *                                because SMTP_HOST is unset.
  *
- * So these tests assert real behaviour end to end, not a degraded stub.
+ * A booking leaves an event in its host's stand-in calendar, which is busy
+ * time on the next listing. Every journey that books removes its bookings AND
+ * its host's stand-in events at the end (fake.clearCalendar: the host's
+ * calendar belongs to this file alone), so a retry starts clean. Clearing
+ * while another journey of this file runs is harmless: their checks read
+ * the bookings table, which still holds their own rows.
  *
- * Isolation: this file books against LINKS.uiBooking (host = primary user,
- * window 09:00–11:00 UTC) and LINKS.apiBooking (host = second user, window
+ * Isolation: this file books against LINKS.uiBooking (host BOOKING_HOSTS.ui,
+ * window 09:00–11:00 UTC) and LINKS.apiBooking (host BOOKING_HOSTS.api, window
  * 13:00–15:00 UTC). Different hosts means
  * storage.GetConfirmedBookingsForUser() can never see the other file's rows,
  * so the two can run in either order and in parallel.
@@ -39,7 +41,8 @@
  */
 
 import { test, expect } from '../fixtures';
-import { LINKS, MISSING_SLUG, USERS } from '../seed/ids';
+import { BOOKING_HOSTS, LINKS, MISSING_SLUG } from '../seed/ids';
+import { fake } from '../fake';
 import { atUtc, bookingDay, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 import { pickBookingDate, slotButtons } from '../lib/ui';
 
@@ -60,15 +63,16 @@ test.describe('public booking — link info', () => {
     // The host list comes from storage.GetAcceptedHosts joined to users — if
     // the join broke, the array would be empty and this would fail.
     expect(body.hosts).toHaveLength(1);
+    // Changed with PAC-72 D-6: the host is the connected BOOKING_HOSTS.ui (it
+    // was the unconnected primary user, the link's owner).
     expect(body.hosts[0]).toMatchObject({
-      email: USERS.primary.email,
-      name: USERS.primary.name,
+      email: BOOKING_HOSTS.ui.email,
+      name: BOOKING_HOSTS.ui.name,
     });
 
-    // coverage.checked counts hosts with an oauth token. The seed deliberately
-    // creates none, so 1 total / 0 checked is the correct, asserted value —
-    // not an "it's some number" assertion.
-    expect(body.coverage).toEqual({ total: 1, checked: 0 });
+    // coverage.checked counts hosts with an oauth token: the one host has one,
+    // so 1 total / 1 checked (it was 1 / 0 while the host was unconnected).
+    expect(body.coverage).toEqual({ total: 1, checked: 1 });
   });
 
   test('answers 404 for a slug that does not exist', async ({ api }) => {
@@ -153,8 +157,9 @@ test.describe('public booking — booking through the API', () => {
       booker_email: bookerEmail,
       notes: 'booked by the e2e suite',
     });
+    // The host is BOOKING_HOSTS.api (PAC-72 D-6; it was the second user).
     expect(conf.hosts).toEqual([
-      expect.objectContaining({ email: USERS.second.email }),
+      expect.objectContaining({ email: BOOKING_HOSTS.api.email }),
     ]);
 
     // The response could be fabricated; the row cannot. A 201 without a row is
@@ -185,6 +190,7 @@ test.describe('public booking — booking through the API', () => {
     expect(slots.map((s: { start: string }) => s.start)).not.toContain(start);
 
     await db.deleteBookingsByBooker('e2e.booker.api.');
+    await fake.clearCalendar(BOOKING_HOSTS.api.email);
   });
 
   test('rejects a booking with no name or email', async ({ api }) => {
@@ -276,6 +282,7 @@ test.describe('public booking — the anonymous browser journey', () => {
     });
 
     await db.deleteBookingsByBooker('e2e.booker.ui.');
+    await fake.clearCalendar(BOOKING_HOSTS.ui.email);
   });
 
   test('a visitor who loses the race to a slot is told, not silently double-booked', async ({
@@ -336,5 +343,42 @@ test.describe('public booking — the anonymous browser journey', () => {
 
     await db.deleteBookingsByBooker('e2e.booker.race.');
     await db.deleteBookingsByBooker('e2e.booker.slow.');
+    await fake.clearCalendar(BOOKING_HOSTS.ui.email);
+  });
+});
+
+test.describe('public booking — an unreadable host calendar (PAC-72 D-6)', () => {
+  // Owner decision PAC-72 D-6 (2026-11-01): a host whose calendar cannot be
+  // read counts as busy. LINKS.unreadableCoHost is collective: its first host
+  // (BOOKING_HOSTS.d6) is connected and free, its co-host (USERS.betaReport)
+  // has no calendar connected. Every slot needs both, so none is offered, and
+  // a booking is the existing 409 with nothing written.
+  test('a collective link with an unconnected co-host offers no slot and refuses a booking', async ({
+    api,
+    db,
+  }) => {
+    const date = nextBookableWeekday();
+    const slotsRes = await api.get(`/api/book/${LINKS.unreadableCoHost.slug}/slots`, {
+      date: isoDate(date),
+      duration: 30,
+    });
+    expect(slotsRes.status()).toBe(200);
+    expect((await slotsRes.json()).slots).toEqual([]);
+
+    const res = await api.post(`/api/book/${LINKS.unreadableCoHost.slug}`, {
+      name: 'E2E D-6 Booker',
+      email: `e2e.booker.d6.${Date.now()}@paceday.test`,
+      start: atUtc(date, '09:00'),
+      end: atUtc(date, '09:30'),
+    });
+    expect(res.status()).toBe(409);
+    expect(await res.json()).toEqual({ error: 'slot is no longer available' });
+
+    const rows = await db.query('SELECT id FROM bookings WHERE link_id = $1', [
+      LINKS.unreadableCoHost.id,
+    ]);
+    expect(rows).toHaveLength(0);
+    // Nothing was written to the connected host's calendar either.
+    expect(await fake.events(BOOKING_HOSTS.d6.email)).toEqual([]);
   });
 });

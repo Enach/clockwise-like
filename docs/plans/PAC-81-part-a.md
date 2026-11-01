@@ -227,6 +227,21 @@ busy.
     (PAC-64) and `TestPAC67_PublicBookingWithARefusedHost` (PAC-67): the
     first now gives its host a readable calendar; the second now expects the
     409 where it expected a 201.
-- **Not done here: e2e.** The e2e seed deliberately leaves the public-booking
-  hosts unconnected, so under D-6 those journeys find no slots and get a 409.
-  The e2e seed must connect those hosts through the fake-google stand-in.
+- **e2e (follow-up commit on this branch, at the coordinator's request).**
+  - The bookable links are now hosted by users connected through the
+    fake-google stand-in (`seed/ids.ts` `BOOKING_HOSTS`; the avatar hosts are
+    connected too), and their credentials are in `ACCEPTED_CREDENTIALS`.
+  - The four `USERS` stay unconnected (AC-24). They still own `uiBooking`,
+    `apiBooking` and `owned`, but host no bookable link.
+  - `seed.ts` now checks for no token only on `USERS`, and for one token on
+    each booking and avatar host. The exact-set checks are kept.
+  - The create-link journey (scheduling-links) and PAC-55 AC-11 (time-format)
+    now run as connected hosts.
+  - Journeys that book clear their host's stand-in calendar at the end, so a
+    retry starts clean.
+  - Changed expectations:
+    - Link info's host is `BOOKING_HOSTS.ui`, with coverage `{1,1}`.
+    - The API booking's host is `BOOKING_HOSTS.api`.
+    - The created link's host is `BOOKING_HOSTS.author`.
+  - New D-6 case: `LINKS.unreadableCoHost` (co-host `USERS.betaReport`) offers
+    no slot, a booking is the 409, and nothing is written.

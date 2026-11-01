@@ -3,7 +3,9 @@
  * booking page always shows 12-hour.
  *
  * Every test uses a fresh user, so no seeded user's settings change under the
- * parallel specs. A fresh browser context (storageStateFor) stands in for
+ * parallel specs, except AC-11's host: since PAC-72 D-6 (an unreadable host
+ * calendar is busy) a bookable host needs a calendar the stand-in answers, so
+ * AC-11 uses the seeded BOOKING_HOSTS.timeFormat, which no other spec touches. A fresh browser context (storageStateFor) stands in for
  * "site storage cleared" in AC-10: clearing storage literally would also drop
  * the onboarding marker and land the user in onboarding.
  */
@@ -14,6 +16,8 @@ import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { storageStateFor, type SessionUser } from '../auth';
 import { query } from '../db';
+import { fake } from '../fake';
+import { BOOKING_HOSTS } from '../seed/ids';
 import { atUtc, nextBookableWeekday } from '../lib/dates';
 import { pickBookingDate, slotButtons } from '../lib/ui';
 
@@ -91,7 +95,12 @@ test.describe('PAC-55 — time format', () => {
   });
 
   test('AC-11: the host sees bookings in 24-hour form; their public page stays 12-hour', async ({ browser, apiAs, api }) => {
-    const host = await freshUser('host');
+    // PAC-72 D-6: the host's calendar must be readable, so the host is the
+    // connected BOOKING_HOSTS.timeFormat (it was a fresh, unconnected user).
+    // Its stand-in calendar belongs to this test: start it empty, so a retry
+    // does not see the previous attempt's booking event.
+    const host: SessionUser = BOOKING_HOSTS.timeFormat;
+    await fake.clearCalendar(host.email);
     const hostApi = apiAs(host);
     expect((await hostApi.patch('/api/settings', { timeFormat: '24h' })).status()).toBe(200);
 
