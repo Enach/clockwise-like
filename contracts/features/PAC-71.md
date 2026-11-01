@@ -434,3 +434,90 @@ Bundle hash at this revision: `2bce17ff28b4603396741505d8da461ddf2af6121bed47020
 ### Gates run at this revision
 
 See the manifest `gatesRun` (each command with its exit code), recorded when the branch was pushed.
+
+## Challenge, revision 3 — 2026-11-01
+
+**Verdict**: accept
+
+Scope: the contract revision 3 delta (`459bc02..77d0f02`) in `contracts/openapi/paths/auth.yaml` (`startMicrosoftOAuth`, `microsoftOAuthCallback`, `startMicrosoftConnect`), `contracts/features/PAC-71.yaml` and this document. I attacked the Microsoft ID-token validation as specified in SIGN-IN step 2.
+
+### Requests wrongly permitted
+
+None that reach an account or cause a write. Each attack below was refused by the contract text as written (see "Verified clean").
+
+### Responses the client cannot handle
+
+None. Responses, statuses, header names and schemas are unchanged; only descriptions changed. The web app never sees the scope, the nonce or the ID token.
+
+### Consumers affected
+
+- `backend/auth/pac50_signin_scopes_test.go:31-32`: the Microsoft expected set becomes `openid Calendars.ReadWrite User.Read offline_access`. The test compares joined strings in order (`:63`), so the order the contract pins ("openid first") matters, and the contract states it. The assertions against step-up, `.All`, `RoleManagement.` and `admin.directory` scopes (`:66-67`) still hold: `openid` is not a step-up extra scope (`TestPAC50_StepupExtraScopesExcludeIdentityScopes`).
+- `backend/api/handlers_pac71_auth.go:236-250`, on the implementation branch and not on `origin/main`: it takes the tenant from `/organization` and refuses when that call fails. It must change to step 2 and step 4 as written.
+- `pac35_auth_flows_test.go` Microsoft runner: as the manifest lists.
+- `e2e/` and `mcp/`: unaffected. `login.microsoftonline.com` resolves to the sink (`e2e/fake.ts:33`) and no e2e journey signs in with Microsoft. `mcp/` sends no credential.
+
+### Contract/implementation divergences
+
+1. The contract and the existing step-up validator check the same ID token differently:
+   - **Contract step 2**: checks `tid` as a canonical GUID before any fetch, then validates against the per-tenant keys at `.../{tid}/discovery/v2.0/keys`.
+   - **Step-up** (`backend/auth/stepup.go:103`, `:245`): uses the `/common` keys and rejects a `tid` only when it contains `/?#`.
+
+   The two do not contradict each other, because Microsoft serves the same keys at both URLs, and the step-up is outside this delta. The plan still needs to say whether sign-in reuses the step-up's verifier. If it does, the reused verifier must meet step 2: a GUID `tid` before any fetch.
+
+### Uncertainties not actually resolved
+
+1. **OQ-9: is `oid` in the sign-in ID token under `openid` alone?** Microsoft does not document it there and says `profile` is required. The default reads the object id from `/me` and requires it to equal `oid` whenever `oid` is present, so it fails closed either way. Merge condition 2 (i) records the answer. This is correctly open and not blocking.
+2. **Key-fetch timeout (non-blocking).** Step 2 says "a fetch that errors or times out" but names no bound. PAC-68 AC-9 bounds its lookup by the identity call's limit. Name a bound, for example the same 5 s as `/me`, so that AC-11b's "keys timeout" case has a fixed expected duration.
+3. **Key cache bounds (non-blocking).** The contract does not say whether "refetched at most once a minute on an unknown `kid`" applies per tenant or globally, and it does not cap the number of tenants cached. Growth is bounded by real sign-ins, since each entry costs a completed code exchange with the app's secret. Still, state a per-tenant limit and a cap.
+4. **`aud` shape (non-blocking).** "Exactly `MICROSOFT_CLIENT_ID` (a single audience)" does not say whether a one-element array `["<client>"]` is accepted. Microsoft emits a string. State one rule, either "a string" or "a string, or a one-element array, equal to the client id", so the test is unambiguous.
+
+### Verified clean
+
+Each payload below is the `id_token` of the token response, or the Graph answer beside it, for a sign-in whose `ms_oauth_state` is `S`.
+
+- **`alg` pinning.** A header of `{"alg":"none"}`, or `{"alg":"HS256","kid":"k1"}` HMAC'd with any attacker-chosen key (for example the bytes of the public RSA key), is REFUSED: the header must say `alg` `RS256`. The key is chosen only by `kid` from Microsoft's published set. An embedded `jwk`, `jku` or `x5u` is not a source the contract allows.
+- **SSRF or path injection through `tid`.**
+  - `{"tid":"../../evil.example/x"}`, `{"tid":"common"}` and `{"tid":"11111111-1111-1111-1111-111111111111/../x"}` are each REFUSED before any fetch, because the canonical 8-4-4-4-12 hex check comes first.
+  - A valid GUID only ever reaches the fixed host `login.microsoftonline.com`.
+  - The token itself arrives from Microsoft's token endpoint over TLS, for a code redeemed with the app's secret, so its unverified payload is not attacker-supplied in the first place. Checking `tid` before the signature is therefore safe.
+- **Issuer mix-up.** `{"tid":"T1","iss":"https://login.microsoftonline.com/T2/v2.0"}` is REFUSED: `iss` must name the token's own `tid`. `{"iss":".../T1/"}` (v1 shape) and `{"ver":"1.0"}` are REFUSED.
+- **Attacker-controlled tenant.**
+  - Tenant TA legitimately issues `{"tid":"TA","oid":"OA"}`. The identity (TA, OA) never equals a victim's (T1, O1) (AC-4).
+  - Evidence for `henry@acme.com` needs `/organization` `{"value":[{"id":"TA","verifiedDomains":[{"name":"acme.com"}]}]}`, which needs DNS proof of `acme.com` in TA.
+  - The unmanaged-directory residual (OQ-3 item 4) is unchanged and release-noted.
+- **Cross-tenant evidence.** Token `tid` T1 with `/organization` `{"value":[{"id":"T2","verifiedDomains":[{"name":"acme.com"}]}]}` gives NONE evidence, because step 4 requires the entry's `id` to equal T1. Nothing is bound or created (rule 5, rules (a) and (b)).
+- **`/organization` failure.** A 503, a timeout, a 403, `{"value":[]}` or two entries all give NONE evidence. Then:
+  - a bound (T1, O1) reaches only its own account;
+  - an unknown identity is refused (rule 5);
+  - an empty legacy account is refused under (b), which needs AUTHORITATIVE evidence;
+  - a non-empty legacy account with recorded `O1` is refused under (a), because a Microsoft work account never has MAILBOX evidence.
+
+  No path lets a failed `/organization` bind an account, or reach one not already bound to that exact (tid, oid).
+- **Code injection and login CSRF.**
+  - The attacker runs their own sign-in (state `SA`, nonce `sha256(SA)`) and puts their `code` into the victim's callback.
+  - With `state=SA` and no matching cookie, the callback gives today's 400.
+  - With the victim's `S`, the token's `nonce` is `sha256(SA)`, not `sha256(S)`, so the sign-in is REFUSED.
+  - Deriving the nonce from the state leaks nothing useful. The state is already in the authorize URL, and the nonce only has to be unpredictable before the flow starts, which it is.
+- **Connect code into sign-in.** A code from a connect flow (no `openid`) redeemed on the SIGN-IN branch yields no `id_token`, so it is REFUSED. The reverse direction is chosen by the cookie alone, as in revision 2.
+- **Same user for both tokens.** The `/me` access token and the ID token come from one token-endpoint response to one code, so they are for the same user and client. The contract says so: "the access token of the same token response as the verified ID token".
+- **`oid` against `/me` `id`.**
+  - In a work tenant, Graph `/me` `id` is documented as the user's `oid` in that tenant.
+  - A `/common` sign-in authenticates in the user's home tenant, so a guest copy in another tenant, whose `oid` would differ, cannot appear.
+  - A mismatch is REFUSED, so a provider anomaly fails closed: `{"oid":"O2"}` with `/me` `{"id":"O1"}` is REFUSED.
+- **Personal accounts.** `{"tid":"9188040d-6c67-4c5b-b112-36a304b66dad"}` with every other check passing is REFUSED before `/me` and `/organization` are read (AC-5, AC-11c). A connect still accepts personal accounts, because it reads no ID token.
+- **Expiry and replay.** `exp` more than 60 s in the past is REFUSED. `nbf` more than 60 s in the future is REFUSED. Replaying the callback fails because the state cookie has already expired (today's 400).
+- **Key rotation.** An unknown `kid` triggers one refetch, and a `kid` still unknown after it is REFUSED. A 5xx from the keys endpoint is REFUSED and release-noted ("Microsoft availability").
+- **Scopes.**
+  - Sign-in: exactly `openid Calendars.ReadWrite User.Read offline_access`, plus `nonce`.
+  - Connect: exactly `Calendars.ReadWrite User.Read offline_access`, with no `nonce`.
+  - Google: unchanged.
+  - No `profile`, no `email` and no admin-consent scope anywhere.
+- **AC-44** is unconditional in the spec and in the manifest (`acceptanceTests`, the release entry in `mergeConditions`, step 4 of the deploy order).
+- **Manifest `acceptanceTests` against spec revision 5.** AC-5, AC-8, AC-11, AC-11b, AC-11c, AC-44 and AC-51 match the spec, with no narrowing. The manifest's AC-11b is a superset: it adds `alg`, `kid`, `ver` and "`/me` is not a GUID".
+- **Gates**, run at `77d0f02` in a clean worktree:
+  - `py -3 scripts/openapi_assemble.py --check`: rc=0 (in sync, 107 paths).
+  - `py -3 scripts/openapi_migration_report.py --check`: rc=0 (129 operations, 11 generated).
+  - `bash scripts/openapi_gen_go.sh --check`: rc=0.
+  - `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` gives `2bce17ff28b4603396741505d8da461ddf2af6121bed470204e3bb0df2bc0098`, which equals the manifest's `contractHash`.
+
+Ready for implementation: yes. The plan, or the next change to the contract, should fold in the non-blocking items above and spec challenge revision 5 Non-blocking 1-4.

@@ -1682,3 +1682,45 @@ Applies the owner's answers of 2026-11-01 (`.claude/factory/owner-decisions.md`,
 **Merge condition 2, restated (needs a real account; not doable by agents).** For one Google Workspace account, the step-up ID token `sub` equals Google v2 userinfo `id`. For one Microsoft work account, the ID token `oid` equals Graph `/me` `id`. The contract (revision 3) states what is recorded and how the sign-in's own ID token enters it.
 
 **Questions left for the owner.** OQ-1 (F1 only; default: adding a sign-in method only through an explicit step), OQ-3 item 4 (unmanaged Microsoft directories, release-noted) and the new OQ-9 (§8: under `openid` alone Microsoft documents the object id as absent from the ID token; default: read it from the profile of the same sign-in and cross-check it against the token when present). OQ-2, OQ-6, OQ-8 and the personal-Microsoft question are decided.
+
+## Challenge, revision 5 — 2026-11-01
+
+**Verdict**: accept
+
+Scope: the delta `459bc02..77d0f02` on this file (the "Revision 5" table, R5-1 to R5-5), against revision 4 as accepted. Owner answers of 2026-11-01 checked against `.claude/factory/owner-decisions.md`: OQ-6 yes, OQ-2 no, OQ-8 (`openid`, tenant from the signed ID token), personal Microsoft accounts acceptable until PAC-77. Each is applied as the owner wrote it. The one place where the spec departs from the literal answer is the object id ("oid from the signed ID token"). Microsoft's ID-token claims reference (read 2026-11-01) says `oid` needs the `profile` scope, and the same answer forbids any other new scope. The spec records this as OQ-9 with a fail-closed default, and owner-decisions lists it as open with that default. That is the correct handling, and it does not block.
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **AC-51 has no rule (a) case.** During an outage of the verified-domain lookup, a non-empty legacy account whose recorded identifier is O1 is refused when (T1, O1) signs in, and stays unbound. Rule (a) needs at least mailbox evidence, and a Microsoft work account never has mailbox evidence. §5 "Microsoft availability" says this ("Microsoft migration bindings are refused"), but no criterion pins it. Add case (iv) to AC-51: refused, unbound, generation unchanged, logged cause is not "tenant cannot be obtained".
+2. **The one-time consent residual is incomplete.** `openid` needs only user-level consent. But in a tenant that has disabled user consent, every new permission needs an administrator's grant, `openid` included, so its members are refused until the administrator grants it. The app already needed that grant for `Calendars.ReadWrite` in such tenants, so this is no regression in kind, but it is a new step. Add a sentence on this to §5 "One-time consent" and to the release notes.
+3. **Sign-ins in flight at deploy.** A sign-in started on the old API sent no `openid` and no `nonce`. If its callback (state lifetime 5 minutes) lands on the new API, the token response has no `id_token`, so the sign-in is refused (AC-11b). This is harmless, but release-note it next to the API-to-web window.
+4. **AC-44's last sentence ("the release record states that the step ran") is a release condition, not a unit assertion.** The `[unit]` part is falsifiable without it. Move the sentence to the release conditions, or mark it as one.
+
+### Criteria I could not falsify
+
+None. For each revised or new criterion I could name an offline test:
+- **AC-8, AC-11b, AC-51.** The test token endpoint already exists as a seam (`microsoftOAuthEndpoint`, `backend/api/handlers_microsoft_auth.go:41`), and its response can carry an `id_token`. The repo already signs RS256 ID tokens with a test key (`handlers_sso_test.go:22-111`, `pac50_sso_helpers_test.go:104`). The keys endpoint needs a seam of the same kind as `microsoftGraphOrganizationURL` (`handlers_pac71_auth.go:55`). Every listed failure (no token, `alg`, `kid`, signature, keys error or timeout, `tid`, `iss`, `aud`, `ver`, `exp`, `nonce`, `oid`≠`/me`) is a fixture change.
+- **AC-5 and AC-11c.** The token's `tid` is the consumer GUID, and the test asserts that no `/organization` request reaches the stub.
+- **AC-11.** An ordered string comparison, as `pac50_signin_scopes_test.go:63` already does.
+
+### Citations I checked and found wrong
+
+None.
+- Microsoft's ID-token claims reference says: `tid` is a GUID, and every personal account carries `9188040d-6c67-4c5b-b112-36a304b66dad`; `tid` needs no `profile` scope; `oid` does need `profile`; `iss` names the tenant and ends in `/v2.0`; `aud` and `nonce` must be validated. All of this matches §3, R5-5 and OQ-9.
+- `pac50_signin_scopes_test.go:19-69` compares the joined scope strings in order and rejects step-up, `.All`, `RoleManagement.` and `admin.directory` scopes. `openid` is not a step-up extra scope (`TestPAC50_StepupExtraScopesExcludeIdentityScopes`). So the amendment in §6 changes only the Microsoft expected set, and every no-admin-scope assertion survives.
+- PAC-68 AC-9 and AC-15 (`origin/factory/pac-68-spec`, `PAC-68.md:95`, `:115`) say what §6 says they say.
+- "Today the tenant is never read" (AC-51) holds on `origin/main`. The revision-2 `/organization` tenant code (`handlers_pac71_auth.go:236-240`) exists only on the implementation branch carried here (`60fdb40` is not an ancestor of `origin/main`). The backend implementation must replace it.
+
+### Consumers this breaks
+
+The ones §6 lists, plus nothing new:
+- `backend/auth/pac50_signin_scopes_test.go:31-32`: the Microsoft set gains `openid`.
+- `backend/api/handlers_pac71_auth.go:236-250` on the implementation branch: the tenant source moves to the ID token.
+- `pac35_auth_flows_test.go` Microsoft fixtures (AC-8).
+- PAC-47 and PAC-68 specs.
+
+`e2e/` has no Microsoft sign-in journey. `login.microsoftonline.com` resolves to the sink (`e2e/fake.ts:33`), and `sso-stepup.spec.ts` uses its own IdP. `mcp/` is unaffected.
