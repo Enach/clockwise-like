@@ -1206,6 +1206,10 @@ reason.  [e2e]
   - The owner's link editor fields for the horizon and the refusal setting.
     These belong to a web ticket after this contract lands (factory §1
     ordering). Until then the API accepts them and the defaults apply.
+    **Deviation (coordinator request, 2026-11-01):** the editor fields ship
+    in the paired web PR (Enach/smart-calendar-flow#130); the manifest's
+    `repositories.frontend.allowedPaths` lists its hand-written files. The
+    zone display and switcher stay PAC-88.
   - Per-host working hours and per-link zones chosen independently of the
     owner (A-2).
 

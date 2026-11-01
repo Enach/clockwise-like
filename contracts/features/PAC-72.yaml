@@ -33,10 +33,17 @@
     "frontend": {
       "url": "https://github.com/Enach/smart-calendar-flow",
       "allowedPaths": [
-        "src/api/generated (regenerated from the bundle with REGEN=1 web-gate, never edited)"
+        "src/api/generated (regenerated from the bundle with REGEN=1 web-gate, never edited)",
+        "src/api/types.ts",
+        "src/api/schedulingLinks.ts",
+        "src/api/schedulingLinks.test.ts",
+        "src/components/links/LinkEditDrawer.tsx",
+        "src/components/links/LinkEditDrawer.test.tsx",
+        "src/pages/PublicBooking.test.tsx"
       ],
+      "allowedPathsNote": "The owner link-editor fields for booking_horizon_days / refusal_message (the hand-written paths above) are in this web PR (Enach/smart-calendar-flow#130), a deviation from spec R2.5 requested by the coordinator (2026-11-01).",
       "forbiddenPaths": [
-        "every other path in this PR: owner link-editor fields for booking_horizon_days / refusal_message and the zone display + switcher (PAC-88) are separate web tickets after this contract lands. Hand-written fixtures typed as the generated SchedulingLink / PublicLinkInfo may need the new required keys to typecheck; that is allowed in this PR."
+        "every other path in this PR: the zone display + switcher on the booking page (PAC-88) is a separate web ticket after this contract lands. Hand-written fixtures typed as the generated SchedulingLink / PublicLinkInfo may need the new required keys to typecheck; that is allowed in this PR."
       ]
     }
   },
