@@ -28,10 +28,10 @@
 - **Microsoft (Entra), one multi-tenant app** ("accounts in any organizational directory and personal Microsoft accounts"):
   - Redirect URIs: `http://localhost:8080/api/auth/microsoft/callback` (sign-in) and `http://localhost:8080/api/admin/sso/stepup/callback` (step-up).
   - Delegated permissions: `openid`, `profile`, `User.Read`, `Calendars.ReadWrite`, `offline_access`.
-  - Step-up only: add the directory-read permission that `auth/stepup.go` `NewMicrosoftStepup` requests.
+  - Step-up only (`auth/stepup.go` `NewMicrosoftStepup`): also add delegated `email`, `Organization.Read.All` and `RoleManagement.Read.Directory`. The last two need an administrator's consent in the dev tenant.
 - **Google, one OAuth client** (Web application, publishing status "Testing", Workspace test user added):
   - Redirect URIs: `http://localhost:8080/api/auth/callback` and `http://localhost:8080/api/admin/sso/stepup/callback`.
-  - Scopes: `calendar` and `userinfo.email` (sign-in), plus the step-up's identity and Directory read-only scopes.
+  - Scopes: `calendar` and `userinfo.email` (sign-in), plus for the step-up `openid`, `email` and `https://www.googleapis.com/auth/admin.directory.user.readonly`.
 
 ### 2. Run the backend locally against those clients
 
@@ -49,8 +49,10 @@ Make a **local branch that is never pushed** and add one temporary line. Remove 
 - **Microsoft sign-in:** in `api/handlers_pac71_auth.go` `microsoftCallback`, after `rawID` is read, write the decoded payload only (never `rawID` itself or the access token) to a local file outside the repository:
 
   ```go
-  if p := strings.Split(rawID, "."); len(p) == 3 { b, _ := base64.RawURLEncoding.DecodeString(p[1]); _ = os.WriteFile(os.Getenv("HOME")+"/pac71-idtoken.json", b, 0o600) }
+  if p := strings.Split(rawID, "."); len(p) == 3 { b, _ := base64.RawURLEncoding.DecodeString(p[1]); h, _ := os.UserHomeDir(); _ = os.WriteFile(filepath.Join(h, "pac71-idtoken.json"), b, 0o600) }
   ```
+
+  It needs the imports `encoding/base64`, `os`, `path/filepath` and `strings`. `os.UserHomeDir` works on Windows, where `HOME` is often unset.
 
   Then read `tid` and `oid` from that file. It holds claims, not a credential: the signature is not in it.
 - **Graph calls** for (i) and (iv): use Graph Explorer signed in with the same test account. Consent to `User.Read` only, and run:
