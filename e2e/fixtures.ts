@@ -11,7 +11,14 @@
  * prefix, never on a whole table or a whole link.
  */
 
-import { test as base, expect, type APIRequestContext, type Page } from '@playwright/test';
+import {
+  test as base,
+  expect,
+  type APIRequestContext,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from '@playwright/test';
 
 import {
   PRIMARY_SESSION,
@@ -23,6 +30,56 @@ import {
 } from './auth';
 import { query, queryOne } from './db';
 import { USERS } from './seed/ids';
+
+/**
+ * PAC-81 Part B, AC-B3: "the browser reports zero CSP violations on every
+ * test". nginx sends an enforced Content-Security-Policy; every browser
+ * context a test opens — the built-in `page`/`context`, the fixtures below and
+ * any `browser.newContext()` a spec calls itself — reports each violation
+ * here, and the auto fixture `cspViolations` fails the test if there is any.
+ *
+ * Two sources, because neither alone is complete: the document's
+ * `securitypolicyviolation` event (structured: the effective directive and
+ * the blocked URI) and Chromium's console line ("Refused to ... violates the
+ * following Content Security Policy directive: ..."). A test that expects
+ * violations (the negative control in tests/csp.spec.ts) annotates itself
+ * with `CSP_VIOLATIONS_EXPECTED` and asserts on the list itself.
+ */
+export interface CspViolation {
+  source: 'event' | 'console';
+  directive: string;
+  blocked: string;
+  text: string;
+}
+
+export const CSP_VIOLATIONS_EXPECTED = 'csp-violations-expected';
+
+const watchedContexts = new WeakSet<BrowserContext>();
+
+async function watchCsp(context: BrowserContext, sink: CspViolation[]): Promise<void> {
+  if (watchedContexts.has(context)) return;
+  watchedContexts.add(context);
+  await context.exposeBinding(
+    '__pacedayCspViolation',
+    (_source, v: { directive: string; blocked: string }) => {
+      sink.push({ source: 'event', directive: v.directive, blocked: v.blocked, text: '' });
+    },
+  );
+  await context.addInitScript(() => {
+    document.addEventListener('securitypolicyviolation', (e) => {
+      const report = (window as unknown as {
+        __pacedayCspViolation?: (v: { directive: string; blocked: string }) => void;
+      }).__pacedayCspViolation;
+      report?.({ directive: e.effectiveDirective || e.violatedDirective, blocked: e.blockedURI });
+    });
+  });
+  context.on('console', (msg) => {
+    const text = msg.text();
+    if (!/Content Security Policy/i.test(text) || !/Refused|violat/i.test(text)) return;
+    const m = text.match(/directive:?\s*"([a-z-]+)/i);
+    sink.push({ source: 'console', directive: m?.[1] ?? 'unknown', blocked: '', text });
+  });
+}
 
 /** A thin, typed client for the HTTP boundary, going through nginx. */
 export class ApiClient {
@@ -70,6 +127,11 @@ export interface Db {
 }
 
 type Fixtures = {
+  /**
+   * Every CSP violation reported in this test (AC-B3). Automatic: a test with
+   * any violation fails unless it is annotated CSP_VIOLATIONS_EXPECTED.
+   */
+  cspViolations: CspViolation[];
   /** Anonymous API client — no Authorization header. Public routes only. */
   api: ApiClient;
   /** API client authenticated as the primary seeded user, via Bearer. */
@@ -93,6 +155,35 @@ type Fixtures = {
 };
 
 export const test = base.extend<Fixtures>({
+  cspViolations: [
+    async ({ browser }, use, testInfo) => {
+      const sink: CspViolation[] = [];
+      // Wrap browser.newContext for the duration of this test, so contexts the
+      // spec (or Playwright's own `context` fixture) creates are watched too.
+      const original = browser.newContext.bind(browser) as Browser['newContext'];
+      browser.newContext = (async (options?: Parameters<Browser['newContext']>[0]) => {
+        const context = await original(options);
+        await watchCsp(context, sink);
+        return context;
+      }) as Browser['newContext'];
+      try {
+        await use(sink);
+      } finally {
+        browser.newContext = original;
+      }
+      if (!testInfo.annotations.some((a) => a.type === CSP_VIOLATIONS_EXPECTED)) {
+        expect(sink, 'CSP violations reported by the browser (PAC-81 AC-B3)').toEqual([]);
+      }
+    },
+    { auto: true },
+  ],
+
+  // The built-in context, in case it was created before the wrapper above.
+  context: async ({ context, cspViolations }, use) => {
+    await watchCsp(context, cspViolations);
+    await use(context);
+  },
+
   api: async ({ playwright }, use) => {
     const request = await playwright.request.newContext();
     await use(new ApiClient(request));
@@ -105,14 +196,16 @@ export const test = base.extend<Fixtures>({
     await request.dispose();
   },
 
-  authedPage: async ({ browser }, use) => {
+  authedPage: async ({ browser, cspViolations: _csp }, use) => {
+    // Depends on cspViolations so its newContext wrapper is in place first.
     const context = await browser.newContext({ storageState: PRIMARY_SESSION() });
     const page = await context.newPage();
     await use(page);
     await context.close();
   },
 
-  secondUserPage: async ({ browser }, use) => {
+  secondUserPage: async ({ browser, cspViolations: _csp }, use) => {
+    // Depends on cspViolations so its newContext wrapper is in place first.
     const context = await browser.newContext({ storageState: SECOND_SESSION() });
     const page = await context.newPage();
     await use(page);
@@ -143,7 +236,8 @@ export const test = base.extend<Fixtures>({
     await request.dispose();
   },
 
-  pageAs: async ({ browser }, use) => {
+  pageAs: async ({ browser, cspViolations: _csp }, use) => {
+    // Depends on cspViolations so its newContext wrapper is in place first.
     const contexts: Array<Awaited<ReturnType<typeof browser.newContext>>> = [];
     await use(async (user: SessionUser, opts: { isManager?: boolean } = {}) => {
       const context = await browser.newContext({ storageState: storageStateFor(user, opts) });
