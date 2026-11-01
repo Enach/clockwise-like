@@ -479,3 +479,121 @@ Not run: `api-gate.sh`, `web-gate.sh` and `e2e-gate.sh` (build stage; the host
 api and web checkouts are on PAC-22 branches of another stage and were left
 there), the web half of `make openapi-check` (expected drift until the paired
 web regeneration), and `go test` (needs the test Postgres).
+
+## Revision 2 — owner answers 2026-11-01
+
+Contract revision 2 for the owner answers, written as `contractRevision` "3"
+in the manifest. "2" was already taken by "Revision — 2026-10-28", which
+answered the contract challenge. It implements spec "Revision 2 — owner
+answers 2026-11-01" (R2.1 to R2.8) on top of `origin/main` at `48f6c60`. The
+merge resolutions are recorded in the merge commit message. Only
+`contracts/openapi/paths/booking.yaml` changes by hand. The bundle,
+`MIGRATION.md` and `backend/api/gen` are regenerated from it.
+
+### R2-C.1 What changes at the HTTP boundary
+
+| Operation / schema | Change | Owner decision |
+|---|---|---|
+| `createPublicBooking` description | Rule part (5) uses the link's `booking_horizon_days`, not a fixed 60. The single zone is the link **owner's** profile zone (`settings.timezone`), or UTC when it is missing or invalid. Wall-clock semantics on DST days. The zone is exposed as `PublicLinkInfo.time_zone`. The 409 body depends on `refusal_message`. The unreadable calendar is **busy** → 409 (`host_busy`), as PAC-81 Part A wrote it, replacing revision 1's "treated as free". The 429 status list is 409/410/500/503 (no 422) | D-1, D-9, D-2/D-5, D-6 |
+| `createPublicBooking` 201 | Merged text: PAC-81's detached completion, plus PAC-72's "stored start/end equal the slot". Retry wording: 409 because the retried booking now occupies the start | — |
+| `createPublicBooking` 409 | Every cause listed with its `reason` and the precedence order. The generic body has no `reason` | D-2/D-5 |
+| `createPublicBooking` 500 | An unreadable external calendar is not a 500 (it is busy, so 409). PAC-81's "500 does not prove nothing was saved" is kept | D-6, D-7 |
+| `getPublicBookingSlots` description, `date` parameter, `PublicSlotsResponse.available_dates` | Horizon is per link. Dates are calendar days in the link's zone. PAC-81's per-host read, budget and D-6 text kept verbatim | D-1, D-9, D-6 |
+| `BookingSlotUnavailableError` | `error` enum gains five specific texts. New optional `reason` (`BookingRefusalReason`) | D-2/D-5 |
+| `BookingRefusalReason` (new) | `too_soon`, `outside_link_hours`, `beyond_horizon`, `host_busy`, `taken` | D-2/D-5 |
+| `BookingRefusalMessage` (new) | `generic` \| `specific` | D-2/D-5 |
+| `PublicLinkInfo` | New required `time_zone` (IANA, never empty) and `booking_horizon_days` (1..365). This is what PAC-88 needs | D-9, D-1 |
+| `PublicLinkCoverage` | Description: a counted-but-dead credential now means the host is busy and no slot is offered | D-6 |
+| `SchedulingLink` (owner read: create/get/list/update responses) | New required `booking_horizon_days`, `refusal_message`, `time_zone` (read-only, derived from the owner) | D-1, D-2/D-5, D-9 |
+| `CreateSchedulingLinkRequest` | Optional `booking_horizon_days` (1..365, default 60) and `refusal_message` (default `generic`) | D-1, D-2/D-5 |
+| `UpdateSchedulingLinkRequest` | Optional, nullable `booking_horizon_days` and `refusal_message`. Absent or null leaves the stored value | D-1, D-2/D-5 |
+| `SchedulingLinkValidationError` | Two new 422 messages: "booking_horizon_days must be between 1 and 365" and "refusal_message must be generic or specific" | — |
+| Migration `032_scheduling_link_horizon_refusal` | Adds `booking_horizon_days INTEGER NOT NULL DEFAULT 60 CHECK 1..365` and `refusal_message TEXT NOT NULL DEFAULT 'generic' CHECK IN (generic, specific)`. The down migration drops both and **destroys data** (first line says so, per PAC-81 Part D) | D-1, D-2/D-5 |
+
+The manifest lists every operation. One more point: `getSchedulingLink`,
+`listSchedulingLinks` and the accept/leave responses that return
+`SchedulingLink` change shape only through the schema.
+
+### R2-C.2 Decisions and rejected alternatives
+
+**The specific body: one `error` text per reason plus a machine `reason`.**
+The text is what the visitor reads. The code is what a client can branch on.
+
+- *Rejected: keep `error` constant and add only `reason`.* The web page today
+  shows `error` verbatim on a 409 (consumer row below). The owner's choice
+  would then show nothing until a web change ships. Pairing a fixed text with
+  each code makes the choice visible with no web change. The enum pins the
+  pairs, so they cannot drift.
+- *Rejected: a separate status per reason* (409 vs 422 vs 410). That
+  reintroduces the per-cause status split D-2 removed. Status must not depend
+  on a link setting.
+
+**`oneOf` was not used for generic vs specific.** oapi-codegen turns `oneOf`
+into opaque union types, and the existing envelope convention is a single
+object. The pairing rule is stated in the schema description. The
+implementation's unit tests (spec AC-34/AC-35) assert it.
+
+**The zone is reported, not stored.**
+
+- *Rejected: a `time_zone` column on the link,* copied from the owner at
+  create time. The owner said "the host's profile time zone". A copy would
+  silently diverge when the owner moves, and it would need its own edit UI
+  (out of scope). Deriving it keeps one source of truth.
+- *Rejected: each host's own zone and own hours, intersected.* See spec
+  R2.4 A-2.
+
+**Horizon bounds 1..365, enforced twice.** Schema `minimum`/`maximum` makes
+the wrong request inexpressible for generated clients. The column `CHECK`
+makes it impossible in storage. The handler's 422 message matches the domain's
+existing validation envelope.
+
+- *Rejected: 0 meaning "no limit".* That reopens API-094's "arbitrarily far
+  ahead".
+
+**D-6 is described, not re-specified.** The text that PAC-81 Part A merged
+for the listing is kept word for word. The booking's description now says
+that a host whose calendar cannot be read makes the slot unofferable, and that
+the refusal is the ordinary 409 (`host_busy` under specific). It no longer
+says "whether a readable calendar is busy is not checked (API-094)". That
+sentence became false once PAC-72's rule applies.
+
+### R2-C.3 Consumers
+
+- **Web `src/pages/PublicBooking.tsx`**: does not break. On a 409 it shows the
+  server's `error` text, clears the slot and refetches. With the default
+  `generic` nothing changes. With `specific` the visitor sees the specific
+  text. New response keys (`time_zone`, `booking_horizon_days`, `reason`) are
+  ignored until PAC-88.
+- **Web `src/api/generated`**: regenerate with `REGEN=1`. `SchedulingLink`
+  and `PublicLinkInfo` gain **required** keys. Any hand-written web fixture or
+  mock typed as those generated types fails `tsc` until it adds them. The web
+  PR must check this (not checked here: host checkouts are off limits to this
+  run).
+- **Backend `backend/api/gen`**: adds `BookingRefusalReason`,
+  `BookingRefusalMessage`, and the new fields and enum constants. The
+  existing constant `SlotIsNoLongerAvailable` is unchanged. `go build ./...`
+  and `go vet ./...` pass. The DTOs in `handlers_booking.go` (`publicLinkDTO`)
+  and `handlers_scheduling_links.go` (`schedulingLinkDTO`,
+  `schedulingLinkInput`, `schedulingLinkPatch`) are hand-written. The
+  implementer adds the fields there. Until then, **the server does not send
+  the new required keys**, so this contract must not merge ahead of its
+  backend PR (factory §7 rule 2, as `mergeAfter` already says).
+- **e2e** (`scheduling-links.spec.ts`, `pac25-access.spec.ts`,
+  `edge.spec.ts`, `seam.spec.ts`, `time-format.spec.ts`,
+  `public-booking.spec.ts`): no assertion breaks. All seeded users have no
+  settings row or `UTC`, so the zone is UTC and behaviour is unchanged. Every
+  link gets horizon 60 and generic refusals. The e2e case added by spec AC-20
+  is for the build stage.
+- **mcp**: does not call these operations.
+
+### R2-C.4 Gate results (this revision)
+
+Recorded in the commit and the Linear comment. The checks are:
+
+- `python3 scripts/openapi_assemble.py --check`
+- `python3 scripts/openapi_migration_report.py --check`
+- `scripts/openapi_gen_go.sh --check`
+- `cd backend && go build ./... && go vet ./...`
+
+Not run: the web generated-types check, Go tests (no database on this
+machine), and e2e.

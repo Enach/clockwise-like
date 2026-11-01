@@ -1,7 +1,7 @@
 # Spec — PAC-72: Public booking accepts only a start the slot listing would offer
 
 - **Linear**: https://linear.app/paceday/issue/PAC-72/public-booking-never-checks-host-availability-the-links-hours-or-a
-- **Status**: challenged (accept-with-changes at `d9be46b`); revision 1 applied, see "Revision — 2026-10-28"
+- **Status**: draft (revision 2, owner answers 2026-11-01; to be challenged). Challenged accept-with-changes at `d9be46b`; revision 1 applied, see "Revision — 2026-10-28"; revision 2, see "Revision 2 — owner answers 2026-11-01", supersedes D-1, D-2/D-5, D-6 and D-9 and every section they touch
 - **Author**: spec-author
 - **Inherited scope**:
   - **API-094** (medium, Confirmed, `docs/factory/api-audit.md:352`), on
@@ -566,7 +566,7 @@ the backend PR; the fixture move is harmless under the old code.
 
 ## Decisions
 
-- **D-1 — Booking horizon: 60 calendar days (today and the next 59), the same
+- **[Superseded by Revision 2: per-link horizon, owner answer 2026-11-01]** **D-1 — Booking horizon: 60 calendar days (today and the next 59), the same
   for the date-less listing, the explicit-date listing and booking. An
   explicit date beyond it lists no slots (200), not an error.** Assumed by the
   factory, pending owner confirmation (2026-10-28). No horizon field exists on
@@ -576,7 +576,7 @@ the backend PR; the fixture move is harmless under the old code.
   unchanged for existing clients. Visible consequence (challenge blocking 3):
   the web page lets a visitor pick a date past the horizon and shows "No time
   available" there.
-- **D-2 — Inside the minimum notice answers 409, not 422.** Assumed by the
+- **D-2 — Inside the minimum notice answers 409, not 422.** **[Owner 2026-11-01: confirmed as 409; the body depends on the link owner's refusal setting, Revision 2.]** Assumed by the
   factory, pending owner confirmation (2026-10-28). The Linear issue, written
   by the product owner, asks for 409 for every start the listing would not
   offer; a single status means one refusal path in clients. The web app already
@@ -591,10 +591,10 @@ the backend PR; the fixture move is harmless under the old code.
   Follows from the issue ("the link's days and hours"); narrows what is offered.
   Assumed by the factory, pending owner confirmation, because it changes what
   the listing shows today.
-- **D-5 — Every 409 carries the same text**, so a refusal does not reveal which
+- **[Superseded by Revision 2: the same text only when the link owner chooses the generic message, the default]** **D-5 — Every 409 carries the same text**, so a refusal does not reveal which
   host constraint failed. Assumed by the factory, pending owner confirmation;
   the most conservative choice about what a refusal discloses.
-- **D-6 — An unreadable host calendar is treated as today (free) in both
+- **[Superseded by Revision 2: owner answer 2026-11-01 is BUSY, already on main via PAC-81 Part A]** **D-6 — An unreadable host calendar is treated as today (free) in both
   paths.** Assumed by the factory, pending owner confirmation; see OQ-2.
 - **D-7 — A storage failure while gathering busy time (host list, focus
   blocks, bookings on any of the hosts' links) fails closed in both paths: the
@@ -613,7 +613,7 @@ the backend PR; the fixture move is harmless under the old code.
   confirmation (2026-10-28). Today a 30 min 30 s booking is stored and overlaps
   the next slot. The 400 keeps a length the link never offers in the same class
   as D-3; the 409 keeps every off-grid start in the same class as AC-9.
-- **D-9 — UTC is the one zone for the link's days, hours and horizon, in both
+- **[Superseded by Revision 2: the link owner's profile time zone, UTC when none]** **D-9 — UTC is the one zone for the link's days, hours and horizon, in both
   listing modes and the booking.** Assumed by the factory, pending owner
   confirmation (2026-10-28). Equal to today in every deployment (no `TZ` set;
   e2e sets `TZ: UTC`), so no visitor sees a change; it removes the
@@ -884,3 +884,367 @@ factory, pending owner confirmation.
 13. **OWNER: OQ-2 / D-6 (unreadable calendar is free).** Kept as assumed; §3's
     table and AC-17d make it explicit for both paths. The new assumptions of
     this revision (D-7 to D-11) are collected for the owner in OQ-6.
+
+## Revision 2 — owner answers 2026-11-01
+
+The product owner answered OQ-1, OQ-2 and OQ-6 on 2026-11-01
+(`.claude/factory/owner-decisions.md`, "PAC-72 decisions (answered
+2026-11-01)"). Those answers are binding and this revision rewrites every part
+of the spec that they change. Where this section and an earlier section
+disagree, **this section wins**. Earlier sections are kept as written so the
+challenge history still reads correctly. The branch was merged with `main` at
+`48f6c60` (PAC-81 Parts A, B and D, PAC-76, PAC-73 part 2, PAC-50) before this
+revision was written. Citations in this section are to the merged tree.
+
+### R2.1 Owner answers and what each one changes
+
+| Decision | Before (revision 1, assumed) | Owner answer 2026-11-01 | Effect on this spec |
+|---|---|---|---|
+| D-1 booking horizon | Fixed: 60 days for every link | **A per-link setting.** Default 60 days. The link owner can edit it | New link setting, bounded 1..365 days (bounds are the factory's reading, R2.4 A-3). Listing and booking use the link's own horizon. Every existing link is set to 60 at upgrade, so no link changes on deploy. New AC-24..AC-27. Supersedes AC-10 and AC-16 (each still holds with N = 60) |
+| D-2 / D-5 refusal message | One identical 409 text for every cause | **A "user setting"** choosing between one generic "slot is no longer available" message (the default) and specific reasons (too soon / outside the link's hours or days / beyond the horizon / host busy / taken) | **Factory reading, recorded here as the spec-stage confirmation the owner asked for:** "user setting" means **the link owner's setting, one per link**. It is not the visitor's choice and not a per-account default. New ACs AC-34..AC-36. AC-13 now holds only when the link uses the generic message |
+| D-3 unoffered duration → 400 | Assumed | **Accepted** | No change |
+| D-4 link days restrict listing and booking | Assumed | **Accepted** | No change |
+| D-6 unreadable host calendar | Treated as **free** in both paths | **Busy.** Never offer or accept a slot whose host calendar could not be read | Already on `main`: PAC-81 Part A applies it to the slot listing and to booking (`engine/booking.go:154-172` marks a host busy for the whole window when its calendar read fails; `engine/booking.go:355-379` refuses a booking with `ErrHostCalendarUnreadable`; `api/handlers_booking.go:411-415` answers that with the 409). This spec **builds on that and does not add a second mechanism**. AC-17d is rewritten (R2.3). §3's failure table, last row, now reads "host busy; booking 409, nothing written; listing offers no slot needing that host". A host the request budget did not reach stays PAC-81's 503 |
+| D-7 storage failure fails closed | Assumed | **Accepted** | No change. One interaction with D-6 is stated in R2.2 |
+| D-8 exact interval | Assumed | **Accepted** | No change |
+| D-9 zone for days and hours | UTC for everyone | **The host's profile time zone.** The booking page shows that zone by default, and the visitor can switch the zone it displays | The factory defines "the host" for collective links and what happens when there is no zone (R2.2). The page display and the visitor's switcher are **PAC-88**. PAC-72 only makes the API report the zone it uses. Supersedes AC-22. New AC-28..AC-33 |
+| D-10 no accepted host | Assumed | **Accepted** | No change. Under specific reasons, this cause reports "host busy" (R2.4 A-5) |
+| D-11 pending bookings block time | Assumed | **Accepted** | No change |
+| D-12 refusal text pinned | Contract choice inside D-5 | **Accepted** (as proposed) | Still pins the generic text. The contract adds the specific texts (contract revision of 2026-11-01) |
+
+### R2.2 Desired behaviour, revised
+
+**The link's zone.** A link's days of the week, daily hours, 15-minute grid,
+"today" and booking horizon are all evaluated in **one zone per link: the
+link owner's profile time zone**. This holds for both listing modes and the
+booking, whatever zone the server runs in. On a collective link with co-hosts
+in other zones, the link's hours are still the owner's. Co-hosts only add busy
+time: their calendar events, focus blocks and bookings are instants, so their
+zones do not matter. Each co-host's own working hours are not part of the rule,
+today or after this change. When the owner changes their profile time zone,
+the link's hours move with it from the next request. The zone is read when the
+request is handled and is never copied onto the link.
+
+**No profile zone.** If the owner has no profile settings yet, or their stored
+zone is not a known zone name, the link uses UTC. A row stored before PAC-24
+validated zones can hold such a name. In that case the API reports UTC as the
+zone in use and never reports an empty or invalid zone. Reading the zone for a
+public request creates no settings for the owner.
+
+**Wall-clock times.** Hours are wall-clock times in the link's zone. On a
+daylight-saving change day, two rules apply:
+
+- a wall time that does not exist that day is not offered;
+- a wall time that occurs twice is offered once, at its first occurrence.
+
+Everything a client sends and receives stays an instant: listed slots, the
+booking's start and the stored interval. Only the meaning of "Monday",
+"09:00" and "today" changes.
+
+**Horizon per link.** A link can be booked on today (in its zone) and the next
+N − 1 days. N is the link's horizon setting. The owner sets it between 1 and
+365 days. A link created without a horizon gets 60. Every link that existed
+before this change gets 60. The owner can change it on create and on update. A
+value outside 1..365 is refused as a validation error, and the link is left
+unchanged. Shortening a horizon only stops new bookings beyond it. Bookings
+already made are kept.
+
+**What the API exposes.** The public link read reports:
+
+- the zone the link's days and hours are evaluated in, so PAC-88 can display
+  times in it by default;
+- the link's horizon, so a date picker can stop at the horizon's last day.
+
+The owner's own link read reports the horizon, the refusal-message choice and
+the zone in use. The listing's dates are calendar days in the link's zone. An
+explicit listing date is a calendar day in that zone.
+
+**Refusal message (link owner's setting).** Each link has a refusal-message
+setting with two values:
+
+- **generic** (the default, and the value for every existing link): every
+  refused booking gets the one text, "slot is no longer available". This is
+  today's behaviour and AC-13.
+- **specific**: the refusal carries one reason, with a fixed text for each:
+  - **too soon**: inside the minimum notice;
+  - **outside the link's days or hours**: a day the link is not open, a start
+    before the window opens, an end after it closes, or a start off the grid;
+  - **beyond the horizon**;
+  - **taken**: a booking that is not cancelled already overlaps the slot on
+    this same link;
+  - **host busy**: any other busy time of an accepted host. That covers a
+    calendar event widened by buffers, a focus block, a booking on another
+    link, a calendar that could not be read (D-6), and a link with no
+    accepted host.
+
+When several causes hold, the reason reported is the first in this order:
+beyond the horizon, outside the link's days or hours, too soon, taken, host
+busy. The order goes from cheapest to check to most revealing. With specific
+reasons, a refusal can tell a visitor that a host has a meeting at that time.
+The owner opts into that. The default discloses nothing.
+
+The setting changes only the body of the refusal. These stay the same under
+both settings:
+
+- the status (409);
+- what is written (nothing);
+- the order of the earlier refusals (429, 404, 410, 400);
+- the 500 for unreadable storage and the 503 for a spent budget.
+
+**D-6 and D-7 together.** A host whose calendar cannot be read is busy for
+the whole window (D-6). The rule does not need that host's focus blocks or
+bookings to refuse the slot. So when both the calendar and a storage read fail
+for the same host, the answer may be the 409 (host busy) rather than the 500.
+Either answer offers and accepts nothing. A storage failure for a host whose
+calendar *was* read stays the 500, never a 409 (D-7).
+
+### R2.3 Acceptance criteria, revised and added
+
+Unless stated otherwise, these hold:
+
+- the owner's profile zone is UTC, so every earlier criterion keeps its
+  meaning;
+- the horizon is 60;
+- the refusal message is generic.
+
+**Amended**
+
+- **AC-10** holds as written, with D+60 read as "D + the link's horizon". AC-24
+  generalises it.
+- **AC-13** holds for links using the generic message. AC-35 covers the
+  specific message.
+- **AC-16** holds with 60 replaced by the link's horizon.
+- **AC-17d (replaced).** Given host A's external calendar cannot be read (no
+  connection, or the provider fails), when the explicit-date listing is read,
+  then no slot needing host A is offered (200). When the date-less listing is
+  read, a day where every slot needs host A is not listed. When a slot that is
+  otherwise free is booked, the answer is 409 and nothing is written.
+  Under specific reasons the reason is "host busy". A host the request budget
+  did not reach is the 503 (PAC-81 AC-A18). This is already true on `main`
+  (`TestPAC81_HostProviderErrorAndOwnLimitTreatedBusy`,
+  `TestPAC81_BookingUnreadableHostIsRefused`, e2e `public-booking.spec.ts`
+  "an unreadable host calendar"). PAC-72 must not regress it, and PAC-72's own
+  AC-17d tests are amended to it.  [unit] [e2e]
+- **AC-19** keeps every clause, with these changes:
+  - the horizon is described as the link's setting, not "60 days";
+  - the zone is described as the link owner's profile zone, not UTC;
+  - "every 409 has the same body" holds only for the generic setting;
+  - unreadable calendars are described as busy.  [contract]
+- **AC-22 (replaced by AC-28 and AC-29).** The server's own zone still has no
+  effect. AC-28 runs with the server process in a zone other than UTC and
+  other than the owner's.
+
+**Horizon per link**
+
+AC-24. Given a link whose horizon is 10 days, the owner's zone UTC and the
+clock on day D:
+
+- an otherwise offerable start on D+9 is listed and books (201);
+- on D+10 the explicit-date listing answers 200 with no slot;
+- a booking on D+10 is 409 and writes nothing;
+- the date-less listing lists no date after D+9.
+
+Repeat with horizons of 1 (only today) and 365 (D+364 offered, D+365 not).
+[unit]
+
+AC-25. Given a link created without a horizon, when it is read back, then its
+horizon is 60. Given a database migrated from the previous version with
+existing links, when they are read, then every one has horizon 60 and generic
+refusals. When the migration is reverted, the links read as before.
+[unit] [contract]
+
+AC-26. Given an owner creating or updating a link, the horizon is handled as
+follows:
+
+- 1 and 365 are stored and read back unchanged;
+- 0, 366 and a negative value are refused as a validation error, and the link
+  is unchanged;
+- an update without a horizon leaves the stored horizon unchanged.
+
+A co-host who is not the owner cannot change it (the existing owner-only
+update rule).  [unit] [contract]
+
+AC-27. Given a link whose horizon is 60 with a confirmed booking on D+50, when
+the owner sets the horizon to 30, then the booking still exists and is still
+busy time for its hosts. A new booking on D+50 is refused (409).  [unit]
+
+**The link's zone**
+
+AC-28. Given the server process in UTC+10 and a link owner whose profile zone
+is America/New_York, a link open Monday to Friday 09:00–17:00 with 30-minute
+slots, and the clock fixed at a known instant:
+
+- (a) the explicit-date listing for a Monday returns slots from 09:00 to 16:30
+  New York time, given as UTC instants (13:00Z–20:30Z in summer, 14:00Z–21:30Z
+  in winter);
+- (b) a booking at 09:00 New York time on that Monday is 201;
+- (c) a booking at 09:00 UTC that Monday (05:00 New York) is 409;
+- (d) on the Saturday that is still Friday evening in New York, nothing is
+  offered for that Saturday's date;
+- (e) the date-less listing's dates are New York calendar days, and the first
+  date is "today" in New York, not today in UTC or in UTC+10.
+
+[unit]
+
+AC-29. Given a collective link owned by a user in Europe/Paris, open 09:00–12:00,
+with an accepted co-host whose profile zone is Asia/Tokyo and who is free all
+day, when the listing is read, then the window is 09:00–12:00 Paris time. When
+the co-host changes zone, nothing offered changes. When the owner changes zone
+to Asia/Tokyo, the next listing's window is 09:00–12:00 Tokyo time.  [unit]
+
+AC-30. Given a link whose owner has no profile settings, when the listing,
+the booking and the public link read are exercised, then days and hours are
+evaluated in UTC, the public link read reports UTC, and the owner still has no
+profile settings afterwards. The same holds when the owner's stored zone is
+not a known zone name (written directly to storage).  [unit]
+
+AC-31. Given an owner in Europe/Paris and a link open every day 01:00–04:00
+with 15-minute slots:
+
+- on the spring daylight-saving day, no slot starts at 02:00, 02:15, 02:30 or
+  02:45 Paris time (those wall times do not exist), 03:00 Paris (01:00Z) is
+  listed, and a booking at 00:45Z (an instant that is not a grid wall time
+  that day) is 409;
+- on the autumn day, each of 02:00, 02:15, 02:30 and 02:45 is listed exactly
+  once, at its first occurrence (UTC+2), and a booking at the second
+  occurrence is 409;
+- every listed start books (201).
+
+[unit]
+
+AC-32. Given any link, when the public link read is made, then it reports a
+non-empty zone name equal to the zone the listing and booking used in AC-28 to
+AC-31, and the link's horizon. When the owner reads the link, then it also
+reports the horizon, the refusal setting and the same zone.  [unit] [contract]
+
+AC-33. Given an explicit listing date, when it is read, then it is interpreted
+as that calendar day in the link's zone. A date that is today in the link's
+zone is in the horizon even when it is yesterday or tomorrow in UTC.  [unit]
+
+**Refusal message**
+
+AC-34. Given a link with the generic setting (by default or explicitly), when
+each refusal cause of AC-2..AC-11, AC-21a, AC-23 and AC-17d is booked, then
+every 409 body is exactly the generic text with no reason, as AC-13.  [unit]
+
+AC-35. Given a link with the specific setting, when one booking per cause is
+made, then the 409 carries the reason named for that cause in R2.2, with its
+fixed text. The causes are:
+
+- inside the notice;
+- a non-link day;
+- before the window;
+- an end after the window;
+- off the grid;
+- beyond the horizon;
+- a confirmed booking on this link;
+- a pending booking on this link;
+- a host calendar event;
+- a focus block;
+- a booking on another link of a host;
+- an unreadable host calendar;
+- no accepted host.
+
+When a start is both beyond the horizon and on a non-link day, the reason is
+"beyond the horizon". When a start is both too soon and overlaps this link's
+booking, the reason is "too soon". When it overlaps both this link's booking
+and a host's meeting, the reason is "taken". In every case nothing is written,
+and 429/404/410/400 keep their precedence (AC-18).  [unit]
+
+AC-36. Given an owner creating or updating a link, the refusal setting is
+handled as follows:
+
+- generic and specific are stored and read back;
+- any other value is a validation error, and the link is unchanged;
+- an update without it leaves it unchanged.
+
+When the owner switches a link from generic to specific, the very next refused
+booking carries a reason.  [unit] [contract]
+
+**End to end**
+
+AC-20 is kept. One e2e case is added: an owner sets a link to specific
+reasons, and a start over the host's meeting is refused with the "host busy"
+reason.  [e2e]
+
+### R2.4 Assumptions the factory made (owner to confirm or correct)
+
+- **A-1 (D-2/D-5 reading).** "User setting" = the **link owner's** setting,
+  one per link, default generic. Not the visitor's, not an account-wide
+  default.
+- **A-2 (D-9 for collective links).** The zone is the **link owner's** profile
+  zone. Co-hosts' zones and co-hosts' own working hours do not shape the
+  window. The alternative was to intersect each host's own hours, each in
+  their own zone. That is a different feature (per-host availability), and
+  it would change what a single-host link offers today.
+- **A-3 (D-1 bounds).** The horizon is 1..365 whole days, default 60. Every
+  existing link is set to 60.
+- **A-4 (no profile zone).** UTC, reported as UTC. No error and no settings
+  row created.
+- **A-5 (reasons).** The owner's list has five reasons. A link with no
+  accepted host and an unreadable calendar both report "host busy". Off-grid
+  and outside-window starts both report "outside the link's days or hours".
+  Precedence: beyond horizon, outside days/hours, too soon, taken, host busy.
+  "Taken" means this link's own non-cancelled booking. Another link's booking
+  of a host is "host busy".
+- **A-6 (daylight saving).** Nonexistent wall times are skipped. Repeated wall
+  times are offered once, at the first occurrence.
+- **A-7 (zone follows the owner).** The zone is read at request time, never
+  stored on the link. When the owner changes zone, the link's hours move.
+
+### R2.5 Out of scope, revised
+
+- **Removed from §5:**
+  - "A time zone for the link's hours": now in scope (owner zone).
+  - "A configurable horizon per link": now in scope.
+  - "Hosts whose calendar cannot be read … free": reversed by D-6 and already
+    on `main` via PAC-81 Part A.
+- **Added:**
+  - **PAC-88**: the booking page shows times in the reported zone by default,
+    and the visitor can switch zones. That includes the web date picker using
+    the reported horizon (OQ-5).
+  - The owner's link editor fields for the horizon and the refusal setting.
+    These belong to a web ticket after this contract lands (factory §1
+    ordering). Until then the API accepts them and the defaults apply.
+  - Per-host working hours and per-link zones chosen independently of the
+    owner (A-2).
+
+### R2.6 What must not change, revised
+
+PAC-81 Part A's behaviour on `main` stays as it is:
+
+- per-host reads on the bounded pool;
+- the 503 for a host the budget did not reach;
+- D-6 busy;
+- the detached booking completion;
+- the 503-before-insert / 500-after-insert rule.
+
+Its tests stay green unchanged. PAC-72's own tests that assumed an unconnected
+or failing host is free were amended in the merge commit (AC-17d in
+`backend/api/pac72_offerable_start_test.go` and
+`backend/engine/pac72_collective_slots_test.go`). **Known, for the
+implementer:** the other engine tests in
+`backend/engine/pac72_collective_slots_test.go` use hosts with no calendar
+credential. Under D-6 those hosts are now busy all day. The tests include the
+pending-booking and storage-failure cases. They must move onto a connected
+fake calendar. The storage-failure case must also have the calendar readable,
+or D-6 answers first (R2.2). Not run here: no database.
+
+### R2.7 Rollback, revised
+
+§7 said "no migration". That is no longer true. Revision 2 adds one migration
+with two link columns, the horizon and the refusal setting. Its down step
+drops both, and **that loses data**: each link's chosen horizon and refusal
+setting. After the down step, every link behaves as revision 1 did: 60 days
+and the generic text. Reverting the backend without the down step is safe,
+because the columns have defaults and are ignored. The zone needs no storage,
+so reverting it is code-only.
+
+### R2.8 Open questions, revised
+
+- OQ-1, OQ-2 and OQ-6: **answered** (R2.1).
+- **OQ-7 — Owner: product owner.** Confirm the factory's readings A-1 to A-7
+  (R2.4). Each is the factory's default until answered. None blocks writing
+  the contract, but A-1, A-2 and A-5 shape the API.
+- **OQ-3, OQ-5:** unchanged. OQ-5 (date picker) now has the data it needs (the
+  reported horizon and zone) and moves to PAC-88.
