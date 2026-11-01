@@ -1,7 +1,10 @@
 # Spec — PAC-83: Web client: 4-second abort falls back to preview data on slow but legitimate requests
 
 - **Linear**: https://linear.app/paceday/issue/PAC-83/web-client-4-second-abort-falls-back-to-preview-data-on-slow-but
-- **Status**: draft (challenged 2026-11-01, accept-with-changes)
+- **Status**: draft (challenged 2026-11-01, accept-with-changes); revision 2,
+  2026-11-01: owner answer to OQ-1 applied (demo only in non-production
+  builds, §3.3, D-11, AC-15c/AC-30); OQ-4 resolved by the contract
+  (`contracts/features/PAC-83.md` §5)
 - **Author**: spec-author
 - **Inherited scope**: none. `docs/factory/api-audit.md` has no open finding on
   client timeouts or preview data. PAC-81 Part A recorded this as follow-up
@@ -11,7 +14,8 @@
   `docs/operator/proxy.md:112-113` tells operators the web aborts after 4 s
   "regardless": that sentence must be corrected when this ships.
 - **Repos**: the product change is web only (Enach/smart-calendar-flow). No
-  server or contract change. Enach/clockwise-like changes too, but only in
+  server behaviour change; the contract gains one description sentence on
+  the shared budget 503 (revision 2, `contracts/features/PAC-83.md` §2). Enach/clockwise-like changes too, but only in
   test and docs: the e2e demo-data guard (`e2e/fixtures.ts:250-261`, §2.6),
   the e2e scenarios of AC-5/AC-10/AC-24, and the `docs/operator/proxy.md`
   sentence.
@@ -344,18 +348,40 @@ made-up data, made-up empty results, or made-up success.
 A tab that carries the old "preview mode" flag from an earlier version of the
 app behaves as a normal tab: the leftover flag is ignored and cleared.
 
-**The demo is isolated so OQ-1 is a small change.** Whether demo data is
-served is decided by the demo session alone (today's `paceday:demo` flag),
-never by a separate "mock mode" that other code can switch on. There is
-exactly one way in: one entry control (factory default (b): an "Explore a
-demo" control on the sign-in screen). Choosing OQ-1 (a) then means removing
-that control (and the demo code); (c) means rendering it only in
-non-production builds — neither touches the error handling of §3.4. The
-demo label is shown on every page of the signed-in app while the demo lasts,
-cannot be dismissed, and says the data is a demo — it never says the server
-is offline (today's `DemoBanner` text does). The Zoom "connect" in a demo
-stays local (`mockZoomConnect`); outside a demo it always starts the real
-OAuth hand-off.
+**The demo exists only in non-production builds (owner, 2026-11-01, OQ-1
+(c)).** Whether demo data is served is decided by the demo session alone
+(today's `paceday:demo` flag), never by a separate "mock mode" that other
+code can switch on. There is exactly one way in: one explicit entry control
+on the sign-in screen, labelled as a demo with made-up data ("Explore a demo
+— made-up data"). The demo label is shown on every page of the signed-in app
+while the demo lasts, cannot be dismissed, and says the data is a demo — it
+never says the server is offline (today's `DemoBanner` text does). The Zoom
+"connect" in a demo stays local (`mockZoomConnect`); outside a demo it always
+starts the real OAuth hand-off.
+
+*Which builds are non-production.* The web is built by Vite; a build's
+**mode** decides. A build in mode `production` — `vite build` / `npm run
+build`, which is what the shipped Paceday web image runs
+(clockwise-like `docker/frontend.dockerfile`, also used by the e2e stack),
+and what a Lovable "publish" runs — is a production build. Every other mode
+is non-production: the Vite dev server (`vite`, mode `development`, which
+is what the Lovable preview runs), `vite build --mode development`
+(`npm run build:dev`) and the unit-test runner (mode `test`). No runtime
+setting, environment variable, URL parameter or storage flag can turn the
+demo on in a production build: the decision is taken when the bundle is
+built, and a production bundle does not contain the demo at all — not its
+entry control, not its label, not its data (seeded events, links, teams,
+manager roster, rooms, directory), not the code that sets the demo session.
+This is checked on the built files, not on the source (AC-30). The exact
+build-time interface (flag name, module layout, the check) is the
+contract's (`contracts/features/PAC-83.md` §4).
+
+*The entry control is never reached after an error.* It is shown on the
+sign-in screen's initial view only. No error — a failed sign-in, an
+unreachable or slow server, a failed health check — starts the demo,
+offers it, links to it or mentions it; the sign-in dialog's error view does
+not contain the entry control. The person reaches it only by choosing it on
+the initial view of a non-production build.
 
 The repository's Lovable agent instructions (§2.6) are updated in the same
 change so they no longer ask for an automatic fallback.
@@ -415,8 +441,8 @@ not block sign-in: the check made before a Google/Microsoft sign-in (today a
 
 Test levels: `[unit]` = vitest in the web repo (component/API-layer tests
 with a controllable fake server and fake timers); `[e2e]` = Playwright
-against the compose stack in this repo, with a test-only way to make the
-server slow (OQ-4). `[contract]` is not used: no interface changes.
+against the compose stack in this repo, with timing and network failures
+controlled at the browser by request interception (OQ-4, resolved). `[contract]` is not used: no interface changes.
 
 **Waiting long enough**
 
@@ -496,8 +522,8 @@ sign in, then an error with a retry is shown in the dialog and no demo session
 starts. And given a server whose pre-sign-in check answers after 3 s, the
 Google/Microsoft sign-in proceeds (no error, no demo).  [unit]
 
-AC-15. Given the person explicitly starts the demo (if the demo is kept, OQ-1),
-then demo data is shown, every signed-in page shows a "demo" label that has
+AC-15. Given a non-production build and the person explicitly starts the
+demo from its entry control, then demo data is shown, every signed-in page shows a "demo" label that has
 no dismiss control and does not say the server is offline, and no request
 reaches the server for demo data; leaving the demo returns to the signed-out
 state with no demo data left in the tab.  [unit]
@@ -509,6 +535,20 @@ OAuth hand-off (never "Zoom connected (demo)"). And the only code path that
 sets the demo session is the single entry control of §3.3 (a unit test
 renders the sign-in dialog under every failure of AC-14 and finds the demo
 session flag unset).  [unit]
+
+AC-15c. Given a non-production build and the sign-in dialog showing the
+error of any AC-14 failure, then the error view contains no demo entry
+control and no text mentioning a demo; the entry control is present on the
+initial view.  [unit]
+
+AC-30. Given the web built in production mode (`npm run build`), then the
+built files contain no demo entry control, no demo label, no demo data and
+no code that sets the demo session (checked by searching the built bundle
+for the markers the contract pins), and the sign-in screen served by the
+e2e stack (which runs the production image) shows no demo entry control.
+Given the same source built in a non-production mode, the same search finds
+the markers (so the check cannot pass vacuously).  [build check in the web
+gate] and [e2e]
 
 **Server answers are shown**
 
@@ -627,14 +667,15 @@ wording).  [doc check in the PR]
   changes signs a user out.
 - No automatic retries: app default `retry: false` (`App.tsx:24`) and
   `retry: false` on the booking page.
-- The demo, if kept (OQ-1), keeps its current data and seeded content; only
+- The demo, in non-production builds (D-11), keeps its current data and seeded content; only
   its label (§3.3) and its entry change.
 - Tests listed in §2.5 are rewritten to the new rule (invert, don't delete);
   their pagehide and HTTP-error halves stay as they are.
 
 ## 7. Rollback
 
-Web-only change, no migration, no contract change. Reverting the web PR
+Web-only change, no migration; the contract change is one description
+sentence (no shape change), kept on revert. Reverting the web PR
 restores the 4 s abort and the automatic preview fallback exactly as today.
 Nothing is stored server-side; the only client-side state touched is the
 session-storage preview flag, which the old code reads as before (a cleared
@@ -657,22 +698,17 @@ the new test ids together), so neither revert breaks the other repo's suite.
 | D-7 | No automatic retries for reads or writes; a manual "Try again" for reads only. | factory-assumed (keeps today's `retry: false`) |
 | D-8 | A 5xx with a non-JSON body (nginx 502/504 page, an operator proxy's 502/503/504/52x page) is a gateway error: "can't reach" for reads, "didn't confirm / may have been saved" for writes and booking. The backend's own 5xx are always JSON (`server_errors.go`, `budget.go`), so the body tells them apart. The budget 503 is recognised by status **and** `RequestBudgetExpiredError` body, never by status alone. | challenge 2026-11-01, from §2.7 |
 | D-9 | Demo data is keyed on the demo session alone, entered through one control; the shared "mock mode" switch is removed. OQ-1 (a)/(c) then only change that control. | challenge 2026-11-01 |
+| D-11 | The demo exists only in non-production builds (Vite mode other than `production`: dev server and Lovable preview, `build:dev`, unit tests). A production build contains no demo entry, label, data or demo-session code, and never shows invented data; no automatic fallback anywhere. The entry is one explicit, labelled control on the sign-in screen's initial view, never reached from an error. Replaces the factory default (b). | owner, 2026-11-01 (OQ-1 (c)) |
 | D-10 | Cloudflare-proxied (or any proxy under 130 s) deployments are an unsupported configuration per `docs/operator/proxy.md:93-110`; the client bound is not lowered for them. There the browser receives the proxy's HTML 5xx (e.g. Cloudflare 524 at 100 s), which D-8 shows honestly; no invented data, no false "not made". | challenge 2026-11-01 (resolves OQ-5) |
 
 ## 9. Open questions
 
-- **OQ-1 (owner, product).** Must a demo remain? Today the only way into it is
-  being silently dropped there when sign-in can't reach the server; there is
-  no explicit "try the demo" control, and the Lovable preview relies on the
-  automatic fallback to show anything. Options: (a) remove the demo entirely
-  — the Lovable preview then shows "can't reach Paceday"; (b) keep it behind
-  an explicit, labelled "Explore a demo" control on the sign-in screen only;
-  (c) keep it only in non-production builds. **Factory default: (b),
-  provisional pending the owner.** Under §3.3/D-9 either other answer only
-  changes the single entry control (remove it, or render it only in
-  non-production builds); §3.4/§3.5 are the same for all three. With (a) or
-  (c) the Lovable preview shows "can't reach Paceday".
-  Resolve: owner answer in chat → `owner-decisions.md`.
+- **OQ-1 — answered (owner, 2026-11-01): (c).** Keep the demo only in
+  non-production builds (Lovable preview, dev). Production builds contain no
+  demo entry and never show invented data; no automatic fallback anywhere.
+  Applied in §3.3, D-11, AC-15, AC-15c, AC-30. The Lovable preview (a
+  non-production build) still shows "can't reach Paceday" after a failure;
+  the demo there is reached only through its explicit entry control.
 - **OQ-2 — resolved (challenge, 2026-11-01).** The bundle's
   `RequestBudgetExpired` response (`contracts/openapi/openapi.yaml:14561-14608`)
   says nothing was written only for `createPublicBooking`; for
@@ -684,13 +720,18 @@ the new test ids together), so neither revert breaks the other repo's suite.
   (`z.literal("request timed out")`), and `schemas.types.d.ts` carries the
   503 entries. No regeneration needed. Recognising the 503 by body is now a
   requirement (§3.4, D-8), not a question.
-- **OQ-4 (factory, e2e) — narrowed.** There is no latency or drop control in
-  the e2e stack today (`e2e/fake-google/fixture.go` has none, §2.5). The
-  e2e-author must choose a way to make the browser wait (AC-5, AC-24) and to
-  fail a request once at the network level (AC-10) that runs against the
-  real compose stack, or move those ACs to `[unit]` with the gap stated in
-  the PR. AC-24's "exactly one booking exists on the server" must be checked
-  against the database either way. Owner: plan-author / e2e-author.
+- **OQ-4 — resolved (contract, 2026-11-01).** The e2e ACs (AC-5, AC-10,
+  AC-24) control timing and failure at the browser's network layer with
+  Playwright request interception (`page.route`) against the real compose
+  stack: the real server answers, and the browser receives that answer late
+  (AC-5: 20 s; AC-24: the real 201 after 30 s) or the first link-info request
+  fails at the network level (AC-10). No test hook is added to the server,
+  nginx or fake-google. What this does not exercise — the server itself being
+  slow — is covered by PAC-81's backend tests; a fake-google latency control
+  was rejected because PAC-81/PAC-72 bound each host read at 15 s and treat
+  an unread host as busy, so a provider delay long enough to matter turns
+  into "no slots" rather than a slow answer. AC-24's "exactly one booking"
+  is checked in the database. Details: `contracts/features/PAC-83.md` §5.
 - **OQ-5 — resolved (challenge, 2026-11-01): D-1 (135 s) and D-10.** No hop
   we ship cuts before the server answers: budget 90 s < write backstop 120 s
   < nginx 130 s < client 135 s; operators must run their proxy above 130 s.
@@ -725,4 +766,14 @@ and lib/api line numbers are correct; the 32 `withFallback` calls in
 | C-14 | checked, no change | MCP: own client, no timeout, no fallback; unaffected. | n/a | §2.6, §5. |
 
 Remaining owner question: **OQ-1** (keep a demo? factory default (b), now a
-one-control change either way).
+one-control change either way). *Answered by the owner 2026-11-01: (c),
+see revision 2 below.*
+
+## Revision 2 — 2026-11-01 (owner answer OQ-1; OQ-4 routed)
+
+- OQ-1 answered (c): §3.3 rewritten (non-production builds defined by Vite
+  mode; production bundle without any demo; entry control explicit, labelled,
+  never reached after an error); D-11 added; AC-15 reworded; AC-15c and AC-30
+  added; OQ-1 marked answered.
+- OQ-4 resolved by the contract: browser-level interception for the e2e ACs,
+  no server test hook; the gap (server-side slowness) is PAC-81's tests'.
