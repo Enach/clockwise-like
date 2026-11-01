@@ -758,3 +758,83 @@ is wrong. Only these return `SchedulingLink`:
 
 Not run: Go tests (no database on this machine; the challenger's run on
 PostgreSQL 16 is the reference), the web types check and e2e.
+
+## Challenge, revision 3.1 — 2026-11-01
+
+Confirming round. Scope: `git diff 1a1e21b 5b5462a` (booking.yaml, bundle,
+`backend/api/gen`, manifest, migration comments) against "Challenge, revision
+3 — 2026-11-01" (2 blocking). Spec side: `docs/specs/PAC-72.md` "Challenge,
+revision 2.1 — 2026-11-01".
+
+**Verdict**: accept. Ready for implementation: **yes**.
+
+### Blocking
+None. Both revision-3 blocking findings are resolved:
+
+1. **Migration number**: `allowedPaths` now permits
+   `NNN_scheduling_link_horizon_refusal.{up,down}.sql` with NNN the next free
+   number after main's latest at merge time, renaming both together;
+   `forbiddenPaths` forbids any other migration. `mergeConditions` requires no
+   two files sharing a version and this version greater than main's latest.
+   The up/down comments no longer claim 032/031 as final. On this branch every
+   version has exactly one up and one down file.
+2. **Settings-read 500**: stated on `getPublicLinkInfo`,
+   `getPublicBookingSlots` (both modes, whole request, never days omitted),
+   `createPublicBooking` ("booking conflict check failed", nothing written;
+   the description separates "no settings row" = UTC from "read failed" =
+   500), `createSchedulingLink`, `getSchedulingLink`, `listSchedulingLinks`,
+   `updateSchedulingLink`, and on `PublicLinkInfo.time_zone`. Those four link
+   operations are exactly the ones whose responses `$ref` `SchedulingLink`
+   (bundle lines 6620, 6848, 6900, and 12663/12668 through the list
+   response); `SchedulingLinkInviteResponse` is `{status}` only, so R31.2 is
+   right.
+
+### Requests wrongly permitted
+1. None new. `POST /api/scheduling-links` with
+   `{"title":"x","booking_horizon_days":null,"refusal_message":null}` is now
+   permitted and means 60 / `generic`, matching a pointer decoder.
+   `{"booking_horizon_days":0}` and `366` remain schema-rejected (minimum 1,
+   maximum 365); `{"refusal_message":"loud"}` remains enum-rejected.
+
+### Responses the client cannot handle
+1. None new. In generated Go the two create fields lost `omitempty`
+   (`backend/api/gen/paceday.gen.go`, `CreateSchedulingLinkRequest`), so a Go
+   marshaller would send `null`; no Go code outside `gen/` builds this type
+   (grep), and null means absent anyway.
+
+### Consumers affected
+- As in revision 3. The web regeneration gains `.nullable()` on two request
+  fields; the shipped PATCH body (`backendLinkBody`) omits them.
+
+### Contract/implementation divergences
+1. Expected until the build stage (`mergeAfter`), as in revision 3.
+2. Fixed: the duplicated `createPublicBooking` 500 fragment is gone; PAC-81's
+   tail is intact.
+
+### Uncertainties not actually resolved
+- None blocking. A-5..A-7 remain factory-assumed and are listed in
+  `ownerReadingsToConfirm`.
+
+### Non-blocking
+1. The merge-condition one-liner (`uniq -c | awk '$1>2'`) does not flag a
+   version with only an up or only a down file; `awk '$1!=2'` would. The prose
+   condition is right.
+2. Stale wording in the manifest `rule`: `zone` still calls A-2/A-4 "factory
+   assumptions (spec R2.4)" before saying they are owner-decided; `horizon`
+   and AC-25 say "migration 032". Cosmetic.
+
+### Verified clean
+- `python3 scripts/openapi_assemble.py --check`: `OK: bundle is in sync (106 paths)`;
+  `python3 scripts/openapi_migration_report.py --check`: `OK: MIGRATION.md covers all 128 operations (10 generated)`;
+  `scripts/openapi_gen_go.sh --check`: `OK: backend/api/gen matches the contract`;
+  `cd backend && go build ./... && go vet ./...`: rc 0.
+- `sha256sum contracts/openapi/openapi.yaml` =
+  `a15d981e14f5bd8e5dbc1ff206952a8dbcd9e02d160dcc2ee31135b9808ee472`, equal to
+  the manifest's `contractHash`.
+- Manifest `acceptanceTests` carry AC-28, AC-31, AC-35 (revision 2.1 text) and
+  the new AC-37..AC-40, matching the spec; `amendedExistingTests` names
+  `TestPAC81_SlotListingCutIs503` and both engine tests.
+- DST and zone examples recomputed with Go zoneinfo (see the spec challenge).
+- Order of evaluation, past-day reason, DST window edges and `time_zone`
+  disclosure are stated consistently in the booking description, the manifest
+  `rule` and spec R21.2.

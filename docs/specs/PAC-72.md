@@ -1597,3 +1597,64 @@ The challenger ran the full suite: nothing else fails.
   listing for horizons longer than the request budget can check. Either it
   lists the dates it shows one at a time, or a bounded range mode is added.
   To be filed with PAC-88; it does not block PAC-72.
+
+## Challenge, revision 2.1 — 2026-11-01
+
+Confirming round. Scope: `git diff 1a1e21b 5b5462a` against "Challenge,
+revision 2 — 2026-11-01" (4 blocking). Owner answers and readings A-1..A-4
+(owner-decisions.md, 2026-11-01) are binding.
+
+**Verdict**: accept. Ready for implementation: **yes**.
+
+### Blocking
+None. Each revision-2 blocking finding is resolved:
+
+1. **AC-31 (DST examples)**: recomputed with Go's zoneinfo
+   (`time.LoadLocation("Europe/Paris")`). 2030-03-31 and 2030-10-27 are the
+   last Sundays of March and October; both changes are at 01:00Z. Spring:
+   00:45Z = 01:45 CET (on the grid from 01:00, ends 01:00Z inside the window:
+   listed, 201), 00:50Z = 01:50 CET (off grid: 409), 01:00Z = 03:00 CEST
+   (listed), 02:00 to 02:45 wall do not exist. Autumn: 00:00Z, 00:15Z, 00:30Z,
+   00:45Z = 02:00, 02:15, 02:30, 02:45 CEST (first occurrences), 01:00Z =
+   02:00 CET (second occurrence: 409). Edge cases: a 02:30 opening taken at
+   01:00Z gives 03:00 CEST as the first slot (Go's forward normalisation would
+   give 03:30, so the clause distinguishes); a 02:30 closing taken at 01:00Z
+   gives 01:45 CET as the last 15-minute slot (normalisation would add
+   03:00/03:15 CEST). All correct, no clause contradicts another, and "every
+   listed start books" holds.
+2. **AC-35 / AC-37**: the pair outside_link_hours > too_soon (09:00 to 17:00,
+   notice 120, clock 08:00, start 08:30) pins the one missing adjacency; with
+   R2.3's pairs the whole order is falsifiable. A past-day start is
+   `too_soon`, or `outside_link_hours` on a non-link day, never
+   `beyond_horizon` (R21.2, AC-37), consistent with the precedence.
+3. **Settings read failure**: R21.2 and AC-38 make a storage error on the
+   owner's settings a server error for booking (nothing written), both listing
+   modes (whole request), the public link read and the owner's link
+   create/get/list/update; never UTC. No settings row stays UTC (A-4, AC-30).
+4. **R2.6**: R21.5 names `TestPAC81_SlotListingCutIs503`
+   (`backend/api/pac81_paths_test.go:284`) as an input-only amendment (date
+   inside the horizon under a fixed clock, 503 assertions unchanged), with the
+   two engine tests.
+
+AC-28 also recomputed: 2030-07-01 is a Monday; Tue 02:30Z = Mon 22:30 EDT;
+13:00Z to 20:30Z = 09:00 to 16:30 EDT; 09:00Z = 05:00 EDT; Fri 2030-07-05
+20:30Z = 16:30 EDT; 2030-01-08 03:30Z = Mon 22:30 EST, 14:00Z = 09:00 EST,
+09:00Z = 04:00 EST. (c), (d) and (f) each fail under the UTC rule.
+
+### Non-blocking
+1. AC-38 makes `listSchedulingLinks` fail as a whole when any listed link's
+   owner settings read fails (a shared link's owner included). Same database,
+   so acceptable; worth one test case with a shared link.
+2. The order of evaluation (R21.2) reads the zone before the cheap checks, so
+   under a settings-read failure a beyond-horizon start is a 500, not a 409.
+   That follows from the horizon depending on the zone and is consistent with
+   AC-38 and AC-40 (AC-40 fails only busy-time storage).
+
+### Criteria I could not falsify
+- None.
+
+### Citations I checked and found wrong
+- None new.
+
+### Consumers this breaks
+- None beyond revision 2's list (the `e2e/lib/dates.ts` change is a comment).
