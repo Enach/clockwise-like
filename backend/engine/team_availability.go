@@ -129,7 +129,7 @@ func (e *TeamAvailabilityEngine) memberBusy(ctx, dbCtx context.Context, userID u
 	var md memberBusyData
 
 	// Per-member calendar access.
-	token, err := auth.LoadUserToken(db, userID)
+	token, err := auth.LoadUserTokenCtx(dbCtx, db, userID) // PAC-71: re-check the session account
 	if err == nil && token != nil {
 		// The member's own credential: renewal and loss are theirs (PAC-67, D-12).
 		ts := auth.UserTokenSource(ctx, db, e.OAuthConfig, userID, token)

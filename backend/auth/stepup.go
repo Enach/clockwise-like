@@ -179,10 +179,16 @@ type StepupIdentity struct {
 	WIDs              []string
 	WIDsPresent       bool
 	AccessToken       string
+	// Subject (Google `sub`) and ObjectID (Microsoft `oid`) are the step-up
+	// identity PAC-71 check 4b compares with the account's bound identity.
+	Subject  string
+	ObjectID string
 }
 
 type stepupClaims struct {
 	Issuer            string          `json:"iss"`
+	Subject           string          `json:"sub"`
+	ObjectID          string          `json:"oid"`
 	Nonce             string          `json:"nonce"`
 	Email             string          `json:"email"`
 	EmailVerified     json.RawMessage `json:"email_verified"`
@@ -226,6 +232,7 @@ func (p *StepupProvider) Exchange(ctx context.Context, code, nonce string) (*Ste
 		Email: c.Email, HD: c.HD, TenantID: c.TenantID, PreferredUsername: c.PreferredUsername,
 		EmailVerified: string(c.EmailVerified) == "true" || string(c.EmailVerified) == `"true"`,
 		AccessToken:   tok.AccessToken,
+		Subject:       c.Subject, ObjectID: c.ObjectID,
 	}
 	if c.WIDs != nil {
 		id.WIDs, id.WIDsPresent = *c.WIDs, true

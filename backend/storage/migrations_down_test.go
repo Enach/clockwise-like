@@ -186,7 +186,7 @@ func TestMigrationsDownTo005AndUpAgain(t *testing.T) {
 			t.Fatalf("down from %d left the database dirty", v)
 		}
 	}
-	if d := diffSnapshots(at005, schemaSnapshot(t, db)); len(d) > 0 {
+	if d := withoutKeptByDown(diffSnapshots(at005, schemaSnapshot(t, db))); len(d) > 0 {
 		t.Fatalf("after migrating down to 005 the schema differs from a fresh 005:\n%s", strings.Join(d, "\n"))
 	}
 
@@ -208,4 +208,26 @@ func migrationDirty(t *testing.T, db *sql.DB) bool {
 		t.Fatal(err)
 	}
 	return dirty
+}
+
+// keptByDown are tables a down migration deliberately keeps, each with its
+// reason; their facts are left out of the down-to-005 comparison only.
+var keptByDown = map[string]string{
+	"operator_audit": "PAC-71 spec section 7: the audit of operator steps survives a rollback (033_identity_binding.down.sql keeps it; its up uses IF NOT EXISTS)",
+}
+
+func withoutKeptByDown(diff []string) []string {
+	out := make([]string, 0, len(diff))
+	for _, line := range diff {
+		kept := false
+		for table := range keptByDown {
+			if strings.Contains(line, " "+table+".") || strings.Contains(line, " "+table+" ") || strings.Contains(line, "."+table+" ") || strings.HasSuffix(line, " "+table) {
+				kept = true
+			}
+		}
+		if !kept {
+			out = append(out, line)
+		}
+	}
+	return out
 }

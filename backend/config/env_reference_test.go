@@ -97,6 +97,7 @@ var dynamicEnvReaders = map[string]bool{
 var notEnvGetters = map[string]string{
 	"writeProviderFailure.redact": "backend/api/handlers_llm.go: removes secrets from provider error text",
 	"extractAttendees.redact":     "backend/nlp/parser.go: removes secrets from model output",
+	"issueConnect.authURL":        "backend/api/handlers_pac71_auth.go: builds the provider authorize URL from a PAC-71 connect state",
 }
 
 var envNamePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)

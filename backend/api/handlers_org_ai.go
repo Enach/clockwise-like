@@ -495,7 +495,7 @@ func (s *generatedServer) PatchOrganizationAI(ctx context.Context, _ gen.PatchOr
 	age := now.Sub(iat)
 	out, err := h.store.write(ctx, storage.OrgAIWrite{ // steps 3 and 4, one transaction
 		UserID: user.ID, OrgID: org.ID, ExpectedVersion: body.version, Patch: body.patch,
-		BreakGlass:   h.sso.breakGlass[strings.ToLower(sessionEmail(ctx))],
+		BreakGlass:   h.sso.breakGlassAccount(user),
 		SessionFresh: !iat.IsZero() && age < breakGlassFreshness && age > -time.Minute,
 		SessionIAT:   iat, Now: now, Hooks: h.hooks,
 	})

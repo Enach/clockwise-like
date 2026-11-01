@@ -79,7 +79,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		Scopes:        strings.Split(tok.scope, ","),
 		ConnectedAt:   time.Now().UTC(),
 	}
-	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
+	if err := storage.UpsertWorkspaceConnectionCtx(r.Context(), h.db, conn); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
@@ -89,14 +89,14 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 
 func (h *integrationsHandlers) slackDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnection(h.db, userID, "slack")
+	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *integrationsHandlers) slackStatus(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	conn, err := storage.GetWorkspaceConnection(h.db, userID, "slack")
+	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
@@ -217,7 +217,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		WorkspaceName: tok.workspaceName,
 		ConnectedAt:   time.Now().UTC(),
 	}
-	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
+	if err := storage.UpsertWorkspaceConnectionCtx(r.Context(), h.db, conn); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
@@ -227,14 +227,14 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 
 func (h *integrationsHandlers) notionDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnection(h.db, userID, "notion")
+	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *integrationsHandlers) notionStatus(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	conn, err := storage.GetWorkspaceConnection(h.db, userID, "notion")
+	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return

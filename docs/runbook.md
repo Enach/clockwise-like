@@ -86,6 +86,28 @@ would leave MCP out.
    are healthy. Check through your proxy:
    `curl -fsS https://<your host>/api/ready`.
 
+### PAC-71 release: sign every session out once (release step)
+
+The PAC-71 release has one extra step, decided by the owner (OQ-6, 2026-11-01:
+yes). **After** steps 1-6 above, with both the new backend and the new web app
+running, advance every account's session generation once:
+
+```
+compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-71 deploy (OQ-6)"
+```
+
+- Every session issued before it gets 401 on its next request, so every user
+  signs in once more. No account, credential or setting changes. The run is
+  recorded in `operator_audit`; record in the release notes that it ran.
+- It locks every account row. A request that is writing account data at that
+  moment may be aborted by Postgres's deadlock detection and get a 500 (the
+  user retries); if the command itself aborts, run it again.
+- Deploy the web app as soon as possible after the backend: in between, the
+  old web app's "connect a calendar" buttons start a sign-in.
+- Microsoft sign-ins in flight at the backend deploy (started on the old API)
+  are refused once, because their token response has no ID token. The user
+  signs in again.
+
 ## Rollback
 
 - **The backend is not ready after a migration** (it exited, or never
@@ -334,10 +356,10 @@ major version, and record it below.
 
 ## Account recovery
 
-Recovering an account whose only sign-in method stopped working is
-documented by PAC-71 in `docs/operator/PAC-71-account-recovery.md`. That
-document is not on `main` yet (PAC-71 is in review); this section links it
-when PAC-71 merges.
+Recovering an account whose only sign-in method stopped working, or that
+is bound to the wrong identity, is documented in
+[`docs/operator/PAC-71-account-recovery.md`](operator/PAC-71-account-recovery.md)
+(the `paceday-operator` command ships in the backend image).
 
 ## Documentation site
 
