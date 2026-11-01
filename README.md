@@ -53,16 +53,38 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 Paceday exposes 16 calendar tools via the [Model Context Protocol](https://modelcontextprotocol.io).
 
-**SSE mode** (running via docker-compose, port 3001):
+**SSE mode, production** — opt-in. The production stack runs no MCP server
+until you add `docker-compose.mcp.yml` and set `MCP_AUTH_TOKEN` in `.env`
+(generate it with `openssl rand -hex 32`; without it compose refuses to start
+the stack, naming the variable):
+
+```bash
+docker compose -f docker-compose.prod.yml -f docker-compose.mcp.yml up -d
+# or put COMPOSE_FILE=docker-compose.prod.yml:docker-compose.mcp.yml in .env
+```
+
+The MCP server publishes no port of its own: nginx serves it on your public
+origin at `/mcp/`, behind your TLS proxy (PAC-81, owner decision Q-O1). Every
+request must carry the token as a bearer header:
+
 ```json
 {
   "mcpServers": {
     "paceday": {
-      "url": "http://localhost:3001/sse"
+      "url": "https://app.example.com/mcp/sse",
+      "headers": { "Authorization": "Bearer <MCP_AUTH_TOKEN>" }
     }
   }
 }
 ```
+
+Anyone holding the token can call every tool, so treat it like a password.
+The proxy in front must let a long-lived event stream through on `/mcp/`
+([proxy requirements](docs/operator/proxy.md) §4).
+
+**SSE mode, development** (`docker compose up` with `docker-compose.yml`):
+the same configuration with `"url": "http://localhost:3001/sse"` and the
+`Authorization` header carrying the `MCP_AUTH_TOKEN` you set.
 
 **stdio mode** (direct binary):
 ```json

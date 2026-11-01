@@ -66,7 +66,7 @@ func collectShellEnvReads(name, text string) map[string]string {
 }
 
 // composeFiles are the files that may consume a variable themselves.
-var composeFiles = []string{"docker-compose.yml", "docker-compose.prod.yml", "docker-compose.dev.yml", "e2e/docker-compose.e2e.yml"}
+var composeFiles = []string{"docker-compose.yml", "docker-compose.prod.yml", "docker-compose.mcp.yml", "docker-compose.dev.yml", "e2e/docker-compose.e2e.yml"}
 
 // envNotInReference lists variables a service reads that are deliberately not
 // in .env.example, each with the reason. Nothing else may be missing.

@@ -4,9 +4,8 @@ How to run the production stack (`docker-compose.prod.yml`): settings, deploy
 order, rollback, backups and restore. Part of PAC-81 (spec
 `NEW-deploy-hardening`, Part D: AC-D3, AC-D4, AC-D6).
 
-Passages marked **added by Part C** describe PAC-81 work that is not on
-`main` yet; until it ships, the "today" instruction next to them applies.
-Parts A (backend process), B (nginx edge) and D (this runbook) have shipped.
+All four parts of PAC-81 have shipped: A (backend process), B (nginx edge),
+C (compose and images) and D (this runbook).
 
 Related documents:
 
@@ -24,27 +23,41 @@ is about production.
 ## First installation
 
 1. Copy `.env.example` to `.env` next to `docker-compose.prod.yml`, `chmod 600
-   .env`, and fill in every `required` entry. Generate `JWT_SECRET` and
-   `MCP_AUTH_TOKEN` with `openssl rand -hex 32`.
-2. Put a TLS-terminating proxy in front, following
+   .env`, and fill in every `required` entry, including `PACEDAY_VERSION`
+   (the exact image version to run). Generate `JWT_SECRET` with
+   `openssl rand -hex 32`. If the TLS proxy runs on this host, set
+   `NGINX_BIND_ADDRESS=127.0.0.1` (and `NGINX_HTTP_PORT` if the proxy holds
+   port 80).
+2. **MCP (optional).** The MCP server is off by default. To enable it, set
+   `MCP_AUTH_TOKEN` (`openssl rand -hex 32`) and add
+   `COMPOSE_FILE=docker-compose.prod.yml:docker-compose.mcp.yml` to `.env`
+   (Windows hosts: `;` as the separator), so that every `docker compose`
+   command below includes it. It is then served at
+   `https://<your host>/mcp/sse` behind the token (owner decision Q-O1); see
+   the README for the client configuration. Without the token compose
+   refuses to start anything, naming `MCP_AUTH_TOKEN`.
+3. Put a TLS-terminating proxy in front, following
    [proxy requirements](./operator/proxy.md).
-3. Set up the daily backup ([Backups](#backups)) **before** the first user
+4. Set up the daily backup ([Backups](#backups)) **before** the first user
    signs in, and rehearse a restore once ([Restore](#restore)).
-4. Deploy with the order below.
+5. Deploy with the order below.
 
 ## Deploy order
 
 Always in this order. `compose` below means
-`docker compose -f docker-compose.prod.yml`.
+`docker compose -f docker-compose.prod.yml`. With MCP enabled through
+`COMPOSE_FILE` in `.env`, use plain `docker compose` in that directory
+instead: an explicit `-f docker-compose.prod.yml` overrides `COMPOSE_FILE` and
+would leave MCP out.
 
 1. **Back up** — `scripts/ops/backup.sh --out /var/backups/paceday --env-file .env`.
    Do not deploy without a backup taken minutes before: it is the only
    rollback for a migration (see [Rollback](#rollback)).
-2. **Pull pinned images** — `compose pull`. Images are pinned to an exact
-   version by a required setting — **added by Part C** (AC-C2). Today the
-   compose file uses `:latest`, so before pulling, record the running images'
-   digests to be able to go back:
-   `docker inspect --format '{{.Config.Image}} {{.Image}}' $(compose ps -q) > deployed-$(date -u +%F).txt`.
+2. **Set the new version and pull** — note the running `PACEDAY_VERSION`
+   (the backup's copy of `.env` records it too), set the new one in `.env`,
+   then `compose pull`. Every image is an exact version: the Paceday images
+   are tagged `PACEDAY_VERSION` (compose refuses to run without it), and the
+   nginx and Postgres versions are pinned in the compose file.
 3. **Start Postgres** — `compose up -d --wait postgres`: it returns once the
    service's `pg_isready` health check passes.
 4. **Start the backend** — `compose up -d backend`. It runs every pending
@@ -54,12 +67,15 @@ Always in this order. `compose` below means
    AC-A11). Check it through your proxy, or inside the container with
    `compose exec backend /server health` (exit 0 = ready; the binary's
    health mode needs no database and no secret). The container health check
-   that runs it (start period 120 s) is **added by Part C** (AC-C3); until
-   then, check by hand. A `failed to open database` / `run migrations` line in
-   `compose logs backend` instead means the migration failed: go to
+   runs the same command (`compose ps` shows `healthy`); its 120 s start
+   period covers the migrations, so `compose up -d --wait backend` returns
+   once the backend is ready. A `failed to open database` / `run migrations`
+   line in `compose logs backend` instead means the migration failed: go to
    [Rollback](#rollback).
-6. **Start the rest** — `compose up -d` (frontend, nginx, MCP). Check through
-   your proxy: `curl -fsS https://<your host>/api/health`.
+6. **Start the rest** — `compose up -d --wait` (frontend, nginx, and MCP when
+   enabled). nginx starts only once the backend and the frontend (and MCP)
+   are healthy. Check through your proxy:
+   `curl -fsS https://<your host>/api/ready`.
 
 ## Rollback
 
@@ -74,9 +90,8 @@ Always in this order. `compose` below means
   the older ones do not, so read any down file as destructive. Down files
   exist for development and for tests, not for rollback.
 - **Image-only change** (the release has no new migration): roll back by
-  deploying the previous version — the previous pinned version once Part C
-  ships, the digests recorded in step 2 today — with `compose up -d`. No
-  restore needed.
+  setting the previous `PACEDAY_VERSION` in `.env` and `compose up -d --wait`.
+  No restore needed.
 - A release that added a migration and ran for a while cannot be rolled back
   without losing the data written since the backup. Prefer a fix-forward
   release; if you must go back, restore the pre-deploy backup and accept that
@@ -147,8 +162,8 @@ previous version. Run every command from the directory holding
      --dump /var/backups/paceday/paceday-<T>.dump               # the step-1 backup
    ```
 
-4. **Deploy the previous version**: set the previous image version (Part C's
-   version setting; today, the digests recorded in deploy step 2), then
+4. **Deploy the previous version**: set the previous `PACEDAY_VERSION` in
+   `.env` (the restored backup's `paceday-<T>.env` holds it), then
    `docker compose -f docker-compose.prod.yml up -d backend`, wait for
    readiness, and `up -d` the rest (deploy steps 4–6).
 5. **Verify** as in [Restore](#restore) step 6: row counts equal the pre-deploy
@@ -169,8 +184,11 @@ Paceday runs one backend; a deploy is not zero-downtime (spec §5).
   and logged one line per unit (`shutdown: abandoned <kind> <id> …`, never an
   email address). The pool closes after that, and the process exits 0 when
   everything finished in the drain, 1 otherwise. The whole sequence takes at
-  most about 43 s. Docker's default stop grace is 10 s, so until Part C sets
-  50 s (**added by Part C**), stop with `compose stop -t 50 backend`.
+  most about 43 s. The compose file gives every Paceday service a 50 s stop
+  grace period (Docker's default is 10 s), so `compose stop backend` and
+  `compose up -d` let it finish; do not pass a shorter `-t`.
+- Container logs are rotated: `json-file`, 10 MB per file, 5 files per
+  container.
 - Requests arriving during the restart get an error from nginx for the few
   seconds the new backend needs to start (longer if it migrates). A booking
   confirmation email still sending after the drain is logged with the booking
@@ -234,7 +252,7 @@ failed database still exists, see
 [Rollback on the same host](#rollback-on-the-same-host).
 
 1. Install the repository at the **same version** that was running (the same
-   image version; once Part C ships, the same pinned version setting).
+   `PACEDAY_VERSION`, which the `paceday-<T>.env` saved with the dump holds).
 2. Put the `paceday-<T>.env` saved with the dump in place as `.env`
    (`chmod 600`).
 3. Start only Postgres on an empty volume: `compose up -d --wait postgres`.
@@ -307,7 +325,6 @@ when PAC-71 merges.
 ## Documentation site
 
 The user documentation (`docs/`, Astro/Starlight) is **published separately**
-(`docs/vercel.json`) and is not served by this stack (spec D-16). Today the
-production compose file still contains a `docs` service that nothing routes
-to; Part C removes it (AC-C8). Publishing the docs is not part of a Paceday
-deploy.
+(`docs/vercel.json`) and is not served by this stack (spec D-16): the
+production compose file has no docs service. Publishing the docs is not part
+of a Paceday deploy.

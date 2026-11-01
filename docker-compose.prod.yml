@@ -1,15 +1,35 @@
-version: '3.9'
-
 # Production compose — standalone, no base file needed.
 # Usage: docker compose -f docker-compose.prod.yml up -d
 #
-# Copy .env.example to .env and fill in every value before first run.
+# Copy .env.example to .env and fill in every value before first run. The
+# runbook (docs/runbook.md) gives the deploy order; docs/operator/proxy.md
+# what the TLS-terminating proxy in front must do.
+#
+# PAC-81 Part C:
+#   - Every image is an exact version. PACEDAY_VERSION (required, no default)
+#     is the tag of the three Paceday images; nginx and Postgres are pinned
+#     here. A rollback is "set the previous PACEDAY_VERSION".
+#   - Every service has a health check (the Paceday binaries' own health mode;
+#     the images are FROM scratch), a stop grace period longer than the
+#     backend's shutdown (5 s notice + 30 s drain + 5 s cancel, + 10 s) and
+#     rotated logs.
+#   - The MCP server is opt-in: add docker-compose.mcp.yml
+#     (`-f docker-compose.prod.yml -f docker-compose.mcp.yml`). It is then
+#     served by nginx at /mcp/ on the public origin, behind MCP_AUTH_TOKEN.
+#   - Plain HTTP only: the proxy in front terminates TLS. No 443, no
+#     certificate mount. No docs service (spec D-16).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
 
 services:
 
   # ── Database ────────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.15-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB:       clockwise
@@ -22,21 +42,43 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Time for a clean shutdown checkpoint.
+    stop_grace_period: 60s
+    logging: *logging
 
   # ── Backend ─────────────────────────────────────────────────────────────────
   backend:
-    image: enach/paceday-backend:latest
+    image: enach/paceday-backend:${PACEDAY_VERSION:?PACEDAY_VERSION is required - the exact Paceday image version to run (see .env.example)}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+    # Readiness (GET /api/ready) through the binary's health mode. Migrations
+    # run before the listener starts, so the start period covers them.
+    healthcheck:
+      test: ["CMD", "/server", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 2s
+    stop_grace_period: 50s
+    logging: *logging
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://clockwise:${POSTGRES_PASSWORD}@postgres:5432/clockwise?sslmode=disable
 
+      # ── Database pool (PAC-81 Part A; empty = the defaults) ────────────────
+      PACEDAY_DB_MAX_OPEN_CONNS:     ${PACEDAY_DB_MAX_OPEN_CONNS:-}
+      PACEDAY_DB_MAX_IDLE_CONNS:     ${PACEDAY_DB_MAX_IDLE_CONNS:-}
+      PACEDAY_DB_CONN_MAX_LIFETIME:  ${PACEDAY_DB_CONN_MAX_LIFETIME:-}
+      PACEDAY_DB_CONN_MAX_IDLE_TIME: ${PACEDAY_DB_CONN_MAX_IDLE_TIME:-}
+
       # ── Auth ────────────────────────────────────────────────────────────────
       # HS256 secret for JWT cookies — generate with: openssl rand -hex 32
       JWT_SECRET: ${JWT_SECRET}                        # required
+      # Break-glass SSO administrators (PAC-50 §4.5).
+      PACEDAY_ADMIN_EMAILS: ${PACEDAY_ADMIN_EMAILS:-}
 
       # ── Trusted proxies (PAC-39) ────────────────────────────────────────────
       # IPs/CIDRs whose X-Real-IP header the backend believes for per-client
@@ -46,24 +88,22 @@ services:
       # socket peer, i.e. all users behind nginx share one bucket).
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
 
-      # ── CORS ─────────────────────────────────────────────────────────────────
+      # ── Public URLs ─────────────────────────────────────────────────────────
       # Frontend origin for cross-origin requests (e.g. https://paceday.nhochart.ovh)
       # Leave unset (or *) only if frontend and backend share the same domain.
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-}
-
-      # ── Frontend URL ──────────────────────────────────────────────────────────
       # Used to redirect back to the frontend after OAuth callbacks.
       # Must match the public URL of the frontend (no trailing slash).
       FRONTEND_URL: ${FRONTEND_URL:-}
-
-      # Legacy session secret (kept for backward compat)
-      SESSION_SECRET: ${SESSION_SECRET}                # required
+      # SSO and step-up callback origin; team invitation link origin.
+      APP_URL:  ${APP_URL:-}
+      BASE_URL: ${BASE_URL:-}
 
       # ── Google OAuth (calendar + sign-in) ───────────────────────────────────
-      GOOGLE_CLIENT_ID:       ${GOOGLE_CLIENT_ID}      # required
-      GOOGLE_CLIENT_SECRET:   ${GOOGLE_CLIENT_SECRET}  # required
+      GOOGLE_CLIENT_ID:       ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET:   ${GOOGLE_CLIENT_SECRET:-}
       # Callback URL registered in Google Cloud Console
-      GOOGLE_REDIRECT_URL:    ${GOOGLE_REDIRECT_URL}   # e.g. https://app.example.com/api/auth/callback
+      GOOGLE_REDIRECT_URL:    ${GOOGLE_REDIRECT_URL:-}   # e.g. https://app.example.com/api/auth/callback
 
       # ── Microsoft OAuth (Outlook calendar + sign-in) ────────────────────────
       MICROSOFT_CLIENT_ID:     ${MICROSOFT_CLIENT_ID:-}
@@ -97,43 +137,49 @@ services:
       PACEDAY_LLM_APPROVED_HOSTS_OPENAI:    ${PACEDAY_LLM_APPROVED_HOSTS_OPENAI:-}
       PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC: ${PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC:-}
 
+      # ── Email (booking confirmations, team invitations) ─────────────────────
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+
+      # ── Monitoring (off until SENTRY_DSN is set; PAC-81 AC-A14) ─────────────
+      SENTRY_DSN:         ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      SENTRY_RELEASE:     ${SENTRY_RELEASE:-${PACEDAY_VERSION}}
+
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
-    image: enach/paceday-frontend:latest
+    image: enach/paceday-frontend:${PACEDAY_VERSION:?PACEDAY_VERSION is required - the exact Paceday image version to run (see .env.example)}
+    restart: unless-stopped
     environment:
       API_BASE_URL: ${API_BASE_URL:-}
-    restart: unless-stopped
-
-  # ── Docs ──────────────────────────────────────────────────────────────────────
-  docs:
-    image: enach/paceday-docs:latest
-    restart: unless-stopped
-
-  # ── MCP Server ───────────────────────────────────────────────────────────────
-  mcp-server:
-    image: enach/paceday-mcp:latest
-    restart: unless-stopped
-    depends_on:
-      - backend
-    ports:
-      - "3001:3001"
-    environment:
-      BACKEND_URL:    http://backend:8080
-      MCP_TRANSPORT:  sse
-      MCP_PORT:       "3001"
-      # Optional bearer token to protect the SSE endpoint
-      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "/fileserver", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
+    stop_grace_period: 50s
+    logging: *logging
 
   # ── Reverse Proxy ─────────────────────────────────────────────────────────────
   nginx:
-    image: nginx:alpine
+    image: nginx:1.31.8-alpine
     restart: unless-stopped
     depends_on:
-      - backend
-      - frontend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    # Plain HTTP; the TLS proxy in front connects here. NGINX_BIND_ADDRESS
+    # empty = every interface (IPv4 and IPv6), as before; 127.0.0.1 when the
+    # proxy runs on this host (docs/operator/proxy.md §5). NGINX_HTTP_PORT is
+    # the host port (default 80).
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_BIND_ADDRESS:+${NGINX_BIND_ADDRESS}:}${NGINX_HTTP_PORT:-80}:80"
     # PAC-81 Part B: the render step writes the trusted-proxy list, the CSP
     # and the upstreams that nginx.conf needs, then starts nginx
     # (nginx/paceday-render.sh lists the settings). Behind the TLS proxy, set
@@ -148,8 +194,16 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/paceday-render.sh:/paceday/render.sh:ro
-      # Mount TLS certificates (Let's Encrypt / certbot output)
-      - ${TLS_CERT_DIR:-/etc/letsencrypt}:/etc/letsencrypt:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
+    # nginx stops gracefully (SIGQUIT), finishing in-flight requests.
+    stop_grace_period: 50s
+    logging: *logging
 
 volumes:
   postgres_data:
