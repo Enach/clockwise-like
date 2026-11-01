@@ -227,28 +227,58 @@ func (h *authHandlers) microsoftCallback(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, r, "token exchange failed", err, http.StatusInternalServerError)
 		return
 	}
-	// (a): an unreadable profile, or one without mail, is the failure state.
+	// Step 2 (contract revision 3.1): the signed ID token of this token
+	// response gives the tenant and the object id. Anything short of every
+	// check is the refusal, before anything is looked up or written.
+	rawID, _ := token.Extra("id_token").(string)
+	if rawID == "" {
+		h.signInRefused(w, r, errors.New("sign-in refused: the Microsoft token response carries no ID token"))
+		return
+	}
+	id, err := microsoftIDTokens.Verify(r.Context(), rawID, cfg.ClientID, auth.MicrosoftNonce(state))
+	if err != nil {
+		h.signInRefused(w, r, fmt.Errorf("sign-in refused: %w", err))
+		return
+	}
+	if id.TenantID == auth.MicrosoftConsumerTenant {
+		// A personal Microsoft account: refused until PAC-77 (owner,
+		// 2026-11-01), before /me or /organization is read.
+		h.signInRefused(w, r, errors.New("sign-in refused: personal Microsoft account (PAC-77)"))
+		return
+	}
+	// Step 3: /me, read with the access token of the same response. (a): an
+	// unreadable profile, or one without mail, is the failure state. Its id
+	// must equal the token's oid (mandatory cross-check).
 	info, err := fetchMicrosoftUserInfo(r.Context(), token)
 	if err != nil || info.Email == "" {
 		h.signInFailed(w, r, "could not read the Microsoft account", err)
 		return
 	}
-	// Step 3: the tenant fails closed (spec D-23). Anything that is not
-	// positively a work account is the refusal, before any lookup or write.
-	tenant, verified, err := fetchMicrosoftOrganization(r.Context(), token)
-	if err != nil || !guidFormat.MatchString(tenant) || !guidFormat.MatchString(info.ID) {
-		h.signInRefused(w, r, fmt.Errorf("sign-in refused: Microsoft tenant unobtainable or account not classifiable as work: %v", err))
+	if !strings.EqualFold(info.ID, id.ObjectID) {
+		h.signInRefused(w, r, errors.New("sign-in refused: Graph /me id differs from the ID token oid"))
 		return
 	}
+	// Step 4: verified-domain EVIDENCE only. A failure, another tenant's
+	// answer or an unlisted domain is NONE evidence, never a refusal by
+	// itself (spec AC-51).
 	evidence := storage.EvidenceNone
-	if d := domain.ExtractDomain(info.Email); d != "" && containsFold(verified, d) {
-		evidence = storage.EvidenceAuthoritative
+	orgTenant, verified, orgErr := fetchMicrosoftOrganization(r.Context(), token)
+	switch {
+	case orgErr != nil:
+		log.Printf("pac71: Microsoft /organization unavailable for tenant %s: %v (no evidence)", id.TenantID, orgErr)
+	case !strings.EqualFold(orgTenant, id.TenantID):
+		log.Printf("pac71: Microsoft /organization names tenant %s, not the token's %s (no evidence)", orgTenant, id.TenantID)
+	default:
+		if d := domain.ExtractDomain(info.Email); d != "" && containsFold(verified, d) {
+			evidence = storage.EvidenceAuthoritative
+		}
 	}
+	tenant := id.TenantID
 	res, err := storage.ResolveSignIn(r.Context(), h.db, storage.SignInRequest{
 		Identity: storage.Identity{
 			Provider: storage.IdentityMicrosoft,
 			Tenant:   strings.ToLower(tenant),
-			Subject:  strings.ToLower(info.ID),
+			Subject:  id.ObjectID,
 		},
 		Email:         info.Email,
 		Name:          info.Name,
@@ -452,7 +482,7 @@ func (s *generatedServer) StartMicrosoftConnect(ctx context.Context, _ gen.Start
 		return gen.StartMicrosoftConnect503JSONResponse{Error: "Microsoft OAuth not configured"}, nil
 	}
 	url, cookie, err := s.issueConnect(ctx, connectProviderOutlook, msConnectCookie, func(state string) string {
-		return auth.GetMicrosoftAuthURL(cfg, state, "")
+		return auth.GetMicrosoftConnectURL(cfg, state)
 	})
 	if err != nil {
 		return gen.StartMicrosoftConnect500JSONResponse{Error: serverFailure(ctx, "start microsoft connect", err, http.StatusInternalServerError)}, nil
@@ -548,3 +578,7 @@ func (h *authHandlers) connectCallback(w http.ResponseWriter, r *http.Request, f
 	}
 	http.Redirect(w, r, h.frontendURL+"/auth/callback?provider="+f.provider+"&connect=credited", http.StatusFound)
 }
+
+// microsoftIDTokens is the sign-in ID-token verifier (one process-wide key
+// cache). A test seam: tests replace it with a fresh verifier.
+var microsoftIDTokens = auth.NewMicrosoftIDTokenVerifier()

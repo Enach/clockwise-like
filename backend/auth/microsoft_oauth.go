@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -28,7 +30,20 @@ type MicrosoftConfig struct {
 	Endpoint oauth2.Endpoint
 }
 
+// MicrosoftSignInScopes is the Microsoft SIGN-IN scope set, exactly and in
+// order (PAC-71 contract revision 3.1, owner OQ-8 and OQ-9): `openid profile`
+// (user consent only) give the signed ID token its tenant and object id; the
+// rest is today's calendar set. The connect keeps today's set.
+var MicrosoftSignInScopes = []string{"openid", "profile", "Calendars.ReadWrite", "User.Read", "offline_access"}
+
+// microsoftCalendarScopes is the Microsoft CONNECT scope set (unchanged).
+var microsoftCalendarScopes = []string{"Calendars.ReadWrite", "User.Read", "offline_access"}
+
 func (c *MicrosoftConfig) oauthConfig() *oauth2.Config {
+	return c.oauthConfigWith(microsoftCalendarScopes)
+}
+
+func (c *MicrosoftConfig) oauthConfigWith(scopes []string) *oauth2.Config {
 	endpoint := microsoftEndpoint
 	if c.Endpoint.AuthURL != "" {
 		endpoint = c.Endpoint
@@ -37,16 +52,30 @@ func (c *MicrosoftConfig) oauthConfig() *oauth2.Config {
 		ClientID:     c.ClientID,
 		ClientSecret: c.ClientSecret,
 		RedirectURL:  c.RedirectURL,
-		Scopes:       []string{"Calendars.ReadWrite", "User.Read", "offline_access"},
+		Scopes:       scopes,
 		Endpoint:     endpoint,
 	}
 }
 
-// GetMicrosoftAuthURL builds Microsoft's consent URL. A non-empty loginHint
-// (already checked with ValidLoginHint) is sent as login_hint (PAC-35).
+// GetMicrosoftAuthURL builds Microsoft's SIGN-IN consent URL: the sign-in
+// scope set and nonce = MicrosoftNonce(state), which the callback requires in
+// the ID token (PAC-71). A non-empty loginHint (already checked with
+// ValidLoginHint) is sent as login_hint (PAC-35).
 func GetMicrosoftAuthURL(cfg *MicrosoftConfig, state, loginHint string) string {
-	opts := append([]oauth2.AuthCodeOption{oauth2.AccessTypeOffline}, loginHintOption(loginHint)...)
-	return cfg.oauthConfig().AuthCodeURL(state, opts...)
+	opts := append([]oauth2.AuthCodeOption{oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("nonce", MicrosoftNonce(state))}, loginHintOption(loginHint)...)
+	return cfg.oauthConfigWith(MicrosoftSignInScopes).AuthCodeURL(state, opts...)
+}
+
+// GetMicrosoftConnectURL builds the CONNECT consent URL: today's calendar
+// scopes, no nonce (a connect reads no ID token, PAC-71 contract section 4).
+func GetMicrosoftConnectURL(cfg *MicrosoftConfig, state string) string {
+	return cfg.oauthConfig().AuthCodeURL(state, oauth2.AccessTypeOffline)
+}
+
+// MicrosoftNonce is the sign-in nonce for state: lowercase hex SHA-256.
+func MicrosoftNonce(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return hex.EncodeToString(sum[:])
 }
 
 func ExchangeMicrosoftCode(ctx context.Context, cfg *MicrosoftConfig, code string) (*oauth2.Token, error) {

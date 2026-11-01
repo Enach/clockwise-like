@@ -160,10 +160,18 @@ credentials and keys must be empty or NULL; an unnamed column counts as changed)
 counts a row there as non-empty (`unclassified:<table>`), so a later migration fails closed at
 run time; a test fails the build-time check too (CONTRACT-5).
 
-**Callbacks.** Google: evidence from `verified_email` and `hd` (§3 of the contract). Microsoft:
-`/me`, then `GET /v1.0/organization?$select=id,verifiedDomains` with the same token (new seam
-`microsoftGraphOrganizationURL`); work account only for a 200 with exactly one entry, GUID ids;
-anything else is the refusal. SSO: `(oidc, iss, sub)`, `email_verified=false` refused, any
+**Callbacks.** Google: evidence from `verified_email` and `hd` (§3 of the contract). Microsoft
+(contract revision 3.1, owner OQ-8 and OQ-9): the sign-in requests exactly `openid profile
+Calendars.ReadWrite User.Read offline_access` with `nonce` = hex SHA-256 of the state. The
+token response's ID token is verified by `auth.MicrosoftIDTokenVerifier`, a sign-in-only,
+tenant-pinned verifier: RS256; `tid` a GUID before any fetch; keys from the tenant's own
+`/discovery/v2.0/keys` (10 s limit; per-tenant cache, 24 h, one refetch a minute on an unknown
+`kid`, 1000 tenants LRU; the first fetch of an uncached tenant is never rate-limited); `iss`,
+`ver`, `aud` (string or one-element array), `oid` GUID, `exp`/`nbf` with 60 s skew and `nonce`.
+The consumer tenant is refused before any Graph read. Graph `/me` `id` must equal `oid`.
+`/organization` is evidence only: AUTHORITATIVE when its one entry is the token's tenant and
+lists the domain; anything else is NONE evidence, never a refusal by itself (AC-51). Seams:
+`auth.MicrosoftKeysURL`, `api.microsoftIDTokens`, `microsoftGraphOrganizationURL`. SSO: `(oidc, iss, sub)`, `email_verified=false` refused, any
 carrier refused. The refusal is `302 <FRONTEND_URL>/?error=signin_refused`, never touching
 `auth_token`. Sessions carry the account's current generation.
 
@@ -192,8 +200,8 @@ is OQ-6, the owner's call. AC-32 and the web half of AC-19 belong to the web PR.
 ## 7. Consumer amendments (amend, never delete)
 
 - `pac35_auth_flows_test.go`: Google fixtures gain `verified_email` (and a consumer or `hd`
-  domain where the account must be domain-confirmed); the Microsoft runner gains an
-  `/organization` answer and GUID ids; every redirect, cookie and kept-on-failure assertion is
+  domain where the account must be domain-confirmed); the Microsoft runner gains a signed ID token (test key
+  served by a stub keys document), an `/organization` answer and GUID ids; every redirect, cookie and kept-on-failure assertion is
   kept. `TestPAC35_CurrentUser_EveryDocumentedStatus`: `AddressStanding` added to the strict
   struct, strict decode kept, 500 sub-test added. The session-token seam takes `gen`, so the
   `failingTokenGenerator` helper changes signature only.

@@ -94,9 +94,16 @@ func closedDB(t *testing.T) *sql.DB {
 type fakeOAuthProvider struct {
 	srv     *httptest.Server
 	profile func(w http.ResponseWriter)
-	// organization is Graph /organization (PAC-71 tenant source); nil answers
-	// one work tenant that verifies example.com.
+	// organization is Graph /organization (PAC-71: verified-domain evidence
+	// only); nil answers the work tenant that verifies example.com.
 	organization func(w http.ResponseWriter)
+	// idToken, when set, is the token response's id_token (PAC-71 Microsoft
+	// sign-in; runMicrosoftCallback sets a valid signed one by default).
+	idToken func() string
+	// tenant is the ID token's tid and /organization's id (default pac35Tenant).
+	tenant string
+	// keys is the stub serving the tenant keys (set on first use).
+	keys *msKeysStub
 }
 
 // pac35Tenant is the work tenant the fake /organization answers by default.
@@ -108,9 +115,15 @@ func newFakeOAuthProvider(t *testing.T) *fakeOAuthProvider {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		body := map[string]any{
 			"access_token": "at-" + uuid.NewString(), "refresh_token": "rt", "token_type": "Bearer", "expires_in": 3600,
-		})
+		}
+		if p.idToken != nil {
+			if tok := p.idToken(); tok != "" {
+				body["id_token"] = tok
+			}
+		}
+		_ = json.NewEncoder(w).Encode(body)
 	})
 	mux.HandleFunc("/profile", func(w http.ResponseWriter, _ *http.Request) { p.profile(w) })
 	mux.HandleFunc("/organization", func(w http.ResponseWriter, _ *http.Request) {
@@ -118,7 +131,7 @@ func newFakeOAuthProvider(t *testing.T) *fakeOAuthProvider {
 			p.organization(w)
 			return
 		}
-		jsonProfile(map[string]any{"value": []any{map[string]any{"id": pac35Tenant, "verifiedDomains": []any{map[string]any{"name": "example.com"}}}}})(w)
+		jsonProfile(map[string]any{"value": []any{map[string]any{"id": p.tenantID(), "verifiedDomains": []any{map[string]any{"name": "example.com"}}}}})(w)
 	})
 	p.srv = httptest.NewServer(mux)
 	t.Cleanup(p.srv.Close)
@@ -198,6 +211,14 @@ func runMicrosoftCallback(t *testing.T, ah *authHandlers, p *fakeOAuthProvider) 
 	prevOrg := microsoftGraphOrganizationURL
 	microsoftGraphOrganizationURL = p.srv.URL + "/organization"
 	t.Cleanup(func() { microsoftGraphOrganizationURL = prevOrg })
+	// PAC-71 (contract revision 3.1): the token response carries a signed ID
+	// token, verified against the test key served as the tenant's keys.
+	if p.keys == nil {
+		p.keys = useTestMicrosoftKeys(t, p)
+	}
+	if p.idToken == nil {
+		p.idToken = func() string { return signMicrosoftIDToken(t, p.defaultIDClaims("s1")) }
+	}
 	ah.frontendURL = pac35Frontend
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/microsoft/callback?state=s1&code=c1", nil)
 	req.AddCookie(&http.Cookie{Name: "ms_oauth_state", Value: "s1"})

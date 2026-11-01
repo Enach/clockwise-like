@@ -2506,18 +2506,19 @@ paths:
         \     (revision 3.1: each fetch has a 10-second limit, the\n     identity-provider class of PAC-81\
         \ Part A; keys are cached per\n     tenant for up to 24 hours; an unknown `kid` triggers at most\
         \ one\n     refetch per tenant per minute; at most 1000 tenants are cached,\n     the least recently\
-        \ used evicted first. A fetch that errors or\n     exceeds the limit, or a `kid` still unknown\
-        \ after the refetch or\n     while that tenant's refetch is rate-limited, is REFUSED);\n   - `iss`\
-        \ equals exactly `https://login.microsoftonline.com/{tid}/v2.0`\n     with the token's own `tid`,\
-        \ and `ver` is `2.0`;\n   - `aud` is either the string `MICROSOFT_CLIENT_ID`, or a JSON\n    \
-        \ array of exactly one element that is that string; any other\n     shape or value (another client,\
-        \ an extra audience, an empty\n     array) is REFUSED (revision 3.1);\n   - `oid` is present and\
-        \ a GUID (canonical 8-4-4-4-12 hex); absent\n     or malformed is REFUSED (revision 3.1, owner\
-        \ OQ-9: the object\n     id comes from the signed token);\n   - `exp` is in the future and `nbf`,\
-        \ when present, is not\n     (60 seconds of clock skew allowed);\n   - `nonce` equals the lowercase\
-        \ hex SHA-256 of the `state` that\n     matched `ms_oauth_state` (step 1), binding the token to\
-        \ this\n     browser's sign-in request.\n   The tenant is the token's `tid`. CLASSIFICATION: a\
-        \ `tid` equal to\n   `9188040d-6c67-4c5b-b112-36a304b66dad` (Microsoft's documented\n   tenant\
+        \ used evicted first. The first fetch for a\n     tenant that is not cached (new, expired after\
+        \ 24 hours, or\n     evicted) is not subject to the per-minute refetch limit. A fetch\n     that\
+        \ errors or exceeds the limit, or a `kid` still unknown after\n     the refetch or while that\
+        \ tenant's refetch is rate-limited, is\n     REFUSED);\n   - `iss` equals exactly `https://login.microsoftonline.com/{tid}/v2.0`\n\
+        \     with the token's own `tid`, and `ver` is `2.0`;\n   - `aud` is either the string `MICROSOFT_CLIENT_ID`,\
+        \ or a JSON\n     array of exactly one element that is that string; any other\n     shape or value\
+        \ (another client, an extra audience, an empty\n     array) is REFUSED (revision 3.1);\n   - `oid`\
+        \ is present and a GUID (canonical 8-4-4-4-12 hex); absent\n     or malformed is REFUSED (revision\
+        \ 3.1, owner OQ-9: the object\n     id comes from the signed token);\n   - `exp` is in the future\
+        \ and `nbf`, when present, is not\n     (60 seconds of clock skew allowed);\n   - `nonce` equals\
+        \ the lowercase hex SHA-256 of the `state` that\n     matched `ms_oauth_state` (step 1), binding\
+        \ the token to this\n     browser's sign-in request.\n   The tenant is the token's `tid`. CLASSIFICATION:\
+        \ a `tid` equal to\n   `9188040d-6c67-4c5b-b112-36a304b66dad` (Microsoft's documented\n   tenant\
         \ for every personal Microsoft account) is a PERSONAL\n   account and is REFUSED here, before\
         \ `/me` or `/organization` is\n   read (owner, 2026-11-01: personal Microsoft sign-in waits for\n\
         \   follow-up PAC-77; spec AC-5, AC-11c). Any other GUID `tid` is a\n   WORK account in that tenant,\

@@ -65,8 +65,9 @@ identity is refused from then on.
 paceday-operator advance-all -operator <you> -reason "PAC-71 deploy"
 ```
 
-Ends every existing session once (every user signs in again). Run it only if the owner
-answered OQ-6 "yes", after both the API and the web app are deployed. It locks every account
+Ends every existing session once (every user signs in again). The owner answered OQ-6 "yes"
+(2026-11-01): it is a step of the PAC-71 release, run once after both the API and the web app
+are deployed (`docs/runbook.md`, "PAC-71 release"). It locks every account
 row; a request that is writing account data at that moment may be aborted by Postgres's
 deadlock detection and answered with a 500 (the user retries), or the command itself may
 abort: run it again.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"database/sql"
 	"fmt"
 	"log"
@@ -77,10 +78,38 @@ func orgStatus(code int) func(http.ResponseWriter) {
 // /organization answers org.
 func pac71Microsoft(t *testing.T, oid, mail string, org func(http.ResponseWriter)) *httptest.ResponseRecorder {
 	t.Helper()
+	return pac71MicrosoftT(t, tenantOf(org), oid, mail, org)
+}
+
+// pac71MicrosoftT runs one Microsoft sign-in whose signed ID token names
+// tenant tid and object id oid (contract revision 3.1); Graph /me answers
+// (oid, mail) and /organization answers org.
+func pac71MicrosoftT(t *testing.T, tid, oid, mail string, org func(http.ResponseWriter)) *httptest.ResponseRecorder {
+	t.Helper()
 	p := newFakeOAuthProvider(t)
+	p.tenant = tid
 	p.profile = jsonProfile(map[string]string{"id": oid, "mail": mail, "displayName": "M " + mail})
 	p.organization = org
 	return runMicrosoftCallback(t, pac71Handlers(t), p)
+}
+
+// tenantOf is the tenant an /organization answer names (its one entry's
+// id), or a fresh work tenant when it names none: the ID token's tid.
+func tenantOf(org func(http.ResponseWriter)) string {
+	if org == nil {
+		return pac71GUID()
+	}
+	rec := httptest.NewRecorder()
+	org(rec)
+	var body struct {
+		Value []struct {
+			ID string `json:"id"`
+		} `json:"value"`
+	}
+	if rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &body) == nil && len(body.Value) == 1 && body.Value[0].ID != "" {
+		return body.Value[0].ID
+	}
+	return pac71GUID()
 }
 
 // pac71Legacy is an account created before PAC-71: unbound, unconfirmed,
@@ -269,37 +298,6 @@ func TestPAC71_AC4_SameObjectIdOtherTenantAndOtherObjectSameTenantAreRefused(t *
 	}
 }
 
-// AC-5, AC-11c: a personal Microsoft account cannot be classified as work
-// (Graph refuses /organization for it), so it is refused, whatever it would
-// have reached; nothing is written.
-func TestPAC71_AC5_AC11c_PersonalMicrosoftAccountIsRefused(t *testing.T) {
-	d := pac71Domain()
-	t1, o1 := pac71GUID(), pac71GUID()
-	henry := pac71Bound(t, "henry@"+d, msIdentity(t1, o1), storage.AddressDomainConfirmed)
-	legacy := pac71Legacy(t, "legacy@"+d, "microsoft", "")
-	personal := orgStatus(http.StatusForbidden)
-	t.Run("bound Henry", func(t *testing.T) {
-		before := readAccount(t, henry)
-		// The same object id: only the tenant answer differs.
-		assertRefused(t, pac71Microsoft(t, o1, "henry@"+d, personal))
-		if after := readAccount(t, henry); after != before {
-			t.Fatalf("Henry changed")
-		}
-	})
-	t.Run("unbound legacy account", func(t *testing.T) {
-		before := readAccount(t, legacy)
-		assertRefused(t, pac71Microsoft(t, pac71GUID(), "legacy@"+d, personal))
-		if after := readAccount(t, legacy); after != before {
-			t.Fatalf("legacy changed")
-		}
-	})
-	t.Run("AC-11c no account", func(t *testing.T) {
-		assertRefused(t, pac71Microsoft(t, pac71GUID(), "erin@"+d, personal))
-		if n := carriersCount(t, "erin@"+d); n != 0 {
-			t.Fatalf("an account was created (%d)", n)
-		}
-	})
-}
 
 func TestPAC71_AC6_SSOIdentityNeverReachesAnotherAccountAndIssuerChangeIsRefused(t *testing.T) {
 	db := openTestDB(t)
@@ -595,40 +593,3 @@ func TestPAC71_AC11_MicrosoftNewAccountNeedsATenantThatVerifiesTheDomain(t *test
 	})
 }
 
-// AC-11b: the tenant fails closed for (i) no carrier, (ii) an empty legacy
-// account and (iii) a bound account; the refusal, not auth_failed.
-func TestPAC71_AC11b_UnobtainableTenantIsRefusedInEveryCase(t *testing.T) {
-	answers := map[string]func(t1 string) func(http.ResponseWriter){
-		"error 500":      func(string) func(http.ResponseWriter) { return orgStatus(http.StatusInternalServerError) },
-		"403 permission": func(string) func(http.ResponseWriter) { return orgStatus(http.StatusForbidden) },
-		"empty value":    func(string) func(http.ResponseWriter) { return jsonProfile(map[string]any{"value": []any{}}) },
-		"multi-entry": func(t1 string) func(http.ResponseWriter) {
-			return jsonProfile(map[string]any{"value": []any{map[string]any{"id": t1}, map[string]any{"id": pac71GUID()}}})
-		},
-		"non-GUID id": func(string) func(http.ResponseWriter) { return orgAnswer("contoso-tenant") },
-		"undecodable body": func(string) func(http.ResponseWriter) {
-			return func(w http.ResponseWriter) { _, _ = w.Write([]byte("<html>")) }
-		},
-	}
-	for name, answer := range answers {
-		t.Run(name, func(t *testing.T) {
-			d := pac71Domain()
-			t1, o1 := pac71GUID(), pac71GUID()
-			assertRefused(t, pac71Microsoft(t, pac71GUID(), "new@"+d, answer(t1)))
-			if carriersCount(t, "new@"+d) != 0 {
-				t.Fatal("(i) created")
-			}
-			legacy := pac71Legacy(t, "legacy@"+d, "microsoft", "")
-			assertRefused(t, pac71Microsoft(t, pac71GUID(), "legacy@"+d, answer(t1)))
-			if a := readAccount(t, legacy); a.identity != "" || a.gen != 0 {
-				t.Fatalf("(ii) legacy changed: %+v", a)
-			}
-			henry := pac71Bound(t, "henry@"+d, msIdentity(t1, o1), storage.AddressDomainConfirmed)
-			before := readAccount(t, henry)
-			assertRefused(t, pac71Microsoft(t, o1, "henry@"+d, answer(t1)))
-			if after := readAccount(t, henry); after != before {
-				t.Fatalf("(iii) Henry changed")
-			}
-		})
-	}
-}

@@ -474,9 +474,12 @@ paths:
              identity-provider class of PAC-81 Part A; keys are cached per
              tenant for up to 24 hours; an unknown `kid` triggers at most one
              refetch per tenant per minute; at most 1000 tenants are cached,
-             the least recently used evicted first. A fetch that errors or
-             exceeds the limit, or a `kid` still unknown after the refetch or
-             while that tenant's refetch is rate-limited, is REFUSED);
+             the least recently used evicted first. The first fetch for a
+             tenant that is not cached (new, expired after 24 hours, or
+             evicted) is not subject to the per-minute refetch limit. A fetch
+             that errors or exceeds the limit, or a `kid` still unknown after
+             the refetch or while that tenant's refetch is rate-limited, is
+             REFUSED);
            - `iss` equals exactly `https://login.microsoftonline.com/{tid}/v2.0`
              with the token's own `tid`, and `ver` is `2.0`;
            - `aud` is either the string `MICROSOFT_CLIENT_ID`, or a JSON

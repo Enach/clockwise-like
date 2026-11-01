@@ -13,7 +13,7 @@ This document says **why** the interface has this shape. The fragments say **wha
 | Operation | Change |
 |---|---|
 | `googleOAuthCallback` `GET /api/auth/callback` | Two branches, chosen only by which state cookie matches `state`. **Sign-in**: account chosen by identity (`google` + userinfo `id`), evidence from `verified_email`/`hd`, migration rules (a)/(b), new fixed refusal redirect `<FRONTEND_URL>/?error=signin_refused`. **Connect**: credited `/auth/callback?provider=google&connect=credited`, credited to nobody `/?connect=not_credited`, including when the provider returns no `code` (the user cancelled). `code` becomes optional and the provider's `error` parameter is documented (revision 2). |
-| `microsoftOAuthCallback` `GET /api/auth/microsoft/callback` | Same two branches. Sign-in (revision 3) verifies the token response's signed ID token and takes the tenant from its `tid`; the consumer tenant `9188040d-6c67-4c5b-b112-36a304b66dad` is a personal account and is refused until PAC-77; an ID token that does not check is the refusal. Object id = Graph `/me` `id` (cross-checked against an ID-token `oid` when present). Graph `/organization` gives verified-domain evidence only; its failure is NONE evidence, never a refusal by itself. Connect reads neither `/me`, `/organization` nor an ID token and never changes the work calendar. |
+| `microsoftOAuthCallback` `GET /api/auth/microsoft/callback` | Same two branches. Sign-in (revision 3) verifies the token response's signed ID token and takes the tenant from its `tid`; the consumer tenant `9188040d-6c67-4c5b-b112-36a304b66dad` is a personal account and is refused until PAC-77; an ID token that does not check is the refusal. Object id = the ID token's `oid`, required (revision 3.1); Graph `/me` `id` is a mandatory cross-check and must equal it, else REFUSED. Graph `/organization` gives verified-domain evidence only; its failure is NONE evidence, never a refusal by itself. Connect reads neither `/me`, `/organization` nor an ID token and never changes the work calendar. |
 | `ssoOidcCallback` `GET /api/auth/callback/oidc/{domain}` | Identity = verified `iss` + `sub`. A carried address is always refused (SSO never reaches or binds an existing account). Same refusal redirect. No connect branch. |
 | `startGoogleConnect` `POST /api/auth/google/connect` | **New.** Protected. 200 `ConnectStartResponse {authorize_url}` + `google_connect_state` cookie. Never redirects. |
 | `startMicrosoftConnect` `POST /api/auth/microsoft/connect` | **New.** Same, `ms_connect_state`; 503 when Microsoft is not configured. |
@@ -586,3 +586,12 @@ None blocking. Two editorial items for the implementer, neither changes behaviou
 - `git show HEAD:contracts/openapi/openapi.yaml | sha256sum` = `943e2166ba595269b70dac8d789b0e1c9d4a147eb962eb021441b574e864195d` = manifest `contractHash`.
 
 **Ready for implementation: yes.**
+
+## Revision 3.1, editorial — 2026-11-01 (backend implementation)
+
+The two editorial items of "Challenge, revision 3.1", applied when the backend implemented revision 3.1. Neither changes behaviour.
+
+1. §1's `microsoftOAuthCallback` row now says that the object id is the ID token's `oid`, which is required, and that Graph `/me` `id` is a mandatory cross-check. It no longer says "`/me` `id`, cross-checked when present".
+2. `auth.yaml` callback step 2 now states that the first key fetch for a tenant that is not cached is not subject to the per-minute refetch limit. A tenant is not cached when it is new, expired after 24 hours, or evicted.
+
+Bundle hash after this change: see manifest `contractHash` (`contractHashHistory` records the step). Only a description changed, so `backend/api/gen` and `MIGRATION.md` regenerate byte-identical.
