@@ -169,7 +169,7 @@ async function verify(): Promise<void> {
       `SELECT 1 FROM oauth_tokens
         WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
       [Object.values(CONNECTED).map((u) => u.id)],
-      5,
+      6,
     ],
     // PAC-35 AC-11: the disconnect journey's own user starts connected.
     [

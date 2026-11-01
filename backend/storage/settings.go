@@ -577,3 +577,20 @@ func ListUsersWithAutoDecline(db DBTX) ([]uuid.UUID, error) {
 	}
 	return out, rows.Err()
 }
+
+// GetUserTimezone returns userID's stored settings.timezone without creating a
+// settings row (PAC-72 D-9: a public booking request reads the link owner's
+// zone and must not create settings for them). found is false when the user
+// has no settings row. A storage failure is the error, never "no row": the
+// caller answers it with a server error rather than falling back to UTC
+// (PAC-72 revision 2.1, D-7).
+func GetUserTimezone(db DBTX, userID uuid.UUID) (tz string, found bool, err error) {
+	err = db.QueryRow(`SELECT timezone FROM settings WHERE user_id = $1`, userID).Scan(&tz)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return tz, true, nil
+}
