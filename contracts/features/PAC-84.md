@@ -4,7 +4,9 @@
 - **Spec**: `docs/specs/PAC-84.md`, challenged accept-with-changes 2026-11-01
   (C-1..C-19 applied), owner Q-1..Q-3 answered 2026-11-01. Branch
   `factory/pac-84-spec` at `3d776ba`.
-- **Stage**: contract-author, revision 1, 2026-11-02. Next: contract-challenger.
+- **Stage**: contract-author, revision 1, 2026-11-02; contract-challenger
+  2026-11-02 (accept-with-changes, K-1..K-17 applied in place, log at the
+  end). Next: planner.
 - **Manifest**: `contracts/features/PAC-84.yaml`.
 - **Owner decisions applied** (`.claude/factory/owner-decisions.md`, PAC-84,
   2026-11-01): Q-1 key from the environment now, KMS later; Q-2 a lost key
@@ -57,8 +59,35 @@ Two server mappings stage 4 must get right *without* a contract change
    succeed with the secret undecrypted, and the handler answers the documented
    500 when it tries to use it (section 9.3). A 404 would tell the admin the
    domain is not configured, which is false.
-2. **AI paths.** An undecryptable AI key is the documented 500, never a
-   silent fall-back to "no key configured" behaviour.
+2. **AI paths.** An undecryptable AI key (S8, or the org key S9 a member's
+   request runs on) is the documented 500, never a silent fall-back to "no
+   key configured" behaviour. It is decided where the AI configuration is
+   decided, **before** anything that turns a failure into an answer:
+   `testLLMConnection` 500 ("Settings load failure", never its 409
+   `AINotConfigured`), `parseNaturalLanguage` 500 ("settings could not be
+   loaded", never the 200 `not_configured` and never the parser's 200
+   `{"intent":"unknown"}` swallow), and likewise every AI-backed operation.
+3. **Conferencing (challenge K-2).** `handlers_conferencing.go:52-63` turns
+   a Zoom decode failure into `ErrZoomInvalidCredential` and any
+   `LoadMicrosoftToken` error into `errTeamsNotConnected`, both 400s of the
+   closed refusal list (`:74-83`). A decryption failure is neither: it is the
+   operation's documented 500, checked with `errors.Is(err,
+   secretbox.ErrDecrypt)` before the refusal mapping.
+4. **Daily recap test send (K-2).** `handlers_daily_recap.go:159-162` turns
+   any `GetWorkspaceConnection` error into 400 "Slack not connected". A
+   decryption failure of the Slack token is the operation's documented 500
+   (whose documented body is `{"error":"db error"}`, not `internal error`).
+5. **Personal calendar fetches (K-2).** `handlers_personal.go:147-155` and
+   `:207-210` turn any `GetPersonalCalendar` error into 404 "personal calendar
+   not found". By the read rule of section 6.2 the fetch never fails on an
+   undecryptable field, so these paths answer as for any other row (the `url`
+   is omitted, section 9.3).
+
+The general rule behind 1-5 (section 6.2): **a storage read function never
+returns a decryption failure as its error**; the failure surfaces only where
+a caller opens that one field, and every caller that maps "not connected /
+not configured / not found" checks `errors.Is(err, secretbox.ErrDecrypt)`
+first. AC-16's body is the operation's **documented** 500 body.
 
 If the challenger finds an act path whose documented answer is not 500, the
 fix is a description-only contract revision, not a new status (spec §5).
@@ -141,7 +170,9 @@ n x ( lp16(part name) lp16(part value) )
 ```
 
 `lp16(x)` = 2-byte big-endian length, then the bytes of `x`. Length-prefixing
-makes the encoding injective (no two bindings share bytes). The data-key id is
+makes the encoding injective (no two bindings share bytes). A table, column,
+part name or part value longer than 65535 bytes is an error of `Seal`/`Open`
+(never truncated); no inventory identity comes near it. The data-key id is
 not in the AAD: a changed id selects another key and fails authentication
 anyway (AC-6).
 
@@ -182,22 +213,24 @@ migrations directory's README or header comment.
 ```sql
 CREATE SEQUENCE encryption_data_keys_id_seq AS integer MINVALUE 1;
 CREATE TABLE encryption_data_keys (
-    id          INTEGER     PRIMARY KEY,           -- nextval(encryption_data_keys_id_seq), never reused
+    id          INTEGER     PRIMARY KEY DEFAULT nextval('encryption_data_keys_id_seq'), -- never reused
     state       TEXT        NOT NULL CHECK (state IN ('active', 'retired')),
     kek_id      TEXT        NOT NULL CHECK (kek_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'),
     wrapped     BYTEA       NOT NULL CHECK (octet_length(wrapped) = 60),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     wrapped_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     retired_at  TIMESTAMPTZ NULL,
+    sealed_count BIGINT     NOT NULL DEFAULT 0 CHECK (sealed_count >= 0), -- seals under this key (K-8)
     CHECK ((state = 'retired') = (retired_at IS NOT NULL))
 );
+ALTER SEQUENCE encryption_data_keys_id_seq OWNED BY encryption_data_keys.id;
 CREATE UNIQUE INDEX encryption_data_keys_one_active
     ON encryption_data_keys ((true)) WHERE state = 'active';
 
 CREATE TABLE encryption_backend_heartbeats (
     instance_id UUID        PRIMARY KEY,           -- random per backend process
     hostname    TEXT        NOT NULL DEFAULT '',
-    active_dek  INTEGER     NOT NULL,              -- the data key this process seals with
+    active_dek  INTEGER     NULL,                  -- the data key this process seals with; NULL until its first key load (K-3)
     started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -212,6 +245,23 @@ CREATE TABLE encryption_backend_heartbeats (
   not yet seen the rotation could still seal under it (section 13, alternative 4).
 - The id sequence is never reset, so a data-key id is never reused within a
   database's life (a restored dump brings its own table and sequence).
+- **Nonce bound and rotation trigger (O-2, K-8).** Nonces are 96-bit random,
+  so one data key seals at most **2^30** values (collision probability
+  below 2^-37, well inside the 2^32 / 2^-32 limit of NIST SP 800-38D 8.3).
+  Each process counts its seals per data key in memory and adds the count to
+  `sealed_count` on every refresher tick (`UPDATE ... SET sealed_count =
+  sealed_count + $n WHERE id = $dek`; a crash loses at most one tick, i.e.
+  under-counts by seconds of traffic, which the 4x margin absorbs). When the
+  refresher sees the active data key at `sealed_count >= 2^30`, it performs
+  `rotate-data-key` step 1 itself (new active data key, the old one retired,
+  under lock `(8400,2)`, logged 9.4); re-sealing old values is not needed
+  for the nonce bound and is left to an operator `--retire` run. Expected
+  load for the documented deployment (Google/Microsoft/Zoom renewals about
+  hourly, two to three columns each, plus user saves) is in the order of
+  10^2 seals per user per day: about 2^26 a year for 1 000 users, so the
+  automatic step is a backstop, not a routine. `status` prints
+  `sealed_count` and flags `rotate due` for an active data key older than
+  365 days or past 2^29 seals (advisory).
 
 ### 4.2 Wrap format
 
@@ -254,6 +304,20 @@ check on both sides means at least one of two racing processes sees the
 other. Heartbeats older than 1 day are deleted by any key load. A crashed
 backend therefore blocks these two commands for at most 90 s.
 
+**Seal lease (K-4).** A heartbeat older than 90 s does not prove the process
+is gone: a backend whose database link stalled, or whose container was
+paused, resumes with its keyring and would seal under a data key that
+`decrypt-all` or `reset-lost-key` has deleted. So the heartbeat is also a
+lease: `Seal` refuses (the write fails with the operation's documented 500;
+`Open` is unaffected) while the last heartbeat upsert that **succeeded** was
+**sent** more than 60 s ago (process monotonic clock; the row's `seen_at` is
+the transaction's `now()`, which is at or after the send, so the lease always
+ends before the 90 s window does). And a refresher tick that finds its
+active data key missing from the table, or the maintenance lock held by
+`decrypt-all`/`reset-lost-key`, stops sealing and begins the process's
+graceful shutdown (exit 1 after the drain, logged 9.4) instead of carrying on
+with keys the database no longer has.
+
 ## 5. Environment and start order
 
 ### 5.1 Grammar
@@ -283,7 +347,10 @@ key    = standard base64 (RFC 4648 §4, "+/", padding required) decoding to exac
 ### 5.2 Where the key comes from (D-9)
 
 - Production and development compose: the backend service declares
-  `env_file: [{ path: ./encryption.env, required: false }]` (compose >= 2.24)
+  `env_file: [{ path: ./encryption.env, required: false }]` (the `required`
+  attribute needs **Docker Compose 2.24.0 or later**; `docs/runbook.md:22`
+  says 2.20 today and is raised to 2.24.0 by this work, K-7; an older 2.2x
+  rejects the long syntax before anything runs)
   and **neither** compose file names `PACEDAY_ENCRYPTION_KEY` or `_PREVIOUS`
   in `environment:` (an `environment:` entry, even `${VAR:-}`, would override
   the file with an empty value). `required: false` is deliberate: a missing
@@ -291,11 +358,17 @@ key    = standard base64 (RFC 4648 §4, "+/", padding required) decoding to exac
   instead of a compose error that names no runbook section.
 - `encryption.env` sits beside `.env`, mode 600, is git-ignored, and is never
   the file passed to `backup.sh --env-file` (section 10 refuses it).
-- `paceday-operator` reads the same two variables from its environment; the
-  runbook runs it as `docker compose -f docker-compose.prod.yml run --rm
-  --env-file … backend /paceday-operator …` or equivalent so it gets the same
-  `env_file` (plan picks the exact invocation; the image must ship the CLI
-  binary).
+- `paceday-operator` reads the same two variables from its environment.
+  The image ships it as `/paceday-operator` (PAC-71's `backend/Dockerfile`
+  change builds and copies it; if PAC-84 merges first it makes the same
+  Dockerfile change, O-1 resolved). Invocation (K-13): subcommands that need
+  the backend **stopped** (`decrypt-all`, `reset-lost-key`,
+  `downgrade-schema`) run as `docker compose -f docker-compose.prod.yml run
+  --rm --no-deps backend /paceday-operator encryption <subcommand> …` with
+  postgres up (a `run` of the service gets the service's `env_file`;
+  compose's own `--env-file` is the interpolation file and is **not** how the
+  key arrives). The others may also use PAC-71's `docker compose … exec
+  backend /paceday-operator …` against the running container.
 
 ### 5.3 Start order (`backend/main.go`, AC-8, AC-9, D-5)
 
@@ -316,10 +389,23 @@ key    = standard base64 (RFC 4648 §4, "+/", padding required) decoding to exac
    Moving the `JWT_SECRET` check is not part of this work.
 6. Listener opens (`ListenAndServe`).
 7. After the listener is open: the **keyring refresher** (every 30 s: reload
-   data keys, unwrap only ids not yet held, switch the active id, upsert the
-   heartbeat with `active_dek`) and the **automatic conversion** (section
-   8.3), both as `lifecycle` tracked units so the drain stops them between
-   batches.
+   data keys, unwrap only ids not yet held, `Install` the new keyring with
+   the switched active id, flush `sealed_count`, **then** upsert the
+   heartbeat with `active_dek`; the order matters: a heartbeat never reports
+   an id the process is not yet sealing with) and the **automatic
+   conversion** (section 8.3), both as `lifecycle` tracked units so the
+   drain stops them between batches. A tick that cannot unwrap a new data
+   key (its wrapping key is not configured in this process) keeps the
+   current keyring, does not advance `active_dek`, and logs section 9.1's
+   wrong/unknown-key text with the prefix `encryption: ` instead of
+   `refusing to start: `; the process keeps serving (values under that key
+   answer per AC-16 with reason `unknown_data_key`). A tick also applies the
+   lease and shutdown rules of section 4.3 and the automatic step of 4.1.
+   Multi-replica note: every start re-wraps under **its own** active key the
+   data keys wrapped by a key in **its own** previous list; replicas started
+   with swapped active/previous keys re-wrap back and forth, which is
+   harmless (both can unwrap) but visible in `status`; the runbook says to
+   roll a key change out to every replica with the same two variables.
 
 The KEK is used only in step 4 and by the refresher for a data key id it has
 not seen (created by `rotate-data-key` or by another process's first-key
@@ -378,7 +464,10 @@ func (k *Keyring) SealWith(dek int32, b Binding, plaintext string) (string, erro
 func (k *Keyring) Open(b Binding, stored string) (string, error)    // empty->"", plain->as is, sealed->decrypt
 func (k *Keyring) Unwraps() int64                                   // AC-26 counter
 
-// Process-wide keyring, installed once at start (like calendar.Configure).
+// Process-wide keyring, installed at start (like calendar.Configure) and
+// replaced by the refresher. The package-level Seal/Open read Current() at
+// call time: no caller holds a *Keyring across a request or cron item, so a
+// seal started after a heartbeat reports a new active id uses it (K-5).
 func Install(k *Keyring)
 func Current() *Keyring                               // nil before Install
 func Seal(b Binding, plaintext string) (string, error) // ErrNoKeyring if none installed
@@ -416,9 +505,16 @@ remote wrap/unwrap; no storage code changes.
 - **One undecryptable secret never fails a multi-secret read, a save, or a
   list** (AC-16c, P-4). Read functions return the row with each secret in a
   form that defers or records its own failure (lazy per-field decryption, or
-  a per-field error); the plan picks the type. A settings save writes an
-  unchanged secret **byte-identical to what it read** (or omits the column);
-  it never re-seals or blanks a value it could not open.
+  a per-field error); the plan picks the type. **A read function never
+  returns a decryption failure as its own error** (K-2: callers such as
+  `GetSSOProviderByDomain`, `GetWorkspaceConnection`, `GetPersonalCalendar`
+  map any error to 404/400 today, section 1). Every save that keeps an
+  existing secret, not only the settings save, writes it **byte-identical to
+  what it read** (or omits the column): settings (S2, S3, S6, S8), the SSO
+  kept client secret (`sso_providers.go:199-203`, same row id so the stored
+  text stays valid), the org AI kept key (S9), the personal calendar
+  `url = COALESCE($4, url)` update; it never re-seals or blanks a value it
+  could not open (K-10).
 - Presence checks keep comparing the stored text with `''` (in Go and in
   SQL); sealed text is non-empty iff the plaintext was (AC-7, AC-16b).
 - `removeCredential` and its callers (`handlers_credentials.go:125-147`)
@@ -449,7 +545,15 @@ ALTER TABLE operator_audit ADD CONSTRAINT operator_audit_action_check CHECK (act
 ```
 
 `operator_audit_action_check` is the name Postgres gives PAC-71's inline
-column CHECK. No inventory column changes type, default or nullability (D-3).
+column CHECK. **Copy drift (K-9):** `IF NOT EXISTS` hides a difference between
+PAC-84's copy and PAC-71's text. Stage 4 adds a storage test that pins
+`operator_audit`'s columns, types, defaults and nullability to PAC-71's
+definition at `impl/pac-71-identity-binding-backend` `033` lines 61-74, and
+whichever of PAC-71 / PAC-84 merges second re-runs it against the first's
+text; a difference is fixed in the second one's own migration with `ALTER
+TABLE`, never by editing the merged one. Any later migration that changes
+the action list restates **all** eight actions (a comment in this migration
+says so). No inventory column changes type, default or nullability (D-3).
 The up step encrypts nothing (SQL has no key); the conversion does.
 
 ### 7.2 Down: `NNN_encryption_at_rest.down.sql`
@@ -457,8 +561,18 @@ The up step encrypts nothing (SQL has no key); the conversion does.
 1. A `DO` block raises
    `PAC-84 down refused: encrypted values or data keys remain; run "paceday-operator encryption decrypt-all" first (docs/runbook.md, "Encryption key - downgrade")`
    if `encryption_data_keys` has any row or any of the 18 columns has a value
-   with `left(col, 6) = 'pdenc:'`. The migration runs in one transaction, so
-   the refusal changes nothing.
+   with `left(col, 6) = 'pdenc:'`. The file runs as one simple-protocol
+   statement batch (one implicit transaction), so the refusal changes no
+   schema. **But golang-migrate marks the version dirty before it runs a
+   step** (`migrate/v4@v4.19.1/migrate.go:738-751`: `SetVersion(NNN-1, true)`,
+   run, `SetVersion(NNN-1, false)`), so a refused step leaves
+   `schema_migrations` at `(NNN-1, dirty)` over an unchanged NNN schema, and
+   the next `storage.Open` (backend or CLI) fails with `ErrDirty` (K-1).
+   Therefore `downgrade-schema` (section 8.2) performs the same check **in
+   Go first**, under the maintenance lock with no live backend, and refuses
+   with exit 1 and the same text without touching `schema_migrations`; if the
+   down step still fails, it calls `Force(NNN)` (the schema is unchanged) and
+   exits 1. The `DO` block stays as the backstop for any other runner.
 2. Drops `encryption_backend_heartbeats`, `encryption_data_keys`,
    `encryption_data_keys_id_seq`.
 3. **Keeps** `operator_audit` and its widened CHECK (spec §7; narrowing it
@@ -517,8 +631,8 @@ together) and nothing else. The 7.1 text is order-independent:
 | Subcommand | Flags | Key needed | Lock | Does | Audit action |
 |---|---|---|---|---|---|
 | `status` | `--check` | none | none | Per inventory column: `empty`, `plain`, `encrypted` counts and encrypted per data key; per data key: id, state, wrapping key id, created (age in days), wrapped_at, retired_at, values. Live heartbeats (instance, host, active_dek, seen). Read-only. | none |
-| `convert` | `--operator --reason [--batch 100]` | active (+ previous to unwrap) | maintenance | Encrypts every plain value (8.3). | `encryption_convert` |
-| `rotate-data-key` | `--operator --reason --retire <dek id> [--batch 100] [--wait 5m]` | active (+ previous) | maintenance; key setup for step 1 | (1) if `<dek id>` is active: in one transaction create a new active data key and mark `<dek id>` retired; (2) wait until every live heartbeat reports the new `active_dek` (none live: no wait), else exit 1 after `--wait` (a re-run resumes); (3) re-seal every value under `<dek id>` with the active key in batches (8.3 compare). Re-run with the same `--retire` after completion: 0 changes. | `encryption_rotate_data_key` |
+| `convert` | `--operator --reason [--batch 100]` | active (+ previous to unwrap); exit 4 unless the active key id equals the `kek_id` of the active data key (K-6) | maintenance | Encrypts every plain value (8.3). | `encryption_convert` |
+| `rotate-data-key` | `--operator --reason --retire <dek id> [--batch 100] [--wait 5m]` | active (+ previous); exit 4 unless the active key id equals the `kek_id` of the active data key, so no data key is created that the running backends cannot unwrap (K-6) | maintenance; key setup for step 1 | (1) if `<dek id>` is active: in one transaction create a new active data key and mark `<dek id>` retired; (2) wait until every live heartbeat reports the new `active_dek` (none live: no wait), else exit 1 after `--wait` (a re-run resumes); (3) re-seal every value under `<dek id>` with the active key in batches (8.3 compare). Re-run with the same `--retire` after completion: 0 changes. | `encryption_rotate_data_key` |
 | `decrypt-all` | `--operator --reason [--empty-undecryptable]` | keys that open every data key | maintenance + no live backend | Writes every sealed value back as plaintext (8.3 compare; the only path allowed to send plaintext, AC-19c). Values that fail to decrypt are listed (table, column, row, dek, reason) and left as they are -> exit 1, data keys kept; with `--empty-undecryptable` they get the AC-23 per-secret removal instead. When no sealed value remains, deletes every data key. | `encryption_decrypt_all` |
 | `reset-lost-key` | `--operator --reason --confirm-lost-key` | the **new** active key only | maintenance + no live backend | AC-23 exactly: every sealed value gets its owner's-removal end state, no provider call; plain values untouched; every data key deleted; one new active data key created under the new key. Exit 4 if any configured key opens a stored data key ("the key is not lost"). | `encryption_reset_lost_key` |
 | `downgrade-schema` | `--operator --reason` | none | maintenance + no live backend | Runs this work's down step (7.2) via the embedded migrations, only if the database's current version is this work's `NNN` (a later migration applied -> exit 1, "roll back the later release first"). | `encryption_downgrade_schema` |
@@ -536,6 +650,17 @@ the down step, into the kept `operator_audit`.
   `UPDATE t SET <column> = $sealed WHERE <identity> AND xmin::text = $xmin`.
   Selector: convert = plain (non-empty, `left(col,6) <> 'pdenc:'`); rotate =
   `split_part(col, ':', 3) = '<dek id>'` among sealed; decrypt-all = sealed.
+- The `SELECT` and its `UPDATE`s run in **one** `READ COMMITTED`
+  transaction. Why `xmin` is a sound compare-and-set (K-17): every `UPDATE`
+  of the row, HOT or not, writes a new tuple version whose `xmin` is the
+  writer's transaction id; a concurrent committed writer makes the `UPDATE`
+  re-check its `WHERE` on the newest version (EvalPlanQual), whose `xmin`
+  differs; freezing (Postgres >= 9.4; the images are `postgres:16`) keeps the
+  raw `xmin` and creates no version; a false match would need the same
+  32-bit xid to come round again (2^31 transactions) inside one short
+  transaction. A concurrent writer that writes back text it read before the
+  pass (the byte-identical rule of 6.2) may restore a plain value or one
+  under a retired key; the next sweep or run picks it up, nothing is lost.
 - The compare is on the row version, not on the value: **no plaintext is sent
   as a parameter or literal** by convert or rotate (AC-19c). A row changed in
   between (any column) is skipped this batch and picked up by the next one;
@@ -580,6 +705,7 @@ Every line starts `refusing to start: ` (CLI: `encryption: `) and ends
 - `key "<id>" (PACEDAY_ENCRYPTION_KEY[_PREVIOUS]) does not open data key <n> (wrapped by key "<id>")` (wrong key, AC-9)
 - `data key <n> is wrapped by key "<id>", which is neither PACEDAY_ENCRYPTION_KEY ("<id>") nor in PACEDAY_ENCRYPTION_KEY_PREVIOUS (<ids or "none">)` (AC-10)
 - `paceday-operator encryption <decrypt-all|reset-lost-key> is running (pid <p>); start the backend after it ends`
+- `PACEDAY_ENCRYPTION_KEY[_PREVIOUS] is the committed e2e test key "<id>"; generate a real key` (K-12; unless `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true`, section 11)
 
 No refusal names `JWT_SECRET` or any other variable (AC-8b keeps each case
 naming only its own).
@@ -605,19 +731,29 @@ crons (AC-17), once per failing secret per request or per cron item.
 | status / presence | existing mapping (not connected / `*Set` true) |
 | best-effort (briefs, free/busy, booking coverage) | skip, as for any unusable credential |
 | public booking host | unreadable -> busy (D-6); never D-7's 500 |
-| lists (personal calendars) | the row is listed; an undecryptable `url` is returned as `""` (note below) |
+| lists and fetches (personal calendars) | the row is listed; an undecryptable `url` is **omitted** (note below) |
 | disconnect | 200, Zoom revocation `unconfirmed` |
 
-Note on the list row: S5 is returned to its owner today; a row whose `url`
-cannot be decrypted is **listed with `url` equal to `""`** and everything
-else as stored (factory-assumed: the alternative, omitting the row, would hide
-it from the delete button AC-16c(d) requires; returning the ciphertext would
-break AC-19). The plan adds a test.
+Note on the list row (O-5 decided, K-11): S5 is returned to its owner today;
+a row whose `url` cannot be decrypted is listed (and fetched by
+`listPersonalCalendars`, the preview and the mark-synced answer) with `url`
+**omitted** and everything else as stored. `""` was the author's choice, but
+`personalCalendarDTO.URL` is `json:"url,omitempty"`
+(`handlers_personal.go:37`) and the bundle's `PersonalCalendar.url` is
+"Omitted when empty", so `""` is not even observable: omission is what the
+existing shape already says for "no usable URL". Rejected: omitting the row
+(hides it from the delete AC-16c(d) requires), a 500 for the list (AC-16c
+forbids), the ciphertext (AC-19). AC-19b's "unchanged in value" holds for
+every value that decrypts. The bundle's description is not amended (no shape
+change; a description-only bundle revision would force a web regeneration
+for nothing): this note is the normative text. The plan adds a test.
 
 ### 9.4 Informational lines
 
 - start: `encryption: key "<id>" active; <n> data keys (active <m>); <r> re-wrapped from previous keys`
 - previous key no longer used: `encryption: previous key "<id>" wraps no data key; remove it once the backup retention (14 days) has passed (docs/runbook.md, "Encryption key")`
+- automatic step (4.1): `encryption: data key <n> reached <count> seals; data key <m> is now active`
+- lease/shutdown (4.3): `encryption: heartbeat not written for <d>; sealing paused` / `encryption: data key <n> no longer exists (or <subcommand> holds the maintenance lock); shutting down`
 - conversion: `encryption: conversion started` / `encryption: conversion done: <n> values encrypted in <d>` / `encryption: conversion waiting: maintenance lock held by <application_name> (pid <p>)`
 
 ## 10. `scripts/ops/backup.sh` refusal (AC-4)
@@ -643,16 +779,24 @@ break AC-19). The plan adds a test.
 |---|---|
 | `docker-compose.yml` (dev) | `env_file: ./encryption.env` (`required: false`); no committed key. Without the file the backend refuses like production. README and `.env.example` give the generation command. |
 | `docker-compose.prod.yml` | same `env_file`; `environment:` does not name the key variables. |
-| `e2e/docker-compose.e2e.yml` | `PACEDAY_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:-e2e-test:cGFjZWRheS1lMmUtdGVzdC1rZXktTk9ULVNFQ1JFVCE=}` (32 ASCII bytes `paceday-e2e-test-key-NOT-SECRET!`), same pattern as `E2E_JWT_SECRET`. |
+| `e2e/docker-compose.e2e.yml` | `PACEDAY_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:-e2e-test:cGFjZWRheS1lMmUtdGVzdC1rZXktTk9ULVNFQ1JFVCE=}` (32 ASCII bytes `paceday-e2e-test-key-NOT-SECRET!`), same pattern as `E2E_JWT_SECRET`, plus `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY: "true"` (K-12). |
+| `cd backend && go run .` (README) | the developer exports `encryption.env` first (`set -a; . ../encryption.env; set +a`); README says so next to the generation command (K-15). |
 | e2e rotation / wrong-key cases (AC-2, AC-9, AC-11) | the e2e key above plus a second committed constant in `e2e/lib`: `e2e-test-2:cGFjZWRheS1lMmUtdGVzdC1rZXktMi1OT1RTRUNSRVQ=` (`paceday-e2e-test-key-2-NOTSECRET`). |
-| `e2e/tests/startup.spec.ts` `BOOTABLE` | adds `PACEDAY_ENCRYPTION_KEY` = the e2e key. |
+| `e2e/tests/startup.spec.ts` `BOOTABLE` | adds `PACEDAY_ENCRYPTION_KEY` = the e2e key and `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true`; one new refusal case boots with the e2e key **without** the allow variable and expects the 9.1 test-key refusal. |
 | production-reference boot (`:72-90`) | `productionReferenceEnvironment()` output plus `PACEDAY_ENCRYPTION_KEY` = the e2e key, added explicitly with a comment saying production gets it from `encryption.env`; the test also asserts, from the YAML text, that the prod backend service declares that `env_file` and that its `environment:` names neither key variable. |
 | Go suite (`scripts/test-backend.sh`, testcontainers) | `secretboxtest.Install` / `secretboxtest.Key`: a random key per test process, generated in committed test code; the script itself needs no variable. |
 | `scripts/ops/rehearse-backup-restore.sh` | `openssl rand -base64 32` per run into `$work/encryption.env`, outside the backup directory; `launch_backend` gains the key argument; a second random key for the negative control. |
 
 The two committed e2e keys are test-only and appear only under `e2e/`
-(and the `#:` line of `E2E_ENCRYPTION_KEY`). Detecting them in production is
-**not** in scope (open item O-3).
+(and the `#:` line of `E2E_ENCRYPTION_KEY`). **O-3 decided (K-12):** the
+backend and the CLI refuse to start (9.1, exit 4 for the CLI) when the
+active key **or** any previous key has the key bytes of either committed e2e
+key, unless `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY` is exactly `true`. The
+comparison is on the 32 bytes, so renaming the id does not get round it. Only
+the e2e compose and `startup.spec.ts` set the variable; the
+production-reference assertion of AC-8b also checks that
+`docker-compose.prod.yml` does not name it. (No deployment-mode variable
+exists in the backend to key this on, so the opt-in is explicit.)
 
 ## 12. `.env.example` and runbook text (AC-24, AC-25)
 
@@ -662,7 +806,8 @@ The two committed e2e keys are test-only and appear only under `e2e/`
 # ── Encryption key (PAC-84) ── lives in encryption.env beside this file, NEVER here
 #: PACEDAY_ENCRYPTION_KEY | required | default: none (the backend refuses to start) | <key id>:<base64 of 32 random bytes>; wraps the data keys that encrypt stored credentials. Put it in encryption.env (mode 600), not in .env: backup.sh refuses an env file holding it. Generate: echo "PACEDAY_ENCRYPTION_KEY=$(date -u +%Y%m%d):$(openssl rand -base64 32)" > encryption.env. Losing it loses every stored connection (docs/runbook.md, "Encryption key").
 #: PACEDAY_ENCRYPTION_KEY_PREVIOUS | optional | default: empty | Comma-separated retired keys, same format, accepted to re-wrap data keys during a rotation; keep each at least 14 days after retiring it (backup retention). encryption.env only.
-#: E2E_ENCRYPTION_KEY | test-only | default: e2e-test:cGFjZWRheS1lMmUtdGVzdC1rZXktTk9ULVNFQ1JFVCE= | PACEDAY_ENCRYPTION_KEY of the e2e stack (e2e/docker-compose.e2e.yml). Never use it anywhere else.
+#: E2E_ENCRYPTION_KEY | test-only | default: e2e-test:cGFjZWRheS1lMmUtdGVzdC1rZXktTk9ULVNFQ1JFVCE= | PACEDAY_ENCRYPTION_KEY of the e2e stack (e2e/docker-compose.e2e.yml). Never use it anywhere else: the backend refuses it unless PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true.
+#: PACEDAY_ENCRYPTION_ALLOW_TEST_KEY | test-only | default: empty | "true" lets the backend start with a committed e2e key. Set only by the e2e stack; never in a deployment.
 ```
 
 The SECRETS paragraph (`.env.example:23-25`) says the encryption key is not
@@ -722,23 +867,166 @@ the strings in messages must match the headings).
 | F-12 | Sixth subcommand `downgrade-schema` | 8.2 |
 | F-13 | CLI exit codes 0-6 | 8.1 |
 | F-14 | `decrypt-all --empty-undecryptable` | 8.2 |
-| F-15 | Undecryptable personal-calendar `url` listed as `""` | 9.3 |
+| F-15 | (superseded by F-22) | 9.3 |
 | F-16 | backup.sh refusal exits 2 (input refusal, like its other argument checks) | 10 |
 | F-17 | Committed e2e keys; random keys for Go and the rehearsal | 11 |
 | F-18 | One migration text for either merge order with PAC-71 | 7.3 |
+| F-19 | Seal lease (60 s) and refresher shutdown on lost data key (K-4) | 4.3 |
+| F-20 | 2^30 seals per data key, `sealed_count`, automatic rotation step 1 (K-8) | 4.1 |
+| F-21 | Committed e2e keys refused unless `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true` (K-12) | 9.1, 11 |
+| F-22 | Undecryptable personal-calendar `url` omitted (replaces F-15's `""`, K-11) | 9.3 |
 
 ## 15. Open items for the challenger / plan
 
-- **O-1** The `paceday-operator` binary must ship in the backend image (PAC-71
-  builds it on its branch; check its Dockerfile change) so the runbook's
-  `docker compose run` invocation works; plan names the exact command.
-- **O-2** Encryptions per data key per year for the documented deployment
-  size (D-1, 2^32 random-nonce bound): the plan states the number; `status`
-  shows each data key's age so `rotate-data-key` can be run routinely.
-- **O-3** Refusing (or warning on) the committed e2e keys outside test mode is
-  not specified; proposed as a follow-up rather than added here.
+- **O-1** Resolved (K-13): PAC-71's `backend/Dockerfile` builds and copies
+  `/paceday-operator`; PAC-84 makes the same change if it merges first;
+  invocation in 5.2.
+- **O-2** Resolved (K-8): 2^30 seals per data key, counted, automatic step 1
+  at the bound (4.1).
+- **O-3** Resolved (K-12): committed e2e keys refused unless
+  `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true` (11).
 - **O-4** The env-file key is visible in `docker inspect` to whoever controls
   Docker on the host; accepted under Q-1 (KMS later), stated in the runbook.
-- **O-5** F-15 (empty `url` in the list for an undecryptable row) is the only
-  place a response *value* differs from a stored one; challenger to confirm
-  it is preferable to a 500 for the whole list (which AC-16c(d) forbids).
+- **O-5** Resolved (K-11): `url` omitted (9.3).
+
+## Challenge — 2026-11-02
+
+**Verdict**: accept-with-changes (all changes applied in place above; no
+bundle change, `contractHash` stays `a15d981e…ee472`, verified:
+`sha256sum contracts/openapi/openapi.yaml` equals `origin/main`'s, and
+`py -3 scripts/openapi_assemble.py --check` -> `OK: bundle is in sync (106 paths)`).
+Code read at `origin/main` `953f96e` and `origin/impl/pac-71-identity-binding-backend` `559b6c1`.
+
+### Requests wrongly permitted / divergences (each fixed above)
+
+1. **K-1 (high) Refused down step leaves the database dirty.** golang-migrate
+   v4.19.1 (`migrate.go:738-751`) writes `SetVersion(NNN-1, dirty=true)`
+   before running a down body. With the 7.2 `DO` refusal, the schema is
+   unchanged but `schema_migrations` reads `(NNN-1, dirty)`, so the next
+   backend start fails `migrate up: Dirty database version NNN-1` and 7.2's
+   "the refusal changes nothing" was false. Fix: `downgrade-schema` checks in
+   Go first and `Force(NNN)` if the step still fails (7.2, AC-22).
+2. **K-2 (high) Act paths that would not reach the documented 500.** Beyond
+   SSO (`handlers_sso.go:57-61,122-125`) and AI: `handlers_conferencing.go:52-63`
+   maps a Zoom decode failure / any `LoadMicrosoftToken` error to 400
+   refusals; `handlers_daily_recap.go:159-162` maps any
+   `GetWorkspaceConnection` error to 400 "Slack not connected";
+   `handlers_personal.go:147-155,207-210` map any `GetPersonalCalendar`
+   error to 404. Example: `POST /api/settings/daily-recap/test` with an
+   undecryptable Slack token would answer `400 Slack not connected` where
+   the bundle documents only a 500 for a stored-data failure. Fix: read
+   functions never return a decryption failure as their error (6.2); five
+   named mappings (1); AC-16 body = the operation's documented 500 body
+   (`sendDailyRecapTest` documents `{"error":"db error"}`).
+3. **K-3 (high) `active_dek INTEGER NOT NULL` vs start order.** 5.3 step 4
+   writes the heartbeat before the first data key exists on a fresh
+   database: the insert would fail and the backend never starts. Fix:
+   nullable (4.1, AC-27).
+4. **K-4 (high) Heartbeat presence is not a fence.** A backend whose DB link
+   stalls or whose container is paused for > 90 s is "absent" to
+   `decrypt-all`/`reset-lost-key`, then resumes and seals under a data key
+   those commands deleted: the value is unreadable forever. Write-then-check
+   only covers processes that start during the operator run. Fix: 60 s seal
+   lease measured from the heartbeat's send time (ends before the 90 s
+   window), and shutdown when the active data key disappears or a
+   destructive command holds the lock (4.3, AC-21c).
+5. **K-5 (medium) Rotation window.** Nothing said `Seal` reads the installed
+   keyring at call time or that the heartbeat follows `Install`; a request or
+   cron item holding a keyring snapshot could seal under the retired key
+   after step 3 swept that row. Harmless (retired keys kept) but it breaks
+   AC-11b's "0 values under N". Fix: 5.3 step 7 order, 6.1 comment.
+6. **K-6 (medium) Operator and backends configured with different active
+   keys.** `rotate-data-key` run with KEK B while backends run KEK A creates
+   a data key no backend can unwrap; refreshers cannot switch, the wait
+   times out, and every backend restart refuses. Fix: convert/rotate exit 4
+   unless the operator's active key wraps the active data key; a refresher
+   that cannot unwrap keeps its keyring (8.2, 5.3, AC-31).
+7. **K-7 (medium) Compose version.** `env_file` long syntax with `required`
+   needs Docker Compose 2.24.0; `docs/runbook.md:22` promises 2.20+. Fix:
+   runbook minimum raised, merge condition (5.2, manifest).
+8. **K-8 (medium) O-2 had no number.** Fix: 2^30 seals per data key,
+   `sealed_count`, automatic rotation step 1 at the bound, `status` flag
+   (4.1, AC-29).
+9. **K-9 (medium) `operator_audit` copy drift.** PAC-84 copies PAC-71's DDL;
+   `CREATE TABLE IF NOT EXISTS` silently keeps whichever merged first. PAC-71's
+   CHECK has exactly three actions today (`033:63`), so nothing is lost now;
+   a later DDL change on either side would be. Fix: pinning test, restate-all
+   rule (7.1, AC-32).
+10. **K-10 (low) Kept secrets other than settings.** SSO keeps
+    `current.OIDCClientSecret` (`sso_providers.go:199-203`), org AI keeps
+    its key, personal calendar `url = COALESCE($4, url)`. Fix: byte-identical
+    rule for every save (6.2, AC-16c).
+11. **K-11 (low) O-5.** `""` cannot be observed: `personalCalendarDTO.URL` is
+    `omitempty` (`handlers_personal.go:37`), bundle says "Omitted when
+    empty". Decided: omitted (9.3).
+12. **K-12 (low) O-3.** Decided: committed e2e key bytes refused unless
+    `PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true` (no deployment-mode variable
+    exists in `backend/`) (9.1, 11, 12, AC-30).
+13. **K-13 (low) O-1 and invocation.** PAC-71's `backend/Dockerfile` builds
+    `/paceday-operator` and its comment uses `exec backend`, which cannot
+    work for subcommands that require the backend stopped; 5.2 named
+    compose's `--env-file`, which is the interpolation file, not the service
+    `env_file`. Fix: `run --rm --no-deps backend /paceday-operator …`;
+    `backend/Dockerfile` added to allowedPaths (5.2, manifest).
+14. **K-14 (low) allowedPaths.** Added `backend/Dockerfile`,
+    `backend/main_test.go`; migration-header note location; runbook :22.
+15. **K-15 (low) `go run .`** (README:40) had no key source (11).
+16. **K-16 (low)** lp16 overflow undefined (3.2); `encryption_data_keys.id`
+    had no `DEFAULT nextval` and the sequence no owner (4.1).
+
+### Responses the client cannot handle
+
+None. The bundle is unchanged; the only response-value difference is an
+omitted optional `url` (already "Omitted when empty"); the web reads
+`raw.url` (`smart-calendar-flow/src/api/client.ts:648`) as optional.
+
+### Consumers affected
+
+As listed in the manifest, plus: `docs/runbook.md:22` (Compose minimum),
+`backend/Dockerfile` (if PAC-84 merges first), PAC-71's operator doc
+`exec` invocation for the destructive encryption subcommands.
+
+### Uncertainties not actually resolved
+
+None claimed by the manifest (`resolvesUncertain: []`).
+
+### Verified clean
+
+- **AAD** (3.2): fixed tag, version byte, every field lp16, part count u8:
+  injective; data-key id outside the AAD is fine (another id is another key).
+  Wrap AAD binds id and `kek_id`.
+- **Row identities** (3.3): `oauth_tokens` `UNIQUE (user_id, calendar_id)`
+  (`017_…:11-12`), only writer `token_store.go:25-33` with literal
+  `'primary'`; `settings.user_id` NOT NULL (`024_…:144`) + unique (`018_…:22`);
+  `workspace_connections` `UNIQUE (user_id, provider)`; `personal_calendars.id`
+  SERIAL (`004_…:2`); `sso_providers.id` UUID (`008_…:2`). No `UPDATE` of
+  any identity column in non-test Go or later migrations on `main` or the
+  PAC-71 branch; PAC-71 binding and its operator steps (`operator.go:45-58`)
+  delete or empty secrets, never move rows between users, so no re-keying
+  case exists. Every insert-assigned-id writer can do the one-transaction
+  write: `DBTX` has `BeginTx` (`dbtx.go:12-20`); personal calendars can take
+  `nextval` in one statement; `UpsertSSOProvider` has no non-test caller.
+- **`xmin` compare-and-set** (8.3): sound on Postgres 16 (images
+  `postgres:16-alpine`, `16.15-alpine`) with SELECT and UPDATE in one READ
+  COMMITTED transaction (HOT updates change `xmin`; EvalPlanQual re-checks;
+  freezing keeps raw `xmin`; wraparound needs 2^31 xids in one short
+  transaction). `SELECT … FOR UPDATE SKIP LOCKED` would be equally sound;
+  `xmin` kept (catches other-column writes, holds no row locks).
+- **Lock race at start**: operator (lock, then read heartbeats) vs backend
+  (commit heartbeat, then read `pg_locks`): whichever second sees the other.
+  Correct; the gap was liveness (K-4).
+- **Migration order**: PAC-71 adds no operator_audit action beyond its three;
+  drop/re-add of `operator_audit_action_check` works in both orders and in
+  `TestMigrationsDownTo005AndUpAgain`'s down/up cycle (both downs keep the
+  table, `keptByDown`); a migration body is one implicit transaction.
+- **Documented 500s**: of the 20 operations without a 500, none acts with a
+  stored secret (re-ran the bundle scan). `ssoOidcCallback`/`startSsoLogin`
+  document 500 and their 404 "also when the lookup errors" stays true once
+  the lookup cannot fail on decryption; `testLLMConnection` and
+  `parseNaturalLanguage` 500 texts ("settings load failure" / "could not be
+  loaded") cover an undecryptable key decided before the 409/200 branches.
+- **backup.sh**: refusal sits after `[ -f "$env_file" ]` (`backup.sh:55`)
+  and before `mkdir -p` (`:75`) and `cp` (`:87`); exit 2 matches its other
+  input refusals.
+- **Manifest conventions** match PAC-72 / PAC-81 part A (added
+  `ownerDecided`, `followUps`).
