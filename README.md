@@ -53,8 +53,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 Paceday exposes 16 calendar tools via the [Model Context Protocol](https://modelcontextprotocol.io).
 
-**SSE mode, production** — opt-in. The production stack runs no MCP server
-until you add `docker-compose.mcp.yml` and set `MCP_AUTH_TOKEN` in `.env`
+**SSE mode, production** (Docker Engine 25+ and Docker Compose v2, see the
+[runbook](docs/runbook.md#requirements)) — opt-in. The production stack runs
+no MCP server until you add `docker-compose.mcp.yml` and set `MCP_AUTH_TOKEN` in `.env`
 (generate it with `openssl rand -hex 32`; without it compose refuses to start
 the stack, naming the variable):
 

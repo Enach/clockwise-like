@@ -380,7 +380,8 @@ func readRepoFile(t *testing.T, rel string) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	return string(raw)
+	// Line endings depend on the checkout (core.autocrlf); the checks do not.
+	return strings.ReplaceAll(string(raw), "\r\n", "\n")
 }
 
 // AC-D1: every variable read is documented; every documented variable is used.

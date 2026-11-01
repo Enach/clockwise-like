@@ -123,6 +123,19 @@ func TestSSEBasePath(t *testing.T) {
 	if code := statusOf(t, "http://"+addr+"/mcp/sse"); code != http.StatusUnauthorized {
 		t.Errorf("/mcp/sse without the token: %d, want 401", code)
 	}
+	// Review of #248: a valid session id is not a credential. The message
+	// endpoint of a live session refuses a request without the token.
+	noTok, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+addr+endpoint,
+		strings.NewReader(`{"jsonrpc":"2.0","id":10,"method":"ping"}`))
+	noTok.Header.Set("Content-Type", "application/json")
+	r, err := http.DefaultClient.Do(noTok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Errorf("POST %s without the token: %d, want 401", endpoint, r.StatusCode)
+	}
 }
 
 func TestSSENoBasePathUnchanged(t *testing.T) {

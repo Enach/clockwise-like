@@ -126,6 +126,19 @@ func TestRenderRequiresVersion(t *testing.T) {
 	if p := r2.Services["nginx"].Ports; len(p) != 1 || p[0].HostIP != "127.0.0.1" || p[0].Published != "18555" {
 		t.Errorf("nginx ports with NGINX_BIND_ADDRESS=127.0.0.1 NGINX_HTTP_PORT=18555: %+v", p)
 	}
+	// Review of #248: an IPv6 address is written in brackets
+	// (.env.example), which every Compose v2 parses as the host address.
+	for addr, want := range map[string]string{"[::1]": "::1", "[2001:db8::5]": "2001:db8::5", "[::]": "::"} {
+		v6 := baseSettings(18556)
+		v6["NGINX_BIND_ADDRESS"] = str(addr)
+		r3, errOut, err := render(t, newProject(t, v6))
+		if err != nil {
+			t.Fatalf("render with NGINX_BIND_ADDRESS=%s: %v %s", addr, err, errOut)
+		}
+		if p := r3.Services["nginx"].Ports; len(p) != 1 || p[0].HostIP != want || p[0].Published != "18556" || p[0].Target != 80 {
+			t.Errorf("NGINX_BIND_ADDRESS=%s: nginx ports %+v, want %s:18556->80", addr, p, want)
+		}
+	}
 }
 
 // AC-C5: MCP enabled without a token fails at config and at up, naming the

@@ -14,6 +14,15 @@ Related documents:
   timeouts, health checks.
 - [Security](./security.md).
 
+## Requirements
+
+- **Docker Engine 25 or later**: the health checks use `start_interval`
+  (frequent checks during the start period), which older engines do not
+  support.
+- **Docker Compose v2** (the `docker compose` plugin; 2.20 or later, or the
+  later 5.x line — the compose tests were run with 5.6.1). The legacy
+  `docker-compose` v1 cannot read these files.
+
 ## Local setup
 
 For development, see the repository [README](../README.md) (`docker compose
@@ -189,6 +198,14 @@ Paceday runs one backend; a deploy is not zero-downtime (spec §5).
   `compose up -d` let it finish; do not pass a shorter `-t`.
 - Container logs are rotated: `json-file`, 10 MB per file, 5 files per
   container.
+- **With MCP enabled, a connected MCP client makes nginx's stop take the full
+  50 s.** nginx stops gracefully: it waits for open connections, and an MCP
+  client holds an event stream open on `/mcp/sse` indefinitely. So
+  `compose stop`, `down` or an `up` that recreates nginx waits the whole
+  50 s grace period while any client is connected, after which Docker ends
+  nginx and the client reconnects. This is expected, not a hang. To restart
+  quickly, stop MCP first (`compose stop mcp-server`): its streams close and
+  nginx then stops at once.
 - Requests arriving during the restart get an error from nginx for the few
   seconds the new backend needs to start (longer if it migrates). A booking
   confirmation email still sending after the drain is logged with the booking

@@ -57,6 +57,7 @@ func composeServices(t *testing.T, text string) map[string]string {
 
 // uncommented drops YAML comments (outside quotes is all these files need).
 func uncommented(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
 	var b strings.Builder
 	for _, line := range strings.Split(s, "\n") {
 		if i := strings.Index(line, " #"); i >= 0 {

@@ -39,6 +39,19 @@ func TestFramingOnlyBookingPage(t *testing.T) {
 		{"/api/book/abc123/slots", false},
 		{"/assets/index-abc.js", false},
 		{"/nginx-health", false},
+		// Review of #248: encodings, case and dot segments. nginx matches the
+		// decoded, normalised $uri, so %2F is a slash, dot segments are
+		// resolved before matching, and matching is case-sensitive.
+		{"/book/x%2Fapp", false},     // $uri /book/x/app: two segments
+		{"/BOOK/x", false},           // case-sensitive
+		{"/Book/x", false},           // case-sensitive
+		{"/book/..", false},          // normalised to /
+		{"/book/x/..", false},        // normalised to /book/
+		{"/book/x/../../app", false}, // normalised to /app
+		// Normalised to /book/app, which IS the booking page of slug "app"
+		// (the SPA serves the same document), so it is framable.
+		{"/book/x/../app", true},
+		{"/book/%61bc", true}, // $uri /book/abc
 	}
 	for _, c := range cases {
 		r := sendOne(t, "", "http://"+n+c.path)

@@ -176,7 +176,8 @@ services:
         condition: service_healthy
     # Plain HTTP; the TLS proxy in front connects here. NGINX_BIND_ADDRESS
     # empty = every interface (IPv4 and IPv6), as before; 127.0.0.1 when the
-    # proxy runs on this host (docs/operator/proxy.md §5). NGINX_HTTP_PORT is
+    # proxy runs on this host (docs/operator/proxy.md §5). An IPv6 address is
+    # written in brackets: [::1]. NGINX_HTTP_PORT is
     # the host port (default 80).
     ports:
       - "${NGINX_BIND_ADDRESS:+${NGINX_BIND_ADDRESS}:}${NGINX_HTTP_PORT:-80}:80"

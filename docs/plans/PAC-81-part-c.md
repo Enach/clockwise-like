@@ -189,3 +189,44 @@ image digests first), nginx to framing denied everywhere. No data changes.
   502.
 - `docker-compose.yml` (development) still passed `SESSION_SECRET`, which
   nothing reads; removed so `.env.example` can drop the deprecated entry.
+
+## Review round 1 (request-changes on `2e82967`)
+
+- **Blocking: CRLF checkout.** `TestProdComposeGraceAndLogs` hard-coded `\n`
+  and failed with `core.autocrlf=true`. `.gitattributes` now pins
+  `docker-compose*.yml` to LF (`git add --renormalize .` changed nothing in
+  the index), and `readRepoFile` / `uncommented` drop `\r`, so the config
+  tests no longer depend on the checkout. Proved by `go test ./config/` in a
+  worktree checked out with `core.autocrlf=true` (compose files and
+  `.env.example` CRLF on disk).
+- Runbook: requirements (Docker Engine 25+ for `start_interval`, Compose v2);
+  with MCP enabled, a connected client makes nginx's graceful stop take the
+  full 50 s.
+- `NGINX_BIND_ADDRESS`: IPv6 is written in brackets (`[::1]`); rendering of
+  `[::1]`, `[2001:db8::5]` and `[::]` is tested.
+- Tests: the MCP message endpoint of a live session refuses a request
+  without the token; framing edge cases (`%2F`, case, dot segments; nginx
+  matches the decoded, normalised `$uri`, so `/book/x/../app` is the booking
+  page of slug `app` and stays framable).
+- `docs/security.md`: the booking page's client-side links can navigate a
+  hostile frame to other routes without a new frame-ancestors check;
+  mitigated by `SameSite=Lax` (no session in a cross-site frame); the web fix
+  is filed separately.
+
+### e2e gate failures (web `27f2794`)
+
+- `edge.spec.ts` "SPA deep link (fallback)" used `/book/<slug>`, which is
+  now framable by owner decision: the spec was wrong, not nginx. The sample
+  is now `/app/links/some/deep/link` (DENY, `'none'`), and a separate test
+  asserts the booking page's headers (`frame-ancestors *`, no
+  `X-Frame-Options`, everything else unchanged).
+- `framing.spec.ts`: both frames were `chrome-error://chromewebdata/` with
+  `net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. The embedding page was
+  fulfilled by `page.route` on a made-up host, which Chromium places in the
+  public address space, and Local Network Access blocks a public page from
+  framing localhost before any header is read. Reproduced against the
+  shipped nginx with Playwright's Chromium (also with a routed
+  `127.0.0.1` origin: still public). The test now serves the embedding page
+  from a real server on `127.0.0.1` (another port, so another origin);
+  reproduced: the real SPA bundle renders inside the frame and `/app` is
+  refused by `frame-ancestors 'none'`.

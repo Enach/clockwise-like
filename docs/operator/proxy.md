@@ -126,7 +126,8 @@ nginx's published port must be reachable **only from your proxy**: anyone who
 reaches it directly skips TLS, HSTS and your proxy's own protections.
 
 - Proxy on the same host: set **`NGINX_BIND_ADDRESS=127.0.0.1`**
-  (`.env.example`) so nginx's port is published on loopback only. If the
+  (`.env.example`) so nginx's port is published on loopback only. An IPv6
+  address goes in brackets: `NGINX_BIND_ADDRESS=[::1]`. If the
   proxy itself listens on port 80, also set **`NGINX_HTTP_PORT`** to a free
   port (e.g. `8081`) and point the proxy at `127.0.0.1:<that port>`. Remember
   (§3) that nginx then still sees the bridge gateway as the peer, not
