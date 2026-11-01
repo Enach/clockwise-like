@@ -292,9 +292,7 @@ func TestPAC72_ShorterHorizonKeepsBookings(t *testing.T) {
 
 // AC-28 (revision 2.1): process in UTC+10, owner in America/New_York.
 func TestPAC72_OwnersZone(t *testing.T) {
-	prev := time.Local
-	time.Local = time.FixedZone("UTC+10", 10*60*60)
-	defer func() { time.Local = prev }()
+	pac72ProcessZone(t, time.FixedZone("UTC+10", 10*60*60)) // before any bench
 
 	summer := time.Date(2030, 7, 2, 2, 30, 0, 0, time.UTC) // Monday 2030-07-01 22:30 EDT
 	b := newPAC72Bench(t, summer)
@@ -375,9 +373,7 @@ func TestPAC72_CollectiveLinkUsesTheOwnersZone(t *testing.T) {
 func TestPAC72_NoProfileZoneIsUTC(t *testing.T) {
 	for _, stored := range []string{"", "Mars/Olympus_Mons", "Local"} {
 		t.Run("stored "+stored, func(t *testing.T) {
-			prev := time.Local
-			time.Local = time.FixedZone("UTC+10", 10*60*60)
-			defer func() { time.Local = prev }()
+			pac72ProcessZone(t, time.FixedZone("UTC+10", 10*60*60)) // before any bench
 			b := newPAC72Bench(t, pac72At(pac72Mon, "06:00"))
 			tag := strings.ToLower(strings.NewReplacer("/", "-", "_", "-").Replace(stored))
 			owner, _ := b.host("pac72-ac30-" + tag + "@example.com")

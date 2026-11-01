@@ -821,11 +821,24 @@ func TestPAC72_ListingAndBookingAreOneRule(t *testing.T) {
 	}
 }
 
+// pac72ProcessZone sets the server process's zone for the rest of t. Call it
+// before t creates any bench: the restore is registered first, so it runs
+// last (t.Cleanup is LIFO), after every httptest server t started has been
+// closed. time.Local is never written while one of t's servers runs.
+func pac72ProcessZone(t *testing.T, loc *time.Location) {
+	t.Helper()
+	prev := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = prev })
+}
+
 // AC-22: with the process in a zone other than UTC, the date-less listing, the
-// explicit-date listing and the booking answer exactly as in UTC.
+// explicit-date listing and the booking answer exactly as in UTC. Each half
+// runs in its own subtest, so its bench (and calendar stand-in) is closed
+// before the zone changes.
 func TestPAC72_ProcessZoneDoesNotMatter(t *testing.T) {
 	now := pac72At(pac72Mon, "20:00") // Tuesday 06:00 at UTC+10
-	run := func(tag string) string {
+	run := func(t *testing.T, tag string) string {
 		b := newPAC72Bench(t, now)
 		owner, _ := b.host("pac72-zone-" + tag + "@example.com")
 		link := b.link("pac72-zone-"+tag, owner, nil, owner)
@@ -842,11 +855,12 @@ func TestPAC72_ProcessZoneDoesNotMatter(t *testing.T) {
 		}
 		return strings.Join(out, "\n")
 	}
-	inUTC := run("utc")
-	prev := time.Local
-	time.Local = time.FixedZone("UTC+10", 10*60*60)
-	defer func() { time.Local = prev }()
-	inPlus10 := run("plus10")
+	var inUTC, inPlus10 string
+	t.Run("process in UTC", func(t *testing.T) { inUTC = run(t, "utc") })
+	t.Run("process in UTC+10", func(t *testing.T) {
+		pac72ProcessZone(t, time.FixedZone("UTC+10", 10*60*60))
+		inPlus10 = run(t, "plus10")
+	})
 	if inUTC != inPlus10 {
 		t.Fatalf("answers differ by process zone.\nUTC:\n%s\nUTC+10:\n%s", inUTC, inPlus10)
 	}

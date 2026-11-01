@@ -198,13 +198,24 @@ func TestPublicBookingCreateContract(t *testing.T) {
 func TestPublicBookingErrorsContract(t *testing.T) {
 	ownerID := createTestUser(t, "public-errors-owner@example.com")
 	link := createPublicBookingLink(t, ownerID, "public-errors", "Public Errors", 120, "reusable", nil)
-	futureStart := futureBookingStart().Format(time.RFC3339)
-	tooSoonAt := time.Now().UTC().Add(30 * time.Minute).Truncate(15 * time.Minute)
+	// PAC-72: a fixed clock (Tuesday 2030-01-08 10:00 UTC) so the too-soon
+	// start is always on a link day, inside the hours and on the grid: only
+	// the 120-minute notice refuses it. The engine reports it free.
+	now := time.Date(2030, 1, 8, 10, 0, 0, 0, time.UTC)
+	futureStart := now.AddDate(0, 0, 1).Format(time.RFC3339)
+	tooSoonAt := now.Add(30 * time.Minute)
 	tooSoon := tooSoonAt.Format(time.RFC3339)
-	// PAC-72: the engine reports the too-soon start free, so the refusal is
-	// the minimum notice's (or, on a weekend or outside the hours, another
-	// rule's: every refusal has the same answer).
-	r := setupPublicBookingRoutes(t, &fakeBookingFlow{slotsResult: []engine.AvailableSlot{{Start: tooSoonAt, End: tooSoonAt.Add(30 * time.Minute)}}})
+	eng := &fakeBookingFlow{slotsResult: []engine.AvailableSlot{{Start: tooSoonAt, End: tooSoonAt.Add(30 * time.Minute)}}}
+	h := newBookingHandlersWithEngine(openTestDB(t), eng)
+	h.now = func() time.Time { return now }
+	r := chi.NewRouter()
+	r.Get("/api/book/{slug}/slots", h.getSlots)
+	r.Post("/api/book/{slug}", h.createBooking)
+	// The same link with specific refusals names the rule: too_soon.
+	specific := createPublicBookingLink(t, ownerID, "public-errors-specific", "Public Errors Specific", 120, "reusable", nil)
+	if _, err := openTestDB(t).Exec(`UPDATE scheduling_links SET refusal_message = 'specific' WHERE id = $1`, specific.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name         string
@@ -218,6 +229,7 @@ func TestPublicBookingErrorsContract(t *testing.T) {
 		{name: "slots reject invalid date", method: http.MethodGet, path: "/api/book/" + link.Slug + "/slots?date=12-08-2026", want: http.StatusBadRequest, wantContains: "invalid date format"},
 		{name: "booking requires fields", method: http.MethodPost, path: "/api/book/" + link.Slug, body: `{}`, want: http.StatusBadRequest, wantContains: "name, email, and start are required"},
 		{name: "booking rejects too soon", method: http.MethodPost, path: "/api/book/" + link.Slug, body: fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":30}`, tooSoon), want: http.StatusConflict, wantContains: `{"error":"slot is no longer available"}`},
+		{name: "booking rejects too soon (specific: the notice rule)", method: http.MethodPost, path: "/api/book/" + specific.Slug, body: fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":30}`, tooSoon), want: http.StatusConflict, wantContains: `{"error":"slot is too soon","reason":"too_soon"}`},
 		{name: "booking rejects invalid duration", method: http.MethodPost, path: "/api/book/" + link.Slug, body: fmt.Sprintf(`{"name":"Alice","email":"alice@example.com","start":"%s","duration_minutes":45}`, futureStart), want: http.StatusBadRequest, wantContains: "invalid duration"},
 	}
 
