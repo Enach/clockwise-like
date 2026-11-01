@@ -537,3 +537,250 @@ test.describe('public booking — only an offered start books (PAC-72)', () => {
   });
 });
 
+/**
+ * PAC-83: the web waits for a slow answer and never invents one.
+ *
+ * OQ-4 (contract contracts/features/PAC-83.md §5.3): timing and failure are
+ * controlled at the browser's network layer with page.route, against the real
+ * stack; nothing in the server, nginx or the stand-in changes. An answer is
+ * HELD on a promise the test releases (route.fetch sends the real request
+ * from Playwright, the test asserts the waiting state, then route.fulfill
+ * hands the real answer to the page). The page's clock is installed before
+ * page.goto and advanced with page.clock.fastForward, so "after 20 s / 30 s"
+ * is page time and the scenario takes seconds; this works because the web
+ * arms its bounds with setTimeout (contract §3.1).
+ *
+ * What these prove: the web does not give up early (the 4 s abort is gone)
+ * and renders a late answer. They do not prove the 135 s bound's value (unit
+ * AC-3) and do not make the server slow (PAC-81 Part A backend tests).
+ *
+ * Page time is advanced to 131 s after the request started: past nginx's
+ * 130 s read timeout, below the client's 135 s bound (CLIENT_REQUEST_BOUND_MS).
+ *
+ * Isolation: these journeys use this file's hosts (BOOKING_HOSTS.ui and .api)
+ * on days no other journey here uses (bookingDay(6) and (7)) and, for the
+ * two-host link, at 11:00-12:00 UTC, which no seeded window of theirs covers.
+ */
+test.describe('public booking — slow or lost answers (PAC-83)', () => {
+  /** Page time that shows the "still working" notice (STILL_WORKING_AFTER_MS is 8 s). */
+  const PAST_STILL_WORKING_MS = 9_000;
+  /** Brings the held request to 131 s of page time in total. */
+  const TO_131_S_MS = 131_000 - PAST_STILL_WORKING_MS;
+  const NO_TIMES = /no time available|no available times/i;
+
+  /** A promise the route handler waits on, and the function that opens it. */
+  function gate(): { wait: Promise<void>; open: () => void } {
+    let open!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { wait, open };
+  }
+
+  test('AC-5: a two-host link whose slots answer late shows the real slots, never none', async ({
+    page,
+    api,
+    apiAs,
+    db,
+    assertNotDemo,
+  }) => {
+    test.setTimeout(120_000);
+    const owner = apiAs(BOOKING_HOSTS.ui);
+    const coHost = apiAs(BOOKING_HOSTS.api);
+    const slug = `e2e-pac83-two-hosts-${Date.now()}`;
+    const title = 'E2E PAC-83 Two Hosts';
+    const day = bookingDay(7);
+
+    const created = await owner.post('/api/scheduling-links', {
+      title,
+      slug,
+      duration_options: [30],
+      days_of_week: [1, 2, 3, 4, 5],
+      window_start_time: '11:00',
+      window_end_time: '12:00',
+      min_notice_minutes: 0,
+      usage_type: 'reusable',
+      co_host_emails: [BOOKING_HOSTS.api.email],
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const link = (await created.json()) as { id: string };
+    try {
+      const accepted = await coHost.post(`/api/scheduling-links/host-invites/${link.id}/accept`);
+      expect(accepted.status(), await accepted.text()).toBe(200);
+      // Two accepted hosts, both connected through the stand-in (PAC-72 D-6).
+      const info = await api.get(`/api/book/${slug}`);
+      expect(info.status()).toBe(200);
+      expect(((await info.json()) as { hosts: unknown[] }).hosts).toHaveLength(2);
+
+      const release = gate();
+      const arrived = gate();
+      let served: { slots: Array<{ start: string }> } | undefined;
+      await page.route(
+        (url) => url.pathname === `/api/book/${slug}/slots`,
+        async (route) => {
+          const res = await route.fetch();
+          served = (await res.json()) as { slots: Array<{ start: string }> };
+          arrived.open();
+          await release.wait;
+          await route.fulfill({ response: res });
+        },
+      );
+
+      await page.clock.install();
+      await page.goto(`/book/${slug}`);
+      await expect(page.getByRole('heading', { name: title })).toBeVisible();
+      await pickBookingDate(page, day);
+      await arrived.wait;
+
+      // The real server answer: 11:00-12:00, 30 minutes, 15-minute stride,
+      // both hosts free. Pinning it exactly is what gives "the real slots"
+      // below its meaning.
+      const expected = ['11:00', '11:15', '11:30'].map((t) => atUtc(day, t));
+      expect(served!.slots.map((s) => instant(s.start))).toEqual(expected);
+
+      // Waiting: nothing invented, no "no times", no error.
+      await page.clock.fastForward(PAST_STILL_WORKING_MS);
+      await expect(page.getByTestId('still-working')).toBeVisible();
+      await expect(slotButtons(page)).toHaveCount(0);
+      await expect(page.getByText(NO_TIMES)).toHaveCount(0);
+      await expect(page.getByTestId('api-error')).toHaveCount(0);
+
+      await page.clock.fastForward(TO_131_S_MS);
+      await expect(page.getByTestId('still-working')).toBeVisible();
+      await expect(slotButtons(page)).toHaveCount(0);
+      await expect(page.getByText(NO_TIMES)).toHaveCount(0);
+      await expect(page.getByTestId('api-error')).toHaveCount(0);
+
+      release.open();
+      await expect(slotButtons(page)).toHaveText([/^11:00\sAM$/, /^11:15\sAM$/, /^11:30\sAM$/]);
+      await expect(page.getByTestId('still-working')).toHaveCount(0);
+      await expect(page.getByText(NO_TIMES)).toHaveCount(0);
+      await assertNotDemo(page);
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      // As tests/scheduling-links.spec.ts does: the link (and its host rows)
+      // is this test's own; nothing was booked on it.
+      await db.query('DELETE FROM scheduling_links WHERE id = $1', [link.id]);
+    }
+  });
+
+  test('AC-10: link info lost once shows "can\'t reach" with a retry, never "Link not found"', async ({
+    page,
+    assertNotDemo,
+  }) => {
+    const slug = LINKS.uiBooking.slug;
+    let gets = 0;
+    await page.route(
+      (url) => url.pathname === `/api/book/${slug}`,
+      async (route) => {
+        // The same path takes the booking POST: only the read is failed.
+        if (route.request().method() !== 'GET') return route.continue();
+        gets += 1;
+        if (gets === 1) return route.abort('failed');
+        return route.continue();
+      },
+    );
+
+    await page.goto(`/book/${slug}`);
+    const error = page.locator('[data-testid="api-error"][data-error-kind="lost"]');
+    await expect(error).toBeVisible();
+    await expect(error).toHaveAttribute('data-effect', 'read');
+    await expect(page.getByText(/link not found/i)).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toHaveCount(0);
+    // The guard is not called while the provoked error is on screen (§5.2).
+
+    await error.getByTestId('api-error-retry').click();
+    await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toBeVisible();
+    await expect(page.getByTestId('api-error')).toHaveCount(0);
+    expect(gets).toBe(2);
+    await assertNotDemo(page);
+
+    await page.reload();
+    await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toBeVisible();
+    await expect(page.getByText(/link not found/i)).toHaveCount(0);
+    expect(gets).toBe(3);
+    await assertNotDemo(page);
+  });
+
+  test('AC-24: a booking answered 201 late shows the confirmation, and exactly one booking exists', async ({
+    page,
+    db,
+    assertNotDemo,
+  }) => {
+    test.setTimeout(120_000);
+    const slug = LINKS.uiBooking.slug;
+    const day = bookingDay(6);
+    const bookerPrefix = `e2e.booker.pac83slow.${Date.now()}`;
+    const bookerEmail = `${bookerPrefix}@paceday.test`;
+
+    const release = gate();
+    const arrived = gate();
+    const bookingPosts: string[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'POST' && new URL(req.url()).pathname === `/api/book/${slug}`) {
+        bookingPosts.push(req.url());
+      }
+    });
+    let status: number | undefined;
+    await page.route(
+      (url) => url.pathname === `/api/book/${slug}`,
+      async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        // The booking reaches the server once, sent from here; the page's own
+        // request is still seen exactly once by page.on('request').
+        const res = await route.fetch();
+        status = res.status();
+        arrived.open();
+        await release.wait;
+        await route.fulfill({ response: res });
+      },
+    );
+
+    try {
+      await page.clock.install();
+      await page.goto(`/book/${slug}`);
+      await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toBeVisible();
+      await pickBookingDate(page, day);
+      const slots = slotButtons(page);
+      await expect(slots).toHaveCount(7);
+      await slots.last().click(); // 10:30 UTC
+      await page.getByLabel('Name', { exact: true }).fill('E2E PAC-83 Slow Booker');
+      await page.getByLabel('Email', { exact: true }).fill(bookerEmail);
+      await page.getByRole('button', { name: /confirm booking/i }).click();
+      await arrived.wait;
+      expect(status).toBe(201);
+
+      // Held: the page keeps waiting, says so, and claims nothing.
+      await page.clock.fastForward(PAST_STILL_WORKING_MS);
+      await expect(page.getByTestId('still-working')).toBeVisible();
+      await expect(page.getByRole('heading', { name: /you are confirmed/i })).toHaveCount(0);
+      await expect(page.getByTestId('api-error')).toHaveCount(0);
+
+      await page.clock.fastForward(TO_131_S_MS);
+      await expect(page.getByRole('heading', { name: /you are confirmed/i })).toHaveCount(0);
+      await expect(page.getByTestId('api-error')).toHaveCount(0);
+
+      release.open();
+      await expect(page.getByRole('heading', { name: /you are confirmed/i })).toBeVisible();
+      await expect(page.getByText(bookerEmail)).toBeVisible();
+      await assertNotDemo(page);
+
+      expect(bookingPosts).toHaveLength(1);
+      const rows = await db.query<{ status: string }>(
+        'SELECT status FROM bookings WHERE link_id = $1 AND booker_email = $2',
+        [LINKS.uiBooking.id, bookerEmail],
+      );
+      expect(rows).toEqual([{ status: 'confirmed' }]);
+      const atThatTime = await db.query(
+        'SELECT 1 FROM bookings WHERE link_id = $1 AND start_time = $2',
+        [LINKS.uiBooking.id, atUtc(day, '10:30')],
+      );
+      expect(atThatTime).toHaveLength(1);
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await db.deleteBookingsByBooker(bookerPrefix);
+      await fake.clearCalendar(BOOKING_HOSTS.ui.email);
+    }
+  });
+});
+
