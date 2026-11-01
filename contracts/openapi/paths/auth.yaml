@@ -381,13 +381,15 @@ paths:
         Since PAC-71 this is the SIGN-IN start only: a flow it starts is
         always a sign-in, whether or not the browser holds a session. The
         signed-in "connect a calendar" controls use `startMicrosoftConnect`.
-        Since PAC-71 contract revision 3 (owner, 2026-11-01, spec OQ-8,
-        D-14, AC-11) the scope parameter is exactly
-        `openid Calendars.ReadWrite User.Read offline_access`: today's three
-        scopes plus the basic `openid` (user-level consent, never an admin
-        consent), so Microsoft returns a signed ID token. No other scope is
-        added (no `profile`, no `email`). PAC-50 AC-24's scope-pinning test
-        is amended to allow exactly this. The request also carries
+        Since PAC-71 contract revision 3.1 (owner, 2026-11-01, spec OQ-8,
+        OQ-9, D-14, AC-11) the scope parameter is exactly
+        `openid profile Calendars.ReadWrite User.Read offline_access`, in
+        that order: today's three scopes preceded by the basic `openid` and
+        `profile` (both user-level consent, never an admin consent), so
+        Microsoft returns a signed ID token carrying `tid` and `oid`. No
+        other scope is added (no `email`). PAC-50 AC-24's scope-pinning test
+        compares the joined string in order and is amended to allow exactly
+        this string. The request also carries
         `nonce=<N>`, where N is the lowercase hex SHA-256 of the state value
         in the `ms_oauth_state` cookie, so the callback can bind the ID
         token to this browser's sign-in without a new cookie.
@@ -404,10 +406,11 @@ paths:
               schema: { type: string, format: uri }
               description: |
                 auth.GetMicrosoftAuthURL(cfg, state): Microsoft's `/common`
-                authorize endpoint with `scope=openid Calendars.ReadWrite
-                User.Read offline_access` (space-separated, URL-encoded, in
-                that order), `state`, `nonce=<lowercase hex SHA-256 of
-                state>` (PAC-71 revision 3), plus `login_hint=<hint>`
+                authorize endpoint with `scope=openid profile
+                Calendars.ReadWrite User.Read offline_access` (space-separated,
+                URL-encoded, exactly in that order), `state`,
+                `nonce=<lowercase hex SHA-256 of state>` (PAC-71 revisions 3
+                and 3.1), plus `login_hint=<hint>`
                 (URL-encoded) when the request's `login_hint` passed the
                 LoginHint rule. No other query parameter of this request is
                 copied into it.
@@ -443,16 +446,22 @@ paths:
         SIGN-IN branch. Step 1 and the `/me` read are today's (PAC-24,
         PAC-35); the rest is PAC-71's. Since contract revision 3 (owner,
         2026-11-01, spec OQ-8) the tenant comes from the signed ID token and
-        the organisation lookup is evidence only (PAC-71.md §3).
+        the organisation lookup is evidence only; since revision 3.1 (owner,
+        OQ-9) the object id comes from the same signed ID token and `/me`
+        is a mandatory cross-check (PAC-71.md §3).
         1. `ms_oauth_state` checked (400) and expired; the code is exchanged
            (500 on failure). Sign-in requests exactly
-           `openid Calendars.ReadWrite User.Read offline_access`
+           `openid profile Calendars.ReadWrite User.Read offline_access`
            (`startMicrosoftOAuth`), so the token response carries an
            `id_token`.
-        2. ID TOKEN AND TENANT (spec §3 "The Microsoft tenant fails closed",
-           D-23, AC-11b). The `id_token` of the token response is accepted
-           only when ALL of these hold; otherwise REFUSED, before anything is
-           looked up or written:
+        2. ID TOKEN, TENANT AND OBJECT ID (spec §3 "The Microsoft tenant
+           fails closed", D-23, AC-11b). The `id_token` of the token response
+           is accepted only when ALL of these hold; otherwise REFUSED, before
+           anything is looked up or written. Sign-in uses its OWN
+           tenant-pinned verifier; it does NOT reuse the PAC-50 step-up
+           verifier (`backend/auth/stepup.go:103`, `:245`), which reads the
+           `/common` keys and rejects a `tid` only when it contains `/?#`
+           (revision 3.1):
            - it is present, a compact JWS, header `alg` `RS256`, with a
              `kid`;
            - its payload `tid` is a GUID (canonical 8-4-4-4-12 hex, compared
@@ -461,12 +470,22 @@ paths:
            - its signature verifies with the key named by `kid` in
              Microsoft's published keys for that tenant,
              `https://login.microsoftonline.com/{tid}/discovery/v2.0/keys`
-             (keys may be cached by tenant for up to 24 hours and refetched
-             at most once a minute on an unknown `kid`; a fetch that errors
-             or times out, or a `kid` still unknown after it, is REFUSED);
+             (revision 3.1: each fetch has a 10-second limit, the
+             identity-provider class of PAC-81 Part A; keys are cached per
+             tenant for up to 24 hours; an unknown `kid` triggers at most one
+             refetch per tenant per minute; at most 1000 tenants are cached,
+             the least recently used evicted first. A fetch that errors or
+             exceeds the limit, or a `kid` still unknown after the refetch or
+             while that tenant's refetch is rate-limited, is REFUSED);
            - `iss` equals exactly `https://login.microsoftonline.com/{tid}/v2.0`
              with the token's own `tid`, and `ver` is `2.0`;
-           - `aud` is exactly `MICROSOFT_CLIENT_ID` (a single audience);
+           - `aud` is either the string `MICROSOFT_CLIENT_ID`, or a JSON
+             array of exactly one element that is that string; any other
+             shape or value (another client, an extra audience, an empty
+             array) is REFUSED (revision 3.1);
+           - `oid` is present and a GUID (canonical 8-4-4-4-12 hex); absent
+             or malformed is REFUSED (revision 3.1, owner OQ-9: the object
+             id comes from the signed token);
            - `exp` is in the future and `nbf`, when present, is not
              (60 seconds of clock skew allowed);
            - `nonce` equals the lowercase hex SHA-256 of the `state` that
@@ -478,21 +497,17 @@ paths:
            account and is REFUSED here, before `/me` or `/organization` is
            read (owner, 2026-11-01: personal Microsoft sign-in waits for
            follow-up PAC-77; spec AC-5, AC-11c). Any other GUID `tid` is a
-           WORK account in that tenant. The ID token's `sub`, `email`,
-           `preferred_username` and `name` are not used.
+           WORK account in that tenant, with object id = the token's `oid`.
+           The ID token's `sub`, `email`, `preferred_username` and `name`
+           are not used.
         3. Graph `GET /v1.0/me?$select=id,mail,displayName` with the access
            token. Unreadable, or no `mail`: the sign-in failure state (a)
-           below, nothing saved (PAC-35, unchanged). OBJECT ID: `/me`'s `id`,
-           which must be a GUID (else REFUSED). Under `openid` alone
-           Microsoft documents the ID token's `oid` claim as requiring the
-           `profile` scope, which is not requested (owner: no other new
-           scope), so the object id is read from `/me` with the access token
-           of the same token response as the verified ID token. When the ID
-           token nevertheless carries `oid`, it must equal `/me`'s `id`
-           (case-insensitive GUID); a mismatch is REFUSED (spec AC-11b). The
-           identity is authority (`microsoft`, tenant from step 2) + object
-           id. (Owner question recorded in PAC-71.md §3 item 1 and §12:
-           whether to add `profile` so the object id is also signed.)
+           below, nothing saved (PAC-35, unchanged). OBJECT-ID CROSS-CHECK
+           (revision 3.1, owner OQ-9, mandatory): `/me`'s `id`, read with the
+           access token of the same token response as the verified ID token,
+           must equal the token's `oid` (case-insensitive GUID); anything
+           else is REFUSED (spec AC-11b). The identity is authority
+           (`microsoft`, tenant from step 2) + object id (`oid` from step 2).
         4. EVIDENCE for `mail` (spec §3 evidence table, AC-51): Graph
            `GET /v1.0/organization?$select=id,verifiedDomains` with the same
            access token (documented least-privileged delegated permission:
@@ -548,8 +563,8 @@ paths:
         the user cancels at Microsoft: NOT CREDITED, a redirect to the web
         app, never a JSON page) and the expiry of `ms_connect_state` on
         every connect-branch response, the 500 included. Neither `/me` nor `/organization` is
-        read and no ID token is requested or read (the connect start does not
-        request `openid`), so any Microsoft account (work or personal, any
+        read and no ID token is requested or read (the connect start
+        requests neither `openid` nor `profile`), so any Microsoft account (work or personal, any
         tenant, any address) can be connected and nothing about it is bound. The
         credential is stored on U as PAC-67 stores it (refresh token kept
         when none is returned; a recorded Outlook loss ends), in the
@@ -677,8 +692,8 @@ paths:
         `/api/auth/microsoft/callback`) as `startMicrosoftOAuth`, with this
         state and no `login_hint`, but exactly the scopes
         `Calendars.ReadWrite User.Read offline_access` and no `nonce`:
-        unlike sign-in (contract revision 3), a connect identifies nobody, so
-        it requests no `openid` and no ID token. Configuration is read from env at request
+        unlike sign-in (contract revisions 3 and 3.1), a connect identifies
+        nobody, so it requests no `openid`, no `profile` and no ID token. Configuration is read from env at request
         time, as `startMicrosoftOAuth` does. The callback recognises the
         connect by the state alone (`microsoftOAuthCallback`, CONNECT
         branch).
