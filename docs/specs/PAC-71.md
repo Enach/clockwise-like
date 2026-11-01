@@ -1,7 +1,7 @@
 # Spec — PAC-71: Sign-in matches accounts by email alone — bind accounts to the provider identity
 
 - **Linear**: https://linear.app/paceday/issue/PAC-71/sign-in-matches-accounts-by-email-alone-anyone-who-controls-an-address
-- **Status**: draft, revision 4. Revision 2 narrowed the ticket to a secure core (§10 Split). Revision 3 answers "Challenge, revision 2" inside that same scope, without growing it. Revision 4 answers "Challenge, revision 3" only and changes nothing else. See "Revision 3" and "Revision 4" at the end.
+- **Status**: draft, revision 5.1. Revision 2 narrowed the ticket to a secure core (§10 Split). Revision 3 answers "Challenge, revision 2" inside that same scope, without growing it. Revision 4 answers "Challenge, revision 3" only and changes nothing else. Revision 5 applies the owner's answers of 2026-11-01 (OQ-2, OQ-6, OQ-8, personal Microsoft accounts) and nothing else. Revision 5.1 applies the owner's OQ-9 answer (add `profile`; the object id comes from the signed ID token) and the four non-blocking items of "Challenge, revision 5". See "Revision 3", "Revision 4", "Revision 5" and "Revision 5.1" at the end.
 - **Author**: spec-author
 - **Priority**: Urgent (security)
 - **Inherited scope**: none blocking. `contracts/openapi/paths/auth.yaml` carries no `x-uncertain` marker on the three sign-in callbacks. Related audit rows:
@@ -18,6 +18,7 @@
   6. align the signed-in connect controls with PAC-47.
 
   Each item is applied below and mapped in "Revision 2".
+- **Owner answers for revision 5 (2026-11-01, `.claude/factory/owner-decisions.md`, binding)**: OQ-6 yes (every account's session generation is advanced once at deploy, as a release step); personal Microsoft accounts wait for PAC-77 (release-noted); OQ-2 no (SSO never reaches existing members; each member links it through F1); OQ-8 / Microsoft tenant: Microsoft sign-in requests the basic `openid` scope (user consent, never admin consent) and takes the tenant and the object id from the signed ID token instead of a separate organisation lookup. This supersedes "sign-in keeps exactly today's scopes" for `openid` only, and PAC-50 AC-24's scope-pinning test is amended to allow it. No other new scope. Applied below and mapped in "Revision 5". **OQ-9 (owner, 2026-11-01, revision 5.1): add `profile` too.** Microsoft sign-in requests `openid profile` (both user consent only), the object id comes from the signed ID token, and the profile's identifier is a mandatory cross-check that must equal it. No other new scope. Mapped in "Revision 5.1".
 - **Orchestrator decisions for revision 3 (factory-level, fail closed, 2026-10-28)**. Recorded as factory decisions, not owner decisions:
   1. Migration rule (b) binds only an account that is **empty** of data and relationships (§2 "What an account can carry today", §3). Anything else is refused with the single message, logged, and left to the operator procedure. The "recorded value is an SSO subject" clause is removed.
   2. Every connect is bound at its start to the account and its session generation; its completion is refused if the generation moved. A binding is one atomic step that locks the account, re-checks its conditions, binds and advances the generation. Writes from sessions of an older generation fail after it.
@@ -210,20 +211,20 @@ Notes on the inventory:
 An account belongs to the identity bound to it, not to an address. An identity is the provider authority together with the subject that authority issues:
 
 - **Google**: Google's stable account identifier.
-- **Microsoft work or school account**: the pair of tenant and object id, both taken from Microsoft's answers for the same access token. The same object id from another tenant is a different identity.
-- **Microsoft personal account**: its own authority, distinct from every work tenant, with Microsoft's identifier for the personal account. An account is classified personal only on a positive signal in Microsoft's answer. An answer that cannot be classified is refused (§3 "Refusal"; nothing written).
+- **Microsoft work or school account**: the pair of tenant and object id. *Revision 5 (owner, OQ-8):* both come from the same sign-in, and the tenant is taken from Microsoft's **signed ID token** for that sign-in, after its signature, audience, issuer, freshness and binding to this sign-in request are checked. *Revision 5.1 (owner, OQ-9):* the object id is also taken from that signed ID token, which must carry it; the profile that the sign-in reads must report the same identifier, or the sign-in is refused. The same object id from another tenant is a different identity.
+- **Microsoft personal account**: its own authority, distinct from every work tenant, with Microsoft's identifier for the personal account. An account is classified personal only on a positive signal in Microsoft's answer. *Revision 5:* the signed ID token gives that signal: Microsoft documents one fixed tenant value for every personal account. A personal account is **refused** in this ticket (owner, 2026-11-01: personal Microsoft sign-in waits for PAC-77, release-noted). An answer that cannot be classified is refused too (§3 "Refusal"; nothing written).
 - **Organisation SSO**: the issuer the ID token was verified against, together with that issuer's subject. Two different issuers are different identities even if one asserts the other's subjects.
 
 Identifiers are only ever compared together with their authority. An identifier from one authority never matches an identifier from another, even when the strings are equal.
 
-All identity evidence comes from the answers that today's sign-in permissions already return. Sign-in requests exactly today's permissions (owner, PAC-68 OQ-2; PAC-50 AC-24).
+All identity evidence comes from the answers that the sign-in's permissions return. Sign-in requests today's permissions, plus, for Microsoft only, the basic `openid` and `profile` identity scopes (revision 5 and 5.1; owner, 2026-11-01, OQ-8 and OQ-9: user-level consent, never an admin consent). Google sign-in requests exactly today's permissions (owner, PAC-68 OQ-2; PAC-50 AC-24 as amended).
 
-**The Microsoft tenant fails closed (revision 3).** The tenant is part of a work account's identity, not only evidence for membership. When it cannot be obtained for a Microsoft sign-in (the source errors, times out, is refused, or is absent), the sign-in is **refused** with the single refusal message (§3 "Refusal") and nothing is written. That holds in every case:
+**The Microsoft tenant fails closed (revision 3).** The tenant is part of a work account's identity, not only evidence for membership. When it cannot be obtained for a Microsoft sign-in (revision 5: the signed ID token is absent; its signature, audience, issuer, freshness or binding to the request does not check; Microsoft's signing keys cannot be read; or the token carries no well-formed tenant; revision 5.1: or no object id), the sign-in is **refused** with the single refusal message (§3 "Refusal") and nothing is written. That holds in every case:
 - the sign-in would create an account;
 - it would bind a pre-existing account under migration (a) or (b);
 - the identity is already bound to an account. A bound Microsoft identity cannot be recognised without its tenant, because the same object id in another tenant is a different identity. So that sign-in is refused too.
 
-Which source supplies the tenant is stage 2's to establish (OQ-3 item 1): Graph's organisation answer is documented under today's scopes; the tenant claim inside the access token and the client information that Microsoft's token endpoint can return are candidates that need no organisation call (§2). Whatever source stage 2 picks, the rule above does not change. This overrides PAC-68's "open for sign-in" stance for Microsoft (§3 constraints, D-23).
+*Source (revision 5, owner OQ-8).* The tenant (and, since revision 5.1, the object id) comes from the signed ID token that the `openid` and `profile` scopes make Microsoft return; it no longer depends on a separate organisation lookup. An organisation lookup, if stage 2 keeps one, serves **only** the verified-domain evidence (§3 "Evidence"): when it fails, the sign-in has **less evidence**, never a missing identity. A bound Microsoft identity therefore still signs in during an outage of that lookup; an unknown identity is decided by rules 4 and 5 with that lesser evidence. The rule above (no tenant, refused) does not change. PAC-68's "open for sign-in" stance is overridden only where the tenant itself cannot be obtained (§3 constraints, D-23).
 
 In this ticket an account has **at most one** bound identity. Binding a second identity is follow-up F1.
 
@@ -235,7 +236,7 @@ In this ticket an account has **at most one** bound identity. Binding a second i
 |---|---|---|---|---|
 | Authoritative | email verified **and** hosted domain equals the address's domain; or email verified on a Google consumer domain (gmail.com, googlemail.com) | the sign-in's tenant lists the address's domain among its verified domains (subject to OQ-3 on unmanaged directories) | an address on a Microsoft consumer mail domain, only if OQ-3 names an answer field that reports it as the account's own sign-in address; otherwise none | the issuer configured for the address's exact domain, and the ID token does not say the email is unverified |
 | Mailbox | email verified, any other domain | — | only if OQ-3 names an answer that says Microsoft verified the address; otherwise none | — |
-| None | email not verified, or flag absent | the tenant does not verify the domain, or the lookup fails | as above | — |
+| None | email not verified, or flag absent | the tenant does not verify the domain, or the verified-domain lookup fails (revision 5: less evidence, never a refusal by itself) | as above (revision 5: moot, personal accounts are refused until PAC-77) | — |
 
 Mailbox evidence is weaker than authoritative evidence. Google's flag records that a mail reached the address at some past time, and it stays set after the mailbox is lost (§1 case 1). Authoritative evidence comes from the party that controls the address's domain.
 
@@ -338,7 +339,7 @@ Existing accounts carry no binding (§2). Until one binds, its address is unconf
   - This holds whether or not the deploy-time step runs. Authentication alone leaves a window between a request's authentication and its credential load (§2), and a binding can commit inside it.
 - When two qualifying identities race for the same unbound account (for example a domain verified in both Google Workspace and Microsoft Entra, on an empty account), exactly one binds and the other is refused.
 - A user who used both Google and Microsoft before this change gets one of them bound. Signing in with the other one is refused (rule 3). They can still connect the other provider's calendar from inside the product (the connect step). Adding it as a sign-in method is follow-up F1.
-- **Existing members and SSO.** An existing member's account is never reached through SSO in this ticket (D-10). Until follow-up F1 lets a member add SSO as a sign-in method, existing members keep signing in with Google or Microsoft. New members whose address no account carries can sign up through SSO (rule 5).
+- **Existing members and SSO.** An existing member's account is never reached through SSO in this ticket (D-10; owner, OQ-2 "no", 2026-11-01: SSO never reaches existing members, each member links it). Until follow-up F1 lets a member add SSO as a sign-in method, existing members keep signing in with Google or Microsoft. New members whose address no account carries can sign up through SSO (rule 5).
 - **Case collisions.** If two existing accounts carry addresses that differ only in letter case, the deployment neither merges nor deletes them:
   - every sign-in or migration match against that address is refused, even when rule (a)'s identifier matches;
   - granting sites resolve the address to nobody;
@@ -354,7 +355,7 @@ Existing accounts carry no binding (§2). Until one binds, its address is unconf
 - Every account created after this change starts at the initial generation. A test helper that mints sessions directly (today's e2e helper, §2) must mint the account's current generation for an account whose generation has moved (for example after the deploy-time step).
 - The generation advances whenever a binding is written or changed for the account. In this ticket that means a migration binding (a) or (b), or an operator's step under the operator procedure. The session that the same sign-in issues carries the new generation.
 - A connect in flight is bound to the generation at its start (§3 "Connecting a calendar"), so an advance also ends every connect started before it.
-- **Deploy-time step (OQ-6, the owner decides).** The factory recommends advancing every account's generation once at deployment, which signs every user out once. It closes every session obtained through email matching before the change, including on accounts that never sign in again. Without it, such a session stays valid until it expires (at most 7 days), on any account that does not bind in that time.
+- **Deploy-time step (OQ-6, owner: yes, 2026-11-01).** Every account's generation is advanced once at deployment, as a step of the PAC-71 release, which signs every user out once. It closes every session obtained through email matching before the change, including on accounts that never sign in again. The release is not complete until the step has run (AC-44), and the release record states that it ran (a release condition, not a test; revision 5.1, challenge r5 Non-blocking 4).
 - Logout is unchanged: it expires the browser's cookie. A user-facing "sign out everywhere" is follow-up F3.
 
 ### Refusal
@@ -364,7 +365,8 @@ When a sign-in cannot reach an account under these rules, the user is told so pl
 - an unbound pre-existing account where neither (a) nor (b) applies;
 - an address that an account carries while the incoming identity is unknown;
 - a new identity without evidence;
-- a Microsoft sign-in whose tenant cannot be obtained, or whose account cannot be classified as work or personal (§3 "Identities").
+- a Microsoft sign-in whose tenant cannot be obtained, or whose account cannot be classified as work or personal (§3 "Identities");
+- a personal Microsoft account (revision 5; until PAC-77).
 
 The message has two parts. It says that Paceday could not sign them in with this account. It says that if they already use Paceday, they should sign in the way they did before, and otherwise contact their workspace administrator or the Paceday operator.
 
@@ -419,8 +421,8 @@ Membership is still decided by PAC-68's rule on the provider's answer for the si
 
 ### Constraints from owner decisions
 
-- Sign-in keeps exactly today's permissions and never requires a new admin consent (owner, PAC-68 OQ-2; PAC-50 AC-24). No identity scope (`openid`, `profile`, `email`) is added to the Google or Microsoft sign-in. Where authoritative or mailbox evidence cannot be obtained under today's permissions, the sign-in is treated as having less evidence; a bound identity still signs in. The exception is the Microsoft tenant, which is identity, not evidence: without it every Microsoft sign-in is refused (§3 "Identities"). **This overrides PAC-68's allowance of `openid` (PAC-68 AC-15, D-5) for sign-in scopes; PAC-68 must amend AC-15 and D-5 to "exactly today's set"** (owner decision on sign-in scopes; PAC-50 AC-24's test).
-- **PAC-68's "open for sign-in" stance does not hold for the Microsoft tenant (revision 3, factory decision, fail closed).** PAC-68 lets a Microsoft sign-in complete, not joined, when its verified-domain lookup errors, times out or is refused (PAC-68 AC-9, AC-15's second clause, D-4; `PAC-68.md:95`, `:115`, `:157` at `ec76099`). PAC-68 assumed the tenant could come from the token response (AC-9, "if taken from the token response"), which needs a scope this spec forbids. Under today's scopes the tenant may come from that same lookup (§2), and the tenant is identity. So PAC-71 refuses such a sign-in, and PAC-68 must amend those three items (§6). If stage 2 finds a tenant source that does not depend on the organisation lookup (OQ-3 item 1), PAC-68's lookup failing would again affect only membership, but a sign-in whose tenant itself cannot be obtained is still refused. Release note: Microsoft sign-in may depend on a second Graph call, and an outage of it refuses Microsoft sign-in with the refusal message.
+- Sign-in never requires a new admin consent (owner, PAC-68 OQ-2; PAC-50 AC-24). *Revision 5 and 5.1 (owner, 2026-11-01, OQ-8 and OQ-9):* Microsoft sign-in adds exactly two scopes, the basic `openid` and `profile`, both needing only the user's own consent (a one-time consent prompt is acceptable). The full Microsoft sign-in scope string is exactly `openid profile Calendars.ReadWrite User.Read offline_access`, in that order. This supersedes "exactly today's permissions" for `openid` and `profile` only, and PAC-50 AC-24's scope-pinning test is amended to allow exactly that string. No other identity scope (`email`) is added to the Microsoft sign-in, and none at all to the Google sign-in. Google needs none: its identity (the stable account identifier, with no tenant) and its evidence (verified flag, hosted domain) already come from the answer today's permissions return, and whether that identifier equals the step-up's subject is a merge condition, not a scope question. Where authoritative or mailbox evidence cannot be obtained, the sign-in is treated as having less evidence; a bound identity still signs in. The exception is the Microsoft tenant, which is identity, not evidence: without it every Microsoft sign-in is refused (§3 "Identities"). PAC-68 AC-15 and D-5 amend to "today's set, plus `openid` and `profile` for Microsoft only".
+- **PAC-68's "open for sign-in" stance does not hold for the Microsoft tenant (revision 3, factory decision, fail closed; revision 5, narrowed by the owner's OQ-8 answer).** PAC-68 lets a Microsoft sign-in complete, not joined, when its verified-domain lookup errors, times out or is refused (PAC-68 AC-9, AC-15's second clause, D-4; `PAC-68.md:95`, `:115`, `:157` at `ec76099`). Since revision 5 the tenant comes from the signed ID token (PAC-68 AC-9's "taken from the token response", which `openid` now allows), so a failure of the verified-domain lookup alone affects only evidence and membership, as PAC-68 wrote: a bound identity signs in, not joined. A sign-in whose tenant cannot be obtained from the ID token is still refused (D-23). Release note: Microsoft sign-in depends on the ID token and on Microsoft's published signing keys; if those keys cannot be read, Microsoft sign-in is refused with the refusal message.
 - A Microsoft sign-in must not reset an existing user's work calendar (owner, PAC-47 vs PAC-67 OQ-13). Today's reset on the plain Microsoft sign-in path is PAC-47's to remove (PAC-47 D-17). This spec adds no path that resets it: a connect, a refusal and a migration binding never change the work calendar.
 
 ## 4. Acceptance criteria
@@ -451,7 +453,7 @@ AC-3. Given Henry bound to Microsoft (T1, O1), when Google identity G2 signs in 
 
 AC-4. Given Henry bound to Microsoft (T1, O1), when (a) (T1, O2) with mail `henry@acme.com`, or (b) (T2, O1) with mail `henry@acme.com` signs in, then both are refused.  [unit]
 
-AC-5 (revised r3). Given Henry bound to Microsoft work account (T1, O1), when a personal Microsoft account with address `henry@acme.com` signs in, then it is refused. Given instead an unbound pre-existing account for `henry@acme.com`, a personal Microsoft account carrying that address is also refused. "Refused" holds whatever stage 2 finds for OQ-3 item 2: with a positive personal-account signal the cause is rule 4; without one the answer cannot be classified and the cause is §3 "Identities". Either way the outcome is the single refusal state and nothing is written. Today both cases reach Henry's account.  [unit]
+AC-5 (revised r5). Given Henry bound to Microsoft work account (T1, O1), when a personal Microsoft account with address `henry@acme.com` signs in (its signed ID token carries Microsoft's personal-account tenant), then it is refused. Given instead an unbound pre-existing account for `henry@acme.com`, or no account at all, a personal Microsoft account carrying that address is also refused. The logged cause is "personal Microsoft account" (a positive signal since revision 5), and no verified-domain lookup is made for it. The outcome is the single refusal state and nothing is written. Today the first two cases reach Henry's account.  [unit]
 
 AC-6. Given Henry bound to Google G1 and an OIDC SSO configuration for `acme.com` with issuer I1, when I1 asserts subject S1 with `henry@acme.com`, then it is refused. Given instead Henry bound to (I1, S1), when the configuration's issuer is changed to I2 and I2 asserts subject S1 with `henry@acme.com`, then it is refused.  [unit]
 
@@ -470,7 +472,7 @@ AC-40 (pre-emptive squat, replaces AC-24). Given no account for `henry@acme.com`
 
 AC-8 (revised r2). Given Henry bound to an identity at Google, at Microsoft, or at SSO issuer I1 (three cases), when that identity signs in, then it reaches Henry with the same redirect target as today's success path. Today's PAC-35 callback tests (`pac35_auth_flows_test.go:142-246`, `:286`) keep every assertion about redirects, the session cookie and what is kept on the failure path. Only their fixtures change, so that the sign-in carries evidence:
 - the Google fixtures add a verified flag;
-- the Microsoft runner adds an organisation answer whose verified domains list the fixture's domain, and a tenant from whichever source stage 2 picks (OQ-3 item 1).  [unit]
+- the Microsoft runner adds a signed ID token (revision 5: a test signing key served as Microsoft's keys, the fixture's tenant, the client as audience, that tenant's issuer, and the request's binding value) and an organisation answer whose verified domains list the fixture's domain.  [unit]
 
 AC-9. Given Henry bound to Google G1, when G1 signs in reporting `henry.new@acme.com`, then it reaches Henry, and Henry's stored address and its standing are unchanged. If another account holds `henry.new@acme.com`, that account's session, credential, address, standing and binding are unchanged.  [unit]
 
@@ -488,19 +490,26 @@ With (c) `carol@sub.acme.com` and hosted domain `acme.com`, the address is uncon
 
 AC-11. Given no account for `dave@acme.com`, when a Microsoft work account (T1, O7) signs in with that mail, then:
 - if tenant T1's verified-domain answer contains `acme.com`, an account is created, bound to (T1, O7), with the address domain-confirmed;
-- if the answer does not contain it, or the lookup errors or times out, the sign-in is refused;
-- the sign-in's authorize request carries exactly today's Microsoft scope set, and `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` passes unchanged.  [unit]
+- if the answer does not contain it, or the lookup errors or times out, the sign-in is refused (revision 5: under rule 5, no evidence; not as a missing tenant);
+- (revised r5.1) the sign-in's authorize request's scope is exactly `openid profile Calendars.ReadWrite User.Read offline_access`, in that order, and nothing else. `TestPAC50_SignInAuthorizeURLsCarryNoNewScope`, amended only so that the Microsoft expected set is that string, passes, and still asserts that no sign-in carries a step-up or admin-consent scope and that the Google and OIDC sets are unchanged.  [unit]
 
-AC-11b (revised r3). Given a Microsoft sign-in whose answers do not let the server determine the tenant, then the sign-in is **refused** (the single refusal state, not the generic failure state), and nothing is created, bound or stored. Each case below is run for (i) no account carrying the address, (ii) an empty unbound pre-existing account for the address, and (iii) Henry bound to (T1, O1), with the answered object id O1:
-- the tenant source errors, times out, or is refused for lack of permission;
-- no tenant answer at all for what would be a work account;
+AC-11b (revised r5). Given a Microsoft sign-in whose answers do not let the server determine the tenant from a valid signed ID token, then the sign-in is **refused** (the single refusal state, not the generic failure state), and nothing is created, bound or stored. Each case below is run for (i) no account carrying the address, (ii) an empty unbound pre-existing account for the address, and (iii) Henry bound to (T1, O1), with the answered object id O1:
+- no ID token in the token response;
+- an ID token whose signature does not verify against Microsoft's published keys, or that is signed by a key Microsoft does not publish;
+- an ID token for another client (audience), from an issuer other than the one its own tenant implies, expired, or not bound to this sign-in request;
+- Microsoft's signing keys cannot be read (error or timeout);
+- a tenant that is absent or not well-formed;
+- (revision 5.1) the ID token carries no object id, or one that is not well-formed;
+- (revision 5.1) the profile cannot confirm the object id: its identifier differs from the ID token's;
 - an answer that cannot be classified as work or personal.
 
 Case (iii) reaches Henry today, and would complete as a sign-in under PAC-68 AC-9 as written; PAC-68 must amend (§6).
 
-(Revision 1's second sentence, about two answers disagreeing on the tenant, is dropped: under today's Microsoft scopes only the organisation answer carries the tenant, so there is no second source to disagree with.)  [unit]
+(Revision 1's second sentence, about two answers disagreeing on the tenant, was dropped in revision 3. Revision 5: the tenant has one source, the ID token; an organisation answer naming a different tenant is not a second source but a failed evidence lookup, AC-51.)  [unit]
 
-AC-11c. Given no account for `erin@acme.com`, when a personal Microsoft account signs in with that address, then it is refused, unless OQ-3 has recorded an answer that gives mailbox or authoritative evidence for personal accounts, in which case the outcome follows the §3 evidence table.  [unit]
+AC-11c (revised r5). Given no account for `erin@acme.com`, when a personal Microsoft account signs in with that address, then it is refused, whatever evidence it carries (owner, 2026-11-01: personal Microsoft sign-in waits for PAC-77).  [unit]
+
+AC-51 (the verified-domain lookup is evidence only, revision 5). Given Microsoft work account (T1, O1) whose signed ID token checks, when the verified-domain lookup errors, times out, is refused, or names a tenant other than T1, then: (i) with Henry bound to (T1, O1), the sign-in reaches Henry, and PAC-68 evaluates membership as "not joined" for it; (ii) with no account carrying the address, the sign-in is refused under rule 5 (no evidence); (iii) with an empty unbound pre-existing account for the address, the sign-in is refused (rule (b) needs authoritative evidence) and the account stays unbound. (iv) (revision 5.1, challenge r5 Non-blocking 1) with a non-empty unbound pre-existing account whose recorded identifier is O1, the sign-in is refused (rule (a) needs at least mailbox evidence, and a Microsoft work account never has it), the account stays unbound and its generation is unchanged. In none of the four is the logged cause "tenant cannot be obtained". Today the tenant is never read, so case (i) cannot pass.  [unit]
 
 **Address standing and address-as-person**
 
@@ -552,7 +561,7 @@ AC-42 (session generation). Given Henry with two sessions S1 and S2:
 - a refusal, a connect and an ordinary bound sign-in do not change the generation, so S1 and S2 keep working;
 - an account created after this change starts at the initial generation, so a session minted for it with the initial generation (today's e2e helper) works until its generation first advances.  [unit]
 
-AC-44 (deploy-time step, conditional on OQ-6). If the owner answers OQ-6 "yes", then given sessions issued before the deployment for any accounts, after the deployment's migration every one of them gets 401 on its next request, and no account, credential or setting changes. If the owner answers "no", this criterion is dropped and §5 records the residual.  [unit] (migration test)
+AC-44 (deploy-time step, revised r5: the owner answered OQ-6 "yes", so it is no longer conditional). Given sessions issued before the deployment for any accounts, after the release's deploy-time step every one of them gets 401 on its next request, and no account, credential or setting changes.  [unit] (migration or command test) (Revision 5.1: that the step ran is a release condition, §3 "Sessions", not part of this criterion.)
 
 **Organisation SSO**
 
@@ -660,21 +669,23 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
   - *Lock-out by a squatter.* An address carried by a mailbox-only account, by a departed holder, or by a legacy account refused under (b) cannot be taken by its rightful owner until an operator frees it (§3 "Operator procedure"; F2). The squatter gains nothing from it: the address resolves to nobody at granting sites.
   - *Unconfirmed addresses.* A user whose only evidence is mailbox evidence (a consumer Google account on a custom domain, or a Google Workspace user on a secondary domain) cannot accept address-based invitations until F2. That includes legacy users who bind under (a) with mailbox evidence.
   - *Break-glass.* An operator's break-glass needs an account holding the listed address domain-confirmed. Until the operator's account binds with authoritative evidence, and for good on a domain with no authority, break-glass does not work for them. The operator should list an address on a domain with an authority.
-  - *Existing members and SSO.* Existing members cannot sign in through SSO until F1 (D-10, OQ-2).
+  - *Existing members and SSO.* Existing members cannot sign in through SSO until F1 (D-10; owner, OQ-2 "no", 2026-11-01).
   - *Legacy users of two providers* can sign in only with the bound one until F1.
-  - *Personal Microsoft accounts* may be unable to sign in at all if OQ-3 item 2 finds no positive signal.
+  - *Personal Microsoft accounts* (revision 5, owner-accepted 2026-11-01). They cannot sign in or sign up until PAC-77 ships. An existing account whose only sign-in is a personal Microsoft account loses sign-in at deploy, and recovers through the operator's "unbind and reassign", through another sign-in method once one exists, or when PAC-77 ships. A personal Microsoft account can still be connected as an Outlook calendar to an account its holder can sign in to.
   - *Pre-gate SSO configurations.* An SSO configuration written before PAC-50's gate, when any member could write it, still gives authoritative evidence for new accounts at its domain. It cannot reach an existing account. The release notes ask operators to review every configured issuer at deployment.
   - *A stolen session* can connect the attacker's own calendar to the victim's account (PAC-47's model), but cannot add a sign-in method, so it ends with the session (expiry, or the operator advancing the generation).
-  - *Pre-deploy sessions.* If the owner answers OQ-6 "no", a session obtained by email matching before the change stays valid up to 7 days on an account that does not bind in that time. On an account that does bind, such a session reaches nothing the binding stored, even in a request already authenticated when the binding commits (§3, AC-50; revision 4).
+  - *Pre-deploy sessions.* Revision 5: closed by the deploy-time step (owner, OQ-6 "yes"; AC-44). Between the deploy and that step, a session obtained by email matching before the change stays valid on an account that does not bind; on an account that does bind, it reaches nothing the binding stored (§3, AC-50). The release keeps that window short.
   - *Provider evidence.* The OQ-3 item 4 residual on unmanaged Microsoft directories, and reported past flaws that let Workspace accounts exist on unverified domains (`hd`). This residual also applies to migration rule (b): until stage 2 answers OQ-3 item 4, (b) binds an empty legacy account on Microsoft tenant evidence that an unmanaged directory might fake. The account is empty, so the binder gains no one else's data, but the rightful holder is then refused.
-  - *Microsoft availability (revision 3).* The Microsoft tenant fails closed. If its source is a second Graph call, an outage of that call refuses every Microsoft sign-in, including bound users, with the refusal message, which then tells them to "sign in the way you did before". PAC-68 had chosen the opposite (open for sign-in); PAC-71 overrides it for the tenant (§3 constraints).
+  - *Microsoft availability (revision 3; revision 5).* The Microsoft tenant fails closed. Since revision 5 it comes from the signed ID token, so an outage of Microsoft's published signing keys refuses every Microsoft sign-in, bound users included. An outage of the verified-domain lookup no longer does: bound users sign in (not joined, PAC-68), while new Microsoft sign-ups and Microsoft migration bindings are refused for lack of evidence until it recovers.
+  - *One-time consent (revision 5; 5.1).* Adding `openid` and `profile` makes Microsoft ask each user once to consent to being signed in and to share their basic profile (user-level, never admin consent). Owner-accepted. In a tenant whose administrator has disabled user consent, every new permission needs the administrator's grant, these two included, so its members are refused until the administrator grants `openid` and `profile` (challenge r5 Non-blocking 2). Such tenants already needed that grant for the calendar permission, so it is a new step, not a new kind of step; release-noted.
+  - *Sign-ins in flight at deploy (revision 5.1, challenge r5 Non-blocking 3).* A Microsoft sign-in started on the old API requested no `openid` and no binding value; if it completes on the new API (within the 5-minute state lifetime) its answer has no ID token and it is refused (AC-11b). The user signs in again. Release-noted beside the API-to-web window.
   - *Rule (a) trusts the record (revision 3).* A pre-deploy takeover by email matching that overwrote the recorded identifier is bound under (a) if the taker signs in first. It is undetectable from the data; the server log flags (a) bindings on mailbox evidence for non-consumer domains, and the operator's "unbind and reassign" step repairs it.
   - *Rule (b) is narrow (revision 3).* Most legacy accounts that were used at all are not empty, so a user whose recorded identifier differs from their incoming identity is refused and needs the operator unless they sign in the way they did before (rule (a)). Production has zero users (`docs/specs/PAC-22.md:80`).
 
 ## 6. What must not change
 
 - **An existing user's next ordinary sign-in through the provider they used last still works.** Migration rule (a) covers it. Today's success tests protect the redirect and session issuance (`pac35_auth_flows_test.go:167`, `:239`, `:286`); their fixtures change as AC-8 states. No existing test protects *which account* is reached. That is a finding, and AC-8 and AC-15 are the new protection.
-- **Sign-in requests exactly today's scopes** (owner, PAC-68 OQ-2; PAC-50 AC-24). `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` (`backend/auth/pac50_signin_scopes_test.go:19-69`) protects it and must pass **unchanged**; AC-11 restates it for Microsoft. No identity scope (`openid`, `profile`, `email`) is added to the Google or Microsoft sign-in.
+- **Sign-in requests today's scopes, plus `openid` and `profile` for Microsoft only (revisions 5 and 5.1)** (owner, PAC-68 OQ-2; PAC-50 AC-24; owner 2026-11-01, OQ-8). **Must change, amended test (consumer):** `TestPAC50_SignInAuthorizeURLsCarryNoNewScope` (`backend/auth/pac50_signin_scopes_test.go:19-69`) changes in exactly one place: the Microsoft expected set becomes `openid profile Calendars.ReadWrite User.Read offline_access` (revision 5.1; the test compares the joined string in order, so the order is part of the contract). Its other assertions stay unchanged: the Google and OIDC sets are exact, and no sign-in carries a step-up or admin-consent scope. AC-11 restates it for Microsoft. No other identity scope (`email`) is added to the Microsoft sign-in, and none to the Google sign-in.
 - **The session cookie is untouched on failure** (PAC-35, API-011). Protected by `pac35_auth_flows_test.go:142-165` and `:193-237`, whose failure assertions are kept. The refusal state and a connect credited to nobody keep this property.
 - **The current-user response's `provider` still means "provider of the first sign-in"** (`paceday.gen.go:1186-1197`).
 - **The SSO email-domain binding** (PAC-45) stays, protected by `handlers_sso_test.go:161-195`.
@@ -683,19 +694,19 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
 - **The manager's removal of an address no account carries** still removes the manager assignment and pending invites and answers 204 (`handlers_manager.go:364-368`).
 - **Must change.** `TestPAC67_MicrosoftCallbackKeepsRefreshAndFlipsOnlyTheCaller` (`pac67_conferencing_test.go:322-358`) asserts that a session-less Microsoft callback lands on an account matched by address. Under this spec it must become a connect (AC-12) or a bound-identity sign-in (AC-8), keeping its PAC-67 assertions: refresh token kept, loss cleared, the other user unaffected. The owner already expects this test to be amended for PAC-47.
 - **Must change.** The web app's signed-in connect surfaces (§2 table) stop using the public sign-in start (AC-32); their tests follow.
-- **Must change, in PAC-47** (`origin/factory/pac-47-spec`, not yet built). These ACs presuppose email matching: AC-3i (a) and (b), AC-3k and AC-3l (`PAC-47.md:650-695`). Their Given must say that the Microsoft identity is the user's bound identity, or their recorded identifier under migration (a). Otherwise PAC-71 refuses them. Their work-calendar assertions (D-17) are unaffected. AC-3j's new account needs a tenant that verifies `z` (rule 5). AC-3e and AC-3f already match the connect step and do not change.
+- **Must change, in PAC-47** (`origin/factory/pac-47-spec`, not yet built). These ACs presuppose email matching: AC-3i (a) and (b), AC-3k and AC-3l (`PAC-47.md:650-695`). Their Given must say that the Microsoft identity is the user's bound identity, or their recorded identifier under migration (a). Otherwise PAC-71 refuses them. Their work-calendar assertions (D-17) are unaffected. AC-3j's new account needs a tenant that verifies `z` (rule 5). (Revision 5: their Microsoft fixtures also need a signed ID token, as AC-8 states.) AC-3e and AC-3f already match the connect step and do not change.
 - **Must change, in PAC-68** (`origin/factory/pac-68-spec` `ec76099`):
-  - AC-15's first clause and D-5 (`PAC-68.md:115`, `:158`) must say "exactly today's set", without the `openid` allowance (§3 constraints).
-  - AC-9, its Microsoft case (`PAC-68.md:95`): when the lookup that supplies the tenant errors or times out, the Microsoft sign-in is **refused** with PAC-71's refusal state and nothing is written, instead of "the sign-in still completes". AC-9's premise that the tenant may be "taken from the token response" needs a scope that is forbidden; it must name the source stage 2 picks (OQ-3 item 1).
-  - AC-15's second clause (`PAC-68.md:115`): a Microsoft work account whose tenant lookup is refused for lack of permission is refused at sign-in, not "signed in as today, not joined". If stage 2 finds a tenant source independent of the verified-domain lookup, both clauses apply only when the tenant itself cannot be obtained; a failure of the verified-domain lookup alone keeps PAC-68's outcome (signed in, not joined).
-  - D-4 (`PAC-68.md:157`): "fails closed for membership, open for sign-in" becomes "fails closed for membership; for sign-in, fails closed whenever the identity (the Microsoft tenant) cannot be established" (PAC-71 D-23).
+  - (revised r5) AC-15's first clause and D-5 (`PAC-68.md:115`, `:158`) must say "today's set, plus `openid` and `profile` for Microsoft only" (owner, 2026-11-01, OQ-8 and OQ-9), instead of a general identity-scope allowance.
+  - (revised r5) AC-9, its Microsoft case (`PAC-68.md:95`): the tenant is "taken from the token response" (the signed ID token, now allowed). When the verified-domain lookup errors or times out, PAC-68's "the sign-in still completes, not joined" stands for a bound identity; only a sign-in whose ID-token tenant cannot be obtained is **refused** with PAC-71's refusal state.
+  - (revised r5) AC-15's second clause (`PAC-68.md:115`): a verified-domain lookup refused for lack of permission keeps PAC-68's outcome (signed in, not joined) for a bound identity; an unknown identity is decided by PAC-71 rule 5 with no evidence.
+  - D-4 (`PAC-68.md:157`): "fails closed for membership, open for sign-in" becomes "fails closed for membership; for sign-in, fails closed whenever the identity (the Microsoft tenant, from the ID token) cannot be established" (PAC-71 D-23).
 - **Must change, in PAC-47** (addition, revision 3). AC-3i (c) (`PAC-47.md:665-675` at `24e0833`) allows creating `m@z` through a Microsoft sign-in. Under rule 5 that needs a tenant that verifies `z`, and under §3 "Identities" a tenant that can be obtained; the AC's Given must say so, as for AC-3j.
 - **Must change, the e2e helper** (`e2e/auth.ts:17-25`). It mints sessions with no generation. They keep working for accounts at the initial generation (§3 "Sessions"); a test that advances an account's generation (or runs after the deploy-time step, AC-44) must mint the current generation. Every e2e test that inserts users and mints sessions is affected only in that case.
 
 ## 7. Rollback
 
 - **Reverting the code** restores matching by address on every callback. That re-opens every §1 scenario, so a revert is a security regression and is release-noted as one.
-- **Down migration.** Dropping the binding, standing and session-generation records loses the bindings, the address standings and the generations. Accounts, credentials and memberships are untouched. Sessions issued after the change keep working under the reverted code, which ignores the generation they carry. A session ended by a generation advance becomes valid again until it expires: the down migration re-opens every session that the deploy-time step (OQ-6) or a binding closed. Release-note it; rotating the signing secret on revert closes them.
+- **Down migration.** Dropping the binding, standing and session-generation records loses the bindings, the address standings and the generations. Accounts, credentials and memberships are untouched. Sessions issued after the change keep working under the reverted code, which ignores the generation they carry. A session ended by a generation advance becomes valid again until it expires: the down migration re-opens every session that the deploy-time step (OQ-6, run at release) or a binding closed. Release-note it; rotating the signing secret on revert closes them.
 - **Re-applying.** Every account is "pre-existing" again and re-binds lazily under (a)/(b). An account bound by (b) has no recorded identifier of the bound identity unless the plan records it on binding. The plan must record the bound identity's subject in today's recorded-identifier field as well, so that a re-apply re-binds it under (a).
 - **Operator procedure.** An address freed by an operator stays freed after a revert. The placeholder address is not restored. A binding replaced by the operator's "unbind and reassign" step is lost with every other binding on the down migration; the audit records of operator steps are kept (the plan says where, so that a down migration does not drop them).
 - **Connect state.** A connect in flight when the code is reverted completes under the reverted code's rules (no generation check). That window is the 5-minute state lifetime (§2).
@@ -706,11 +717,11 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
   - **For this ticket: no**, on factory guidance, aligned with PAC-47 (`PAC-47.md:377-411`). A connect attaches the calendar credential only (§3). This removes revision 1's Blocking 5 and 6 and the fresh-proof machinery.
   - **Still open for follow-up F1**: whether the product should offer, after a connect, to also add that account as a sign-in method, or only through an explicit "add a sign-in method" step. Factory default for F1: only through the explicit step.
   - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before F1's spec. Not blocking this ticket.
-- **OQ-2: when an organisation enables SSO or changes its IdP, may existing members' accounts be reached through SSO without each adding it? (owner, product).**
+- **OQ-2: when an organisation enables SSO or changes its IdP, may existing members' accounts be reached through SSO without each adding it? (owner, product).** **Decided (owner, 2026-11-01): no.** SSO never reaches existing members; each member links it (F1). The text below is kept as the record.
   - **Factory default:** no (D-10). In this ticket existing members cannot use SSO at all. In F1 they add it as a sign-in method.
   - **Alternative:** the org's configured issuer counts as authoritative for its own domain even on existing accounts. That reopens §1 case 5 for whoever can change the configuration (PAC-50 admin step-up or break-glass).
   - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before F1's stage 4. Not blocking this ticket: production has zero users (`docs/specs/PAC-22.md:80`).
-- **OQ-3: what stage 2 must verify about provider answers within today's scopes (contract-author / plan-author, technical).** No call was made for this spec. Stage 2 records the answer for each item, with the documentation or a recorded call:
+- **OQ-3: what stage 2 must verify about provider answers within today's scopes (contract-author / plan-author, technical).** *Revision 5:* items 1 and 2 are settled by the owner's OQ-8 answer. The tenant comes from the signed ID token that `openid` returns; personal accounts are recognised by Microsoft's fixed personal-account tenant in that token and refused until PAC-77 (item 3 is moot until then). Stage 2 still names the object-id source and the token checks, and items 4 to 6 stand. No call was made for this spec. Stage 2 records the answer for each item, with the documentation or a recorded call:
   1. **Microsoft tenant.** Graph `GET /organization` (fields `id`, `verifiedDomains`) is documented with `User.Read` as its least-privileged delegated permission (known from documentation, not called). Stage 2 confirms that it answers under exactly today's Microsoft scopes for a work account. `id` is the tenant; Graph `/me`'s `id` is the object id for a work account. Both are read with the same access token. The step-up already reads the same resource with wider scopes (`stepup.go:290`).
      - **Alternatives stage 2 must check (revision 3), none needing `/organization`:** (i) the `tid` claim of the Graph access token returned by today's code exchange. Microsoft documents access tokens as opaque to the client and Graph tokens cannot be signature-checked by a third party, but this one arrives directly from Microsoft's token endpoint over TLS in the code exchange. Stage 2 states whether reading it is supported and stable. (ii) The `client_info` value (`uid`, `utid`) that the v2 token endpoint returns when the token request includes `client_info=1`; it needs no scope. Stage 2 states whether it is documented for confidential web clients. If either is adopted, stage 2 also states how it agrees with `/me`'s object id.
      - **Whatever stage 2 finds, the rule stays fail-closed** (§3 "Identities"): a sign-in whose tenant cannot be obtained from the chosen source is refused. A source independent of `/organization` only narrows which outages refuse sign-in, and lets PAC-68 keep "signed in, not joined" for a failed verified-domain lookup alone (§6).
@@ -726,12 +737,14 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
   - PAC-47 defines the Outlook connect (§2). This spec extends the same semantics to Google. Whichever of PAC-47 and PAC-71 is built first implements the connect start and callback for both providers. The second reuses it. Neither redefines it.
   - PAC-68 and PAC-47 change the same three callbacks. Suggested order: PAC-71 first, because PAC-68's membership guarantee (§3 "Limit") depends on it. AC-31 holds whatever the order.
   - **Resolve by:** the plan stating the order.
-- **OQ-6: end every existing session when PAC-71 deploys? (owner; no default).**
+- **OQ-6: end every existing session when PAC-71 deploys? (owner; no default).** **Decided (owner, 2026-11-01): yes.** The operator's "advance every account's generation" step is part of the PAC-71 release (§3 "Sessions", AC-44, D-21). The text below is kept as the record.
   - **Factory recommendation: yes**, by advancing every account's session generation once at deployment (§3 "Sessions", AC-44). Every user signs in once more. The step closes every session obtained through email matching before the change, including on accounts that never sign in again. Production has zero users (`docs/specs/PAC-22.md:80`), so the cost there is nil.
   - **Alternative:** no deploy-time step. Pre-deploy sessions end when their account binds (AC-42) or when they expire (at most 7 days).
   - **Owner:** Nicolas Hochart. **Resolve by:** owner answer before release (stage 7). Not blocking stages 2 to 6: AC-44 is conditional.
 - **OQ-7: deliver email confirmation in this ticket or a follow-up?** Resolved in revision 2: follow-up F2 (§10).
-- **OQ-8: is a refused Microsoft sign-in during a tenant-lookup outage acceptable? (owner, product; factory default recorded, not blocking).**
+- **Personal Microsoft accounts (asked 2026-10-28).** **Decided (owner, 2026-11-01): acceptable, release-noted.** PAC-71 ships without personal Microsoft sign-in; PAC-77 restores it (§5, §10).
+- **OQ-9 (new in revision 5): where is the Microsoft object id read under `openid` alone? (owner, technical; not blocking, default applied).** **Decided (owner, 2026-11-01): add `profile` too.** Microsoft sign-in requests `openid profile` (user consent only); the object id comes from the signed ID token, which must carry it; the profile's identifier must equal it, or the sign-in is refused. The text below is kept as the record. The owner's OQ-8 answer names the ID token as the source of the object id, but Microsoft's ID token reference documents the object-id claim as requiring the `profile` scope, which the same answer excludes ("no other new scope"). **Default (contract revision 3):** the tenant comes strictly from the signed ID token; the object id comes from the profile read with the access token of the same token response, and must equal the ID token's object id whenever the token carries one. **Alternative:** add `profile` (user consent only, never admin consent) so the object id is itself signed. **Owner:** Nicolas Hochart. **Resolve by:** before release; merge condition 2 records whether the sign-in token carries it.
+- **OQ-8: is a refused Microsoft sign-in during a tenant-lookup outage acceptable? (owner, product; factory default recorded, not blocking).** **Decided (owner, 2026-11-01): use the industry approach.** Microsoft sign-in requests `openid` (user consent only) and takes the tenant and object id from the signed ID token, not from a separate organisation lookup. A tenant-lookup outage therefore no longer exists as such; what still refuses is a sign-in whose ID token cannot be checked (§3, D-23). The text below is kept as the record.
   - **Factory decision (revision 3, fail closed):** yes; the tenant is identity, and a bound Microsoft identity cannot be recognised without it (D-23). PAC-68's "open for sign-in" is overridden for the tenant.
   - **Alternative:** none safe that the factory can see within today's scopes, other than a tenant source independent of the lookup (OQ-3 item 1), which stage 2 checks anyway.
   - **Owner:** Nicolas Hochart. **Resolve by:** before release; the factory default applies meanwhile.
@@ -740,7 +753,7 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
 
 | ID | Decision | Source |
 |---|---|---|
-| D-1 | Identity = Google account id; Microsoft (tenant, object id) from the same token's answers; Microsoft personal account as its own authority; SSO (verified issuer, subject). Identifiers compared only with their authority. | **Owner** for Google and Microsoft (PAC-68 OQ-1, "Google sub, Microsoft oid+tid"). **Factory-assumed** for SSO, personal accounts, and same-token sourcing. |
+| D-1 | Identity = Google account id; Microsoft (tenant, object id) from the same sign-in, both from the signed ID token (revisions 5 and 5.1), the object id confirmed by the profile; Microsoft personal account as its own authority, recognised by Microsoft's personal-account tenant and refused until PAC-77; SSO (verified issuer, subject). Identifiers compared only with their authority. | **Owner** for Google and Microsoft (PAC-68 OQ-1, "Google sub, Microsoft oid+tid"; 2026-11-01, OQ-8 and OQ-9: from the signed ID token; personal accounts wait for PAC-77). **Factory-assumed** for SSO. |
 | D-2 | The address never links a sign-in to an account that has a bound identity, even with authoritative evidence. | Issue direction, filed at the owner's request ("A matching email address alone never links"). **Factory-assumed** that it holds even for authoritative evidence. |
 | D-3 | Mismatch is refused; never a silent merge. | Issue direction; **factory-assumed** specifics (§3 Refusal). |
 | D-4 | (revised r2) A connect from inside the product attaches a calendar credential to the signed-in account and never binds an identity or adds a sign-in method. In this ticket an account has one bound identity; adding one is F1. | **Factory guidance** (orchestrator, 2026-10-28), aligned with PAC-47 §3 item 3 (`PAC-47.md:377-411`). Answers OQ-1 "no" for this ticket. |
@@ -749,20 +762,20 @@ AC-23. Given the full stack with a sign-in stand-in, when a second identity carr
 | D-7 | The account's address does not change when the provider reports a new one. | **Factory-assumed**. |
 | D-8 | (revised r3) Pre-existing accounts bind lazily on the first post-deployment sign-in meeting (a) (same recorded identifier, Google/Microsoft only; binds the identity on record) or (b) (Google/Microsoft authoritative evidence on an **empty** account: no credential, connection, key, changed preference, relationship or stored data, per §2's inventory; the recorded identifier plays no part). Everything else is refused, logged, and left to the operator procedure. Binding locks the account, re-checks, binds and advances the generation as one atomic step. | **Factory decision** (orchestrator, 2026-10-28, revision 3 items 1 and 2, fail closed). |
 | D-9 | Nothing is deleted: accounts, memberships, credentials, settings, accepted grants. | Factory rule; issue body. |
-| D-10 | SSO is never authoritative over an existing account, bound or not. Existing members cannot use SSO until F1. | **Factory-assumed**; OQ-2. |
+| D-10 | SSO is never authoritative over an existing account, bound or not. Existing members cannot use SSO until F1. | **Owner** (OQ-2 "no", 2026-11-01). |
 | D-11 | (withdrawn r2) Disconnect and sign-in methods. | Moved to F1 with sign-in-method management. |
 | D-12 | (revised r2) A recycled address at the provider (new subject) is refused while any account carries it; an operator resolves it until F2. | **Factory-assumed**. |
 | D-13 | PAC-50 step-up also requires the bound identity when the account's binding is at that authority. Break-glass authorises the account holding the listed address domain-confirmed, not a session email claim. | **Factory-assumed**. |
-| D-14 | Sign-in requests exactly today's scopes; identity evidence comes from today's answers. PAC-68's `openid` allowance (AC-15, D-5) is overridden for sign-in scopes and PAC-68 must amend. | **Owner** (PAC-68 OQ-2, "offer both"; PAC-50 AC-24). |
+| D-14 | (revised r5.1) Sign-in requests today's scopes plus, for Microsoft only, `openid` and `profile` (user consent, never admin consent); the Microsoft string is exactly `openid profile Calendars.ReadWrite User.Read offline_access`; no other new scope. PAC-50 AC-24's test is amended to allow exactly that; PAC-68 AC-15 and D-5 amend to "today's set plus `openid` and `profile` for Microsoft". | **Owner** (PAC-68 OQ-2; PAC-50 AC-24; 2026-11-01 OQ-8 and OQ-9, which supersede "exactly today's scopes" for `openid` and `profile` only). |
 | D-15 | A Microsoft sign-in must not reset an existing user's work calendar. This spec adds no reset path: a connect, a migration binding and a refusal never change it. | **Owner** (PAC-47 vs PAC-67 OQ-13). |
 | D-16 | (withdrawn r2) Fresh proof for adding or removing a sign-in method. | Moved to F1. |
 | D-17 | Addresses are compared case-insensitively everywhere; no new account may carry an address another carries in any case; existing case collisions are left untouched, refused at sign-in and granting sites, and acted on in full at revoking sites. | **Factory-assumed** (revision 1, Non-blocking 5; revision 2 for revoking sites). |
 | D-18 | (withdrawn r2) Paceday email confirmation. | Moved to F2. |
 | D-19 | The organisation's "extended access" step never binds or changes an identity. Revision 3: it does not exist on `main` (`contracts/features/PAC-50.yaml:215` says the step-up is not that step), so AC-35 is dropped; the ticket that builds the step inherits this decision and must carry the criterion. | **Factory-assumed** (revision 1, Non-blocking 7). |
 | D-20 | (revised r3) Every account has a session generation carried by its sessions and checked on every authenticated request; it advances on every binding write and on the operator procedure. A failed read of it is a server error, not 401; no cache. Writes of any kind rule (b) counts are also checked against it when stored. (revised r4) A request of an older generation never obtains, uses or returns a credential, connection, key or account data stored after the advance, provider calls included. Every load of a credential or account data for a request re-confirms the request's generation against the account's current one in the same read; on a mismatch it returns nothing, no provider call is made, and the request ends as 401. | **Factory guidance** (orchestrator, 2026-10-28, item 2); read-failure and in-flight-write rules **factory decision** (revision 3, Challenge r2 Non-blocking 2 and Blocking 2); read and provider-call rule **factory decision** (orchestrator, revision 4, Challenge r3 Blocking 1 option (i), independent of OQ-6). |
-| D-21 | A one-time advance of every account's generation at deployment is the factory's recommendation; the owner decides (OQ-6). | **Factory recommendation**, owner pending. |
+| D-21 | A one-time advance of every account's generation at deployment is part of the PAC-71 release. | **Owner** (OQ-6 "yes", 2026-11-01). |
 | D-22 | Lock-out of a rightful owner by an account that carries the address is refused safely and resolved by a written operator procedure until F2. | **Factory guidance** (orchestrator, 2026-10-28, item 4). |
-| D-23 | The Microsoft tenant is identity. A Microsoft sign-in whose tenant cannot be obtained is refused with the single message, whether it would create, bind or reach a bound account. Overrides PAC-68 D-4 "open for sign-in" for the tenant; PAC-68 AC-9, AC-15 second clause and D-4 amend. | **Factory decision** (orchestrator, 2026-10-28, revision 3 item 3, fail closed); OQ-8 for the owner. |
+| D-23 | The Microsoft tenant is identity. A Microsoft sign-in whose tenant cannot be obtained (revision 5: from a valid signed ID token) is refused with the single message, whether it would create, bind or reach a bound account. A failed verified-domain lookup is less evidence, not a missing tenant. Overrides PAC-68 D-4 "open for sign-in" only for the tenant; PAC-68 AC-9, AC-15 and D-4 amend as §6 states. | **Factory decision** (orchestrator, 2026-10-28, revision 3 item 3, fail closed); source **owner** (OQ-8, 2026-11-01). |
 | D-24 | A connect is bound at its start to the account and its session generation; a completion under a different current generation is credited to nobody. A connect cannot be started by another site. | **Factory decision** (orchestrator, 2026-10-28, revision 3 item 2; Challenge r2 Non-blocking 5). |
 | D-25 | Operator "unbind and reassign": operator-only (no API, web or MCP path), audited, advances the generation. Rule (a) binds the identity on record; (a) bindings on mailbox evidence for non-consumer domains are logged for review. | **Factory decision** (orchestrator, 2026-10-28, revision 3 item 4; Challenge r2 Non-blocking 1). |
 
@@ -781,7 +794,7 @@ Revision 2 narrows PAC-71 to the identity core. The rest goes to the follow-up t
 
   Granting and revoking sites keep the split defined here, and break-glass checks the standing at the time of use. Takes over: AC-24, AC-26, AC-27, D-18, revision 1 Blocking 2 and 3, Non-blocking 6 and 9, and the lock-out residual of §5.
 - **F3 — Session management and security notices for users.** Builds on the session generation added here. It offers a user-facing "sign out of all other sessions" in Settings, and states whether logout should also advance the generation. It notifies the account holder by mail, when a sender is configured, of security events: a migration binding, an operator freeing an address, and, once F1 exists, a method added or removed. Takes over: revision 1 §5 "notifying the user", the user-facing part of revision 1 Blocking 5's session-revocation requirement.
-- **F4 (conditional; filed as PAC-77, https://linear.app/paceday/issue/PAC-77, after stage 2 confirmed the condition) — Sign-in with a personal Microsoft account.** Filed only if stage 2 finds (OQ-3 items 2 and 3) that today's Microsoft answers give no positive personal-account signal or no address evidence, so that personal accounts cannot sign in or create accounts under PAC-71. It decides, as an owner question, whether to obtain that signal through a permission that needs no admin consent, or to accept the limit. Takes over: the personal-Microsoft residual of §5.
+- **F4 (conditional; filed as PAC-77, https://linear.app/paceday/issue/PAC-77, after stage 2 confirmed the condition) — Sign-in with a personal Microsoft account.** Filed only if stage 2 finds (OQ-3 items 2 and 3) that today's Microsoft answers give no positive personal-account signal or no address evidence, so that personal accounts cannot sign in or create accounts under PAC-71. It decides, as an owner question, whether to obtain that signal through a permission that needs no admin consent, or to accept the limit. Takes over: the personal-Microsoft residual of §5. **Note for PAC-77 (revision 5):** the signal now exists. With `openid`, the signed ID token's tenant is `9188040d-6c67-4c5b-b112-36a304b66dad` for every personal Microsoft account (Microsoft's documented personal-account tenant), so PAC-71 recognises personal accounts positively and refuses them by owner decision, not for lack of a signal. PAC-77 then has to decide only the identifier (the object id within that tenant) and the address evidence, which personal accounts still lack under `openid` alone.
 
 ## Challenge, revision 0 — 2026-10-28
 
@@ -1648,3 +1661,122 @@ All other revision 4 citations match `ae5c2cf`:
 ### Consumers this breaks
 
 None beyond those revision 3 lists. The in-read generation check reaches every handler that loads a credential after authentication. The plan must name them (Non-blocking 1).
+
+## Revision 5 — owner answers 2026-11-01
+
+Applies the owner's answers of 2026-11-01 (`.claude/factory/owner-decisions.md`, section 2026-11-01, binding) and nothing else. No challenge finding is answered here, §10 is unchanged except the note for PAC-77, and no follow-up is added or widened. The challenge text and the earlier revision records above are kept unchanged. Owner questions are marked **Decided** in §8, with their earlier text kept as the record.
+
+| # | Owner answer | Where applied |
+|---|---|---|
+| R5-1 | **OQ-6: yes.** Every existing session is signed out once at deploy; the operator's "advance every account's generation" step runs as part of the PAC-71 release. | §3 "Sessions" (deploy-time step is a release step); AC-44 is no longer conditional (revised r5); §5 "Pre-deploy sessions" now describes only the window between deploy and the step; §7 wording; §8 OQ-6 decided; D-21 now owner. |
+| R5-2 | **Personal Microsoft accounts: acceptable, release-noted.** PAC-71 ships without personal Microsoft sign-in; PAC-77 restores it. | §3 "Identities" (personal accounts refused); §3 "Refusal" (cause listed); §5 residual rewritten as owner-accepted, with the recovery paths; AC-5 and AC-11c revised r5; §8 records the decision; D-1. |
+| R5-3 | **OQ-2: no.** SSO never reaches existing members; each member links it (F1). | §3 "Existing members and SSO"; §5 residual; §8 OQ-2 decided; D-10 now owner. Behaviour unchanged (it was the applied default). |
+| R5-4 | **OQ-8 / Microsoft tenant: the industry approach.** Microsoft sign-in requests the basic `openid` scope (user-level consent, never admin consent) and takes the tenant and object id from the signed ID token, not from a separate organisation lookup. Supersedes "exactly today's scopes" for `openid` only; PAC-50 AC-24's scope-pinning test is amended to allow it. No other new scope. | §3 "Identities" (tenant from the signed ID token after signature, audience, issuer, freshness and request-binding checks; an organisation lookup, if kept, is evidence only, and its failure means less evidence, never refusal by itself); evidence table; §3 constraints (Microsoft adds `openid` only; Google unchanged, with the reason); PAC-68 stance narrowed; AC-8 fixtures (signed ID token), AC-11 (scope set plus `openid`; amended scope test), AC-11b revised r5 (ID-token failure cases), new AC-51 (verified-domain lookup failure is evidence only); §5 "Microsoft availability" and new "One-time consent" residual; §6 (PAC-50 AC-24 test amended as a consumer; PAC-68 AC-9, AC-15, D-4, D-5 amendments rewritten); §8 OQ-3 items 1 and 2 settled, OQ-8 decided; D-1, D-14, D-23. |
+| R5-5 | (Consequence of R5-4, recorded for PAC-77.) The signed ID token now positively marks personal accounts by Microsoft's documented personal-account tenant `9188040d-6c67-4c5b-b112-36a304b66dad`. | §3 "Identities"; §10 F4/PAC-77 note: PAC-77 starts with the signal and has to decide only the identifier and address evidence. |
+
+**Why Google does not get `openid`.** The owner's answer is about Microsoft, and states "no other new scope". Google needs none: its identity has no tenant, its stable account identifier and evidence (verified flag, hosted domain) already come from today's answer, and the remaining Google question (that identifier equals the step-up's subject) is a merge condition that a scope would not answer.
+
+**Acceptance-criterion ledger (revision 5).**
+- **Revised:** AC-5, AC-8 (Microsoft fixture), AC-11 (scope set), AC-11b (ID-token cases), AC-11c, AC-44 (no longer conditional).
+- **New:** AC-51 (the verified-domain lookup is evidence only).
+- **Unchanged:** every other criterion.
+
+**Merge condition 2, restated (needs a real account; not doable by agents).** For one Google Workspace account, the step-up ID token `sub` equals Google v2 userinfo `id`. For one Microsoft work account, the ID token `oid` equals Graph `/me` `id`. The contract (revision 3) states what is recorded and how the sign-in's own ID token enters it.
+
+**Questions left for the owner.** OQ-1 (F1 only; default: adding a sign-in method only through an explicit step), OQ-3 item 4 (unmanaged Microsoft directories, release-noted) and the new OQ-9 (§8: under `openid` alone Microsoft documents the object id as absent from the ID token; default: read it from the profile of the same sign-in and cross-check it against the token when present). OQ-2, OQ-6, OQ-8 and the personal-Microsoft question are decided.
+
+## Challenge, revision 5 — 2026-11-01
+
+**Verdict**: accept
+
+Scope: the delta `459bc02..77d0f02` on this file (the "Revision 5" table, R5-1 to R5-5), against revision 4 as accepted. Owner answers of 2026-11-01 checked against `.claude/factory/owner-decisions.md`: OQ-6 yes, OQ-2 no, OQ-8 (`openid`, tenant from the signed ID token), personal Microsoft accounts acceptable until PAC-77. Each is applied as the owner wrote it. The one place where the spec departs from the literal answer is the object id ("oid from the signed ID token"). Microsoft's ID-token claims reference (read 2026-11-01) says `oid` needs the `profile` scope, and the same answer forbids any other new scope. The spec records this as OQ-9 with a fail-closed default, and owner-decisions lists it as open with that default. That is the correct handling, and it does not block.
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+1. **AC-51 has no rule (a) case.** During an outage of the verified-domain lookup, a non-empty legacy account whose recorded identifier is O1 is refused when (T1, O1) signs in, and stays unbound. Rule (a) needs at least mailbox evidence, and a Microsoft work account never has mailbox evidence. §5 "Microsoft availability" says this ("Microsoft migration bindings are refused"), but no criterion pins it. Add case (iv) to AC-51: refused, unbound, generation unchanged, logged cause is not "tenant cannot be obtained".
+2. **The one-time consent residual is incomplete.** `openid` needs only user-level consent. But in a tenant that has disabled user consent, every new permission needs an administrator's grant, `openid` included, so its members are refused until the administrator grants it. The app already needed that grant for `Calendars.ReadWrite` in such tenants, so this is no regression in kind, but it is a new step. Add a sentence on this to §5 "One-time consent" and to the release notes.
+3. **Sign-ins in flight at deploy.** A sign-in started on the old API sent no `openid` and no `nonce`. If its callback (state lifetime 5 minutes) lands on the new API, the token response has no `id_token`, so the sign-in is refused (AC-11b). This is harmless, but release-note it next to the API-to-web window.
+4. **AC-44's last sentence ("the release record states that the step ran") is a release condition, not a unit assertion.** The `[unit]` part is falsifiable without it. Move the sentence to the release conditions, or mark it as one.
+
+### Criteria I could not falsify
+
+None. For each revised or new criterion I could name an offline test:
+- **AC-8, AC-11b, AC-51.** The test token endpoint already exists as a seam (`microsoftOAuthEndpoint`, `backend/api/handlers_microsoft_auth.go:41`), and its response can carry an `id_token`. The repo already signs RS256 ID tokens with a test key (`handlers_sso_test.go:22-111`, `pac50_sso_helpers_test.go:104`). The keys endpoint needs a seam of the same kind as `microsoftGraphOrganizationURL` (`handlers_pac71_auth.go:55`). Every listed failure (no token, `alg`, `kid`, signature, keys error or timeout, `tid`, `iss`, `aud`, `ver`, `exp`, `nonce`, `oid`≠`/me`) is a fixture change.
+- **AC-5 and AC-11c.** The token's `tid` is the consumer GUID, and the test asserts that no `/organization` request reaches the stub.
+- **AC-11.** An ordered string comparison, as `pac50_signin_scopes_test.go:63` already does.
+
+### Citations I checked and found wrong
+
+None.
+- Microsoft's ID-token claims reference says: `tid` is a GUID, and every personal account carries `9188040d-6c67-4c5b-b112-36a304b66dad`; `tid` needs no `profile` scope; `oid` does need `profile`; `iss` names the tenant and ends in `/v2.0`; `aud` and `nonce` must be validated. All of this matches §3, R5-5 and OQ-9.
+- `pac50_signin_scopes_test.go:19-69` compares the joined scope strings in order and rejects step-up, `.All`, `RoleManagement.` and `admin.directory` scopes. `openid` is not a step-up extra scope (`TestPAC50_StepupExtraScopesExcludeIdentityScopes`). So the amendment in §6 changes only the Microsoft expected set, and every no-admin-scope assertion survives.
+- PAC-68 AC-9 and AC-15 (`origin/factory/pac-68-spec`, `PAC-68.md:95`, `:115`) say what §6 says they say.
+- "Today the tenant is never read" (AC-51) holds on `origin/main`. The revision-2 `/organization` tenant code (`handlers_pac71_auth.go:236-240`) exists only on the implementation branch carried here (`60fdb40` is not an ancestor of `origin/main`). The backend implementation must replace it.
+
+### Consumers this breaks
+
+The ones §6 lists, plus nothing new:
+- `backend/auth/pac50_signin_scopes_test.go:31-32`: the Microsoft set gains `openid`.
+- `backend/api/handlers_pac71_auth.go:236-250` on the implementation branch: the tenant source moves to the ID token.
+- `pac35_auth_flows_test.go` Microsoft fixtures (AC-8).
+- PAC-47 and PAC-68 specs.
+
+`e2e/` has no Microsoft sign-in journey. `login.microsoftonline.com` resolves to the sink (`e2e/fake.ts:33`), and `sso-stepup.spec.ts` uses its own IdP. `mcp/` is unaffected.
+
+## Revision 5.1 — owner answer on OQ-9 and challenge r5 non-blocking items (2026-11-01)
+
+Applies the owner's OQ-9 answer (`.claude/factory/owner-decisions.md`, 2026-11-01: "add `profile` too") and the four non-blocking items of "Challenge, revision 5", which accepted revision 5 with no blocking finding. Nothing else changes. The records above are kept unchanged.
+
+| # | Change | Where |
+|---|---|---|
+| 5.1-1 | **OQ-9 decided: add `profile`.** The Microsoft sign-in scope string is exactly `openid profile Calendars.ReadWrite User.Read offline_access`, in that order (the PAC-50 AC-24 test compares the joined string in order). Both new scopes need user consent only. No other new scope. | Header; §3 "Identities" and constraints; §6 (PAC-50 test, PAC-68 AC-15/D-5); AC-11; §8 OQ-9 decided; D-14. |
+| 5.1-2 | **The object id comes from the signed ID token and is required.** A token without a well-formed object id is refused. The profile's identifier is a mandatory cross-check: it must equal the token's, otherwise refused. | §3 "Identities" and "The Microsoft tenant fails closed"; AC-11b (two cases replace "stage 2 names the comparison"); D-1. |
+| 5.1-3 | Challenge r5 NB1: AC-51 gains case (iv). During a verified-domain lookup outage, a non-empty legacy account whose recorded identifier matches is refused under rule (a), stays unbound, and its generation is unchanged. | AC-51. |
+| 5.1-4 | Challenge r5 NB2: release note for tenants with user consent disabled. An administrator must grant `openid` and `profile` before members can sign in. | §5 "One-time consent". |
+| 5.1-5 | Challenge r5 NB3: release note that Microsoft sign-ins in flight at deploy are refused (no ID token). The user signs in again. | §5 new residual. |
+| 5.1-6 | Challenge r5 NB4: AC-44's "the release record states that the step ran" moves to the release conditions. | AC-44; §3 "Sessions". |
+
+**Acceptance-criterion ledger (revision 5.1).** Revised: AC-11 (scope string), AC-11b (object-id cases), AC-44 (release-record sentence removed), AC-51 (case (iv)). Every other criterion is unchanged.
+
+**Questions left for the owner.** OQ-1 (F1 only) and OQ-3 item 4 (unmanaged Microsoft directories, release-noted). OQ-9 is decided.
+
+## Challenge, revision 5.1 — 2026-11-01
+
+**Verdict**: accept
+
+Scope: confirming round on the delta `4264e4f..dc754be` (the "Revision 5.1" table, 5.1-1 to 5.1-6), against revision 5 as accepted by "Challenge, revision 5". Owner OQ-9 answer checked against `.claude/factory/owner-decisions.md` (2026-11-01: "add `profile` too"; `/me` `id` must equal `oid`; no other new scope).
+
+### Blocking
+
+None.
+
+### Non-blocking
+
+None new. Revision 5.1 introduces no new criterion that cannot be falsified and no new path that writes on a refusal.
+
+### Revision 5 items, checked
+
+- OQ-9 applied: the Microsoft sign-in scope is exactly `openid profile Calendars.ReadWrite User.Read offline_access`, in that order, in §3 "Identities" and constraints, §6 (PAC-50 AC-24 test and PAC-68 AC-15/D-5), AC-11 and D-14. `email` stays excluded; Google is unchanged. The connect start keeps `Calendars.ReadWrite User.Read offline_access` (`auth.yaml:694`).
+- The object id comes from the signed ID token and is required (§3 "Identities", "The Microsoft tenant fails closed"; D-1). AC-11b replaces "stage 2 names the comparison" with two falsifiable cases: no or malformed `oid`, and profile identifier different from `oid`. Both are refusals with nothing written.
+- NB1: AC-51 case (iv) added (non-empty legacy account, recorded identifier O1, refused under rule (a), stays unbound, generation unchanged).
+- NB2: §5 "One-time consent" now covers tenants with user consent disabled (administrator must grant `openid` and `profile`), release-noted.
+- NB3: §5 "Sign-ins in flight at deploy" added (no ID token, refused under AC-11b, user signs in again), release-noted.
+- NB4: AC-44's release-record sentence moved to §3 "Sessions" as a release condition; AC-44 is now purely the `[unit]` assertion.
+
+### Criteria I could not falsify
+
+None new.
+
+### Citations I checked and found wrong
+
+None.
+
+### Consumers this breaks
+
+None beyond those already listed: `backend/auth/pac50_signin_scopes_test.go` (expected Microsoft string becomes the revision 5.1 string; it compares the joined string in order), PAC-47 and PAC-68 Microsoft fixtures (ID token now also carries `oid`).
+
+**Ready for implementation: yes** (together with contract revision 3.1, challenged in `contracts/features/PAC-71.md`).
