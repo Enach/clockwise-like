@@ -20,7 +20,8 @@
 #      backup set is checked to hold neither the key nor any seeded secret.
 #   4. restore.sh onto the fresh host; a backend started with the .env saved
 #      beside the dump and the encryption key kept apart from it.
-#   5. Asserts: health 200; equal row counts for every public table; the
+#   5. Asserts: health 200; equal row counts for every public table except
+#      encryption_backend_heartbeats (backend liveness, PAC-84); the
 #      stored credentials read back THROUGH THE BACKEND (the Google calendar
 #      reads as connected, the webcal URL comes back to its owner unchanged;
 #      PAC-84 AC-25, not a raw column comparison); the pre-backup cookie
@@ -139,6 +140,17 @@ step "build the backend from this tree ($(git -C "$root" rev-parse --short HEAD)
 exe="$work/paceday-backend"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe="$exe.exe" ;; esac
 ( cd "$root/backend" && go build -o "$exe" . )
 
+# rowcounts is rowcounts.sh without encryption_backend_heartbeats (PAC-84):
+# that table holds the liveness of the backends running at that moment (each
+# writes its row every 30 s and deletes it on shutdown), so it legitimately
+# differs between a backup and a restore. Every other table, encryption_data_keys
+# included (a start with the same key creates no data key when one is active),
+# is still compared, so the negative control below keeps its meaning.
+rowcounts() {
+  "$here/rowcounts.sh" "$@" > "$work/rowcounts.raw"
+  grep -v '^encryption_backend_heartbeats ' "$work/rowcounts.raw" || true
+}
+
 launch_backend() { # name port db_port jwt_secret encryption_key — starts it, prints nothing
   # A local, unreachable DSN keeps the rehearsal from reporting to any real
   # Sentry project (before Part A an empty DSN falls back to a built-in one).
@@ -216,7 +228,7 @@ echo "OK the conversion encrypted every seeded credential in place"
 step "backup.sh while the source backend is running"
 backups="$work/backups"
 dump="$("$here/backup.sh" --out "$backups" --env-file "$work/.env" --compose-file "$compose_file")"
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/source.counts"
+rowcounts --compose-file "$compose_file" > "$work/source.counts"
 kill -0 "$source_pid" || fail "the source backend stopped during the backup"
 [ "$(health "$api_base")" = 200 ] || fail "source not healthy after backup"
 ls -l "$backups"
@@ -254,7 +266,7 @@ start_backend restored "$((api_base + 1))" "$dst_port" "$jwt_saved" "$(enc_key)"
 restored_pid="$last_pid"
 
 step "assertions (fresh host)"
-"$here/rowcounts.sh" --container "$dst" > "$work/restored.counts"
+rowcounts --container "$dst" > "$work/restored.counts"
 diff -u "$work/source.counts" "$work/restored.counts" || fail "row counts differ"
 echo "OK row counts equal for all $(wc -l < "$work/restored.counts") public tables"
 # Read back through the backend, not by raw column (PAC-84 AC-25): the
@@ -315,7 +327,7 @@ rm -f "$work/with-key.env"
 echo "OK backup.sh refuses an env file holding the encryption key, writing nothing"
 
 psql_src "INSERT INTO organizations (name, domain) VALUES ('After backup', 'after.example.com')" >/dev/null
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/source-later.counts"
+rowcounts --compose-file "$compose_file" > "$work/source-later.counts"
 if diff -q "$work/source-later.counts" "$work/restored.counts" >/dev/null; then fail "the count comparison missed a row added after the backup"; fi
 echo "OK a row added to the source after the backup makes the comparison differ"
 
@@ -339,7 +351,7 @@ start_backend source-again "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
 pre_pid="$last_pid"
 sleep 1
 predeploy="$("$here/backup.sh" --out "$backups" --env-file "$work/.env" --compose-file "$compose_file")"
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/predeploy.counts"
+rowcounts --compose-file "$compose_file" > "$work/predeploy.counts"
 kill "$pre_pid"; wait "$pre_pid" 2>/dev/null || true
 # What a migration that failed halfway leaves: part of its schema, and
 # golang-migrate's record of the version marked dirty.
@@ -371,7 +383,7 @@ docker compose -f "$compose_file" up -d --wait postgres >/dev/null 2>&1
 start_backend previous-version "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
 
 step "assertions (same host)"
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/rolledback.counts"
+rowcounts --compose-file "$compose_file" > "$work/rolledback.counts"
 diff -u "$work/predeploy.counts" "$work/rolledback.counts" || fail "row counts differ from the pre-deploy backup"
 echo "OK row counts equal the pre-deploy backup's for all $(wc -l < "$work/rolledback.counts") public tables"
 [ "$(health "$api_base")" = 200 ] || fail "rolled-back backend not healthy"

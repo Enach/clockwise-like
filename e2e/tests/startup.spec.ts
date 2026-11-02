@@ -143,10 +143,18 @@ test.describe('startup — the production reference environment', () => {
     const envStart = block.indexOf('    environment:');
     expect(envStart).toBeGreaterThanOrEqual(0);
     const environment: string[] = [];
+    // Blank lines (the file groups variables under comment headers) do not
+    // end the mapping; the first non-blank line indented less than an entry
+    // does. Line endings were normalised above (core.autocrlf checkouts).
     for (const line of block.slice(envStart + 1)) {
+      if (line.trim() === '') continue;
       if (!line.startsWith('      ')) break;
       environment.push(line);
     }
+    // The whole mapping was read, not a prefix of it.
+    expect(environment[0]).toContain('PORT:');
+    expect(environment.length, `parsed backend environment:\n${environment.join('\n')}`).toBeGreaterThan(20);
+    expect(environment.join('\n')).toContain('SENTRY_RELEASE');
     expect(environment.join('\n')).toContain('JWT_SECRET');
     const uncommentedText = lines.filter((l) => !l.trim().startsWith('#')).map((l) => l.replace(/\s+#.*$/, '')).join('\n');
     for (const name of [ENCRYPTION_KEY, `${ENCRYPTION_KEY}_PREVIOUS`, ALLOW_TEST_KEY]) {
