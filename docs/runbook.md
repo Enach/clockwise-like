@@ -574,6 +574,22 @@ text — deliberately, and audited):
    image in between**: its automatic conversion would encrypt everything
    again.
 
+**After `downgrade-schema`, do not run the new image's backend.** This
+release's `paceday-operator encryption` commands refuse to migrate a
+database below this release's schema: `status` only reports it, and the
+other commands exit 1 without changing anything. The backend server
+would migrate it up again, and the previous release would then refuse to
+start, because it does not know that schema version. Check the result with
+plain SQL instead:
+
+```bash
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations'
+```
+
+The version must be below this release's encryption migration (034) and
+`dirty` must be `f`.
+
 The alternative is restoring the pre-deploy backup (losing what was written
 since).
 

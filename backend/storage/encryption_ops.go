@@ -77,6 +77,9 @@ type PassResult struct {
 	// decrypted, emptied, skipped).
 	Counts   map[string]map[string]int64
 	Failures []Failure
+	// LossesCleared counts recorded credential losses ended by a removal
+	// (reset-lost-key, decrypt-all --empty-undecryptable; contract 8.4).
+	LossesCleared int64
 	// Remaining is set when the pass ended partial: values still to do.
 	Remaining int64
 	Partial   bool
@@ -104,16 +107,31 @@ func (r *PassResult) Total(verb string) int64 {
 	return n
 }
 
+// sealedPrefix selects values starting with the marker.
 const sealedPrefix = `left(%s, 6) = 'pdenc:'`
+
+// DamagedSQL is secretbox.Classify's damaged-marker rule in SQL (review #5):
+// the first six characters differ from "pdenc:" in exactly one place and the
+// rest is "<digits>:<digits>:<base64url>". Such a value is neither plain
+// nor convertible: it is counted "malformed", is never converted, and blocks
+// decrypt-all's key removal and the downgrade like a sealed value.
+func DamagedSQL(c string) string {
+	return fmt.Sprintf(`(left(%[1]s, 6) <> 'pdenc:' AND octet_length(%[1]s) >= 11 AND substr(%[1]s, 7) ~ '^[0-9]+:[0-9]+:[A-Za-z0-9_-]+$' AND ((substr(%[1]s, 1, 1) <> 'p')::int + (substr(%[1]s, 2, 1) <> 'd')::int + (substr(%[1]s, 3, 1) <> 'e')::int + (substr(%[1]s, 4, 1) <> 'n')::int + (substr(%[1]s, 5, 1) <> 'c')::int + (substr(%[1]s, 6, 1) <> ':')::int) = 1)`, c)
+}
+
+// sealedOrDamaged selects every value Go classifies KindSealed.
+func sealedOrDamaged(c string) string {
+	return "(" + fmt.Sprintf(sealedPrefix, c) + " OR " + DamagedSQL(c) + ")"
+}
 
 func (c SecretColumn) selector(kind PassKind) string {
 	switch kind {
 	case PassConvert:
-		return fmt.Sprintf(`%[1]s IS NOT NULL AND %[1]s <> '' AND left(%[1]s, 6) <> 'pdenc:'`, c.Column)
+		return fmt.Sprintf(`%[1]s IS NOT NULL AND %[1]s <> '' AND left(%[1]s, 6) <> 'pdenc:' AND NOT %[2]s`, c.Column, DamagedSQL(c.Column))
 	case PassRotate:
 		return fmt.Sprintf(sealedPrefix+` AND split_part(%[1]s, ':', 3) = $%d`, c.Column, len(c.Identity)+2)
 	default:
-		return fmt.Sprintf(sealedPrefix, c.Column)
+		return sealedOrDamaged(c.Column)
 	}
 }
 
@@ -308,8 +326,7 @@ func runBatch(ctx context.Context, db *sql.DB, col SecretColumn, opt PassOptions
 		switch opt.Kind {
 		case PassConvert:
 			if secretbox.Classify(r.value) != secretbox.KindPlain {
-				res.add(col.Name(), "skipped", 1)
-				res.Failures = append(res.Failures, Failure{Column: col.Name(), Row: b.RowString(), DEK: "-", Reason: string(secretbox.ReasonMalformed)})
+				res.fail(Failure{Column: col.Name(), Row: b.RowString(), DEK: "-", Reason: string(secretbox.ReasonMalformed)})
 				continue
 			}
 			if newValue, err = opt.Seal(b, r.value); err != nil {
@@ -327,15 +344,14 @@ func runBatch(ctx context.Context, db *sql.DB, col SecretColumn, opt PassOptions
 					}
 				}
 				if opt.Kind == PassDecrypt && opt.EmptyUndecryptable {
-					n, err := removeSealedValues(ctx, tx, col, col.identityEq(1), argsOf(r.ids)...)
+					n, err := removeSealedValues(ctx, tx, col, col.identityEq(1), &res.LossesCleared, argsOf(r.ids)...)
 					if err != nil {
 						return rows, updated, concurrent, err
 					}
 					res.add(col.Name(), "emptied", n)
 					continue
 				}
-				res.add(col.Name(), "skipped", 1)
-				res.Failures = append(res.Failures, f)
+				res.fail(f)
 				continue
 			}
 			if opt.Kind == PassDecrypt {
@@ -377,14 +393,21 @@ func argsOf(ids []string) []any {
 // removeSealedValues gives the sealed values of col in the rows matching
 // where (args from $1) the owner's-removal end state (AC-23), without any
 // provider call, and returns the rows changed. Plain values are untouched.
-func removeSealedValues(ctx context.Context, tx *sql.Tx, col SecretColumn, where string, args ...any) (int64, error) {
-	sealed := fmt.Sprintf(sealedPrefix, col.Column)
+func removeSealedValues(ctx context.Context, tx *sql.Tx, col SecretColumn, where string, losses *int64, args ...any) (int64, error) {
+	sealed := sealedOrDamaged(col.Column)
 	exec := func(q string) (int64, error) {
 		r, err := tx.ExecContext(ctx, q, args...)
 		if err != nil {
 			return 0, fmt.Errorf("%s: reset: %w", col.Name(), err)
 		}
 		return r.RowsAffected()
+	}
+	clearLosses := func(q string) error {
+		n, err := exec(q)
+		if err == nil && losses != nil {
+			*losses += n
+		}
+		return err
 	}
 	cond := sealed
 	if where != "" {
@@ -394,7 +417,7 @@ func removeSealedValues(ctx context.Context, tx *sql.Tx, col SecretColumn, where
 	case "oauth_tokens":
 		// An emptied row would still read as connected: delete it, and end
 		// the recorded loss of the removed credential.
-		if _, err := exec(`DELETE FROM credential_losses cl USING oauth_tokens t WHERE ` + qualify(cond, "t") + ` AND cl.user_id = t.user_id AND cl.provider = 'google'`); err != nil {
+		if err := clearLosses(`DELETE FROM credential_losses cl USING oauth_tokens t WHERE ` + qualify(cond, "t") + ` AND cl.user_id = t.user_id AND cl.provider = 'google'`); err != nil {
 			return 0, err
 		}
 		return exec(`DELETE FROM oauth_tokens WHERE ` + cond)
@@ -403,14 +426,14 @@ func removeSealedValues(ctx context.Context, tx *sql.Tx, col SecretColumn, where
 	case "settings":
 		switch col.Column {
 		case "microsoft_tokens":
-			if _, err := exec(`DELETE FROM credential_losses cl USING settings t WHERE ` + qualify(cond, "t") + ` AND cl.user_id = t.user_id AND cl.provider = 'outlook'`); err != nil {
+			if err := clearLosses(`DELETE FROM credential_losses cl USING settings t WHERE ` + qualify(cond, "t") + ` AND cl.user_id = t.user_id AND cl.provider = 'outlook'`); err != nil {
 				return 0, err
 			}
 			return exec(`UPDATE settings SET microsoft_tokens = '',
 				conferencing_provider = CASE WHEN conferencing_provider = 'teams' THEN 'meet' ELSE conferencing_provider END
 				WHERE ` + cond)
 		case "zoom_tokens":
-			if _, err := exec(`DELETE FROM credential_losses cl USING settings t WHERE ` + qualify(cond, "t") + ` AND cl.user_id = t.user_id AND cl.provider = 'zoom'`); err != nil {
+			if err := clearLosses(`DELETE FROM credential_losses cl USING settings t WHERE ` + qualify(cond, "t") + ` AND cl.user_id = t.user_id AND cl.provider = 'zoom'`); err != nil {
 				return 0, err
 			}
 			return exec(`UPDATE settings SET zoom_tokens = '', conferencing_provider = 'meet' WHERE ` + cond)
@@ -444,7 +467,7 @@ func ResetLostKey(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig) (*Pa
 	}
 	res := &PassResult{}
 	for _, col := range Inventory {
-		n, err := removeSealedValues(ctx, tx, col, "")
+		n, err := removeSealedValues(ctx, tx, col, "", &res.LossesCleared)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -520,7 +543,7 @@ func countSealed(ctx context.Context, q DBTXQuery) (int64, error) {
 	var total int64
 	for _, col := range Inventory {
 		var n int64
-		if err := q.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s WHERE `+sealedPrefix, col.Table, col.Column)).Scan(&n); err != nil {
+		if err := q.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s WHERE %s`, col.Table, sealedOrDamaged(col.Column))).Scan(&n); err != nil {
 			return 0, err
 		}
 		total += n
@@ -532,7 +555,10 @@ func countSealed(ctx context.Context, q DBTXQuery) (int64, error) {
 type ColumnStatus struct {
 	Name                    string
 	Empty, Plain, Encrypted int64
-	ByDEK                   map[string]int64
+	// Malformed: damaged-marker values (review #5), neither plain nor
+	// decryptable.
+	Malformed int64
+	ByDEK     map[string]int64
 }
 
 // DataKeyStatus is one data key in the status report.
@@ -578,9 +604,10 @@ func ReadEncryptionStatus(ctx context.Context, db *sql.DB) (*EncryptionStatus, e
 		c := col.Column
 		err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT
 			count(*) FILTER (WHERE %[1]s IS NULL OR %[1]s = ''),
-			count(*) FILTER (WHERE %[1]s <> '' AND left(%[1]s, 6) <> 'pdenc:'),
+			count(*) FILTER (WHERE %[1]s <> '' AND left(%[1]s, 6) <> 'pdenc:' AND NOT %[3]s),
+			count(*) FILTER (WHERE %[3]s),
 			count(*) FILTER (WHERE left(%[1]s, 6) = 'pdenc:')
-			FROM %[2]s`, c, col.Table)).Scan(&cs.Empty, &cs.Plain, &cs.Encrypted)
+			FROM %[2]s`, c, col.Table, DamagedSQL(c))).Scan(&cs.Empty, &cs.Plain, &cs.Malformed, &cs.Encrypted)
 		if err != nil {
 			return nil, err
 		}
@@ -784,4 +811,25 @@ func DowngradeSchema(ctx context.Context, db *sql.DB) (from, to uint, err error)
 		return cur, 0, nil
 	}
 	return cur, to, err
+}
+
+// MalformedTotal counts damaged-marker values over the inventory.
+func (s *EncryptionStatus) MalformedTotal() int64 {
+	var n int64
+	for _, c := range s.Columns {
+		n += c.Malformed
+	}
+	return n
+}
+
+// fail records a value the pass could not process, once per row and column
+// however many sweeps see it.
+func (r *PassResult) fail(f Failure) {
+	for _, g := range r.Failures {
+		if g.Column == f.Column && g.Row == f.Row {
+			return
+		}
+	}
+	r.add(f.Column, "skipped", 1)
+	r.Failures = append(r.Failures, f)
 }

@@ -1149,3 +1149,137 @@ func TestPAC84_OperatorAuditPinned(t *testing.T) {
 		t.Fatal("empty operator admitted")
 	}
 }
+
+// Review #2 (K-4): a stall inside a refresher tick counts against the seal
+// lease (it is renewed from the tick's start), and a tick whose data key was
+// deleted meanwhile writes no heartbeat, renews nothing and shuts down.
+func TestPAC84_RefresherLeaseAndDeletedKeyDuringTick(t *testing.T) {
+	db, _, _ := openEncDB(t)
+	ctx := context.Background()
+	cfg := encKeys(t, "lease")
+	inst := Instance{ID: uuid.New()}
+	load, err := LoadKeyring(ctx, db, cfg, inst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := secretbox.Current()
+	secretbox.Install(load.Keyring)
+	defer secretbox.Install(prev)
+	defer secretbox.SetSealGate(nil)
+
+	// Fake times an hour in the past, so a renewal taken from the real clock
+	// (the old behaviour) would wrongly keep the lease open.
+	t0 := time.Now().Add(-time.Hour)
+	fake := t0
+	lease := NewLease(t0)
+	lease.now = func() time.Time { return fake }
+	var reasons []string
+	r := &Refresher{DB: db, Cfg: cfg, Inst: inst, Lease: lease, Logf: t.Logf,
+		Shutdown: func(s string) { reasons = append(reasons, s) },
+		now:      func() time.Time { return t0 }}
+	// The tick stalls 70 s after reading the data keys.
+	r.afterKeys = func() { fake = t0.Add(70 * time.Second) }
+	if !r.Tick(ctx) {
+		t.Fatal("tick stopped")
+	}
+	if err := lease.Check(); !errors.Is(err, secretbox.ErrSealPaused) {
+		t.Fatal("a 70 s stall inside the tick renewed the lease")
+	}
+
+	// decrypt-all / reset-lost-key deleted the data keys during the stall.
+	var seenBefore time.Time
+	_ = db.QueryRow(`SELECT seen_at FROM encryption_backend_heartbeats WHERE instance_id = $1`, inst.ID).Scan(&seenBefore)
+	r.now = func() time.Time { return fake }
+	r.afterKeys = func() {
+		if _, err := db.Exec(`DELETE FROM encryption_data_keys`); err != nil {
+			t.Error(err)
+		}
+	}
+	if r.Tick(ctx) || len(reasons) != 1 || !strings.Contains(reasons[0], "no longer exists") {
+		t.Fatalf("tick with deleted keys: %v", reasons)
+	}
+	var seenAfter time.Time
+	_ = db.QueryRow(`SELECT seen_at FROM encryption_backend_heartbeats WHERE instance_id = $1`, inst.ID).Scan(&seenAfter)
+	if !seenAfter.Equal(seenBefore) {
+		t.Fatal("a heartbeat was written after the data keys were deleted")
+	}
+	if err := lease.Check(); !errors.Is(err, secretbox.ErrSealPaused) {
+		t.Fatal("lease renewed after the data keys were deleted")
+	}
+	if _, err := secretbox.Seal(bindSettings("webcal_url", uuid.New()), "v"); !errors.Is(err, secretbox.ErrSealPaused) {
+		t.Fatal("sealing continues after shutdown began")
+	}
+}
+
+// Review #5: Go and SQL classify a damaged envelope the same way. It is
+// counted malformed (not plain) by status, never selected by convert (no
+// endless partial), reported by decrypt-all, blocks the key removal and the
+// downgrade, and is removed by reset-lost-key.
+func TestPAC84_DamagedEnvelopeSameInGoAndSQL(t *testing.T) {
+	db, _, _ := openEncDB(t)
+	ctx := context.Background()
+	l := seedLegacy(t, db)
+	cfg := encKeys(t, "dmg")
+	load := installLoaded(t, db, cfg)
+	if _, err := RunPass(ctx, db, PassOptions{Kind: PassConvert, Keyring: load.Keyring}); err != nil {
+		t.Fatal(err)
+	}
+	sealed := l.raw(t, db, Inventory[4]) // settings.webcal_url
+	damaged := "q" + sealed[1:]
+	if secretbox.Classify(damaged) != secretbox.KindSealed {
+		t.Fatal("Go: damaged envelope not sealed")
+	}
+	plainLike := "qdenc-not-an-envelope"
+	if _, err := db.Exec(`UPDATE settings SET webcal_url = $2 WHERE user_id = $1`, l.user, damaged); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO settings (user_id, webcal_url) VALUES ($1, $2)`, l.user2, plainLike); err != nil {
+		t.Fatal(err)
+	}
+	// Every value Go calls sealed, SQL selects as sealed-or-damaged.
+	for _, v := range []string{damaged, sealed, plainLike, "https://x.example/a.ics", "pdenc:1:1:abc"} {
+		var sqlSealed bool
+		if err := db.QueryRow(`SELECT `+sealedOrDamaged("$1::text")+``, v).Scan(&sqlSealed); err != nil {
+			t.Fatal(err)
+		}
+		if sqlSealed != (secretbox.Classify(v) == secretbox.KindSealed) {
+			t.Fatalf("%q: SQL %v, Go %v", v, sqlSealed, secretbox.Classify(v))
+		}
+	}
+	st, _ := ReadEncryptionStatus(ctx, db)
+	if st.MalformedTotal() != 1 || st.PlainTotal() != 1 {
+		t.Fatalf("status: malformed %d plain %d, want 1 and 1", st.MalformedTotal(), st.PlainTotal())
+	}
+	res, err := RunPass(ctx, db, PassOptions{Kind: PassConvert, Keyring: load.Keyring})
+	if err != nil || res.Partial || len(res.Failures) != 0 || res.Total("encrypted") != 1 {
+		t.Fatalf("convert: %v %+v", err, res)
+	}
+	if l.raw(t, db, Inventory[4]) != damaged {
+		t.Fatal("convert touched the damaged value")
+	}
+	if err := DowngradeCheck(ctx, db); !errors.Is(err, ErrDowngradeRefused) {
+		t.Fatal("downgrade check ignores the damaged value")
+	}
+	res, _ = RunPass(ctx, db, PassOptions{Kind: PassDecrypt, Keyring: load.Keyring})
+	if len(res.Failures) != 1 || res.Failures[0].Column != "settings.webcal_url" || res.Failures[0].Reason != "malformed" {
+		t.Fatalf("decrypt-all failures %+v", res.Failures)
+	}
+	if _, ok, _ := DeleteAllDataKeysIfUnused(ctx, db); ok {
+		t.Fatal("data keys removed while a damaged value remains")
+	}
+	// The raw down body refuses too (no data keys would not be enough).
+	if _, err := db.Exec(`DELETE FROM encryption_data_keys`); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := EncryptionMigrationVersion()
+	raw, _ := migrationFiles.ReadFile(fmt.Sprintf("migrations/%03d_encryption_at_rest.down.sql", want))
+	if _, err := db.Exec(string(raw)); err == nil || !strings.Contains(err.Error(), "decrypt-all") {
+		t.Fatalf("DO block with a damaged value: %v", err)
+	}
+	if _, _, _, err := ResetLostKey(ctx, db, encKeys(t, "dmg2")); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.raw(t, db, Inventory[4]); got != "" {
+		t.Fatal("reset-lost-key left the damaged value")
+	}
+}

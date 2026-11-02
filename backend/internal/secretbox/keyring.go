@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type dekEntry struct {
@@ -280,8 +281,48 @@ func ReportFailure(err error, user string) {
 		return
 	}
 	line := de.LogLine(user)
+	if !firstReport(line) {
+		return
+	}
 	log.Print(line)
 	if r := reporter.Load(); r != nil {
 		(*r)(line)
 	}
+}
+
+// Review #4 (contract 9.2): a storage read opens every secret of a row, so
+// one undecryptable secret would be reported on every read of that row by
+// every request and cron tick. Each distinct line is reported once per
+// ReportWindow per process instead.
+const ReportWindow = time.Hour
+
+const maxReported = 10000
+
+var (
+	reportedMu sync.Mutex
+	reported   = map[string]time.Time{}
+	reportNow  = time.Now
+)
+
+// firstReport reports whether line was not reported within ReportWindow,
+// and records it.
+func firstReport(line string) bool {
+	reportedMu.Lock()
+	defer reportedMu.Unlock()
+	now := reportNow()
+	if at, ok := reported[line]; ok && now.Sub(at) < ReportWindow {
+		return false
+	}
+	if len(reported) >= maxReported {
+		reported = map[string]time.Time{}
+	}
+	reported[line] = now
+	return true
+}
+
+// ResetReported forgets every reported failure (tests).
+func ResetReported() {
+	reportedMu.Lock()
+	defer reportedMu.Unlock()
+	reported = map[string]time.Time{}
 }

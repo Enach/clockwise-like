@@ -157,6 +157,21 @@ with `pdenc:`; a value that did would read as a decryption error, not as the
 wrong plaintext. Stage 4 pins this with a test that classifies every secret
 value in `e2e/seed/seed.sql` and one sample of each form above as **plain**.
 
+**Implementation note (stage-4 review #5, 2026-11-02).** AC-6 requires that
+changing any single byte of a stored value, the marker included, fails to
+decrypt. So a value whose first six bytes differ from `pdenc:` in exactly
+one place and whose rest is `<digits>:<digits>:<base64url>` is classified
+**sealed (malformed)**, not plain. Go (`secretbox.Classify`) and SQL
+(`storage.DamagedSQL`, the down step's `DO` block) apply the same rule.
+Such a value:
+
+- is counted `malformed` by `status`, which is neither plain nor encrypted,
+  so `--check` does not fail on it;
+- is never selected by `convert`;
+- is reported by `decrypt-all`, and removed with `--empty-undecryptable`;
+- blocks the data-key removal and the downgrade;
+- is removed by `reset-lost-key`.
+
 ### 3.2 Associated data (AAD)
 
 Every seal and open passes this byte string as GCM additional data:
@@ -888,6 +903,34 @@ the strings in messages must match the headings).
 - **O-4** The env-file key is visible in `docker inspect` to whoever controls
   Docker on the host; accepted under Q-1 (KMS later), stated in the runbook.
 - **O-5** Resolved (K-11): `url` omitted (9.3).
+
+## Stage-4 amendments (review of #251, 2026-11-02)
+
+Recorded by the implementer at the coordinator's request. None of them
+changes the HTTP bundle.
+
+- **3.1:** damaged-marker values are classified sealed (malformed); see
+  the note in 3.1.
+- **4.3 / 5.3 step 7 (review #2, K-4):** the refresher renews the seal
+  lease from the time the tick *started*, so a stall inside the tick counts
+  against the lease. Its heartbeat upsert writes only while the active data
+  key still exists. When the upsert writes nothing, the process renews
+  nothing and shuts down.
+- **8.1 (review #3):** `paceday-operator encryption` never migrates a
+  database whose schema is below this work's version, whether it was
+  downgraded or not yet upgraded:
+  - `status` reports this and exits 0, or 1 with `--check`;
+  - every mutating subcommand refuses with exit 1 and writes an audit row
+    when `operator_audit` exists.
+
+  Otherwise migrations are applied first, as before.
+- **8.1 / 8.4 (review #6):** every exit-1 end of a mutating subcommand
+  writes exactly one audit row (`failed`). `reset-lost-key` (and
+  `decrypt-all --empty-undecryptable`) record `lossesCleared`.
+- **9.2 (review #4):** each distinct line is logged and reported once per
+  hour per process, not on every storage read of the row.
+- **Manifest:** `compose-test/` is added to `allowedPaths`, so the compose
+  gate gives the backend its own random key (review #1, AC-28).
 
 ## Challenge — 2026-11-02
 

@@ -25,6 +25,7 @@
         "backend/cmd/paceday-operator (encryption subcommands; created by this work if PAC-71 has not merged)",
         "backend/internal/testdb (installing a test keyring)",
         "backend/Dockerfile (only if PAC-71 has not merged: build and copy /paceday-operator exactly as PAC-71's change does)",
+        "compose-test/ (encryption-key override and harness key: the compose gate boots the backend with its own random key, never a repo-root encryption.env; amendment of 2026-11-02, review of #251)",
         "docker-compose.yml, docker-compose.prod.yml, e2e/docker-compose.e2e.yml (key source only, contract section 11)",
         ".env.example, .gitignore (encryption.env)",
         "scripts/ops/backup.sh, scripts/ops/rehearse-backup-restore.sh and their tests",
@@ -216,5 +217,5 @@
     "Team invitation tokens hashed (spec section 10).",
     "Fold the PAC-84 notes into bundle descriptions at the next bundle revision that touches them: PersonalCalendar.url 'omitted when empty or undecryptable'; sendDailyRecapTest / testLLMConnection / parseNaturalLanguage / createMeetingLink 500 text naming an undecryptable stored credential."
   ],
-  "challenge": "contract-challenger 2026-11-02: accept-with-changes; K-1..K-17 applied in contracts/features/PAC-84.md (log at its end). No bundle change; contractHash unchanged."
+  "challenge": "contract-challenger 2026-11-02: accept-with-changes; K-1..K-17 applied in contracts/features/PAC-84.md (log at its end). No bundle change; contractHash unchanged. Amendment 2026-11-02 (stage-4 review of #251, authorised by the factory coordinator): allowedPaths adds compose-test/; implementation notes on 3.1, 4.3, 8.1, 8.4, 9.2 recorded in contracts/features/PAC-84.md \"Stage-4 amendments\"."
 }

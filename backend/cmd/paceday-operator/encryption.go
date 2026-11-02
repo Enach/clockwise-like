@@ -48,11 +48,12 @@ type encryptionRun struct {
 	getenv                func(string) string
 	out, errw             io.Writer
 	started               time.Time
+	audited               bool
 	pollEvery             time.Duration
 }
 
-// openDB is storage.OpenAs; tests replace it.
-var openDB = storage.OpenAs
+// openDB opens without migrating; dispatch decides whether to migrate.
+var openDB = storage.OpenNoMigrate
 
 func runEncryption(args []string, getenv func(string) string, out, errw io.Writer) int {
 	if len(args) == 0 || !subcommands[args[0]] {
@@ -125,16 +126,72 @@ func runEncryption(args []string, getenv func(string) string, out, errw io.Write
 	}
 	defer db.Close()
 	ctx := context.Background()
+	code := r.dispatch(ctx, db, cfg)
+	// Review #6 (contract 8.1): every mutating run that ends with exit 1
+	// writes exactly one audit row, whatever path it failed on.
+	if mutating && code == exitFailed && !r.audited {
+		code = r.audit(ctx, db, auditAction[r.sub], storage.AuditDetails{Outcome: "failed"}, exitFailed)
+	}
+	return code
+}
+
+var auditAction = map[string]string{
+	"convert":          storage.AuditEncryptionConvert,
+	"rotate-data-key":  storage.AuditEncryptionRotate,
+	"decrypt-all":      storage.AuditEncryptionDecrypt,
+	"reset-lost-key":   storage.AuditEncryptionResetLost,
+	"downgrade-schema": storage.AuditEncryptionDowngrade,
+}
+
+// dispatch checks the schema version, applies migrations, takes the lock
+// and runs the subcommand.
+func (r *encryptionRun) dispatch(ctx context.Context, db *sql.DB, cfg secretbox.KeyConfig) int {
+	// Review #3: a database below this work's migration (downgraded with
+	// downgrade-schema, or not yet upgraded) is never migrated up by the
+	// CLI: the previous release could no longer start on it.
+	want, err := storage.EncryptionMigrationVersion()
+	if err != nil {
+		fmt.Fprintln(r.errw, "encryption:", err)
+		return exitFailed
+	}
+	version, dirty, present, err := storage.SchemaVersion(ctx, db)
+	if err != nil {
+		fmt.Fprintln(r.errw, "encryption:", err)
+		return exitFailed
+	}
+	if present && !dirty && version < want {
+		msg := fmt.Sprintf("the database schema is at version %d, below this release's encryption migration %d (downgraded with downgrade-schema, or not yet upgraded); this command changes nothing and applies no migration. Start this release's backend to upgrade, or run the previous release (docs/runbook.md, \"Encryption key - downgrade\")", version, want)
+		if r.sub == "status" {
+			fmt.Fprintln(r.out, "encryption: "+msg)
+			if r.check {
+				return exitFailed
+			}
+			return exitOK
+		}
+		fmt.Fprintf(r.errw, "encryption %s: %s\n", r.sub, msg)
+		// The audit row is written when operator_audit exists (the down step
+		// keeps it); a database never upgraded has none to write to.
+		var hasAudit bool
+		_ = db.QueryRowContext(ctx, `SELECT to_regclass('public.operator_audit') IS NOT NULL`).Scan(&hasAudit)
+		if !hasAudit {
+			r.audited = true
+		}
+		return exitFailed
+	}
+	if err := storage.Migrate(db); err != nil {
+		fmt.Fprintln(r.errw, "encryption:", err)
+		return exitFailed
+	}
 	if r.sub == "status" {
 		return r.status(ctx, db)
 	}
 	lock, err := storage.TryMaintenanceLock(ctx, db)
 	if err != nil {
 		if errors.Is(err, storage.ErrLockHeld) {
-			fmt.Fprintf(errw, "encryption %s: %v; try again after it ends\n", r.sub, err)
+			fmt.Fprintf(r.errw, "encryption %s: %v; try again after it ends\n", r.sub, err)
 			return exitLock
 		}
-		fmt.Fprintln(errw, "encryption:", err)
+		fmt.Fprintln(r.errw, "encryption:", err)
 		return exitFailed
 	}
 	defer lock.Release()
@@ -142,11 +199,11 @@ func runEncryption(args []string, getenv func(string) string, out, errw io.Write
 	case "decrypt-all", "reset-lost-key", "downgrade-schema":
 		live, err := storage.LiveHeartbeats(ctx, db)
 		if err != nil {
-			fmt.Fprintln(errw, "encryption:", err)
+			fmt.Fprintln(r.errw, "encryption:", err)
 			return exitFailed
 		}
 		if len(live) > 0 {
-			fmt.Fprintf(errw, "encryption %s: %d backend process(es) wrote a heartbeat in the last 90 seconds (e.g. instance %s on %q); stop every backend first (docs/runbook.md, \"Encryption key - stop the backend first\")\n",
+			fmt.Fprintf(r.errw, "encryption %s: %d backend process(es) wrote a heartbeat in the last 90 seconds (e.g. instance %s on %q); stop every backend first (docs/runbook.md, \"Encryption key - stop the backend first\")\n",
 				r.sub, len(live), live[0].InstanceID, live[0].Hostname)
 			return exitBackends
 		}
@@ -176,6 +233,7 @@ func (r *encryptionRun) keyIDs(cfg secretbox.KeyConfig) *storage.AuditKeyIDs {
 // audit writes the run's one operator_audit row; a failure to write it
 // makes the run fail.
 func (r *encryptionRun) audit(ctx context.Context, db *sql.DB, action string, d storage.AuditDetails, code int) int {
+	r.audited = true
 	d.StartedAt = r.started.Format(time.RFC3339)
 	d.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := storage.WriteEncryptionAudit(ctx, db, action, r.operator, r.reason, d); err != nil {
@@ -407,6 +465,10 @@ func (r *encryptionRun) decryptAll(ctx context.Context, db *sql.DB, cfg secretbo
 	fmt.Fprintf(r.out, "encryption decrypt-all: %d values decrypted, %d emptied\n", res.Total("decrypted"), res.Total("emptied"))
 	details.Outcome = outcome(code, res.Partial || len(res.Failures) > 0)
 	details.Counts = res.Counts
+	if r.empty {
+		lc := res.LossesCleared
+		details.LossesCleared = &lc
+	}
 	return r.audit(ctx, db, storage.AuditEncryptionDecrypt, details, code)
 }
 
@@ -430,6 +492,8 @@ func (r *encryptionRun) resetLostKey(ctx context.Context, db *sql.DB, cfg secret
 	r.printPass(res)
 	details.DataKeys.Removed = removed
 	details.DataKeys.Created = []int32{created}
+	lc := res.LossesCleared
+	details.LossesCleared = &lc
 	details.Counts = res.Counts
 	details.Outcome = "completed"
 	fmt.Fprintf(r.out, "encryption reset-lost-key: data keys removed %v; data key %d created under key %q; users reconnect the removed connections\n", removed, created, cfg.Active.ID)
@@ -466,14 +530,14 @@ func (r *encryptionRun) status(ctx context.Context, db *sql.DB) int {
 		return exitFailed
 	}
 	now := time.Now()
-	fmt.Fprintf(r.out, "%-42s %8s %8s %10s  %s\n", "column", "empty", "plain", "encrypted", "encrypted per data key")
+	fmt.Fprintf(r.out, "%-42s %8s %8s %10s %10s  %s\n", "column", "empty", "plain", "encrypted", "malformed", "encrypted per data key")
 	for _, c := range st.Columns {
 		keys := make([]string, 0, len(c.ByDEK))
 		for id, n := range c.ByDEK {
 			keys = append(keys, fmt.Sprintf("%s:%d", id, n))
 		}
 		sort.Strings(keys)
-		fmt.Fprintf(r.out, "%-42s %8d %8d %10d  %s\n", c.Name, c.Empty, c.Plain, c.Encrypted, strings.Join(keys, " "))
+		fmt.Fprintf(r.out, "%-42s %8d %8d %10d %10d  %s\n", c.Name, c.Empty, c.Plain, c.Encrypted, c.Malformed, strings.Join(keys, " "))
 	}
 	fmt.Fprintln(r.out, "data keys:")
 	if len(st.DataKeys) == 0 {
@@ -505,6 +569,11 @@ func (r *encryptionRun) status(ctx context.Context, db *sql.DB) int {
 	}
 	plain := st.PlainTotal()
 	fmt.Fprintf(r.out, "plain values: %d\n", plain)
+	if m := st.MalformedTotal(); m > 0 {
+		// Review #5: a damaged envelope is neither plain nor convertible;
+		// --check does not fail on it (convert cannot fix it), it is reported.
+		fmt.Fprintf(r.out, "malformed values: %d (damaged envelopes: never converted or decrypted; decrypt-all reports them, --empty-undecryptable removes them, the downgrade refuses while they remain)\n", m)
+	}
 	if r.check && plain > 0 {
 		return exitPlain
 	}

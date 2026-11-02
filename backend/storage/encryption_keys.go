@@ -451,6 +451,9 @@ type Refresher struct {
 	Shutdown func(reason string)
 
 	shutdownOnce sync.Once
+	// Test seams: the clock and a hook after the data keys are processed.
+	now       func() time.Time
+	afterKeys func()
 }
 
 func (r *Refresher) logf(format string, args ...any) {
@@ -474,6 +477,9 @@ func (r *Refresher) stop(reason string) {
 // step, then upsert the heartbeat with the active id (Install before the
 // heartbeat, K-5). It returns false when the process must shut down.
 func (r *Refresher) Tick(ctx context.Context) bool {
+	// Review #2 (K-4): the lease is renewed from the time this tick STARTED,
+	// so a database stall anywhere inside the tick counts against it.
+	sent := r.clock()
 	cur := secretbox.Current()
 	if cur == nil {
 		return true
@@ -488,8 +494,7 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 	deks, err := LoadDataKeys(ctx, r.DB)
 	if err != nil {
 		r.logf("encryption: refresher: read data keys: %v", err)
-		r.beat(ctx, cur.ActiveDEK())
-		return true
+		return r.beat(ctx, cur.ActiveDEK(), sent)
 	}
 	found := false
 	for _, w := range deks {
@@ -530,19 +535,52 @@ func (r *Refresher) Tick(ctx context.Context) bool {
 			}
 		}
 	}
-	r.beat(ctx, cur.ActiveDEK())
-	return true
+	if r.afterKeys != nil {
+		r.afterKeys()
+	}
+	return r.beat(ctx, cur.ActiveDEK(), sent)
 }
 
-func (r *Refresher) beat(ctx context.Context, active int32) {
-	sent := time.Now()
-	if err := WriteHeartbeat(ctx, r.DB, r.Inst, &active); err != nil {
+// beat upserts the heartbeat only while the active data key still exists
+// (review #2, K-4): if decrypt-all or reset-lost-key removed it while this
+// tick was stalled, nothing is written, the lease is not renewed and the
+// process shuts down. The lease is renewed from sent, the start of the tick.
+func (r *Refresher) beat(ctx context.Context, active int32, sent time.Time) bool {
+	ok, err := writeHeartbeatIfKey(ctx, r.DB, r.Inst, active)
+	if err != nil {
 		r.logf("encryption: heartbeat: %v", err)
-		return
+		return true
+	}
+	if !ok {
+		r.stop(fmt.Sprintf("encryption: data key %d no longer exists (or decrypt-all/reset-lost-key holds the maintenance lock); shutting down", active))
+		return false
 	}
 	if r.Lease != nil {
 		r.Lease.Renew(sent)
 	}
+	return true
+}
+
+func (r *Refresher) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+// writeHeartbeatIfKey upserts inst's heartbeat with active, only while data
+// key active exists; it reports whether it wrote.
+func writeHeartbeatIfKey(ctx context.Context, db DBTX, inst Instance, active int32) (bool, error) {
+	res, err := db.ExecContext(ctx, `
+		INSERT INTO encryption_backend_heartbeats (instance_id, hostname, active_dek)
+		SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM encryption_data_keys WHERE id = $3)
+		ON CONFLICT (instance_id) DO UPDATE SET active_dek = EXCLUDED.active_dek, seen_at = now()`,
+		inst.ID, inst.Hostname, active)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // keyErrorText strips a sentinel prefix from a key error.

@@ -26,9 +26,12 @@ type LLMCompleter interface {
 // slackAPIBase is the Slack Web API (a test seam; production never changes it).
 var slackAPIBase = "https://slack.com/api"
 
+// notionAPIBase is the Notion API (a test seam; production never changes it).
+var notionAPIBase = "https://api.notion.com/v1"
+
 const (
-	briefCacheTTL    = 24 * time.Hour
-	notionAPIBase    = "https://api.notion.com/v1"
+	briefCacheTTL = 24 * time.Hour
+
 	maxSlackMessages = 10
 	maxNotionPages   = 8
 	maxTerms         = 5

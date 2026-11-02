@@ -236,8 +236,8 @@ func TestPAC84_OperatorDecryptDowngradeReset(t *testing.T) {
 	}
 	var dirty bool
 	_ = e.db.QueryRow(`SELECT dirty FROM schema_migrations`).Scan(&dirty)
-	if dirty || e.audits(storage.AuditEncryptionDowngrade) != 0 {
-		t.Fatal("refused downgrade left the database dirty or audited")
+	if dirty || e.auditOutcome(storage.AuditEncryptionDowngrade) != "failed" {
+		t.Fatal("refused downgrade left the database dirty, or wrote no failed audit row (review #6)")
 	}
 	if db2, err := storage.Open(e.dsn); err != nil {
 		t.Fatalf("backend cannot open after a refused downgrade: %v", err)
@@ -265,14 +265,22 @@ func TestPAC84_OperatorDecryptDowngradeReset(t *testing.T) {
 	if code != exitOK || !strings.Contains(out, "schema version") {
 		t.Fatalf("downgrade: %d %s %s", code, out, stderr)
 	}
-	if e.audits(storage.AuditEncryptionDowngrade) != 1 || e.audits(storage.AuditEncryptionDecrypt) != 2 {
+	if e.audits(storage.AuditEncryptionDowngrade) != 2 || e.audits(storage.AuditEncryptionDecrypt) != 2 {
 		t.Fatal("audit rows after downgrade")
 	}
 }
 
 func TestPAC84_OperatorResetLostKey(t *testing.T) {
 	e := newOpEnv(t)
-	e.seedPlain()
+	u := e.seedPlain()
+	// An Outlook credential with a recorded loss: the reset removes it and
+	// ends the loss (lossesCleared, review #6).
+	if _, err := e.db.Exec(`UPDATE settings SET microsoft_tokens = '{"access_token":"ms"}' WHERE user_id = $1`, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.RecordCredentialLoss(e.db, u, storage.CredentialOutlook); err != nil {
+		t.Fatal(err)
+	}
 	if code, _, _ := e.run(e.keyed(), "convert", "--operator", "o", "--reason", "r"); code != exitOK {
 		t.Fatal("convert")
 	}
@@ -296,5 +304,99 @@ func TestPAC84_OperatorResetLostKey(t *testing.T) {
 	cfg, _ := secretbox.ParseKeyConfig(fresh["PACEDAY_ENCRYPTION_KEY"], "")
 	if _, err := storage.PrepareKeyring(context.Background(), e.db, cfg, true); err != nil {
 		t.Fatalf("start with the new key: %v", err)
+	}
+}
+
+func (e *opEnv) auditOutcome(action string) string {
+	var o string
+	_ = e.db.QueryRow(`SELECT details->>'outcome' FROM operator_audit WHERE action = $1 ORDER BY created_at DESC LIMIT 1`, action).Scan(&o)
+	return o
+}
+
+// Review #6: reset-lost-key records lossesCleared.
+func TestPAC84_OperatorResetRecordsLossesCleared(t *testing.T) {
+	e := newOpEnv(t)
+	u := e.seedPlain()
+	if _, err := e.db.Exec(`UPDATE settings SET zoom_tokens = '{"access_token":"z","refresh_token":"r"}' WHERE user_id = $1`, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.RecordCredentialLoss(e.db, u, storage.CredentialZoom); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := e.run(e.keyed(), "convert", "--operator", "o", "--reason", "r"); code != exitOK {
+		t.Fatal("convert")
+	}
+	fresh := map[string]string{"PACEDAY_ENCRYPTION_KEY": secretboxtest.KeyValue("fresh2")}
+	if code, _, stderr := e.run(fresh, "reset-lost-key", "--operator", "o", "--reason", "lost", "--confirm-lost-key"); code != exitOK {
+		t.Fatalf("reset: %d %s", code, stderr)
+	}
+	var lc string
+	_ = e.db.QueryRow(`SELECT details->>'lossesCleared' FROM operator_audit WHERE action = 'encryption_reset_lost_key'`).Scan(&lc)
+	if lc != "1" {
+		t.Fatalf("lossesCleared = %q, want 1", lc)
+	}
+}
+
+// Review #6: exit-1 paths after the lock write one failed audit row
+// (rotate-data-key on a data key that does not exist).
+func TestPAC84_OperatorFailureIsAudited(t *testing.T) {
+	e := newOpEnv(t)
+	e.seedPlain()
+	if code, _, _ := e.run(e.keyed(), "convert", "--operator", "o", "--reason", "r"); code != exitOK {
+		t.Fatal("convert")
+	}
+	if code, _, _ := e.run(e.keyed(), "rotate-data-key", "--operator", "o", "--reason", "r", "--retire", "99"); code != exitFailed {
+		t.Fatal("rotate of a missing data key must exit 1")
+	}
+	if e.audits(storage.AuditEncryptionRotate) != 1 || e.auditOutcome(storage.AuditEncryptionRotate) != "failed" {
+		t.Fatal("no failed audit row")
+	}
+}
+
+// Review #3: after downgrade-schema no encryption subcommand re-applies
+// this work's migration: status reports it and changes nothing, the
+// mutating ones refuse (exit 1, audited) and the version stays below.
+func TestPAC84_OperatorAfterDowngradeNeverMigratesUp(t *testing.T) {
+	e := newOpEnv(t)
+	e.seedPlain()
+	for _, args := range [][]string{
+		{"convert", "--operator", "o", "--reason", "r"},
+		{"decrypt-all", "--operator", "o", "--reason", "r"},
+		{"downgrade-schema", "--operator", "o", "--reason", "r"},
+	} {
+		if code, _, stderr := e.run(e.keyed(), args...); code != exitOK {
+			t.Fatalf("%s: %d %s", args[0], code, stderr)
+		}
+	}
+	want, _ := storage.EncryptionMigrationVersion()
+	version := func() uint {
+		var v uint
+		if err := e.db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if version() >= want {
+		t.Fatal("not downgraded")
+	}
+	code, out, _ := e.run(nil, "status")
+	if code != exitOK || !strings.Contains(out, "below this release's encryption migration") {
+		t.Fatalf("status after downgrade: %d %s", code, out)
+	}
+	if code, _, _ := e.run(nil, "status", "--check"); code != exitFailed {
+		t.Fatal("status --check after downgrade must not report success")
+	}
+	before := e.audits(storage.AuditEncryptionConvert)
+	code, _, stderr := e.run(e.keyed(), "convert", "--operator", "o", "--reason", "r")
+	if code != exitFailed || !strings.Contains(stderr, "applies no migration") {
+		t.Fatalf("convert after downgrade: %d %s", code, stderr)
+	}
+	if e.audits(storage.AuditEncryptionConvert) != before+1 {
+		t.Fatal("the refusal was not audited")
+	}
+	var tables int
+	_ = e.db.QueryRow(`SELECT count(*) FROM pg_tables WHERE tablename LIKE 'encryption_%'`).Scan(&tables)
+	if version() >= want || tables != 0 {
+		t.Fatalf("migration re-applied: version %d, %d encryption tables", version(), tables)
 	}
 }
