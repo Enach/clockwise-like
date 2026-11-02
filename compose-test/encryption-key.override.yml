@@ -1,0 +1,14 @@
+# PAC-84 (review #1): the compose tests give the backend their own freshly
+# generated encryption key. The shipped files read the key from
+# ./encryption.env beside docker-compose.prod.yml, which a clean checkout
+# does not have; and an operator's repo-root encryption.env must never be
+# picked up by a test. `!reset []` drops that env_file entirely (Docker
+# Compose >= 2.24.0, the runbook's minimum) and the key comes from the
+# project env file the harness writes (COMPOSETEST_ENCRYPTION_KEY, a random
+# key per project, never a committed one).
+services:
+  backend:
+    env_file: !reset []
+    environment:
+      PACEDAY_ENCRYPTION_KEY: ${COMPOSETEST_ENCRYPTION_KEY:?the compose-test harness sets COMPOSETEST_ENCRYPTION_KEY}
+      PACEDAY_ENCRYPTION_KEY_PREVIOUS: ""

@@ -509,3 +509,27 @@ func TestMCPThroughNginx(t *testing.T) {
 		t.Errorf("60 s after start: restarts %d, health %+v", after.RestartCount, after.State.Health)
 	}
 }
+
+// PAC-84 (review #1): the backend gets this project's own random key from
+// the override, never a repo-root encryption.env nor a committed key.
+func TestBackendGetsTheTestsOwnEncryptionKey(t *testing.T) {
+	p := newProject(t, baseSettings(18557))
+	r, errOut, err := render(t, p)
+	if err != nil {
+		t.Fatalf("render: %v %s", err, errOut)
+	}
+	env := r.Services["backend"].Environment
+	if got := env["PACEDAY_ENCRYPTION_KEY"]; got == nil || *got != p.key || !strings.HasPrefix(p.key, "composetest:") {
+		t.Fatalf("backend PACEDAY_ENCRYPTION_KEY = %v, want the project's key", got)
+	}
+	if got := env["PACEDAY_ENCRYPTION_KEY_PREVIOUS"]; got == nil || *got != "" {
+		t.Fatalf("PACEDAY_ENCRYPTION_KEY_PREVIOUS = %v, want empty", got)
+	}
+	if _, ok := env["PACEDAY_ENCRYPTION_ALLOW_TEST_KEY"]; ok {
+		t.Fatal("the compose tests must not need the test-key opt-in")
+	}
+	other := newProject(t, baseSettings(18558))
+	if other.key == p.key {
+		t.Fatal("two projects share a key")
+	}
+}

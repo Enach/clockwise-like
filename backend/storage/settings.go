@@ -233,6 +233,9 @@ type Settings struct {
 	// TimeFormat is the user's time-of-day display: "12h" (default) or "24h" (PAC-55).
 	TimeFormat string    `json:"timeFormat"`
 	UpdatedAt  time.Time `json:"updatedAt"`
+	// secrets holds what a read stored and opened for each secret column
+	// (PAC-84, settings_secrets.go). Never encoded.
+	secrets settingsSecrets
 }
 
 // settingsColumns is the one column list every settings read uses.
@@ -272,6 +275,8 @@ func GetOrCreateSettingsByUser(db DBTX, userID uuid.UUID) (*Settings, error) {
 		return nil, err
 	}
 	s := &Settings{}
+	var rawUnbound, rawOpenAI, rawAnthropic, rawAzure, rawBedrock, rawVertex string
+	var rawMicrosoft, rawWebcal, rawZoom string
 	err := db.QueryRow(`SELECT`+settingsColumns+` FROM settings WHERE user_id = $1`, userID).Scan(
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
@@ -280,15 +285,15 @@ func GetOrCreateSettingsByUser(db DBTX, userID uuid.UUID) (*Settings, error) {
 		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
 		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,
 		&s.CompressionEnabled, &s.AutoScheduleEnabled, &s.AutoScheduleCron,
-		&s.StoredLLMProvider, &s.LLMModel, &s.LLMUnboundAPIKey, &s.LLMBaseURL,
-		&s.LLMAPIKeys.OpenAI, &s.LLMAPIKeys.Anthropic, &s.LLMAPIKeys.AzureOpenAI,
-		&s.LLMAPIKeys.Bedrock, &s.LLMAPIKeys.Vertex,
+		&s.StoredLLMProvider, &s.LLMModel, &rawUnbound, &s.LLMBaseURL,
+		&rawOpenAI, &rawAnthropic, &rawAzure,
+		&rawBedrock, &rawVertex,
 		&s.AWSRegion, &s.AWSProfile, &s.BedrockModel,
 		&s.AzureEndpoint, &s.AzureDeployment, &s.AzureAPIVersion,
 		&s.GCPProject, &s.GCPLocation, &s.VertexModel,
 		&s.OllamaBaseURL, &s.OllamaModel,
-		&s.CalendarProvider, &s.MicrosoftTokens, &s.WebcalURL, &s.CalendarEmail,
-		&s.ConferencingProvider, &s.ZoomTokens,
+		&s.CalendarProvider, &rawMicrosoft, &rawWebcal, &s.CalendarEmail,
+		&s.ConferencingProvider, &rawZoom,
 		&s.RecapEnabled, &s.RecapSendTime, &s.RecapSendTo,
 		&s.RecapChannelID, &s.RecapIncludeBriefs, &s.RecapIncludeFocus, &s.RecapIncludeHabits,
 		&s.WorkingHours, &s.LunchBreaks,
@@ -298,6 +303,14 @@ func GetOrCreateSettingsByUser(db DBTX, userID uuid.UUID) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
+	// PAC-84: each secret is opened on its own; a failure is recorded on s
+	// and never fails the read (contract 6.2).
+	s.openSettingsSecrets(userID, map[string]string{
+		SettingsColLLMUnboundKey: rawUnbound, "llm_api_key_openai": rawOpenAI,
+		"llm_api_key_anthropic": rawAnthropic, "llm_api_key_azure_openai": rawAzure,
+		"llm_api_key_bedrock": rawBedrock, "llm_api_key_vertex": rawVertex,
+		SettingsColMicrosoftTokens: rawMicrosoft, SettingsColZoomTokens: rawZoom, SettingsColWebcalURL: rawWebcal,
+	})
 	s.LLMProvider = ReadLLMProvider(s.StoredLLMProvider)
 	s.RefreshKeyFlags()
 	s.UpdatedAt = s.UpdatedAt.UTC()
@@ -325,6 +338,18 @@ func SaveSettingsForUserAt(db DBTX, userID uuid.UUID, s *Settings, now time.Time
 		return fmt.Errorf("SaveSettingsForUser: userID is required")
 	}
 	s.normalizeSchedules()
+	// PAC-84: every secret written is sealed for this row, or is the text
+	// read, byte-identical, when the save did not change it (contract 6.2).
+	sec := map[string]string{}
+	for _, col := range []string{SettingsColLLMUnboundKey, SettingsColWebcalURL,
+		"llm_api_key_openai", "llm_api_key_anthropic", "llm_api_key_azure_openai",
+		"llm_api_key_bedrock", "llm_api_key_vertex"} {
+		v, err := s.storedSecretText(col, userID)
+		if err != nil {
+			return fmt.Errorf("SaveSettingsForUser: %s: %w", col, err)
+		}
+		sec[col] = v
+	}
 	_, err := db.Exec(`
 		INSERT INTO settings (
 			user_id, work_start, work_end, timezone,
@@ -419,12 +444,12 @@ func SaveSettingsForUserAt(db DBTX, userID uuid.UUID, s *Settings, now time.Time
 		s.BufferBeforeMinutes, s.BufferAfterMinutes,
 		s.BufferEnabled, s.BufferMinMeetingMinutes, s.BufferSkipBackToBack,
 		s.CompressionEnabled, s.AutoScheduleEnabled, s.AutoScheduleCron,
-		s.storedProvider(), s.LLMModel, s.LLMUnboundAPIKey, s.LLMBaseURL,
+		s.storedProvider(), s.LLMModel, sec[SettingsColLLMUnboundKey], s.LLMBaseURL,
 		s.AWSRegion, s.AWSProfile, s.BedrockModel,
 		s.AzureEndpoint, s.AzureDeployment, s.AzureAPIVersion,
 		s.GCPProject, s.GCPLocation, s.VertexModel,
 		s.OllamaBaseURL, s.OllamaModel,
-		s.CalendarProvider, s.WebcalURL, s.CalendarEmail,
+		s.CalendarProvider, sec[SettingsColWebcalURL], s.CalendarEmail,
 		s.ConferencingProvider,
 		s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo), s.RecapChannelID,
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
@@ -432,8 +457,8 @@ func SaveSettingsForUserAt(db DBTX, userID uuid.UUID, s *Settings, now time.Time
 		s.WorkingHours, s.LunchBreaks,
 		timeFormatOrDefault(s.TimeFormat),
 		now,
-		s.LLMAPIKeys.OpenAI, s.LLMAPIKeys.Anthropic, s.LLMAPIKeys.AzureOpenAI,
-		s.LLMAPIKeys.Bedrock, s.LLMAPIKeys.Vertex,
+		sec["llm_api_key_openai"], sec["llm_api_key_anthropic"], sec["llm_api_key_azure_openai"],
+		sec["llm_api_key_bedrock"], sec["llm_api_key_vertex"],
 	)
 	return err
 }

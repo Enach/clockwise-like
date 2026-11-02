@@ -4,27 +4,33 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-func Open(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
+// Open opens the backend's pool (application_name "paceday-backend",
+// PAC-84 contract 4.3) and applies the migrations.
+func Open(dsn string) (*sql.DB, error) { return OpenAs(dsn, AppBackend) }
+
+// OpenAs is Open with the connections named appName in pg_stat_activity
+// (the operator CLI names itself after its subcommand).
+func OpenAs(dsn, appName string) (*sql.DB, error) {
+	db, err := OpenNoMigrate(dsn, appName)
 	if err != nil {
-		return nil, fmt.Errorf("open postgres: %w", err)
-	}
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("ping postgres: %w", err)
+		return nil, err
 	}
 	if err := runMigrations(db); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 	return db, nil
@@ -69,4 +75,47 @@ func ApplyPool(db *sql.DB, maxOpen, maxIdle int, maxLifetime, maxIdleTime time.D
 	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(maxLifetime)
 	db.SetConnMaxIdleTime(maxIdleTime)
+}
+
+// OpenNoMigrate opens and pings the database, named appName, without
+// applying migrations (PAC-84 review #3: the operator CLI must not re-apply
+// this work's migration on a database downgraded below it).
+func OpenNoMigrate(dsn, appName string) (*sql.DB, error) {
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+	cfg.RuntimeParams["application_name"] = appName
+	db := stdlib.OpenDB(*cfg)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	return db, nil
+}
+
+// Migrate applies the embedded migrations (what Open does after opening).
+func Migrate(db *sql.DB) error {
+	if err := runMigrations(db); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	return nil
+}
+
+// SchemaVersion reads schema_migrations; present is false on a database no
+// migration ever ran on.
+func SchemaVersion(ctx context.Context, db *sql.DB) (version uint, dirty, present bool, err error) {
+	var exists bool
+	if err = db.QueryRowContext(ctx, `SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		return 0, false, false, err
+	}
+	var v int64
+	err = db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`).Scan(&v, &dirty)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, false, nil
+	}
+	if err != nil {
+		return 0, false, false, err
+	}
+	return uint(v), dirty, true, nil
 }

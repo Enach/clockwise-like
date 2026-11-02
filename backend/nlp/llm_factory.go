@@ -72,6 +72,11 @@ type Decision struct {
 	// keys (stored and submitted): every string Redact replaces (spec
 	// §3.1a).
 	Secrets []string
+	// Err is set when the key this decision needs is stored but cannot be
+	// decrypted (PAC-84, contract 1): the request is the operation's
+	// documented 500, never "not configured". Client and NotConfigured are
+	// then nil.
+	Err error
 }
 
 // Organization reports whether the decision runs on the organisation's
@@ -129,6 +134,8 @@ func Status(s *storage.Settings, inOrg bool) storage.AIStatus { return StatusOf(
 // adds configuration).
 func StatusOf(st AIState) storage.AIStatus {
 	d := DecideState(st)
+	// PAC-84: an undecryptable key is still a configured choice (its
+	// presence flag is set, AC-16b); using it is the 500.
 	if d.NotConfigured != nil {
 		return storage.AIStatus{InOrganization: st.Org.InOrg(), NotConfigured: d.NotConfigured}
 	}
@@ -230,6 +237,9 @@ func decide(st AIState, choice string, key, model *string, saved bool, own []str
 		k := s.LLMAPIKeys.For(choice)
 		if key != nil {
 			k = *key
+		} else if err := s.SecretErr(storage.LLMKeyColumn(choice)); err != nil {
+			// PAC-84: decided here, before "needs key" can answer.
+			return Decision{Provider: choice, Configuration: ConfigurationOwn, Err: err}
 		}
 		if k == "" {
 			return notConfigured(ReasonNeedsKey, choice, saved, s, st, EnablerUser)
@@ -244,6 +254,10 @@ func decide(st AIState, choice string, key, model *string, saved bool, own []str
 		switch {
 		case complete && org.Confirmed():
 			c := org.Config
+			if err := c.KeyErr(); err != nil {
+				// PAC-84: the organisation's key cannot be decrypted.
+				return Decision{Provider: c.Provider, Configuration: ConfigurationOrganization, Err: err}
+			}
 			return Decision{Provider: c.Provider, Client: newOrgClient(c),
 				Configuration: ConfigurationOrganization, Secrets: append(secrets, c.APIKey)}
 		case complete:

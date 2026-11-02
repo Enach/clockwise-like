@@ -18,6 +18,8 @@ package composetest
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -192,6 +194,7 @@ type project struct {
 	files   []string // compose files, relative to the repo root or absolute
 	envFile string
 	port    int
+	key     string // COMPOSETEST_ENCRYPTION_KEY of this project
 }
 
 // settings is the .env of a project; a nil value leaves the name out.
@@ -219,9 +222,17 @@ func newProject(t *testing.T, s settings, files ...string) *project {
 	projectsMu.Lock()
 	seq := len(projects)
 	projectsMu.Unlock()
-	p := &project{name: fmt.Sprintf("pac81c-%s-%d-%d", runID, seq, rand.Intn(1000)), files: append([]string{"docker-compose.prod.yml"}, files...)}
+	// PAC-84 (review #1): every project carries the key override, so the
+	// backend boots with the test's own random key and never with a
+	// repo-root encryption.env.
+	p := &project{name: fmt.Sprintf("pac81c-%s-%d-%d", runID, seq, rand.Intn(1000)),
+		files: append([]string{"docker-compose.prod.yml", keyOverride}, files...)}
 	if v := s["NGINX_HTTP_PORT"]; v != nil {
 		_, _ = fmt.Sscan(*v, &p.port)
+	}
+	if _, ok := s["COMPOSETEST_ENCRYPTION_KEY"]; !ok {
+		p.key = randomEncryptionKey(t)
+		s["COMPOSETEST_ENCRYPTION_KEY"] = str(p.key)
 	}
 	var b strings.Builder
 	for k, v := range s {
@@ -248,7 +259,7 @@ func composeEnv() []string {
 		k, _, _ := strings.Cut(kv, "=")
 		switch {
 		case strings.HasPrefix(k, "COMPOSE_"), strings.HasPrefix(k, "NGINX_"), strings.HasPrefix(k, "SENTRY_"),
-			strings.HasPrefix(k, "PACEDAY_"), strings.HasPrefix(k, "MCP_"), k == "POSTGRES_PASSWORD", k == "JWT_SECRET":
+			strings.HasPrefix(k, "PACEDAY_"), strings.HasPrefix(k, "COMPOSETEST_"), strings.HasPrefix(k, "MCP_"), k == "POSTGRES_PASSWORD", k == "JWT_SECRET":
 			continue
 		}
 		out = append(out, kv)
@@ -367,4 +378,19 @@ func waitHealth(t *testing.T, id, want string, timeout time.Duration) time.Durat
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// keyOverride is the compose file giving the backend the test's own key.
+const keyOverride = "compose-test/encryption-key.override.yml"
+
+// randomEncryptionKey is a fresh PACEDAY_ENCRYPTION_KEY value ("<id>:<std
+// base64 of 32 random bytes>"); never a committed key, so the backend needs
+// no PACEDAY_ENCRYPTION_ALLOW_TEST_KEY.
+func randomEncryptionKey(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 32)
+	if _, err := cryptorand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return "composetest:" + base64.StdEncoding.EncodeToString(b)
 }

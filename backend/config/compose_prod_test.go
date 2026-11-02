@@ -314,3 +314,25 @@ func TestProdComposeNginxBind(t *testing.T) {
 		}
 	}
 }
+
+// PAC-84 (contract sections 5.2, 11; AC-8b, AC-28, AC-30): the backend of the
+// production and development compose files takes the encryption key from
+// encryption.env beside the compose file, with required: false so a missing
+// file reaches the backend's own refusal, and neither file names a key
+// variable or the test-key opt-in anywhere (an environment: entry, even
+// ${VAR:-}, would override the file with an empty value).
+func TestComposeEncryptionKeyFromEnvFile(t *testing.T) {
+	envFile := regexp.MustCompile(`(?m)^    env_file:\n      - path: \./encryption\.env\n        required: false\n`)
+	for _, f := range []string{"docker-compose.prod.yml", "docker-compose.yml"} {
+		text := uncommented(readRepoFile(t, f))
+		svcs := composeServices(t, text)
+		if !envFile.MatchString(svcs["backend"]) {
+			t.Errorf("%s: backend does not declare env_file [{path: ./encryption.env, required: false}]", f)
+		}
+		for _, name := range []string{"PACEDAY_ENCRYPTION_KEY", "PACEDAY_ENCRYPTION_KEY_PREVIOUS", "PACEDAY_ENCRYPTION_ALLOW_TEST_KEY", "E2E_ENCRYPTION_KEY"} {
+			if regexp.MustCompile(`\b` + name + `\b`).MatchString(text) {
+				t.Errorf("%s names %s outside a comment; the key comes from encryption.env only", f, name)
+			}
+		}
+	}
+}

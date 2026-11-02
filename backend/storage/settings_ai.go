@@ -111,13 +111,21 @@ type LLMAPIKeysSet struct {
 
 // RefreshKeyFlags recomputes the read-only key presence flags from the keys.
 func (s *Settings) RefreshKeyFlags() {
+	// PAC-84 (D-3, AC-16b): presence is the stored value being non-empty; a
+	// key that cannot be decrypted is still set.
 	k := s.LLMAPIKeys
 	s.LLMAPIKeysSet = LLMAPIKeysSet{
-		OpenAI: k.OpenAI != "", Anthropic: k.Anthropic != "", AzureOpenAI: k.AzureOpenAI != "",
-		Bedrock: k.Bedrock != "", Vertex: k.Vertex != "",
+		OpenAI:      s.secretPresent("llm_api_key_openai", k.OpenAI),
+		Anthropic:   s.secretPresent("llm_api_key_anthropic", k.Anthropic),
+		AzureOpenAI: s.secretPresent("llm_api_key_azure_openai", k.AzureOpenAI),
+		Bedrock:     s.secretPresent("llm_api_key_bedrock", k.Bedrock),
+		Vertex:      s.secretPresent("llm_api_key_vertex", k.Vertex),
 	}
-	s.LLMAPIKeySet = k.For(s.LLMProvider) != ""
-	s.LLMUnboundAPIKeySet = s.LLMUnboundAPIKey != ""
+	s.LLMAPIKeySet = false
+	if col := LLMKeyColumn(s.LLMProvider); col != "" {
+		s.LLMAPIKeySet = s.secretPresent(col, k.For(s.LLMProvider))
+	}
+	s.LLMUnboundAPIKeySet = s.secretPresent(SettingsColLLMUnboundKey, s.LLMUnboundAPIKey)
 }
 
 // AINotConfigured is why AI is not configured for a caller and who can change

@@ -9,18 +9,29 @@
 #      volume, as in docker-compose.prod.yml. A "fresh host": a second,
 #      empty Postgres container.
 #   2. The backend built from this tree, run against the source with a
-#      generated .env; users, an organization and a stored provider
-#      credential (oauth_tokens) seeded, and a session cookie issued BEFORE
-#      the backup, checked to work.
-#   3. backup.sh against the running source (the backend keeps running).
+#      generated .env and, apart from it, a generated encryption key in
+#      $work/encryption.env (PAC-84: never inside the backup directory);
+#      users, an organization and stored provider credentials seeded plain,
+#      as a release before PAC-84 left them (a Google token in oauth_tokens,
+#      a webcal URL in settings); the backend restarted so its automatic
+#      conversion encrypts them; a session cookie issued BEFORE the backup,
+#      checked to work.
+#   3. backup.sh against the running source (the backend keeps running); the
+#      backup set is checked to hold neither the key nor any seeded secret.
 #   4. restore.sh onto the fresh host; a backend started with the .env saved
-#      beside the dump.
-#   5. Asserts: health 200; equal row counts for every public table; the
-#      stored credential intact; the pre-backup cookie accepted.
-#   6. Negative controls: another JWT_SECRET gets 401; a row added after the
-#      backup makes the counts differ; restore.sh refuses a dump without its
-#      .sha256 (and a non-empty database); backup.sh refuses a shared
-#      directory; retention deletes a 15-day-old set it wrote and nothing else.
+#      beside the dump and the encryption key kept apart from it.
+#   5. Asserts: health 200; equal row counts for every public table except
+#      encryption_backend_heartbeats (backend liveness, PAC-84); the
+#      stored credentials read back THROUGH THE BACKEND (the Google calendar
+#      reads as connected, the webcal URL comes back to its owner unchanged;
+#      PAC-84 AC-25, not a raw column comparison); the pre-backup cookie
+#      accepted.
+#   6. Negative controls: another JWT_SECRET gets 401; another encryption key
+#      refuses to start (PAC-84 AC-9); a row added after the backup makes the
+#      counts differ; restore.sh refuses a dump without its .sha256 (and a
+#      non-empty database); backup.sh refuses a shared directory and an env
+#      file holding the encryption key; retention deletes a 15-day-old set it
+#      wrote and nothing else.
 #
 # Part 2 — rollback on the same host after a failed migration
 # (docs/runbook.md "Rollback on the same host"):
@@ -86,6 +97,11 @@ GOOGLE_CLIENT_SECRET=rehearsal-not-a-real-secret
 EOF
 # shellcheck disable=SC1091
 set -a; . "$work/.env"; set +a
+# PAC-84 (contract section 11): a fresh random key per run, in its own file
+# beside .env and outside the backup directory, as the runbook says.
+printf 'PACEDAY_ENCRYPTION_KEY=rehearsal:%s\n' "$(openssl rand -base64 32)" > "$work/encryption.env"
+enc_key() { grep '^PACEDAY_ENCRYPTION_KEY=' "$work/encryption.env" | cut -d= -f2-; }
+enc_key_b64="$(enc_key | cut -d: -f2-)"
 
 step "source host: compose project $project (postgres on volume ${project}_postgres_data, :$src_port); fresh host :$dst_port"
 cat > "$work/docker-compose.yml" <<EOF
@@ -124,17 +140,29 @@ step "build the backend from this tree ($(git -C "$root" rev-parse --short HEAD)
 exe="$work/paceday-backend"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe="$exe.exe" ;; esac
 ( cd "$root/backend" && go build -o "$exe" . )
 
-launch_backend() { # name port db_port jwt_secret — starts it, prints nothing
+# rowcounts is rowcounts.sh without encryption_backend_heartbeats (PAC-84):
+# that table holds the liveness of the backends running at that moment (each
+# writes its row every 30 s and deletes it on shutdown), so it legitimately
+# differs between a backup and a restore. Every other table, encryption_data_keys
+# included (a start with the same key creates no data key when one is active),
+# is still compared, so the negative control below keeps its meaning.
+rowcounts() {
+  "$here/rowcounts.sh" "$@" > "$work/rowcounts.raw"
+  grep -v '^encryption_backend_heartbeats ' "$work/rowcounts.raw" || true
+}
+
+launch_backend() { # name port db_port jwt_secret encryption_key — starts it, prints nothing
   # A local, unreachable DSN keeps the rehearsal from reporting to any real
   # Sentry project (before Part A an empty DSN falls back to a built-in one).
   env -i PATH="$PATH" SYSTEMROOT="${SYSTEMROOT:-}" TEMP="${TEMP:-/tmp}" \
     PORT="$2" DATABASE_URL="postgres://clockwise:$POSTGRES_PASSWORD@127.0.0.1:$3/clockwise?sslmode=disable" \
-    JWT_SECRET="$4" SENTRY_DSN="http://rehearsal@127.0.0.1:9/1" SENTRY_ENVIRONMENT=rehearsal \
+    JWT_SECRET="$4" PACEDAY_ENCRYPTION_KEY="$5" \
+    SENTRY_DSN="http://rehearsal@127.0.0.1:9/1" SENTRY_ENVIRONMENT=rehearsal \
     "$exe" > "$work/$1.log" 2>&1 &
   pids+=("$!")
   last_pid="$!"
 }
-start_backend() { # name port db_port jwt_secret — starts it and waits for health
+start_backend() { # name port db_port jwt_secret encryption_key — starts it and waits for health
   launch_backend "$@"
   for _ in $(seq 1 90); do
     [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2/api/health")" = 200 ] && return 0
@@ -150,37 +178,68 @@ me_status() { # port token
 }
 psql_in() { docker exec "$1" psql -U clockwise -d clockwise -v ON_ERROR_STOP=1 -Atc "$2"; }
 psql_src() { psql_in "$(src_container)" "$1"; }
+session_token() { # user_id email — an HS256 session cookie value, as the backend issues
+  local now h p s
+  now="$(date +%s)"
+  h="$(printf '%s' '{"alg":"HS256","typ":"JWT"}' | b64url)"
+  p="$(printf '{"sub":"%s","email":"%s","iat":%d,"exp":%d}' "$1" "$2" "$now" "$((now + 86400))" | b64url)"
+  s="$(printf '%s' "$h.$p" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | b64url)"
+  printf '%s' "$h.$p.$s"
+}
+get_as() { # port token path — the response body
+  curl -s --cookie "auth_token=$2" "http://127.0.0.1:$1$3"
+}
 
 # ── Part 1 ────────────────────────────────────────────────────────────────────
 step "source backend :$api_base (runs migrations), seed data, issue a session"
-start_backend source "$api_base" "$src_port" "$JWT_SECRET"
+start_backend source "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
 source_pid="$last_pid"
 uid="$(psql_src "INSERT INTO users (email, name) VALUES ('rehearsal-owner@example.com', 'Rehearsal Owner') RETURNING id" | head -1)"
-psql_src "INSERT INTO users (email, name) VALUES ('rehearsal-member@example.com', 'Rehearsal Member')" >/dev/null
+mid="$(psql_src "INSERT INTO users (email, name) VALUES ('rehearsal-member@example.com', 'Rehearsal Member') RETURNING id" | head -1)"
 psql_src "INSERT INTO organizations (name, domain) VALUES ('Rehearsal', 'rehearsal.example.com')" >/dev/null
 psql_src "UPDATE users SET org_id = (SELECT id FROM organizations WHERE domain = 'rehearsal.example.com')" >/dev/null
-# A stored provider credential, as a connected Google calendar leaves one.
-# Expiry far ahead, so no renewal is attempted against Google.
+# Stored provider credentials, written plain as a release before PAC-84 left
+# them: a connected Google calendar for the owner (expiry far ahead, so no
+# renewal is attempted against Google) and a webcal calendar for the member.
+# Random per run, so a hit in the backup set can only be a leak.
+canary_access="rehearsal-access-$(openssl rand -hex 16)"
+canary_refresh="rehearsal-refresh-$(openssl rand -hex 16)"
+canary_webcal="https://calendar.example.com/private-$(openssl rand -hex 16)/basic.ics"
 psql_src "INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id)
-          VALUES ('$uid', 'rehearsal-access-token', 'rehearsal-refresh-token', NOW() + INTERVAL '30 days', 'primary')" >/dev/null
-cred_query="SELECT access_token || '/' || refresh_token FROM oauth_tokens WHERE user_id = '$uid'"
-now="$(date +%s)"
-h="$(printf '%s' '{"alg":"HS256","typ":"JWT"}' | b64url)"
-p="$(printf '{"sub":"%s","email":"rehearsal-owner@example.com","iat":%d,"exp":%d}' "$uid" "$now" "$((now + 86400))" | b64url)"
-s="$(printf '%s' "$h.$p" | openssl dgst -sha256 -hmac "$JWT_SECRET" -binary | b64url)"
-token="$h.$p.$s"
+          VALUES ('$uid', '$canary_access', '$canary_refresh', NOW() + INTERVAL '30 days', 'primary')" >/dev/null
+psql_src "INSERT INTO settings (user_id, calendar_provider, webcal_url) VALUES ('$mid', 'webcal', '$canary_webcal')" >/dev/null
+token="$(session_token "$uid" rehearsal-owner@example.com)"
+member_token="$(session_token "$mid" rehearsal-member@example.com)"
 [ "$(me_status "$api_base" "$token")" = 200 ] || fail "the session does not work on the source"
 # Touch a user-scoped endpoint so the backend writes rows of its own.
 curl -s -o /dev/null --cookie "auth_token=$token" "http://127.0.0.1:$api_base/api/settings" || true
-echo "user $uid signed in on the source (cookie issued at $now)"
+echo "users $uid (owner) and $mid (member) signed in on the source"
+
+step "restart the source backend: its automatic conversion encrypts the plain credentials (PAC-84 D-7)"
+kill "$source_pid"; wait "$source_pid" 2>/dev/null || true
+start_backend source-converted "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
+source_pid="$last_pid"
+plain_left_query="SELECT (SELECT count(*) FROM oauth_tokens WHERE access_token NOT LIKE 'pdenc:%' OR refresh_token NOT LIKE 'pdenc:%')
+                       + (SELECT count(*) FROM settings WHERE webcal_url <> '' AND webcal_url NOT LIKE 'pdenc:%')"
+for _ in $(seq 1 60); do [ "$(psql_src "$plain_left_query")" = 0 ] && break; sleep 1; done
+[ "$(psql_src "$plain_left_query")" = 0 ] || { tail -20 "$work/source-converted.log" >&2; fail "the conversion left plain credentials"; }
+echo "OK the conversion encrypted every seeded credential in place"
 
 step "backup.sh while the source backend is running"
 backups="$work/backups"
 dump="$("$here/backup.sh" --out "$backups" --env-file "$work/.env" --compose-file "$compose_file")"
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/source.counts"
+rowcounts --compose-file "$compose_file" > "$work/source.counts"
 kill -0 "$source_pid" || fail "the source backend stopped during the backup"
 [ "$(health "$api_base")" = 200 ] || fail "source not healthy after backup"
 ls -l "$backups"
+# PAC-84 AC-1/AC-4: the backup set holds neither the key nor a seeded secret
+# (the custom-format dump is compressed, so it is searched as plain SQL).
+docker exec -i "$(src_container)" pg_restore -f - < "$dump" > "$work/dump.sql"
+grep -q "pdenc:1:" "$work/dump.sql" || fail "the plain-SQL rendering of the dump holds no encrypted value"
+for needle in "$canary_access" "$canary_refresh" "$canary_webcal" "$enc_key_b64" PACEDAY_ENCRYPTION_KEY; do
+  if grep -rqF -- "$needle" "$work/dump.sql" "$backups"; then fail "the backup set contains a seeded secret or the encryption key"; fi
+done
+echo "OK the backup set (dump rendered as SQL, .env copy, checksums) holds no seeded secret and no encryption key"
 for f in "$dump" "${dump%.dump}.env" "${dump%.dump}.sha256"; do
   [ -f "$f" ] || fail "missing $f"
   case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) ;; *) [ "$(stat -c %a "$f")" = 600 ] || fail "$f is not mode 600" ;; esac
@@ -201,15 +260,24 @@ if echo "$restore_log" | grep -q "waiting for Postgres to finish starting"; then
 fi
 saved_env="${dump%.dump}.env"
 jwt_saved="$(grep '^JWT_SECRET=' "$saved_env" | cut -d= -f2-)"
-start_backend restored "$((api_base + 1))" "$dst_port" "$jwt_saved"
+# The encryption key does not come from the backup set: the operator keeps
+# encryption.env apart and supplies it here (docs/runbook.md, "Encryption key").
+start_backend restored "$((api_base + 1))" "$dst_port" "$jwt_saved" "$(enc_key)"
 restored_pid="$last_pid"
 
 step "assertions (fresh host)"
-"$here/rowcounts.sh" --container "$dst" > "$work/restored.counts"
+rowcounts --container "$dst" > "$work/restored.counts"
 diff -u "$work/source.counts" "$work/restored.counts" || fail "row counts differ"
 echo "OK row counts equal for all $(wc -l < "$work/restored.counts") public tables"
-[ "$(psql_in "$dst" "$cred_query")" = "rehearsal-access-token/rehearsal-refresh-token" ] || fail "the stored provider credential did not survive the restore"
-echo "OK the stored provider credential (oauth_tokens) restored intact"
+# Read back through the backend, not by raw column (PAC-84 AC-25): the
+# Google status is "connected" only when the stored token decrypts
+# (auth.LoadUserToken), and the webcal URL is returned to its owner in value.
+status_body="$(get_as "$((api_base + 1))" "$token" /api/auth/status)"
+echo "$status_body" | grep -q '"connected":true' || fail "the restored Google credential does not read back through the backend: $status_body"
+echo "OK the restored Google credential decrypts through the backend (/api/auth/status connected)"
+settings_body="$(get_as "$((api_base + 1))" "$member_token" /api/settings)"
+echo "$settings_body" | grep -qF "\"webcalUrl\":\"$canary_webcal\"" || fail "the restored webcal URL does not read back unchanged through the backend"
+echo "OK the restored webcal URL reads back unchanged through the backend (/api/settings)"
 [ "$(health "$((api_base + 1))")" = 200 ] || fail "restored backend not healthy"
 echo "OK restored backend /api/health 200 (readiness check: added by Part A)"
 got="$(me_status "$((api_base + 1))" "$token")"
@@ -218,12 +286,24 @@ echo "OK pre-backup session cookie accepted on the restored stack (/api/auth/me 
 kill "$restored_pid"; wait "$restored_pid" 2>/dev/null || true
 
 step "negative controls (fresh host)"
-start_backend wrong-secret "$((api_base + 2))" "$dst_port" "$(openssl rand -hex 32)"
+start_backend wrong-secret "$((api_base + 2))" "$dst_port" "$(openssl rand -hex 32)" "$(enc_key)"
 wrong_pid="$last_pid"
 got="$(me_status "$((api_base + 2))" "$token")"
 [ "$got" = 401 ] || fail "with another JWT_SECRET the session got $got, want 401"
 echo "OK with a different JWT_SECRET the same cookie gets 401 (the .env must travel with the dump)"
 kill "$wrong_pid"; wait "$wrong_pid" 2>/dev/null || true
+
+# PAC-84 AC-9/AC-25: the restored database booted with another key (same key
+# id, other bytes) refuses to start, without printing either key.
+other_key_b64="$(openssl rand -base64 32)"
+launch_backend wrong-key "$((api_base + 2))" "$dst_port" "$jwt_saved" "rehearsal:$other_key_b64"
+wrong_key_pid="$last_pid"
+for _ in $(seq 1 60); do kill -0 "$wrong_key_pid" 2>/dev/null || break; sleep 1; done
+kill -0 "$wrong_key_pid" 2>/dev/null && fail "the backend kept running with another encryption key"
+wait "$wrong_key_pid" 2>/dev/null && fail "the backend exited 0 with another encryption key"
+grep -q "refusing to start" "$work/wrong-key.log" || fail "the backend with another key did not refuse: $(tail -3 "$work/wrong-key.log")"
+if grep -qF -e "$other_key_b64" -e "$enc_key_b64" "$work/wrong-key.log"; then fail "the refusal printed key material"; fi
+echo "OK with another encryption key the restored backend refuses to start: $(grep -m1 'refusing to start' "$work/wrong-key.log")"
 
 if "$here/restore.sh" --dump "$dump" --container "$dst" 2>/dev/null; then fail "restore.sh accepted a non-empty database"; fi
 echo "OK restore.sh refuses a database that already has tables"
@@ -240,8 +320,14 @@ if "$here/backup.sh" --out "$work/shared" --env-file "$work/.env" --compose-file
 [ "$(ls -A "$work/shared")" = notes.txt ] || fail "backup.sh changed a directory it refused"
 echo "OK backup.sh refuses a directory holding other files"
 
+cat "$work/.env" "$work/encryption.env" > "$work/with-key.env"
+if "$here/backup.sh" --out "$work/keyed" --env-file "$work/with-key.env" --compose-file "$compose_file" >/dev/null 2>&1; then fail "backup.sh copied an env file holding the encryption key"; fi
+[ ! -e "$work/keyed" ] || fail "backup.sh created its directory before refusing the env file"
+rm -f "$work/with-key.env"
+echo "OK backup.sh refuses an env file holding the encryption key, writing nothing"
+
 psql_src "INSERT INTO organizations (name, domain) VALUES ('After backup', 'after.example.com')" >/dev/null
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/source-later.counts"
+rowcounts --compose-file "$compose_file" > "$work/source-later.counts"
 if diff -q "$work/source-later.counts" "$work/restored.counts" >/dev/null; then fail "the count comparison missed a row added after the backup"; fi
 echo "OK a row added to the source after the backup makes the comparison differ"
 
@@ -261,18 +347,18 @@ echo "OK retention removed a 15-day-old set it wrote and a 15-day-old interrupte
 
 # ── Part 2 ────────────────────────────────────────────────────────────────────
 step "same host: pre-deploy backup, then a failed migration"
-start_backend source-again "$api_base" "$src_port" "$JWT_SECRET"
+start_backend source-again "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
 pre_pid="$last_pid"
 sleep 1
 predeploy="$("$here/backup.sh" --out "$backups" --env-file "$work/.env" --compose-file "$compose_file")"
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/predeploy.counts"
+rowcounts --compose-file "$compose_file" > "$work/predeploy.counts"
 kill "$pre_pid"; wait "$pre_pid" 2>/dev/null || true
 # What a migration that failed halfway leaves: part of its schema, and
 # golang-migrate's record of the version marked dirty.
 psql_src "CREATE TABLE half_applied_032 (id int); UPDATE schema_migrations SET version = 32, dirty = true" >/dev/null
 echo "simulated: migration 032 failed halfway (table half_applied_032, schema_migrations 32 dirty)"
 
-launch_backend dirty "$((api_base + 3))" "$src_port" "$JWT_SECRET"
+launch_backend dirty "$((api_base + 3))" "$src_port" "$JWT_SECRET" "$(enc_key)"
 dirty_pid="$last_pid"
 for _ in $(seq 1 60); do kill -0 "$dirty_pid" 2>/dev/null || break; sleep 1; done
 kill -0 "$dirty_pid" 2>/dev/null && fail "the backend kept running on a dirty database"
@@ -294,10 +380,10 @@ set_aside="$("$here/set-aside-volume.sh" --compose-file "$compose_file")"
 docker volume inspect "${project}_postgres_data" >/dev/null 2>&1 && fail "the original volume still exists"
 docker compose -f "$compose_file" up -d --wait postgres >/dev/null 2>&1
 "$here/restore.sh" --dump "$predeploy" --compose-file "$compose_file"
-start_backend previous-version "$api_base" "$src_port" "$JWT_SECRET"
+start_backend previous-version "$api_base" "$src_port" "$JWT_SECRET" "$(enc_key)"
 
 step "assertions (same host)"
-"$here/rowcounts.sh" --compose-file "$compose_file" > "$work/rolledback.counts"
+rowcounts --compose-file "$compose_file" > "$work/rolledback.counts"
 diff -u "$work/predeploy.counts" "$work/rolledback.counts" || fail "row counts differ from the pre-deploy backup"
 echo "OK row counts equal the pre-deploy backup's for all $(wc -l < "$work/rolledback.counts") public tables"
 [ "$(health "$api_base")" = 200 ] || fail "rolled-back backend not healthy"

@@ -19,8 +19,11 @@ Related documents:
 - **Docker Engine 25 or later**: the health checks use `start_interval`
   (frequent checks during the start period), which older engines do not
   support.
-- **Docker Compose v2** (the `docker compose` plugin; 2.20 or later, or the
-  later 5.x line — the compose tests were run with 5.6.1). The legacy
+- **Docker Compose v2** (the `docker compose` plugin; **2.24.0 or later**, or
+  the later 5.x line — the compose tests were run with 5.6.1). 2.24.0 is the
+  first version that reads the backend's `env_file` entry with
+  `required: false` (the encryption key file, [Encryption key](#encryption-key));
+  an older 2.2x refuses the compose files before anything runs. The legacy
   `docker-compose` v1 cannot read these files.
 
 ## Local setup
@@ -37,7 +40,11 @@ is about production.
    `openssl rand -hex 32`. If the TLS proxy runs on this host, set
    `NGINX_BIND_ADDRESS=127.0.0.1` (and `NGINX_HTTP_PORT` if the proxy holds
    port 80).
-2. **MCP (optional).** The MCP server is off by default. To enable it, set
+2. **Encryption key.** Create `encryption.env` beside `.env` (never inside
+   it) and store a copy apart from the backups, as
+   [Encryption key](#encryption-key) says. Without it the backend refuses to
+   start.
+3. **MCP (optional).** The MCP server is off by default. To enable it, set
    `MCP_AUTH_TOKEN` (`openssl rand -hex 32`) and add
    `COMPOSE_FILE=docker-compose.prod.yml:docker-compose.mcp.yml` to `.env`
    (Windows hosts: `;` as the separator), so that every `docker compose`
@@ -45,11 +52,11 @@ is about production.
    `https://<your host>/mcp/sse` behind the token (owner decision Q-O1); see
    the README for the client configuration. Without the token compose
    refuses to start anything, naming `MCP_AUTH_TOKEN`.
-3. Put a TLS-terminating proxy in front, following
+4. Put a TLS-terminating proxy in front, following
    [proxy requirements](./operator/proxy.md).
-4. Set up the daily backup ([Backups](#backups)) **before** the first user
+5. Set up the daily backup ([Backups](#backups)) **before** the first user
    signs in, and rehearse a restore once ([Restore](#restore)).
-5. Deploy with the order below.
+6. Deploy with the order below.
 
 ## Deploy order
 
@@ -105,6 +112,11 @@ would leave MCP out.
   without losing the data written since the backup. Prefer a fix-forward
   release; if you must go back, restore the pre-deploy backup and accept that
   loss explicitly.
+- **Going back to a release before encryption at rest (PAC-84)** is never an
+  image swap once the backend has converted the stored credentials: the older
+  release would send ciphertext to the providers as tokens, and every
+  connection would end up marked lost. Either restore the pre-deploy backup,
+  or follow [Encryption key - downgrade](#encryption-key---downgrade).
 
 ### Rollback on the same host
 
@@ -246,11 +258,22 @@ Schedule it daily, e.g. in root's crontab on the Docker host:
 
 ### Backups are secrets
 
-- **A dump contains every user's stored provider credentials in plain
-  text**: OAuth access and refresh tokens, Slack/Notion tokens and the AI API
-  keys users entered (for example `029_llm_bring_your_own.up.sql`; nothing in
-  the backend encrypts them — encryption at rest is a follow-up, spec §10).
-  Anyone with a dump can act as your users at those providers.
+- **Stored provider credentials are encrypted in a dump** (PAC-84): OAuth
+  access and refresh tokens, Slack/Notion tokens, the AI API keys users and
+  organisations entered, webcal URLs, SSO client secrets. They open only with
+  the encryption key, which lives in `encryption.env` and is **never part of
+  the backup set** (`backup.sh` refuses an env file that holds it). A dump
+  still holds everything else in clear: users' names and emails, calendar
+  data the app stores, bookings, settings, team invitation tokens.
+- **A dump taken before the conversion finished** (any dump from a release
+  before PAC-84, and possibly the first one after the upgrade) still holds
+  every credential not yet converted **in plain text**: anyone with it can act
+  as your users at those providers. Such dumps age out with the 14-day
+  retention; delete off-host copies on the same schedule.
+- **Keep the encryption key apart from the dumps**: a dump without the key
+  restores a stack whose stored connections cannot be read (see
+  [Encryption key](#encryption-key)); the key without a dump is useless. Store
+  the two in different places with different access.
 - **The `.env` copy holds** `JWT_SECRET` (anyone with it can forge a session
   for any user), `POSTGRES_PASSWORD`, every OAuth client secret, `SMTP_PASS`
   and `MCP_AUTH_TOKEN`.
@@ -260,7 +283,8 @@ Schedule it daily, e.g. in root's crontab on the Docker host:
   schedule everywhere they are copied.
 - A dump **without its `.env` does not restore a working stack**: with another
   `JWT_SECRET` every user is logged out, and without the OAuth client secrets
-  no stored provider token can be refreshed. Always keep the pair together.
+  no stored provider token can be refreshed. Always keep the pair together —
+  and the encryption key separately (above).
 
 ## Restore
 
@@ -271,7 +295,12 @@ failed database still exists, see
 1. Install the repository at the **same version** that was running (the same
    `PACEDAY_VERSION`, which the `paceday-<T>.env` saved with the dump holds).
 2. Put the `paceday-<T>.env` saved with the dump in place as `.env`
-   (`chmod 600`).
+   (`chmod 600`), and the encryption key, from where you keep it apart from
+   the backups, in place as `encryption.env` (`chmod 600`): the key that was
+   active when the dump was taken, or a later one with that key still listed
+   in `PACEDAY_ENCRYPTION_KEY_PREVIOUS`. With no key or another key the
+   backend refuses to start, naming the problem
+   ([Encryption key](#encryption-key)).
 3. Start only Postgres on an empty volume: `compose up -d --wait postgres`.
    Without `--wait` the command returns while Postgres is still initialising
    the new volume. `restore.sh` also waits (up to 120 s, `--wait-seconds`) until
@@ -303,22 +332,29 @@ ports 15494, 15495 and 18091–18094 by default). It builds the backend from the
 checkout, and runs the source database as a compose project on a named volume,
 as in production.
 
-- **Fresh host:** seeds users, an organization and a stored provider
-  credential (`oauth_tokens`), issues a session before the backup, backs up
-  while the backend runs, restores onto a second Postgres, starts a backend
-  with the saved `.env`, and checks health, equal row counts for every public
-  table, the credential intact and the old session accepted.
+- **Fresh host:** generates an encryption key into `encryption.env` outside
+  the backup directory, seeds users, an organization and stored provider
+  credentials (a Google token in `oauth_tokens`, a webcal URL) in plain as an
+  older release left them, restarts the backend so its conversion encrypts
+  them, issues a session before the backup, backs up while the backend runs
+  (and checks that the backup set holds neither the key nor a seeded
+  secret), restores onto a second Postgres, starts a backend with the saved
+  `.env` and the separately kept key, and checks health, equal row counts for
+  every public table, the credentials read back **through the backend** (the
+  Google calendar connected, the webcal URL returned unchanged to its owner)
+  and the old session accepted.
 - **Same host:** takes a pre-deploy backup, simulates a failed migration
   (half-created table, `schema_migrations` dirty at 32), checks that the
   backend and `restore.sh` both refuse it, then runs
   [Rollback on the same host](#rollback-on-the-same-host) and checks health,
   counts, the session, and that the set-aside volume still holds the failed
   database.
-- **Negative controls:** another `JWT_SECRET` gets 401; a row added after the
+- **Negative controls:** another `JWT_SECRET` gets 401; another encryption
+  key makes the restored backend refuse to start; a row added after the
   backup makes the counts differ; `restore.sh` refuses a dump without its
   `.sha256` (and `--allow-missing-checksum` warns); `backup.sh` refuses a
-  shared directory; retention deletes a 15-day-old set it wrote and keeps a
-  file it did not write.
+  shared directory and an env file holding the encryption key; retention
+  deletes a 15-day-old set it wrote and keeps a file it did not write.
 
 Rehearse once per quarter and after any change to the scripts or to Postgres'
 major version, and record it below.
@@ -331,6 +367,231 @@ major version, and record it below.
 | 2026-10-28 | factory implementer (PAC-81 Part D, review round 1) | `rehearse-backup-restore.sh` on this branch after `d65a5bd`, Docker 29.8.2 / Compose v2 on Windows 11 (Git Bash), `postgres:16-alpine` | **Passed** (19:16 UTC). Fresh host: 34 tables equal, `oauth_tokens` credential intact, health 200, old session 200. Same host: the backend refused the dirty database (`Dirty database version 32`), `restore.sh` refused it, the volume was set aside (1487 entries, content checksums equal), restored, health 200, counts equal to the pre-deploy backup, session 200, the set-aside copy still dirty at 32. Negative controls all as expected. Mode-600 check not run (Windows). |
 | 2026-10-28 | factory implementer (PAC-81 Part D, review round 2) | `rehearse-backup-restore.sh` on this branch after `67b8876`, same host setup | **Passed** (19:29 UTC). The rehearsal now runs the runbook's commands only: `up -d --wait postgres` (with the production health check), no extra waits. `restore.sh` onto a Postgres started a moment earlier waited for it to finish initialising, then restored. `set-aside-volume.sh` refused an existing copy name and left both volumes untouched. Retention removed a 15-day-old `.dump.partial`. All earlier assertions passed. |
 | 2026-10-28 | factory implementer (PAC-81 Part D, final round) | `rehearse-backup-restore.sh` on this branch merged with `main` at `ec1f096` (Part B shipped), same host setup | **Passed** (19:58 UTC), all 18 checks. The manual set-aside block above was also run verbatim against a throwaway compose project: it refused while the volume was in use, stopped when the copy name existed (the existing volume was left empty), and otherwise set the volume aside. |
+
+## Encryption key
+
+Since PAC-84 every stored secret — Google tokens, the Outlook and Zoom
+records, personal-calendar tokens and URLs, the webcal URL, Slack/Notion
+tokens, users' and organisations' AI keys, SSO client secrets and SAML
+certificates — is stored encrypted (AES-256-GCM). The values are encrypted
+with **data keys** kept in the database (`encryption_data_keys`); each data
+key is itself encrypted ("wrapped") by **the encryption key** you supply in
+`PACEDAY_ENCRYPTION_KEY`. The database alone, or a dump, therefore opens
+nothing; the key alone opens nothing either.
+
+**Generate** it once per deployment, in the directory of `.env`:
+
+```sh
+echo "PACEDAY_ENCRYPTION_KEY=$(date -u +%Y%m%d):$(openssl rand -base64 32)" > encryption.env && chmod 600 encryption.env
+```
+
+The value is `<key id>:<base64 of 32 random bytes>`; the id (here the date)
+is what logs, errors and `encryption status` print — the key bytes are never
+printed. Standard padded base64 only (what `openssl rand -base64 32` prints).
+
+**Where it lives.**
+
+- `encryption.env`, beside `.env`, mode 600, git-ignored. The backend service
+  of `docker-compose.prod.yml` (and `docker-compose.yml`) reads it through
+  `env_file` with `required: false` (Docker Compose 2.24.0 or later); neither
+  compose file names the key under `environment:`.
+- **Never in `.env`**: `.env` travels with every backup, and
+  `scripts/ops/backup.sh` refuses (exit 2, nothing written) an env file that
+  sets `PACEDAY_ENCRYPTION_KEY` or `PACEDAY_ENCRYPTION_KEY_PREVIOUS`.
+- **Back it up separately**: a copy in your password manager or secrets
+  vault, with access limited to the people who operate the deployment, not
+  next to the dumps. A restore needs it (see [Restore](#restore)).
+- Whoever controls Docker on the host can read it (`docker inspect` shows a
+  container's environment). That is accepted until the key moves to a KMS
+  (owner decision Q-1, a follow-up).
+
+**Start.** The backend refuses to start — before it opens the database, runs
+a cron or listens — when the key is missing or malformed, when it does not
+open the stored data keys (wrong key), or when a data key is wrapped by a key
+id that is neither `PACEDAY_ENCRYPTION_KEY` nor listed in
+`PACEDAY_ENCRYPTION_KEY_PREVIOUS`. Every such line starts
+`refusing to start:` and ends `(docs/runbook.md, "Encryption key")`. On
+success it logs
+`encryption: key "<id>" active; <n> data keys (active <m>); <r> re-wrapped from previous keys`.
+It also refuses the committed e2e test keys (whatever their id) unless
+`PACEDAY_ENCRYPTION_ALLOW_TEST_KEY=true`, which only the e2e stack sets.
+
+**Upgrading to the release with encryption at rest.** Create
+`encryption.env` **before** the upgrade (the backend refuses to start
+without it) and check Docker Compose is 2.24.0 or later. After the upgrade
+the backend serves at once and, once per start, converts the remaining plain
+values in the background in small batches (`encryption: conversion done: <n>
+values encrypted in <d>`); plain values keep working meanwhile. Check:
+
+```sh
+docker compose -f docker-compose.prod.yml exec backend /paceday-operator encryption status --check
+```
+
+exits 0 when nothing plain is left (3 while some is).
+
+### Operator commands
+
+`paceday-operator encryption <subcommand>` ships in the backend image as
+`/paceday-operator`. It reads `DATABASE_URL` and the same two key variables
+as the backend. Subcommands that need the backend **running or not** use
+`exec`:
+
+```sh
+docker compose -f docker-compose.prod.yml exec backend /paceday-operator encryption status
+```
+
+Subcommands that need the backend **stopped** (`decrypt-all`,
+`reset-lost-key`, `downgrade-schema`) run in a one-off container of the
+backend service, with Postgres up (`run` gives it the service's `env_file`,
+so the key comes from `encryption.env`; compose's own `--env-file` option is
+not how the key arrives):
+
+```sh
+docker compose -f docker-compose.prod.yml stop backend
+docker compose -f docker-compose.prod.yml run --rm --no-deps backend /paceday-operator encryption decrypt-all --operator you@example.com --reason "downgrade to 1.4.2"
+```
+
+| Subcommand | Needs | Does |
+|---|---|---|
+| `status [--check]` | no key | Per secret column: empty, plain and encrypted counts, encrypted per data key; per data key: id, state, wrapping key id, age, values, `sealed_count`, `rotate due` (older than 365 days or past 2^29 seals); live backends. Read-only. |
+| `convert --operator --reason [--batch 100]` | active key (the one wrapping the active data key) | Encrypts every plain value. |
+| `rotate-data-key --operator --reason --retire <id> [--batch 100] [--wait 5m]` | active key (the one wrapping the active data key) | Makes a new active data key, waits until every running backend uses it, re-encrypts the values under data key `<id>`. |
+| `decrypt-all --operator --reason [--empty-undecryptable]` | keys that open every data key; backend stopped | Writes every value back in plain and deletes the data keys (prepare a downgrade). |
+| `reset-lost-key --operator --reason --confirm-lost-key` | the **new** key only; backend stopped | The lost-key reset below. |
+| `downgrade-schema --operator --reason` | no key; backend stopped | Runs this release's schema down step (see the downgrade below). |
+
+Every mutating subcommand writes one `operator_audit` row (who, why, counts —
+never a value), takes the maintenance lock, and is safe to re-run (a second
+run reports 0 changes). Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | done (including "nothing to do") |
+| 1 | the run failed or ended incomplete (database error, values that could not be processed, rotation wait timed out); the audit row says `failed`/`partial` and a re-run resumes |
+| 2 | usage: unknown subcommand or flag, missing `--operator`/`--reason`/`--retire`/`--confirm-lost-key`, missing `DATABASE_URL` |
+| 3 | `status --check` only: at least one plain value remains |
+| 4 | key refused: active key missing or malformed, a configured key does not open a data key, a data key wrapped by an unknown key id, `convert`/`rotate-data-key` run with an active key that does not wrap the active data key; for `reset-lost-key`: a configured key **does** open a stored data key (the key is not lost) |
+| 5 | maintenance lock held by another process (named, with its pid) |
+| 6 | a backend is running (`decrypt-all`, `reset-lost-key`): see below |
+
+### Encryption key - stop the backend first
+
+`decrypt-all` and `reset-lost-key` refuse (exit 6) while any backend has
+reported itself in the last 90 seconds: a running backend would re-encrypt
+values behind `decrypt-all`, or keep using data keys `reset-lost-key`
+removed. Stop **every** backend (`docker compose -f docker-compose.prod.yml
+stop backend` on every host), wait 90 seconds, then run the command with
+`run --rm --no-deps` as above. A backend that starts while one of them runs
+refuses to start (`paceday-operator encryption <subcommand> is running (pid
+<p>); start the backend after it ends`).
+
+### Rotating the encryption key
+
+Do this when the key may have been exposed, or on a schedule. No value is
+re-encrypted; only the few data keys are re-wrapped.
+
+1. Generate a new key with a new id. In `encryption.env`, make it
+   `PACEDAY_ENCRYPTION_KEY` and move the old one to
+   `PACEDAY_ENCRYPTION_KEY_PREVIOUS` (comma-separated, at most 8):
+
+   ```sh
+   PACEDAY_ENCRYPTION_KEY=20270101:<new base64>
+   PACEDAY_ENCRYPTION_KEY_PREVIOUS=20261102:<old base64>
+   ```
+
+2. Restart the backend (`compose up -d --wait backend`). At start it re-wraps
+   every data key under the new key in one transaction
+   (`<r> re-wrapped from previous keys`). With several backends, roll the
+   change to **every** one with the same two variables.
+3. `encryption status` shows 0 data keys under the old id, and the backend
+   logs `previous key "<id>" wraps no data key; remove it once the backup
+   retention (14 days) has passed`.
+4. **Keep the old key for at least 14 days** (the backup retention): a dump
+   taken before the rotation has its data keys wrapped by the old key. Then
+   remove it from `_PREVIOUS` and from your separate copy.
+
+### Rotating a data key
+
+Only needed if a data key may have been exposed (or `status` says
+`rotate due`):
+
+```sh
+docker compose -f docker-compose.prod.yml exec backend /paceday-operator encryption rotate-data-key --retire <data key id> --operator you@example.com --reason "scheduled rotation"
+```
+
+It creates a new active data key, waits (up to `--wait`, default 5m) until
+every running backend reports it, then re-encrypts the values under the old
+one in batches. Afterwards `status` shows 0 values under it; retired data keys
+are kept (60 bytes each). A backend also rotates by itself when its active
+data key reaches 2^30 encryptions.
+
+### Losing the key
+
+Losing `PACEDAY_ENCRYPTION_KEY` (and every previous key) loses **every
+stored connection**: nothing can decrypt them (owner decision Q-2). The
+deployment is recovered with a reset, and users reconnect:
+
+1. Stop every backend ([stop the backend first](#encryption-key---stop-the-backend-first)).
+2. Generate a new key into `encryption.env` (only the new key; no previous).
+3. Run:
+
+   ```sh
+   docker compose -f docker-compose.prod.yml run --rm --no-deps backend /paceday-operator encryption reset-lost-key --confirm-lost-key --operator you@example.com --reason "encryption key lost"
+   ```
+
+   Every encrypted value is removed as its owner's own disconnect would
+   remove it, with no call to any provider: Google and Slack/Notion
+   connections deleted, Outlook and Zoom removed (conferencing back to Meet),
+   personal calendars holding an encrypted value disabled and emptied, the
+   webcal URL, users' and organisations' AI keys and SSO client secrets and
+   certificates emptied. Plain values are left alone. Every data key is
+   deleted and a new one is created under the new key. It refuses (exit 4) if
+   any configured key still opens a stored data key: then the key is not
+   lost.
+4. Start the backend. Users see those connections as not connected and
+   reconnect; organisation admins re-enter the org AI key and the SSO client
+   secret (SSO sign-in for that domain fails until then; break-glass still
+   works).
+
+### Encryption key - downgrade
+
+To go back to a release from before encryption at rest **without** restoring
+a backup (no data lost, but the stored credentials are written back in plain
+text — deliberately, and audited):
+
+1. Stop every backend ([stop the backend first](#encryption-key---stop-the-backend-first)).
+2. Write every value back in plain and delete the data keys:
+   `… run --rm --no-deps backend /paceday-operator encryption decrypt-all --operator … --reason …`.
+   Values that cannot be decrypted are listed and left as they are (exit 1);
+   `--empty-undecryptable` removes them as the lost-key reset would.
+3. Run the schema down step:
+   `… run --rm --no-deps backend /paceday-operator encryption downgrade-schema --operator … --reason …`.
+   It refuses (exit 1, naming `paceday-operator encryption decrypt-all`)
+   while any encrypted value or data key remains, and never leaves
+   `schema_migrations` dirty. It drops the data-key and heartbeat tables and
+   keeps `operator_audit`.
+4. Set the previous `PACEDAY_VERSION` and start it. **Never start the new
+   image in between**: its automatic conversion would encrypt everything
+   again.
+
+**After `downgrade-schema`, do not run the new image's backend.** This
+release's `paceday-operator encryption` commands refuse to migrate a
+database below this release's schema: `status` only reports it, and the
+other commands exit 1 without changing anything. The backend server
+would migrate it up again, and the previous release would then refuse to
+start, because it does not know that schema version. Check the result with
+plain SQL instead:
+
+```bash
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U clockwise -d clockwise -c 'SELECT version, dirty FROM schema_migrations'
+```
+
+The version must be below this release's encryption migration (034) and
+`dirty` must be `f`.
+
+The alternative is restoring the pre-deploy backup (losing what was written
+since).
 
 ## Account recovery
 

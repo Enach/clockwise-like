@@ -327,7 +327,19 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
       'SELECT llm_provider, llm_api_key, ollama_base_url FROM settings WHERE user_id = $1',
       [user.id],
     );
-    expect(row).toEqual({ llm_provider: 'ollama', llm_api_key: 'sk-e2e-legacy', ollama_base_url: OLLAMA_ORIGIN });
+    expect(row).toMatchObject({ llm_provider: 'ollama', ollama_base_url: OLLAMA_ORIGIN });
+    // PAC-84: the key column holds either the plain value written by SQL
+    // above, written back byte-identical by the save (plain values are read
+    // forever, D-7), or — if a conversion pass ran in between — its sealed
+    // form (contract 3.1). Never anything else, and the key is still on file.
+    if (row?.llm_api_key !== 'sk-e2e-legacy') {
+      expect(row?.llm_api_key).toMatch(/^pdenc:1:[1-9][0-9]*:[A-Za-z0-9_-]+$/);
+      expect(row?.llm_api_key).not.toContain('sk-e2e-legacy');
+    }
+    expect(await (await api.get('/api/settings')).json()).toMatchObject({
+      llmProvider: 'unsupported',
+      llmUnboundApiKeySet: true,
+    });
   });
 
   for (const clear of [true, false]) {
