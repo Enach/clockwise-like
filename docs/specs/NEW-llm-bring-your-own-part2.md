@@ -13,6 +13,11 @@
   every finding ("Revision 1", "Revision 2", "Revision 2.1"). Sections 2
   to 9 are the live text.
 - **Author**: spec-author
+- **Amended by**: `docs/specs/PAC-87.md` (owner answers OQ-P2-1 and OQ-P2-2,
+  2026-11-01). Its §3 replaces this file's §3.1 table (rows 5, 9, 10), the
+  §3.4 rules on when a member is asked again and when a confirmation ends,
+  and P2-AC-18, -22, -23, -24, -26, -29, -36 and -37 as its §4.0 maps them.
+  Where the two disagree, PAC-87 wins.
 - **Supersedes**: the parent spec's "Part 2" acceptance criteria (AC-22 to
   AC-31, AC-36, AC-38, AC-41 and the Part 2 rows of AC-40) and the Part 2
   clauses of its §3. They were written before the owner answered OQ-1, OQ-7
