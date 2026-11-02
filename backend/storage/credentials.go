@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -114,7 +115,13 @@ func LoadZoomCredential(db DBTX, userID uuid.UUID) (*ZoomCredential, error) {
 	if err != nil {
 		return nil, err
 	}
-	return DecodeZoomCredential(raw.String)
+	// PAC-84: a decryption failure is returned as itself (errors.Is
+	// secretbox.ErrDecrypt), never as "not stored".
+	plain, err := openSecret(bindSettings(SettingsColZoomTokens, userID), raw.String, userID)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeZoomCredential(plain)
 }
 
 // SaveZoomCredential stores userID's Zoom credential from a (re)connect, makes
@@ -137,15 +144,23 @@ func SaveZoomCredential(db DBTX, userID uuid.UUID, c ZoomCredential) error {
 		if err := tx.QueryRow(`SELECT COALESCE(zoom_tokens, '') FROM settings WHERE user_id = $1 FOR UPDATE`, userID).Scan(&raw); err != nil {
 			return err
 		}
-		if old, err := DecodeZoomCredential(raw); err == nil {
-			c.RefreshToken = old.RefreshToken
+		// An old value that cannot be decrypted keeps nothing (a reconnect
+		// replaces it, AC-16c b).
+		if plain, err := secretbox.Open(bindSettings(SettingsColZoomTokens, userID), raw); err == nil {
+			if old, err := DecodeZoomCredential(plain); err == nil {
+				c.RefreshToken = old.RefreshToken
+			}
 		}
 	}
 	data, err := encodeZoomCredential(c)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE settings SET zoom_tokens = $2, conferencing_provider = 'zoom' WHERE user_id = $1`, userID, data); err != nil {
+	sealed, err := secretbox.Seal(bindSettings(SettingsColZoomTokens, userID), data)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE settings SET zoom_tokens = $2, conferencing_provider = 'zoom' WHERE user_id = $1`, userID, sealed); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, CredentialZoom); err != nil {
@@ -162,16 +177,31 @@ func UpdateZoomCredential(db DBTX, userID uuid.UUID, c ZoomCredential) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`UPDATE settings SET zoom_tokens = $2 WHERE user_id = $1 AND COALESCE(zoom_tokens, '') <> ''`, userID, data)
+	sealed, err := secretbox.Seal(bindSettings(SettingsColZoomTokens, userID), data)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE settings SET zoom_tokens = $2 WHERE user_id = $1 AND COALESCE(zoom_tokens, '') <> ''`, userID, sealed)
 	return err
 }
 
 // UpdateMicrosoftCredential writes a renewed Microsoft record back for its
 // owner only, and only while a credential is still stored.
 func UpdateMicrosoftCredential(db DBTX, userID uuid.UUID, record string) error {
-	_, err := db.Exec(`UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1 AND COALESCE(microsoft_tokens, '') <> ''`, userID, record)
+	sealed, err := secretbox.Seal(bindSettings(SettingsColMicrosoftTokens, userID), record)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1 AND COALESCE(microsoft_tokens, '') <> ''`, userID, sealed)
 	return err
 }
+
+// UndecryptableRemoved is what RemoveZoomCredential and
+// RemoveMicrosoftCredential return when the removed value was stored but
+// could not be decrypted (PAC-84 AC-16c c): it is non-empty (something was
+// removed) and decodes as no credential, so the Zoom revocation reports
+// "unconfirmed" and no provider call is made with it.
+const UndecryptableRemoved = "\x00undecryptable"
 
 // RemoveZoomCredential is step 1 of a Zoom disconnect (PAC-67): in one
 // transaction it reads the stored value, removes it whether or not it decodes,
@@ -222,5 +252,12 @@ func removeCredential(db DBTX, userID uuid.UUID, column, update, provider string
 	if strings.TrimSpace(raw.String) == "" {
 		return "", nil
 	}
-	return raw.String, nil
+	plain, err := openSecret(bindSettings(column, userID), raw.String, userID)
+	if err != nil {
+		return UndecryptableRemoved, nil
+	}
+	if strings.TrimSpace(plain) == "" {
+		return "", nil
+	}
+	return plain, nil
 }

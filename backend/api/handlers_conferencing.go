@@ -16,6 +16,7 @@ import (
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/conference"
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
@@ -48,6 +49,12 @@ func (f defaultConferenceProviderFactory) ProviderForRequest(ctx context.Context
 	userID := auth.UserIDFromContext(ctx)
 	switch providerName {
 	case "zoom":
+		// PAC-84 (contract 1, K-2): an undecryptable credential is the
+		// documented 500 (not in conferenceRefusal's closed list), checked
+		// before the refusals.
+		if err := settings.SecretErr(storage.SettingsColZoomTokens); err != nil {
+			return nil, err
+		}
 		if strings.TrimSpace(settings.ZoomTokens) == "" {
 			return nil, conference.ErrZoomNotConnected
 		}
@@ -58,6 +65,9 @@ func (f defaultConferenceProviderFactory) ProviderForRequest(ctx context.Context
 		return &conference.ZoomProvider{Tokens: auth.ZoomTokenSource(ctx, f.db, conference.ZoomOAuthConfigFromEnv(), userID, cred)}, nil
 	case "teams":
 		msToken, tokenErr := auth.LoadMicrosoftToken(f.db, userID)
+		if errors.Is(tokenErr, secretbox.ErrDecrypt) {
+			return nil, tokenErr
+		}
 		if tokenErr != nil || msToken == nil {
 			return nil, errTeamsNotConnected
 		}

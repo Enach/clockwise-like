@@ -19,6 +19,9 @@ var (
 func NewProvider(s *storage.Settings) (Provider, error) {
 	switch s.ConferencingProvider {
 	case "zoom":
+		if err := s.SecretErr(storage.SettingsColZoomTokens); err != nil {
+			return nil, err // PAC-84: a server failure, not a refusal
+		}
 		if s.ZoomTokens == "" {
 			return nil, ErrZoomNotConnected
 		}

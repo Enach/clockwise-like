@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -18,6 +19,10 @@ type PersonalCalendar struct {
 	Enabled         bool       `json:"enabled"`
 	LastSyncedAt    *time.Time `json:"-"`
 	CreatedAt       time.Time  `json:"createdAt"`
+	// SecretErr is the decryption failure of URL or CredentialsJSON, if any
+	// (PAC-84 contract 6.2): the read never fails on it; reading the
+	// calendar's events does.
+	SecretErr error `json:"-"`
 }
 
 type PersonalBlocker struct {
@@ -29,55 +34,74 @@ type PersonalBlocker struct {
 }
 
 func ListPersonalCalendars(db DBTX) ([]PersonalCalendar, error) {
-	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at FROM personal_calendars ORDER BY id`)
+	return queryPersonalCalendars(db, `SELECT `+personalCalendarCols+` FROM personal_calendars ORDER BY id`)
+}
+
+func queryPersonalCalendars(db DBTX, q string, args ...any) ([]PersonalCalendar, error) {
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var cals []PersonalCalendar
 	for rows.Next() {
-		var c PersonalCalendar
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
+		c, err := scanPersonalCalendar(rows)
+		if err != nil {
 			return nil, err
 		}
-		cals = append(cals, c)
+		cals = append(cals, *c)
 	}
 	return cals, rows.Err()
 }
 
 func GetPersonalCalendar(db DBTX, id int64) (*PersonalCalendar, error) {
-	row := db.QueryRow(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at FROM personal_calendars WHERE id = $1`, id)
-	var c PersonalCalendar
-	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return scanPersonalCalendar(db.QueryRow(`SELECT `+personalCalendarCols+` FROM personal_calendars WHERE id = $1`, id))
 }
 
+// InsertPersonalCalendar stores c. The id is taken first, so the secrets are
+// sealed for this row in the one insert (PAC-84 contract 3.3).
 func InsertPersonalCalendar(db DBTX, c *PersonalCalendar) (int64, error) {
 	var id int64
-	err := db.QueryRow(
-		`INSERT INTO personal_calendars (user_id, provider, name, url, credentials_json, enabled) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		c.UserID, c.Provider, c.Name, c.URL, c.CredentialsJSON, c.Enabled,
+	if err := db.QueryRow(`SELECT nextval(pg_get_serial_sequence('personal_calendars', 'id'))`).Scan(&id); err != nil {
+		return 0, err
+	}
+	url, creds, err := sealPersonal(id, c.URL, c.CredentialsJSON)
+	if err != nil {
+		return 0, err
+	}
+	err = db.QueryRow(
+		`INSERT INTO personal_calendars (id, user_id, provider, name, url, credentials_json, enabled) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		id, c.UserID, c.Provider, c.Name, url, creds, c.Enabled,
 	).Scan(&id)
 	return id, err
 }
 
+// UpdatePersonalCalendar changes the given fields of userID's calendar id.
+// A url left out (nil) keeps the stored text byte-identical (PAC-84 K-10);
+// a url given is sealed for this row.
 func UpdatePersonalCalendar(db DBTX, id int64, userID uuid.UUID, name, url *string, enabled *bool) (*PersonalCalendar, error) {
+	var sealedURL *string
+	if url != nil {
+		s, err := secretbox.Seal(bindPersonal("url", id), *url)
+		if err != nil {
+			return nil, err
+		}
+		sealedURL = &s
+	}
 	row := db.QueryRow(`
 		UPDATE personal_calendars SET
 			name = COALESCE($3, name), url = COALESCE($4, url), enabled = COALESCE($5, enabled)
 		WHERE id = $1 AND user_id = $2
-		RETURNING id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at`,
-		id, userID, name, url, enabled)
-	var c PersonalCalendar
-	if err := row.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
+		RETURNING `+personalCalendarCols,
+		id, userID, name, sealedURL, enabled)
+	c, err := scanPersonalCalendar(row)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &c, nil
+	return c, nil
 }
 
 func DeletePersonalCalendarForUser(db DBTX, id int64, userID uuid.UUID) (bool, error) {
@@ -163,21 +187,7 @@ func ListPersonalCalendarsByUser(db DBTX, userID uuid.UUID) ([]PersonalCalendar,
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("ListPersonalCalendarsByUser: userID is required")
 	}
-	rows, err := db.Query(`SELECT id, user_id, provider, name, url, credentials_json, enabled, last_synced_at, created_at
-		FROM personal_calendars WHERE user_id = $1 ORDER BY id`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var cals []PersonalCalendar
-	for rows.Next() {
-		var c PersonalCalendar
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Provider, &c.Name, &c.URL, &c.CredentialsJSON, &c.Enabled, &c.LastSyncedAt, &c.CreatedAt); err != nil {
-			return nil, err
-		}
-		cals = append(cals, c)
-	}
-	return cals, rows.Err()
+	return queryPersonalCalendars(db, `SELECT `+personalCalendarCols+` FROM personal_calendars WHERE user_id = $1 ORDER BY id`, userID)
 }
 
 // ListUsersWithPersonalCalendars returns the distinct user IDs that own at

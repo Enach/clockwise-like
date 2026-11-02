@@ -77,8 +77,8 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	}
 
 	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
-	if err != nil {
-		return // user has no Slack connection
+	if err != nil || conn.TokenErr != nil {
+		return // no Slack connection, or (PAC-84 AC-17) its token cannot be decrypted: skip this user
 	}
 
 	loc, err := time.LoadLocation(settings.Timezone)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -24,6 +25,13 @@ type SSOProvider struct {
 	SAMLCert         string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	// SecretErr is the decryption failure of OIDCClientSecret or SAMLCert,
+	// if any (PAC-84): the read never fails on it; SSO sign-in answers its
+	// documented 500 when it needs the secret.
+	SecretErr error
+
+	rawClientSecret, rawSAMLCert string // the stored text, as read
+	clientSecretErr              error
 }
 
 const ssoProviderCols = `id, domain, provider_name, provider_type, enabled,
@@ -42,7 +50,11 @@ func scanSSOProvider(s interface{ Scan(...any) error }) (*SSOProvider, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	return &p, err
+	if err != nil {
+		return &p, err
+	}
+	p.openSecrets()
+	return &p, nil
 }
 
 // GetSSOProviderByDomain returns the enabled provider for domain, compared
@@ -71,16 +83,28 @@ func GetSSOProviderByDomainAnyState(db DBTX, domain string) (*SSOProvider, error
 // UpsertSSOProvider writes p, keyed on the lower-cased domain, without
 // recording it. The admin API writes through SaveOIDCProviderRecorded.
 func UpsertSSOProvider(db DBTX, p *SSOProvider) (*SSOProvider, error) {
-	stored, _, err := upsertSSOProvider(context.Background(), db, p)
-	return stored, err
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stored, _, err := upsertSSOProvider(ctx, tx, p)
+	if err != nil {
+		return nil, err
+	}
+	return stored, tx.Commit()
 }
 
+// upsertSSOProviderSQL writes the row with empty secrets; upsertSSOProvider
+// then seals them for the row's id in the same transaction (PAC-84 contract
+// 3.3: the id is assigned by the insert, or is the conflict row's).
 const upsertSSOProviderSQL = `
 		INSERT INTO sso_providers
 			(domain, provider_name, provider_type, enabled,
 			 oidc_issuer, oidc_client_id, oidc_client_secret,
 			 saml_entry_point, saml_issuer, saml_cert)
-		VALUES (lower($1),$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		VALUES (lower($1),$2,$3,$4,$5,$6,'',$7,$8,'')
 		ON CONFLICT ((lower(domain))) DO UPDATE SET
 			provider_name      = EXCLUDED.provider_name,
 			provider_type      = EXCLUDED.provider_type,
@@ -95,13 +119,15 @@ const upsertSSOProviderSQL = `
 		RETURNING ` + ssoProviderCols + `, (xmax = 0) AS inserted`
 
 // upsertSSOProvider reports whether the row was inserted (true) or updated.
+// q must be a transaction: the row and its sealed secrets are written by two
+// statements.
 func upsertSSOProvider(ctx context.Context, q queryRower, p *SSOProvider) (*SSOProvider, bool, error) {
 	var out SSOProvider
 	var inserted bool
 	err := q.QueryRowContext(ctx, upsertSSOProviderSQL,
 		strings.TrimSpace(p.Domain), p.ProviderName, p.ProviderType, p.Enabled,
-		p.OIDCIssuer, p.OIDCClientID, p.OIDCClientSecret,
-		p.SAMLEntryPoint, p.SAMLIssuer, p.SAMLCert,
+		p.OIDCIssuer, p.OIDCClientID,
+		p.SAMLEntryPoint, p.SAMLIssuer,
 	).Scan(
 		&out.ID, &out.Domain, &out.ProviderName, &out.ProviderType, &out.Enabled,
 		&out.OIDCIssuer, &out.OIDCClientID, &out.OIDCClientSecret,
@@ -109,6 +135,9 @@ func upsertSSOProvider(ctx context.Context, q queryRower, p *SSOProvider) (*SSOP
 		&out.CreatedAt, &out.UpdatedAt, &inserted,
 	)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := writeSSOSecrets(ctx, q, &out, p.OIDCClientSecret, p.SAMLCert, nil); err != nil {
 		return nil, false, err
 	}
 	return &out, inserted, nil
@@ -135,7 +164,7 @@ var ErrSSOClientSecretEmpty = errors.New("oidc_client_secret must not be empty")
 // The comparison is byte for byte: a change of case or a trailing slash is a
 // change (PAC-22 spec D-13).
 func KeepableClientSecret(current *SSOProvider, issuer, clientID string) error {
-	if current == nil || current.ProviderType != "oidc" || current.OIDCClientSecret == "" {
+	if current == nil || current.ProviderType != "oidc" || !current.HasClientSecret() {
 		return ErrSSOClientSecretRequired
 	}
 	if current.OIDCIssuer != issuer || current.OIDCClientID != clientID {
@@ -196,12 +225,18 @@ func saveOIDCProvider(ctx context.Context, tx *sql.Tx, w OIDCProviderWrite) (*SS
 		return nil, false, err
 	}
 
+	// PAC-84: a kept secret is written back as the text stored, byte for
+	// byte (same row id, so it stays valid, K-10); a supplied one is sealed
+	// for the row's id.
 	var secret string
+	var keepRaw *string
 	if w.ClientSecret == nil {
 		if err := KeepableClientSecret(current, w.Issuer, w.ClientID); err != nil {
 			return nil, false, err
 		}
 		secret = current.OIDCClientSecret
+		raw := current.rawClientSecret
+		keepRaw = &raw
 	} else {
 		if *w.ClientSecret == "" {
 			return nil, false, ErrSSOClientSecretEmpty
@@ -212,6 +247,12 @@ func saveOIDCProvider(ctx context.Context, tx *sql.Tx, w OIDCProviderWrite) (*SS
 	var saved *SSOProvider
 	inserted := false
 	if current != nil {
+		storedSecret := ""
+		if keepRaw != nil {
+			storedSecret = *keepRaw
+		} else if storedSecret, err = secretbox.Seal(bindSSO("oidc_client_secret", current.ID), secret); err != nil {
+			return nil, false, err
+		}
 		saved, err = scanSSOProvider(tx.QueryRowContext(ctx, `
 			UPDATE sso_providers SET
 				domain             = lower(domain),
@@ -226,19 +267,20 @@ func saveOIDCProvider(ctx context.Context, tx *sql.Tx, w OIDCProviderWrite) (*SS
 				updated_at         = NOW()
 			WHERE id = $1
 			RETURNING `+ssoProviderCols,
-			current.ID, w.ProviderName, w.Issuer, w.ClientID, secret))
+			current.ID, w.ProviderName, w.Issuer, w.ClientID, storedSecret))
 	} else {
 		// No row was there to lock. A row inserted concurrently since is
 		// replaced as any replace is, and keeps its own active state; this
 		// path always carries a supplied secret (a left-out one was refused
-		// above), so no empty secret can be stored.
+		// above), so no empty secret can be stored. The row is written with
+		// an empty secret, then the secret sealed for its id (PAC-84).
 		var out SSOProvider
 		err = tx.QueryRowContext(ctx, `
 			INSERT INTO sso_providers
 				(domain, provider_name, provider_type, enabled,
 				 oidc_issuer, oidc_client_id, oidc_client_secret,
 				 saml_entry_point, saml_issuer, saml_cert)
-			VALUES ($1, $2, 'oidc', true, $3, $4, $5, '', '', '')
+			VALUES ($1, $2, 'oidc', true, $3, $4, '', '', '', '')
 			ON CONFLICT ((lower(domain))) DO UPDATE SET
 				provider_name      = EXCLUDED.provider_name,
 				provider_type      = EXCLUDED.provider_type,
@@ -250,11 +292,14 @@ func saveOIDCProvider(ctx context.Context, tx *sql.Tx, w OIDCProviderWrite) (*SS
 				saml_cert          = '',
 				updated_at         = NOW()
 			RETURNING `+ssoProviderCols+`, (xmax = 0) AS inserted`,
-			domain, w.ProviderName, w.Issuer, w.ClientID, secret).Scan(
+			domain, w.ProviderName, w.Issuer, w.ClientID).Scan(
 			&out.ID, &out.Domain, &out.ProviderName, &out.ProviderType, &out.Enabled,
 			&out.OIDCIssuer, &out.OIDCClientID, &out.OIDCClientSecret,
 			&out.SAMLEntryPoint, &out.SAMLIssuer, &out.SAMLCert,
 			&out.CreatedAt, &out.UpdatedAt, &inserted)
+		if err == nil {
+			err = writeSSOSecrets(ctx, tx, &out, secret, "", nil)
+		}
 		if err == nil {
 			saved = &out
 		}

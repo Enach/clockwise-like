@@ -97,7 +97,7 @@ func (h *integrationsHandlers) slackStatus(w http.ResponseWriter, r *http.Reques
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	conn, err := storage.GetWorkspaceConnection(h.db, userID, "slack")
-	if err != nil {
+	if err != nil || conn.TokenErr != nil { // PAC-84 AC-16b: an undecryptable token is not connected
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
 	}
@@ -235,7 +235,7 @@ func (h *integrationsHandlers) notionStatus(w http.ResponseWriter, r *http.Reque
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	conn, err := storage.GetWorkspaceConnection(h.db, userID, "notion")
-	if err != nil {
+	if err != nil || conn.TokenErr != nil { // PAC-84 AC-16b: an undecryptable token is not connected
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
 	}

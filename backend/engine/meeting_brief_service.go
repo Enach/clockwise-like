@@ -84,12 +84,12 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 	terms := buildSearchTerms(event)
 
 	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
-	if err == nil {
+	if err == nil && conn.TokenErr == nil { // PAC-84: skip an undecryptable token
 		brief.SlackResults, _ = fetchSlackMessages(ctx, conn.BotToken, terms)
 	}
 
 	notionConn, err := storage.GetWorkspaceConnection(s.DB, userID, "notion")
-	if err == nil {
+	if err == nil && notionConn.TokenErr == nil {
 		brief.NotionResults, _ = fetchNotionPages(ctx, notionConn.AccessToken, terms)
 	}
 

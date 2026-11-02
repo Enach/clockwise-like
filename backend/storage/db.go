@@ -10,17 +10,26 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-func Open(dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
+// Open opens the backend's pool (application_name "paceday-backend",
+// PAC-84 contract 4.3) and applies the migrations.
+func Open(dsn string) (*sql.DB, error) { return OpenAs(dsn, AppBackend) }
+
+// OpenAs is Open with the connections named appName in pg_stat_activity
+// (the operator CLI names itself after its subcommand).
+func OpenAs(dsn, appName string) (*sql.DB, error) {
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
+	cfg.RuntimeParams["application_name"] = appName
+	db := stdlib.OpenDB(*cfg)
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}

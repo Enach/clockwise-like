@@ -141,6 +141,14 @@ func run() int {
 	}
 	api.SetPublicBookingLimits(bookLimit, slotsLimit)
 
+	// PAC-84 (contract 5.3 step 2): the encryption keys are decided before
+	// the database is opened, so a missing or malformed key refuses on a
+	// fresh database as on an encrypted one.
+	keyCfg, err := config.DecideEncryptionKeys(os.Getenv)
+	if err != nil {
+		log.Fatal(config.EncryptionRefusal("refusing to start: ", err))
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		log.Fatal("DATABASE_URL environment variable is required")
@@ -156,6 +164,13 @@ func run() int {
 		log.Printf("WARNING: %s", n)
 	}
 	storage.ApplyPool(db, pool.MaxOpen, pool.MaxIdle, pool.MaxLifetime, pool.MaxIdleTime)
+
+	// PAC-84 (contract 5.3 step 4): key load before any cron, conversion or
+	// listener. Any failure refuses to start.
+	enc, err := startEncryption(context.Background(), db, keyCfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	oauthConfig := auth.NewGoogleOAuthConfig(
 		os.Getenv("GOOGLE_CLIENT_ID"),
@@ -267,11 +282,16 @@ func run() int {
 	go func() { serveErr <- srv.ListenAndServe() }()
 	log.Printf("server listening on :%s", port)
 
+	// PAC-84 (contract 5.3 step 7): after the listener is open, the keyring
+	// refresher and the automatic conversion.
+	stopEncryption := enc.startBackground()
+
 	stopScheduling := func() {
 		focusCron.Stop()
 		for _, c := range []*cron.Cron{personalCron, autoDeclineCron, recapCron, mgrCron} {
 			c.Stop() // no new run; a running one is a tracked unit
 		}
+		stopEncryption()
 	}
 	code := 0
 	select {
@@ -284,7 +304,13 @@ func run() int {
 		if !lifecycle.Default().Shutdown(srv, lifecycle.DefaultPhases, stopScheduling, cancelRequests) {
 			code = 1
 		}
+	case <-enc.fatal:
+		// Contract 4.3: the active data key is gone or a destructive
+		// operator command holds the lock; drain and exit 1.
+		lifecycle.Default().Shutdown(srv, lifecycle.DefaultPhases, stopScheduling, cancelRequests)
+		code = 1
 	}
+	enc.removeHeartbeat()
 	// The pool closes only after every unit returned or was abandoned.
 	if err := db.Close(); err != nil {
 		log.Printf("shutdown: close database pool: %v", err)

@@ -91,6 +91,12 @@ services:
       # REQUIRED — main.go log.Fatal's without it. This exact value is what
       # e2e/auth.ts signs session JWTs with. Keep the two in sync.
       JWT_SECRET: ${E2E_JWT_SECRET:-e2e-only-jwt-secret-not-for-any-real-deployment}
+      # PAC-84: committed TEST-ONLY encryption key (32 ASCII bytes
+      # "paceday-e2e-test-key-NOT-SECRET!"). The backend refuses these bytes
+      # unless PACEDAY_ENCRYPTION_ALLOW_TEST_KEY is exactly "true", which only
+      # this stack and e2e/tests/startup.spec.ts set.
+      PACEDAY_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:-e2e-test:cGFjZWRheS1lMmUtdGVzdC1rZXktTk9ULVNFQ1JFVCE=}
+      PACEDAY_ENCRYPTION_ALLOW_TEST_KEY: "true"
       SESSION_SECRET: e2e-only-session-secret
       # Same-origin through nginx, so CORS must not be restrictive.
       ALLOWED_ORIGIN: "*"

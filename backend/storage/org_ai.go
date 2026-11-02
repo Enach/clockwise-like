@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/google/uuid"
 )
 
@@ -54,7 +55,18 @@ type OrgAIConfig struct {
 	PersonalKeysAllowed bool
 	Version             int64
 	UpdatedAt           *time.Time
+
+	// PAC-84: the stored api_key text as read, and its decryption failure
+	// (APIKey is then ""). Presence is the stored text being non-empty.
+	rawKey string
+	keyErr error
 }
+
+// KeyErr is the decryption failure of the stored key, nil when it opened.
+func (c OrgAIConfig) KeyErr() error { return c.keyErr }
+
+// KeyPresent reports a stored key (D-3: no decryption needed).
+func (c OrgAIConfig) KeyPresent() bool { return c.APIKey != "" || c.keyErr != nil }
 
 // defaultOrgAIConfig is what an organisation with no stored row reads as.
 func defaultOrgAIConfig() OrgAIConfig { return OrgAIConfig{PersonalKeysAllowed: true} }
@@ -63,7 +75,7 @@ func defaultOrgAIConfig() OrgAIConfig { return OrgAIConfig{PersonalKeysAllowed: 
 // provider, a key, and for azure_openai an endpoint and a deployment (spec
 // §3.1 "Complete"; contract OrganizationAIConfiguration.configured).
 func (c OrgAIConfig) Complete() bool {
-	if c.Provider == "" || c.APIKey == "" {
+	if c.Provider == "" || !c.KeyPresent() {
 		return false
 	}
 	if c.Provider == "azure_openai" {
@@ -112,7 +124,7 @@ func (s *orgAIScan) dest() []any {
 		&s.azureAPIVersion, &s.awsRegion, &s.apiKey, &s.personalKeysAllowed, &s.version, &s.updatedAt}
 }
 
-func (s *orgAIScan) config() OrgAIConfig {
+func (s *orgAIScan) config(orgID uuid.UUID) OrgAIConfig {
 	if !s.version.Valid {
 		return defaultOrgAIConfig()
 	}
@@ -121,6 +133,13 @@ func (s *orgAIScan) config() OrgAIConfig {
 		AzureEndpoint: s.azureEndpoint.String, AzureDeployment: s.azureDeployment.String,
 		AzureAPIVersion: s.azureAPIVersion.String, AWSRegion: s.awsRegion.String,
 		APIKey: s.apiKey.String, PersonalKeysAllowed: s.personalKeysAllowed.Bool, Version: s.version.Int64,
+	}
+	// PAC-84: opened on its own; a failure never fails the read (6.2).
+	c.rawKey = s.apiKey.String
+	if plain, err := openSecret(bindOrgAI(orgID), c.rawKey, uuid.Nil); err != nil {
+		c.APIKey, c.keyErr = "", err
+	} else {
+		c.APIKey = plain
 	}
 	if s.updatedAt.Valid {
 		t := s.updatedAt.Time.UTC()
@@ -154,7 +173,7 @@ func ReadOrgAIState(ctx context.Context, db *sql.DB, userID uuid.UUID) (OrgAISta
 		o := org.UUID
 		st.OrgID = &o
 	}
-	st.Config = sc.config()
+	st.Config = sc.config(org.UUID)
 	st.ConfirmedVersion = confirmed.Int64
 	return st, nil
 }
@@ -179,7 +198,7 @@ func getOrgAIConfig(ctx context.Context, q rowQuerier, orgID uuid.UUID, lock str
 	if err != nil {
 		return OrgAIConfig{}, err
 	}
-	return sc.config(), nil
+	return sc.config(orgID), nil
 }
 
 // OrgAIPatch is a change to the configuration as patchOrganizationAI's body
@@ -226,6 +245,9 @@ func (p OrgAIPatch) Merge(stored OrgAIConfig) (next OrgAIConfig, changed []strin
 	}
 	set(&next.Model, p.Model)
 	set(&next.APIKey, p.APIKey)
+	if p.APIKey != nil {
+		next.rawKey, next.keyErr = "", nil // PAC-84: replaced, sealed anew
+	}
 	set(&next.BaseURL, p.BaseURL)
 	set(&next.AzureEndpoint, p.AzureEndpoint)
 	set(&next.AzureDeployment, p.AzureDeployment)
@@ -256,7 +278,7 @@ func (p OrgAIPatch) Merge(stored OrgAIConfig) (next OrgAIConfig, changed []strin
 			}
 		}
 	}
-	keyWritten := p.APIKey != nil || (providerChanged && stored.APIKey != "")
+	keyWritten := p.APIKey != nil || (providerChanged && stored.KeyPresent())
 	if keyWritten {
 		changed = append(changed, OrgAIPropAPIKey)
 	}
@@ -410,6 +432,15 @@ func WriteOrgAIConfig(ctx context.Context, db *sql.DB, w OrgAIWrite) (OrgAIWrite
 	next, changed := w.Patch.Merge(stored)
 	now := w.Now.UTC()
 	next.UpdatedAt = &now
+	// PAC-84: a kept key is written back byte-identical (K-10); a new one
+	// is sealed for this organisation.
+	storedKey := next.rawKey
+	if next.keyErr == nil && (next.rawKey == "" || next.APIKey != stored.APIKey) {
+		if storedKey, err = secretbox.Seal(bindOrgAI(w.OrgID), next.APIKey); err != nil {
+			return OrgAIWriteOutcome{}, err
+		}
+		next.rawKey = storedKey
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE org_ai_configurations SET provider = $2, model = $3, base_url = $4,
 			azure_endpoint = $5, azure_deployment = $6, azure_api_version = $7, aws_region = $8,
@@ -417,7 +448,7 @@ func WriteOrgAIConfig(ctx context.Context, db *sql.DB, w OrgAIWrite) (OrgAIWrite
 			updated_at = $12, updated_by = $13
 		WHERE org_id = $1 AND configuration_version = $14`,
 		w.OrgID, next.Provider, next.Model, next.BaseURL, next.AzureEndpoint, next.AzureDeployment,
-		next.AzureAPIVersion, next.AWSRegion, next.APIKey, next.PersonalKeysAllowed, next.Version,
+		next.AzureAPIVersion, next.AWSRegion, storedKey, next.PersonalKeysAllowed, next.Version,
 		now, w.UserID, w.ExpectedVersion); err != nil {
 		return OrgAIWriteOutcome{}, err
 	}

@@ -196,6 +196,20 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 	if removeUnbound {
 		s.LLMUnboundAPIKey = ""
 	}
+	// PAC-84 (AC-16c b): a secret the body sets, an empty value included,
+	// replaces what is stored even when that could not be decrypted; every
+	// other secret is written back byte-identical by the save.
+	if newKey != nil {
+		if col := storage.LLMKeyColumn(s.LLMProvider); col != "" {
+			s.MarkSecretReplaced(col)
+		}
+	}
+	if removeUnbound {
+		s.MarkSecretReplaced(storage.SettingsColLLMUnboundKey)
+	}
+	if _, ok := fields["webcalUrl"]; ok {
+		s.MarkSecretReplaced(storage.SettingsColWebcalURL)
+	}
 	// PAC-73 Part 2 (spec §3.4, P2-AC-36): storing "off" or one of the five
 	// providers ends the caller's organisation confirmation, whether or not
 	// the stored choice changes; storing "organization" records none. A

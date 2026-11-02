@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Enach/paceday/backend/internal/outbound"
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -131,7 +132,13 @@ func (s *renewingSource) Token() (*oauth2.Token, error) {
 
 	// Another action may have renewed (and rotated) it meanwhile, or the owner
 	// may have reconnected: the stored credential is the latest one.
-	if latest, err := s.store.load(); err == nil && latest != nil {
+	latest, lerr := s.store.load()
+	if errors.Is(lerr, secretbox.ErrDecrypt) {
+		// PAC-84 (AC-16): never renew with, or classify, a credential that
+		// cannot be decrypted: no provider call, no loss recorded.
+		return nil, lerr
+	}
+	if lerr == nil && latest != nil {
 		s.cur = latest
 		if s.usable(latest) {
 			return copyToken(latest), nil
