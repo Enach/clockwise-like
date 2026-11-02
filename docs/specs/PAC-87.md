@@ -126,7 +126,7 @@ overruled:
   (`src/api/client.ts:864-875`, `settingsPatchBody`), but sends the whole
   document when it has no previous copy; the contract's settings description
   says the same ("Writing `""` or a provider deletes the caller's
-  organisation confirmation").
+  organisation confirmation", `scheduling.yaml:3372-3374`).
 - Under OQ-P2-2 this rule would silently undo a moved member's confirmation
   every time a whole settings document carrying their (unchanged) own
   provider is saved. §3.4 decides it.
@@ -193,11 +193,18 @@ question.
   starts a new consent period that no earlier confirmation can match, ever
   (the "never reused" rule of Part 2 P2-D17 applies to consent periods too).
 - **Accepted consequence (owner's explicit answer, recorded so nobody
-  re-litigates it):** a new key or Azure endpoint may belong to a different
-  provider account with different administrators. The consent notice names
-  the provider, not the account, and the owner has decided that such a change
-  does not re-ask. Nothing in this spec warns members of it; the admin view
-  says it (§3.6).
+  re-litigates it):** consent is to the provider, not to a provider account,
+  an endpoint or a gateway. A new key, a new Azure endpoint or deployment, or
+  a new Bedrock region may belong to a **different account of the same
+  provider, with different administrators**; a new gateway (an
+  operator-approved OpenAI-compatible address, owner OQ-B6) may be **run by a
+  different company**. In each case those administrators can access members'
+  data from the next request on, and **members are not asked again**. The
+  owner's answer names exactly these changes ("a key rotation or a
+  destination (gateway/endpoint) change does NOT require members to confirm
+  again"), so this is the answer, not an over-reading of it. The consent
+  notice names the provider only (as shipped). Members are not warned; the
+  administrator making such a change is told before saving (§3.6).
 - **What a confirmed request sends.** A request decided on the
   organisation's configuration sends the provider, key, destination and model
   of one consistent read of the configuration, and only if that read's
@@ -212,7 +219,23 @@ question.
   instead) only when the provider has changed since it was shown, or the
   configuration is not complete. A key or destination change between showing
   and confirming does not refuse it: the member agreed to the provider, which
-  is what the notice showed. Confirming twice is harmless.
+  is what the notice showed. Confirming twice is harmless. "The provider has
+  changed since it was shown" includes P87-D1's cases (a removal and set-up
+  again of the same provider, P → Q → P): a confirmation of anything shown
+  before the current consent period began is refused. The check and the
+  record are one atomic step against the configuration as stored at that
+  moment (as today, `org_ai.go:520-548`): an administrator's provider change
+  can never land between them and leave a confirmation recorded for the new
+  provider that the member was not shown.
+- **What the server must store to decide this.** Whatever the confirmation
+  names, the server must be able to tell, from what it stores, whether a
+  provider change happened between the state the member was shown and the
+  current one — comparing the provider shown with the current provider is
+  **not** enough (P → Q → P has the same provider at both ends). The
+  stored consent marker and the configuration it belongs to must be read in
+  the same single read that decides a request (§2.1, `ReadOrgAIState`), so a
+  request can never pair one configuration with another configuration's
+  consent marker.
 
 ### 3.2 The decision table (replaces Part 2 §3.1's table)
 
@@ -271,8 +294,23 @@ secrets to redact). A probe that names nothing, for a member in row 9, tests
 the organisation's configuration as the member's requests use it and does not
 carry the member's stored model; a probe that names a provider or carries a
 key is still answered "personal keys are not allowed" (Part 2 §3.5,
-unchanged). Brief refresh in row 10 changes nothing and fetches nothing (Part
-2 P2-AC-27, extended to the new row 10).
+unchanged); a probe that names nothing and carries only a model is answered
+as in row 4 ("llmModel and llmApiKey cannot be used with your organisation's
+AI configuration", `llm_factory.go:156`, `:213-214`), and nothing is sent.
+Brief refresh in row 10 changes nothing and fetches nothing (Part 2 P2-AC-27,
+extended to the new row 10).
+
+**Members' own keys on the organisation path (PAC-84).** Row 9 needs nothing
+from the member's own provider settings. It must not decrypt anything that
+a row-4 request does not already decrypt: today every AI request loads the
+member's settings, which opens every stored key for redaction
+(`storage/settings_secrets.go:68-77`, `llm_factory.go:206`, `:226`); row 9
+uses exactly those plaintexts for redaction and nothing else. A member key
+that cannot be decrypted (PAC-84 `SecretErr`) does **not** stop row 9 and is
+not reported to the member as their key's failure (in row 2 it is,
+`llm_factory.go:240-242`); it cannot be redacted because its plaintext is
+unknown, and it is never sent. The organisation's key failing to decrypt in
+row 9 gives row 4's answer for that case (`llm_factory.go:257-259`).
 
 ### 3.4 When a confirmation ends (replaces Part 2 §3.4 "Choosing one's own provider, or off, ends the confirmation")
 
@@ -290,6 +328,16 @@ unchanged). Brief refresh in row 10 changes nothing and fetches nothing (Part
   confirmation is still the member's own confirmation (Part 2 §3.4, "No path
   but the confirmation operation records one").
 - Storing "follow my organisation" still records nothing.
+- "Changes" is decided against the choice stored when the write is applied,
+  not against a copy the client or handler read earlier. A member's own
+  confirmation racing with their own settings write that changes the choice
+  must end in one of the two orders: either the confirmation is recorded and
+  then ended by the change, or the change is stored and then the confirmation
+  is recorded (an explicit confirmation after the change). It must never end
+  with the changed choice stored, the confirmation recorded before it, and
+  the confirmation still live. (Today the handler deletes before it saves,
+  `handlers_settings.go:219-228`, with no lock against a concurrent
+  confirmation.)
 
 ### 3.5 Telling the member (wording)
 
@@ -329,7 +377,11 @@ organisation allows personal keys, and (d) offer to confirm. Suggested web text
     anything is sent to the new provider.";
   - a change of only the key and/or destination values: "Members are not
     asked to confirm again: they agreed to ‹Provider›, and this change keeps
-    it.";
+    it. If this key or address belongs to another ‹Provider› account or to a
+    gateway run by someone else, its administrators can access your members'
+    text and meeting details from the next request on." (wording not
+    contractual beyond: it says members are not asked again, and that a
+    different account or gateway operator gains access);
   - forbidding personal keys while the configuration is complete: "Members
     who use their own key will be asked once to confirm, then use your
     organisation's AI. Their own settings are kept and used again if you
@@ -343,13 +395,19 @@ organisation allows personal keys, and (d) offer to confirm. Suggested web text
   sentences).
 - The admin view's "Not allowed: members use the organisation's AI" becomes
   true; it may add "after confirming once".
+- `e2e/TESTIDS-REQUIRED.md:104` (`ai-use-org`, "rows 7 and 10") becomes row 7
+  only; row 10's confirm action uses the row-5 confirm test id
+  (`ai-org-confirm`) or a new one listed there.
 
 ### 3.7 Audit
 
 - Every organisation-AI change's operator record additionally says whether
   it starts a new consent period, i.e. whether members will be asked again
   (true exactly for a provider change, including removal and first setup).
-  Never a value or key (Part 2 P2-AC-6 unchanged).
+  Never a value or key (Part 2 P2-AC-6 unchanged). Factory-assumed,
+  **P87-D7** (not asked for; it lets an operator answer "when were members
+  last asked?" from the record alone). No API reads the record
+  (`scheduling.yaml:1178`), so no client is affected.
 - Confirmations and moves still write no operator record (§5).
 
 ### 3.8 Existing data at deploy
@@ -364,11 +422,17 @@ organisation allows personal keys, and (d) offer to confirm. Suggested web text
   **P87-D4**). Those members are asked once more — which the shipped
   behaviour would have done anyway.
 - Confirmations held by members whose stored choice is not "follow my
-  organisation" are ended at deploy (factory-assumed, **P87-D5**). Today such
-  a confirmation could only come from a direct call to the confirmation
-  operation and had no effect (§2.2); under OQ-P2-2 it would silently move the
-  member onto the organisation's AI without them ever being shown the row-10
-  text. Ending them means every moved member sees and confirms that text.
+  organisation" are ended at deploy (factory-assumed, **P87-D5**). Such a
+  confirmation exists only after a direct call to the confirmation operation,
+  or after the web's confirm-then-choose flow (`useOrganizationAI.ts:33-36`)
+  recorded the confirmation and the choice write then failed. It was given
+  under a rule where it could move nobody (§2.2, P2-AC-18); under OQ-P2-2 it
+  would move the member at deploy, with no request of theirs in between.
+  Ending it costs one more confirmation and nothing else (nothing is sent
+  meanwhile), so it is safe; it is not strictly required by consent (the
+  member did confirm that provider), and the owner may drop it without any
+  other change. After deploy the rule is uniform: a confirmation is of the
+  provider, whatever the member's stored choice when it was recorded.
 - No member's stored choice, keys or destination values are touched.
 - After deploy, a consent period never matches a confirmation number issued
   before it unless that confirmation was of the current configuration.
@@ -402,7 +466,9 @@ PAC87-AC-1. Given organisation A complete on provider P with key K1, and a
 follower M who confirmed A, when an administrator replaces the key with K2
 (including re-entering K1), then M's next parse is sent to P with K2 and M is
 not asked; M's settings read reports the organisation's configuration as
-configured. Today it answers row 5. [unit]
+configured. Today it answers row 5. [unit] [e2e: `e2e/tests/llm-org-ai.spec.ts`
+gains a key rotation after the member's confirmation, and the member's next
+parse is sent without a notice]
 
 PAC87-AC-2. Given the same M, when an administrator changes only a
 destination value — for OpenAI or Anthropic the gateway (set, change,
@@ -428,8 +494,13 @@ were shown, then the confirmation is accepted and M's next parse is sent with
 the current key. When instead the administrator changed the provider before
 M confirmed, then the confirmation is refused, nothing is recorded, the answer
 carries A's current configuration (naming the new provider), and M's next
-parse answers row 5. Given A not complete, a confirmation is refused and
-nothing is recorded (unchanged). [contract] [unit]
+parse answers row 5. When the administrator removed A and set it up again
+with P (or changed P → Q → P) before M confirmed, the confirmation of what M
+was shown is refused likewise (P87-D1). Given A not complete, a confirmation
+is refused and nothing is recorded (unchanged). With a test store that
+applies an administrator's provider change at each storage access the
+confirmation makes (one run per access), no run ends with a confirmation
+recorded that covers the new provider. [contract] [unit]
 
 PAC87-AC-6. Given M confirmed A on provider P at configuration state S1, and
 an administrator change to S2 stored after M's request began to be decided (a
@@ -460,7 +531,8 @@ settings write), then M2's next parse is sent with A's provider, key,
 destination and model, and the outgoing request contains neither K2, m2 nor
 g2; M2's settings read still reports OpenAI as the stored choice with a key on
 file, and its AI status reports the organisation's configuration as
-configured (row 9). Today the parse after confirming answers row 10. [unit]
+configured (row 9); the confirmation's own success answer carries that same
+row-9 status. Today the parse after confirming answers row 10. [unit]
 
 PAC87-AC-9. Given M2 in row 9, when an administrator allows personal keys,
 then M2's next parse carries K2 to OpenAI (via g2, with m2) with no action by
@@ -495,11 +567,13 @@ on A's configuration. When a settings write changes M2's stored choice to
 Anthropic, M2's confirmation is ended and the next parse answers row 10.
 [unit]
 
-PAC87-AC-14. Given M2 in row 9, when M2 probes naming OpenAI, or naming
-nothing with a key, or naming nothing with a model, then the answer is
-"personal keys are not allowed" naming the admin and nothing is sent; naming
-nothing and carrying neither, the probe tests A's configuration without M2's
-model. [unit]
+PAC87-AC-14. Given M2 in row 9 with stored model m2, when M2 probes naming
+OpenAI, or naming nothing with a key, then the answer is "personal keys are
+not allowed" naming the admin and nothing is sent; naming nothing with only a
+model, the answer is row 4's "cannot be used with your organisation's AI
+configuration" and nothing is sent; naming nothing and carrying neither, the
+probe is sent with A's provider, key, destination and model, and the outgoing
+request does not contain m2. [unit]
 
 ### 4.3 Wording and web
 
@@ -508,8 +582,9 @@ PAC87-AC-15. Given every not-configured sentence the server can give
 dialog opened from row 10, when a test reads each, then row 10's server
 sentence, the row 10 notice and the dialog contain "access", and none of the
 member-facing sentences contains "read", "reads" or "see" (whole words,
-case-insensitive). The admin form's four pre-save sentences of §3.6 contain
-none of those words either. [unit] [e2e]
+case-insensitive). The Settings line for a member in row 9 and the Settings
+note for a member in row 10 contain none of those words either, nor do the
+admin form's four pre-save sentences of §3.6. [unit] [e2e]
 
 PAC87-AC-16. Given a member stored on OpenAI in A, A complete and forbidding,
 when they use the natural-language bar, then the page shows the row 10
@@ -523,7 +598,7 @@ PAC87-AC-17. Given an administrator editing A's configuration in the web,
 when the form changes the provider (or removes it), then before saving the
 form shows that every member will be asked to confirm again; when it changes
 only the key and/or destination values, it shows that members are not asked
-again; when it forbids personal keys with A complete, it shows that members
+again and that another account or gateway operator would gain access; when it forbids personal keys with A complete, it shows that members
 on their own key will be asked once and keep their settings; when it forbids
 with A not complete, it shows the existing OQ-P2-3 warning. [unit]
 
@@ -538,10 +613,15 @@ is still sent without asking. After a later provider change, neither X's
 stored confirmation nor any confirmation issued before the migration
 matches. No member's stored choice or key differs before and after. [unit]
 
-PAC87-AC-19. Given the migration is reverted, when any follower or row-9
-member next parses, then they answer row 5 or row 10 and nothing is sent
-until they confirm again; no confirmation from before the revert is read as
-covering a configuration it did not confirm. [unit]
+PAC87-AC-19. Given, after the migration, follower M confirmed A at
+configuration state S1 and an administrator then rotated A's key (state S2,
+M still confirmed under §3.1), member M2 in row 9, and follower N whose
+confirmation was recorded at S2 itself, when the migration is reverted, then
+M's next parse answers row 5 and sends nothing, M2's answers row 10 and sends
+nothing; N either is sent on S2 or answers row 5 (both pass: the rollback may
+keep a confirmation recorded at the exact current state, or end every
+confirmation). No member's stored choice or key differs before and after the
+revert. [unit]
 
 PAC87-AC-20. Given one account per row of §3.2 (rows 1 to 11, row 9 now
 included), when each parses, refreshes a brief, runs the probe naming nothing
@@ -552,6 +632,22 @@ PAC87-AC-21. Given a stand-in backend whose parse answer is row 10's
 not-configured answer, when the MCP tool `clockwise_parse_command` is called,
 then it returns that sentence and reason unchanged; no MCP tool confirms.
 [contract]
+
+PAC87-AC-22. (PAC-84.) Given M2 in row 9 whose stored OpenAI key cannot be
+decrypted (wrong key binding in a test store), when M2 parses, then the parse
+is sent on A's configuration exactly as for a member whose key opens, and the
+answer does not mention M2's key. Given instead A's key cannot be decrypted,
+M2's parse gives row 4's answer for that case and sends nothing. A count of
+decryptions made while deciding M2's parse equals the count for a row-4
+follower with the same stored keys. [unit]
+
+PAC87-AC-23. Given member M on OpenAI in A (personal keys allowed, M
+confirmed while following, then chose OpenAI), with a test store that
+applies M's own confirmation at each storage access of M's settings write
+changing the choice to Anthropic (one run per access), then in no run does
+M end stored on Anthropic with a live confirmation recorded before the
+change; after A forbids personal keys, M answers row 10 in every run where
+M did not confirm after the change. [unit]
 
 ## 5. Explicitly out of scope
 
@@ -589,8 +685,10 @@ then it returns that sentence and reason unchanged; no MCP tool confirms.
 - No key in error text, logs, reports or operator records (P2-AC-39,
   `TestPAC73P2_NoKeyLeavesThroughProviderErrorText`).
 - PAC-84: the organisation's key and members' keys stay sealed; a kept key is
-  written back byte-identical (`org_ai.go:434-444`), and members' still-stored
-  keys in row 9 remain sealed and unread except for redaction.
+  written back byte-identical (`org_ai.go:434-444`); members' still-stored
+  keys in row 9 stay sealed at rest, are opened only by the settings load that
+  already opens them for every request (for redaction), and are never sent
+  (§3.3, PAC87-AC-22).
 - PAC-50 AC-27: an SSO grant is never spent on an organisation-AI change, and
   the reverse.
 
@@ -599,11 +697,16 @@ then it returns that sentence and reason unchanged; no MCP tool confirms.
 Reverting restores "any provider, key or destination change re-asks" and
 "forbidden own-provider members stay off". The data change at deploy is
 additive (a new consent-period marker per organisation, confirmations
-re-keyed on it). The down migration must not let a confirmation be read as
-covering a configuration it did not confirm; the simplest compliant down
-migration ends every stored confirmation, so every follower and moved member
-is asked once more after a rollback and nothing is sent before they confirm
-(PAC87-AC-19). It loses only confirmations (no user data, no keys, no stored
+re-keyed on it — the contract stage chooses the representation). The down
+migration must not let a confirmation be read by the reverted code as
+covering a configuration state it was not recorded at: a confirmation that
+survived a key rotation under §3.1, and every row-9 member's confirmation,
+must not count after the revert. Ending every stored confirmation is the
+simplest compliant down migration (every follower and moved member is asked
+once more and nothing is sent before they confirm); keeping only
+confirmations recorded at the exact current state is also compliant
+(PAC87-AC-19). Because a rollback asks members again, it is a visible event
+for every organisation using its AI; the release note says so. It loses only confirmations (no user data, no keys, no stored
 choices). Confirmations ended at deploy under P87-D5 are not restored by a
 rollback; they had no effect under the shipped rules either.
 
@@ -623,15 +726,20 @@ so overruling changes a test, not the design):
 | P87-D3 | Only a settings write that *changes* the stored choice to off or another provider ends the confirmation | otherwise unrelated saves undo the move and break "ask once" | AC-13 |
 | P87-D4 | Confirmations of older configurations are not revived at deploy | history not reliably stored; matches shipped behaviour | AC-18 |
 | P87-D5 | Confirmations held by non-followers are ended at deploy | so every moved member sees row 10's text before being moved | AC-18 |
-| P87-D6 | The admin form tells the admin before saving whether members will be asked again | makes OQ-P2-1's consequence visible to the person causing it | AC-17 |
+| P87-D6 | The admin form tells the admin before saving whether members will be asked again, and that a key/destination change can give another account or gateway operator access | makes OQ-P2-1's consequence visible to the person causing it | AC-17 |
+| P87-D7 | The operator record of a change says whether it starts a new consent period | lets an operator see when members were last asked; never a value | AC-7 |
 
 For the contract stage (owner: contract-author), not the owner:
 
 - How the read exposes the consent period and what the confirmation names
   (the issue proposes keeping the configuration version for administrators
-  and adding a separate number for consent; a confirmation naming the version
-  shown is also workable if the server compares providers). AC-5 is the
-  behaviour either must meet.
+  and adding a separate number for consent; a confirmation naming the
+  configuration version shown is also workable only if the server stores
+  enough to tell whether a provider change happened after that version —
+  comparing providers is not enough, §3.1 "What the server must store").
+  AC-5 and AC-6 are the behaviour either must meet. The e2e
+  `llm-org-ai.spec.ts:119-120` reads `org_ai_confirmations.configuration_version`
+  directly; it changes with the representation.
 - Whether row 10 keeps its machine-readable reason (with a now-confirmable
   meaning) or gets a new one; clients today read `personal_keys_forbidden`
   + `enablers: [user]` as "offer Use my organisation's AI"
@@ -640,6 +748,142 @@ For the contract stage (owner: contract-author), not the owner:
 - The AI status for a member in row 9 combines a stored own provider with
   "configured: the organisation's". The contract's `Settings.llmProvider` and
   `AIStatus` descriptions (rows 10–11 only, today) must cover it.
-- The contract text that says "Writing `""` or a provider deletes the
-  caller's organisation confirmation" and "re-entering the same key re-asks
-  members" (`scheduling.yaml:1180-1195`) must be rewritten to §3.1 and §3.4.
+- The contract text that says "re-entering the same key re-asks members" and
+  "Forbidding personal keys moves nobody" (`scheduling.yaml:1180-1195`),
+  "Writing `""` or a provider deletes the caller's organisation confirmation"
+  (`:3372-3374`), the row table (`:2634-2635`, row 9 absent), `configured`
+  "True exactly in rows 2 and 4 (row 9 is reserved)" (`:2756`) and "A
+  member's confirmation is for one version" (`:2877`) must be rewritten to
+  §3.1, §3.2 and §3.4.
+- Deploy order: the backend may ship before the web. If row 10 keeps
+  `personal_keys_forbidden` + `enablers: [user]`, a web build from before
+  PAC-87 still offers "Use my organisation's AI", which rewrites the stored
+  choice; the contract must say whether that window is accepted or the reason
+  changes.
+
+## Challenge log
+
+### Challenge — 2026-11-02 (spec-challenger, on `7480fc7`; code verified at clockwise-like `32ecacf`, smart-calendar-flow `702a6c2`)
+
+**Verdict**: accept-with-changes. The changes below are applied in this
+revision; nothing remains blocking for the contract stage.
+
+#### Blocking (fixed in the body)
+
+1. **Confirm-time check under-specified for P → Q → P.** §8 said a
+   confirmation naming the configuration version shown "is workable if the
+   server compares providers". It is not: after P → Q → P (or remove and
+   set up P again) the provider shown equals the current one, so a
+   comparison accepts a confirmation P87-D1 says must be refused. Resolved:
+   §3.1 "What the server must store to decide this" states the requirement
+   (tell from stored data whether a provider change happened since the
+   state shown; consent marker read in the same single read as the
+   configuration); AC-5 adds the P → Q → P / removal case and a
+   per-storage-access race run; §8 rewritten.
+2. **AC-14 contradicted §3.3 and Part 2.** A probe naming nothing and
+   carrying only a model was "personal keys are not allowed" in AC-14, but
+   §3.3 calls row 9 "in every respect a row-4 request", where a model is the
+   400 `MsgProbeOrganizationNoModel` (`llm_factory.go:156`, `:213-214`), and
+   the forbid check covers only a named provider or a key
+   (`llm_factory.go:189`). Resolved: §3.3 and AC-14 now agree on row 4's
+   answer; AC-14 also checks the stored model m2 is not sent.
+3. **§6 "members' keys in row 9 remain sealed and unread except for
+   redaction" was not true and left a PAC-84 failure mode open.** Every AI
+   request loads settings, which opens every stored key
+   (`storage/settings_secrets.go:68-77`); row 2 turns a key that will not
+   open into an error (`llm_factory.go:240-242`). Unstated: whether a
+   member key that will not open stops row 9. Resolved: §3.3 "Members' own
+   keys on the organisation path" — no decryption beyond what row 4 already
+   does, an unopenable member key never stops row 9, the organisation's
+   key failing gives row 4's answer; new AC-22.
+
+#### Non-blocking (fixed in the body unless noted)
+
+1. **Accepted consequence understated.** It named a different account
+   behind a key or Azure endpoint, not a gateway run by a different company,
+   and claimed "the admin view says it" while §3.6's sentence did not.
+   Checked against the owner text: "a key rotation or a destination
+   (gateway/endpoint) change does NOT require members to confirm again"
+   names exactly these cases, so per-provider consent is the answer, not an
+   over-reading; no owner question is needed. §3.1 now says it plainly;
+   §3.6's admin sentence and AC-17 say another account or gateway operator
+   gains access (P87-D6 widened).
+2. **Own confirmation vs own settings write race.** The handler deletes the
+   confirmation before saving (`handlers_settings.go:219-228`) with no lock
+   against a concurrent confirmation, so "change ends the confirmation" can
+   be lost. Harmless before PAC-87 (a non-follower's confirmation did
+   nothing); under row 9 it can move a member who withdrew. §3.4 states the
+   required ordering; new AC-23.
+3. **AC-19 over-constrained the rollback** (required every follower to be
+   asked again, forbidding a cheaper compliant down migration) and did not
+   name the case that matters (a confirmation that survived a key rotation).
+   Rewritten; §7 says both down migrations are compliant and that a
+   rollback is a visible re-ask, to be release-noted.
+4. **P87-D5's rationale was wrong.** A non-follower's confirmation can come
+   from the web's confirm-then-choose flow when the choice write fails
+   (`useOrganizationAI.ts:33-36`), i.e. from a member who meant to move; the
+   consent sentence they confirmed is the same. Ending them is safe (only a
+   re-ask, nothing sent) but not required by consent. §3.8 says so; kept as
+   the conservative default.
+5. **Audit field was an unlisted assumption.** §3.7's "starts a new consent
+   period" flag was not asked for; recorded as P87-D7. No API reads the
+   record (`scheduling.yaml:1178`), so no consumer is affected.
+6. **AC-1 had no e2e** although it is the headline behaviour and crosses the
+   migration and storage; `[e2e]` added in `e2e/tests/llm-org-ai.spec.ts`.
+   AC-15 now also covers the member-facing Settings lines (row 9 and row 10).
+   AC-8 now checks the confirmation's own 200 status is row 9.
+7. **Deploy order.** If row 10 keeps `personal_keys_forbidden` +
+   `enablers: [user]`, a pre-PAC-87 web still offers the choice-rewriting
+   action; added to §8 for the contract stage.
+8. **Settings write / request read race (not changed).** A request reads
+   settings and organisation state in two statements
+   (`nlp/ai_source.go:39-48`); a member's own concurrent settings write can
+   be decided on either side. Each decision is still one row and row 9 sends
+   only organisation values, so no value mix is possible; equivalent to a
+   request already in flight. Recorded only.
+
+#### Criteria I could not falsify
+
+- AC-4 second sentence, AC-21: pass today; they are regression guards, not
+  new behaviour. Accepted as such.
+
+#### Citations I checked and found wrong
+
+- §8 put "Writing `""` or a provider deletes the caller's organisation
+  confirmation" at `scheduling.yaml:1180-1195`; it is at `:3372-3374`
+  (fixed; §2.3 now cites it).
+- §6's PAC-84 bullet (see Blocking 3).
+- All other file:line claims in §2 and §6 checked and correct, including the
+  test names and lines, `org_ai.go` 103-107, 154-177, 226-229, 260-290,
+  390-413, 429-431, 434-444, 455-470, 520-556, `llm_factory.go` 15-31,
+  202-205, 226, 231-235, 255-265, 302-321, 396-400, `handlers_settings.go`
+  213-250, `handlers_org_ai.go` 539-559, migration 031 lines 37-43, and the
+  web citations (`aiProviders.ts:120-125`, `AINotConfiguredNotice.tsx:54-63,
+  72`, `useOrganizationAI.ts:33-36`, `client.ts:330-332, 864-875`,
+  `Settings.tsx:618-623`, `OrganizationAISection.tsx:74, 174, 202, 233-252,
+  281-285`, `OrganizationAISection.test.tsx:180-182`). No `x-uncertain` in
+  `scheduling.yaml`; no api-audit finding on organisation AI.
+
+#### Consumers this breaks
+
+- clockwise-like `backend/api/pac73p2_rows_test.go:291` (P2-AC-18 pins row 10
+  after confirming), `:351` (confirmation per version);
+  `backend/storage/org_ai_test.go:301`; `backend/nlp/llm_factory.go:29-31`
+  (row 9 "reserved" comment).
+- clockwise-like `contracts/openapi/paths/scheduling.yaml:1180-1195`,
+  `:2634-2635`, `:2756`, `:2877`, `:3372-3374` (listed in §8).
+- clockwise-like `e2e/tests/llm-org-ai.spec.ts:119-120` (reads
+  `org_ai_confirmations.configuration_version`), `e2e/TESTIDS-REQUIRED.md:104`
+  (`ai-use-org` "rows 7 and 10").
+- smart-calendar-flow `src/lib/aiProviders.ts:120-125` and
+  `aiProviders.test.ts:148`; `src/components/AINotConfiguredNotice.tsx:31,54-63`
+  and its test `:75`; `src/components/OrgAIConsentDialog.test.tsx:51`;
+  `src/hooks/useOrganizationAI.ts:33-36` (`choose` must not be used from
+  row 10).
+- MCP: none. `mcp/tools.go:195` passes the backend's answer through; no
+  reason-specific handling in `mcp/`.
+
+#### Owner questions
+
+None blocking. P87-D1..D7 are factory defaults with falsifiable ACs; the
+owner may overrule any of them, P87-D5 most cheaply.
