@@ -231,10 +231,18 @@ currently fixme'd is blocked on it.
    window**, because `engine/booking.go hostBusy()` treats a host's confirmed
    bookings as busy time. Cleanup is by the test's own unique booker-email
    prefix (`db.deleteBookingsByBooker`), never by "clear this link".
-7. **The demo-data guard.** `src/api/client.ts` silently substitutes built-in
-   demo fixtures when the backend is unreachable. `fixtures.ts assertNotDemo`
-   asserts both the "showing demo data" banner and the demo roster names are
-   absent. Call it in every authenticated UI test.
+7. **The demo-data guard.** `fixtures.ts assertNotDemo` fails when the page
+   shows anything that means the test did not talk to a live backend: the demo
+   label (`demo-label`), the "can't reach Paceday" banner
+   (`server-unreachable-banner`), an inline lost-answer error
+   (`api-error` with `data-error-kind="lost"`), the demo roster names, and,
+   while a web from before PAC-83 can still be deployed, the old
+   "showing demo data" banner sentence. Since PAC-83 the web never falls back
+   to demo data on its own (the demo exists only in non-production builds and
+   only when chosen), so an unreachable backend shows the banner or the inline
+   error instead; a test that asserts only an absence would otherwise pass
+   against a dead backend. Call it in every UI test. Its own test is
+   `tests/guard-self-test.spec.ts` (AC-28).
 
 ---
 
@@ -269,7 +277,7 @@ npm run stack:down                    # stop and remove
 | `did not serve the SPA` | `<repo-root>/frontend` is missing or empty — see §2. |
 | `schema not ready` / `migrations are dirty` | a migration failed halfway. The version in the error names it; look at `backend/storage/migrations/`. |
 | `fixture verification failed` | `seed/seed.ts verify()` found the database is not what the tests assume. The message names the row count that was wrong. Usually a schema change that dropped a seeded column. |
-| A UI test sees "Sarah Chen" or "showing demo data" | the frontend could not reach `/api` and fell back to demo fixtures. The nginx proxy or the backend is down; the test is telling you the truth. |
+| `assertNotDemo` fails on `server-unreachable-banner` or `api-error` (`lost`) | the frontend could not reach `/api`. The nginx proxy or the backend is down; the test is telling you the truth. ("Sarah Chen" or "showing demo data" means the same on a web from before PAC-83.) |
 | 401 everywhere | `E2E_JWT_SECRET` and the compose file's `JWT_SECRET` have drifted apart. They must match. |
 | `[stand-in]` setup fails, or calendar scenarios get 500 "peer address refused" | the stand-in is down or not on its pinned address. `docker compose -p paceday-e2e -f e2e/docker-compose.e2e.yml logs fake-google backend`. "refusing to start" in the backend log means the two calendar variables are inconsistent — the message names which. |
 | A calendar scenario sees "no matching arrival" | the backend answered without reaching the stand-in. The failure message lists what did arrive under that credential label; `GET http://127.0.0.1:18090/__fixture/requests` shows everything. |
@@ -307,7 +315,11 @@ psql postgres://paceday_e2e:paceday_e2e@127.0.0.1:15433/paceday_e2e
    test. Never clear a whole table or a whole link.
 6. **Check the guardrails**: `npm run typecheck`, then
    `grep -rn "waitForTimeout\|page.route\|locator('\." tests/ lib/` should be
-   empty.
+   empty, except the reviewed uses of `page.route`: intercepting an external
+   image (`csp.spec.ts`) and holding or failing a real answer in the browser
+   (PAC-83, `public-booking.spec.ts`: `route.fetch` then `route.fulfill`, or
+   `route.abort`, never an invented body); and attribute locators on the
+   test ids of contract PAC-83 §5.1.
 
 ---
 
