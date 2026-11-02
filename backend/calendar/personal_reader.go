@@ -11,6 +11,11 @@ import (
 
 // ReadPersonalEvents fetches events from a personal calendar using the stored provider config.
 func ReadPersonalEvents(ctx context.Context, pc *storage.PersonalCalendar, start, end time.Time) ([]GenericEvent, error) {
+	// PAC-84: a secret that cannot be decrypted is never sent anywhere; the
+	// failure (errors.Is secretbox.ErrDecrypt) is the read's error.
+	if pc.SecretErr != nil {
+		return nil, pc.SecretErr
+	}
 	switch pc.Provider {
 	case "webcal":
 		c := NewWebcalClient(pc.URL)

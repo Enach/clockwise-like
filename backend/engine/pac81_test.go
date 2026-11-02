@@ -398,8 +398,24 @@ func pac81Personal(t *testing.T, db storage.DBTX, g *googleStub, n int) (uuid.UU
 	return user, id
 }
 
-func TestPAC81_PersonalSync6EventsTwoWaves(t *testing.T) {
+// pac81PersonalScale is pac81Scale with a provider limit of 300 ms (item
+// limit 350 ms) for the personal-sync tests. The stub answers in 140 ms; at
+// the shared 150 ms limit a create delayed by 10 ms of scheduling ends on the
+// client's own limit after the stub has counted it, which is AC-A17's
+// documented residual (provider accepted, answer never arrived, not
+// recorded), not the budget cut these tests are about. 160 ms of headroom
+// keeps every create counted by the stub answered to the client, so
+// "recorded == created" checks AC-A17's "every answered create is recorded".
+func pac81PersonalScale(t *testing.T) {
+	t.Helper()
 	pac81Scale(t)
+	l := outbound.Current()
+	l.Provider = 300 * time.Millisecond
+	t.Cleanup(outbound.SetForTest(l))
+}
+
+func TestPAC81_PersonalSync6EventsTwoWaves(t *testing.T) {
+	pac81PersonalScale(t)
 	db := openTestDB(t)
 	g := newGoogleStub(t)
 	user, cal := pac81Personal(t, db, g, 6)
@@ -421,13 +437,15 @@ func TestPAC81_PersonalSync6EventsTwoWaves(t *testing.T) {
 	}
 }
 
+// The 1 s budget lets creates start for its first ~550 ms (a create needs its
+// 350 ms limit plus the 100 ms margin): a few waves of 4, far short of 40.
 func TestPAC81_PersonalSync40EventsCutThenRerun(t *testing.T) {
-	pac81Scale(t)
+	pac81PersonalScale(t)
 	db := openTestDB(t)
 	g := newGoogleStub(t)
 	user, cal := pac81Personal(t, db, g, 40)
 	base := context.WithValue(context.Background(), auth.UserIDKey, user)
-	ctx, cancel := context.WithTimeout(base, 700*time.Millisecond)
+	ctx, cancel := context.WithTimeout(base, time.Second)
 	err := (&PersonalBlocker{DB: db}).Sync(ctx, cal)
 	cancel()
 	if !errors.Is(err, budget.ErrExpired) {

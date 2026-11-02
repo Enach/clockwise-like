@@ -248,18 +248,57 @@ export const test = base.extend<Fixtures>({
   },
 
   assertNotDemo: async ({}, use) => {
-    await use(async (page: Page) => {
-      // src/components/MockBanner.tsx renders this exact sentence whenever
-      // src/api/client.ts has fallen back to its built-in demo fixtures. If it
-      // is on screen, whatever else the test asserted proves nothing about the
-      // backend.
-      await expect(
-        page.getByText(/Backend not reachable — showing demo data/i),
-      ).toHaveCount(0);
-      // src/api/manager.ts SEED_MEMBERS — the demo roster. Never in a real one.
-      await expect(page.getByText(/Sarah Chen|Miguel Alvarez|Priya Nair/)).toHaveCount(0);
-    });
+    await use(assertNotDemo);
   },
 });
+
+/**
+ * The anti-false-pass guard (PAC-83 AC-28, contract
+ * contracts/features/PAC-83.md §5.2): fails when the page shows anything that
+ * means the test did not talk to a live backend.
+ *
+ * Exported on its own (and handed out by the `assertNotDemo` fixture) so the
+ * guard self-test (tests/guard-self-test.spec.ts) runs this exact function
+ * against pages built with page.setContent.
+ *
+ * Every marker is a stable test id the web renders (contract §5.1), except
+ * two kept on purpose:
+ *  - the old banner sentence, so the guard still works against the web from
+ *    before PAC-83 while the two repos' merges are not simultaneous (spec §7);
+ *    remove it once no deployed web renders it;
+ *  - the manager demo roster names, which only the demo seed contains.
+ */
+export async function assertNotDemo(page: Page): Promise<void> {
+  // The non-dismissible label every signed-in page shows during a demo
+  // (demo builds only; never in the production image the suite runs).
+  await expect(page.getByTestId('demo-label'), 'the demo label is on screen').toHaveCount(0);
+  // The persistent "can't reach Paceday" banner: the health probe failed.
+  await expect(
+    page.getByTestId('server-unreachable-banner'),
+    'the "can\'t reach Paceday" banner is on screen',
+  ).toHaveCount(0);
+  // An inline "can't reach" error. Since PAC-83 an unreachable backend no
+  // longer shows invented data but this error, so a test that only asserts
+  // something is ABSENT (an empty list, no conflict) would otherwise pass
+  // against a dead backend. Tests that provoke a lost answer on purpose
+  // (public-booking.spec.ts AC-10) do not call the guard while it is shown.
+  await expect(
+    page.locator('[data-testid="api-error"][data-error-kind="lost"]'),
+    'an inline "can\'t reach" error is on screen',
+  ).toHaveCount(0);
+  // Transitional: the web before PAC-83 (src/components/MockBanner.tsx)
+  // rendered this sentence when src/api/client.ts had fallen back to its
+  // built-in demo fixtures.
+  await expect(
+    page.getByText(/Backend not reachable — showing demo data/i),
+    'the pre-PAC-83 demo-data banner is on screen',
+  ).toHaveCount(0);
+  // The manager demo roster (src/api/manager.ts SEED_MEMBERS before PAC-83,
+  // src/demo after). Never in a real roster.
+  await expect(
+    page.getByText(/Sarah Chen|Miguel Alvarez|Priya Nair/),
+    'a demo roster name is on screen',
+  ).toHaveCount(0);
+}
 
 export { expect };

@@ -14,10 +14,15 @@ environment. On the production compose stack, every command below is run as:
 docker compose -f docker-compose.prod.yml exec backend /paceday-operator <command> [flags]
 ```
 
+These account steps run against the running backend (`exec`). The same binary's
+`encryption` subcommands (PAC-84) are documented in `docs/runbook.md`, "Encryption key";
+the ones that need the backend stopped run as
+`docker compose -f docker-compose.prod.yml run --rm --no-deps backend /paceday-operator encryption ...`.
+
 (Outside a container: `DATABASE_URL=... go run ./cmd/paceday-operator <command> ...` from
 `backend/`.) The steps have no API route, web page or MCP tool. Every run writes an `operator_audit` row (operator,
 time, account, previous and new identity, evidence, what was removed, reason); a rollback of
-migration 033 keeps that table.
+migration 035 (`035_identity_binding`) keeps that table.
 
 ## 1. Find the account
 

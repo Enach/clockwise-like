@@ -64,6 +64,12 @@ func (h *ssoHandlers) startSSO(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "SAML not yet supported", http.StatusNotImplemented)
 		return
 	}
+	// PAC-84 (contract 1, K-2): an undecryptable client secret is the
+	// documented 500, never 404 "not configured".
+	if err := provider.ClientSecretErr(); err != nil {
+		writeServerError(w, r, "OIDC setup", err, http.StatusInternalServerError)
+		return
+	}
 
 	appURL := os.Getenv("APP_URL")
 	redirectURL := appURL + "/api/auth/callback/oidc/" + d
@@ -122,6 +128,10 @@ func (h *ssoHandlers) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	provider, err := storage.GetSSOProviderByDomain(db, d)
 	if err != nil || provider == nil {
 		writeError(w, "SSO not configured for this domain", http.StatusNotFound)
+		return
+	}
+	if err := provider.ClientSecretErr(); err != nil { // PAC-84 K-2: the documented 500
+		writeServerError(w, r, "OIDC setup", err, http.StatusInternalServerError)
 		return
 	}
 
@@ -406,10 +416,10 @@ func ssoProviderView(p *storage.SSOProvider) gen.SsoProvider {
 		State:               state,
 		OidcIssuer:          p.OIDCIssuer,
 		OidcClientId:        p.OIDCClientID,
-		HasOidcClientSecret: p.OIDCClientSecret != "",
+		HasOidcClientSecret: p.HasClientSecret(),
 		SamlEntryPoint:      p.SAMLEntryPoint,
 		SamlIssuer:          p.SAMLIssuer,
-		HasSamlCert:         p.SAMLCert != "",
+		HasSamlCert:         p.HasSAMLCert(),
 		CreatedAt:           p.CreatedAt,
 		UpdatedAt:           p.UpdatedAt,
 	}

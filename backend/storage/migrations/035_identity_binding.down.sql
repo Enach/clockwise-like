@@ -1,8 +1,9 @@
--- 033_identity_binding.down.sql — PAC-71 rollback (spec §7, contract rollback).
+-- 035_identity_binding.down.sql — PAC-71 rollback (spec §7, contract rollback).
 -- Drops the bindings, the address standings, the session generations and the
 -- case-insensitive key. Accounts, credentials, memberships and settings are
 -- untouched. operator_audit is deliberately KEPT: the audit of operator steps
--- survives a rollback. Sessions ended by a generation advance become valid
+-- survives a rollback (and 034_encryption_at_rest's down keeps it too, with
+-- its eight-action CHECK, PAC-84 contract 7.2). Sessions ended by a generation advance become valid
 -- again under the reverted code until they expire: rotate the signing secret.
 DROP TABLE IF EXISTS user_identities;
 DROP INDEX IF EXISTS users_email_lower_idx;

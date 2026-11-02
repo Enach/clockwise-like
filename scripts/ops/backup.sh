@@ -6,10 +6,19 @@
 # backups older than the retention. Run it daily (owner default Q-O3: daily,
 # kept 14 days, so up to 24 h of data can be lost).
 #
-# THE OUTPUT IS SECRET. A dump contains every user's stored provider
-# credentials (OAuth tokens, LLM API keys) in plain columns, and the .env copy
-# holds JWT_SECRET, POSTGRES_PASSWORD and the OAuth client secrets. Files are
-# written mode 600; store and ship them as secrets.
+# THE OUTPUT IS SECRET. Since PAC-84 the stored provider credentials (OAuth
+# tokens, AI keys, webcal URLs, SSO client secrets) are encrypted in the dump,
+# under data keys that only the encryption key (encryption.env, NEVER part of
+# the backup set) can open; but a dump taken before the conversion finished
+# still holds the values not yet converted in plain columns, and every dump
+# holds users' calendar data, emails and session-independent records. The
+# .env copy holds JWT_SECRET, POSTGRES_PASSWORD and the OAuth client secrets.
+# Files are written mode 600; store and ship them as secrets.
+#
+# The env file must NOT hold PACEDAY_ENCRYPTION_KEY or
+# PACEDAY_ENCRYPTION_KEY_PREVIOUS: the script refuses (exit 2, nothing
+# written) when it sets either to a non-empty value, so the key never travels
+# with the dumps it opens (docs/runbook.md, "Encryption key").
 #
 # Usage:
 #   scripts/ops/backup.sh --out DIR --env-file PATH
@@ -46,13 +55,39 @@ while [ $# -gt 0 ]; do
     --keep-days) keep_days="$2"; shift 2 ;;
     --db) db="$2"; shift 2 ;;
     --user) user="$2"; shift 2 ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
     *) echo "backup: unknown argument $1" >&2; exit 2 ;;
   esac
 done
 [ -n "$out" ] || { echo "backup: --out DIR is required" >&2; exit 2; }
 [ -n "$env_file" ] || { echo "backup: --env-file PATH is required (a dump without its secrets does not restore a working stack)" >&2; exit 2; }
 [ -f "$env_file" ] || { echo "backup: $env_file not found" >&2; exit 2; }
+
+# PAC-84 (contract section 10): the encryption key lives in encryption.env,
+# outside the backup set. Refuse an env file that sets it, before anything is
+# looked up or written. The value is never printed.
+key_line_re='^[[:space:]]*(export[[:space:]]+)?(PACEDAY_ENCRYPTION_KEY|PACEDAY_ENCRYPTION_KEY_PREVIOUS)[[:space:]]*=(.*)$'
+line_no=0
+while IFS= read -r line || [ -n "$line" ]; do
+  line_no=$((line_no + 1))
+  line="${line%$'\r'}"
+  [[ "$line" =~ $key_line_re ]] || continue
+  key_var="${BASH_REMATCH[2]}"
+  key_val="${BASH_REMATCH[3]}"
+  key_val="${key_val#"${key_val%%[![:space:]]*}"}"
+  key_val="${key_val%"${key_val##*[![:space:]]}"}"
+  if [ "${#key_val}" -ge 2 ]; then
+    first="${key_val:0:1}" last="${key_val: -1}"
+    if [ "$first" = "$last" ] && { [ "$first" = "'" ] || [ "$first" = '"' ]; }; then
+      key_val="${key_val:1:${#key_val}-2}"
+    fi
+  fi
+  if [ -n "$key_val" ]; then
+    echo "backup: $env_file line $line_no sets $key_var; the encryption key must live in encryption.env, outside the backup set (docs/runbook.md, \"Encryption key\"). Nothing was written." >&2
+    exit 2
+  fi
+done < "$env_file"
+unset line key_var key_val first last
 case "$keep_days" in ''|*[!0-9]*) echo "backup: --keep-days must be a positive integer" >&2; exit 2 ;; esac
 [ "$keep_days" -ge 1 ] || { echo "backup: --keep-days must be at least 1" >&2; exit 2; }
 

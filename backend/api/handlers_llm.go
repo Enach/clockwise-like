@@ -72,6 +72,12 @@ func (h *llmHandlers) testLLM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, bad, http.StatusBadRequest)
 		return
 	}
+	if d.Err != nil {
+		// PAC-84 (contract 1): an undecryptable stored key is the
+		// documented 500, never the 409 AINotConfigured.
+		writeServerError(w, r, "testLLM", d.Err, http.StatusInternalServerError)
+		return
+	}
 	if d.NotConfigured != nil {
 		writeNotConfigured(w, d.NotConfigured)
 		return

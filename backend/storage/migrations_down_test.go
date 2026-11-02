@@ -180,10 +180,15 @@ func TestMigrationsDownTo005AndUpAgain(t *testing.T) {
 	atLatest := schemaSnapshot(t, db)
 
 	// Down one version at a time, so a failure names the file.
-	for v := latest; v > 5; v-- {
+	// The version is read after each step: numbers may have a gap (none
+	// today; PAC-71's identity binding was renumbered 035 after PAC-84's 034).
+	for v := latest; v > 5; {
 		step(m, fmt.Sprintf("down from %d", v), func() error { return m.Steps(-1) })
 		if dirty := migrationDirty(t, db); dirty {
 			t.Fatalf("down from %d left the database dirty", v)
+		}
+		if v, _, err = m.Version(); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if d := withoutKeptByDown(diffSnapshots(at005, schemaSnapshot(t, db))); len(d) > 0 {
@@ -213,7 +218,7 @@ func migrationDirty(t *testing.T, db *sql.DB) bool {
 // keptByDown are tables a down migration deliberately keeps, each with its
 // reason; their facts are left out of the down-to-005 comparison only.
 var keptByDown = map[string]string{
-	"operator_audit": "PAC-71 spec section 7: the audit of operator steps survives a rollback (033_identity_binding.down.sql keeps it; its up uses IF NOT EXISTS)",
+	"operator_audit": "PAC-71 spec section 7: the audit of operator steps survives a rollback (035_identity_binding.down.sql and 034_encryption_at_rest.down.sql keep it; both ups use IF NOT EXISTS)",
 }
 
 func withoutKeptByDown(diff []string) []string {

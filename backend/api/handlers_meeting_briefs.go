@@ -94,6 +94,10 @@ func (h *meetingBriefHandlers) refreshBrief(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	decision := nlp.DecideState(st)
+	if decision.Err != nil { // PAC-84: undecryptable key, the documented 500
+		writeServerError(w, r, "load AI configuration", decision.Err, http.StatusInternalServerError)
+		return
+	}
 	if decision.NotConfigured != nil {
 		writeNotConfigured(w, decision.NotConfigured)
 		return

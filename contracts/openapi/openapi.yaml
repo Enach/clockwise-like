@@ -15337,6 +15337,21 @@ components:
 
         this 503 proves that no booking was saved for the request.
 
+
+        On every other operation that writes, this 503 does NOT prove that
+
+        nothing was written (PAC-83): work the handler finished before the
+
+        budget ran out (a provider event, a database row) is not undone, and
+
+        a call the handler made without the request''s context may still
+
+        complete after this 503 was sent. A client re-reads to learn the
+
+        outcome; `createPublicBooking` is the only operation whose 503 means
+
+        "nothing written".
+
         '
       content:
         application/json:

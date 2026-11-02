@@ -64,6 +64,15 @@ services:
       start_interval: 2s
     stop_grace_period: 50s
     logging: *logging
+    # PAC-84: the encryption key comes from encryption.env beside this file
+    # (mode 600, outside the backup set; docs/runbook.md, "Encryption key").
+    # required: false (Docker Compose >= 2.24.0) so a missing file reaches the
+    # backend, which refuses with its own message. Never name
+    # PACEDAY_ENCRYPTION_KEY or _PREVIOUS under environment: below (an empty
+    # entry would override the file).
+    env_file:
+      - path: ./encryption.env
+        required: false
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://clockwise:${POSTGRES_PASSWORD}@postgres:5432/clockwise?sslmode=disable

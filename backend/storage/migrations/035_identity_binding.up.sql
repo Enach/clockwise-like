@@ -1,4 +1,4 @@
--- 033_identity_binding.up.sql — PAC-71 (spec docs/specs/PAC-71.md §3, §7;
+-- 035_identity_binding.up.sql — PAC-71 (spec docs/specs/PAC-71.md §3, §7;
 -- contract contracts/features/PAC-71.md §5–§9; plan docs/plans/PAC-71.md §2).
 --
 -- An account belongs to the identity bound to it, not to an address. This
@@ -8,8 +8,10 @@
 -- stays unbound (unconfirmed, generation 0) until its first sign-in under
 -- migration rule (a) or (b), or an operator step (AC-18). No row is deleted.
 --
--- Numbered 033, the next free version after main's 032_scheduling_link_horizon_refusal (PAC-72;
--- written as 032 and renumbered at merge, contract mergeConditions).
+-- Numbered 035, the next free version after main's 034_encryption_at_rest (PAC-84;
+-- written as 032, renumbered 033 after PAC-72's 032 and 035 after PAC-84's 034,
+-- contract mergeConditions). golang-migrate never applies a version below the
+-- database's current one, so 033 would be skipped on a database already at 034.
 -- Rows the pre-PAC-71 API inserts between this migration and the API deploy
 -- (contract §14 step 1) get the column defaults below, so the new API treats
 -- them as unbound legacy accounts.
@@ -58,9 +60,18 @@ CREATE TABLE user_identities (
 --    so a record survives every later change to the account, and the down
 --    migration keeps this table (spec §7). IF NOT EXISTS makes up -> down -> up
 --    work with the kept table.
+--    034_encryption_at_rest (PAC-84) runs first and already creates this table
+--    with this definition, so the CREATE below is a no-op on every database
+--    migrated in order. Its action CHECK restates ALL EIGHT actions (PAC-71's
+--    three and PAC-84's five; PAC-84 contract 7.1/7.3, K-9): PAC-71 never
+--    re-adds a narrower CHECK, whichever migration creates the table. Any later
+--    migration that changes the action list restates all eight.
 CREATE TABLE IF NOT EXISTS operator_audit (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    action            TEXT        NOT NULL CHECK (action IN ('free_address', 'reassign', 'advance_all')),
+    action            TEXT        NOT NULL CHECK (action IN (
+                          'free_address', 'reassign', 'advance_all',
+                          'encryption_convert', 'encryption_rotate_data_key', 'encryption_decrypt_all',
+                          'encryption_reset_lost_key', 'encryption_downgrade_schema')),
     operator          TEXT        NOT NULL CHECK (operator <> ''),
     reason            TEXT        NOT NULL CHECK (reason <> ''),
     account_id        UUID        NULL,

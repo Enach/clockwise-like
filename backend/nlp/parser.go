@@ -177,6 +177,11 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 	// decision reads one consistent state (Part 2, P2-AC-37), and the client
 	// carries only that state's values.
 	decision := DecideState(st)
+	if decision.Err != nil {
+		// PAC-84 (contract 1): the documented 500, never not_configured
+		// and never the {"intent":"unknown"} swallow.
+		return nil, fmt.Errorf("load AI configuration: %w", decision.Err)
+	}
 	if nc := decision.NotConfigured; nc != nil {
 		return &ParseResult{Intent: "unknown", Error: nc.Message, NotConfigured: nc}, nil
 	}

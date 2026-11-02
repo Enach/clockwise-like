@@ -109,8 +109,10 @@ your proxy.
 - Keep-alive to nginx: any value is fine; Paceday's backend keeps idle
   connections 120 s.
 
-The web app aborts its own API calls after 4 s regardless (spec F-W1); these
-bounds protect the server, they do not make long calls succeed in the browser.
+The web app waits up to 135 s for an API answer (PAC-83), longer than nginx's
+130 s, so with the timeouts above a slow request ends with the server's or
+nginx's own answer, which the web shows; a proxy that gives up sooner cuts
+those requests short in the browser.
 
 **MCP, when enabled** (`docker-compose.mcp.yml`): `GET /mcp/sse` is a
 long-lived event stream that can stay idle for minutes. nginx lets it idle for

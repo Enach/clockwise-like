@@ -157,6 +157,13 @@ func (h *dailyRecapHandlers) test(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
+	if err == nil && conn.TokenErr != nil {
+		// PAC-84 (contract 1, K-2): an undecryptable Slack token is the
+		// operation's documented 500, never 400 "Slack not connected".
+		logServerError(r, "db error", conn.TokenErr, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
 	if err != nil {
 		http.Error(w, "Slack not connected", http.StatusBadRequest)
 		return

@@ -8,7 +8,10 @@
 //	                              -evidence authoritative|mailbox -operator <name> -reason <text>
 //	                              [-keep-calendar-credentials] [-remove slack,notion,zoom,ai-keys,external]
 //	paceday-operator advance-all  -operator <name> -reason <text>
+//	paceday-operator encryption status|convert|rotate-data-key|decrypt-all|reset-lost-key|downgrade-schema [flags]
 //
+// (encryption: PAC-84, contracts/features/PAC-84.md section 8; it opens the
+// database itself, with its own application_name and exit codes.)
 // DATABASE_URL names the database. Migrations are applied first, as the server
 // does on start.
 package main
@@ -27,12 +30,21 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "encryption" {
+		os.Exit(runEncryption(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		fmt.Fprintln(os.Stderr, "DATABASE_URL is required")
 		os.Exit(2)
 	}
-	db, err := storage.Open(dsn)
+	// PAC-84 contract 4.3: every process names itself in application_name;
+	// PAC-71's subcommands are "paceday-operator <subcommand>".
+	app := "paceday-operator"
+	if len(os.Args) > 1 {
+		app += " " + os.Args[1]
+	}
+	db, err := storage.OpenAs(dsn, app)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -44,7 +56,7 @@ func main() {
 	}
 }
 
-const usage = "usage: paceday-operator free-address|reassign|advance-all [flags] (see -h on each)"
+const usage = "usage: paceday-operator free-address|reassign|advance-all|encryption [flags] (see -h on each; encryption: docs/runbook.md, \"Encryption key\")"
 
 // run executes one operator command against db and reports on out.
 func run(ctx context.Context, db *sql.DB, args []string, out io.Writer) error {

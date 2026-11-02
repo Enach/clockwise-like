@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/secretbox/secretboxtest"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -17,6 +18,9 @@ const fallbackDSN = "postgres://test:test@127.0.0.1:15432/testdb?sslmode=disable
 
 // Create creates an isolated database on the PostgreSQL instance configured for tests.
 func Create() (string, func() error, error) {
+	// PAC-84: every database test may write an inventory secret, which needs
+	// a keyring; a random one is installed once per test process.
+	secretboxtest.EnsureProcess()
 	dsn := os.Getenv("PACEDAY_TEST_DATABASE_URL")
 	if dsn == "" {
 		dsn = fallbackDSN

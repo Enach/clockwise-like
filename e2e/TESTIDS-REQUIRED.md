@@ -104,12 +104,27 @@ breaks those selectors without breaking the feature.
 | `ai-use-org` | the notice's "Use my organisation's AI" action in rows 7 and 10 | P2-AC-18, P2-AC-31. |
 | `ai-personal-keys-forbidden` | the Settings note that a member's own choice and key are kept but not used | P2-AC-31. |
 
-## 5. Demo / mock state markers — `src/components/MockBanner.tsx`, `DemoBanner.tsx`
+## 5. Demo, unreachable and failure markers (PAC-83, contract `contracts/features/PAC-83.md` §5.1)
 
-| Test id | Element | Why |
+Binding test ids the web renders since PAC-83. `e2e/fixtures.ts assertNotDemo`
+— the single most important anti-false-pass check in the suite — fails on
+`demo-label`, `server-unreachable-banner` and `api-error` with
+`data-error-kind="lost"` (AC-28, self-tested in `tests/guard-self-test.spec.ts`).
+
+| Test id | Element | Used by |
 |---|---|---|
-| `mock-banner` | the "Backend not reachable — showing demo data" banner | `e2e/fixtures.ts assertNotDemo` asserts this banner is **absent** on every authenticated page, because `src/api/client.ts` silently substitutes demo fixtures on `ApiUnreachableError`. That guard is the single most important anti-false-pass check in the suite and it currently depends on an exact English sentence. A stable id makes it robust; changing the copy today would silently disarm it. |
-| `demo-banner` | the demo-session banner | Same reasoning. |
+| `demo-entry` | the demo entry control, sign-in initial view, demo builds only | `tests/demo-build.spec.ts` (AC-30: absent from the production image) |
+| `demo-label` | the non-dismissible demo label on every signed-in page during a demo; demo builds only | `assertNotDemo` |
+| `server-unreachable-banner` | the persistent "can't reach Paceday" banner (Dashboard, Settings, Audit) when the health probe fails | `assertNotDemo` |
+| `server-unreachable-retry` | its retry button | — |
+| `api-error` | an inline failure message where the action happened; attributes `data-error-kind` (`budget`, `too-large`, `lost`, `http`) and `data-effect` (`read`, `write`, `booking`) | `assertNotDemo` (`lost`); `tests/public-booking.spec.ts` AC-10 |
+| `api-error-retry` | the manual retry control inside `api-error`, only when a retry is offered | AC-10 |
+| `still-working` | the "still working, may take up to about a minute and a half" notice, on a user-started call after 8 s | AC-5, AC-24 |
+| `ai-progress` | the "asking the AI, may take up to a minute" message, from submit until answer | — (unit AC-2) |
+
+Retired: `mock-banner` (never rendered; its banner is gone) and `demo-banner`
+(replaced by `demo-label`). The old banner sentence stays in `assertNotDemo`
+only while a web from before PAC-83 can still be deployed.
 
 ---
 

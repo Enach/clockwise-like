@@ -129,7 +129,7 @@ func orgCaller(db *sql.DB, ctx context.Context) (*storage.User, *storage.Org, ge
 func orgAIView(c storage.OrgAIConfig) gen.OrganizationAIConfiguration {
 	out := gen.OrganizationAIConfiguration{
 		Configured:           c.Complete(),
-		KeySet:               c.Provider != "" && c.APIKey != "",
+		KeySet:               c.Provider != "" && c.KeyPresent(),
 		PersonalKeysAllowed:  c.PersonalKeysAllowed,
 		ConfigurationVersion: int(c.Version),
 		UpdatedAt:            c.UpdatedAt,

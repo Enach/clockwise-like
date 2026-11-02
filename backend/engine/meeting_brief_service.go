@@ -26,9 +26,12 @@ type LLMCompleter interface {
 // slackAPIBase is the Slack Web API (a test seam; production never changes it).
 var slackAPIBase = "https://slack.com/api"
 
+// notionAPIBase is the Notion API (a test seam; production never changes it).
+var notionAPIBase = "https://api.notion.com/v1"
+
 const (
-	briefCacheTTL    = 24 * time.Hour
-	notionAPIBase    = "https://api.notion.com/v1"
+	briefCacheTTL = 24 * time.Hour
+
 	maxSlackMessages = 10
 	maxNotionPages   = 8
 	maxTerms         = 5
@@ -84,12 +87,12 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 	terms := buildSearchTerms(event)
 
 	conn, err := storage.GetWorkspaceConnectionCtx(ctx, s.DB, userID, "slack")
-	if err == nil {
+	if err == nil && conn.TokenErr == nil { // PAC-84: skip an undecryptable token
 		brief.SlackResults, _ = fetchSlackMessages(ctx, conn.BotToken, terms)
 	}
 
 	notionConn, err := storage.GetWorkspaceConnectionCtx(ctx, s.DB, userID, "notion")
-	if err == nil {
+	if err == nil && notionConn.TokenErr == nil {
 		brief.NotionResults, _ = fetchNotionPages(ctx, notionConn.AccessToken, terms)
 	}
 

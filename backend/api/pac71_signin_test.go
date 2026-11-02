@@ -198,10 +198,19 @@ func readAccount(t *testing.T, id uuid.UUID) accountState {
 	} else if b != nil {
 		a.identity = b.String()
 	}
-	_ = db.QueryRow(`SELECT access_token FROM oauth_tokens WHERE user_id = $1`, id).Scan(&a.googleAccess)
+	// PAC-84: the stored credentials are sealed; compare their plaintext.
+	var rawAccess string
+	_ = db.QueryRow(`SELECT access_token FROM oauth_tokens WHERE user_id = $1`, id).Scan(&rawAccess)
+	var err error
+	if a.googleAccess, err = storage.OpenSecret(storage.BindOAuthToken("access_token", id, "primary"), rawAccess, id); err != nil {
+		t.Fatalf("open google access token: %v", err)
+	}
 	var ms, cp sql.NullString
 	_ = db.QueryRow(`SELECT microsoft_tokens, calendar_provider FROM settings WHERE user_id = $1`, id).Scan(&ms, &cp)
-	a.msTokens, a.calendarProvider = ms.String, cp.String
+	if a.msTokens, err = storage.OpenSecret(storage.BindSettings(storage.SettingsColMicrosoftTokens, id), ms.String, id); err != nil {
+		t.Fatalf("open microsoft tokens: %v", err)
+	}
+	a.calendarProvider = cp.String
 	return a
 }
 

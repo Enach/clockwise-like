@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/internal/outbound"
+	"github.com/Enach/paceday/backend/internal/secretbox"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
@@ -126,11 +127,15 @@ func StoreMicrosoftCredential(db storage.Querier, userID uuid.UUID, token *oauth
 	if _, err := db.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return err
 	}
+	sealed, err := secretbox.Seal(storage.BindSettings(storage.SettingsColMicrosoftTokens, userID), string(data))
+	if err != nil {
+		return err
+	}
 	q := `UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1`
 	if setOutlook {
 		q = `UPDATE settings SET microsoft_tokens = $2, calendar_provider = 'outlook' WHERE user_id = $1`
 	}
-	if _, err := db.Exec(q, userID, string(data)); err != nil {
+	if _, err := db.Exec(q, userID, sealed); err != nil {
 		return err
 	}
 	return storage.ClearCredentialLoss(db, userID, storage.CredentialOutlook)
@@ -158,8 +163,13 @@ func LoadMicrosoftToken(db storage.Querier, userID uuid.UUID) (*oauth2.Token, er
 	if err := row.Scan(&raw); err != nil || !raw.Valid || raw.String == "" {
 		return nil, nil
 	}
+	// PAC-84: a decryption failure is returned (errors.Is secretbox.ErrDecrypt).
+	plain, err := storage.OpenSecret(storage.BindSettings(storage.SettingsColMicrosoftTokens, userID), raw.String, userID)
+	if err != nil {
+		return nil, err
+	}
 	var rec microsoftTokenRecord
-	if err := json.Unmarshal([]byte(raw.String), &rec); err != nil {
+	if err := json.Unmarshal([]byte(plain), &rec); err != nil {
 		return nil, err
 	}
 	return &oauth2.Token{
