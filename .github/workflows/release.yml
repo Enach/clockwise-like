@@ -1,0 +1,122 @@
+# Image pipeline (PAC-81 spec F-C1: "no image pipeline").
+#
+# Builds the backend and frontend images from main of both repos and publishes
+# them to GHCR with one exact version, b<backend sha>-f<frontend sha>: the
+# PACEDAY_VERSION of docker-compose.prod.yml. `:main` points at the latest.
+#
+# Runs on every push to main (after ci.yml passes), every 30 minutes to pick up
+# frontend merges (the web repo has no token to trigger this one), and by hand.
+# A version that already exists is not rebuilt. The frontend is released only
+# when its own CI passed on that commit.
+name: release
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      frontend_sha: ${{ steps.v.outputs.frontend_sha }}
+      build: ${{ steps.v.outputs.build }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          backend_sha=$(gh api repos/${{ github.repository }}/commits/main --jq .sha)
+          frontend_sha=$(gh api repos/Enach/smart-calendar-flow/commits/main --jq .sha)
+          version="b${backend_sha:0:7}-f${frontend_sha:0:7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "frontend_sha=$frontend_sha" >> "$GITHUB_OUTPUT"
+          # The frontend's CI must have passed on that commit (a run with no checks yet waits for the next schedule).
+          state=$(gh api "repos/Enach/smart-calendar-flow/commits/$frontend_sha/check-runs" \
+            --jq '[.check_runs[] | select(.name == "verify")] | if length == 0 then "none" elif all(.conclusion == "success") then "success" else "other" end')
+          echo "frontend CI on ${frontend_sha:0:7}: $state"
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          if docker manifest inspect "ghcr.io/$owner/paceday-backend:$version" >/dev/null 2>&1; then
+            echo "$version already published"; echo "build=false" >> "$GITHUB_OUTPUT"
+          elif [ "$state" != "success" ]; then
+            echo "frontend not green, not releasing"; echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  ci:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: [plan, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      # docker/frontend.dockerfile builds from frontend/ = the web repo.
+      - uses: actions/checkout@v4
+        with:
+          repository: Enach/smart-calendar-flow
+          ref: ${{ needs.plan.outputs.frontend_sha }}
+          path: frontend-web
+      - run: rm -rf frontend && mv frontend-web frontend
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: names
+        run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.names.outputs.owner }}/paceday-backend:${{ needs.plan.outputs.version }}
+            ghcr.io/${{ steps.names.outputs.owner }}/paceday-backend:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/frontend.dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ steps.names.outputs.owner }}/paceday-frontend:${{ needs.plan.outputs.version }}
+            ghcr.io/${{ steps.names.outputs.owner }}/paceday-frontend:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
