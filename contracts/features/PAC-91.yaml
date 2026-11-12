@@ -1,0 +1,154 @@
+{
+  "featureId": "PAC-91",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-91/booking-page-in-a-frame-links-must-leave-the-frame-target-top-or-other",
+  "status": "draft (contract revision 1, 2026-11-12; awaiting contract-challenger)",
+  "contractRevision": "unchanged bundle (PAC-91 changes no HTTP operation); PAC-91 interface revision 1",
+  "contractHash": "c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main 4f798cb and on factory/pac-91-spec (byte-identical; git show <rev>:contracts/openapi/openapi.yaml | sha256sum). python scripts/openapi_assemble.py --check -> OK: bundle is in sync (106 paths). If main's bundle moves before PAC-91 merges, the stage-4 PR records main's new hash here and changes nothing else: PAC-91 must not alter the bundle.",
+  "contractDoc": "contracts/features/PAC-91.md",
+  "specDoc": "docs/specs/PAC-91.md (revision 2: spec-challenger 2026-11-12 accept-with-changes, applied in place; OQ-2 and OQ-3 resolved; OQ-1 owner, non-blocking)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "interfaceKind": "No HTTP change. Non-HTTP interfaces pinned in contracts/features/PAC-91.md: nginx framability rule and decision table (section 2), web TOP_LEVEL_LINK_TARGET / isFramed() and frame guard placement (section 3), test ids (section 4).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "nginx/nginx.conf (framability maps only)",
+        "nginx/paceday-render.sh (only if the framability variable it keys the CSP map on is renamed)",
+        "nginx/test/** (partc_test.go table per contract section 2.4, row :53 flipped; new test files allowed)",
+        "e2e/tests/framing.spec.ts (AC-4, AC-5, AC-16)",
+        "e2e/TESTIDS-REQUIRED.md (the four test ids of contract section 4)",
+        "docs/security.md (B1 row, :55, AC-17)",
+        "docs/plans/PAC-91.md",
+        "docs/specs/PAC-91.md (status line only)",
+        "contracts/features/PAC-91.{md,yaml} (contractHash field only, if main's bundle moved)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** (no HTTP change; any bundle diff is a contract defect)",
+        "backend/** (no server change; backend/api/gen generated)",
+        "docker/fileserver/** (spec D-6)",
+        "docker-compose*.yml, e2e/docker-compose.e2e.yml (no image or service change)",
+        "mcp/**",
+        "nginx/nginx.conf outside the framability maps (headers, locations, proxy settings unchanged)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/lib/framing.ts (new: TOP_LEVEL_LINK_TARGET, isFramed) and src/lib/framing.test.ts",
+        "src/components/FrameGuard.tsx (new) and src/components/FrameGuard.test.tsx",
+        "src/App.tsx (mount the guard inside BrowserRouter, above AuthProvider)",
+        "src/pages/PublicBooking.tsx (the three links and their test ids only)",
+        "src/pages/PublicBooking.pac91.test.tsx (new)",
+        "src/pages/PublicBooking.test.tsx, src/pages/PublicBooking.pac83.test.tsx, src/pages/PublicBooking.pac88.test.tsx (only if a link assertion must follow the new target)",
+        ".impeccable/baseline.json (only with an issue tag, if the notice raises an accepted finding)"
+      ],
+      "forbiddenPaths": [
+        "src/api/** including src/api/generated (no API change, nothing to regenerate)",
+        "src/pages/Index.tsx, src/pages/NotFound.tsx and other routes' own links (spec section 5)",
+        "any change to which route is the booking page (Q-O2)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [],
+  "componentsChanged": [],
+  "nonHttpInterface": {
+    "framability": "Framable iff $uri matches ^/book/[^/]+/?$ AND the raw path ($request_uri cut at the first '?') is /book/<plain segment>[/]; plain segment = 1+ chars, no '/', no %2F/%5C escape (case-insensitive), not a dot segment in any spelling (., .., %2e, .%2e, %2E%2e, ...). Query never inspected. Case-sensitive /book/. Decision table: contract section 2.4.",
+    "headers": "framable: CSP shared policy + frame-ancestors *, no X-Frame-Options; otherwise frame-ancestors 'none' + X-Frame-Options DENY; every other header and directive identical; all responses incl. errors.",
+    "webLinkTarget": "src/lib/framing.ts TOP_LEVEL_LINK_TARGET = \"_top\" used by the three booking-page links and the notice link; OQ-1 'new tab' = change to \"_blank\" (one line) + AC-4 expectation.",
+    "webFrameDetection": "isFramed(): window.self !== window.top equivalent; never reads the embedder; tests stub it.",
+    "webGuard": "FrameGuard inside BrowserRouter, above AuthProvider; synchronous per render: unframed -> children; framed + matchPath('/book/:slug') -> children; else only the notice. No effect-based decision, no API request, no redirect while the notice shows.",
+    "testIds": [
+      "frame-notice",
+      "frame-notice-open",
+      "booking-home-link",
+      "booking-error-home-link"
+    ]
+  },
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-91-spec",
+    "assembler": "python scripts/openapi_assemble.py --check -> rc 0, OK: bundle is in sync (106 paths); bundle sha256 unchanged from main",
+    "webGate": "make verify in smart-calendar-flow incl. make design-check (the notice is new UI); nothing to regenerate.",
+    "nginxGate": "go test ./... in nginx/test (Docker required; absence is a failure, not a skip).",
+    "e2eGate": "make e2e in clockwise-like against the PAC-91 web image (AC-4).",
+    "stage4": "make verify output in each PR body; the clockwise-like PR states the bundle sha256 is unchanged.",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] booking page loaded: header link (booking-home-link) has href '/' and target TOP_LEVEL_LINK_TARGET.",
+    "AC-2  [unit] generic, 404 and 410 error states: booking-error-home-link has href '/' and target TOP_LEVEL_LINK_TARGET.",
+    "AC-3  [unit] every state (loaded, slot chosen, booked, generic error, 404, 410): every internal anchor carries the target and activating it leaves the router location on /book/<slug>.",
+    "AC-4  [e2e] another origin frames /book/<slug>; click booking-home-link -> top-level URL is BASE_URL/ (OQ-1 'new tab': a new page at BASE_URL/, embedder unchanged, frame still /book/<slug>).",
+    "AC-5  [e2e] unframed booking page, click booking-home-link -> home page (guard, passes today).",
+    "AC-6  [unit] isFramed stubbed true on /, /signin, /signup, /app, /settings, /app/team/invite/<t>, /logout, /auth/callback, unknown path -> only frame-notice; the route component's render counter stays 0.",
+    "AC-7  [unit] frame-notice has exactly one link, frame-notice-open, href '/', target TOP_LEVEL_LINK_TARGET.",
+    "AC-8  [unit] AC-6 with session probe answering signed out -> location unchanged, zero requests to /api/ (no /api/auth/me, no logout, no refresh).",
+    "AC-9  [unit] framed on /book/<slug> -> booking page renders as unframed (guard).",
+    "AC-10 [unit] framed on /book/<slug>, then client navigation to another route -> frame-notice replaces the page.",
+    "AC-11 [unit] unframed on every AC-6 route -> no frame-notice, route renders (guard).",
+    "AC-12 [nginx] every refused row of contract section 2.4 -> frame-ancestors 'none' + X-Frame-Options DENY, status 200 (/book/abc%00: 400).",
+    "AC-13 [nginx] encoded slash/backslash or dot-segment slug rows of section 2.4 -> refused.",
+    "AC-14 [nginx] every framable row of section 2.4 -> frame-ancestors *, no X-Frame-Options, other directives unchanged (guard).",
+    "AC-15 [nginx] existing non-framable cases of TestFramingOnlyBookingPage and TestSecurityHeadersOnEveryResponse stay non-framable (guard).",
+    "AC-16 [e2e] embedder frames BASE_URL/app/team/invite/..%2F..%2F..%2Fbook%2Fx and BASE_URL/book//<slug> beside the booking page -> a frame-ancestors violation for each, no #root in either, booking frame renders.",
+    "AC-17 [review] docs/security.md B1 row states both mitigations and the raw-path decision."
+  ],
+  "resolvesFindings": [
+    "docs/security.md B1 row (:55): in-frame client navigation from the booking page, open since PAC-81 Part C",
+    "docs/plans/PAC-81-part-c.md:211-214 (gap noted, fix filed separately)"
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "OQ-2 (spec): run 2026-11-12 on nginx:1.31.8-alpine with the shipped config: /%2Fbook/x, /book%2Fx, /book%2fx, /book//abc, //book/abc reach location /, 200, forwarded raw; framable today.",
+    "OQ-3 (spec): PAC-88 (#144) merges first; PAC-91 web PR based on main after it."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "clockwise-like nginx/test/partc_test.go:53",
+      "breaks": "yes (by design)",
+      "detail": "/book/x/../app flips to not framable (spec D-3)."
+    },
+    {
+      "consumer": "clockwise-like e2e/tests/framing.spec.ts, e2e/tests/edge.spec.ts:68-82",
+      "breaks": "no",
+      "detail": "Real booking URLs stay framable; /app still refused by headers."
+    },
+    {
+      "consumer": "clockwise-like e2e/tests/time-format.spec.ts:79",
+      "breaks": "no",
+      "detail": "Clicks a 'paceday' link in the signed-in shell, not on the booking page."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow PublicBooking*.test.tsx",
+      "breaks": "no",
+      "detail": "No existing test asserts the links' target or navigation (spec 2.7)."
+    },
+    {
+      "consumer": "embedding sites",
+      "breaks": "no",
+      "detail": "Booking URLs as Paceday generates them (lower-case slug, any query) stay framable."
+    }
+  ],
+  "mergeInterplay": [
+    "PAC-88 (Enach/smart-calendar-flow#144) edits src/pages/PublicBooking.tsx and its tests; it merges first and the PAC-91 web PR is based on main after it (links at :355, :383, :487 there)."
+  ],
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "Enach/smart-calendar-flow#144 (PAC-88) has merged before the PAC-91 web PR merges; the PAC-91 web PR is rebased onto that main.",
+    "The clockwise-like PR merges after the PAC-91 web PR, or carries AC-4 as test.fixme with a comment naming PAC-91 until the web image with the change is published.",
+    "contracts/openapi/openapi.yaml byte-identical to main's (sha256 in the clockwise-like PR body).",
+    "make verify green in both repos (incl. design-check for the notice) and the nginx/test suite run with Docker, output pasted in each PR."
+  ],
+  "rollback": "Revert the web PR and/or the clockwise-like PR independently; no migration, no data, no contract revision. Each half alone restores today's behaviour for its half.",
+  "ownerDecided": [
+    "PAC-81 Q-O2 (2026-11-01): only the public booking page may be framed, by any site."
+  ],
+  "ownerOpen": [
+    "OQ-1: booking-page links replace the embedding page (default, _top) or open a new tab (_blank). Non-blocking; one-line change."
+  ],
+  "followUps": [],
+  "challenge": "Spec challenged 2026-11-12 (accept-with-changes, applied). Contract awaiting contract-challenger."
+}
