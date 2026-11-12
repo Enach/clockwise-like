@@ -1,7 +1,7 @@
 {
   "featureId": "PAC-87",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-87",
-  "status": "draft (contract-author revision 1, 2026-11-12; awaiting contract-challenger)",
+  "status": "draft (contract-author revision 1, 2026-11-12; contract-challenger 2026-11-12 accept-with-changes, applied in place: contracts/features/PAC-87.md 'Challenge — 2026-11-12')",
   "contractRevision": "1 (PAC-87); amends NEW-llm-bring-your-own Part 2 contract revision 3.1",
   "contractHash": "bf8c476f52bb4898849110060860854a9b9619b22463f4a98ed4d5a006ab84b4",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after make openapi in an LF clone of factory/pac-87-k at 757dffa (golang:1.25-bookworm, api-gate pattern). Base: main 32ecacf, c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346. Reproduce: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml. If PAC-88 (booking.yaml) merges first, the second to merge regenerates and records the new hash; the PAC-87 fragment text does not change.",
@@ -19,13 +19,14 @@
     "backend": {
       "url": "https://github.com/Enach/clockwise-like",
       "allowedPaths": [
-        "backend/storage (org_ai.go: consent_since_version on writes, confirmation check/record, ReadOrgAIState; settings write ordering)",
+        "backend/storage (org_ai.go: consent_since_version on writes, confirmation check/record, ReadOrgAIState; settings write ordering: one transaction holding the caller's users row FOR NO KEY UPDATE, contract section 5a)",
         "backend/storage/migrations/036_llm_org_ai_consent_period.{up,down}.sql (text normative in contracts/features/PAC-87.md section 3; number per its either-order rule)",
         "backend/nlp (llm_factory.go decision table: rows 9 and 10, row-9 probe and redaction)",
         "backend/api (handlers_org_ai.go, handlers_settings.go, handlers for parse/probe/brief only where the decision is consumed; no response shape change)",
         "backend/**/_test.go for the above",
-        "mcp (tests only: AC-21)",
+        "mcp (tests only: AC-21, including the stale row-10 fixture in mcp/org_ai_not_in_mcp_test.go)",
         "e2e/tests/llm-org-ai.spec.ts, e2e/TESTIDS-REQUIRED.md",
+        "docs/runbook.md (PAC-87 release note and rollback line only: production rollback is the runbook's, contract section 3.3)",
         "docs/specs/NEW-llm-bring-your-own-part2.md (pointer to PAC-87 only)",
         "contracts/features/PAC-87.{md,yaml} (contractHash only, if main's bundle moved)"
       ],
@@ -36,7 +37,7 @@
         "any other migration (PAC-71's, PAC-84's)",
         "Makefile coverage floors, .github, .claude settings"
       ],
-      "migration": "036_llm_org_ai_consent_period (contracts/features/PAC-87.md section 3). Up: org_ai_configurations.consent_since_version BIGINT NOT NULL DEFAULT 0, set to configuration_version for every row, CHECK 0 <= consent_since_version <= configuration_version; delete confirmations of members whose settings row has llm_provider <> 'organization' (P87-D5); rename org_ai_confirmations.configuration_version to consent_since_version. Down: keep only confirmations of followers whose stored value equals the organisation's current configuration_version, rename back, drop the column and CHECK. Number: main's last is 034, PAC-71 holds 035, so 036; whichever of PAC-71/PAC-87 merges second takes the next free number above everything on main (never below an applied version); the texts are disjoint and do not change."
+      "migration": "036_llm_org_ai_consent_period (contracts/features/PAC-87.md section 3). Up: org_ai_configurations.consent_since_version BIGINT NOT NULL DEFAULT 0, set to configuration_version for every row, CHECK 0 <= consent_since_version <= configuration_version; delete confirmations of members whose settings row has llm_provider <> 'organization' (P87-D5); rename org_ai_confirmations.configuration_version to consent_since_version and its CHECK constraint with it. Down: keep only confirmations of followers whose stored value equals the organisation's current configuration_version, rename back, drop the column and CHECK. Number: main's last is 034, PAC-71 holds 035, so 036; whichever of PAC-71/PAC-87 merges second takes the next free number above everything on main (never below an applied version); the texts are disjoint and do not change. Prefer PAC-71 first (PAC-87 at 036): if PAC-87 sits below PAC-71's migration, PAC-87 cannot be reverted in place once PAC-71 is deployed (contract section 3)."
     },
     "frontend": {
       "url": "https://github.com/Enach/smart-calendar-flow",
@@ -45,7 +46,8 @@
         "src/lib/aiProviders.ts (+ test): drop the personal_keys_forbidden+[user] branch of offersOrganizationAI; row 10 is organization_unconfirmed",
         "src/components/AINotConfiguredNotice.tsx, src/components/OrgAIConsentDialog.tsx (+ tests): kept-choice sentence when Settings.llmProvider is not organization",
         "src/hooks/useOrganizationAI.ts (choose never used from row 10)",
-        "src/pages/Settings.tsx (row-9 line), src/components/settings/OrganizationAISection.tsx (+ test): the four pre-save sentences (P87-D6) and 'after confirming once'"
+        "src/pages/Settings.tsx (row-9 line), src/components/settings/OrganizationAISection.tsx (+ test): the four pre-save sentences (P87-D6) and 'after confirming once'",
+        "src/api/client.ts (optional: llmTestBody may send {} in row 9 so Test connection tests the organisation's AI, AC-14; contract section 4)"
       ],
       "forbiddenPaths": [
         "src/api/generated by hand",
@@ -177,7 +179,7 @@
     }
   ],
   "migrationRegister": "contracts/openapi/MIGRATION.md: no row changes status (description-only changes; the touched operations keep their rows, as Part 2 did). Regenerated by make openapi; any diff is committed.",
-  "rollback": "Stop the backend, run the 036 down step, start the previous image (image-only rollback is impossible: the previous image cannot start at schema 036, and the reverted code reads the renamed column). Down keeps only confirmations of followers recorded at exactly the current state; every other follower and every row-9 member is asked again, nothing sent before they confirm; no configuration, key, stored choice or operator record is lost; P87-D5 deletions are not restored. Release note: a rollback is a visible re-ask. Rolling forward again re-runs up. No HTTP schema to revert (descriptions only).",
+  "rollback": "Production (binding): docs/runbook.md 'Rollback' unchanged: fix forward, or restore the pre-deploy backup and start the previous image (no operator migrate step exists; down migrations are not run in production). In place (dev, tests, staging; AC-19): stop the backend, run the 036 down step (down 1, only while it is the newest applied migration), start the previous image; image-only rollback is impossible (the previous image cannot start at schema 036). Down keeps only confirmations of followers recorded at exactly the current state; every other follower and every row-9 member is asked again, nothing sent before they confirm; no configuration, key, stored choice or operator record is lost; P87-D5 deletions are not restored. Release note: a rollback is a visible re-ask. Rolling forward again re-runs up. No HTTP schema to revert (descriptions only). Open: an operator command for the in-place down step if the release wants it in production.",
   "ownerDecided": [
     "OQ-P2-1 re-ask only when the provider changes (2026-11-01).",
     "OQ-P2-2 move forbidden own-provider members onto the organisation's AI after one confirmation, keeping their settings (2026-11-01).",
@@ -195,5 +197,19 @@
   ],
   "followUps": [
     "Backend test that a personal-keys forbid with no key set is stored (spec section 6 finding; OQ-P2-3)."
-  ]
+  ],
+  "mergeInterplay": {
+    "PAC-71": "PAC-71's migration (035_identity_binding on its merge branch) touches users, user_identities, operator_audit; disjoint from 036. Whichever merges second takes the next free number above everything on main. Preferred: PAC-71 first, PAC-87 at 036 (keeps PAC-87's in-place down step usable).",
+    "PAC-84": "No secret column involved. paceday-operator encryption downgrade-schema refuses a database not at 034, so with 036 applied PAC-84's in-place downgrade needs PAC-87's down step first; after PAC-71 ships it ends anyway (owner, 2026-11-12, option B).",
+    "PAC-88": "Disjoint fragments (booking.yaml); the second to merge regenerates the bundle and records its hash."
+  },
+  "mergeConditions": [
+    "Backend PR deploys before the web PR; the web PR body says 'requires clockwise-like PAC-87 deployed'.",
+    "AC-23 test runs the injected confirmation concurrently against the users-row lock (contract section 5a)."
+  ],
+  "challenge": {
+    "date": "2026-11-12",
+    "verdict": "accept-with-changes",
+    "log": "contracts/features/PAC-87.md, 'Challenge — 2026-11-12'"
+  }
 }

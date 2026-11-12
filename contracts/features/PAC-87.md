@@ -6,7 +6,7 @@
   `factory/pac-87-spec` at `cbccf33`. Amends
   `docs/specs/NEW-llm-bring-your-own-part2.md` (Part 2) and its contract
   `contracts/features/NEW-llm-bring-your-own-part2.{md,yaml}` (revision 3.1).
-- **Stage**: contract-author, revision 1, 2026-11-12. Next: contract-challenger.
+- **Stage**: contract-author, revision 1, 2026-11-12; contract-challenger 2026-11-12, accept-with-changes (applied in place, log at the end). Next: plan-author.
 - **Manifest**: `contracts/features/PAC-87.yaml`.
 - **Owner decisions applied** (`.claude/factory/owner-decisions.md`,
   2026-11-01): OQ-P2-1 re-ask only when the provider changes; OQ-P2-2 move
@@ -64,6 +64,17 @@ current consent start). If no provider change happened after V, the latest
 one is at or before V, so `consent_since_version <= V`: accepted, whatever
 keys or destinations changed in between. No history table is needed and no
 provider is compared.
+
+(Challenge 2026-11-12: "versions only grow" also holds across deletion. The
+configuration row is never deleted by the server: a removal keeps the row
+and its version (`031_llm_org_ai.up.sql` (a), `org_ai.go` `Merge`), and no
+statement in `backend/` deletes from `org_ai_configurations`. The only
+deletion is the `ON DELETE CASCADE` from `organizations`, and
+`org_ai_confirmations.org_id` cascades from the same row, so a
+configuration that restarts at version 0 can only belong to an organisation
+with no confirmation left to match it. Stage 4 must not add a delete path;
+if one is ever needed it deletes the organisation's confirmations in the
+same transaction.)
 
 **Why the check cannot race (AC-5's per-access run).** The confirmation is
 recorded by one conditional statement against the configuration row as
@@ -195,6 +206,28 @@ If PAC-87 merges first it keeps `036` only if `035` is already on `main`;
 otherwise it renumbers to `035` and PAC-71 renumbers to `036`. Neither text
 changes. No stored secret moves (PAC-84 contract 3.3): `api_key` is not read.
 
+*Challenge 2026-11-12 (verified, plus one consequence).* PAC-71's migration is
+`035_identity_binding` on its current merge branch (`pac71-merge`; the pushed
+`impl/pac-71-identity-binding-backend` still carries `033` and is behind
+`main`); it touches only `users` (new columns, `email_key` backfill),
+`user_identities` and `operator_audit`, none of which this migration reads or
+writes, so the texts are disjoint and the order is free. Why the second to
+merge must go above: golang-migrate's `Up` only walks forward from the
+database's version, so a `035` merged after a database ran `036` would be
+skipped silently on that database. **Consequence for rollback:** the in-place
+down step below is `down 1` only while PAC-87's migration is the newest on
+the database. If PAC-87 takes `035` and PAC-71's migration lands above it,
+PAC-87 can no longer be reverted in place once PAC-71 is deployed (that
+would mean running PAC-71's down step first, which the owner excluded in
+production on 2026-11-12, option B); it is then fix-forward or the
+pre-deploy backup. The preferred order is therefore PAC-71 first, PAC-87 at
+`036`. The migration does not change the PAC-84 picture either:
+`paceday-operator encryption downgrade-schema` already refuses any database
+not at `034` ("roll back the later release first",
+`storage/encryption_ops.go:736-746`), so with `036` applied PAC-84's in-place
+downgrade needs this down step first, and after PAC-71 ships it ends anyway
+(owner, 2026-11-12).
+
 ### 3.1 Up
 
 ```sql
@@ -222,6 +255,11 @@ WHERE EXISTS (
 --     it and never matches again (P87-D4, AC-18 Y). The CHECK (>= 1) stays.
 ALTER TABLE org_ai_confirmations
     RENAME COLUMN configuration_version TO consent_since_version;
+-- The column CHECK of 031 keeps its generated name across a column rename;
+-- rename it too so the name says what it checks (challenge 2026-11-12).
+ALTER TABLE org_ai_confirmations
+    RENAME CONSTRAINT org_ai_confirmations_configuration_version_check
+    TO org_ai_confirmations_consent_since_version_check;
 ```
 
 What it does to AC-18's population: X (confirmed the current version 7) ->
@@ -249,6 +287,9 @@ WHERE EXISTS (
     WHERE s.user_id = f.user_id AND s.llm_provider <> 'organization'
 );
 ALTER TABLE org_ai_confirmations
+    RENAME CONSTRAINT org_ai_confirmations_consent_since_version_check
+    TO org_ai_confirmations_configuration_version_check;
+ALTER TABLE org_ai_confirmations
     RENAME COLUMN consent_since_version TO configuration_version;
 ALTER TABLE org_ai_configurations
     DROP CONSTRAINT IF EXISTS org_ai_configurations_consent_since_check;
@@ -266,9 +307,26 @@ operator record. Confirmations ended by up (b) are not restored.
 
 ### 3.3 Rollback procedure
 
-1. Stop the backend. 2. Run the `036` down step (golang-migrate `down 1`, or
-the operator's migrate step per `docs/runbook.md`). 3. Start the previous
-image. Image-only rollback does not work: the previous image cannot start
+*Corrected by the challenge 2026-11-12.* There is no "operator's migrate
+step" in production: `paceday-operator` has only the `encryption`
+subcommands (`cmd/paceday-operator/encryption.go:34`), the image carries no
+migrate CLI, and `docs/runbook.md` "Rollback" says never to migrate down in
+production and to restore the pre-deploy backup (or fix forward). So:
+
+- **Production (binding):** the runbook's procedure, unchanged: fix forward,
+  or stop the stack, restore the pre-deploy backup taken before the PAC-87
+  deploy, start the previous image. That loses what was written since the
+  backup, as for every release with a migration; the runbook already says so.
+- **In place (development, tests, a staging copy, or production only if the
+  release manager runs golang-migrate against it by hand and records it):**
+  1. stop the backend; 2. run the down step (`migrate ... down 1`, valid only
+  while PAC-87's migration is the newest applied, see §3 "Consequence for
+  rollback"); 3. start the previous image. This is what PAC87-AC-19 tests.
+  The down step is the only one in the repository that loses nothing but
+  confirmations; a release that wants it as the production rollback adds an
+  operator command for it first (not in this contract; open item).
+
+Image-only rollback does not work: the previous image cannot start
 against a database at a version it has no file for (`storage/db.go:65`,
 `m.Up()`), and must not be forced to, because without the down step the
 reverted code would read `org_ai_confirmations` with a column it no longer
@@ -304,6 +362,39 @@ web build from before PAC-87 parses every PAC-87 answer. During the window:
 - A pre-PAC-87 web sends whole settings documents when it has no previous
   copy; under §3.4 / P87-D3 an unchanged `llmProvider` no longer ends the
   confirmation, so this does not undo a move.
+
+*Challenge 2026-11-12, checked against smart-calendar-flow `origin/main`
+`ae8b0d4` (none of the files below changed since `702a6c2`):*
+
+- Row 10 on an older web: `asksConfirmation` (`aiProviders.ts:112-114`) is
+  true and `offersOrganizationAI` (`:120-125`) false, so the notice shows only
+  "Review and confirm" (`ai-org-confirm`, `choose: false`); the dialog's
+  mutation calls `confirmOrganizationAI` and skips
+  `chooseOrganizationAIChoice` when `choose` is false
+  (`useOrganizationAI.ts:33-37`). The stored choice is never rewritten from
+  row 10. The Settings page additionally shows the existing
+  `ai-personal-keys-forbidden` line ("Your own choice (‹provider›) and any
+  key you saved for it are kept but not used", `Settings.tsx:618-623`): true
+  in rows 9, 10 and 11.
+- Nothing an older web shows a row-9 member is false: no notice
+  (`aiStatus.configured` is true), the line above (true), the organisation
+  section's "Not allowed: members use the organisation's AI"
+  (`OrganizationAISection.tsx:74`, true). What is missing is the positive
+  line "AI runs on your organisation's AI".
+- **Test connection in row 9 (older AND current web).** `llmTestBody`
+  (`src/api/client.ts:885-895`) always names the draft's provider, so a
+  row-9 member pressing Test connection sends e.g.
+  `POST /api/llm/test {"llmProvider":"openai","llmModel":""}` and gets the
+  409 `personal_keys_forbidden` `[organization_admin]` "Your organisation
+  does not allow personal API keys, so OpenAI cannot be tested. An
+  administrator of your organisation can change this."
+  (`llm_factory.go:186-197`). True, but the member cannot test the AI they
+  actually use from Settings. The web PR may send `{}` in row 9 (the
+  manifest's frontend `allowedPaths` now lists `client.ts` for this); not a
+  merge condition.
+- The older administrator form makes no claim about who is asked again
+  (it has no pre-save sentence except the OQ-P2-3 warning), so nothing it
+  says becomes false during the window.
 
 **The web PR must not deploy before the backend PR.** A PAC-87 web against a
 pre-PAC-87 backend would show row 10 (`personal_keys_forbidden` + `[user]`)
@@ -349,6 +440,35 @@ caller) before recording, so the two orders of AC-23 are the only outcomes.
 Today's handler deletes before saving with no lock
 (`handlers_settings.go:213-228`).
 
+**Corrected by the challenge 2026-11-12: the lock is on the caller's
+`users` row, not the settings row.** A settings-row lock does not order the
+two: the handler creates a missing settings row outside any transaction
+(`GetOrCreateSettingsByUser`, `handlers_settings.go:134`), and a member with
+no settings row follows by default (`029_llm_bring_your_own.up.sql:14`), so
+a confirmation that runs first finds no row and locks nothing. The `users`
+row always exists. Binding for stage 4:
+
+1. `patchSettings` runs, in ONE transaction: `SELECT 1 FROM users WHERE id =
+   $caller FOR NO KEY UPDATE`; re-read the stored `llm_provider` inside the
+   transaction (never the copy read before it, which also loses against a
+   second concurrent settings write of the same caller); save; if the stored
+   value changed to `""` or another provider, delete the caller's
+   confirmations; commit.
+2. `confirmOrganizationAI` takes the same `users` row lock FIRST, then the
+   configuration row `FOR SHARE` (as today), then records.
+3. `FOR NO KEY UPDATE`, not `FOR UPDATE`: an administrator's write holds the
+   configuration row `FOR UPDATE` and then inserts its `sso_events` row, whose
+   foreign key takes `FOR KEY SHARE` on the administrator's `users` row;
+   `FOR KEY SHARE` conflicts with `FOR UPDATE` but not with `FOR NO KEY
+   UPDATE`, so an administrator confirming as a member while saving the
+   configuration in another request cannot deadlock. A transaction-scoped
+   advisory lock keyed on the caller's id is an equivalent alternative.
+4. The AC-23 test must run the injected confirmation concurrently (it blocks
+   on the lock until the write commits) and assert the outcome, not run it
+   inline in the hook, which would wait on itself.
+
+With these, the outcomes are exactly the two orders of AC-23.
+
 ## 6. Contract text rewritten (spec §8 item 4)
 
 | Where (scheduling.yaml unless named) | Was | Now |
@@ -390,10 +510,121 @@ and its `contractHash` is recomputed then. No shared component is touched.
 | clockwise-like `backend/api/pac73p2_rows_test.go:291` (P2-AC-18), `:351`; `backend/storage/org_ai_test.go:301`; `nlp/llm_factory.go:29-31` | yes | rewritten to PAC-87 AC-1..-23 in stage 4 |
 | `e2e/tests/llm-org-ai.spec.ts:119-120` | yes | reads `consent_since_version` (§3) |
 | `e2e/TESTIDS-REQUIRED.md:104` (`ai-use-org` rows 7 and 10) | yes | row 7 only; row 10 uses `ai-org-confirm` |
-| mcp `clockwise_parse_command` (`mcp/tools.go:195`) | no | passes the sentence through (AC-21) |
+| mcp `clockwise_parse_command` (`mcp/tools.go:195`) | no | passes the sentence through (AC-21); no MCP code reads `reason` (grep finds none outside tests) |
+| `mcp/org_ai_not_in_mcp_test.go:22` (fixture: row 10 as `personal_keys_forbidden` `[user]` with the old "Choose ..." sentence) | no (stand-in backend) | stale fixture: AC-21 replaces it with row 10's `organization_unconfirmed` sentence (added by the challenge) |
+| `docs/runbook.md` "Rollback" | no | PAC-87's release note and rollback (§3.3) follow it; a line naming the re-ask on rollback may be added (added by the challenge) |
 
 ## 9. Verification at this stage
 
 See the manifest's `gates` for the exact commands and results (LF docker
 clone, api-gate pattern). Nothing was implemented; statements about
 behaviour after PAC-87 are what stage 4 must build.
+
+## Challenge — 2026-11-12
+
+contract-challenger on `52d8a2f` merged with `origin/main` `4f798cb` (CI
+workflows only; bundle unaffected). Code read: clockwise-like `origin/main`;
+smart-calendar-flow `origin/main` `ae8b0d4` via `git show` (the cited files
+are unchanged since `702a6c2`).
+
+**Verdict**: accept-with-changes. The interface change is descriptions plus
+one example and is sound; the defects were in the stage-4 bindings (lock,
+rollback) and fixed in place above.
+
+### Requests wrongly permitted
+
+None at the schema level: no schema, enum or `required` list changed.
+Attacked:
+
+1. `POST /api/organization/ai/consent {"configurationVersion": 7}` after
+   P (v7, consent start 7) -> Q (v8, start 8) -> P (v9, start 9): `7 < 9`,
+   409 `configuration_changed`. The same if the confirmation's transaction
+   runs between the two changes (start 8 > 7). Confirm before both: stored 7,
+   then start 9 != 7, so not confirmed. Refused in every interleaving: the
+   confirmation reads the row `FOR SHARE` and the admin write holds it
+   `FOR UPDATE` (`org_ai.go:425-428`, `:522-525`), so they are serialised.
+2. Remove then set up again: `{"configurationVersion": 7}` after `provider:
+   ""` (v8, start 8, incomplete) -> 409 `organization_not_configured`
+   (wins); after re-setup P (v9, start 9) -> 409 `configuration_changed`.
+3. `{"configurationVersion": 12}` with current version 9: `12 > 9`, 409.
+   `{"configurationVersion": 0}` is the schema's 400 (`minimum: 1`).
+
+### Responses the client cannot handle
+
+None. Row 10 as `organization_unconfirmed` `[user]` parses under the web's
+closed enum (`schemas.ts:8`); no property is added to the
+`z.strictObject` schemas (`schemas.ts:8,11,320,329`).
+
+### Consumers affected (added)
+
+- `mcp/org_ai_not_in_mcp_test.go:22`: stale row-10 fixture (stand-in
+  backend, so it does not break); AC-21 replaces it. Added to §8.
+- `src/api/client.ts:885-895` `llmTestBody`: a row-9 member's Test
+  connection always names their own provider and is refused (§4). Added as
+  allowed (optional) to the frontend paths.
+
+### Contract/implementation divergences (fixed in the body)
+
+1. **[major] §5a lock target.** "Locks the caller's settings row (`SELECT ...
+   FOR UPDATE`)" does not order a confirmation against a settings write: the
+   settings row may not exist when the confirmation runs (members with none
+   follow by default; the handler creates it outside a transaction,
+   `handlers_settings.go:134`), so `FOR UPDATE` locks nothing. Fixed: lock
+   the caller's `users` row `FOR NO KEY UPDATE` first in both, re-read the
+   stored choice inside the transaction; `FOR NO KEY UPDATE` so an
+   administrator's `sso_events` foreign-key `FOR KEY SHARE` cannot deadlock
+   against it. Payload: `PATCH /api/settings {"llmProvider":"anthropic"}`
+   racing `POST /api/organization/ai/consent {"configurationVersion":9}` for
+   a member without a settings row.
+2. **[major] §3.3 rollback named a step that does not exist in production.**
+   No operator migrate command (`cmd/paceday-operator/encryption.go:34`), and
+   `docs/runbook.md` "Rollback" forbids down migrations in production. Fixed:
+   production rollback is the runbook's (fix forward, or the pre-deploy
+   backup); the in-place down step is for dev/test/staging (AC-19), and an
+   operator command for it is an open item.
+3. **[minor] Either-order rule, rollback consequence.** If PAC-87 ends up
+   below PAC-71's migration, PAC-87 cannot be reverted in place once PAC-71
+   is deployed (owner option B forbids PAC-71's down step in production).
+   Recorded; preferred order PAC-71 first, PAC-87 at `036`.
+4. **[minor] Constraint name.** Renaming the column leaves the 031 CHECK
+   named `org_ai_confirmations_configuration_version_check`. Up and down now
+   rename it with the column.
+
+### Uncertainties not actually resolved
+
+None claimed (`resolvesUncertain: []`, no `x-uncertain` on the touched
+operations; re-checked).
+
+### Verified clean
+
+- Consent period: `consent_since_version <= V <= configuration_version`
+  plus complete, checked and recorded under the configuration row lock;
+  `ReadOrgAIState` compares stored start to current start in its single
+  statement (`org_ai.go:154-177`), so a request never mixes reads. Versions
+  are monotonic, and the row is deleted only together with its organisation,
+  which also deletes the confirmations (FK cascade), so a version can never
+  restart at 1 under a live confirmation (added to §1).
+- Migration up: backfill `start = version` keeps X confirmed and Y not;
+  P87-D5 delete; rename. Down: `stored = configuration_version` implies
+  `stored = start = version` (stored <= start <= version), so a kept row was
+  recorded at exactly the current state; non-followers removed. No secret
+  column is read (`api_key` untouched; PAC-84's `identityType`/`secrets.go`
+  list only `org_ai_configurations.api_key`). PAC-84's `downgrade-schema`
+  refuses any database not at `034`, so it is unaffected. PAC-71's `035`
+  touches only `users`, `user_identities`, `operator_audit`: disjoint.
+- Row 10 on an older web: confirm only, `choose: false`, the stored choice
+  is never rewritten (`AINotConfiguredNotice.tsx:30-63`,
+  `useOrganizationAI.ts:33-37`). Nothing an older web tells a row-9 or row-10
+  member, or an administrator, becomes false during the window (§4).
+- Row-9 status (`configured: true`, `configuration: organization`, the
+  organisation's `provider`) and probe rules (`llm_factory.go:174-205`:
+  step 1a applies before the table, so naming a provider in row 9 is the 409
+  and `{}` reaches the row-9 decision).
+- Audit fields: `details` is JSONB without a key CHECK; the break-glass
+  placeholder row is rewritten with full details in the same transaction
+  (`org_ai.go:461-470`), so both new keys are always present on a stored
+  change.
+- MCP: pure pass-through, no reason parsing.
+- Manifest: 23 acceptance tests = spec's 23; the stage-4 paths include the
+  migration files, `e2e/tests/llm-org-ai.spec.ts`, `e2e/TESTIDS-REQUIRED.md`;
+  added `docs/runbook.md`, the MCP fixture and `client.ts`.

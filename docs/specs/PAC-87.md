@@ -1,7 +1,7 @@
 # Spec — PAC-87: organisation AI, apply the owner's answers OQ-P2-1 and OQ-P2-2
 
 - **Linear**: https://linear.app/paceday/issue/PAC-87
-- **Status**: draft
+- **Status**: challenged — spec challenge 2026-11-02 accept-with-changes (applied); contract challenge 2026-11-12 accept-with-changes (applied in `contracts/features/PAC-87.md`). Ready for the plan stage.
 - **Author**: spec-author
 - **Amends**: `docs/specs/NEW-llm-bring-your-own-part2.md` (the "Part 2
   spec", PAC-73 part 2, accepted at revision 2.1 and shipped in
