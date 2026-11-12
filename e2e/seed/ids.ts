@@ -292,6 +292,103 @@ export const AVATAR_HOSTS = {
 } as const;
 
 /**
+ * PAC-88 (contract contracts/features/PAC-88.md section 6): the booking page's
+ * time zone journeys. Each host is connected through the stand-in (a token it
+ * does not accept is an unreadable calendar, which D-6 makes busy, so every
+ * PAC-88 link would offer nothing). New York, Paris and Los Angeles carry a
+ * settings row with that profile zone; the no-zone owner has NO settings row
+ * (seed.sql deletes any, seed.ts verifies the absence), which is what makes
+ * its link's zone UTC (PAC-72 A-4, AC-3).
+ */
+export const PAC88_HOSTS = {
+  /** Owner and only host of PAC88_LINKS.dst (AC-19). */
+  newYork: {
+    id: 'b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4',
+    email: 'e2e.pac88.ny@paceday.test',
+    name: 'E2E PAC-88 New York Host',
+    zone: 'America/New_York',
+    token: 'e2e-pac88-ny-work',
+    label: 'pac88-ny-work',
+  },
+  /** Owner and host of PAC88_LINKS.paris (AC-1, AC-2, AC-7, AC-9, AC-10, AC-21). */
+  paris: {
+    id: 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5',
+    email: 'e2e.pac88.paris@paceday.test',
+    name: 'E2E PAC-88 Paris Host',
+    zone: 'Europe/Paris',
+    token: 'e2e-pac88-paris-work',
+    label: 'pac88-paris-work',
+  },
+  /** Accepted co-host of PAC88_LINKS.paris: its zone must change nothing (A-2, AC-2). */
+  losAngeles: {
+    id: 'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6',
+    email: 'e2e.pac88.la@paceday.test',
+    name: 'E2E PAC-88 Los Angeles Co-host',
+    zone: 'America/Los_Angeles',
+    token: 'e2e-pac88-la-work',
+    label: 'pac88-la-work',
+  },
+  /** Owner and host of PAC88_LINKS.noZone: no settings row at all (A-4, AC-3). */
+  noZone: {
+    id: 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7',
+    email: 'e2e.pac88.utc@paceday.test',
+    name: 'E2E PAC-88 No-zone Host',
+    zone: null,
+    token: 'e2e-pac88-utc-work',
+    label: 'pac88-utc-work',
+  },
+} as const;
+
+/**
+ * PAC-88 links (contract section 6). Duration 30 only, no notice, no buffers,
+ * generic refusal. Write isolation: only tests/pac88-booking.spec.ts books,
+ * and only on PAC88_LINKS.paris, serially, on "booking Mondays" no read-only
+ * journey displays; the dst and noZone links' calendars are written by no
+ * journey.
+ */
+export const PAC88_LINKS = {
+  /** Every day 00:00-23:59 New York time, 365-day horizon: AC-19's DST link. */
+  dst: {
+    id: 'cbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    slug: 'e2e-pac88-dst-30min',
+    title: 'E2E PAC-88 DST Link',
+    ownerUserId: PAC88_HOSTS.newYork.id,
+    hostUserIds: [PAC88_HOSTS.newYork.id],
+    daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    windowStart: '00:00',
+    windowEnd: '23:59',
+    horizonDays: 365,
+  },
+  /**
+   * Monday 09:00-17:00 Paris time, 365-day horizon, collective with a Los
+   * Angeles co-host. (Not cccccccc-...: that id is TEAMS.connectedManager.)
+   */
+  paris: {
+    id: 'cacacaca-caca-4aca-8aca-cacacacacaca',
+    slug: 'e2e-pac88-paris-30min',
+    title: 'E2E PAC-88 Paris Link',
+    ownerUserId: PAC88_HOSTS.paris.id,
+    hostUserIds: [PAC88_HOSTS.paris.id, PAC88_HOSTS.losAngeles.id],
+    daysOfWeek: [1],
+    windowStart: '09:00',
+    windowEnd: '17:00',
+    horizonDays: 365,
+  },
+  /** Monday to Friday 09:00-17:00 in UTC (owner without a zone), 60 days. */
+  noZone: {
+    id: 'cddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    slug: 'e2e-pac88-utc-30min',
+    title: 'E2E PAC-88 No-zone Link',
+    ownerUserId: PAC88_HOSTS.noZone.id,
+    hostUserIds: [PAC88_HOSTS.noZone.id],
+    daysOfWeek: [1, 2, 3, 4, 5],
+    windowStart: '09:00',
+    windowEnd: '17:00',
+    horizonDays: 60,
+  },
+} as const;
+
+/**
  * Every credential the stand-in accepts, installed by global setup. The
  * rejected user's token is deliberately absent.
  */
@@ -305,6 +402,7 @@ export const ACCEPTED_CREDENTIALS = [
     DISCONNECTING,
     ...Object.values(BOOKING_HOSTS),
     ...Object.values(AVATAR_HOSTS),
+    ...Object.values(PAC88_HOSTS),
   ].map((u) => ({
     token: u.token,
     label: u.label,
@@ -330,6 +428,7 @@ export const SEEDED_USER_IDS: readonly string[] = [
   DISCONNECTING.id,
   ...Object.values(AVATAR_HOSTS).map((u) => u.id),
   ...Object.values(BOOKING_HOSTS).map((u) => u.id),
+  ...Object.values(PAC88_HOSTS).map((u) => u.id),
 ];
 
 export const SEEDED_LINK_IDS: readonly string[] = [
@@ -337,13 +436,15 @@ export const SEEDED_LINK_IDS: readonly string[] = [
   SEAM_LINK.id,
   OFFERABLE_LINK.id,
   ...Object.values(AVATAR_HOSTS).map((u) => u.link.id),
+  ...Object.values(PAC88_LINKS).map((l) => l.id),
 ];
 
 /**
  * Accepted host rows seed.sql inserts: one per link, plus the unconnected
- * co-host of LINKS.unreadableCoHost.
+ * co-host of LINKS.unreadableCoHost and the Los Angeles co-host of
+ * PAC88_LINKS.paris.
  */
-export const SEEDED_ACCEPTED_HOST_ROWS = SEEDED_LINK_IDS.length + 1;
+export const SEEDED_ACCEPTED_HOST_ROWS = SEEDED_LINK_IDS.length + 2;
 
 /** Exact analytics values seed.sql writes, for the manager roster assertions. */
 export const ANALYTICS = {

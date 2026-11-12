@@ -339,4 +339,76 @@ VALUES
    'E2E Past Booker', 'past.booker@paceday.test',
    '2020-01-06T15:00:00Z', '2020-01-06T15:30:00Z', 'confirmed', 'seeded — exhausts the link');
 
+-- ── PAC-88: booking page time zone (contract PAC-88 section 6) ───────────────
+-- Four hosts connected through the stand-in (seed/ids.ts PAC88_HOSTS, all in
+-- ACCEPTED_CREDENTIALS: an unaccepted token is an unreadable calendar, which
+-- PAC-72 D-6 makes busy, and every PAC-88 link would offer nothing).
+INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
+  ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'e2e.pac88.ny@paceday.test',    'E2E PAC-88 New York Host',       '', 'google', 'e2e-pac88-ny'),
+  ('b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5', 'e2e.pac88.paris@paceday.test', 'E2E PAC-88 Paris Host',          '', 'google', 'e2e-pac88-paris'),
+  ('b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'e2e.pac88.la@paceday.test',    'E2E PAC-88 Los Angeles Co-host', '', 'google', 'e2e-pac88-la'),
+  ('b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7', 'e2e.pac88.utc@paceday.test',   'E2E PAC-88 No-zone Host',        '', 'google', 'e2e-pac88-utc');
+
+-- PAC-71 (as for every seeded user above): bound to a Google identity with
+-- authoritative evidence, address domain-confirmed. Inserted after that
+-- block, so bound here, with subjects of their own ("7188" + n) that cannot
+-- collide with the block's "71" + 6 digits.
+UPDATE users SET address_standing = 'domain_confirmed'
+ WHERE id IN ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5',
+              'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7');
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by)
+SELECT id, 'google', '', '7188' || lpad((row_number() OVER (ORDER BY id))::text, 4, '0'), 'authoritative', 'created'
+FROM users
+WHERE id IN ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5',
+             'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7');
+
+INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
+  ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'e2e-pac88-ny-work',    'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5', 'e2e-pac88-paris-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'e2e-pac88-la-work',    'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7', 'e2e-pac88-utc-work',   'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+
+-- The three zoned hosts' profile zones (PAC-72 D-9: a link's days and hours
+-- are its owner's zone; the LA co-host's zone must change nothing, A-2).
+INSERT INTO settings (user_id, timezone, work_start, work_end, focus_daily_target_minutes, calendar_provider)
+VALUES
+  ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'America/New_York',    '09:00', '18:00', 240, 'google'),
+  ('b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5', 'Europe/Paris',        '09:00', '18:00', 240, 'google'),
+  ('b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'America/Los_Angeles', '09:00', '18:00', 240, 'google')
+ON CONFLICT (user_id) DO UPDATE SET
+  timezone = EXCLUDED.timezone,
+  work_start = EXCLUDED.work_start,
+  work_end = EXCLUDED.work_end,
+  focus_daily_target_minutes = EXCLUDED.focus_daily_target_minutes,
+  calendar_provider = EXCLUDED.calendar_provider;
+
+-- Stale-row guard: the no-zone owner must have NO settings row (A-4: its
+-- link's zone is UTC). Anything that created one (a settings read through the
+-- app creates defaults) would silently change AC-3. seed.ts verifies it.
+DELETE FROM settings WHERE user_id = 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7';
+
+-- The links name booking_horizon_days explicitly (the other seeded links keep
+-- the migration's default, 60). Monday-only Paris and every-day New York run
+-- 365 days so AC-10's winter Monday and AC-19's next transitions are inside.
+INSERT INTO scheduling_links
+  (id, owner_user_id, slug, title, duration_options, days_of_week,
+   window_start_time, window_end_time, buffer_before, buffer_after,
+   min_notice_minutes, usage_type, max_uses, active, booking_horizon_days)
+VALUES
+  ('cbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4',
+   'e2e-pac88-dst-30min', 'E2E PAC-88 DST Link', '{30}', '{0,1,2,3,4,5,6}',
+   '00:00', '23:59', 0, 0, 0, 'reusable', NULL, true, 365),
+  ('cacacaca-caca-4aca-8aca-cacacacacaca', 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5',
+   'e2e-pac88-paris-30min', 'E2E PAC-88 Paris Link', '{30}', '{1}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true, 365),
+  ('cddddddd-dddd-4ddd-8ddd-dddddddddddd', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7',
+   'e2e-pac88-utc-30min', 'E2E PAC-88 No-zone Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, true, 60);
+
+INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUES
+  ('cbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'accepted', NOW()),
+  ('cacacaca-caca-4aca-8aca-cacacacacaca', 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5', 'accepted', NOW()),
+  ('cacacaca-caca-4aca-8aca-cacacacacaca', 'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'accepted', NOW()),
+  ('cddddddd-dddd-4ddd-8ddd-dddddddddddd', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7', 'accepted', NOW());
+
 COMMIT;

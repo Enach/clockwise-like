@@ -636,8 +636,11 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
       const arrived = gate();
       let served: { slots: Array<{ start: string }> } | undefined;
       let startedAt: number | undefined;
+      // PAC-88: the page's first /slots request is now the day overview
+      // (from/to); only the day listing (date=) is held. Setup, not an
+      // assertion: the journey still holds the one answer it asserts on.
       await page.route(
-        (url) => url.pathname === `/api/book/${slug}/slots`,
+        (url) => url.pathname === `/api/book/${slug}/slots` && url.searchParams.has('date'),
         async (route) => {
           startedAt ??= await page.evaluate(() => Date.now());
           const res = await route.fetch();
@@ -677,7 +680,10 @@ test.describe('public booking — slow or lost answers (PAC-83)', () => {
 
       // Delivered while paused; the clock resumes only once the page has the
       // answer, so no real time is added before the 135 s bound is cleared.
-      const answered = page.waitForResponse((r) => new URL(r.url()).pathname === `/api/book/${slug}/slots`);
+      const answered = page.waitForResponse((r) => {
+        const u = new URL(r.url());
+        return u.pathname === `/api/book/${slug}/slots` && u.searchParams.has('date');
+      });
       release.open();
       await answered;
       await page.clock.resume();

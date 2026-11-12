@@ -58,6 +58,10 @@ type TeamAvailability interface {
 
 type BookingFlow interface {
 	CollectiveSlots(ctx context.Context, link *storage.SchedulingLink, date time.Time, durationMinutes int) ([]engine.AvailableSlot, error)
+	// CollectiveSlotsDays is CollectiveSlots for several link days with one
+	// calendar read per host (PAC-88 contract section 2.3): out[i] is
+	// CollectiveSlots(days[i]).
+	CollectiveSlotsDays(ctx context.Context, link *storage.SchedulingLink, days []time.Time, durationMinutes int) ([][]engine.AvailableSlot, error)
 	ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes string) (*storage.Booking, error)
 }
 

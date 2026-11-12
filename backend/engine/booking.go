@@ -49,6 +49,9 @@ type BookingReads struct {
 	AcceptedHosts func(db storage.DBTX, linkID uuid.UUID) ([]*storage.LinkHost, error)
 	FocusBlocks   func(db storage.DBTX, userID uuid.UUID, weekStart time.Time) ([]storage.FocusBlock, error)
 	HostBookings  func(db storage.DBTX, userID uuid.UUID, start, end time.Time) ([]time.Time, error)
+	// OwnerZone reads the link owner's stored zone for the confirmation
+	// email (PAC-88); nil is storage.GetUserTimezone.
+	OwnerZone func(db storage.DBTX, userID uuid.UUID) (tz string, found bool, err error)
 }
 
 func (r BookingReads) acceptedHosts(db storage.DBTX, linkID uuid.UUID) ([]*storage.LinkHost, error) {
@@ -114,58 +117,115 @@ func slugify(s string) string {
 
 // CollectiveSlots returns time slots where ALL accepted hosts are simultaneously
 // free: the link's grid slots on date's calendar day (GridSlots, in date's
-// location, which is the link's zone, PAC-72 D-9), minus busy time. It is the
-// busy-time half of the offerable-start rule that the
-// public slot listing and the public booking share (PAC-72): a link with no
-// accepted host offers nothing (D-10), and a storage failure while reading the
-// hosts, a host's focus blocks or the bookings on a host's links is an error,
-// never "free" (D-7).
-//
-// PAC-81 AC-A18: each host's read (credential renewal plus one calendar
-// list) runs on the bounded per-item pool. Owner decision PAC-72 D-6
-// (2026-11-01): a host whose calendar fails with a provider error, is not
-// connected, or times out on its own limit is busy for the whole window. A
-// host not read because of the budget, or cut by it, makes the whole listing
-// a budget error (503), never a slot list that silently ignores that host.
+// location, which is the link's zone, PAC-72 D-9), minus busy time. It is
+// CollectiveSlotsDays for one day.
 func (e *BookingEngine) CollectiveSlots(
 	ctx context.Context,
 	link *storage.SchedulingLink,
 	date time.Time,
 	durationMinutes int,
 ) ([]AvailableSlot, error) {
+	out, err := e.CollectiveSlotsDays(ctx, link, []time.Time{date}, durationMinutes)
+	if err != nil {
+		return nil, err
+	}
+	return out[0], nil
+}
+
+// dayWindow is one link day's window (LinkWindow), ok false when it has none.
+type dayWindow struct {
+	day        time.Time
+	start, end time.Time
+	ok         bool
+}
+
+// CollectiveSlotsDays is CollectiveSlots for several link days at once: out[i]
+// is exactly what CollectiveSlots(days[i]) answers, computed with ONE
+// external calendar read per accepted host over the window from the earliest
+// day's opening to the latest day's close (PAC-88 contract section 2.3, C-3).
+// It is the busy-time half of the offerable-start rule that the public slot
+// listing and the public booking share (PAC-72): a link with no accepted host
+// offers nothing (D-10), and a storage failure while reading the hosts, a
+// host's focus blocks or the bookings on a host's links is an error, never
+// "free" (D-7). days are calendar days in the link's zone (their location).
+//
+// Equivalence with one read per day (PAC-88 C-1): each day's busy time is
+// built only from the events overlapping that day's own window (buffers are
+// applied to those events), the focus blocks read from that day's opening and
+// the bookings overlapping that day's window, exactly as a one-day read saw
+// them. Storage reads stay per day; only the provider call is shared.
+//
+// PAC-81 AC-A18: each host's read (credential renewal plus the calendar
+// list, every page of it) runs on the bounded per-item pool. Owner decision
+// PAC-72 D-6 (2026-11-01): a host whose calendar fails with a provider error
+// (on any page), is not connected, or times out on its own limit is busy for
+// every requested day's whole window. A host not read because of the budget,
+// or cut by it, makes the whole listing a budget error (503), never a slot
+// list that silently ignores that host.
+func (e *BookingEngine) CollectiveSlotsDays(
+	ctx context.Context,
+	link *storage.SchedulingLink,
+	days []time.Time,
+	durationMinutes int,
+) ([][]AvailableSlot, error) {
+	out := make([][]AvailableSlot, len(days))
+	for i := range out {
+		out[i] = make([]AvailableSlot, 0)
+	}
+	if len(days) == 0 {
+		return out, nil
+	}
 	hosts, err := e.Reads.acceptedHosts(storage.Bind(ctx, e.DB), link.ID)
 	if err != nil {
 		return nil, err
 	}
 	if len(hosts) == 0 {
-		return []AvailableSlot{}, nil
+		return out, nil
 	}
 
-	// The link's window on date's calendar day, in the link's zone, with the
-	// daylight-saving edge rules (PAC-72 R21.2).
-	windowStart, windowEnd, ok := LinkWindow(link, date)
-	if !ok {
-		return []AvailableSlot{}, nil
+	// Each day's window in the link's zone, with the daylight-saving edge
+	// rules (PAC-72 R21.2), and the one window the calendar read covers.
+	windows := make([]dayWindow, len(days))
+	var readStart, readEnd time.Time
+	found := false
+	for i, d := range days {
+		ws, we, ok := LinkWindow(link, d)
+		windows[i] = dayWindow{day: d, start: ws, end: we, ok: ok}
+		if !ok {
+			continue
+		}
+		if !found || ws.Before(readStart) {
+			readStart = ws
+		}
+		if !found || we.After(readEnd) {
+			readEnd = we
+		}
+		found = true
+	}
+	if !found {
+		return out, nil
 	}
 
-	// Collect merged busy intervals across all accepted hosts. Owner
-	// decision PAC-72 D-6 (2026-11-01): a host whose calendar cannot be read
-	// (not connected, provider error, or its own per-call timeout) is busy
-	// for the whole window, so no collective slot needing that host is
-	// offered. A host the budget did not reach is the 503 (peritem).
-	// A storage failure (PAC-72 D-7) is kept apart from an unreadable
-	// calendar: it fails the listing instead of making the host busy.
-	perHost := make([][]interval, len(hosts))
+	// perHost[h][i] is host h's busy time on day i. A storage failure
+	// (PAC-72 D-7) is kept apart from an unreadable calendar: it fails the
+	// listing instead of making the host busy.
+	perHost := make([][][]interval, len(hosts))
 	storeErr := make([]error, len(hosts))
 	if err := peritem.Run(ctx, len(hosts), peritem.Read, HostReadLimit(), func(callCtx context.Context, i int) error {
-		busy, err := e.hostBusy(callCtx, ctx, hosts[i].UserID, windowStart, windowEnd, link)
+		busy, err := e.hostBusyDays(callCtx, ctx, hosts[i].UserID, readStart, readEnd, windows, link)
 		var se *storageReadError
 		if errors.As(err, &se) {
 			storeErr[i] = err
 			return err
 		}
 		if err != nil {
-			perHost[i] = []interval{{start: windowStart, end: windowEnd}}
+			all := make([][]interval, len(windows))
+			for j, w := range windows {
+				if w.ok {
+					all[j] = []interval{{start: w.start, end: w.end}}
+				}
+			}
+			perHost[i] = all
 			return err
 		}
 		perHost[i] = busy
@@ -178,20 +238,26 @@ func (e *BookingEngine) CollectiveSlots(
 			return nil, err
 		}
 	}
-	var allBusy []interval
-	for _, busy := range perHost {
-		allBusy = append(allBusy, busy...)
-	}
-	merged := mergeIntervals(allBusy)
 
-	// Candidate slots on the 15-minute wall-clock grid.
-	slots := make([]AvailableSlot, 0)
-	for _, c := range GridSlots(link, date, durationMinutes) {
-		if !overlapsMerged(interval{start: c.Start, end: c.End}, merged) {
-			slots = append(slots, c)
+	for j, w := range windows {
+		if !w.ok {
+			continue
+		}
+		var dayBusy []interval
+		for _, busy := range perHost {
+			if busy != nil {
+				dayBusy = append(dayBusy, busy[j]...)
+			}
+		}
+		merged := mergeIntervals(dayBusy)
+		// Candidate slots on the 15-minute wall-clock grid.
+		for _, c := range GridSlots(link, w.day, durationMinutes) {
+			if !overlapsMerged(interval{start: c.Start, end: c.End}, merged) {
+				out[j] = append(out[j], c)
+			}
 		}
 	}
-	return slots, nil
+	return out, nil
 }
 
 // HostReadLimit is one per-item call's own limit: a credential renewal plus
@@ -213,75 +279,93 @@ func (e *storageReadError) Unwrap() error { return e.err }
 // refused with the existing 409 and nothing is written.
 var ErrHostCalendarUnreadable = errors.New("a host's calendar could not be read")
 
-// hostBusy reads one host's busy time. The calendar call runs on ctx (the
-// per-item deadline); the database reads run on dbCtx (the request), so a
-// slow calendar never leaves the host's existing bookings out of busy time.
-// The error is non-nil when the host's calendar could not be read (no
-// connection, provider error, own timeout): the caller treats the host as
-// busy (PAC-72 D-6). A storage read failure is a *storageReadError, which the
-// caller returns as an error instead (PAC-72 D-7).
-func (e *BookingEngine) hostBusy(
+// hostBusyDays reads one host's busy time for each window: one calendar read
+// (every page) over [readStart, readEnd), then per window the events
+// overlapping it (with the link's buffers), the host's focus blocks read from
+// the window's opening and the bookings overlapping it. The calendar call
+// runs on ctx (the per-item deadline); the database reads run on dbCtx (the
+// request), so a slow calendar never leaves the host's existing bookings out
+// of busy time. The error is non-nil when the host's calendar could not be
+// read (no connection, provider error on any page, own timeout): the caller
+// treats the host as busy (PAC-72 D-6). A storage read failure is a
+// *storageReadError, which the caller returns as an error instead (D-7).
+func (e *BookingEngine) hostBusyDays(
 	ctx, dbCtx context.Context,
 	userID uuid.UUID,
-	start, end time.Time,
+	readStart, readEnd time.Time,
+	windows []dayWindow,
 	link *storage.SchedulingLink,
-) ([]interval, error) {
-	var busy []interval
+) ([][]interval, error) {
 	db := storage.Bind(dbCtx, e.DB)
 
-	// Calendar events from Google/Outlook.
+	// Calendar events from Google/Outlook: one complete read (PAC-88 C-10).
 	calClient, err := e.calendarClientForUser(ctx, dbCtx, userID)
 	if err != nil {
 		return nil, err
 	}
-	events, err := calClient.ListEvents(ctx, calClient.CalendarID, start, end)
+	events, err := calClient.ListEventsComplete(ctx, calClient.CalendarID, readStart, readEnd)
 	if err != nil {
 		return nil, err
 	}
+	var evs []interval
 	for _, ev := range events {
 		if ev.Transparency == "transparent" {
 			continue
 		}
 		s, e2 := parseEventTime(ev)
 		if !s.IsZero() && !e2.IsZero() {
-			busy = append(busy, interval{start: s, end: e2})
+			evs = append(evs, interval{start: s, end: e2})
 		}
 	}
 
-	// Buffer time around each event.
-	if link.BufferBefore > 0 || link.BufferAfter > 0 {
-		buffered := make([]interval, len(busy))
-		for i, b := range busy {
-			buffered[i] = interval{
-				start: b.start.Add(-time.Duration(link.BufferBefore) * time.Minute),
-				end:   b.end.Add(time.Duration(link.BufferAfter) * time.Minute),
+	out := make([][]interval, len(windows))
+	for j, w := range windows {
+		if !w.ok {
+			continue
+		}
+		var busy []interval
+		// The events a one-day read of this window returns: those
+		// overlapping it (the provider's timeMin/timeMax filter).
+		for _, iv := range evs {
+			if iv.start.Before(w.end) && iv.end.After(w.start) {
+				busy = append(busy, iv)
 			}
 		}
-		busy = append(busy, buffered...)
-	}
+		// Buffer time around each event.
+		if link.BufferBefore > 0 || link.BufferAfter > 0 {
+			buffered := make([]interval, len(busy))
+			for i, b := range busy {
+				buffered[i] = interval{
+					start: b.start.Add(-time.Duration(link.BufferBefore) * time.Minute),
+					end:   b.end.Add(time.Duration(link.BufferAfter) * time.Minute),
+				}
+			}
+			busy = append(busy, buffered...)
+		}
 
-	// Focus blocks from DB.
-	// Only this host's focus blocks (PAC-64): another user's focus time does
-	// not make this host busy.
-	blocks, err := e.Reads.focusBlocks(db, userID, start)
-	if err != nil {
-		return nil, &storageReadError{fmt.Errorf("focus blocks: %w", err)}
-	}
-	for _, fb := range blocks {
-		busy = append(busy, interval{start: fb.StartTime, end: fb.EndTime})
-	}
+		// Only this host's focus blocks (PAC-64): another user's focus
+		// time does not make this host busy. Read per day from the day's
+		// opening, so a window of many days is covered (PAC-88 C-10).
+		blocks, err := e.Reads.focusBlocks(db, userID, w.start)
+		if err != nil {
+			return nil, &storageReadError{fmt.Errorf("focus blocks: %w", err)}
+		}
+		for _, fb := range blocks {
+			busy = append(busy, interval{start: fb.StartTime, end: fb.EndTime})
+		}
 
-	// Bookings that are not cancelled, on any link this user hosts (PAC-72
-	// D-11).
-	times, err := e.Reads.hostBookings(db, userID, start, end)
-	if err != nil {
-		return nil, &storageReadError{fmt.Errorf("host bookings: %w", err)}
+		// Bookings that are not cancelled, on any link this user hosts
+		// (PAC-72 D-11).
+		times, err := e.Reads.hostBookings(db, userID, w.start, w.end)
+		if err != nil {
+			return nil, &storageReadError{fmt.Errorf("host bookings: %w", err)}
+		}
+		for i := 0; i+1 < len(times); i += 2 {
+			busy = append(busy, interval{start: times[i], end: times[i+1]})
+		}
+		out[j] = busy
 	}
-	for i := 0; i+1 < len(times); i += 2 {
-		busy = append(busy, interval{start: times[i], end: times[i+1]})
-	}
-
-	return busy, nil
+	return out, nil
 }
 
 func overlapsMerged(iv interval, merged []interval) bool {
@@ -535,8 +619,8 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 
 	// The confirmation email (AC-A8): a failure is logged with the booking
 	// id and reported, never retried (D-15).
-	err := sendConfirmationEmail(link.Title, booking.BookerName, booking.BookerEmail,
-		strings.Join(hostNames, " and "), start, end)
+	// PAC-88: in the link's zone read now, then UTC (owner OQ-4).
+	err := e.sendBookingEmail(db, link, booking, strings.Join(hostNames, " and "))
 	if err != nil {
 		msg := outbound.RedactAddresses(err.Error())
 		log.Printf("ERROR: booking confirmation email failed for booking %s: %s", booking.ID, msg)
@@ -550,7 +634,77 @@ func (e *BookingEngine) completeBooking(ctx context.Context, link *storage.Sched
 
 // --- ICS / email -----------------------------------------------------------
 
-func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, start, end time.Time) error {
+// emailZone is the link's zone for the confirmation email, read at compose
+// time by the PAC-72 rule (PAC-88 contract section 4): the owner's profile
+// zone; no settings row, an empty name, "Local" or a name that does not load
+// is UTC. A failed read is the error (the caller sends in UTC and warns).
+func (e *BookingEngine) emailZone(db storage.DBTX, ownerID uuid.UUID) (*time.Location, error) {
+	read := e.Reads.OwnerZone
+	if read == nil {
+		read = storage.GetUserTimezone
+	}
+	tz, found, err := read(db, ownerID)
+	if err != nil {
+		return time.UTC, err
+	}
+	if !found || tz == "" || tz == "Local" {
+		return time.UTC, nil
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC, nil
+	}
+	return loc, nil
+}
+
+// sendBookingEmail reads the link's zone, then composes and sends the
+// confirmation. An unreadable zone is still sent, in UTC, and logged as a
+// WARN with the booking id (AC-23).
+func (e *BookingEngine) sendBookingEmail(db storage.DBTX, link *storage.SchedulingLink, booking *storage.Booking, hostNames string) error {
+	loc, err := e.emailZone(db, link.OwnerUserID)
+	if err != nil {
+		log.Printf("WARN: booking confirmation email for booking %s: link zone unreadable, sent in UTC: %s",
+			booking.ID, outbound.RedactAddresses(err.Error()))
+		loc = time.UTC
+	}
+	return sendConfirmationEmail(link.Title, booking.BookerName, booking.BookerEmail, hostNames,
+		booking.StartTime, booking.EndTime, loc)
+}
+
+// utcOffset is the offset in force at t in t's location, "UTC+hh:mm" or
+// "UTC−hh:mm" (U+2212 MINUS SIGN).
+func utcOffset(t time.Time) string {
+	_, off := t.Zone()
+	sign := "+"
+	if off < 0 {
+		sign, off = "−", -off
+	}
+	return fmt.Sprintf("UTC%s%02d:%02d", sign, off/3600, off%3600/60)
+}
+
+// composeConfirmation is the confirmation email's subject date and body text
+// (PAC-88 contract section 4, owner OQ-4): the link's zone with its offset,
+// then UTC; UTC only when the zone is UTC.
+func composeConfirmation(bookerName, hostNames string, start, end time.Time, loc *time.Location) (subjectDate, text string) {
+	us, ue := start.UTC(), end.UTC()
+	if loc == nil || loc.String() == "UTC" {
+		return us.Format("Monday, January 2"), fmt.Sprintf(
+			"Hi %s,\n\nYour meeting with %s is confirmed.\n\nDate: %s\nTime: %s – %s UTC\n",
+			bookerName, hostNames, us.Format("Monday, January 2, 2006"), us.Format("15:04"), ue.Format("15:04"))
+	}
+	ls, le := start.In(loc), end.In(loc)
+	timeLine := fmt.Sprintf("%s – %s, %s (%s)", ls.Format("3:04 PM"), le.Format("3:04 PM"), loc.String(), utcOffset(ls))
+	if utcOffset(ls) != utcOffset(le) {
+		// The meeting spans a change of offset.
+		timeLine = fmt.Sprintf("%s (%s) – %s (%s), %s", ls.Format("3:04 PM"), utcOffset(ls), le.Format("3:04 PM"), utcOffset(le), loc.String())
+	}
+	return ls.Format("Monday, January 2"), fmt.Sprintf(
+		"Hi %s,\n\nYour meeting with %s is confirmed.\n\nDate: %s\nTime: %s\nIn UTC: %s – %s UTC on %s\n",
+		bookerName, hostNames, ls.Format("Monday, January 2, 2006"), timeLine,
+		us.Format("15:04"), ue.Format("15:04"), us.Format("Monday, January 2, 2006"))
+}
+
+func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, start, end time.Time, loc *time.Location) error {
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
 	smtpUser := os.Getenv("SMTP_USER")
@@ -565,6 +719,7 @@ func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, sta
 	}
 
 	ics := generateICS(title, bookerName, bookerEmail, hostNames, start, end)
+	subjectDate, text := composeConfirmation(bookerName, hostNames, start, end, loc)
 
 	boundary := "boundary-paceday-ics"
 	body := strings.Join([]string{
@@ -572,15 +727,12 @@ func sendConfirmationEmail(title, bookerName, bookerEmail, hostNames string, sta
 		fmt.Sprintf("Content-Type: multipart/mixed; boundary=%q", boundary),
 		fmt.Sprintf("From: Paceday <%s>", smtpFrom),
 		fmt.Sprintf("To: %s", bookerEmail),
-		fmt.Sprintf("Subject: Confirmed — %s on %s", title, start.Format("Mon Jan 2")),
+		fmt.Sprintf("Subject: Confirmed — %s on %s", title, subjectDate),
 		"",
 		"--" + boundary,
 		"Content-Type: text/plain; charset=utf-8",
 		"",
-		fmt.Sprintf("Hi %s,\n\nYour meeting with %s is confirmed.\n\nDate: %s\nTime: %s – %s UTC\n",
-			bookerName, hostNames,
-			start.Format("Monday, January 2 2006"),
-			start.Format("15:04"), end.Format("15:04")),
+		text,
 		"",
 		"--" + boundary,
 		"Content-Type: text/calendar; method=REQUEST",

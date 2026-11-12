@@ -28,6 +28,30 @@ Highest priority: this is the suite's most valuable journey.
 | `booking-confirmation` | the confirmation card | So the success assertion does not depend on the copy "You are confirmed!". |
 | `booking-error` | the `submitError` paragraph | Same, for the 409/410/422 branches. |
 
+
+## 1a. PAC-88 booking page time zone — `src/pages/PublicBooking.tsx`, `src/components/booking/**`
+
+Contract `contracts/features/PAC-88.md` section 3.5 (exact spellings), used by
+`tests/pac88-zones.spec.ts` and `tests/pac88-booking.spec.ts`. Implemented by
+the web PR smart-calendar-flow#144 (the journeys need it).
+
+| Test id | Element | Used for |
+|---|---|---|
+| `booking-tz-label` | zone label, text `<zone> (UTC±hh:mm)` (U+2212 minus); the selected day's offset, or the selected time's | AC-1, AC-2, AC-3, AC-21 |
+| `booking-tz-switcher` | `<input role="combobox">` named "Time zone"; value = the current zone; typing filters; options `role="option"` named `<zone> (UTC±hh:mm)` | every zone switch (`lib/zones.ts switchZone`) |
+| `booking-tz-use-mine` | "Use my time zone (<browser zone>)", absent when equal | AC-7 |
+| `booking-tz-back-to-host` | "Back to the host's time zone (<zone>)", shown after a switch | AC-7 |
+| `booking-tz-unsupported` | "Times can't be shown in <zone>. Choose another time zone." | not driven by e2e (a zone the server refuses needs a browser zone the server lacks) |
+| `booking-tz-announcer` | `role="status"`, polite, empty on load | AC-7 (after a switch), AC-1 (nothing on load) |
+
+Also relied on (not test ids): each time button's accessible name is
+`<Weekday, Month D, YYYY>, <time>, <zone> <offset>` (spec 3.9; asserted with
+`toHaveAccessibleName`), its visible text stays the time alone (`slotButtons`);
+day cells not listed by the overview are disabled; the month caption reads
+`<Month> <YYYY>` (`lib/zones.ts showDay`); the confirmation shows the date,
+`start – end · N min` and `<zone> (UTC±hh:mm)`; "Book another time" is a
+button with that name.
+
 ## 2. Links page create form — `src/pages/Links.tsx`
 
 > **Resolved (2026-10-11) by the "acceptable alternative" below.** Since

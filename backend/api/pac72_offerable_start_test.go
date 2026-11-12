@@ -554,23 +554,25 @@ func TestPAC72_ListingDaysAndHorizon(t *testing.T) {
 	owner, _ := b.host("pac72-listing@example.com")
 	link := b.link("pac72-listing", owner, nil, owner)
 
-	all := b.slots(link.Slug, "", 30)
-	if all.code != http.StatusOK || len(all.dates) == 0 {
-		t.Fatalf("date-less listing = %d %s", all.code, all.body)
+	// PAC-88 (contract section 7): the 60-day horizon is read as two
+	// bounded overviews (from/to); their union is the horizon's link days.
+	dates := b.horizonDates(link.Slug, 30, pac72Mon, 60)
+	if len(dates) == 0 {
+		t.Fatalf("overviews of the horizon list no date")
 	}
 	last := pac72Mon.AddDate(0, 0, 59).Format(time.DateOnly)
-	if !sort.StringsAreSorted(all.dates) || all.dates[0] != "2030-01-07" || all.dates[len(all.dates)-1] != last {
-		t.Errorf("AC-16: dates run %s..%s, want 2030-01-07..%s ascending", all.dates[0], all.dates[len(all.dates)-1], last)
+	if !sort.StringsAreSorted(dates) || dates[0] != "2030-01-07" || dates[len(dates)-1] != last {
+		t.Errorf("AC-16: dates run %s..%s, want 2030-01-07..%s ascending", dates[0], dates[len(dates)-1], last)
 	}
-	for _, d := range all.dates {
+	for _, d := range dates {
 		day, _ := time.Parse(time.DateOnly, d)
 		if wd := day.Weekday(); wd == time.Saturday || wd == time.Sunday {
-			t.Errorf("AC-15: date-less listing offers %s, a %s", d, wd)
+			t.Errorf("AC-15: overview offers %s, a %s", d, wd)
 		}
 	}
 	// 60 days from a Monday: 8 full weeks and Monday-Thursday = 44 link days.
-	if len(all.dates) != 44 {
-		t.Errorf("date-less listing has %d dates, want 44", len(all.dates))
+	if len(dates) != 44 {
+		t.Errorf("overviews of the horizon have %d dates, want 44", len(dates))
 	}
 
 	for _, tc := range []struct {
@@ -599,8 +601,8 @@ func TestPAC72_ListingDaysAndHorizon(t *testing.T) {
 }
 
 // AC-17a-c: busy time that cannot be gathered from storage is a server error
-// for the booking (nothing written) and the explicit-date listing, and drops
-// the day from the date-less listing; never a 409. AC-17d (revision 2, D-6): an
+// for the booking (nothing written), the explicit-date listing and (PAC-88
+// C-4: no more omitted day) the date-less overview; never a 409. AC-17d (revision 2, D-6): an
 // unreadable external calendar makes the host busy.
 func TestPAC72_UnreadableBusyTime(t *testing.T) {
 	boom := errors.New("injected storage failure")
@@ -652,20 +654,11 @@ func TestPAC72_UnreadableBusyTime(t *testing.T) {
 			if got := b.slots(link.Slug, "2030-01-08", 30); got.code != http.StatusInternalServerError || got.body != `{"error":"internal error"}` {
 				t.Errorf("explicit-date listing = %d %s, want 500 internal error", got.code, got.body)
 			}
-			all := b.slots(link.Slug, "", 30)
-			if all.code != http.StatusOK {
-				t.Fatalf("date-less listing = %d %s", all.code, all.body)
-			}
-			for _, d := range all.dates {
-				if d == "2030-01-08" {
-					t.Errorf("date-less listing offers the day whose busy time could not be read")
-				}
-			}
-			if strings.HasSuffix(tc.name, "hosts") && len(all.dates) != 0 {
-				t.Errorf("date-less listing = %v, want no date when no host list can be read", all.dates)
-			}
-			if !strings.HasSuffix(tc.name, "hosts") && len(all.dates) != 43 {
-				t.Errorf("date-less listing has %d dates, want the other 43 link days", len(all.dates))
+			// PAC-88 (contract section 7, C-4): the date-less read is the
+			// overview, and a storage failure on any needed link day is
+			// its 500, like the explicit date.
+			if got := b.slots(link.Slug, "", 30); got.code != http.StatusInternalServerError || got.body != `{"error":"internal error"}` {
+				t.Errorf("date-less overview = %d %s, want 500 internal error", got.code, got.body)
 			}
 		})
 	}

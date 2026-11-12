@@ -98,6 +98,21 @@ func (f *countingBookingFlow) CollectiveSlots(_ context.Context, link *storage.S
 	return allFreeSlots(link, date, duration), nil
 }
 
+// CollectiveSlotsDays follows the PAC-88 range method (one call per request):
+// out[i] is this fake's CollectiveSlots for days[i], so its assertions do not
+// change.
+func (f *countingBookingFlow) CollectiveSlotsDays(ctx context.Context, link *storage.SchedulingLink, days []time.Time, duration int) ([][]engine.AvailableSlot, error) {
+	out := make([][]engine.AvailableSlot, len(days))
+	for i, d := range days {
+		slots, err := f.CollectiveSlots(ctx, link, d, duration)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = slots
+	}
+	return out, nil
+}
+
 // allFreeSlots is the link's window on date, every 15 minutes, as
 // CollectiveSlots offers it when no host is busy.
 func allFreeSlots(link *storage.SchedulingLink, date time.Time, duration int) []engine.AvailableSlot {

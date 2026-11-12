@@ -286,14 +286,31 @@ paths:
     get:
       operationId: getPublicBookingSlots
       tags: [booking]
-      summary: Available slots for a date, or the list of dates that have any slot.
+      summary: Available slots for one day, or the days of a bounded range that have any slot.
       description: >-
-        Two distinct modes. With `date`: `slots` is populated and `available_dates` is
-        always the empty array. Without `date`: the handler probes the link's booking
-        horizon, today and the next `booking_horizon_days` - 1 days in the link's
-        zone, and returns in `available_dates` the days that have at least one
-        offered slot, with `slots` always the empty array. Both keys are always
-        present in both modes. A slot is offered by the same rule
+        Days are calendar days in the DAY ZONE: `display_time_zone` when the
+        request carries it, otherwise the link's zone (`PublicLinkInfo.time_zone`)
+        (PAC-88, owner decision PAC-72 D-9). Two distinct modes. With `date` (one
+        day in the day zone): `slots` holds every offered slot whose start falls
+        on that day in the day zone, in ascending start order, and
+        `available_dates` is always the empty array. Without `date` (the day
+        overview): `available_dates` holds, in ascending order, the days from
+        `from` to `to` inclusive (at most 42 days; when both are omitted, today
+        in the day zone and the next 41 days) on which at least one offered
+        slot starts in the day zone, and `slots` is always the empty array.
+        Every answer states the link's zone it was computed in (`time_zone`),
+        the day zone (`display_time_zone`) and the days it covered
+        (`range_from`, `range_to`). A day of the day zone is never cut into
+        parts: every offered start is listed under exactly one day, its
+        calendar date in the day zone, whichever of the link's days it belongs
+        to (a day zone other than the link's makes one day overlap two, around
+        an offset change three, of the link's days; they are one answer). The
+        day zone changes only how offered starts are grouped into days: the set
+        of offered instants, the booking rule, the refusals and the link's own
+        "today", horizon, days and hours (all in the link's zone) are the same
+        for every day zone. Without `display_time_zone` and with `date`, the
+        lists are exactly the PAC-72 answer for that link-zone day. Both list
+        keys are always present in both modes. A slot is offered by the same rule
         `createPublicBooking` accepts (PAC-72; see that operation for the six parts
         and the link's zone): duration, link days and daily window on the 15-minute
         grid, every accepted host free, minimum notice, horizon, at least one
@@ -301,17 +318,30 @@ paths:
         link's zone (the link owner's profile time zone, UTC when it has none; the
         zone used is `PublicLinkInfo.time_zone`), whatever zone the server process
         runs in; slot instants are returned in UTC. A day not in the link's
-        `days_of_week` offers no slot. An explicit `date` before today or after the
-        horizon's last day answers 200 with `slots: []`, exactly like a fully
-        booked day, never an error; a link with no accepted host answers 200 with
-        no slot and no date in both modes. When busy time cannot be gathered from
-        storage (the link's accepted hosts, a host's focus blocks, or the bookings
-        on any link a host owns or co-hosts), the explicit-date mode answers 500
-        and the date-less mode omits that day. The date-less mode reads every day
-        of the horizon (up to 365) under the one request budget; with a long
-        horizon or slow calendars it ends in the 503 below, never in a list
-        truncated to the days it reached (PAC-72 revision 3.1). Clients needing
-        a long range should use the explicit-date mode per visible day.
+        `days_of_week` offers no slot. A `date`, or a whole `from`..`to` range,
+        with no offered start (before today, after the horizon's last day, not
+        a link day, fully booked) answers 200 with an empty list, never an
+        error; a link with no accepted host answers 200 with no slot and no
+        date in both modes. When busy time cannot be gathered from storage (the
+        link's accepted hosts, a host's focus blocks, or the bookings on any
+        link a host owns or co-hosts) for any link day the answer needs, both
+        modes answer 500 for the whole request (PAC-88 spec section 3.4: never
+        a day that silently looks empty; this replaces the earlier date-less
+        behaviour of omitting that day). The cost of an answer is bounded by
+        the days it covers, never by the link's horizon: the overview covers at
+        most 42 days whatever `booking_horizon_days` is (1 to 365), and, in
+        both modes, each accepted host's external calendar is read at most once
+        per request, over one window spanning every link day the answer needs
+        (link days outside the horizon or not among `days_of_week` need no
+        read). That one read is complete for its whole window: every page of
+        the provider's answer is read, and a read that cannot be completed (a
+        later page fails, or the read's own limit ends first) is an unreadable
+        calendar (busy, D-6 below), never a partial list of events. The
+        storage half of busy time (focus blocks, bookings) likewise covers
+        every needed link day, however many storage queries that takes. The earlier date-less read of the whole horizon (and its 503 on
+        long horizons, PAC-72 revision 3.1) no longer exists: a request without
+        `date`, `from` and `to` is the 42-day overview starting today in the
+        day zone.
         Hosts (PAC-81, spec AC-A18): each accepted host's calendar is read on at
         most 4 concurrent reads per request, each limited to its own 15 s (shortened
         to the budget left minus a 10 s stop margin). A host whose calendar cannot be
@@ -319,17 +349,33 @@ paths:
         2026-11-01; it replaces the earlier "treated as free"): not connected, a
         provider error, or a read that fails on its own time limit. Every link is
         collective (every accepted host must be free; there is no round-robin or
-        any-host kind), so a link with such a host offers no slot for that date,
-        and without `date` that day is not listed; the answer is still a 200. A
+        any-host kind), so a link with such a host offers no slot in the window
+        read (no slot for that `date`, no day of that overview); the answer is
+        still a 200. A
         host that was not read because the request budget ran out (a read not
         started at the stop margin, or cut short by the budget) is neither free
         nor busy: the answer is the 503. A read that hits a deadline shortened by the budget (budget left minus
         the margin was below 15 s) counts as cut short by the budget, not as failing
         on its own limit: the answer is the 503, never a 200 that silently omits that host or,
         without `date`, a day. Neither mode has a partial shape.
+        Validation order (PAC-88 keeps the existing order and appends its checks
+        where the `date` check was): rate limit (429), link lookup (404, 410),
+        `duration` (400), the link's zone (500), then the query in this order:
+        `display_time_zone`, `date` combined with `from` or `to`, `date`,
+        `from`, `to`, `from` without `to` or the reverse, `to` before `from`,
+        a range over 42 days (each a 400 with its own message, see the 400
+        below). An empty query value (`date=`, `from=`, `to=`,
+        `display_time_zone=`) is the same as an absent one. Unknown query
+        parameters are ignored.
+        Caching: the answer carries no `Cache-Control`, `ETag` or
+        `Last-Modified` header (none before PAC-88, none added), so no browser
+        stores it heuristically; it depends on the clock and on hosts'
+        calendars, and a client may reuse it only within one page visit.
         Rate limited per client (NEW-booking-rate-limit), separately from and more
         loosely than `createPublicBooking`: at most 120 requests per client per
-        fixed 1-minute window, with or without `date`. The limit is checked and the
+        fixed 1-minute window, in every mode and with or without
+        `display_time_zone`; one overview request counts once whatever its
+        range (unchanged by PAC-88). The limit is checked and the
         request counted atomically as the handler's first step, before the link
         lookup and before the query is validated, so every request counts whatever
         it would otherwise have answered, and a refused request answers 429 even
@@ -345,19 +391,64 @@ paths:
           required: true
           schema:
             type: string
+        - name: display_time_zone
+          in: query
+          required: false
+          description: >-
+            PAC-88: the IANA name of the zone whose calendar days `date`, `from`,
+            `to` and the answer's days are (the day zone). Optional; absent or
+            empty means the link's zone. Accepted when it matches the pattern,
+            is not `Local`, `localtime` or `posixrules` (files some systems link
+            to the server's own zone) and does not start with `right/` (the
+            leap-second variants, whose instants are off by seconds), and
+            `time.LoadLocation` loads it from the server's
+            tz database (the backend image's tzdata, `backend/Dockerfile`);
+            names are case-sensitive and the tz database's links (e.g.
+            `Asia/Calcutta`) are accepted as themselves. Anything else is the
+            400 `invalid display_time_zone, use an IANA time zone name`, never
+            an answer in another zone (spec AC-32). The answer echoes the name
+            as sent in `display_time_zone`.
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$'
+            example: America/New_York
         - name: date
           in: query
           required: false
           description: >-
             Day to enumerate, parsed with Go layout "2006-01-02" as a calendar day
-            in the link's zone (`PublicLinkInfo.time_zone`, PAC-72 revision 2). A
-            day outside the link's booking horizon (before today in that zone, or
-            after today + `booking_horizon_days` - 1) answers 200 with no slots.
-            Omit for the availability summary over the whole horizon.
+            in the day zone (`display_time_zone` when given, else the link's
+            zone `PublicLinkInfo.time_zone`, PAC-72 revision 2). A day with no
+            offered start (before today, after the horizon's last day) answers
+            200 with no slots. Cannot be combined with `from` or `to`. Omit for
+            the day overview.
           schema:
             type: string
             format: date
             example: '2026-08-12'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            PAC-88: first day (inclusive, YYYY-MM-DD, a calendar day in the day
+            zone) of the day overview. Given together with `to` or not at all,
+            and only without `date`. Omitted with `to`: today in the day zone.
+          schema:
+            type: string
+            format: date
+            example: '2027-03-01'
+        - name: to
+          in: query
+          required: false
+          description: >-
+            PAC-88: last day (inclusive, YYYY-MM-DD, day zone) of the day
+            overview; not before `from`, and `from`..`to` spans at most 42 days
+            (a six-week month grid). Omitted with `from`: `from` + 41 days.
+          schema:
+            type: string
+            format: date
+            example: '2027-04-11'
         - name: duration
           in: query
           required: false
@@ -377,8 +468,16 @@ paths:
                 $ref: '#/components/schemas/PublicSlotsResponse'
         '400':
           description: >-
-            "invalid duration" (non-numeric or not in the link's duration set) or
-            "invalid date format, use YYYY-MM-DD".
+            The `BookingError` envelope with one of these messages, in the
+            validation order given above: "invalid duration" (non-numeric or not
+            in the link's duration set); "invalid display_time_zone, use an IANA
+            time zone name" (PAC-88, spec AC-32: not matching the pattern,
+            `Local`, `localtime`, `posixrules`, a `right/` name, or not
+            loadable from the server's tz database); "date
+            cannot be combined with from or to"; "invalid date format, use
+            YYYY-MM-DD"; "invalid from, use YYYY-MM-DD"; "invalid to, use
+            YYYY-MM-DD"; "from and to must be given together"; "to must not be
+            before from"; "range must not exceed 42 days".
           content:
             application/json:
               schema:
@@ -399,11 +498,12 @@ paths:
           $ref: '#/components/responses/BookingSlotsRateLimited'
         '500':
           description: >-
-            Storage or engine failure, including, with `date` only, busy time that
-            cannot be gathered from storage for that day (PAC-72), and, in both
-            modes, a failed read of the link owner's settings (the link's zone;
-            PAC-72 revision 3.1): the whole request is this 500, never the UTC
-            fallback and never a list with days omitted. Body:
+            Storage or engine failure, including, in both modes, busy time that
+            cannot be gathered from storage for any link day the answer needs
+            (PAC-72; PAC-88 extends it to the overview, which no longer omits
+            such a day), and a failed read of the link owner's settings (the
+            link's zone; PAC-72 revision 3.1): the whole request is this 500,
+            never the UTC fallback and never a list with days omitted. Body:
             {"error":"internal error"}
           content:
             application/json:
@@ -1885,7 +1985,8 @@ components:
             the zone actually used by `getPublicBookingSlots` and
             `createPublicBooking` for this link at the time of the read, so a
             booking page can show times in it by default (display and the
-            visitor's zone switcher are PAC-88). Never empty. Disclosed to anyone
+            visitor's zone switcher are PAC-88; `getPublicBookingSlots` states
+            the zone it used in `PublicSlotsResponse.time_zone`). Never empty. Disclosed to anyone
             who has the link, on every link: owner decision D-9 makes the
             owner's zone the page's default display. A failed read of the
             owner's settings is the operation's 500, never `UTC`.
@@ -1915,28 +2016,67 @@ components:
     PublicSlotsResponse:
       type: object
       description: >-
-        Both keys are always present. Exactly one is populated depending on whether the
-        `date` query parameter was supplied.
-      required: [slots, available_dates]
+        Every key is always present. Exactly one list is populated depending on
+        whether the `date` query parameter was supplied. `time_zone`,
+        `display_time_zone`, `range_from` and `range_to` are PAC-88. A server
+        without them (before PAC-88, or after its rollback) ignores
+        `display_time_zone`, `from` and `to`; a client that sent
+        `display_time_zone` and finds `display_time_zone` absent from the
+        answer, or different from what it sent, must not read the answer's
+        days as days of the zone it asked for (contract PAC-88 section 5).
+      required: [slots, available_dates, time_zone, display_time_zone, range_from, range_to]
       additionalProperties: false
       properties:
         slots:
           type: array
-          description: Populated only when `date` was given; otherwise the empty array.
+          description: >-
+            Populated only when `date` was given: the offered slots whose start
+            falls on `date` in `display_time_zone`, in ascending start order;
+            otherwise the empty array.
           items:
             $ref: '#/components/schemas/PublicBookingSlot'
         available_dates:
           type: array
           description: >-
             Populated only when `date` was omitted; YYYY-MM-DD strings (calendar
-            days in the link's zone, `PublicLinkInfo.time_zone`), in ascending
-            order, for days within the link's booking horizon (today in that zone
-            and the next `booking_horizon_days` - 1 days) that are among the
-            link's `days_of_week` and have at least one offered slot. Otherwise
-            the empty array.
+            days in `display_time_zone`), ascending, without duplicates: the
+            days from `range_from` to `range_to` on which at least one offered
+            slot starts in that zone (an offered slot is within the link's
+            horizon, on one of its `days_of_week` and inside its hours, all in
+            the link's zone). Otherwise the empty array.
           items:
             type: string
             format: date
+        time_zone:
+          type: string
+          description: >-
+            PAC-88 (spec AC-31): IANA name of the link's zone this answer was
+            computed in (days, hours, grid, "today", horizon), read in this
+            request by the same rule as `PublicLinkInfo.time_zone`, so the two
+            are equal when read at the same moment. A client holding a
+            different `PublicLinkInfo.time_zone` re-reads the link (the host
+            changed zone, spec AC-26). Never empty.
+          example: Europe/Paris
+        display_time_zone:
+          type: string
+          description: >-
+            PAC-88: the day zone of `date`, `available_dates`, `range_from` and
+            `range_to`: the request's `display_time_zone` exactly as sent when
+            it was given, otherwise equal to `time_zone`. Never empty.
+          example: Asia/Tokyo
+        range_from:
+          type: string
+          format: date
+          description: >-
+            PAC-88: first day (day zone) the answer covers: `date` with `date`,
+            otherwise the overview's resolved `from`.
+        range_to:
+          type: string
+          format: date
+          description: >-
+            PAC-88: last day (day zone) the answer covers: `date` with `date`,
+            otherwise the overview's resolved `to` (at most `range_from` + 41
+            days).
 
     CreatePublicBookingRequest:
       type: object

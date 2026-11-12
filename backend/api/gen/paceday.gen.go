@@ -2916,7 +2916,7 @@ type PublicLinkInfo struct {
 	MinNoticeMinutes int          `json:"min_notice_minutes"`
 	Slug             string       `json:"slug"`
 
-	// TimeZone IANA name of the zone the link's days, hours, "today" and booking horizon are evaluated in (PAC-72 revision 2, owner decision D-9): the link owner's profile time zone, or `UTC` when the owner has no settings row or its stored name is not a loadable IANA zone. It is the zone actually used by `getPublicBookingSlots` and `createPublicBooking` for this link at the time of the read, so a booking page can show times in it by default (display and the visitor's zone switcher are PAC-88). Never empty. Disclosed to anyone who has the link, on every link: owner decision D-9 makes the owner's zone the page's default display. A failed read of the owner's settings is the operation's 500, never `UTC`.
+	// TimeZone IANA name of the zone the link's days, hours, "today" and booking horizon are evaluated in (PAC-72 revision 2, owner decision D-9): the link owner's profile time zone, or `UTC` when the owner has no settings row or its stored name is not a loadable IANA zone. It is the zone actually used by `getPublicBookingSlots` and `createPublicBooking` for this link at the time of the read, so a booking page can show times in it by default (display and the visitor's zone switcher are PAC-88; `getPublicBookingSlots` states the zone it used in `PublicSlotsResponse.time_zone`). Never empty. Disclosed to anyone who has the link, on every link: owner decision D-9 makes the owner's zone the page's default display. A failed read of the owner's settings is the operation's 500, never `UTC`.
 	TimeZone string `json:"time_zone"`
 	Title    string `json:"title"`
 
@@ -2927,13 +2927,25 @@ type PublicLinkInfo struct {
 // PublicLinkInfoUsageType Defaults to `reusable` when the stored value is empty.
 type PublicLinkInfoUsageType string
 
-// PublicSlotsResponse Both keys are always present. Exactly one is populated depending on whether the `date` query parameter was supplied.
+// PublicSlotsResponse Every key is always present. Exactly one list is populated depending on whether the `date` query parameter was supplied. `time_zone`, `display_time_zone`, `range_from` and `range_to` are PAC-88. A server without them (before PAC-88, or after its rollback) ignores `display_time_zone`, `from` and `to`; a client that sent `display_time_zone` and finds `display_time_zone` absent from the answer, or different from what it sent, must not read the answer's days as days of the zone it asked for (contract PAC-88 section 5).
 type PublicSlotsResponse struct {
-	// AvailableDates Populated only when `date` was omitted; YYYY-MM-DD strings (calendar days in the link's zone, `PublicLinkInfo.time_zone`), in ascending order, for days within the link's booking horizon (today in that zone and the next `booking_horizon_days` - 1 days) that are among the link's `days_of_week` and have at least one offered slot. Otherwise the empty array.
+	// AvailableDates Populated only when `date` was omitted; YYYY-MM-DD strings (calendar days in `display_time_zone`), ascending, without duplicates: the days from `range_from` to `range_to` on which at least one offered slot starts in that zone (an offered slot is within the link's horizon, on one of its `days_of_week` and inside its hours, all in the link's zone). Otherwise the empty array.
 	AvailableDates []openapi_types.Date `json:"available_dates"`
 
-	// Slots Populated only when `date` was given; otherwise the empty array.
+	// DisplayTimeZone PAC-88: the day zone of `date`, `available_dates`, `range_from` and `range_to`: the request's `display_time_zone` exactly as sent when it was given, otherwise equal to `time_zone`. Never empty.
+	DisplayTimeZone string `json:"display_time_zone"`
+
+	// RangeFrom PAC-88: first day (day zone) the answer covers: `date` with `date`, otherwise the overview's resolved `from`.
+	RangeFrom openapi_types.Date `json:"range_from"`
+
+	// RangeTo PAC-88: last day (day zone) the answer covers: `date` with `date`, otherwise the overview's resolved `to` (at most `range_from` + 41 days).
+	RangeTo openapi_types.Date `json:"range_to"`
+
+	// Slots Populated only when `date` was given: the offered slots whose start falls on `date` in `display_time_zone`, in ascending start order; otherwise the empty array.
 	Slots []PublicBookingSlot `json:"slots"`
+
+	// TimeZone PAC-88 (spec AC-31): IANA name of the link's zone this answer was computed in (days, hours, grid, "today", horizon), read in this request by the same rule as `PublicLinkInfo.time_zone`, so the two are equal when read at the same moment. A client holding a different `PublicLinkInfo.time_zone` re-reads the link (the host changed zone, spec AC-26). Never empty.
+	TimeZone string `json:"time_zone"`
 }
 
 // RawGoogleBusyWindow calendar.TimeSlot, with explicit json tags `start` / `end` since PAC-26 (API-028, API-029). Same keys as FreeBusyWindow; kept as its own schema because it is a different Go type with a different failure mode: a Google timestamp that fails to parse becomes the Go zero time `0001-01-01T00:00:00Z` because the parse error is discarded. Before PAC-26 the struct had no tags and the keys were `Start` / `End`.
@@ -4623,8 +4635,17 @@ type HandleZoomOAuthCallbackParams struct {
 
 // GetPublicBookingSlotsParams defines parameters for GetPublicBookingSlots.
 type GetPublicBookingSlotsParams struct {
-	// Date Day to enumerate, parsed with Go layout "2006-01-02" as a calendar day in the link's zone (`PublicLinkInfo.time_zone`, PAC-72 revision 2). A day outside the link's booking horizon (before today in that zone, or after today + `booking_horizon_days` - 1) answers 200 with no slots. Omit for the availability summary over the whole horizon.
+	// DisplayTimeZone PAC-88: the IANA name of the zone whose calendar days `date`, `from`, `to` and the answer's days are (the day zone). Optional; absent or empty means the link's zone. Accepted when it matches the pattern, is not `Local`, `localtime` or `posixrules` (files some systems link to the server's own zone) and does not start with `right/` (the leap-second variants, whose instants are off by seconds), and `time.LoadLocation` loads it from the server's tz database (the backend image's tzdata, `backend/Dockerfile`); names are case-sensitive and the tz database's links (e.g. `Asia/Calcutta`) are accepted as themselves. Anything else is the 400 `invalid display_time_zone, use an IANA time zone name`, never an answer in another zone (spec AC-32). The answer echoes the name as sent in `display_time_zone`.
+	DisplayTimeZone *string `form:"display_time_zone,omitempty" json:"display_time_zone,omitempty"`
+
+	// Date Day to enumerate, parsed with Go layout "2006-01-02" as a calendar day in the day zone (`display_time_zone` when given, else the link's zone `PublicLinkInfo.time_zone`, PAC-72 revision 2). A day with no offered start (before today, after the horizon's last day) answers 200 with no slots. Cannot be combined with `from` or `to`. Omit for the day overview.
 	Date *openapi_types.Date `form:"date,omitempty" json:"date,omitempty"`
+
+	// From PAC-88: first day (inclusive, YYYY-MM-DD, a calendar day in the day zone) of the day overview. Given together with `to` or not at all, and only without `date`. Omitted with `to`: today in the day zone.
+	From *openapi_types.Date `form:"from,omitempty" json:"from,omitempty"`
+
+	// To PAC-88: last day (inclusive, YYYY-MM-DD, day zone) of the day overview; not before `from`, and `from`..`to` spans at most 42 days (a six-week month grid). Omitted with `from`: `from` + 41 days.
+	To *openapi_types.Date `form:"to,omitempty" json:"to,omitempty"`
 
 	// Duration Meeting length in minutes. Must be one of the link's `durations` (or exactly 30 when the link has none). Default is `durations[0]`, else 30.
 	Duration *int `form:"duration,omitempty" json:"duration,omitempty"`
@@ -6639,7 +6660,7 @@ type ServerInterface interface {
 	// Book a slot on a public scheduling link.
 	// (POST /api/book/{slug})
 	CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string)
-	// Available slots for a date, or the list of dates that have any slot.
+	// Available slots for one day, or the days of a bounded range that have any slot.
 	// (GET /api/book/{slug}/slots)
 	GetPublicBookingSlots(w http.ResponseWriter, r *http.Request, slug string, params GetPublicBookingSlotsParams)
 	// List Google Calendar events in a time window
@@ -7128,7 +7149,7 @@ func (_ Unimplemented) CreatePublicBooking(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Available slots for a date, or the list of dates that have any slot.
+// Available slots for one day, or the days of a bounded range that have any slot.
 // (GET /api/book/{slug}/slots)
 func (_ Unimplemented) GetPublicBookingSlots(w http.ResponseWriter, r *http.Request, slug string, params GetPublicBookingSlotsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -8722,11 +8743,35 @@ func (siw *ServerInterfaceWrapper) GetPublicBookingSlots(w http.ResponseWriter, 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params GetPublicBookingSlotsParams
 
+	// ------------- Optional query parameter "display_time_zone" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "display_time_zone", r.URL.Query(), &params.DisplayTimeZone)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "display_time_zone", Err: err})
+		return
+	}
+
 	// ------------- Optional query parameter "date" -------------
 
 	err = runtime.BindQueryParameter("form", true, false, "date", r.URL.Query(), &params.Date)
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "date", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "from", r.URL.Query(), &params.From)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "from", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "to", r.URL.Query(), &params.To)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "to", Err: err})
 		return
 	}
 
@@ -19002,7 +19047,7 @@ type StrictServerInterface interface {
 	// Book a slot on a public scheduling link.
 	// (POST /api/book/{slug})
 	CreatePublicBooking(ctx context.Context, request CreatePublicBookingRequestObject) (CreatePublicBookingResponseObject, error)
-	// Available slots for a date, or the list of dates that have any slot.
+	// Available slots for one day, or the days of a bounded range that have any slot.
 	// (GET /api/book/{slug}/slots)
 	GetPublicBookingSlots(ctx context.Context, request GetPublicBookingSlotsRequestObject) (GetPublicBookingSlotsResponseObject, error)
 	// List Google Calendar events in a time window
