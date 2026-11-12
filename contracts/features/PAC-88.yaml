@@ -1,15 +1,15 @@
 {
   "featureId": "PAC-88",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-88",
-  "status": "draft (contract-author 2026-11-12; awaiting contract-challenger)",
-  "contractRevision": "1",
-  "contractHash": "41ab9b1549e657ec9e55ead94ad593d5c5884ccabaa433124ffdf2cd63f4ff74",
-  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi` in an LF clone of factory/pac-88-spec (golang:1.25-bookworm, api-gate pattern). Reproduce with: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml (or git show <rev>:contracts/openapi/openapi.yaml | sha256sum). Before this revision (main 32ecacf) the bundle hash was c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346.",
+  "status": "challenged accept-with-changes (contract-challenger 2026-11-12); changes applied in revision 2",
+  "contractRevision": "2",
+  "contractHash": "408aa8242e0057115dfc75d368fc5c0e107e1528b707ad775342d699f3cac404",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi` in an LF clone of factory/pac-88-k2 at f8eb690 (golang:1.25-bookworm, api-gate pattern), base origin/main 4f798cb. Reproduce with: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml. Revision 1 (4b198d5) was 41ab9b1549e657ec9e55ead94ad593d5c5884ccabaa433124ffdf2cd63f4ff74; main before PAC-88 c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346.",
   "contractDoc": "contracts/features/PAC-88.md",
   "specDoc": "docs/specs/PAC-88.md (challenged accept-with-changes 2026-11-02 at 85b4e25; owner OQ-2 and OQ-4 answered 2026-11-02, recorded in this revision; OQ-1 resolved by this contract)",
   "sourceOfTruth": "Enach/clockwise-like",
   "scope": "The slot listing groups offered starts by calendar day in an optional display zone, states the link zone it used, and replaces the whole-horizon date-less read by a bounded (<= 42 days) day overview with one calendar read per host per request; the confirmation email states the link zone with offset, then UTC; the web keeps time_zone and booking_horizon_days and implements the display zone and switcher; a deterministic e2e seed for zones and DST.",
-  "mergeAfter": "origin/main 32ecacf (PAC-72 and PAC-84 contained). No dependency on open PRs.",
+  "mergeAfter": "origin/main 4f798cb (PAC-72, PAC-84 and the CI workflows contained). No dependency on open PRs; PAC-87 ordering in mergeConditions.",
   "repositories": {
     "backend": {
       "url": "https://github.com/Enach/clockwise-like",
@@ -17,9 +17,12 @@
         "backend/api/handlers_booking.go, backend/api/booking_rule.go (getSlots: display zone, overview range, validation, response keys; no change to createBooking)",
         "backend/api/pac88_*_test.go (new) and the amended tests named in contracts/features/PAC-88.md section 7 (pac72_offerable_start_test.go, pac72_rev2_test.go) only where they read the date-less mode",
         "backend/api/interfaces.go and test fakes, only if the range read needs a new engine method",
+        "backend/api/handlers_booking_test.go, backend/api/pac81_paths_test.go, backend/api/ratelimit_booking_test.go (BookingFlow fakes only, assertions unchanged; contract section 7)",
         "backend/engine/booking.go (range read of host busy time; email composition), backend/engine/*_test.go",
         "backend/storage (read helpers only; no migration)",
+        "backend/calendar/events.go and its tests (complete, paged event read for the one-read rule, contract section 2.3; existing callers keep their behaviour)",
         "e2e/seed/seed.sql, e2e/seed/ids.ts, e2e/seed/seed.ts (contract section 6)",
+        "e2e/fake-google (only if the paged event read needs the stand-in to answer a page token)",
         "e2e/tests/pac88-*.spec.ts (new), e2e/lib (zone/transition helpers)",
         "e2e/TESTIDS-REQUIRED.md, e2e/README.md (section 3.5 test ids, seed fixtures)",
         "docs/plans/PAC-88.md",
@@ -77,14 +80,14 @@
   "nonHttpInterface": {
     "email": "contracts/features/PAC-88.md section 4: subject date and body in the link zone read at compose time ('Time: 7:30 PM – 8:00 PM, America/Los_Angeles (UTC−08:00)'), then 'In UTC: 03:30 – 04:00 UTC on Friday, January 15, 2027'; UTC link zone or unreadable zone: UTC only, labelled, still sent, unreadable logged with the booking id; ICS unchanged (UTC Z instants).",
     "webClient": "contracts/features/PAC-88.md section 3: mapper keeps time_zone and booking_horizon_days; every listing request sends display_time_zone; overview per visible grid with from/to; legacy detection by the echoed display_time_zone; time_zone mismatch re-reads link info; 400 on a zone -> back to the previous zone with booking-tz-unsupported; no persistence (OQ-2); test ids booking-tz-label, booking-tz-switcher, booking-tz-use-mine, booking-tz-back-to-host, booking-tz-unsupported, booking-tz-announcer.",
-    "e2eSeed": "contracts/features/PAC-88.md section 6: PAC88_HOSTS newYork/paris/losAngeles/noZone (b4b4.., b5b5.., b6b6.., b7b7..), PAC88_LINKS dst (365 days, every day, 00:00-23:59, NY owner), paris (Monday 09:00-17:00, 365 days, LA co-host), noZone (Mon-Fri 09:00-17:00, 60 days, no settings row); SEEDED_ACCEPTED_HOST_ROWS = links + 2."
+    "e2eSeed": "contracts/features/PAC-88.md section 6: PAC88_HOSTS newYork/paris/losAngeles/noZone (b4b4.., b5b5.., b6b6.., b7b7..), PAC88_LINKS dst cbbbbbbb.. (365 days, every day, 00:00-23:59, NY owner), paris cacacaca.. (Monday 09:00-17:00, 365 days, LA co-host), noZone cddddddd.. (Mon-Fri 09:00-17:00, 60 days, no settings row, deleted by the seed and verified absent); hosts in SEEDED_USER_IDS and ACCEPTED_CREDENTIALS; SEEDED_ACCEPTED_HOST_ROWS = links + 2; booking journeys serial in one file on booking-only Mondays, start chosen at run time."
   },
   "gates": {
     "contractApproval": "contract-challenger review on factory/pac-88-spec, then the stage-4 PRs",
-    "assembler": "LF clone of factory/pac-88-k at de83f45 (golang:1.25-bookworm, api-gate pattern), 2026-11-12: make openapi rc 0; python3 scripts/openapi_assemble.py --check -> OK: bundle is in sync (106 paths)",
-    "migrationRegister": "LF clone of factory/pac-88-k at de83f45 (golang:1.25-bookworm, api-gate pattern), 2026-11-12: OK: MIGRATION.md covers all 128 operations (10 generated)",
-    "goGen": "LF clone of factory/pac-88-k at de83f45 (golang:1.25-bookworm, api-gate pattern), 2026-11-12: OK: backend/api/gen matches the contract; cd backend && go build ./... rc 0 (getSlots is handwritten, no implementer of the generated method to fix)",
-    "openapiCheckApi": "LF clone of factory/pac-88-k at de83f45 (golang:1.25-bookworm, api-gate pattern), 2026-11-12: make openapi-check WEB=/nonexistent rc 0 (web half SKIPPED by design at this stage)",
+    "assembler": "LF clone of factory/pac-88-k2 at f8eb690 (golang:1.25-bookworm, api-gate pattern), 2026-11-12: make openapi rc 0; OK: bundle is in sync (106 paths)",
+    "migrationRegister": "same clone: OK: MIGRATION.md covers all 128 operations (10 generated)",
+    "goGen": "same clone: OK: backend/api/gen matches the contract; cd backend && go build ./... ok",
+    "openapiCheckApi": "same clone: make openapi-check WEB=/nonexistent rc 0 (web half SKIPPED by design at this stage)",
     "webGate": "Not run at this stage: the web half of openapi-check reports drift until the paired web PR regenerates src/api/generated (REGEN=1 web-gate).",
     "stage4": "api-gate.sh, web-gate.sh, e2e gate (make verify in both repos); the api PR body records the bundle sha256 equal to contractHash.",
     "defaultBranch": "main",
@@ -128,12 +131,13 @@
     "AC-31 [contract] every listing answer states time_zone equal to PublicLinkInfo.time_zone (C-5).",
     "AC-32 [contract] unknown display_time_zone: 400 'invalid display_time_zone, use an IANA time zone name', never another zone or an empty 200 (C-2).",
     "AC-33 [unit] demo source shows the demo link's zone label; no demo path in production builds.",
-    "C-1..C-9, E-1..E-4 [contract/unit Go]: contracts/features/PAC-88.md section 7."
+    "C-1..C-10, E-1..E-4 [contract/unit Go]: contracts/features/PAC-88.md section 7 (C-10: paged read complete, page-2 failure busy, focus block and booking on the last needed day; C-2 incl. localtime, posixrules, right/)."
   ],
   "amendedExistingTests": [
     "backend/api/pac72_offerable_start_test.go TestPAC72_ListingDaysAndHorizon, TestPAC72_UnreadableBusyTime (date-less now 500), process-zone case at :835",
     "backend/api/pac72_rev2_test.go horizon cases (:125-150), case (e) (:300-320)",
-    "backend/api/pac72_rev2_test.go TestPAC72_LongHorizonDatelessListingIs503 replaced by C-9"
+    "backend/api/pac72_rev2_test.go TestPAC72_LongHorizonDatelessListingIs503 replaced by C-9",
+    "BookingFlow fakes in backend/api/handlers_booking_test.go, pac81_paths_test.go (cutEngine; TestPAC81_SlotListingCutIs503 date-less path = 42-day overview, still 503), ratelimit_booking_test.go (countingBookingFlow; TestGetSlots_RateLimited still 200): follow the range method, assertions unchanged"
   ],
   "resolvesFindings": [],
   "resolvesUncertain": [],
@@ -184,10 +188,11 @@
     }
   ],
   "mergeConditions": [
-    "contract-challenger accepts this revision (or a later one).",
+    "contract-challenger accepts this revision (or a later one): accept-with-changes 2026-11-12, changes applied in revision 2.",
     "The api PR's contracts/openapi/openapi.yaml sha256 equals contractHash (or a recorded later revision).",
-    "The follow-up ticket for the visitor-zone email (owner OQ-4, carrying API-051) is filed before the api PR merges.",
+    "SATISFIED: the follow-up ticket for the visitor-zone email (owner OQ-4, carrying API-051) is filed as PAC-94 ('Booking confirmation email in the visitor's chosen time zone', related to PAC-88).",
     "Merge order: api PR first, then the web PR; the UI e2e journeys (AC-1, 2, 3, 7, 9, 10, 19, 21) pass in the pair's e2e gate before the web PR merges.",
+    "PAC-87 (factory/pac-87-spec) changes other fragments but the same bundle, backend/api/gen and e2e/TESTIDS-REQUIRED.md: whichever merges second re-runs make openapi in an LF clone, commits the regenerated files and records its new contractHash (fragment text unchanged).",
     "No migration and no change to createPublicBooking in either PR (bundle diff limited to getPublicBookingSlots, PublicSlotsResponse and the PublicLinkInfo.time_zone description)."
   ],
   "rollback": "Code only: no migration, nothing stored. Revert the web PR: browser-zone display returns. Revert the api PR: the UTC email and the pre-PAC-88 listing return; the newer web detects the missing display_time_zone and runs in link-zone mode (switcher disabled, link-zone days only, overview errors shown as PAC-83 errors, never every day selectable). Older web against the new server is unaffected (contract section 5).",
@@ -198,9 +203,9 @@
     "PAC-88 OQ-4: email shows the link zone (name + offset) plus UTC; visitor zone in the email is a follow-up (2026-11-02)."
   ],
   "followUps": [
-    "Confirmation email in the visitor's chosen zone (OQ-4), with a booking-create input and API-051.",
+    "PAC-94: confirmation email in the visitor's chosen zone (OQ-4), with a booking-create input and API-051 (filed).",
     "Move getPublicBookingSlots to the generated server once the binder can keep the rate limit first (MIGRATION.md note).",
     "Optional: Cache-Control: no-store on the public listing (contract section 8), if a proxy ever caches it."
   ],
-  "challenge": "pending (contract-challenger)"
+  "challenge": "accept-with-changes, contract-challenger 2026-11-12 (contracts/features/PAC-88.md 'Challenge — 2026-11-12'); changes applied in revision 2"
 }

@@ -2875,38 +2875,42 @@ paths:
         overview covers at most 42 days whatever `booking_horizon_days` is (1 to 365), and, in both modes,
         each accepted host''s external calendar is read at most once per request, over one window spanning
         every link day the answer needs (link days outside the horizon or not among `days_of_week` need
-        no read). The earlier date-less read of the whole horizon (and its 503 on long horizons, PAC-72
-        revision 3.1) no longer exists: a request without `date`, `from` and `to` is the 42-day overview
-        starting today in the day zone. Hosts (PAC-81, spec AC-A18): each accepted host''s calendar is
-        read on at most 4 concurrent reads per request, each limited to its own 15 s (shortened to the
-        budget left minus a 10 s stop margin). A host whose calendar cannot be read is BUSY for the whole
-        requested window (owner decision PAC-72 D-6, 2026-11-01; it replaces the earlier "treated as free"):
-        not connected, a provider error, or a read that fails on its own time limit. Every link is collective
-        (every accepted host must be free; there is no round-robin or any-host kind), so a link with such
-        a host offers no slot in the window read (no slot for that `date`, no day of that overview); the
-        answer is still a 200. A host that was not read because the request budget ran out (a read not
-        started at the stop margin, or cut short by the budget) is neither free nor busy: the answer is
-        the 503. A read that hits a deadline shortened by the budget (budget left minus the margin was
-        below 15 s) counts as cut short by the budget, not as failing on its own limit: the answer is
-        the 503, never a 200 that silently omits that host or, without `date`, a day. Neither mode has
-        a partial shape. Validation order (PAC-88 keeps the existing order and appends its checks where
-        the `date` check was): rate limit (429), link lookup (404, 410), `duration` (400), the link''s
-        zone (500), then the query in this order: `display_time_zone`, `date` combined with `from` or
-        `to`, `date`, `from`, `to`, `from` without `to` or the reverse, `to` before `from`, a range over
-        42 days (each a 400 with its own message, see the 400 below). An empty query value (`date=`, `from=`,
-        `to=`, `display_time_zone=`) is the same as an absent one. Unknown query parameters are ignored.
-        Caching: the answer carries no `Cache-Control`, `ETag` or `Last-Modified` header (none before
-        PAC-88, none added), so no browser stores it heuristically; it depends on the clock and on hosts''
-        calendars, and a client may reuse it only within one page visit. Rate limited per client (NEW-booking-rate-limit),
-        separately from and more loosely than `createPublicBooking`: at most 120 requests per client per
-        fixed 1-minute window, in every mode and with or without `display_time_zone`; one overview request
-        counts once whatever its range (unchanged by PAC-88). The limit is checked and the request counted
-        atomically as the handler''s first step, before the link lookup and before the query is validated,
-        so every request counts whatever it would otherwise have answered, and a refused request answers
-        429 even for an unknown slug. Booking requests do not consume this budget and slot requests do
-        not consume the booking budget. Client identification, the per-process caveat, the sweep and the
-        CORS preflight exemption are exactly as described on `createPublicBooking`; this limiter has its
-        own counts and its own sweep.'
+        no read). That one read is complete for its whole window: every page of the provider''s answer
+        is read, and a read that cannot be completed (a later page fails, or the read''s own limit ends
+        first) is an unreadable calendar (busy, D-6 below), never a partial list of events. The storage
+        half of busy time (focus blocks, bookings) likewise covers every needed link day, however many
+        storage queries that takes. The earlier date-less read of the whole horizon (and its 503 on long
+        horizons, PAC-72 revision 3.1) no longer exists: a request without `date`, `from` and `to` is
+        the 42-day overview starting today in the day zone. Hosts (PAC-81, spec AC-A18): each accepted
+        host''s calendar is read on at most 4 concurrent reads per request, each limited to its own 15
+        s (shortened to the budget left minus a 10 s stop margin). A host whose calendar cannot be read
+        is BUSY for the whole requested window (owner decision PAC-72 D-6, 2026-11-01; it replaces the
+        earlier "treated as free"): not connected, a provider error, or a read that fails on its own time
+        limit. Every link is collective (every accepted host must be free; there is no round-robin or
+        any-host kind), so a link with such a host offers no slot in the window read (no slot for that
+        `date`, no day of that overview); the answer is still a 200. A host that was not read because
+        the request budget ran out (a read not started at the stop margin, or cut short by the budget)
+        is neither free nor busy: the answer is the 503. A read that hits a deadline shortened by the
+        budget (budget left minus the margin was below 15 s) counts as cut short by the budget, not as
+        failing on its own limit: the answer is the 503, never a 200 that silently omits that host or,
+        without `date`, a day. Neither mode has a partial shape. Validation order (PAC-88 keeps the existing
+        order and appends its checks where the `date` check was): rate limit (429), link lookup (404,
+        410), `duration` (400), the link''s zone (500), then the query in this order: `display_time_zone`,
+        `date` combined with `from` or `to`, `date`, `from`, `to`, `from` without `to` or the reverse,
+        `to` before `from`, a range over 42 days (each a 400 with its own message, see the 400 below).
+        An empty query value (`date=`, `from=`, `to=`, `display_time_zone=`) is the same as an absent
+        one. Unknown query parameters are ignored. Caching: the answer carries no `Cache-Control`, `ETag`
+        or `Last-Modified` header (none before PAC-88, none added), so no browser stores it heuristically;
+        it depends on the clock and on hosts'' calendars, and a client may reuse it only within one page
+        visit. Rate limited per client (NEW-booking-rate-limit), separately from and more loosely than
+        `createPublicBooking`: at most 120 requests per client per fixed 1-minute window, in every mode
+        and with or without `display_time_zone`; one overview request counts once whatever its range (unchanged
+        by PAC-88). The limit is checked and the request counted atomically as the handler''s first step,
+        before the link lookup and before the query is validated, so every request counts whatever it
+        would otherwise have answered, and a refused request answers 429 even for an unknown slug. Booking
+        requests do not consume this budget and slot requests do not consume the booking budget. Client
+        identification, the per-process caveat, the sweep and the CORS preflight exemption are exactly
+        as described on `createPublicBooking`; this limiter has its own counts and its own sweep.'
       security: []
       parameters:
       - name: slug
@@ -2919,11 +2923,13 @@ paths:
         required: false
         description: 'PAC-88: the IANA name of the zone whose calendar days `date`, `from`, `to` and the
           answer''s days are (the day zone). Optional; absent or empty means the link''s zone. Accepted
-          when it matches the pattern, is not `Local`, and `time.LoadLocation` loads it from the server''s
-          tz database (the backend image''s tzdata, `backend/Dockerfile`); names are case-sensitive and
-          the tz database''s links (e.g. `Asia/Calcutta`) are accepted as themselves. Anything else is
-          the 400 `invalid display_time_zone, use an IANA time zone name`, never an answer in another
-          zone (spec AC-32). The answer echoes the name as sent in `display_time_zone`.'
+          when it matches the pattern, is not `Local`, `localtime` or `posixrules` (files some systems
+          link to the server''s own zone) and does not start with `right/` (the leap-second variants,
+          whose instants are off by seconds), and `time.LoadLocation` loads it from the server''s tz database
+          (the backend image''s tzdata, `backend/Dockerfile`); names are case-sensitive and the tz database''s
+          links (e.g. `Asia/Calcutta`) are accepted as themselves. Anything else is the 400 `invalid display_time_zone,
+          use an IANA time zone name`, never an answer in another zone (spec AC-32). The answer echoes
+          the name as sent in `display_time_zone`.'
         schema:
           type: string
           maxLength: 64
@@ -2980,10 +2986,10 @@ paths:
           description: 'The `BookingError` envelope with one of these messages, in the validation order
             given above: "invalid duration" (non-numeric or not in the link''s duration set); "invalid
             display_time_zone, use an IANA time zone name" (PAC-88, spec AC-32: not matching the pattern,
-            `Local`, or not loadable from the server''s tz database); "date cannot be combined with from
-            or to"; "invalid date format, use YYYY-MM-DD"; "invalid from, use YYYY-MM-DD"; "invalid to,
-            use YYYY-MM-DD"; "from and to must be given together"; "to must not be before from"; "range
-            must not exceed 42 days".'
+            `Local`, `localtime`, `posixrules`, a `right/` name, or not loadable from the server''s tz
+            database); "date cannot be combined with from or to"; "invalid date format, use YYYY-MM-DD";
+            "invalid from, use YYYY-MM-DD"; "invalid to, use YYYY-MM-DD"; "from and to must be given together";
+            "to must not be before from"; "range must not exceed 42 days".'
           content:
             application/json:
               schema:

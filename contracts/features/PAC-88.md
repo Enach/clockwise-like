@@ -18,7 +18,7 @@
   (LF docker clone, api-gate pattern). `MIGRATION.md`: note on the
   `getPublicBookingSlots` row (kept handwritten, section 9). Web types are not
   regenerated here; that is the paired web PR (`REGEN=1` web-gate).
-- **Base**: clockwise-like `origin/main` `32ecacf`; smart-calendar-flow
+- **Base**: clockwise-like `origin/main` `32ecacf` (revision 1; revision 2 merged `4f798cb`); smart-calendar-flow
   `origin/main` `ae8b0d4` (the spec cited `702a6c2`; the lines this contract
   relies on, `src/api/schedulingLinks.ts` `getPublicLink`/`getPublicSlots`, are
   unchanged).
@@ -541,3 +541,131 @@ its `contractHash`; its fragment text does not change.
 
 **Base**: merged `origin/main` `4f798cb` (CI workflows only; bundle unchanged
 by it).
+
+---
+
+## Challenge — 2026-11-12
+
+**Verdict**: accept-with-changes. All changes applied in revision 2 (this
+commit series on `factory/pac-88-spec`; contractHash `408aa824…`, was
+`41ab9b15…`). Base: `origin/main` `4f798cb` merged (CI workflows only).
+Web read at smart-calendar-flow `origin/main` `ae8b0d4`.
+
+### Requests wrongly permitted
+
+1. `GET /api/book/{slug}/slots?display_time_zone=localtime&date=2027-03-01`
+   matches the pattern and, on a Debian-like host, `time.LoadLocation`
+   resolves `/usr/share/zoneinfo/localtime` → `/etc/localtime`: the answer is
+   grouped in the server process's zone and echoed as `localtime`, the very
+   thing the `Local` exclusion forbids (AC-28). Likewise
+   `display_time_zone=right/Europe/Paris` loads a leap-second file whose
+   instants Go reads ~27 s off. **Fixed** (fragment): `localtime`,
+   `posixrules` and `right/…` are refused with the display-zone 400; C-2 pins
+   them. (Low.)
+
+### Responses the client cannot handle
+
+1. `getPublicBookingSlots` overview with `from=2027-03-01&to=2027-04-11` on a
+   host with > 250 events in the window: the handler's single read goes
+   through `calendar.ListEvents` (`backend/calendar/events.go:14-25`), which
+   reads only the first page (no `nextPageToken`). The answer would list
+   `available_dates` on days whose events are on page 2, and the web would
+   offer starts that `createPublicBooking` then refuses 409 `host_busy`
+   (it re-reads one day). Violates the normative C-1 equivalence. **Fixed**:
+   fragment + section 2.3: the one read is complete (all pages) or the host is
+   unreadable (busy, D-6); C-10 pins it; `backend/calendar/events.go` added
+   to allowedPaths. (High, blocking before fix.)
+2. Same overview: `hostBusy` reads focus blocks with
+   `ListFocusBlocksForUserWeek(db, user, windowStart)` (`engine/booking.go:267`,
+   `storage/focus_blocks.go:30`), 7 days only. Over a 44-day window, focus
+   blocks after day 7 would be free time. **Fixed**: section 2.3 requires
+   storage reads to cover every needed link day; C-10 places a focus block and
+   a booking on the last needed day. (High.)
+3. Web `PublicBooking.tsx:459`: `availableDates.size === 0` makes every future
+   day selectable; `:157` `placeholderData: (prev) => prev` would show the
+   previous zone's days while the new zone loads; `:457` `date < today` uses
+   the browser's today. Each contradicts spec 3.4/AC-12/AC-14 once days are
+   zone days. **Fixed**: section 3.2 regression guards (also: the 429 keeps
+   `SLOTS_RATE_LIMITED_MESSAGE`, another 400 is a PAC-83 error). (Medium.)
+
+### Consumers affected
+
+- `backend/api/pac81_paths_test.go:284-317` (`TestPAC81_SlotListingCutIs503`,
+  date-less path and cancelled 60-day listing) and
+  `backend/api/ratelimit_booking_test.go:467-494` (`TestGetSlots_RateLimited`,
+  date-less requests) call the date-less mode and were missing from the
+  amended list; their `BookingFlow` fakes (`cutEngine`, `countingBookingFlow`,
+  and the one in `handlers_booking_test.go`) must follow the range method one
+  read per host requires (`api/interfaces.go:59`). **Fixed**: section 7,
+  `amendedExistingTests`, allowedPaths (fakes only, assertions unchanged).
+  (Medium.)
+- Date-less callers otherwise: web `schedulingLinks.ts:419` returns early
+  without a date (older build never calls it, confirmed); `mcp/` has no
+  `/api/book` call; `e2e/tests` use `date=` only; docs mention it only in
+  past contracts. Removal is safe.
+- e2e seed: `PAC88_LINKS.paris` id `cccccccc-cccc-4ccc-8ccc-cccccccccccc` is
+  already `TEAMS.connectedManager` (`e2e/seed/ids.ts:183`, `seed.sql:202`).
+  **Fixed**: `cacacaca-caca-4aca-8aca-cacacacacaca`. (Low.)
+- e2e seed: the hosts must be in `ACCEPTED_CREDENTIALS` (`ids.ts:299`) or the
+  stand-in refuses their tokens and D-6 makes every PAC-88 link empty; the
+  noZone host's settings row must be deleted and verified absent; "their
+  calendars are written by no journey" was false for the Paris link (AC-9 and
+  AC-21 bookings create host events and busy bookings), racing the read-only
+  journeys under `fullyParallel`. **Fixed**: section 6 seed rules (serial
+  booking file on booking-only Mondays, start chosen at run time so a retry
+  does not 409). (Medium.)
+
+### Contract/implementation divergences
+
+1. Section 8 said the email's compose-time zone read happens "a fraction of a
+   second" after the booking; `completeBooking` (`engine/booking.go:480-545`)
+   reads it after every host event is created (each up to `HostReadLimit()`,
+   25 s), on the completion unit's context. **Fixed** wording, and the drain
+   cancellation case is the AC-23 path. Residual accepted (owner OQ-4 scope).
+
+### Uncertainties not actually resolved
+
+- None claimed (no `x-uncertain`, no audit finding). Recorded residual: one
+  44-day read means a provider failure or own 15 s timeout empties the whole
+  overview (D-6 on a larger window) where per-day reads lost only some days;
+  owner rule, recorded in section 2.3, not changed.
+
+### Verified clean
+
+- Day-zone rule `s.In(Z).Format(DateOnly) == D`: needs no midnight, so a
+  skipped midnight, 23/25 h days in either zone, ±14 h (`Pacific/Kiritimati`,
+  `Etc/GMT+12`) and :30/:45 offsets need no special case. A Z day (≤ 25 h)
+  touches at most 3 link days (3 needs a contained 23 h link day); an `n`-day
+  overview at most `n + 2` (checked with one fall-back in Z and one
+  spring-forward in the link zone, and Casablanca's two Ramadan transitions).
+- First-occurrence rule stays in the link zone (`GridSlots`, forbidden path);
+  regrouping never re-filters, so a repeated wall time appears twice only in
+  a display zone (AC-18 arithmetic checked: 2027-11-07 is NY's fall-back,
+  05:00–06:30Z = 1:00–1:45 EDT then 1:00–1:30 EST, seven starts). AC-10,
+  AC-22, AC-29, AC-30 arithmetic checked.
+- Equivalence C-1: per-day and one-window reads see the same overlapping
+  events, bookings and (after fix 2) focus blocks at the same `now`; horizon,
+  notice and link days are evaluated per link day as before.
+- Cost: one read per host, 4-way concurrency, 15 s own limit; 10 hosts =
+  3 waves ≤ 45 s inside the PAC-81 90 s budget, same as one dated listing;
+  budget-cut stays 503; storage failure → 500 in both modes (C-4).
+- Validation order: 429 first (handwritten handler, `allowPublicBooking`),
+  then 404/410, duration, link zone 500, then the new 400s; the generated
+  binder is not mounted (MIGRATION.md note) so it cannot pre-empt the 429.
+- Newer web vs old server: detection by the echoed `display_time_zone` on
+  every answer (old server omits it; key always present on the new one, as
+  sent, so string equality is safe even for link names like
+  `Asia/Calcutta`). Old web vs new server: dated answers unchanged plus four
+  ignored keys (mapper is loose).
+- `SEEDED_ACCEPTED_HOST_ROWS = links + 2` is right (owner row per link + D-6
+  co-host + LA co-host); the exact-set verify derives from `ids.ts`, so no
+  other spec's count moves.
+- PAC-87 touches `habits.yaml`/`scheduling.yaml` only; overlap is the
+  generated bundle, `backend/api/gen` and `e2e/TESTIDS-REQUIRED.md`; merge
+  condition added (second to merge regenerates and re-hashes).
+- Follow-up for the visitor-zone email filed: PAC-94 (merge condition marked
+  satisfied).
+- Gates (LF clone of `factory/pac-88-k2` at `f8eb690`, golang:1.25-bookworm):
+  `make openapi` rc 0; `make openapi-check WEB=/nonexistent` rc 0 (bundle in
+  sync, 106 paths; MIGRATION.md 128 operations; Go gen matches; web half
+  skipped by design); `go build ./...` ok; bundle sha256 `408aa824…`.
