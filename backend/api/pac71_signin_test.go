@@ -2,8 +2,8 @@ package api
 
 import (
 	"bytes"
-	"encoding/json"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -307,7 +307,6 @@ func TestPAC71_AC4_SameObjectIdOtherTenantAndOtherObjectSameTenantAreRefused(t *
 	}
 }
 
-
 func TestPAC71_AC6_SSOIdentityNeverReachesAnotherAccountAndIssuerChangeIsRefused(t *testing.T) {
 	db := openTestDB(t)
 	d := pac71Domain()
@@ -601,4 +600,3 @@ func TestPAC71_AC11_MicrosoftNewAccountNeedsATenantThatVerifiesTheDomain(t *test
 		}
 	})
 }
-

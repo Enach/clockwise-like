@@ -570,7 +570,17 @@ func TestPAC84_RotateDataKey(t *testing.T) {
 // encrypted (in Go, leaving the version clean; and by the DO block);
 // decrypt-all writes every plaintext back and removes the data keys; then
 // downgrade-schema succeeds and the inventory holds the plaintexts.
+//
+// downgrade-schema runs only from the encryption migration's version (034):
+// once a later migration ships (PAC-71's 035) it refuses and the way back is
+// a backup restore (owner decision 2026-11-12, contract "Stage-4
+// amendments"). The database here is therefore held at 034.
 func TestPAC84_DecryptAllAndDowngrade(t *testing.T) {
+	want, err := EncryptionMigrationVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(SetMigrationCeilingForTest(want))
 	db, _, _ := openEncDB(t)
 	ctx := context.Background()
 	l := seedLegacy(t, db)
@@ -579,7 +589,9 @@ func TestPAC84_DecryptAllAndDowngrade(t *testing.T) {
 	if _, err := RunPass(ctx, db, PassOptions{Kind: PassConvert, Keyring: load.Keyring}); err != nil {
 		t.Fatal(err)
 	}
-	want, _ := EncryptionMigrationVersion()
+	if v, dirty, _, err := SchemaVersion(ctx, db); err != nil || v != want || dirty {
+		t.Fatalf("the test database is not at the encryption migration: %d %v %v", v, dirty, err)
+	}
 	if _, _, err := DowngradeSchema(ctx, db); !errors.Is(err, ErrDowngradeRefused) {
 		t.Fatalf("downgrade with encrypted values: %v", err)
 	}
