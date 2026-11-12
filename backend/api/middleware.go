@@ -184,8 +184,9 @@ func (g *guardedResponseWriter) decide() bool {
 	for k := range h {
 		delete(h, k)
 	}
+	// base is a Clone taken at hand-over and is restored at most once.
 	for k, v := range g.base {
-		h[k] = append([]string(nil), v...)
+		h[k] = v
 	}
 	if g.guard.Stale() {
 		sessionUnauthorized(g.ResponseWriter)
