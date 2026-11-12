@@ -349,6 +349,19 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'e2e.pac88.la@paceday.test',    'E2E PAC-88 Los Angeles Co-host', '', 'google', 'e2e-pac88-la'),
   ('b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7', 'e2e.pac88.utc@paceday.test',   'E2E PAC-88 No-zone Host',        '', 'google', 'e2e-pac88-utc');
 
+-- PAC-71 (as for every seeded user above): bound to a Google identity with
+-- authoritative evidence, address domain-confirmed. Inserted after that
+-- block, so bound here, with subjects of their own ("7188" + n) that cannot
+-- collide with the block's "71" + 6 digits.
+UPDATE users SET address_standing = 'domain_confirmed'
+ WHERE id IN ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5',
+              'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7');
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by)
+SELECT id, 'google', '', '7188' || lpad((row_number() OVER (ORDER BY id))::text, 4, '0'), 'authoritative', 'created'
+FROM users
+WHERE id IN ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5',
+             'b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6', 'b7b7b7b7-b7b7-4b7b-8b7b-b7b7b7b7b7b7');
+
 INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
   ('b4b4b4b4-b4b4-4b4b-8b4b-b4b4b4b4b4b4', 'e2e-pac88-ny-work',    'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('b5b5b5b5-b5b5-4b5b-8b5b-b5b5b5b5b5b5', 'e2e-pac88-paris-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
