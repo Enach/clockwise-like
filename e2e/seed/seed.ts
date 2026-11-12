@@ -22,6 +22,8 @@ import {
   CONNECTED,
   DISCONNECTING,
   LINKS,
+  PAC88_HOSTS,
+  PAC88_LINKS,
   PERSONAL_CALENDAR,
   SEEDED_ACCEPTED_HOST_ROWS,
   SEEDED_LINK_IDS,
@@ -195,6 +197,52 @@ async function verify(): Promise<void> {
     // A focus block is busy time for its owner, and the e2e users host the
     // booking links, so a leftover block would silently shrink slot lists.
     ['no focus blocks', 'SELECT 1 FROM focus_blocks', [], 0],
+    // PAC-88 (contract section 6): each zoned host carries exactly its zone,
+    // the no-zone owner has no settings row at all (a stale one would change
+    // AC-3 silently), every PAC-88 host is connected through the stand-in,
+    // and the Paris link is collective with the Los Angeles co-host (AC-2).
+    [
+      'PAC-88 hosts carry their profile zones',
+      `SELECT 1 FROM settings WHERE (user_id, timezone) IN
+         (($1::uuid, $2), ($3::uuid, $4), ($5::uuid, $6))`,
+      [
+        PAC88_HOSTS.newYork.id, PAC88_HOSTS.newYork.zone,
+        PAC88_HOSTS.paris.id, PAC88_HOSTS.paris.zone,
+        PAC88_HOSTS.losAngeles.id, PAC88_HOSTS.losAngeles.zone,
+      ],
+      3,
+    ],
+    [
+      'the PAC-88 no-zone owner has no settings row',
+      'SELECT 1 FROM settings WHERE user_id = $1',
+      [PAC88_HOSTS.noZone.id],
+      0,
+    ],
+    [
+      'PAC-88 hosts have one unexpired token each',
+      `SELECT 1 FROM oauth_tokens
+        WHERE user_id = ANY($1::uuid[]) AND expiry > NOW() + interval '1 year'`,
+      [Object.values(PAC88_HOSTS).map((u) => u.id)],
+      Object.keys(PAC88_HOSTS).length,
+    ],
+    [
+      'PAC-88 links carry their horizons, days and windows',
+      `SELECT 1 FROM scheduling_links
+        WHERE (id, booking_horizon_days, days_of_week, window_start_time, window_end_time) IN
+          (($1::uuid, $2::int, $3::int[], $4::time, $5::time), ($6::uuid, $7::int, $8::int[], $9::time, $10::time),
+           ($11::uuid, $12::int, $13::int[], $14::time, $15::time))`,
+      Object.values(PAC88_LINKS).flatMap((l) => [
+        l.id, l.horizonDays, [...l.daysOfWeek], l.windowStart, l.windowEnd,
+      ]),
+      3,
+    ],
+    [
+      'the PAC-88 Paris link has its Los Angeles co-host',
+      `SELECT 1 FROM scheduling_link_hosts
+        WHERE link_id = $1 AND user_id = ANY($2::uuid[]) AND status = 'accepted'`,
+      [PAC88_LINKS.paris.id, [...PAC88_LINKS.paris.hostUserIds]],
+      2,
+    ],
   ];
 
   for (const [label, sql, params, expected] of checks) {

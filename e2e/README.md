@@ -151,10 +151,27 @@ reasons in `SEAM-REQUIRED.md` item B, and is marked `test.fixme` in
 | Startup: production env boots; unsafe calendar settings refuse to boot; the redirect is announced (AC-3, 12, 13, 14, 26) | **covered, on the built image** | `tests/startup.spec.ts` |
 | Nothing reached a real provider during the run (AC-23) | **covered except the status lookup**; the strict form is **`test.fixme`** — `GET /api/auth/status` calls Google userinfo for a connected user (see the file) | `tests/hermeticity.spec.ts` |
 | The real Google OAuth callback | **`test.fixme`** — `SEAM-REQUIRED.md` item B | `tests/auth-session.spec.ts` |
+| Booking page time zone (PAC-88): server echo, bounded overview and day zone; host-zone default (AC-1, AC-2, AC-3), "Use my time zone" (AC-7), Monday-only Paris in Auckland (AC-10, AC-13), DST transition days computed at run time (AC-19) | **covered, API + UI** (UI needs smart-calendar-flow#144) | `tests/pac88-zones.spec.ts` |
+| Booking after a zone switch (AC-9) and the confirmation in that zone (AC-21) | **covered, UI + API + DB**, serial, on a booking-only Monday | `tests/pac88-booking.spec.ts` |
 | Auto-decline reaching the stand-in | **not exercised** — spec AG-5: it only runs on its 15-minute cron | — |
 
 Every `test.fixme` carries a comment naming what blocks it, as
 `docs/factory/README.md` §3 rule 4 requires.
+
+### PAC-88 seed fixtures
+
+`seed/ids.ts PAC88_HOSTS` (b4b4… New York, b5b5… Paris, b6b6… Los Angeles,
+b7b7… no zone) and `PAC88_LINKS` (`dst` cbbbbbbb…, every day 00:00–23:59 New
+York, 365 days; `paris` cacacaca…, Monday 09:00–17:00 Paris, 365 days, with the
+Los Angeles co-host; `noZone` cddddddd…, weekdays 09:00–17:00, 60 days). All
+four hosts are in `ACCEPTED_CREDENTIALS` (an unaccepted token is an unreadable
+calendar, which PAC-72 D-6 makes busy). The no-zone owner must have no
+settings row: `seed.sql` deletes any and `verify()` checks the absence (a
+stale row would silently change AC-3). Only `tests/pac88-booking.spec.ts`
+writes to the Paris link's hosts, serially, on a Monday the read-only file
+never displays; `dst` and `noZone` are never booked. The browser zone is set
+per describe with `test.use({ timezoneId })`; the global `timezoneId: 'UTC'`
+and the compose `TZ: UTC` stay (AC-28).
 
 ### 5a. The calendar stand-in and the sink
 
