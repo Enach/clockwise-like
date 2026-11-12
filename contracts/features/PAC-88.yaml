@@ -1,0 +1,206 @@
+{
+  "featureId": "PAC-88",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-88",
+  "status": "draft (contract-author 2026-11-12; awaiting contract-challenger)",
+  "contractRevision": "1",
+  "contractHash": "PENDING",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi` in an LF clone of factory/pac-88-spec (golang:1.25-bookworm, api-gate pattern). Reproduce with: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml (or git show <rev>:contracts/openapi/openapi.yaml | sha256sum). Before this revision (main 32ecacf) the bundle hash was c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346.",
+  "contractDoc": "contracts/features/PAC-88.md",
+  "specDoc": "docs/specs/PAC-88.md (challenged accept-with-changes 2026-11-02 at 85b4e25; owner OQ-2 and OQ-4 answered 2026-11-02, recorded in this revision; OQ-1 resolved by this contract)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "The slot listing groups offered starts by calendar day in an optional display zone, states the link zone it used, and replaces the whole-horizon date-less read by a bounded (<= 42 days) day overview with one calendar read per host per request; the confirmation email states the link zone with offset, then UTC; the web keeps time_zone and booking_horizon_days and implements the display zone and switcher; a deterministic e2e seed for zones and DST.",
+  "mergeAfter": "origin/main 32ecacf (PAC-72 and PAC-84 contained). No dependency on open PRs.",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/api/handlers_booking.go, backend/api/booking_rule.go (getSlots: display zone, overview range, validation, response keys; no change to createBooking)",
+        "backend/api/pac88_*_test.go (new) and the amended tests named in contracts/features/PAC-88.md section 7 (pac72_offerable_start_test.go, pac72_rev2_test.go) only where they read the date-less mode",
+        "backend/api/interfaces.go and test fakes, only if the range read needs a new engine method",
+        "backend/engine/booking.go (range read of host busy time; email composition), backend/engine/*_test.go",
+        "backend/storage (read helpers only; no migration)",
+        "e2e/seed/seed.sql, e2e/seed/ids.ts, e2e/seed/seed.ts (contract section 6)",
+        "e2e/tests/pac88-*.spec.ts (new), e2e/lib (zone/transition helpers)",
+        "e2e/TESTIDS-REQUIRED.md, e2e/README.md (section 3.5 test ids, seed fixtures)",
+        "docs/plans/PAC-88.md",
+        "contracts/features/PAC-88.{md,yaml} (contractHash field only, if main's bundle moved)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision (back to stage 2); contracts/openapi/openapi.yaml and backend/api/gen by hand",
+        "the createPublicBooking request or response (spec AC-24, owner OQ-4) and ConfirmBooking's signature",
+        "backend/storage/migrations (no migration)",
+        "backend/engine/booking_window.go rules (the offered set, the first-occurrence rule) and the rate limiter values",
+        "e2e/playwright.config.ts global timezoneId and e2e/docker-compose.e2e.yml TZ (stay UTC, AC-28); per-file test.use overrides only",
+        "e2e/tests/public-booking.spec.ts assertions (AC-28 unchanged journeys)",
+        "mcp/"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/schedulingLinks.ts and its tests (mapper keeps time_zone and booking_horizon_days; getPublicSlots per contract section 3.1)",
+        "src/api/generated (regenerated with REGEN=1 web-gate, never edited)",
+        "src/pages/PublicBooking.tsx, src/pages/PublicBooking*.test.tsx",
+        "src/components/booking/** (new: time zone switcher, labels)",
+        "src/lib/timeFormat.ts, src/lib/timeZone.ts (new) and tests",
+        "src/demo/** (demo link zone and slot keys, AC-33)"
+      ],
+      "forbiddenPaths": [
+        "storing the chosen zone anywhere beyond page state: localStorage, sessionStorage, IndexedDB, cookie, URL (owner OQ-2)",
+        "any change to the booking-create request body (AC-24)",
+        "a 24-hour clock on the booking page (PAC-55 section 5)",
+        "a date-less listing request without from/to; any automatic retry of booking create"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {
+      "operationId": "getPublicBookingSlots",
+      "change": "Query: optional display_time_zone (IANA, pattern, maxLength 64, not Local, loadable), from, to (date; together; <= 42 days; not with date). Response: required time_zone, display_time_zone, range_from, range_to added. Days are display-zone days; overview bounded (default today + 41 in the day zone) replaces the whole-horizon read; storage failure in the overview is 500 (was an omitted day); one calendar read per accepted host per request. 400 messages: 'invalid display_time_zone, use an IANA time zone name', 'date cannot be combined with from or to', 'invalid from, use YYYY-MM-DD', 'invalid to, use YYYY-MM-DD', 'from and to must be given together', 'to must not be before from', 'range must not exceed 42 days' (plus the existing two). No status added or removed; 429 (120/min/client) and 503 unchanged; no caching headers."
+    },
+    {
+      "operationId": "getPublicLinkInfo",
+      "change": "Description only (PublicLinkInfo.time_zone: the listing states the same zone)."
+    }
+  ],
+  "operationsNotChanged": [
+    {
+      "operationId": "createPublicBooking",
+      "reason": "Spec AC-24 and owner OQ-4: the email reads the link zone itself; no booking-create input. API-051 not inherited."
+    }
+  ],
+  "componentsChanged": [
+    "schemas.PublicSlotsResponse: four required keys added (time_zone, display_time_zone, range_from, range_to); slots/available_dates descriptions now in the day zone.",
+    "schemas.PublicLinkInfo.time_zone: description sentence."
+  ],
+  "nonHttpInterface": {
+    "email": "contracts/features/PAC-88.md section 4: subject date and body in the link zone read at compose time ('Time: 7:30 PM – 8:00 PM, America/Los_Angeles (UTC−08:00)'), then 'In UTC: 03:30 – 04:00 UTC on Friday, January 15, 2027'; UTC link zone or unreadable zone: UTC only, labelled, still sent, unreadable logged with the booking id; ICS unchanged (UTC Z instants).",
+    "webClient": "contracts/features/PAC-88.md section 3: mapper keeps time_zone and booking_horizon_days; every listing request sends display_time_zone; overview per visible grid with from/to; legacy detection by the echoed display_time_zone; time_zone mismatch re-reads link info; 400 on a zone -> back to the previous zone with booking-tz-unsupported; no persistence (OQ-2); test ids booking-tz-label, booking-tz-switcher, booking-tz-use-mine, booking-tz-back-to-host, booking-tz-unsupported, booking-tz-announcer.",
+    "e2eSeed": "contracts/features/PAC-88.md section 6: PAC88_HOSTS newYork/paris/losAngeles/noZone (b4b4.., b5b5.., b6b6.., b7b7..), PAC88_LINKS dst (365 days, every day, 00:00-23:59, NY owner), paris (Monday 09:00-17:00, 365 days, LA co-host), noZone (Mon-Fri 09:00-17:00, 60 days, no settings row); SEEDED_ACCEPTED_HOST_ROWS = links + 2."
+  },
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-88-spec, then the stage-4 PRs",
+    "assembler": "PENDING",
+    "migrationRegister": "PENDING",
+    "goGen": "PENDING",
+    "openapiCheckApi": "PENDING",
+    "webGate": "Not run at this stage: the web half of openapi-check reports drift until the paired web PR regenerates src/api/generated (REGEN=1 web-gate).",
+    "stage4": "api-gate.sh, web-gate.sh, e2e gate (make verify in both repos); the api PR body records the bundle sha256 equal to contractHash.",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit][e2e] Paris link, Tokyo browser: label Europe/Paris with the shown day's offset; times = offered instants in Paris (PAC88_LINKS.paris).",
+    "AC-2  [e2e] collective link, Paris owner, LA co-host: page shows Europe/Paris.",
+    "AC-3  [e2e] owner without zone: label UTC (+00:00), times UTC whatever the browser (PAC88_LINKS.noZone).",
+    "AC-4  [unit] link info 500: PAC-83 error with retry, no time, no zone label.",
+    "AC-5  [unit] link zone the browser cannot format: UTC labelled UTC, switcher available.",
+    "AC-6  [unit] switcher filter 'new york' finds America/New_York; options show offsets; link zone and UTC first.",
+    "AC-7  [unit][e2e] 'Use my time zone (America/New_York)' present when browser zone differs, absent when equal.",
+    "AC-8  [unit] one action back to the link's zone.",
+    "AC-9  [unit][e2e] booking after a switch sends the offered start string; same 201/409 as from the default zone.",
+    "AC-10 [unit][e2e] Monday-only Paris 09:00-17:00 shown in Pacific/Auckland on a winter week: Monday 12 starts 9:00-11:45 PM, Tuesday 19 starts 12:00-4:30 AM, no other day.",
+    "AC-11 [unit] union of listed times over selectable days = offered starts; each under its Z date once (zones incl. UTC-12, UTC+14, :30, :45).",
+    "AC-12 [unit] days before today (displayed zone) not selectable; last selectable = last displayed day with an offered start.",
+    "AC-13 [unit][e2e] a day with no offered start (non-link weekday, beyond horizon) not selectable.",
+    "AC-14 [unit] zone switch: selected day kept if still selectable, else none selected and 'pick a date'.",
+    "AC-15 [unit] details step: selected time re-rendered in the new zone; typed details kept.",
+    "AC-16 [unit] a displayed day's listing failure (network, 5xx, 503): whole day error + retry; after retry exactly the AC-11 set (one answer per day under this contract).",
+    "AC-16a [unit] overview failure: no day selectable, PAC-83 error with retry.",
+    "AC-16b [contract][unit] 365-day link: overview of the last month answers 200 (C-9); the page never requests more than the grid (<= 42 days).",
+    "AC-17 [unit] NY spring-forward Sunday 01:00-04:00: no 02:xx; offsets -05:00 then -04:00.",
+    "AC-18 [unit] UTC link Sundays 05:00-07:00 shown in America/New_York on 2027-11-07: seven times 1:00,1:15,1:30,1:45 AM (-04:00) then 1:00,1:15,1:30 AM (-05:00), distinct offsets and accessible names.",
+    "AC-18a [unit] Europe/London link 00:00-03:00 on the October fall-back Sunday, shown in London: offsets per instant, no repeated wall time.",
+    "AC-19 [e2e] PAC88_LINKS.dst, Paris browser: next NY and Paris transitions >= 2 days ahead, transition day +-1 in each zone; page = server's answer for that day (display_time_zone) = regrouped PAC-72 explicit-date answers; no whole-horizon read.",
+    "AC-20 [unit] a later day's label shows that day's offset.",
+    "AC-21 [unit][e2e] booked while showing Asia/Tokyo: confirmation shows Tokyo date, start-end, Asia/Tokyo, UTC+09:00; 'Book another time' stays in Tokyo.",
+    "AC-22 [unit Go] LA owner, 2027-01-15 03:30Z, 30 min: subject Thursday, January 14; body 7:30 PM – 8:00 PM, America/Los_Angeles (UTC−08:00), then 03:30 – 04:00 UTC on Friday, January 15, 2027; ICS DTSTART 20270115T033000Z.",
+    "AC-23 [unit Go] zone unreadable at compose: email still sent in UTC labelled UTC; WARN log with the booking id.",
+    "AC-24 [contract][unit web] CreatePublicBookingRequest unchanged (bundle diff shows no change to it); identical request bodies from any zone.",
+    "AC-25 [unit] chosen zone kept across duration change, 409, retry, confirmation; a new load shows the link's zone (nothing persisted, OQ-2).",
+    "AC-26 [contract][unit] host changes zone: the next listing's time_zone changes (C-5); the page re-reads link info and never lists under a stale zone.",
+    "AC-27 [unit] switcher named 'Time zone', keyboard operable, polite announcement on visitor change only, time buttons named with date/time/zone/offset, deselection announced, >= 44x44 px.",
+    "AC-28 [e2e] UTC/UTC public-booking.spec.ts journeys unchanged.",
+    "AC-29 [unit] Paris Tuesday 16:05 (Tokyo Wednesday 00:05): 16:15 and 16:30 Paris reachable under Wednesday (Tokyo).",
+    "AC-30 [unit] Tokyo confirmation of 2027-01-14 23:30Z: ICS file name 2027-01-15, DTSTART 20270114T233000Z.",
+    "AC-31 [contract] every listing answer states time_zone equal to PublicLinkInfo.time_zone (C-5).",
+    "AC-32 [contract] unknown display_time_zone: 400 'invalid display_time_zone, use an IANA time zone name', never another zone or an empty 200 (C-2).",
+    "AC-33 [unit] demo source shows the demo link's zone label; no demo path in production builds.",
+    "C-1..C-9, E-1..E-4 [contract/unit Go]: contracts/features/PAC-88.md section 7."
+  ],
+  "amendedExistingTests": [
+    "backend/api/pac72_offerable_start_test.go TestPAC72_ListingDaysAndHorizon, TestPAC72_UnreadableBusyTime (date-less now 500), process-zone case at :835",
+    "backend/api/pac72_rev2_test.go horizon cases (:125-150), case (e) (:300-320)",
+    "backend/api/pac72_rev2_test.go TestPAC72_LongHorizonDatelessListingIs503 replaced by C-9"
+  ],
+  "resolvesFindings": [],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "Spec OQ-1: direction (b), contracts/features/PAC-88.md sections 2 and 8.",
+    "Spec OQ-2 (owner 2026-11-02): not remembered; contract section 3.4.",
+    "Spec OQ-4 (owner 2026-11-02): link zone + UTC; contract section 4; visitor-zone email is a follow-up."
+  ],
+  "doesNotResolve": [
+    "API-051 (single-use link re-opened by a cancellation): not inherited, createPublicBooking untouched.",
+    "Moving getPublicBookingSlots to the generated server (MIGRATION.md note)."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "Enach/smart-calendar-flow (older build)",
+      "breaks": "no",
+      "detail": "Sends date without display_time_zone: same lists plus four ignored keys; never calls the date-less mode."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow (web PR)",
+      "breaks": "n/a",
+      "detail": "Implements contract section 3; degrades to link-zone mode against an older server (section 5)."
+    },
+    {
+      "consumer": "smart-calendar-flow src/api/generated",
+      "breaks": "regenerated",
+      "detail": "PublicSlotsResponse gains four required keys; not used to parse the public client's answers."
+    },
+    {
+      "consumer": "e2e/tests public-booking, scheduling-links, seam",
+      "breaks": "no",
+      "detail": "Explicit-date calls only (AC-28)."
+    },
+    {
+      "consumer": "backend Go tests reading the date-less mode",
+      "breaks": "yes",
+      "detail": "Amended per amendedExistingTests."
+    },
+    {
+      "consumer": "backend/api/gen",
+      "breaks": "regenerated",
+      "detail": "GetPublicBookingSlotsParams gains three optional fields; the handler is handwritten."
+    },
+    {
+      "consumer": "mcp",
+      "breaks": "no",
+      "detail": "No tool calls /api/book."
+    }
+  ],
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "The api PR's contracts/openapi/openapi.yaml sha256 equals contractHash (or a recorded later revision).",
+    "The follow-up ticket for the visitor-zone email (owner OQ-4, carrying API-051) is filed before the api PR merges.",
+    "Merge order: api PR first, then the web PR; the UI e2e journeys (AC-1, 2, 3, 7, 9, 10, 19, 21) pass in the pair's e2e gate before the web PR merges.",
+    "No migration and no change to createPublicBooking in either PR (bundle diff limited to getPublicBookingSlots, PublicSlotsResponse and the PublicLinkInfo.time_zone description)."
+  ],
+  "rollback": "Code only: no migration, nothing stored. Revert the web PR: browser-zone display returns. Revert the api PR: the UTC email and the pre-PAC-88 listing return; the newer web detects the missing display_time_zone and runs in link-zone mode (switcher disabled, link-zone days only, overview errors shown as PAC-83 errors, never every day selectable). Older web against the new server is unaffected (contract section 5).",
+  "ownerDecided": [
+    "PAC-72 D-9: host profile zone by default, visitor can change it (2026-11-01).",
+    "PAC-72 A-2: collective link uses the owner's zone; A-4: no zone is UTC, shown as UTC (2026-11-01).",
+    "PAC-88 OQ-2: the chosen zone is not remembered across visits (2026-11-02).",
+    "PAC-88 OQ-4: email shows the link zone (name + offset) plus UTC; visitor zone in the email is a follow-up (2026-11-02)."
+  ],
+  "followUps": [
+    "Confirmation email in the visitor's chosen zone (OQ-4), with a booking-create input and API-051.",
+    "Move getPublicBookingSlots to the generated server once the binder can keep the rate limit first (MIGRATION.md note).",
+    "Optional: Cache-Control: no-store on the public listing (contract section 8), if a proxy ever caches it."
+  ],
+  "challenge": "pending (contract-challenger)"
+}
