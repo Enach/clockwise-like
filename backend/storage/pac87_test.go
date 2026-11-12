@@ -15,7 +15,7 @@ import (
 
 // PAC-87 (spec docs/specs/PAC-87.md; contract contracts/features/PAC-87.md):
 // consent periods, the operator record's consent fields, the settings write
-// ordered against a confirmation, leaving an organisation, and migration 036.
+// ordered against a confirmation, leaving an organisation, and migration 035.
 
 // pac87Org is an organisation with an admin holding a fresh grant per change.
 type pac87Org struct {
@@ -411,7 +411,64 @@ func TestPAC87_LeavingTheOrganisationEndsTheConfirmation(t *testing.T) {
 	}
 }
 
-// pac87Seed is AC-18's population before migration 036: A at version 7 on
+// Review finding 3: a confirmation of A kept from before PAC-87 (when a move
+// to B kept the row) never confirms a later rejoin of A. The pre-deploy move
+// is reproduced by updating users.org_id directly, as the old SetUserOrg
+// did, and the member's confirmation for A is inserted as that code left it.
+// Signing in back to A asks again; a confirmation then is recorded anew.
+func TestPAC87_RejoinWithAPreDeployConfirmationAsksAgain(t *testing.T) {
+	db := openTestDB(t)
+	a := newPAC87Org(t, db, "pac87-rejoin-a")
+	b := newPAC87Org(t, db, "pac87-rejoin-b")
+	cfg := a.change(OrgAIPatch{Provider: strp("openai"), APIKey: strp("k")})
+	m := a.member("m")
+	if a.confirm(m, cfg.Version) != OrgAIConfirmed || !a.confirmed(m) {
+		t.Fatal("setup: confirm in A")
+	}
+	// Before the deploy: moved to B by the old code, A's row kept.
+	if _, err := db.Exec(`UPDATE users SET org_id = $1 WHERE id = $2`, b.org, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1`, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO org_ai_confirmations (user_id, org_id, consent_since_version) VALUES ($1, $2, $3)`, m, a.org, cfg.ConsentSince); err != nil {
+		t.Fatal(err)
+	}
+	// After the deploy: the first sign-in puts the member back in A.
+	if err := SetUserOrg(db, m, a.org); err != nil {
+		t.Fatal(err)
+	}
+	if a.confirmed(m) {
+		t.Fatal("the confirmation kept from before the move confirmed the rejoin: the member must be asked again")
+	}
+	var n int
+	_ = db.QueryRow(`SELECT count(*) FROM org_ai_confirmations WHERE user_id = $1`, m).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d confirmations left after rejoining", n)
+	}
+	if a.confirm(m, cfg.Version) != OrgAIConfirmed || !a.confirmed(m) {
+		t.Fatal("confirming after the rejoin")
+	}
+	// Signing in again into the same organisation keeps the new one; a
+	// stray row for another organisation goes.
+	if _, err := db.Exec(`INSERT INTO org_ai_confirmations (user_id, org_id, consent_since_version) VALUES ($1, $2, 1)`, m, b.org); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetUserOrg(db, m, a.org); err != nil || !a.confirmed(m) {
+		t.Fatalf("same organisation again: confirmed %v, %v", a.confirmed(m), err)
+	}
+	_ = db.QueryRow(`SELECT count(*) FROM org_ai_confirmations WHERE user_id = $1 AND org_id = $2`, m, b.org).Scan(&n)
+	if n != 0 {
+		t.Fatal("a confirmation for another organisation survived a sign-in")
+	}
+	// An unknown user is a no-op, as before.
+	if err := SetUserOrg(db, uuid.New(), a.org); err != nil {
+		t.Fatalf("unknown user: %v", err)
+	}
+}
+
+// pac87Seed is AC-18's population before migration 035: A at version 7 on
 // OpenAI forbidding personal keys; X follower confirmed 7, Y follower
 // confirmed 5, Z on OpenAI with a key holding 7.
 type pac87Seed struct {
@@ -477,16 +534,16 @@ func constraintExists(t *testing.T, db *sql.DB, name string) bool {
 	return n == 1
 }
 
-// PAC87-AC-18, -19: migration 036 up keeps followers confirmed at the
+// PAC87-AC-18, -19: migration 035 up keeps followers confirmed at the
 // current version, ends older confirmations and those of members not
 // following; down keeps only followers confirmed at exactly the current
 // state; neither touches a stored choice or key; up, down, up.
-func TestMigration036_ConsentPeriod(t *testing.T) {
+func TestMigration035_ConsentPeriod(t *testing.T) {
 	db, to := migrationTestDB(t)
 	to(34)
 	s := seedPAC87(t, db)
 	before := settingsFacts(t, db)
-	to(36)
+	to(35)
 	if !constraintExists(t, db, "org_ai_confirmations_consent_since_version_check") || constraintExists(t, db, "org_ai_confirmations_configuration_version_check") ||
 		!constraintExists(t, db, "org_ai_configurations_consent_since_check") {
 		t.Fatal("constraint names after up")
@@ -562,7 +619,7 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 		}
 	}
 	rows.Close()
-	to(36)
+	to(35)
 	if state(s.x).Confirmed() || state(s.z).Confirmed() {
 		t.Fatal("a confirmation ended by down came back with up")
 	}

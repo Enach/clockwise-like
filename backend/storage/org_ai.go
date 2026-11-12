@@ -19,7 +19,7 @@ import (
 //
 // PAC-87 (spec docs/specs/PAC-87.md §3.1, §3.4; contract
 // contracts/features/PAC-87.md §1, §5, §5a; migration
-// 036_llm_org_ai_consent_period): a confirmation covers the organisation's
+// 035_llm_org_ai_consent_period): a confirmation covers the organisation's
 // provider for one consent period. Every provider change (first setup, a
 // change to another provider, removal) starts a new period at the version it
 // produces (ConsentSince); key, destination, model and personal-keys changes

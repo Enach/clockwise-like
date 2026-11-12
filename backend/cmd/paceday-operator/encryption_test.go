@@ -43,7 +43,7 @@ func newOpEnv(t *testing.T) *opEnv {
 // newOpEnvAtEncryption is newOpEnv with every migration in this process (the
 // test's and the CLI's) stopped at the encryption migration (034).
 // downgrade-schema runs only from 034; once a later migration ships
-// (PAC-71's 035) the CLI's own migrate-up would take the database past it,
+// (035 and up) the CLI's own migrate-up would take the database past it,
 // so the downgrade path is proven on a database held at 034 (owner decision
 // 2026-11-12, contract "Stage-4 amendments"). TestPAC84_DowngradeRefusedAbove034
 // covers the shipped schema.

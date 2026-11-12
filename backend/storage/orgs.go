@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/Enach/paceday/backend/domain"
@@ -34,21 +36,38 @@ func GetOrgByID(db DBTX, id uuid.UUID) (*Org, error) {
 // SetUserOrg makes orgID the user's organisation. Leaving an organisation
 // ends the user's organisation-AI confirmation for it (PAC-87, factory
 // decision 2026-11-12): a member who leaves and later rejoins is asked again
-// before anything is sent. The membership change comes first and the delete
-// is a separate statement, so it sees a confirmation that a concurrent
-// ConfirmOrgAI committed before the change (that confirmation locks the same
-// users row); one recorded after the change finds the caller no longer a
-// member and records nothing.
+// before anything is sent. The previous organisation is read under the
+// users-row lock ConfirmOrgAI also takes first, so a concurrent confirmation
+// lands wholly before (and is deleted here) or wholly after (and finds the
+// caller no longer a member, recording nothing). When the organisation
+// changes, EVERY confirmation of the user is deleted, including one for the
+// organisation being joined: a row kept from an earlier membership (for
+// example one recorded before PAC-87, when a move kept it) never confirms a
+// rejoin (review finding 3). When it does not change, only confirmations of
+// other organisations are deleted.
 func SetUserOrg(db DBTX, userID, orgID uuid.UUID) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var prev uuid.NullUUID
+	err = tx.QueryRow(`SELECT org_id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID).Scan(&prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // no such user: nothing to move (as the bare UPDATE did)
+	}
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`UPDATE users SET org_id = $1 WHERE id = $2`, orgID, userID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1 AND org_id <> $2`, userID, orgID); err != nil {
+	if prev.Valid && prev.UUID == orgID {
+		_, err = tx.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1 AND org_id <> $2`, userID, orgID)
+	} else {
+		_, err = tx.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1`, userID)
+	}
+	if err != nil {
 		return err
 	}
 	return tx.Commit()
