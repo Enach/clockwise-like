@@ -31,9 +31,27 @@ func GetOrgByID(db DBTX, id uuid.UUID) (*Org, error) {
 	return o, row.Scan(&o.ID, &o.Name, &o.Domain, &o.CreatedAt)
 }
 
+// SetUserOrg makes orgID the user's organisation. Leaving an organisation
+// ends the user's organisation-AI confirmation for it (PAC-87, factory
+// decision 2026-11-12): a member who leaves and later rejoins is asked again
+// before anything is sent. The membership change comes first and the delete
+// is a separate statement, so it sees a confirmation that a concurrent
+// ConfirmOrgAI committed before the change (that confirmation locks the same
+// users row); one recorded after the change finds the caller no longer a
+// member and records nothing.
 func SetUserOrg(db DBTX, userID, orgID uuid.UUID) error {
-	_, err := db.Exec(`UPDATE users SET org_id = $1 WHERE id = $2`, orgID, userID)
-	return err
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`UPDATE users SET org_id = $1 WHERE id = $2`, orgID, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1 AND org_id <> $2`, userID, orgID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // AssociateUserWithOrg derives the org from the user's email domain and links them.

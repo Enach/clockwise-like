@@ -12,14 +12,16 @@ import (
 )
 
 // PAC-73 Part 2, P2-AC-33 (spec docs/specs/NEW-llm-bring-your-own-part2.md
-// §3.7, P2-D9): clockwise_parse_command relays the row 5, 10 and 11
+// §3.7, P2-D9; PAC-87 AC-21): clockwise_parse_command relays the row 5, 10 and 11
 // not-configured answers unchanged, and no MCP tool reads or changes the
 // organisation's AI configuration or gives a confirmation (the confirmation
 // is the person's, owner O-13).
 func TestParseCommand_RelaysPart2Rows(t *testing.T) {
 	for _, tc := range []struct{ reason, enablers, message string }{
 		{"organization_unconfirmed", `["user"]`, "AI features are off until you confirm: your organisation provides AI through OpenAI. Your text and meeting details (titles, attendee emails, Slack and Notion excerpts) are sent to your organisation's AI provider account, which its administrators can access outside Paceday. Confirm in Paceday to turn AI on."},
-		{"personal_keys_forbidden", `["user"]`, "AI features are off: your organisation does not allow personal API keys, so your own choice (OpenAI) and any key you saved for it are kept but not used. Choose \"Use my organisation's AI\" in Settings to use your organisation's AI."},
+		// PAC-87 (PAC87-AC-21): row 10 is organization_unconfirmed [user]
+		// with its own sentence; the MCP passes it through and never confirms.
+		{"organization_unconfirmed", `["user"]`, "AI features are off until you confirm: your organisation does not allow personal API keys and provides AI through OpenAI. Your text and meeting details (titles, attendee emails, Slack and Notion excerpts) are sent to your organisation's AI provider account, which its administrators can access outside Paceday. Your own choice (Anthropic) and any key you saved are kept, and are used again if your organisation allows personal keys. Confirm in Paceday to use your organisation's AI."},
 		{"personal_keys_forbidden", `["organization_admin"]`, "AI features are off: your organisation does not allow personal API keys and has not finished setting up its AI. An administrator of your organisation can set it up."},
 	} {
 		msg, _ := json.Marshal(tc.message)

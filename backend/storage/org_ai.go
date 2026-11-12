@@ -14,8 +14,17 @@ import (
 
 // PAC-73 Part 2 (spec docs/specs/NEW-llm-bring-your-own-part2.md §3.2, §3.4,
 // §7; contract revision 3.1): the organisation's AI configuration, each
-// member's confirmation of one version of it, and the operator record of
-// every change (migration 031_llm_org_ai).
+// member's confirmation of it, and the operator record of every change
+// (migration 031_llm_org_ai).
+//
+// PAC-87 (spec docs/specs/PAC-87.md §3.1, §3.4; contract
+// contracts/features/PAC-87.md §1, §5, §5a; migration
+// 036_llm_org_ai_consent_period): a confirmation covers the organisation's
+// provider for one consent period. Every provider change (first setup, a
+// change to another provider, removal) starts a new period at the version it
+// produces (ConsentSince); key, destination, model and personal-keys changes
+// do not. A member is confirmed exactly when their stored period equals the
+// organisation's current one.
 
 // SSOGrantPurposeLLMOrgKeyWrite is the purpose of a step-up grant that may
 // authorise one change of the organisation's AI configuration. An SSO write
@@ -54,7 +63,11 @@ type OrgAIConfig struct {
 	APIKey              string
 	PersonalKeysAllowed bool
 	Version             int64
-	UpdatedAt           *time.Time
+	// ConsentSince is the version that started the current consent period
+	// (PAC-87): the version produced by the latest provider change, 0 before
+	// any. Never above Version.
+	ConsentSince int64
+	UpdatedAt    *time.Time
 
 	// PAC-84: the stored api_key text as read, and its decryption failure
 	// (APIKey is then ""). Presence is the stored text being non-empty.
@@ -89,9 +102,11 @@ func (c OrgAIConfig) Complete() bool {
 // "read together, as one consistent state"). It comes from one SQL statement,
 // so it is one snapshot: a request never combines values of two versions.
 type OrgAIState struct {
-	OrgID            *uuid.UUID
-	Config           OrgAIConfig
-	ConfirmedVersion int64 // 0: no confirmation
+	OrgID  *uuid.UUID
+	Config OrgAIConfig
+	// ConfirmedSince is the consent period the user's stored confirmation
+	// covers (PAC-87); 0: no confirmation.
+	ConfirmedSince int64
 }
 
 // InOrg reports whether the user belongs to an organisation.
@@ -100,28 +115,31 @@ func (s OrgAIState) InOrg() bool { return s.OrgID != nil }
 // Forbids reports whether the user's organisation forbids personal keys.
 func (s OrgAIState) Forbids() bool { return s.InOrg() && !s.Config.PersonalKeysAllowed }
 
-// Confirmed reports whether the user's stored confirmation names exactly the
-// version this state read (spec §3.1 "Confirmed").
+// Confirmed reports whether the user's stored confirmation covers the
+// consent period this state read (PAC-87 §3.1 "Confirmed"): no provider
+// change since it was recorded. Read in the same statement as the
+// configuration, so a request never pairs one configuration with another's
+// consent marker.
 func (s OrgAIState) Confirmed() bool {
-	return s.InOrg() && s.ConfirmedVersion != 0 && s.ConfirmedVersion == s.Config.Version
+	return s.InOrg() && s.ConfirmedSince != 0 && s.ConfirmedSince == s.Config.ConsentSince
 }
 
 const orgAIColumns = `c.provider, c.model, c.base_url, c.azure_endpoint, c.azure_deployment,
 	c.azure_api_version, c.aws_region, c.api_key, c.personal_keys_allowed,
-	c.configuration_version, c.updated_at`
+	c.configuration_version, c.consent_since_version, c.updated_at`
 
 // orgAIScan holds the nullable columns of a LEFT JOIN on the configuration.
 type orgAIScan struct {
 	provider, model, baseURL, azureEndpoint, azureDeployment sql.NullString
-	azureAPIVersion, awsRegion, apiKey                        sql.NullString
-	personalKeysAllowed                                       sql.NullBool
-	version                                                   sql.NullInt64
-	updatedAt                                                 sql.NullTime
+	azureAPIVersion, awsRegion, apiKey                       sql.NullString
+	personalKeysAllowed                                      sql.NullBool
+	version, consentSince                                    sql.NullInt64
+	updatedAt                                                sql.NullTime
 }
 
 func (s *orgAIScan) dest() []any {
 	return []any{&s.provider, &s.model, &s.baseURL, &s.azureEndpoint, &s.azureDeployment,
-		&s.azureAPIVersion, &s.awsRegion, &s.apiKey, &s.personalKeysAllowed, &s.version, &s.updatedAt}
+		&s.azureAPIVersion, &s.awsRegion, &s.apiKey, &s.personalKeysAllowed, &s.version, &s.consentSince, &s.updatedAt}
 }
 
 func (s *orgAIScan) config(orgID uuid.UUID) OrgAIConfig {
@@ -133,6 +151,7 @@ func (s *orgAIScan) config(orgID uuid.UUID) OrgAIConfig {
 		AzureEndpoint: s.azureEndpoint.String, AzureDeployment: s.azureDeployment.String,
 		AzureAPIVersion: s.azureAPIVersion.String, AWSRegion: s.awsRegion.String,
 		APIKey: s.apiKey.String, PersonalKeysAllowed: s.personalKeysAllowed.Bool, Version: s.version.Int64,
+		ConsentSince: s.consentSince.Int64,
 	}
 	// PAC-84: opened on its own; a failure never fails the read (6.2).
 	c.rawKey = s.apiKey.String
@@ -157,7 +176,7 @@ func ReadOrgAIState(ctx context.Context, db *sql.DB, userID uuid.UUID) (OrgAISta
 	var sc orgAIScan
 	var confirmed sql.NullInt64
 	err := db.QueryRowContext(ctx, `
-		SELECT u.org_id, `+orgAIColumns+`, f.configuration_version
+		SELECT u.org_id, `+orgAIColumns+`, f.consent_since_version
 		FROM users u
 		LEFT JOIN org_ai_configurations c ON c.org_id = u.org_id
 		LEFT JOIN org_ai_confirmations f ON f.user_id = u.id AND f.org_id = u.org_id
@@ -174,7 +193,7 @@ func ReadOrgAIState(ctx context.Context, db *sql.DB, userID uuid.UUID) (OrgAISta
 		st.OrgID = &o
 	}
 	st.Config = sc.config(org.UUID)
-	st.ConfirmedVersion = confirmed.Int64
+	st.ConfirmedSince = confirmed.Int64
 	return st, nil
 }
 
@@ -226,7 +245,10 @@ type OrgAIPatch struct {
 //   - the version advances by one on a provider change (including the
 //     removal), on any apiKey in the patch (keys are never compared), and on
 //     any destination value that changes; never otherwise, and it is never
-//     reset, so a version is never reused (spec P2-D4, P2-D17).
+//     reset, so a version is never reused (spec P2-D4, P2-D17);
+//   - a provider change (including the removal) starts a new consent period
+//     at the new version; nothing else moves it (PAC-87 §1), so consent
+//     periods are never reused either.
 //
 // changed lists the contract names of the properties whose value changed
 // (apiKey whenever present), for the operator record; never a value.
@@ -236,7 +258,7 @@ func (p OrgAIPatch) Merge(stored OrgAIConfig) (next OrgAIConfig, changed []strin
 	providerChanged := p.Provider != nil && *p.Provider != stored.Provider
 	if providerChanged {
 		next = OrgAIConfig{Provider: *p.Provider, PersonalKeysAllowed: stored.PersonalKeysAllowed,
-			Version: stored.Version, UpdatedAt: stored.UpdatedAt}
+			Version: stored.Version, ConsentSince: stored.ConsentSince, UpdatedAt: stored.UpdatedAt}
 	}
 	set := func(dst *string, v *string) {
 		if v != nil {
@@ -287,6 +309,9 @@ func (p OrgAIPatch) Merge(stored OrgAIConfig) (next OrgAIConfig, changed []strin
 	}
 	if providerChanged || keyWritten || destinationChanged {
 		next.Version = stored.Version + 1
+	}
+	if providerChanged {
+		next.ConsentSince = next.Version
 	}
 	return next, changed
 }
@@ -344,11 +369,17 @@ type OrgAIWriteOutcome struct {
 	Changed []string
 }
 
+// orgAIWrittenDetails is the operator record's details. PAC-87 (P87-D7,
+// contract §5): consent_period_started is true exactly when the change
+// altered the provider (members are asked again); consent_since_version is
+// the consent period's start after the change. Never a value or a key.
 type orgAIWrittenDetails struct {
 	OrgID                uuid.UUID `json:"org_id"`
 	Via                  string    `json:"via"`
 	Changed              []string  `json:"changed"`
 	ConfigurationVersion int64     `json:"configuration_version"`
+	ConsentPeriodStarted bool      `json:"consent_period_started"`
+	ConsentSinceVersion  int64     `json:"consent_since_version"`
 	SessionIAT           *int64    `json:"session_iat,omitempty"`
 }
 
@@ -445,17 +476,18 @@ func WriteOrgAIConfig(ctx context.Context, db *sql.DB, w OrgAIWrite) (OrgAIWrite
 		UPDATE org_ai_configurations SET provider = $2, model = $3, base_url = $4,
 			azure_endpoint = $5, azure_deployment = $6, azure_api_version = $7, aws_region = $8,
 			api_key = $9, personal_keys_allowed = $10, configuration_version = $11,
-			updated_at = $12, updated_by = $13
+			updated_at = $12, updated_by = $13, consent_since_version = $15
 		WHERE org_id = $1 AND configuration_version = $14`,
 		w.OrgID, next.Provider, next.Model, next.BaseURL, next.AzureEndpoint, next.AzureDeployment,
 		next.AzureAPIVersion, next.AWSRegion, storedKey, next.PersonalKeysAllowed, next.Version,
-		now, w.UserID, w.ExpectedVersion); err != nil {
+		now, w.UserID, w.ExpectedVersion, next.ConsentSince); err != nil {
 		return OrgAIWriteOutcome{}, err
 	}
 
 	// The operator record, in the same transaction (contract revision 3.1,
 	// NB-B). Never a value, never the key.
-	details := orgAIWrittenDetails{OrgID: w.OrgID, Via: via, Changed: changed, ConfigurationVersion: next.Version}
+	details := orgAIWrittenDetails{OrgID: w.OrgID, Via: via, Changed: changed, ConfigurationVersion: next.Version,
+		ConsentPeriodStarted: next.ConsentSince != stored.ConsentSince, ConsentSinceVersion: next.ConsentSince}
 	if via == "breakglass" {
 		iat := w.SessionIAT.Unix()
 		details.SessionIAT = &iat
@@ -502,27 +534,59 @@ func consumeGrant(ctx context.Context, q rowQuerier, userID, orgID uuid.UUID, pu
 type OrgAIConfirmStatus int
 
 const (
-	// OrgAIConfirmed: the confirmation for the version is recorded.
+	// OrgAIConfirmed: the confirmation of the current consent period is
+	// recorded.
 	OrgAIConfirmed OrgAIConfirmStatus = iota
 	// OrgAIConfirmNotConfigured: the configuration is not complete; nothing
 	// recorded (wins over a stale version).
 	OrgAIConfirmNotConfigured
-	// OrgAIConfirmChanged: the version is not the current one; nothing
-	// recorded.
+	// OrgAIConfirmChanged: the version shown is not in the current consent
+	// period (a provider change since, or a version above the current one);
+	// nothing recorded.
 	OrgAIConfirmChanged
+	// OrgAIConfirmNotMember: the caller no longer belongs to the organisation
+	// named (they left it after their membership was checked); nothing
+	// recorded.
+	OrgAIConfirmNotMember
 )
 
-// ConfirmOrgAI records the user's confirmation of version for their
-// organisation, only when that version is the current one of a complete
-// configuration (confirmOrganizationAI). The check and the record are one
-// transaction holding the configuration row, so an administrator's change
-// cannot land between them. It returns the current configuration.
+// lockUserRow takes the caller's users row FOR NO KEY UPDATE and returns
+// their organisation (PAC-87 contract §5a): the lock that orders a
+// confirmation against the same user's settings write and organisation
+// change. FOR NO KEY UPDATE, not FOR UPDATE, so an administrator's
+// sso_events insert (FOR KEY SHARE on their own users row) never waits on it.
+func lockUserRow(ctx context.Context, tx *sql.Tx, userID uuid.UUID) (uuid.NullUUID, error) {
+	var org uuid.NullUUID
+	err := tx.QueryRowContext(ctx, `SELECT org_id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID).Scan(&org)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.NullUUID{}, nil
+	}
+	return org, err
+}
+
+// ConfirmOrgAI records the user's confirmation for their organisation of the
+// version they were shown (confirmOrganizationAI, PAC-87 contract §1): it is
+// accepted exactly when the configuration is complete and the version lies
+// in the current consent period (consent start <= version <= current
+// version), and what is stored is the consent period, never the version. One
+// transaction: the caller's users row first (ordered against their own
+// settings write and organisation change, §5a), then the configuration row
+// FOR SHARE (an administrator's write holds it FOR UPDATE), so a provider
+// change can never land between the check and the record. It returns the
+// current configuration.
 func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, version int64, now time.Time) (OrgAIConfirmStatus, OrgAIConfig, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, OrgAIConfig{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	member, err := lockUserRow(ctx, tx, userID)
+	if err != nil {
+		return 0, OrgAIConfig{}, err
+	}
+	if !member.Valid || member.UUID != orgID {
+		return OrgAIConfirmNotMember, OrgAIConfig{}, nil
+	}
 	cfg, err := getOrgAIConfig(ctx, tx, orgID, " FOR SHARE")
 	if err != nil {
 		return 0, OrgAIConfig{}, err
@@ -530,15 +594,15 @@ func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, vers
 	switch {
 	case !cfg.Complete():
 		return OrgAIConfirmNotConfigured, cfg, nil
-	case cfg.Version != version:
+	case version < cfg.ConsentSince || version > cfg.Version:
 		return OrgAIConfirmChanged, cfg, nil
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO org_ai_confirmations (user_id, org_id, configuration_version, confirmed_at)
+		INSERT INTO org_ai_confirmations (user_id, org_id, consent_since_version, confirmed_at)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (user_id, org_id) DO UPDATE
-			SET configuration_version = EXCLUDED.configuration_version, confirmed_at = EXCLUDED.confirmed_at`,
-		userID, orgID, version, now.UTC()); err != nil {
+			SET consent_since_version = EXCLUDED.consent_since_version, confirmed_at = EXCLUDED.confirmed_at`,
+		userID, orgID, cfg.ConsentSince, now.UTC()); err != nil {
 		return 0, OrgAIConfig{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -547,10 +611,72 @@ func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, vers
 	return OrgAIConfirmed, cfg, nil
 }
 
-// DeleteOrgAIConfirmations ends every stored confirmation of the user (a
-// settings write that stores "off" or one of the five providers, spec §3.4,
-// P2-AC-36).
-func DeleteOrgAIConfirmations(ctx context.Context, db *sql.DB, userID uuid.UUID) error {
-	_, err := db.ExecContext(ctx, `DELETE FROM org_ai_confirmations WHERE user_id = $1`, userID)
-	return err
+// SettingsWriteStep names a storage access of SaveSettingsEndingOrgAIConfirmation,
+// for tests that apply a concurrent change at each one (PAC-87 AC-23).
+type SettingsWriteStep int
+
+// The storage accesses of a settings write, in order.
+const (
+	SettingsWriteLock SettingsWriteStep = iota
+	SettingsWriteReread
+	SettingsWriteSave
+	SettingsWriteEndConfirmation
+	SettingsWriteCommit
+	SettingsWriteDone
+)
+
+// SaveSettingsEndingOrgAIConfirmation saves s as userID's settings and ends
+// the user's organisation-AI confirmation when, and only when, the save
+// CHANGES the stored choice to "off" or to a different provider (PAC-87
+// §3.4, P87-D3; contract §5a). One transaction: the caller's users row FOR
+// NO KEY UPDATE (the lock ConfirmOrgAI takes first), the stored choice
+// re-read inside it (never the copy the handler read before), the save, the
+// end of the confirmation, commit. A concurrent confirmation of the same
+// user therefore lands wholly before (and is ended by the change) or wholly
+// after (an explicit confirmation after the change). before, when not nil,
+// runs before each storage access (tests only). ended reports whether a
+// confirmation was ended.
+func SaveSettingsEndingOrgAIConfirmation(ctx context.Context, db *sql.DB, userID uuid.UUID, s *Settings, before func(SettingsWriteStep)) (ended bool, err error) {
+	at := func(step SettingsWriteStep) {
+		if before != nil {
+			before(step)
+		}
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	at(SettingsWriteLock)
+	if _, err := lockUserRow(ctx, tx, userID); err != nil {
+		return false, err
+	}
+	at(SettingsWriteReread)
+	var stored string
+	err = tx.QueryRowContext(ctx, `SELECT llm_provider FROM settings WHERE user_id = $1`, userID).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		stored = LLMChoiceOrganization // no row follows by default (029)
+	} else if err != nil {
+		return false, err
+	}
+	next := s.storedProvider()
+	at(SettingsWriteSave)
+	if err := saveSettingsAt(tx, userID, s, time.Now()); err != nil {
+		return false, err
+	}
+	if next != stored && next != LLMChoiceOrganization {
+		at(SettingsWriteEndConfirmation)
+		res, err := tx.ExecContext(ctx, `DELETE FROM org_ai_confirmations WHERE user_id = $1`, userID)
+		if err != nil {
+			return false, err
+		}
+		n, _ := res.RowsAffected()
+		ended = n > 0
+	}
+	at(SettingsWriteCommit)
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	at(SettingsWriteDone)
+	return ended, nil
 }

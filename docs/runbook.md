@@ -117,6 +117,19 @@ would leave MCP out.
   release would send ciphertext to the providers as tokens, and every
   connection would end up marked lost. Either restore the pre-deploy backup,
   or follow [Encryption key - downgrade](#encryption-key---downgrade).
+- **Going back past PAC-87** (organisation AI consent periods, migration
+  `036_llm_org_ai_consent_period`): this section applies unchanged — fix
+  forward, or restore the pre-deploy backup and start the previous image. An
+  image-only rollback does not work: the previous image cannot start on a
+  database at 036. There is no operator command for 036's down step; it is
+  for development, tests and staging (stop the backend, `migrate ... down 1`
+  only while 036 is the newest applied migration, start the previous image).
+  Release note for any rollback past PAC-87: every member who uses the
+  organisation's AI is asked to confirm again (except followers confirmed at
+  exactly the current configuration when 036's down step is used); nothing
+  is sent before they confirm. No configuration, key or stored AI choice is
+  lost. Once PAC-71's migration is applied above 036, 036 can no longer be
+  reverted in place.
 
 ### Rollback on the same host
 

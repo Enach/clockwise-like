@@ -53,6 +53,9 @@ type settingsHandlers struct {
 	db *sql.DB
 	// source is where the AI status reads from; nil means db (PAC-73 Part 2).
 	source nlp.AISource
+	// beforeWriteStep runs before each storage access of the settings
+	// write's transaction (tests only, PAC-87 AC-23; nil in production).
+	beforeWriteStep func(storage.SettingsWriteStep)
 }
 
 // getSettings returns the caller's settings, creating their row on first read
@@ -210,19 +213,13 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 	if _, ok := fields["webcalUrl"]; ok {
 		s.MarkSecretReplaced(storage.SettingsColWebcalURL)
 	}
-	// PAC-73 Part 2 (spec §3.4, P2-AC-36): storing "off" or one of the five
-	// providers ends the caller's organisation confirmation, whether or not
-	// the stored choice changes; storing "organization" records none. A
-	// side effect, never a refusal. It runs before the save, so a failure
-	// leaves at worst a deleted confirmation (the member is asked again),
-	// never a stored own choice with a live confirmation.
-	if endsOrgAIConfirmation(fields) {
-		if err := storage.DeleteOrgAIConfirmations(r.Context(), h.db, userID); err != nil {
-			writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
-			return
-		}
-	}
-	if err := storage.SaveSettingsForUser(h.db, userID, s); err != nil {
+	// PAC-87 (spec §3.4, P87-D3; contract §5a): the save ends the caller's
+	// organisation confirmation only when it CHANGES the stored choice to
+	// "off" or to a different provider, decided against the choice stored
+	// when the write is applied, in one transaction holding the caller's
+	// users row (the lock a confirmation takes first). Storing
+	// "organization" records none.
+	if _, err := storage.SaveSettingsEndingOrgAIConfirmation(r.Context(), h.db, userID, s, h.beforeWriteStep); err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
 	}
@@ -233,20 +230,6 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(updated)
-}
-
-// endsOrgAIConfirmation reports whether a settings write stores "off" or one
-// of the five providers as llmProvider (PAC-73 Part 2, P2-AC-36).
-func endsOrgAIConfirmation(fields map[string]json.RawMessage) bool {
-	raw, ok := fields["llmProvider"]
-	if !ok {
-		return false
-	}
-	var v string
-	if json.Unmarshal(raw, &v) != nil {
-		return false
-	}
-	return v == storage.LLMChoiceOff || nlp.IsKeyProvider(v)
 }
 
 // settingsProblem is one validation failure and the properties it is about.

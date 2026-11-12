@@ -21,11 +21,12 @@ func strp(v string) *string { return &v }
 func boolp(v bool) *bool    { return &v }
 
 // The merge rules of OrganizationAIConfigurationUpdate (spec P2-D4, P2-D7,
-// P2-D17, revision 2.1 NB1).
+// P2-D17, revision 2.1 NB1), and PAC-87 §1: only a provider change (removal
+// and first setup included) starts a consent period, at the new version.
 func TestOrgAIPatchMerge(t *testing.T) {
 	when := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	openai := OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1",
-		PersonalKeysAllowed: false, Version: 4, UpdatedAt: &when}
+		PersonalKeysAllowed: false, Version: 4, ConsentSince: 2, UpdatedAt: &when}
 	for _, tc := range []struct {
 		name    string
 		stored  OrgAIConfig
@@ -34,28 +35,28 @@ func TestOrgAIPatchMerge(t *testing.T) {
 		changed []string
 	}{
 		{"model only keeps the version", openai, OrgAIPatch{Model: strp("gpt-y")},
-			OrgAIConfig{Provider: "openai", Model: "gpt-y", BaseURL: "https://gw.example/openai", APIKey: "k1", Version: 4, UpdatedAt: &when},
+			OrgAIConfig{Provider: "openai", Model: "gpt-y", BaseURL: "https://gw.example/openai", APIKey: "k1", Version: 4, ConsentSince: 2, UpdatedAt: &when},
 			[]string{"model"}},
 		{"personal keys only keeps the version", openai, OrgAIPatch{PersonalKeysAllowed: boolp(true)},
-			OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1", PersonalKeysAllowed: true, Version: 4, UpdatedAt: &when},
+			OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1", PersonalKeysAllowed: true, Version: 4, ConsentSince: 2, UpdatedAt: &when},
 			[]string{"personalKeysAllowed"}},
 		{"the same key again advances (keys are never compared)", openai, OrgAIPatch{APIKey: strp("k1")},
-			OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1", Version: 5, UpdatedAt: &when},
+			OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1", Version: 5, ConsentSince: 2, UpdatedAt: &when},
 			[]string{"apiKey"}},
 		{"a destination change advances", openai, OrgAIPatch{BaseURL: strp("")},
-			OrgAIConfig{Provider: "openai", Model: "gpt-x", APIKey: "k1", Version: 5, UpdatedAt: &when},
+			OrgAIConfig{Provider: "openai", Model: "gpt-x", APIKey: "k1", Version: 5, ConsentSince: 2, UpdatedAt: &when},
 			[]string{"baseUrl"}},
 		{"an unchanged destination does not", openai, OrgAIPatch{BaseURL: strp("https://gw.example/openai")},
-			OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1", Version: 4, UpdatedAt: &when},
+			OrgAIConfig{Provider: "openai", Model: "gpt-x", BaseURL: "https://gw.example/openai", APIKey: "k1", Version: 4, ConsentSince: 2, UpdatedAt: &when},
 			[]string{}},
 		{"a provider change replaces everything but personal keys", openai, OrgAIPatch{Provider: strp("bedrock"), APIKey: strp("k2"), AWSRegion: strp("eu-west-1")},
-			OrgAIConfig{Provider: "bedrock", APIKey: "k2", AWSRegion: "eu-west-1", Version: 5, UpdatedAt: &when},
+			OrgAIConfig{Provider: "bedrock", APIKey: "k2", AWSRegion: "eu-west-1", Version: 5, ConsentSince: 5, UpdatedAt: &when},
 			[]string{"provider", "model", "baseUrl", "awsRegion", "apiKey"}},
 		{"the removal keeps personal keys and the count", openai, OrgAIPatch{Provider: strp("")},
-			OrgAIConfig{Version: 5, UpdatedAt: &when},
+			OrgAIConfig{Version: 5, ConsentSince: 5, UpdatedAt: &when},
 			[]string{"provider", "model", "baseUrl", "apiKey"}},
 		{"a first setup from nothing", OrgAIConfig{PersonalKeysAllowed: true}, OrgAIPatch{Provider: strp("vertex"), APIKey: strp("k")},
-			OrgAIConfig{Provider: "vertex", APIKey: "k", PersonalKeysAllowed: true, Version: 1},
+			OrgAIConfig{Provider: "vertex", APIKey: "k", PersonalKeysAllowed: true, Version: 1, ConsentSince: 1},
 			[]string{"provider", "apiKey"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,12 +87,22 @@ func TestOrgAIConfig_Complete(t *testing.T) {
 			t.Errorf("%+v.Complete() = %v, want %v", tc.c, got, tc.want)
 		}
 	}
-	st := OrgAIState{Config: OrgAIConfig{Version: 3}, ConfirmedVersion: 3}
+	st := OrgAIState{Config: OrgAIConfig{Version: 3, ConsentSince: 3}, ConfirmedSince: 3}
 	if st.Confirmed() || st.InOrg() || st.Forbids() {
 		t.Errorf("no org: %+v", st)
 	}
-	if (OrgAIState{Config: OrgAIConfig{Version: 0}, ConfirmedVersion: 0}).Confirmed() {
+	if (OrgAIState{Config: OrgAIConfig{Version: 0}, ConfirmedSince: 0}).Confirmed() {
 		t.Error("version 0 with no confirmation reads as confirmed")
+	}
+	id := uuid.New()
+	for _, tc := range []struct {
+		since, version, confirmed int64
+		want                      bool
+	}{{5, 7, 5, true}, {5, 5, 5, true}, {7, 7, 5, false}, {5, 7, 7, false}, {5, 7, 0, false}} {
+		st := OrgAIState{OrgID: &id, Config: OrgAIConfig{Version: tc.version, ConsentSince: tc.since}, ConfirmedSince: tc.confirmed}
+		if st.Confirmed() != tc.want {
+			t.Errorf("period %d, version %d, confirmed %d: Confirmed() = %v, want %v", tc.since, tc.version, tc.confirmed, !tc.want, tc.want)
+		}
 	}
 }
 
@@ -296,8 +307,9 @@ func TestWriteOrgAIConfig_FirstSetupConditionIsTheVersion(t *testing.T) {
 	}
 }
 
-// One consistent read; the confirmation names one version; settings
-// choices end it (P2-AC-24, P2-AC-25, P2-AC-36, P2-AC-42).
+// One consistent read; the confirmation covers one consent period; a change
+// of the settings choice ends it (P2-AC-24, P2-AC-25, P2-AC-36, P2-AC-42,
+// PAC87-AC-4, -12).
 func TestOrgAIStateAndConfirmation(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -341,11 +353,21 @@ func TestOrgAIStateAndConfirmation(t *testing.T) {
 	if st3, _ := ReadOrgAIState(ctx, db, other.ID); st3.Confirmed() {
 		t.Fatal("one member's confirmation confirmed another")
 	}
-	if err := DeleteOrgAIConfirmations(ctx, db, user); err != nil {
+	// Choosing one's own provider ends it (PAC-87 §3.4).
+	s, err := GetOrCreateSettingsByUser(db, user)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := ReadOrgAIState(ctx, db, user); st.Confirmed() || st.ConfirmedVersion != 0 {
-		t.Fatalf("after delete = %+v", st)
+	s.LLMProvider = "openai"
+	if ended, err := SaveSettingsEndingOrgAIConfirmation(ctx, db, user, s, nil); err != nil || !ended {
+		t.Fatalf("own provider write: ended %v, %v", ended, err)
+	}
+	if st, _ := ReadOrgAIState(ctx, db, user); st.Confirmed() || st.ConfirmedSince != 0 {
+		t.Fatalf("after the change = %+v", st)
+	}
+	s.LLMProvider = LLMChoiceOrganization
+	if ended, err := SaveSettingsEndingOrgAIConfirmation(ctx, db, user, s, nil); err != nil || ended {
+		t.Fatalf("back to organization: ended %v, %v", ended, err)
 	}
 	// Removal then the same setup again: a version never had before.
 	_, _, _ = ConfirmOrgAI(ctx, db, user, org, 1, now)
@@ -359,7 +381,7 @@ func TestOrgAIStateAndConfirmation(t *testing.T) {
 		}
 	}
 	st, _ = ReadOrgAIState(ctx, db, user)
-	if st.Config.Version != 3 || st.Confirmed() || st.ConfirmedVersion != 1 {
+	if st.Config.Version != 3 || st.Config.ConsentSince != 3 || st.Confirmed() || st.ConfirmedSince != 1 {
 		t.Fatalf("after removal and the same setup = %+v, want version 3 unconfirmed", st)
 	}
 }
