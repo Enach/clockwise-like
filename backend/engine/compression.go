@@ -55,7 +55,7 @@ func (e *CompressionEngine) CheckCalendar(ctx context.Context) error {
 
 func (e *CompressionEngine) SuggestForDay(ctx context.Context, date time.Time) (*CompressionResult, error) {
 	// The user whose calendar calClient opens.
-	s, err := storage.GetOrCreateSettingsByUser(e.DB, auth.UserIDFromContext(ctx))
+	s, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, auth.UserIDFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("load settings: %w", err)
 	}
@@ -189,7 +189,7 @@ func (e *CompressionEngine) Apply(ctx context.Context, proposals []MoveProposal)
 			continue
 		}
 
-		storage.WriteAuditLog(e.DB, subject, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
+		storage.WriteAuditLogCtx(ctx, e.DB, subject, "meeting_moved", `{"event_id":"`+p.EventID+`","new_start":"`+p.ProposedStart.Format(time.RFC3339)+`"}`)
 		applied = append(applied, p.EventID)
 	}
 

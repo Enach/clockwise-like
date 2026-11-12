@@ -19,7 +19,7 @@ import (
 // It is the Google (re)connect (PAC-67): a token without a refresh token keeps
 // the stored one, so a reconnect never erases a working credential, and
 // storing ends any recorded loss of the Google connection (AC-12, AC-24).
-func UpsertUserToken(db storage.DBTX, userID uuid.UUID, token *oauth2.Token) error {
+func UpsertUserToken(db storage.Querier, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}
@@ -56,7 +56,7 @@ const primaryCalendar = "primary"
 // disconnect never re-stores what the user removed (PAC-67). Every row of the
 // owner gets the token, as before; each is sealed for its own calendar_id
 // (PAC-84 contract 3.3).
-func UpdateUserToken(db storage.DBTX, userID uuid.UUID, token *oauth2.Token) error {
+func UpdateUserToken(db storage.Querier, userID uuid.UUID, token *oauth2.Token) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}
@@ -108,7 +108,7 @@ var ErrNoUser = errors.New("auth.LoadUserToken: userID is required (received uui
 // PAC-84: a token that cannot be decrypted is an error with errors.Is
 // secretbox.ErrDecrypt (logged with contract 9.2's line); status callers map
 // it to "not connected" as any error, act callers to a 500.
-func LoadUserToken(db storage.DBTX, userID uuid.UUID) (*oauth2.Token, error) {
+func LoadUserToken(db storage.Querier, userID uuid.UUID) (*oauth2.Token, error) {
 	if userID == uuid.Nil {
 		return nil, ErrNoUser
 	}
@@ -122,7 +122,7 @@ func LoadUserToken(db storage.DBTX, userID uuid.UUID) (*oauth2.Token, error) {
 
 // DeleteUserToken removes the OAuth token for a specific user, and with it
 // any recorded loss of it (PAC-67: a disconnect ends a loss).
-func DeleteUserToken(db storage.DBTX, userID uuid.UUID) error {
+func DeleteUserToken(db storage.Querier, userID uuid.UUID) error {
 	if userID == uuid.Nil {
 		return ErrNoUser
 	}

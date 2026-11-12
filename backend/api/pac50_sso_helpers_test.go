@@ -234,7 +234,7 @@ func newSSOEnv(t *testing.T, breakGlass ...string) *ssoEnv {
 	})
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(pac50Secret))
+		r.Use(requireAuth(e.db, pac50Secret))
 		r.Route("/api/admin/sso", e.h.mountAdmin)
 	})
 	e.router = r
@@ -254,6 +254,9 @@ func (e *ssoEnv) memberOf(t *testing.T, email string) (*storage.User, *storage.O
 	if err != nil {
 		t.Fatal(err)
 	}
+	// PAC-71: break-glass needs the account to hold the listed address
+	// domain-confirmed (AC-38); members are seeded with that standing.
+	confirmAddress(t, e.db, u.ID)
 	if err := storage.AssociateUserWithOrg(e.db, u.ID, email); err != nil {
 		t.Fatal(err)
 	}

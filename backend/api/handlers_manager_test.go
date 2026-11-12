@@ -286,7 +286,7 @@ func TestManagerTeam_ScopedDeletePreservesOtherAssignmentAndHistory(t *testing.T
 func TestManagerTeam_PatchFormalMemberCreatesScopedSettings(t *testing.T) {
 	r := setupManagerRoutes(t, &fakeManagerWorkflow{})
 	ownerID := createTestUser(t, "manager-patch-formal@example.com")
-	memberID := createTestUser(t, "formal-report@example.com")
+	memberID := createConfirmedUser(t, "formal-report@example.com")
 	team := createManagerTestTeam(t, ownerID, "Patch Formal")
 	db := openTestDB(t)
 	if err := storage.AddTeamMember(db, team.ID, memberID, "member"); err != nil {

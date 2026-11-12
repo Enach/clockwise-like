@@ -4,14 +4,17 @@
 # them to GHCR with one exact version, b<backend sha>-f<frontend sha>: the
 # PACEDAY_VERSION of docker-compose.prod.yml. `:main` points at the latest.
 #
-# Runs on every push to main (after ci.yml passes), every 30 minutes to pick up
-# frontend merges (the web repo has no token to trigger this one), and by hand.
-# A version that already exists is not rebuilt. The frontend is released only
-# when its own CI passed on that commit.
+# Runs when ci.yml finishes on main, every 30 minutes to pick up frontend
+# merges (the web repo has no token to trigger this one), and by hand. It does
+# not run the CI again: both main commits must already carry a green "verify"
+# check (ci.yml on push to main in each repo). A version that already exists is
+# not rebuilt.
 name: release
 
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   schedule:
     - cron: "*/30 * * * *"
@@ -29,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      backend_sha: ${{ steps.v.outputs.backend_sha }}
       frontend_sha: ${{ steps.v.outputs.frontend_sha }}
       build: ${{ steps.v.outputs.build }}
     permissions:
@@ -45,26 +49,28 @@ jobs:
           version="b${backend_sha:0:7}-f${frontend_sha:0:7}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "frontend_sha=$frontend_sha" >> "$GITHUB_OUTPUT"
-          # The frontend's CI must have passed on that commit (a run with no checks yet waits for the next schedule).
-          state=$(gh api "repos/Enach/smart-calendar-flow/commits/$frontend_sha/check-runs" \
-            --jq '[.check_runs[] | select(.name == "verify")] | if length == 0 then "none" elif all(.conclusion == "success") then "success" else "other" end')
-          echo "frontend CI on ${frontend_sha:0:7}: $state"
+          echo "backend_sha=$backend_sha" >> "$GITHUB_OUTPUT"
+          # Both repos' CI must have passed on those commits (no check yet, or
+          # still running: the next trigger picks it up).
+          ci_state() {
+            gh api "repos/$1/commits/$2/check-runs" \
+              --jq '[.check_runs[] | select(.name == "verify")] | if length == 0 then "none" elif all(.conclusion == "success") then "success" else "other" end'
+          }
+          b_state=$(ci_state "${{ github.repository }}" "$backend_sha")
+          f_state=$(ci_state Enach/smart-calendar-flow "$frontend_sha")
+          echo "backend CI on ${backend_sha:0:7}: $b_state; frontend CI on ${frontend_sha:0:7}: $f_state"
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           if docker manifest inspect "ghcr.io/$owner/paceday-backend:$version" >/dev/null 2>&1; then
             echo "$version already published"; echo "build=false" >> "$GITHUB_OUTPUT"
-          elif [ "$state" != "success" ]; then
-            echo "frontend not green, not releasing"; echo "build=false" >> "$GITHUB_OUTPUT"
+          elif [ "$b_state" != "success" ] || [ "$f_state" != "success" ]; then
+            echo "main not green in both repos, not releasing"; echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  ci:
+  publish:
     needs: plan
     if: needs.plan.outputs.build == 'true'
-    uses: ./.github/workflows/ci.yml
-
-  publish:
-    needs: [plan, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ needs.plan.outputs.backend_sha }}
       # docker/frontend.dockerfile builds from frontend/ = the web repo.
       - uses: actions/checkout@v4
         with:

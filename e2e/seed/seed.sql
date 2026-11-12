@@ -105,6 +105,15 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   -- an unoffered start overlaps.
   ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e.offerable@paceday.test', 'E2E Offerable Host',      '', 'google', 'e2e-offerable');
 
+-- PAC-71: every seeded user is bound to a Google identity with authoritative
+-- evidence, so its address is domain-confirmed and the journeys that resolve an
+-- address to a person (co-hosts, manager roster, team invites) find it. The
+-- subjects are decimal strings, the Google format (contract section 3 item 6).
+UPDATE users SET address_standing = 'domain_confirmed' WHERE email LIKE 'e2e.%@paceday.test';
+INSERT INTO user_identities (user_id, provider, tenant, subject, evidence, bound_by)
+SELECT id, 'google', '', '71' || lpad((row_number() OVER (ORDER BY id))::text, 6, '0'), 'authoritative', 'created'
+FROM users WHERE email LIKE 'e2e.%@paceday.test';
+
 -- ON DELETE CASCADE from users removes these on the next run.
 INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar_id) VALUES
   ('55555555-5555-4555-8555-555555555555', 'e2e-connected-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),

@@ -28,7 +28,7 @@ type WorkspaceConnection struct {
 
 // UpsertWorkspaceConnection stores c, its tokens sealed for (user_id,
 // provider), the upsert's conflict key (PAC-84 contract 3.3).
-func UpsertWorkspaceConnection(db DBTX, c *WorkspaceConnection) error {
+func UpsertWorkspaceConnection(db Querier, c *WorkspaceConnection) error {
 	access, err := secretbox.Seal(bindWorkspace("access_token", c.UserID, c.Provider), c.AccessToken)
 	if err != nil {
 		return err
@@ -58,7 +58,7 @@ func UpsertWorkspaceConnection(db DBTX, c *WorkspaceConnection) error {
 // GetWorkspaceConnection returns userID's connection to provider. A token
 // that cannot be decrypted is left "" and reported in TokenErr; it is never
 // the returned error (PAC-84 K-2: callers map any error to "not connected").
-func GetWorkspaceConnection(db DBTX, userID uuid.UUID, provider string) (*WorkspaceConnection, error) {
+func GetWorkspaceConnection(db Querier, userID uuid.UUID, provider string) (*WorkspaceConnection, error) {
 	row := db.QueryRow(`
 		SELECT id, user_id, provider, access_token, bot_token,
 		       workspace_id, workspace_name, scopes, connected_at, expires_at
@@ -83,7 +83,7 @@ func GetWorkspaceConnection(db DBTX, userID uuid.UUID, provider string) (*Worksp
 	return &c, nil
 }
 
-func DeleteWorkspaceConnection(db DBTX, userID uuid.UUID, provider string) error {
+func DeleteWorkspaceConnection(db Querier, userID uuid.UUID, provider string) error {
 	_, err := db.Exec(`DELETE FROM workspace_connections WHERE user_id = $1 AND provider = $2`,
 		userID, provider)
 	return err

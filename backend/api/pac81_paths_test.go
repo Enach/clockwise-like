@@ -418,7 +418,7 @@ func TestPAC81_StepupCallbackAtBudgetBeforeCheck0(t *testing.T) {
 	r := chi.NewRouter()
 	r.Use(budget.Middleware(200*time.Millisecond, nil))
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(pac50Secret))
+		r.Use(requireAuth(e.db, pac50Secret))
 		r.Route("/api/admin/sso", e.h.mountAdmin)
 	})
 	e.router = r
@@ -556,7 +556,14 @@ func pac81NamedPaths(t *testing.T) []pac81Path {
 	}).user
 
 	p := newFakeOAuthProvider(t)
-	p.profile = jsonProfile(map[string]string{"id": "pac81-" + uuid.NewString()[:6], "email": "pac81-signin-" + uuid.NewString()[:6] + "@example.com", "mail": "pac81-ms-" + uuid.NewString()[:6] + "@example.com", "name": "P"})
+	// PAC-71: Google's address is verified; the Microsoft profile id is the
+	// object id of a signed ID token, verified against the stub tenant keys.
+	p.profile = jsonProfile(map[string]any{"verified_email": true, "id": uuid.NewString(), "email": "pac81-signin-" + uuid.NewString()[:6] + "@example.com", "mail": "pac81-ms-" + uuid.NewString()[:6] + "@example.com", "name": "P"})
+	p.keys = useTestMicrosoftKeys(t, p)
+	p.idToken = func() string { return signMicrosoftIDToken(t, p.defaultIDClaims("s1")) }
+	prevOrg := microsoftGraphOrganizationURL
+	microsoftGraphOrganizationURL = p.srv.URL + "/organization"
+	t.Cleanup(func() { microsoftGraphOrganizationURL = prevOrg })
 	prevG, prevMS, prevGraph := googleUserInfoURL, microsoftOAuthEndpoint, microsoftGraphMeURL
 	googleUserInfoURL, microsoftOAuthEndpoint, microsoftGraphMeURL = p.srv.URL+"/profile", p.endpoint(), p.srv.URL+"/profile"
 	t.Cleanup(func() { googleUserInfoURL, microsoftOAuthEndpoint, microsoftGraphMeURL = prevG, prevMS, prevGraph })

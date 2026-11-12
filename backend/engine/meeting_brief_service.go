@@ -82,16 +82,16 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		GeneratedAt:     time.Now().UTC(),
 		Status:          "pending",
 	}
-	_ = storage.UpsertMeetingBrief(s.DB, brief)
+	_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 
 	terms := buildSearchTerms(event)
 
-	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
+	conn, err := storage.GetWorkspaceConnectionCtx(ctx, s.DB, userID, "slack")
 	if err == nil && conn.TokenErr == nil { // PAC-84: skip an undecryptable token
 		brief.SlackResults, _ = fetchSlackMessages(ctx, conn.BotToken, terms)
 	}
 
-	notionConn, err := storage.GetWorkspaceConnection(s.DB, userID, "notion")
+	notionConn, err := storage.GetWorkspaceConnectionCtx(ctx, s.DB, userID, "notion")
 	if err == nil && notionConn.TokenErr == nil {
 		brief.NotionResults, _ = fetchNotionPages(ctx, notionConn.AccessToken, terms)
 	}
@@ -102,7 +102,7 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		if s.LLMUnavailable != "" {
 			brief.BriefText = s.LLMUnavailable
 		}
-		_ = storage.UpsertMeetingBrief(s.DB, brief)
+		_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 		return brief, nil
 	}
 
@@ -123,7 +123,7 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		brief.BriefText = s.redact(text)
 	}
 	brief.GeneratedAt = time.Now().UTC()
-	_ = storage.UpsertMeetingBrief(s.DB, brief)
+	_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 	return brief, nil
 }
 
