@@ -16,6 +16,7 @@ import (
 	"github.com/Enach/paceday/backend/nlp/nlptest"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 )
 
 // PAC-87 (spec docs/specs/PAC-87.md; contract contracts/features/PAC-87.md):
@@ -527,4 +528,91 @@ func TestPAC87_RejoiningAsksAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.allThree("organization_unconfirmed", "", "user")
+}
+
+// PAC-71 x PAC-87 (review finding 1): a session revoked before the request
+// gets requireAuth's 401 from PATCH /api/settings and POST
+// /api/organization/ai/consent through the real router; one revoked while
+// the request runs (just before the settings write's or the confirmation's
+// transaction) saves nothing, ends nothing and records nothing, and the
+// guard answers the 401.
+func TestPAC87_RevokedSessionNeitherSavesNorConfirms(t *testing.T) {
+	admin := newBYOK(t, "p87-stale-admin")
+	org := p2Org(t, admin, "p87-stale.example")
+	p2Admin(t, admin.user, org, p2OpenAI(p2KeyA))
+	m := p2Member(t, "p87-stale-m", org)
+	m.mustConfirm(1)
+	db := openTestDB(t)
+	bump := func() {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE users SET session_generation = session_generation + 1 WHERE id = $1`, m.user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gen := func() int64 {
+		var g int64
+		_ = db.QueryRow(`SELECT session_generation FROM users WHERE id = $1`, m.user).Scan(&g)
+		return g
+	}
+	stored := func() string {
+		var p string
+		_ = db.QueryRow(`SELECT COALESCE((SELECT llm_provider FROM settings WHERE user_id = $1), 'organization')`, m.user).Scan(&p)
+		return p
+	}
+	confirmations := func() int {
+		var n int
+		_ = db.QueryRow(`SELECT count(*) FROM org_ai_confirmations WHERE user_id = $1`, m.user).Scan(&n)
+		return n
+	}
+
+	// Revoked before the request: the router answers 401.
+	old := gen()
+	bump()
+	r := pac71Router(t, &oauth2.Config{})
+	assert401(t, doAs(t, r, http.MethodPatch, "/api/settings", `{"llmProvider":"anthropic"}`, sessionCookie(t, m.user, old)))
+	assert401(t, doAs(t, r, http.MethodPost, "/api/organization/ai/consent", `{"configurationVersion":1}`, sessionCookie(t, m.user, old)))
+	if stored() != "organization" || confirmations() != 1 {
+		t.Fatalf("a revoked session changed something: %q, %d confirmations", stored(), confirmations())
+	}
+
+	// Revoked while the settings write runs, just before its transaction's
+	// re-check.
+	g := &storage.SessionGuard{UserID: m.user, Gen: gen()}
+	h := &settingsHandlers{db: db, beforeWriteStep: func(at storage.SettingsWriteStep) {
+		if at == storage.SettingsWriteRecheck {
+			bump()
+		}
+	}}
+	req := withUser(httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"llmProvider":"anthropic"}`)), m.user)
+	req = req.WithContext(storage.WithSessionGuard(req.Context(), g))
+	gw := &guardedResponseWriter{ResponseWriter: httptest.NewRecorder(), r: req, guard: g}
+	h.patchSettings(gw, req)
+	gw.finish()
+	if !g.Stale() {
+		t.Fatal("the settings write did not re-check the session")
+	}
+	assert401(t, gw.ResponseWriter.(*httptest.ResponseRecorder))
+	if stored() != "organization" || confirmations() != 1 {
+		t.Fatalf("a session revoked mid-request saved %q or ended the confirmation (%d)", stored(), confirmations())
+	}
+
+	// Revoked just before the confirmation's transaction.
+	if _, err := db.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1`, m.user); err != nil {
+		t.Fatal(err)
+	}
+	g = &storage.SessionGuard{UserID: m.user, Gen: gen()}
+	oa := orgAIFor(t)
+	oa.store = confirmHookStore{orgAIStore: oa.store, before: bump}
+	req = withUser(httptest.NewRequest(http.MethodPost, "/api/organization/ai/consent", strings.NewReader(`{"configurationVersion":1}`)), m.user)
+	req = req.WithContext(storage.WithSessionGuard(req.Context(), g))
+	gw = &guardedResponseWriter{ResponseWriter: httptest.NewRecorder(), r: req, guard: g}
+	oa.confirm(gw, req)
+	gw.finish()
+	if !g.Stale() {
+		t.Fatal("the confirmation did not re-check the session")
+	}
+	assert401(t, gw.ResponseWriter.(*httptest.ResponseRecorder))
+	if confirmations() != 0 {
+		t.Fatal("a session revoked mid-request recorded a confirmation")
+	}
 }

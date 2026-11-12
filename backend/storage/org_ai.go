@@ -629,7 +629,9 @@ func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, vers
 // for tests that apply a concurrent change at each one (PAC-87 AC-23).
 type SettingsWriteStep int
 
-// The storage accesses of a settings write, in order.
+// The storage accesses of a settings write, in order. SettingsWriteRecheck
+// (PAC-71's session re-check) comes first; it is numbered last so the PAC-87
+// steps keep their order from SettingsWriteLock to SettingsWriteDone.
 const (
 	SettingsWriteLock SettingsWriteStep = iota
 	SettingsWriteReread
@@ -637,6 +639,7 @@ const (
 	SettingsWriteEndConfirmation
 	SettingsWriteCommit
 	SettingsWriteDone
+	SettingsWriteRecheck
 )
 
 // SaveSettingsEndingOrgAIConfirmation saves s as userID's settings and ends
@@ -665,6 +668,7 @@ func SaveSettingsEndingOrgAIConfirmation(ctx context.Context, db *sql.DB, userID
 	// before the users-row lock (its FOR KEY SHARE, then FOR NO KEY UPDATE
 	// on the same row: no deadlock between two of the user's requests). A
 	// revoked or stale session saves nothing and ends nothing.
+	at(SettingsWriteRecheck)
 	if err := RecheckSessionGeneration(ctx, tx); err != nil {
 		return false, err
 	}

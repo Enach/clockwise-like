@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -629,5 +630,64 @@ func TestMigration036_ConsentPeriod(t *testing.T) {
 		if state(u).Confirmed() {
 			t.Errorf("%v confirmed after a provider change", u)
 		}
+	}
+}
+
+// PAC-71 x PAC-87 (review finding 1): a revoked or stale session can
+// neither save settings (nor end a confirmation through them) nor confirm.
+// The re-check is the first statement of both transactions.
+func TestPAC87_StaleSessionNeitherSavesNorConfirms(t *testing.T) {
+	db := openTestDB(t)
+	o := newPAC87Org(t, db, "pac87-stale")
+	cfg := o.change(OrgAIPatch{Provider: strp("openai"), APIKey: strp("k")})
+	m := o.member("m")
+	if o.confirm(m, cfg.Version) != OrgAIConfirmed {
+		t.Fatal("setup: confirm")
+	}
+	var gen int64
+	if err := db.QueryRow(`SELECT session_generation FROM users WHERE id = $1`, m).Scan(&gen); err != nil {
+		t.Fatal(err)
+	}
+	// The session was issued at gen; the account has moved on (revoked).
+	if _, err := db.Exec(`UPDATE users SET session_generation = session_generation + 1 WHERE id = $1`, m); err != nil {
+		t.Fatal(err)
+	}
+	g := &SessionGuard{UserID: m, Gen: gen}
+	ctx := WithSessionGuard(context.Background(), g)
+
+	s, err := GetOrCreateSettingsByUser(db, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.LLMProvider = "anthropic"
+	if _, err := SaveSettingsEndingOrgAIConfirmation(ctx, db, m, s, nil); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("settings write with a stale session = %v, want ErrStaleSession", err)
+	}
+	if !g.Stale() {
+		t.Fatal("the guard was not marked stale")
+	}
+	var stored string
+	_ = db.QueryRow(`SELECT llm_provider FROM settings WHERE user_id = $1`, m).Scan(&stored)
+	if stored != LLMChoiceOrganization || !o.confirmed(m) {
+		t.Fatalf("a stale session wrote settings (%q) or ended the confirmation (confirmed %v)", stored, o.confirmed(m))
+	}
+
+	if _, err := db.Exec(`DELETE FROM org_ai_confirmations WHERE user_id = $1`, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ConfirmOrgAI(ctx, db, m, o.org, cfg.Version, time.Now()); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("confirm with a stale session = %v, want ErrStaleSession", err)
+	}
+	if o.confirmed(m) {
+		t.Fatal("a stale session recorded a confirmation")
+	}
+
+	// The current session does both.
+	cur := WithSessionGuard(context.Background(), &SessionGuard{UserID: m, Gen: gen + 1})
+	if _, _, err := ConfirmOrgAI(cur, db, m, o.org, cfg.Version, time.Now()); err != nil || !o.confirmed(m) {
+		t.Fatalf("confirm with the current session: %v", err)
+	}
+	if ended, err := SaveSettingsEndingOrgAIConfirmation(cur, db, m, s, nil); err != nil || !ended {
+		t.Fatalf("settings write with the current session: ended %v, %v", ended, err)
 	}
 }
