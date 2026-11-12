@@ -31,8 +31,8 @@ import {
   addDays,
   dateIn,
   dayCell,
+  dstViews,
   expectListed,
-  nextTransition,
   pickDay,
   switchZone,
   winterMonday,
@@ -83,10 +83,14 @@ test.describe('PAC-88 API — listing in a display zone', () => {
     expect(linkInfo.booking_horizon_days).toBe(365);
 
     // Default overview: today in the display zone + 41 days, no slot list.
+    // Today in Auckland is read before and after the request, so a run
+    // across Auckland midnight accepts either day.
+    const before = dateIn(new Date(), 'Pacific/Auckland');
     const ov = await listing(api, PAC88_LINKS.paris.slug, { display_time_zone: 'Pacific/Auckland' });
+    const after = dateIn(new Date(), 'Pacific/Auckland');
     expect(ov.time_zone).toBe(linkInfo.time_zone); // AC-31
     expect(ov.display_time_zone).toBe('Pacific/Auckland');
-    expect(ov.range_from).toBe(dateIn(new Date(), 'Pacific/Auckland'));
+    expect([before, after]).toContain(ov.range_from);
     expect(ov.range_to).toBe(addDays(ov.range_from, 41));
     expect(ov.slots).toEqual([]);
 
@@ -239,22 +243,19 @@ test.describe('PAC-88 page — browser in Europe/Paris', () => {
   test('AC-19: transition days and their neighbours, in New York and in Paris', async ({ page, api }) => {
     test.setTimeout(300_000);
     const zones = ['America/New_York', 'Europe/Paris'];
-    const transitions = zones.map((z) => nextTransition(z, 2));
+    // Each zone's days in calendar order, whichever zone changes first
+    // (Paris's spring change comes before New York's autumn one from about
+    // mid-March to late October); showDay also moves backwards.
     const views: Array<{ zone: string; day: string; starts: string[] }> = [];
-    for (const t of transitions) {
-      for (const zone of zones) {
-        const change = dateIn(t, zone);
-        for (const day of [addDays(change, -1), change, addDays(change, 1)]) {
-          const answer = await listing(api, PAC88_LINKS.dst.slug, { date: day, display_time_zone: zone });
-          expect(answer.time_zone).toBe('America/New_York');
-          expect(answer.display_time_zone).toBe(zone);
-          const starts = answer.slots.map((s) => s.start);
-          // C-1 end to end, against the server's own explicit-date answers.
-          expect([...starts].sort(), `${zone} ${day}`).toEqual(await regrouped(api, PAC88_LINKS.dst.slug, day, zone));
-          expect(starts.length, `${zone} ${day} lists something`).toBeGreaterThan(0);
-          views.push({ zone, day, starts });
-        }
-      }
+    for (const { zone, day } of dstViews(zones, 2)) {
+      const answer = await listing(api, PAC88_LINKS.dst.slug, { date: day, display_time_zone: zone });
+      expect(answer.time_zone).toBe('America/New_York');
+      expect(answer.display_time_zone).toBe(zone);
+      const starts = answer.slots.map((s) => s.start);
+      // C-1 end to end, against the server's own explicit-date answers.
+      expect([...starts].sort(), `${zone} ${day}`).toEqual(await regrouped(api, PAC88_LINKS.dst.slug, day, zone));
+      expect(starts.length, `${zone} ${day} lists something`).toBeGreaterThan(0);
+      views.push({ zone, day, starts });
     }
 
     await openPage(page, PAC88_LINKS.dst.slug, PAC88_LINKS.dst.title);
@@ -264,9 +265,6 @@ test.describe('PAC-88 page — browser in Europe/Paris', () => {
         await pickDay(page, v.day);
         await expectListed(page, v.starts, zone);
       }
-      // Back to the first month for the next zone's views.
-      await page.goto(`/book/${PAC88_LINKS.dst.slug}`);
-      await expect(page.getByTestId('booking-tz-label')).toBeVisible();
     }
   });
 });

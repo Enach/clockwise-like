@@ -170,22 +170,56 @@ export function dayCell(page: Page, iso: string): Locator {
     .first();
 }
 
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
 /**
- * Move the calendar to the month of `iso` (up to 14 months ahead; the page
- * shows six weeks per month and requests one overview per grid) and return
- * that day's cell. Days are dates of the DISPLAYED zone.
+ * Move the calendar to the month of `iso`, forwards or backwards (up to 15
+ * months either way; the page shows six weeks per month and requests one
+ * overview per grid), and return that day's cell. Days are dates of the
+ * DISPLAYED zone. The month on screen is read from the caption
+ * "<Month> <YYYY>".
  */
 export async function showDay(page: Page, iso: string): Promise<Locator> {
   await expect(page.getByRole('grid')).toBeVisible();
   const target = plainDate(iso);
-  const label = target.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  for (let hop = 0; hop < 15; hop++) {
-    if (await page.getByText(label, { exact: true }).first().isVisible().catch(() => false)) {
-      return dayCell(page, iso);
-    }
-    await page.getByRole('button', { name: /next month|go to the next month/i }).click();
+  const want = target.getUTCFullYear() * 12 + target.getUTCMonth();
+  const caption = page.getByText(new RegExp(`^(${MONTHS.join('|')}) \\d{4}$`)).first();
+  for (let hop = 0; hop < 16; hop++) {
+    const text = ((await caption.textContent()) ?? '').trim();
+    const [name, year] = text.split(' ');
+    const shown = Number(year) * 12 + MONTHS.indexOf(name ?? '');
+    if (shown === want) return dayCell(page, iso);
+    const button = shown < want
+      ? page.getByRole('button', { name: /next month|go to the next month/i })
+      : page.getByRole('button', { name: /previous month|go to the previous month/i });
+    await button.click();
+    await expect(caption).not.toHaveText(text);
   }
-  throw new Error(`could not reach ${label} in the booking calendar`);
+  throw new Error(`could not reach ${MONTHS[target.getUTCMonth()]} ${target.getUTCFullYear()} in the booking calendar`);
+}
+
+/**
+ * AC-19's views: for the next offset change of each zone at least
+ * `minDaysAhead` days after `now`, the change day and the day either side,
+ * as dates of each display zone. Ordered by display zone (in `zones` order),
+ * then by date, without duplicates, so a journey visits each zone's days in
+ * calendar order whichever zone changes first.
+ */
+export function dstViews(zones: string[], minDaysAhead = 2, now = new Date()): Array<{ zone: string; day: string }> {
+  const transitions = zones.map((z) => nextTransition(z, minDaysAhead, now));
+  const out: Array<{ zone: string; day: string }> = [];
+  for (const zone of zones) {
+    const days = new Set<string>();
+    for (const t of transitions) {
+      const change = dateIn(t, zone);
+      for (const d of [addDays(change, -1), change, addDays(change, 1)]) days.add(d);
+    }
+    for (const day of [...days].sort()) out.push({ zone, day });
+  }
+  return out;
 }
 
 /** Select the day `iso` (displayed zone) once the overview has made it selectable. */
