@@ -140,6 +140,10 @@ func TestPAC90_BookingPanicMidQueryHandlerReturns(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("handler goroutine did not return within 1 s")
 	}
+	// Beyond AC-1b's minimum (review of #258, finding 1): cancelling the
+	// insert's context closes the unscanned row, so the interrupted
+	// connection itself goes back to the pool.
+	pac90WaitInUseZero(t, db, time.Second)
 	if got := <-repanic; got != want {
 		t.Fatalf("re-panicked with %v, want the save step's panic", got)
 	}
