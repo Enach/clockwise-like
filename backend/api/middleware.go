@@ -76,6 +76,7 @@ var afterAuthHook func(r *http.Request)
 //     401 (or the 500);
 //   - no account row for `sub`: the request proceeds as before PAC-71, and
 //     every in-request re-check answers the 401 (contract §5, CONTRACT-12).
+//
 // preAuthExpiry holds, by request path, the budget answer a route gives
 // before its handler registers its own (PAC-81 AC-A2): requireAuth registers
 // it ahead of the session-generation read.
@@ -144,7 +145,9 @@ func requireAuth(db *sql.DB, jwtSecret string) func(http.Handler) http.Handler {
 			if afterAuthHook != nil {
 				afterAuthHook(r)
 			}
-			gw := &guardedResponseWriter{ResponseWriter: w, r: r, guard: guard}
+			// base: the headers requireAuth's own 401 would carry (those the
+			// outer middleware set, CORS included), restored on an override.
+			gw := &guardedResponseWriter{ResponseWriter: w, r: r, guard: guard, base: w.Header().Clone()}
 			next.ServeHTTP(gw, r)
 			gw.finish()
 		})
@@ -154,13 +157,16 @@ func requireAuth(db *sql.DB, jwtSecret string) func(http.Handler) http.Handler {
 // guardedResponseWriter turns a stale in-request re-check into requireAuth's
 // 401 (and an unreadable generation into the 500), "whatever the operation
 // had already decided" (contract bearerAuth): the decision is taken when the
-// handler first writes, or when it returns without writing, and every header
-// the handler set is dropped so nothing it prepared (a cookie, a Location)
-// leaks into the 401.
+// handler first writes, or when it returns without writing. On an override
+// the header map is reset to base, the headers present when requireAuth
+// handed over (exactly those its own 401 carries), so nothing the handler
+// prepared (a cookie, a Location) leaks into the answer and nothing the
+// outer middleware set (CORS) is lost.
 type guardedResponseWriter struct {
 	http.ResponseWriter
 	r          *http.Request
 	guard      *storage.SessionGuard
+	base       http.Header
 	decided    bool
 	overridden bool
 }
@@ -177,6 +183,10 @@ func (g *guardedResponseWriter) decide() bool {
 	h := g.ResponseWriter.Header()
 	for k := range h {
 		delete(h, k)
+	}
+	// base is a Clone taken at hand-over and is restored at most once.
+	for k, v := range g.base {
+		h[k] = v
 	}
 	if g.guard.Stale() {
 		sessionUnauthorized(g.ResponseWriter)
