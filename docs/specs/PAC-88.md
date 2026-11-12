@@ -1,7 +1,9 @@
 # Spec — PAC-88: Public booking page shows times in the host's time zone by default, with a booker time-zone switcher
 
 - **Linear**: https://linear.app/paceday/issue/PAC-88
-- **Status**: draft, challenged 2026-11-02 (accept-with-changes, see Challenge log)
+- **Status**: accepted, challenged 2026-11-02 (accept-with-changes, see Challenge log);
+  owner answered OQ-2 and OQ-4 on 2026-11-02; OQ-1 resolved by the contract
+  (`contracts/features/PAC-88.md`, 2026-11-12)
 - **Author**: spec-author; body corrected by spec-challenger (see Challenge log)
 - **Repos**: `Enach/clockwise-like` (api, at `32ecacf`), `Enach/smart-calendar-flow` (web, at `702a6c2`)
 - **Owner decisions this implements**: PAC-72 D-9 (2026-11-01): "display the
@@ -281,8 +283,8 @@ than the link's.
   (never skipped, never another zone unlabelled). The email's calendar
   attachment keeps absolute instants, which the booker's calendar shows in
   their own zone. The booking-create request is unchanged.
-  (Factory-assumed, F-4 revised by the challenge; the visitor's zone in the
-  email is OQ-4.)
+  (F-4 revised by the challenge, confirmed by the owner 2026-11-02, OQ-4: the
+  visitor's zone in the email is a follow-up ticket.)
 - The page's demo source (non-production only) carries a link zone so the
   demo shows the same labels; production behaviour is unaffected.
 
@@ -291,8 +293,8 @@ than the link's.
 The visitor's chosen zone holds for the visit: across date and duration
 changes, refusals, errors and retries, the confirmation, and "book another
 time". A fresh visit to the link (new tab or later) opens in the link's zone
-again. (Factory-assumed, F-3: a literal reading of "by default"; the owner may
-prefer remembering the choice, OQ-2.)
+again. (F-3, confirmed by the owner 2026-11-02, OQ-2: the choice is not
+remembered across visits; nothing is written to browser storage.)
 
 ### 3.8 Host zone changing mid-visit
 
@@ -569,8 +571,8 @@ exists (PAC-83 OQ-1, unchanged). [unit]
 - **Co-host zones** (A-2: ignored).
 - **Localisation** of date/month names (English only, `src/lib/locale.ts`).
 - **Detecting the visitor's zone from IP.**
-- **The email in the visitor's chosen zone** (OQ-4; it would change booking
-  create and inherit API-051).
+- **The email in the visitor's chosen zone** (owner, OQ-4, 2026-11-02: a
+  follow-up ticket; it would change booking create and inherit API-051).
 - **MCP tools**: none touches public booking (§2.1).
 - **Host-side views**: the owner's link drawer already names the profile
   zone (`LinkEditDrawer.tsx:492`); host calendar events are instants. No change.
@@ -617,7 +619,7 @@ link-zone days as display-zone days.
 - **F-2** Switcher: all browser-supported IANA zones, searchable, link zone
   and UTC first, browser-zone shortcut shown only when it differs (§3.3).
 - **F-3** The choice lasts for the visit only; a fresh visit opens in the
-  host's zone (§3.7). See OQ-2.
+  host's zone (§3.7). Confirmed by the owner (OQ-2, 2026-11-02).
 - **F-4** (revised by the challenge) The confirmation email states the date
   and times in the link's zone with name and offset, then the same start–end
   in UTC; UTC only, labelled, if the link zone cannot be read at send time;
@@ -626,7 +628,8 @@ link-zone days as display-zone days.
   (AC-21); the email in the visitor's zone needs a new booking-create input,
   which brings API-051 (a lifecycle/counter defect unrelated to zones) into
   scope, while the attached calendar file already shows the booker their own
-  zone. Visitor-zone email is OQ-4.
+  zone. Confirmed by the owner (OQ-4, 2026-11-02); visitor-zone email is a
+  follow-up ticket.
 - **F-5** Days, "today" and the horizon end are displayed-zone days; a day
   is selectable iff it has an offered start (§3.4).
 - **F-6** A server zone the browser cannot render → display UTC, labelled.
@@ -660,9 +663,13 @@ link-zone days as display-zone days.
   An unknown display zone is a 400 (AC-32). Booking create is not touched.
   Constraints: AC-16, AC-16a, AC-16b, AC-26, AC-31, AC-32 and §7's
   newer-web/older-server rule. Resolve in `contracts/features/PAC-88.md`.
-- **OQ-2 (owner, low priority, not blocking)** — should a visitor's chosen
+  **Resolved (contract stage, 2026-11-12): direction (b)**, see
+  `contracts/features/PAC-88.md` (optional `display_time_zone`, bounded
+  `from`/`to` overview of at most 42 days, stated `time_zone`).
+- **OQ-2 (owner) — answered 2026-11-02: no.** Should a visitor's chosen
   zone be remembered for later visits (on that browser), overriding the host
-  default? The factory assumes not (F-3), as the literal reading of D-9.
+  default? Owner: the chosen zone is NOT remembered across visits; each visit
+  opens in the host's zone (F-3 confirmed).
 - **OQ-3 (resolved by the challenge)** — the e2e DST case (AC-19) is
   deterministic without a clock seam: transitions are absolute dates the test
   computes at run time; a dedicated owner (profile zone America/New_York) and
@@ -675,11 +682,12 @@ link-zone days as display-zone days.
   backend image, Node and the browser for a future rule change (accepted; it
   would be a real defect worth a red run). Fixed-date DST cases live at unit
   level (AC-17, AC-18, AC-18a).
-- **OQ-4 (owner, not blocking)** — should the confirmation email show the
-  time in the zone the visitor chose (rather than the host's zone plus UTC,
-  F-4)? Yes means a new optional booking-create input and carrying API-051
-  (single-use link re-opened by a cancellation) in this ticket, or a
-  follow-up ticket after epic E5. The factory recommends the follow-up.
+- **OQ-4 (owner) — answered 2026-11-02: follow-up.** Should the confirmation
+  email show the time in the zone the visitor chose (rather than the host's
+  zone plus UTC, F-4)? Owner: the email shows the link's zone (name + offset)
+  plus UTC (F-4 confirmed); the visitor's chosen zone in the email is a
+  follow-up ticket. Booking create stays unchanged in PAC-88 and API-051 is
+  not inherited.
 
 ## Challenge log
 
@@ -767,5 +775,6 @@ minimal correct fix is the regrouping this spec defines; ship PAC-88.
   zone is sent. No MCP consumer.
 
 #### Remaining owner questions
-- OQ-2 (remember the chosen zone across visits) — unchanged, not blocking.
-- OQ-4 (email in the visitor's zone, pulling in API-051) — new, not blocking.
+- OQ-2 (remember the chosen zone across visits) — answered 2026-11-02: no.
+- OQ-4 (email in the visitor's zone, pulling in API-051) — answered
+  2026-11-02: link zone + UTC now, visitor zone a follow-up ticket.
