@@ -1,0 +1,65 @@
+# CI on GitHub-hosted runners: the repo's own gate, `make verify` (factory §3).
+# Runs on every pull request and every push to main, and is called by
+# release.yml so no image is published from a red main.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The web repo, where `make clone-frontend` puts it (WEB ?= ../smart-calendar-flow):
+      # openapi-check also checks its generated types, e2e builds it.
+      - uses: actions/checkout@v4
+        with:
+          repository: Enach/smart-calendar-flow
+          path: web
+      - run: mv web ../smart-calendar-flow
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: |
+            backend/go.sum
+            mcp/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Tools pinned by the Makefile and scripts
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1
+          sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Web dependencies (openapi-check runs its generator)
+        working-directory: ../smart-calendar-flow
+        run: npm ci --legacy-peer-deps
+
+      - name: e2e dependencies
+        working-directory: e2e
+        run: npm ci && npx playwright install --with-deps
+
+      - name: make verify
+        run: make verify
+
+      - name: Verify summary
+        if: always()
+        run: cat .verify/steps.txt .verify/coverage.txt 2>/dev/null || true
