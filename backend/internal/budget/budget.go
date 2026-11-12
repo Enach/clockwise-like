@@ -264,17 +264,19 @@ func (w *writer) Write(b []byte) (int, error) {
 }
 
 // Flush flushes the response under the same lock as every write, and does
-// nothing once the budget has answered. The raw writer is never exposed
-// (no Unwrap), so a handler cannot write around the budget.
+// nothing once the budget has answered. Otherwise it commits the response
+// (begin) and forwards the flush outward through the whole remaining chain,
+// following Unwrap past writers that have no Flush of their own (PAC-90
+// item 4: a type assertion alone dropped it at the access log's writer).
+// The raw writer is never exposed (no Unwrap), so a handler cannot write
+// around the budget.
 func (w *writer) Flush() {
 	w.st.mu.Lock()
 	defer w.st.mu.Unlock()
 	if !w.begin() {
 		return
 	}
-	if f, ok := w.dst.(http.Flusher); ok {
-		f.Flush()
-	}
+	_ = http.NewResponseController(w.dst).Flush()
 }
 
 // ErrHijackRefused is returned by Hijack: no route behind the budget takes

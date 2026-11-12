@@ -110,7 +110,10 @@ func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 // loggingMiddleware writes exactly one access-log line per request (PAC-81
 // AC-A13): method, the matched route pattern (never the raw path, which can
 // carry an invite token, and never the query string), the status actually
-// written ("-" when nothing was written, e.g. the client went away), the
+// sent (PAC-90: a flush before any write is 200; a handler chain that wrote
+// nothing is net/http's implicit 200 while the request context is live, and
+// "-" when that context had ended, i.e. the client went away or the server
+// cancelled the request at the end of the drain), the
 // duration, and the client address as the abuse limits resolve it
 // (TRUSTED_PROXIES and X-Real-IP). It sits outside every middleware that can
 // write or replace a status, so a replaced status and the budget's 503 are
@@ -121,8 +124,11 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w}
 		defer func() {
 			status := "-"
-			if sw.status != 0 {
+			switch {
+			case sw.status != 0:
 				status = strconv.Itoa(sw.status)
+			case r.Context().Err() == nil:
+				status = strconv.Itoa(http.StatusOK)
 			}
 			p := recover()
 			if p != nil {
@@ -180,6 +186,18 @@ func (s *statusWriter) Write(b []byte) (int, error) {
 		s.status = http.StatusOK
 	}
 	return s.ResponseWriter.Write(b)
+}
+
+// Flush records a flush before any write as the 200 it sends, and forwards
+// it outward (Sentry's wrapper, then net/http's writer), following Unwrap
+// where a writer has no Flush of its own (PAC-90 item 4). Only the budget
+// middleware reaches it: handlers hold the budget's writer, which has no
+// Unwrap.
+func (s *statusWriter) Flush() {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	_ = http.NewResponseController(s.ResponseWriter).Flush()
 }
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
