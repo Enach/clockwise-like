@@ -111,3 +111,20 @@ allowedPaths `engine/booking.go` (`completeBooking`, `sendConfirmationEmail`,
 None outside the backend: smart-calendar-flow and mcp see no response change.
 Operators see `200` where the log said `-` for live unwritten responses; the
 runbook does not describe the field's values (checked), so it needs no change.
+
+## 9. Stage-4 notes (impl/pac-90-api, 2026-11-12)
+
+No contract mistake found; the bundle hash is unchanged (main still 4f798cb).
+Test names are as listed in the manifest, with these readings and additions:
+
+- AC-1b is an engine test, so "a following booking is 201" is read as
+  `ConfirmBooking` returning the saved booking with no error (the value the
+  route turns into its 201) within 2 s.
+- Added, beyond the manifest list: `TestPAC90_BookingReleasesBeforeCompletionOnPoolOfOne`
+  (engine; the release still happens before the completion unit on a pool of
+  1, the engine-level twin of AC-2) and `TestPAC90_FlushForwardsThroughUnwrapOnlyWriter`
+  (budget; section 3.1's "including writers that only expose Unwrap").
+- The AC-1b seam wraps the save step's querier only while the seam is set; with
+  it nil the insert runs on `storage.BindConn` exactly as before.
+- AC-8b: PAC-71 (#242) is unmerged at the time of this PR, so AC-8b and the
+  `guardedResponseWriter.Flush` change land with PAC-71 (section 5).

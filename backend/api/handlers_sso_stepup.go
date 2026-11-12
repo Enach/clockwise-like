@@ -659,6 +659,9 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 		reserved = c
 		defer func() { _ = reserved.Close() }()
 	}
+	if stepupBeforeCommit != nil {
+		stepupBeforeCommit(r.Context())
+	}
 	if !budget.Commit(r.Context()) {
 		return
 	}
@@ -678,6 +681,11 @@ func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user 
 	}
 	http.Redirect(w, r, h.stepupTarget(purpose, reason), http.StatusFound)
 }
+
+// stepupBeforeCommit is a test seam (PAC-90 AC-5b): it runs in finishStepup
+// between the record's connection reservation and budget.Commit. Nil in
+// production.
+var stepupBeforeCommit func(ctx context.Context)
 
 // stepupTarget is the settings landing for an outcome ("" reason: granted).
 func (h *ssoHandlers) stepupTarget(purpose, reason string) string {
