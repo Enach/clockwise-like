@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -62,10 +63,39 @@ func runMigrations(db *sql.DB) error {
 	}
 	// Close releases the connection (the driver has no pool of its own).
 	defer m.Close()
+	if ceiling := migrationCeiling.Load(); ceiling != 0 {
+		// Tests only (SetMigrationCeilingForTest): migrate up to the
+		// ceiling, never down from above it.
+		cur, _, verr := m.Version()
+		if verr != nil && !errors.Is(verr, migrate.ErrNilVersion) {
+			return fmt.Errorf("migrate up: %w", verr)
+		}
+		if errors.Is(verr, migrate.ErrNilVersion) || cur < uint(ceiling) {
+			if err := m.Migrate(uint(ceiling)); err != nil && err != migrate.ErrNoChange {
+				return fmt.Errorf("migrate up: %w", err)
+			}
+		}
+		return nil
+	}
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 	return nil
+}
+
+// migrationCeiling is the highest version runMigrations applies; 0 (always,
+// outside tests) means every embedded migration.
+var migrationCeiling atomic.Uint32
+
+// SetMigrationCeilingForTest makes every Open/Migrate in this process stop at
+// version v (it never migrates down) until the returned restore is called.
+// Tests only: the PAC-84 downgrade tests hold a database at the encryption
+// migration (034) although a later one (PAC-71's 035) is embedded, because
+// downgrade-schema runs only from 034 (owner decision 2026-11-12, PAC-84
+// contract "Stage-4 amendments").
+func SetMigrationCeilingForTest(v uint) (restore func()) {
+	prev := migrationCeiling.Swap(uint32(v))
+	return func() { migrationCeiling.Store(prev) }
 }
 
 // ApplyPool sets the pool caps on db (PAC-81 AC-A9; values decided by

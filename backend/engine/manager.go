@@ -188,7 +188,7 @@ func inferCandidateCadence(candidate *oneOnOneCandidate) string {
 // DetectTeam scans a six-week window around now and identifies 1:1
 // recurring meetings to build the manager's team member list.
 func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*DetectResult, error) {
-	token, err := LoadCalendarToken(e.DB, managerID)
+	token, err := LoadCalendarTokenCtx(ctx, e.DB, managerID)
 	if err != nil {
 		return nil, err
 	}
@@ -239,10 +239,10 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		}
 
 		// Check if member is a Paceday user
+		// PAC-71 granting site (roster import): only the one account that
+		// holds the address domain-confirmed, ignoring letter case.
 		var memberUserID *uuid.UUID
-		var uid uuid.UUID
-		err := e.DB.QueryRow(`SELECT id FROM users WHERE email=$1`, c.email).Scan(&uid)
-		if err == nil {
+		if uid, ok, err := storage.ConfirmedHolder(e.DB, c.email); err == nil && ok {
 			memberUserID = &uid
 		}
 
@@ -265,13 +265,13 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		} else if existing != nil {
 			result.MembersUpdated++
 		}
-		if err := storage.UpsertManagerTeamMember(e.DB, m); err != nil {
+		if err := storage.UpsertManagerTeamMemberCtx(ctx, e.DB, m); err != nil {
 			return nil, fmt.Errorf("persist detected member %s: %w", c.email, err)
 		}
 
 		// Record occurrences
 		for _, occ := range c.occurrences {
-			if err := storage.UpsertOneOnOneOccurrence(e.DB, managerID, c.email, occ.eventID, occ.occurredAt); err != nil {
+			if err := storage.UpsertOneOnOneOccurrenceCtx(ctx, e.DB, managerID, c.email, occ.eventID, occ.occurredAt); err != nil {
 				return nil, fmt.Errorf("persist occurrence for %s: %w", c.email, err)
 			}
 		}
@@ -282,7 +282,7 @@ func (e *ManagerEngine) DetectTeam(ctx context.Context, managerID uuid.UUID) (*D
 		profile.IsManager = true
 		profile.DetectedAt = &now2
 		result.IsManager = true
-		if err := storage.UpsertUserProfile(e.DB, profile); err != nil {
+		if err := storage.UpsertUserProfileCtx(ctx, e.DB, profile); err != nil {
 			return nil, fmt.Errorf("persist manager profile: %w", err)
 		}
 	}
@@ -502,7 +502,7 @@ func (e *ManagerEngine) GetMemberWeek(ctx context.Context, managerID uuid.UUID, 
 	}
 
 	// Cache the result
-	_ = storage.UpsertTeamAnalytics(e.DB, &storage.TeamAnalyticsRow{
+	_ = storage.UpsertTeamAnalyticsCtx(ctx, e.DB, &storage.TeamAnalyticsRow{
 		ManagerUserID:  managerID,
 		MemberEmail:    member.MemberEmail,
 		WeekStart:      weekStart,

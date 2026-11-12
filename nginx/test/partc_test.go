@@ -39,19 +39,22 @@ func TestFramingOnlyBookingPage(t *testing.T) {
 		{"/api/book/abc123/slots", false},
 		{"/assets/index-abc.js", false},
 		{"/nginx-health", false},
-		// Review of #248: encodings, case and dot segments. nginx matches the
-		// decoded, normalised $uri, so %2F is a slash, dot segments are
-		// resolved before matching, and matching is case-sensitive.
+		// Review of #248: encodings, case and dot segments. $uri is decoded
+		// and normalised (%2F is a slash, dot segments resolved) and matching
+		// is case-sensitive; since PAC-91 the raw path must match too.
 		{"/book/x%2Fapp", false},     // $uri /book/x/app: two segments
 		{"/BOOK/x", false},           // case-sensitive
 		{"/Book/x", false},           // case-sensitive
 		{"/book/..", false},          // normalised to /
 		{"/book/x/..", false},        // normalised to /book/
 		{"/book/x/../../app", false}, // normalised to /app
-		// Normalised to /book/app, which IS the booking page of slug "app"
-		// (the SPA serves the same document), so it is framable.
-		{"/book/x/../app", true},
-		{"/book/%61bc", true}, // $uri /book/abc
+		// PAC-91 (spec D-3) reverses the PAC-81 review here: framability is
+		// decided on the raw path as well as $uri, and the raw path has a
+		// literal dot segment, so it is refused even though $uri is
+		// /book/app. Browsers resolve literal dot segments before sending,
+		// so no visitor requests it. Full table in pac91_test.go.
+		{"/book/x/../app", false},
+		{"/book/%61bc", true}, // $uri /book/abc, raw segment plain
 	}
 	for _, c := range cases {
 		r := sendOne(t, "", "http://"+n+c.path)

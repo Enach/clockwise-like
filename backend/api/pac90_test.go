@@ -201,7 +201,7 @@ func newPAC90Stepup(t *testing.T, dirHook func()) *pac90Stepup {
 		})
 	})
 	r.Group(func(r chi.Router) {
-		r.Use(requireAuth(pac50Secret))
+		r.Use(requireAuth(s.pool, pac50Secret))
 		r.Route("/api/admin/sso", e.h.mountAdmin)
 	})
 	e.router = r

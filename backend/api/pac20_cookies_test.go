@@ -67,7 +67,7 @@ func cookieEmitters(t *testing.T) map[string]func() *httptest.ResponseRecorder {
 		"logout":                 get("/api/auth/logout", (&meHandlers{}).logout),
 		"issue session": func() *httptest.ResponseRecorder {
 			rec := httptest.NewRecorder()
-			_ = ah.issueJWT(rec, &storage.User{ID: uuid.New(), Email: "pac20@example.test"})
+			_ = ah.issueJWT(rec, &storage.User{ID: uuid.New(), Email: "pac20@example.test"}, 0)
 			return rec
 		},
 	}

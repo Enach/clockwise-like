@@ -93,6 +93,32 @@ would leave MCP out.
    are healthy. Check through your proxy:
    `curl -fsS https://<your host>/api/ready`.
 
+### PAC-71 release: sign every session out once (release step)
+
+The PAC-71 release has one extra step, decided by the owner (OQ-6, 2026-11-01:
+yes). **After** steps 1-6 above, with both the new backend and the new web app
+running, advance every account's session generation once:
+
+```
+compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-71 deploy (OQ-6)"
+```
+
+- `advance-all` runs against the running backend (`exec`): it needs no
+  backend stop, unlike the encryption subcommands below that use
+  `run --rm --no-deps backend`. (`run --rm --no-deps backend /paceday-operator
+  advance-all …` also works; it reads the same environment.)
+- Every session issued before it gets 401 on its next request, so every user
+  signs in once more. No account, credential or setting changes. The run is
+  recorded in `operator_audit`; record in the release notes that it ran.
+- It locks every account row. A request that is writing account data at that
+  moment may be aborted by Postgres's deadlock detection and get a 500 (the
+  user retries); if the command itself aborts, run it again.
+- Deploy the web app as soon as possible after the backend: in between, the
+  old web app's "connect a calendar" buttons start a sign-in.
+- Microsoft sign-ins in flight at the backend deploy (started on the old API)
+  are refused once, because their token response has no ID token. The user
+  signs in again.
+
 ## Rollback
 
 - **The backend is not ready after a migration** (it exited, or never
@@ -590,15 +616,21 @@ docker compose -f docker-compose.prod.yml exec postgres \
 The version must be below this release's encryption migration (034) and
 `dirty` must be `f`.
 
+`downgrade-schema` runs only on a database exactly at 034. A release that
+also carries a later migration (PAC-71's `035_identity_binding`) leaves the
+database at 035, and `downgrade-schema` then refuses (exit 1, "the database is at version 35, not 34: roll back the later release first") without changing anything. Going back from such a release
+to one before encryption at rest is a restore of the pre-deploy backup
+([Rollback](#rollback)); never migrate down in production by hand.
+
 The alternative is restoring the pre-deploy backup (losing what was written
 since).
 
 ## Account recovery
 
-Recovering an account whose only sign-in method stopped working is
-documented by PAC-71 in `docs/operator/PAC-71-account-recovery.md`. That
-document is not on `main` yet (PAC-71 is in review); this section links it
-when PAC-71 merges.
+Recovering an account whose only sign-in method stopped working, or that
+is bound to the wrong identity, is documented in
+[`docs/operator/PAC-71-account-recovery.md`](operator/PAC-71-account-recovery.md)
+(the `paceday-operator` command ships in the backend image).
 
 ## Documentation site
 

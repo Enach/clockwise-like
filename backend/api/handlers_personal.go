@@ -52,7 +52,7 @@ func toPersonalCalendarDTO(c *storage.PersonalCalendar) personalCalendarDTO {
 }
 
 func (h *personalHandlers) list(w http.ResponseWriter, r *http.Request) {
-	cals, err := storage.ListPersonalCalendarsByUser(h.db, userIDFromCtx(r.Context()))
+	cals, err := storage.ListPersonalCalendarsByUserCtx(r.Context(), h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		writeServerError(w, r, "list", err, http.StatusInternalServerError)
 		return
@@ -87,7 +87,7 @@ func (h *personalHandlers) create(w http.ResponseWriter, r *http.Request) {
 		UserID: userIDFromCtx(r.Context()), Provider: req.Provider, Name: req.Name,
 		URL: req.URL, Enabled: req.Enabled,
 	}
-	id, err := storage.InsertPersonalCalendar(h.db, pc)
+	id, err := storage.InsertPersonalCalendarCtx(r.Context(), h.db, pc)
 	if err != nil {
 		writeServerError(w, r, "create", err, http.StatusInternalServerError)
 		return
@@ -113,7 +113,7 @@ func (h *personalHandlers) patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	cal, err := storage.UpdatePersonalCalendar(h.db, id, userIDFromCtx(r.Context()), req.Name, req.URL, req.Enabled)
+	cal, err := storage.UpdatePersonalCalendarCtx(r.Context(), h.db, id, userIDFromCtx(r.Context()), req.Name, req.URL, req.Enabled)
 	if err != nil {
 		writeServerError(w, r, "patch", err, http.StatusInternalServerError)
 		return
@@ -132,7 +132,7 @@ func (h *personalHandlers) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	deleted, err := storage.DeletePersonalCalendarForUser(h.db, id, userIDFromCtx(r.Context()))
+	deleted, err := storage.DeletePersonalCalendarForUserCtx(r.Context(), h.db, id, userIDFromCtx(r.Context()))
 	if err != nil {
 		writeServerError(w, r, "delete", err, http.StatusInternalServerError)
 		return
@@ -145,7 +145,7 @@ func (h *personalHandlers) delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *personalHandlers) ownedCalendar(ctx context.Context, id int64, userID uuid.UUID) (*storage.PersonalCalendar, error) {
-	cal, err := storage.GetPersonalCalendar(storage.Bind(ctx, h.db), id)
+	cal, err := storage.GetPersonalCalendarCtx(ctx, h.db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -199,12 +199,11 @@ func (h *personalHandlers) sync(w http.ResponseWriter, r *http.Request) {
 		writeCalendarFailure(w, r, "sync", err)
 		return
 	}
-	db := storage.Bind(r.Context(), h.db)
-	if err := storage.MarkPersonalCalendarSynced(db, id, userID); err != nil {
+	if err := storage.MarkPersonalCalendarSyncedCtx(r.Context(), h.db, id, userID); err != nil {
 		writeServerError(w, r, "mark synced", err, http.StatusInternalServerError)
 		return
 	}
-	cal, err := storage.GetPersonalCalendar(db, id)
+	cal, err := storage.GetPersonalCalendarCtx(r.Context(), h.db, id)
 	if err != nil || cal == nil || cal.UserID != userID {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return

@@ -29,7 +29,9 @@ func TestPAC50_SignInAuthorizeURLsCarryNoNewScope(t *testing.T) {
 		"google": {GetAuthURL(NewGoogleOAuthConfig("g", "s", "https://app.test/cb"), "st", ""),
 			[]string{"https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/userinfo.email"}},
 		"microsoft": {GetMicrosoftAuthURL(&MicrosoftConfig{ClientID: "m", ClientSecret: "s", RedirectURL: "https://app.test/cb"}, "st", ""),
-			[]string{"Calendars.ReadWrite", "User.Read", "offline_access"}},
+			// PAC-71 (owner OQ-8 and OQ-9, 2026-11-01): Microsoft sign-in gains
+			// `openid profile`, both user consent only; nothing else changes.
+			[]string{"openid", "profile", "Calendars.ReadWrite", "User.Read", "offline_access"}},
 		"oidc sso": {oidcClient.AuthURL("st", ""), []string{"openid", "profile", "email"}},
 	}
 

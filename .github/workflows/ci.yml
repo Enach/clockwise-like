@@ -1,13 +1,12 @@
 # CI on GitHub-hosted runners: the repo's own gate, `make verify` (factory §3).
-# Runs on every pull request and every push to main, and is called by
-# release.yml so no image is published from a red main.
+# Runs on every pull request and every push to main; release.yml publishes
+# only main commits on which this job ("verify") passed in both repos.
 name: ci
 
 on:
   pull_request:
   push:
     branches: [main]
-  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -23,11 +22,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Paired PRs (factory: the api PR and its web PR land together): use the
+      # web branch naming the same PAC ticket as this branch, else main.
+      - name: Paired web branch
+        id: pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          ref=main
+          t=$(grep -oiE 'pac-[0-9]+' <<<"$BRANCH" | head -1 | tr 'A-Z' 'a-z' || true)
+          if [ -n "$t" ]; then
+            m=$(gh api --paginate repos/Enach/smart-calendar-flow/branches --jq '.[].name' | grep -iE "(^|[^a-z0-9])$t([^0-9]|$)" || true)
+            # several (factory/pac-N-spec, impl/pac-N-api...): keep this branch's prefix (impl/)
+            if [ "$(printf '%s\n' "$m" | grep -c .)" -gt 1 ] && [[ $BRANCH == */* ]]; then
+              m=$(printf '%s\n' "$m" | grep -F "${BRANCH%%/*}/" || true)
+            fi
+            if [ "$(printf '%s\n' "$m" | grep -c .)" -eq 1 ]; then ref=$m
+            elif printf '%s\n' "$m" | grep -qxF "$BRANCH"; then ref=$BRANCH
+            elif [ -n "$m" ]; then echo "::warning::several web branches for $t: $(echo $m); using main"; fi
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "web ref: $ref"
+
       # The web repo, where `make clone-frontend` puts it (WEB ?= ../smart-calendar-flow):
       # openapi-check also checks its generated types, e2e builds it.
       - uses: actions/checkout@v4
         with:
           repository: Enach/smart-calendar-flow
+          ref: ${{ steps.pair.outputs.ref }}
           path: web
       - run: mv web ../smart-calendar-flow
       # docker/frontend.dockerfile (e2e and release) builds from frontend/ = the

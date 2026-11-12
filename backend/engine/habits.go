@@ -67,7 +67,7 @@ func (e *HabitsEngine) ReoptimizeAll(ctx context.Context, userID uuid.UUID) erro
 	// calOps may be nil if not connected — we degrade gracefully.
 
 	now := e.now()
-	if settings, settingsErr := storage.GetOrCreateSettingsByUser(e.DB, userID); settingsErr == nil {
+	if settings, settingsErr := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID); settingsErr == nil {
 		if loc, locErr := time.LoadLocation(settings.Timezone); locErr == nil {
 			now = now.In(loc)
 		}
@@ -93,7 +93,7 @@ func (e *HabitsEngine) scheduleDay(
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, day.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
 
-	settings, _ := storage.GetOrCreateSettingsByUser(e.DB, userID)
+	settings, _ := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
 
 	// Fetch calendar busy intervals once for the day.
 	var calBusy []interval
@@ -181,7 +181,7 @@ func (e *HabitsEngine) scheduleDay(
 			}
 			// Mark displaced and try to reschedule below.
 			existing.Status = "displaced"
-			_, _ = storage.UpsertHabitOccurrence(e.DB, existing)
+			_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, existing)
 		}
 
 		// Find a slot.
@@ -189,7 +189,7 @@ func (e *HabitsEngine) scheduleDay(
 		slot := findFirstSlot(windowStart, windowEnd, dur, merged)
 
 		if slot == nil {
-			_, _ = storage.UpsertHabitOccurrence(e.DB, &storage.HabitOccurrence{
+			_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
 				HabitID:       h.ID,
 				ScheduledDate: day,
 				StartTime:     windowStart,
@@ -204,7 +204,7 @@ func (e *HabitsEngine) scheduleDay(
 			calEventID = e.createHabitEvent(ctx, calOps, h, slot.start, slot.end)
 		}
 
-		_, _ = storage.UpsertHabitOccurrence(e.DB, &storage.HabitOccurrence{
+		_, _ = storage.UpsertHabitOccurrenceCtx(ctx, e.DB, &storage.HabitOccurrence{
 			HabitID:         h.ID,
 			ScheduledDate:   day,
 			StartTime:       slot.start,
@@ -247,7 +247,7 @@ func (e *HabitsEngine) createHabitEvent(
 }
 
 func (e *HabitsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
-	token, err := auth.LoadUserToken(e.DB, userID)
+	token, err := auth.LoadUserTokenCtx(ctx, e.DB, userID)
 	if err != nil || token == nil {
 		return nil, fmt.Errorf("no token for user %s", userID)
 	}

@@ -932,6 +932,35 @@ changes the HTTP bundle.
 - **Manifest:** `compose-test/` is added to `allowedPaths`, so the compose
   gate gives the backend its own random key (review #1, AC-28).
 
+### Amendment with PAC-71 (merge into impl/pac-71-identity-binding-backend, owner decision 2026-11-12)
+
+Recorded by the PAC-71 implementer at the merge of main (PAC-84 32ecacf)
+into the PAC-71 branch. No HTTP bundle change.
+
+- **7.2 / 7.3 / 8.2, downgrade with a later migration:** PAC-71's
+  migration is renumbered `035_identity_binding` (7.3, "PAC-84 first").
+  Because every `paceday-operator encryption` subcommand first migrates up
+  to the newest embedded version, a release that carries 035 always has its
+  database at 035, and `downgrade-schema` (which runs only from this work's
+  version, 034) refuses: exit 1, `the database is at version 35, not 34:
+  roll back the later release first`, nothing changed, `schema_migrations`
+  clean, one `failed` audit row. **Owner decision (2026-11-12): this is
+  accepted.** Once 035 ships, the way back to a release before encryption
+  at rest is a restore of the pre-deploy backup (`docs/runbook.md`,
+  "Encryption key - downgrade"); nothing in production runs PAC-71's down
+  migration, and `downgrade-schema` is not extended to step through later
+  migrations.
+- **Tests:** the downgrade path at 034 is still proven unchanged
+  (`TestPAC84_DecryptAllAndDowngrade`, `TestPAC84_OperatorDecryptDowngradeReset`,
+  `TestPAC84_OperatorAfterDowngradeNeverMigratesUp`) on a database held at
+  034 by the test-only `storage.SetMigrationCeilingForTest` (every
+  `Open`/`Migrate` in the test process, the CLI's included, stops at 034 and
+  never migrates down). `TestPAC84_DowngradeRefusedAbove034` covers the
+  shipped schema (035): the refusal above.
+- **7.1 (K-9):** `035_identity_binding`'s `CREATE TABLE IF NOT EXISTS
+  operator_audit` (a no-op after 034) restates all eight actions in its
+  CHECK; `TestPAC84_OperatorAuditPinned` passes against it.
+
 ## Challenge — 2026-11-02
 
 **Verdict**: accept-with-changes (all changes applied in place above; no
