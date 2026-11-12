@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 // PAC-90 items 2-4: the access log's implicit 200, flush through the
@@ -151,6 +154,58 @@ func TestPAC90_FlushBeforeWriteLogs200(t *testing.T) {
 			t.Fatalf("lines %v", lines)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// AC-8b: a route behind requireAuth whose in-request re-check finds the
+// session stale; the handler sets headers, then flushes through
+// http.ResponseController before writing: the client gets requireAuth's 401
+// and none of the handler's headers. Fails with Unwrap-only traversal of the
+// guard (the budget would commit a 200 with the handler's headers).
+func TestPAC90_GuardedFlushStaleSessionIs401(t *testing.T) {
+	u, err := storage.UpsertUser(sharedTestDB, "pac90-guard-"+uuid.NewString()[:8]+"@example.com", "G", "", "google", "sub-pac90-guard-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleErr error
+	r := fullRouter(t)
+	r.With(requireAuth(sharedTestDB, pac50Secret)).Get("/api/pac90/guarded", func(w http.ResponseWriter, r *http.Request) {
+		// Another sign-in signs this session out while the request runs.
+		if _, err := sharedTestDB.Exec(`UPDATE users SET session_generation = session_generation + 1 WHERE id = $1`, u.ID); err != nil {
+			t.Error(err)
+		}
+		staleErr = storage.WithSessionGeneration(r.Context(), sharedTestDB, func(storage.Querier) error { return nil })
+		http.SetCookie(w, &http.Cookie{Name: "pac90_handler", Value: "leak"})
+		w.Header().Set("Location", "/handler-chose-this")
+		w.Header().Set("X-Handler", "1")
+		_ = http.NewResponseController(w).Flush()
+		_, _ = w.Write([]byte("handler body"))
+	})
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/pac90/guarded", nil)
+	req.AddCookie(&http.Cookie{Name: "auth_token", Value: session(t, u, time.Now())})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !errors.Is(staleErr, storage.ErrStaleSession) {
+		t.Fatalf("the in-request re-check did not find the session stale: %v", staleErr)
+	}
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), `{"error":"unauthorized"}`) {
+		t.Fatalf("client got %d %q, want requireAuth's 401", resp.StatusCode, body)
+	}
+	for _, h := range []string{"Location", "X-Handler"} {
+		if v := resp.Header.Get(h); v != "" {
+			t.Fatalf("handler header %s leaked into the 401: %q", h, v)
+		}
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == "pac90_handler" {
+			t.Fatal("handler cookie leaked into the 401")
+		}
 	}
 }
 

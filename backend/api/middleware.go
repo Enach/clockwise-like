@@ -207,6 +207,17 @@ func (g *guardedResponseWriter) finish() {
 	}
 }
 
+// Flush decides first, like a first write, and forwards the flush only when
+// the handler's response stands (PAC-90 contract section 3.4, AC-8b). Without it,
+// http.ResponseController would unwrap straight to the budget's Flush, which
+// commits the handler's headers and a 200 before the guard has decided.
+func (g *guardedResponseWriter) Flush() {
+	if g.decide() {
+		return
+	}
+	_ = http.NewResponseController(g.ResponseWriter).Flush()
+}
+
 // Unwrap lets http.ResponseController reach the underlying writer.
 func (g *guardedResponseWriter) Unwrap() http.ResponseWriter { return g.ResponseWriter }
 
