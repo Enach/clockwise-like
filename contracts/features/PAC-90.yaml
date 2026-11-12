@@ -1,0 +1,132 @@
+{
+  "featureId": "PAC-90",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-90",
+  "status": "draft (contract-author 2026-11-12; awaiting contract-challenger)",
+  "contractRevision": "unchanged: PAC-90 changes no HTTP operation. PAC-90 manifest revision 1.",
+  "contractHash": "c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main 4f798cb (last bundle change a9e2802, PAC-83) and on this branch (byte-identical: git diff origin/main -- contracts/openapi is empty). Same value as PAC-83 1.1 and PAC-84. Reproduce with: `git show origin/main:contracts/openapi/openapi.yaml | sha256sum` (LF blob; a CRLF Windows checkout hashes differently) and `python3 scripts/openapi_assemble.py --check`. If main's bundle moves before PAC-90 merges, the stage-4 PR records main's new hash here and changes nothing else in this field: PAC-90 must not alter the bundle.",
+  "contractDoc": "contracts/features/PAC-90.md",
+  "specDoc": "docs/specs/PAC-90.md (challenged accept-with-changes 2026-11-12, C-1..C-9 applied in place; branch factory/pac-90-spec)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "This manifest covers the items 1-4 PR only (spec D-6): booking connection release on panic (item 1), access-log status for an unwritten response and for a flush (item 2), step-up reservation tests (item 3), flush forwarding (item 4). Item 5 (completion-unit cancellation at the hard cancel) is a separate PR after PAC-88 merges; see followUps. No HTTP, schema, migration or configuration change.",
+  "interfaceKind": "No HTTP change. The only interfaces fixed here are internal and observable by tests: the access-log status field (contracts/features/PAC-90.md section 2), the flush semantics of the production writer chain (section 3), and the test seams the stage-4 PR may add (section 4).",
+  "mergeAfter": "factory/pac-90-spec (contained in this branch). Independent of PAC-88 and PAC-87. Either order with PAC-71 (#242); AC-8b ships with whichever merges second (contract section 5).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/engine/booking.go (ConfirmBooking's reservation/insert block, main :382-419, and new package-level test-seam variables beside beforeBookingConn only; completeBooking, sendConfirmationEmail, sendMail and the slot code are item 5 / PAC-88 territory and stay untouched)",
+        "backend/engine/pac90_test.go (new)",
+        "backend/api/middleware.go (loggingMiddleware and statusWriter only; nothing PAC-71 adds or changes: requireAuth, guardedResponseWriter, guarded)",
+        "backend/api/handlers_sso_stepup.go (finishStepup only: one package-level test seam between the reservation and budget.Commit; no behaviour change)",
+        "backend/api/pac90_test.go (new; may reuse helpers from pac81_paths_test.go and pac50_sso_stepup_test.go without editing them)",
+        "backend/internal/budget/budget.go (writer.Flush only; no Unwrap, Hijack still refused)",
+        "backend/internal/budget/pac90_test.go (new)",
+        "docs/plans/PAC-90.md",
+        "contracts/features/PAC-90.{md,yaml} (contractHash field only, if main's bundle moved; test-name corrections recorded in the md)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** (no HTTP change; any bundle diff is a contract defect, back to stage 2)",
+        "backend/api/gen (generated)",
+        "backend/storage/migrations/** (no migration)",
+        "backend/internal/outbound/**, backend/internal/lifecycle/**, backend/api/handlers_teams.go, backend/main.go (item 5, after PAC-88; team invite after PAC-71)",
+        "existing PAC-81/PAC-50 test files: they must pass unchanged (spec section 6); a helper they need is copied, not edited",
+        "mcp/ (unaffected)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [],
+      "forbiddenPaths": [
+        "every path: no web change, no regeneration (bundle unchanged)."
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [],
+  "componentsChanged": [],
+  "operationsNotChanged": [
+    {
+      "operationId": "createPublicBooking",
+      "reason": "Item 1 changes only what happens to the reserved connection when the save step panics; the documented 201/409/500/503 are unchanged (AC-A19 tests in spec section 6 pass unchanged). A panic is not a documented response today and stays undocumented (the server aborts the connection as before)."
+    },
+    {
+      "operationId": "ssoStepupCallback (Google and Microsoft step-up callbacks)",
+      "reason": "Item 3 is test-only; the budget's denied redirect keeps reason=not_admin at the record step (spec OQ-2, follow-up)."
+    },
+    {
+      "operationId": "every operation",
+      "reason": "Items 2 and 4 change the access-log line and whether a handler's flush reaches the client. No operation flushes today (spec section 2 item 4), so no response observable at the HTTP boundary changes."
+    }
+  ],
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-90-spec, then the stage-4 PR",
+    "assembler": "py -3 scripts/openapi_assemble.py --check -> rc 0, 'OK: bundle is in sync (106 paths)' (2026-11-12, worktree of factory/pac-90-spec)",
+    "migrationRegister": "py -3 scripts/openapi_migration_report.py --check -> rc 0, 'OK: MIGRATION.md covers all 128 operations (10 generated)'",
+    "goGen": "bash scripts/openapi_gen_go.sh --check -> rc 0, 'OK: backend/api/gen matches the contract'",
+    "webGate": "Not applicable: bundle unchanged, nothing to regenerate.",
+    "stage4": "make verify in clockwise-like (factory section 3); the PR body states the bundle sha256 is unchanged and that every test named in acceptanceTests ran (the DB-backed ones need Docker; 'could not run' is stated, never silent).",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml runs make verify (PAC-81 F-C1, 4f798cb)",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1a [integration, engine] TestPAC90_BookingPanicOutsideQueryReleasesConn: panic injected after budget.Commit and before the insert -> panic reaches the server as today; db.Stats().InUse == 0 within 1 s; pool cap 1: next acquire within 1 s and a query on it succeeds.",
+    "AC-1b [integration, engine] TestPAC90_BookingPanicMidQueryHandlerReturns: panic injected after the insert's *Row is returned and before Scan -> handler goroutine returns within 1 s, panic reaches the server; pool cap 2: a following booking is 201 within 2 s.",
+    "AC-2  [integration, api] TestPAC81_PoolCapOnePaths (existing, unchanged) passes.",
+    "AC-3  [unit, api] TestPAC90_AccessLogUnwrittenLiveRequestIs200: production chain (RegisterRoutes), handler writes nothing, client connected -> exactly one access line, status 200.",
+    "AC-4  [unit, api] existing TestPAC81_AccessLogRoutePatternAndNothingWritten ('-' for client gone), TestPAC81_AccessLogBudget503, TestPAC81_AccessLogOneLineStatusPathClient (replaced status) pass unchanged.",
+    "AC-5  [integration, api] TestPAC90_StepupPoolHeldAtRecordIsBudgetDenied: Google step-up, checks pass, the fake GoogleIsAdmin takes the only connection (cap 1), short budget -> budget's denied redirect within budget + 1 s, handler goroutine returns within budget + 1 s; after release no outcome and no grant for the user (asserts 'stepup=denied', not the reason).",
+    "AC-5b [integration, api] TestPAC90_StepupBudgetBetweenReserveAndCommitStoresNothing: seam between reservation and budget.Commit lets the budget answer -> denied redirect, handler returns within budget + 1 s, InUse 0 within 1 s, no outcome and no grant.",
+    "AC-6  [integration, api] TestPAC90_StepupPoolFreeAtRecordIsGranted: same fixture, pool free -> outcome recorded, granted redirect.",
+    "AC-7  [integration, api] TestPAC90_FlushReachesClientThroughProductionChain: httptest.Server with RegisterRoutes' middleware chain; handler writes a chunk, flushes, blocks until the client confirms receipt -> chunk arrives within 2 s, before the handler returns.",
+    "AC-8  [integration, api] TestPAC90_FlushBeforeWriteLogs200: flush before any write, then the client goes away -> client saw 200; access log 200, not '-'.",
+    "AC-8  [unit, budget] TestPAC90_FlushAfterBudgetAnsweredIsNoop: after the budget answered, w.(http.Flusher).Flush() and http.NewResponseController(w).Flush() send nothing and do not panic; budget.writer still has no Unwrap and Hijack still returns ErrHijackRefused.",
+    "AC-8b [integration, api; with whichever of PAC-71 / PAC-90 merges second] TestPAC90_GuardedFlushStaleSessionIs401: route behind requireAuth, stale session, handler sets a header then flushes via ResponseController before writing -> client gets requireAuth's 401 and none of the handler's headers.",
+    "Spec section 6 regression set, unchanged: TestPAC81_HandlerGoroutineReturnsAtBudgetWithPoolHeld, TestPAC81_BookingBudgetBeforeInsertIs503NoRow, TestPAC81_BookingInsertHeldPastBudgetIs201, TestPAC81_BookingInsertFailsAfterBudgetIs500, TestPAC81_BookingPoolSaturatedBeforeInsertIs503, TestPAC81_BookingCommittedDuringDrainCreatesHostEvents, TestPAC81_BookingCompletionAbandonedAtDrainIsLogged, TestPAC81_BookingEmailFailureLogged, api/pac50_sso_stepup_test.go."
+  ],
+  "resolvesFindings": [
+    "PAC-81 Part A confirming review (#247) non-blocking findings: booking connection not released on panic; access log '-' for an implicit 200; step-up reservation path untested; budget.writer.Flush a no-op in production."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [],
+  "doesNotResolve": [
+    "Item 5 (completion-unit steps the hard cancel cannot stop): follow-up PR after PAC-88, see followUps.",
+    "Spec OQ-2 (reason=not_admin at the step-up record step): contract enum change, follow-up ticket.",
+    "Spec challenge C-9: step-up's deferred reserved.Close()/tx.Rollback() share the in-flight-panic hazard; follow-up candidate."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "Enach/smart-calendar-flow",
+      "breaks": "no",
+      "detail": "No operation changes; no regeneration."
+    },
+    {
+      "consumer": "mcp",
+      "breaks": "no",
+      "detail": "HTTP-only consumer; no response changes."
+    },
+    {
+      "consumer": "operators reading the access log",
+      "breaks": "no (corrected)",
+      "detail": "Unwritten responses on live requests now log 200 instead of '-'; '-' keeps meaning 'context ended before anything was written'. docs/runbook.md does not describe the '-' value (checked: no change needed)."
+    },
+    {
+      "consumer": "PAC-71 (#242) guardedResponseWriter",
+      "breaks": "no, if AC-8b holds",
+      "detail": "Whichever merges second gives guardedResponseWriter a flush that decides first (spec C-3); until then nothing flushes."
+    }
+  ],
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "The stage-4 PR leaves contracts/openapi/openapi.yaml byte-identical to main's (sha256 in the PR body).",
+    "make verify output pasted in the PR body (factory section 3)."
+  ],
+  "followUps": [
+    "PAC-90 item 5 PR, depends on PAC-88 (impl/pac-88-api) merging first: spec AC-9..AC-11, OQ-1 default as revised by challenge C-5 (context-aware sender beside the unchanged outbound.SendMail; handlers_teams.go untouched), plus the C-6 criterion (an email not started before the hard cancel is not started). It gets its own manifest revision (allowedPaths: engine/booking.go completeBooking/sendConfirmationEmail, internal/outbound, engine tests).",
+    "Team-invite email cancellation at the hard cancel, after PAC-71 merges (spec section 5).",
+    "Step-up reason at the record step (spec OQ-2), contract enum + web message.",
+    "Step-up deferred release under an in-flight driver panic (spec challenge C-9)."
+  ],
+  "rollback": "Revert the PR. No migration, no configuration, no bundle change. Items 1, 2+4 and 3 are separable commits; any one can be reverted alone (item 2's flush-200 recording and item 4 share statusWriter: revert them together)."
+}
