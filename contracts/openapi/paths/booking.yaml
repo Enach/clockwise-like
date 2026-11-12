@@ -333,7 +333,12 @@ paths:
         both modes, each accepted host's external calendar is read at most once
         per request, over one window spanning every link day the answer needs
         (link days outside the horizon or not among `days_of_week` need no
-        read). The earlier date-less read of the whole horizon (and its 503 on
+        read). That one read is complete for its whole window: every page of
+        the provider's answer is read, and a read that cannot be completed (a
+        later page fails, or the read's own limit ends first) is an unreadable
+        calendar (busy, D-6 below), never a partial list of events. The
+        storage half of busy time (focus blocks, bookings) likewise covers
+        every needed link day, however many storage queries that takes. The earlier date-less read of the whole horizon (and its 503 on
         long horizons, PAC-72 revision 3.1) no longer exists: a request without
         `date`, `from` and `to` is the 42-day overview starting today in the
         day zone.
@@ -393,7 +398,10 @@ paths:
             PAC-88: the IANA name of the zone whose calendar days `date`, `from`,
             `to` and the answer's days are (the day zone). Optional; absent or
             empty means the link's zone. Accepted when it matches the pattern,
-            is not `Local`, and `time.LoadLocation` loads it from the server's
+            is not `Local`, `localtime` or `posixrules` (files some systems link
+            to the server's own zone) and does not start with `right/` (the
+            leap-second variants, whose instants are off by seconds), and
+            `time.LoadLocation` loads it from the server's
             tz database (the backend image's tzdata, `backend/Dockerfile`);
             names are case-sensitive and the tz database's links (e.g.
             `Asia/Calcutta`) are accepted as themselves. Anything else is the
@@ -464,7 +472,8 @@ paths:
             validation order given above: "invalid duration" (non-numeric or not
             in the link's duration set); "invalid display_time_zone, use an IANA
             time zone name" (PAC-88, spec AC-32: not matching the pattern,
-            `Local`, or not loadable from the server's tz database); "date
+            `Local`, `localtime`, `posixrules`, a `right/` name, or not
+            loadable from the server's tz database); "date
             cannot be combined with from or to"; "invalid date format, use
             YYYY-MM-DD"; "invalid from, use YYYY-MM-DD"; "invalid to, use
             YYYY-MM-DD"; "from and to must be given together"; "to must not be

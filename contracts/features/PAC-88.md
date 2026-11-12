@@ -93,7 +93,22 @@ so a default range can never be mistaken for the whole horizon.
   at most once, over one window from the earliest needed link day's window
   start to the latest needed link day's window end. Storage reads (focus blocks,
   bookings on the host's links) may be split as storage needs; they are not
-  provider calls. An unreadable calendar (not connected, provider error, own
+  provider calls, but together they cover every needed link day
+  (`storage.ListFocusBlocksForUserWeek` reads 7 days from its start, so a
+  44-day window needs a range read or several weeks).
+- **The one read is complete** (challenge 2026-11-12): `calendar.ListEvents`
+  (`backend/calendar/events.go:14`) reads only the provider's first page
+  (Google's default page is 250 events with `singleEvents`). A one-day window
+  never reached it; a 44-day window of a busy host does, and the events past
+  the first page would silently be free time, breaking C-1 and listing slots
+  the booking then refuses as `host_busy`. The read follows every page
+  (`nextPageToken`) inside the host's own limit; a read that cannot be
+  completed is an unreadable calendar (busy, D-6), never a partial list.
+  Pinned by C-10.
+- **Robustness residual (D-6, owner-decided)**: one read now covers up to 44
+  days, so a host whose provider fails or hits its own 15 s limit makes the
+  whole overview offer no day (a 200), where the per-day reads lost only the
+  failing days. This is D-6 applied to a larger window, not a new rule. An unreadable calendar (not connected, provider error, own
   15 s limit) makes that host busy for that whole window (D-6: no slot in the
   answer), exactly what the per-day reads gave.
 - The PAC-81 budget, per-item limit, 4-way host concurrency and the 503 for a
@@ -126,7 +141,13 @@ envelope `{"error":"<message>"}`, Content-Type `application/json`:
 An empty value (`display_time_zone=`) is the same as an absent one (as `date=`
 already is). Unknown parameters are ignored. `UTC` and `Etc/*` names are
 accepted; tz-database links (`Asia/Calcutta`, `US/Eastern`) load and are echoed
-as sent, not canonicalised. The backend image ships Alpine `tzdata`
+as sent, not canonicalised. Also refused with the same message (challenge
+2026-11-12): `localtime` and `posixrules` (on Debian-like hosts
+`/usr/share/zoneinfo/localtime` links to `/etc/localtime`, so it would load the
+server process's zone, which must have no effect, AC-28) and any name starting
+with `right/` (leap-second variants: Go ignores their leap records, so
+instants are off by about 27 s). `posix/...` names are plain copies and are
+accepted. The backend image ships Alpine `tzdata`
 (`backend/Dockerfile:3,12`); the test process uses Go's own zoneinfo, so
 contract tests use only long-stable names.
 
@@ -196,6 +217,20 @@ instants stay UTC RFC3339 (`PublicBookingSlot`, unchanged).
 - Failures of the day request or the overview keep the PAC-83 semantics
   (AC-16, AC-16a): one answer per displayed day, so a day is all or nothing by
   construction; an overview failure leaves no day selectable.
+- Regression guards against today's page (challenge 2026-11-12, web `ae8b0d4`):
+  - `PublicBooking.tsx:459` "`availableDates.size === 0` means every future
+    day selectable" goes: an overview answer with no dates means no
+    selectable day; while the overview for the current (zone, grid, duration)
+    has not answered, no day is selectable.
+  - `PublicBooking.tsx:157` `placeholderData: (prev) => prev`: an answer kept
+    as placeholder from another zone, day or duration is never rendered as
+    the current one (zone, day/range and duration are in the query key, and
+    the echo check above applies to placeholders too).
+  - `PublicBooking.tsx:457` `date < today` uses the browser's today: it
+    becomes today in the displayed zone (AC-12).
+  - A 429 on the overview or a day keeps `SLOTS_RATE_LIMITED_MESSAGE`
+    (`PublicBooking.tsx:49`, `:497`); any 400 other than the display-zone one
+    is a PAC-83 error with retry, never "no time available".
 
 ### 3.3 Request budget per visit
 
@@ -217,6 +252,15 @@ zone" combobox), `booking-tz-use-mine` ("Use my time zone (...)"),
 `booking-tz-back-to-host` (back to the host's zone), `booking-tz-unsupported`
 (section 3.2), `booking-tz-announcer` (the polite live region). Day cells and
 time buttons keep their existing ids; their accessible names follow spec 3.9.
+
+Accessibility pins (challenge 2026-11-12, spec 3.9, AC-27): the switcher is a
+combobox labelled "Time zone" with the current zone as its accessible value
+and a listbox of options, following the ARIA combobox pattern (open, type to
+filter, arrows, Enter, Escape). The "unsupported" text is announced through
+`booking-tz-announcer` and focus stays on the switcher. In link-zone mode
+(section 5) the switcher is `aria-disabled="true"`, still focusable, with the
+"unavailable right now" text as its `aria-describedby`. Nothing is announced
+on load, on a host-zone change the visitor did not cause, or on a re-render.
 
 ### 3.6 Demo source (non-production builds only)
 
@@ -285,8 +329,29 @@ with it.
 Added to `e2e/seed/seed.sql` and `e2e/seed/ids.ts` (`seed.ts` verify derives its
 sets from `ids.ts`; `SEEDED_ACCEPTED_HOST_ROWS` becomes `SEEDED_LINK_IDS.length
 + 2`: the D-6 co-host and the Los Angeles co-host). All hosts are connected
-through the calendar stand-in (oauth token `e2e-pac88-*-work`, expiry 2099) and
-their calendars are written by no journey, so they are empty.
+through the calendar stand-in (oauth token `e2e-pac88-*-work`, expiry 2099).
+
+Seed rules (challenge 2026-11-12):
+
+- The four hosts join `SEEDED_USER_IDS`, the three links `SEEDED_LINK_IDS`,
+  and the four hosts' tokens `ACCEPTED_CREDENTIALS` (`ids.ts:299`). A token
+  the stand-in does not accept is an unreadable calendar: D-6 would make
+  every PAC-88 link offer nothing and every journey fail.
+- Settings rows for New York, Paris and Los Angeles carry
+  `calendar_provider = 'google'` (seed check `seed.ts:191`). `seed.sql` deletes
+  any settings row of `PAC88_HOSTS.noZone` (a stale row would silently change
+  AC-3), and `verify()` asserts the three zones and the absence of that row.
+- Calendars: only the booking journeys (AC-9, AC-21) write to the Paris and
+  Los Angeles stand-in calendars (a booking creates host events) and add
+  bookings that are busy time. They run in one spec file, serially, on
+  "booking Mondays" no read-only journey uses (AC-1, AC-2, AC-7 use the AC-10
+  Monday or another unbooked Monday), and each picks its start at run time
+  as the first offered start on its Monday, so a retry (`E2E_RETRIES`) takes
+  the next free start instead of a 409. The `dst` and `noZone` links'
+  calendars are written by no journey.
+- Other specs: every new row belongs to new users and new `e2e-pac88-*`
+  slugs; no existing spec counts users, links or settings outside its own
+  fixtures (the exact sets come from `ids.ts`), so no other count moves.
 
 | Fixture | id | Profile zone | Role |
 |---|---|---|---|
@@ -298,9 +363,11 @@ their calendars are written by no journey, so they are empty.
 | Link | id | slug | days | window | horizon | notice / buffers | usage |
 |---|---|---|---|---|---|---|---|
 | `PAC88_LINKS.dst` | `cbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb` | `e2e-pac88-dst-30min` | `{0,1,2,3,4,5,6}` | 00:00-23:59 | 365 | 0 / 0, 0 | reusable |
-| `PAC88_LINKS.paris` | `cccccccc-cccc-4ccc-8ccc-cccccccccccc` | `e2e-pac88-paris-30min` | `{1}` (Monday) | 09:00-17:00 | 365 | 0 / 0, 0 | reusable |
+| `PAC88_LINKS.paris` | `cacacaca-caca-4aca-8aca-cacacacacaca` | `e2e-pac88-paris-30min` | `{1}` (Monday) | 09:00-17:00 | 365 | 0 / 0, 0 | reusable |
 | `PAC88_LINKS.noZone` | `cddddddd-dddd-4ddd-8ddd-dddddddddddd` | `e2e-pac88-utc-30min` | `{1,2,3,4,5}` | 09:00-17:00 | 60 | 0 / 0, 0 | reusable |
 
+(`cccccccc-...`, the first choice, is already `TEAMS.connectedManager`,
+`ids.ts:183`; e2e ids stay unique across fixtures.)
 All `duration_options = {30}`, `refusal_message` default (generic). The links
 are inserted by a separate `INSERT` naming `booking_horizon_days`.
 
@@ -354,6 +421,14 @@ Contract and unit tests the api PR adds (Go, `backend/api/pac88_*_test.go`,
 - **C-9** (replaces `TestPAC72_LongHorizonDatelessListingIs503`) a 365-day link
   with a 20 ms calendar delay under a 1 s budget: the overview of the month of
   the last bookable day answers 200 (AC-16b).
+- **C-10** (challenge 2026-11-12) completeness of the one read: a Google stub
+  answering the window in two pages (`nextPageToken`), with a busy event only
+  on page 2 on day 40 of a 42-day overview, removes that day's covered
+  starts; a page-2 failure makes the host busy for the window (D-6, 200 with
+  no day); a focus block and a booking on the last needed link day each
+  remove their starts (a 7-day focus read fails this test).
+- **C-2 additions**: `localtime`, `posixrules` and `right/Europe/Paris` answer
+  the display-zone 400.
 - **E-1..E-4** email (Go): AC-22 Los Angeles; a UTC owner; the unreadable-zone
   fallback and its log line (AC-23); a meeting spanning a transition.
 
@@ -370,6 +445,14 @@ mode, which no longer reads the whole horizon or omits a day):
   days is read in `ceil(n/42)` overviews).
 - `pac72_rev2_test.go` `TestPAC72_LongHorizonDatelessListingIs503`: replaced
   by C-9 (its premise, a whole-horizon read, no longer exists).
+- `BookingFlow` fakes (challenge 2026-11-12): one read per host needs a range
+  method on `BookingFlow` (`api/interfaces.go:59`) or a changed
+  `CollectiveSlots`; the fakes in `handlers_booking_test.go`,
+  `pac81_paths_test.go` (`cutEngine`; `TestPAC81_SlotListingCutIs503`'s
+  date-less path is now the 42-day overview, still 503 when cut) and
+  `ratelimit_booking_test.go` (`countingBookingFlow`;
+  `TestGetSlots_RateLimited` sends date-less requests, still 200) follow it;
+  their assertions do not change.
 
 Every other PAC-72, PAC-81 and rate-limit test passes unchanged.
 
@@ -403,9 +486,13 @@ Every other PAC-72, PAC-81 and rate-limit test passes unchanged.
 - **Pass the checked zone into `ConfirmBooking` for the email** (instead of a
   read at compose time). Exact by construction, but it changes an engine
   interface and its fakes, and leaves AC-23 untestable. A read at compose time
-  is the same rule a fraction of a second later; a host who changes zone in
-  that window gets an email in the new zone, still labelled, with the UTC line
-  and the ICS instant unchanged. Accepted residual.
+  is the same rule read after the host events are created (each up to
+  `HostReadLimit()`, 25 s, `engine/booking.go:506`), so seconds later, not a
+  fraction of a second; a host who changes zone in that window gets an email
+  in the new zone, still labelled, with the UTC line and the ICS instant
+  unchanged. The read runs on the completion unit's context (`lifecycle.Go`),
+  never the request's, which has ended: a read failing because the drain
+  cancelled the unit is the AC-23 path (UTC, still sent). Accepted residual.
 - **Email in the visitor's zone.** Owner OQ-4: follow-up ticket (it needs a
   booking-create input and inherits API-051).
 - **`Cache-Control: no-store` on the listing.** Correct in spirit, but nothing
@@ -444,3 +531,13 @@ The api PR (server, email, seed, API-level e2e checks) merges first; the web PR
 follows; the UI e2e journeys (AC-1, AC-2, AC-3, AC-7, AC-9, AC-10, AC-19, AC-21)
 land with or after the web PR in the e2e gate of the pair. Either order is safe
 for users (section 5).
+
+**PAC-87** (`factory/pac-87-spec`) edits `habits.yaml` and `scheduling.yaml`,
+never `booking.yaml`; both PRs regenerate `contracts/openapi/openapi.yaml` and
+`backend/api/gen/paceday.gen.go`, and both touch `e2e/TESTIDS-REQUIRED.md`.
+Whichever merges second rebases, re-runs `make openapi` in an LF clone,
+commits the regenerated bundle and Go types, and records the new sha256 as
+its `contractHash`; its fragment text does not change.
+
+**Base**: merged `origin/main` `4f798cb` (CI workflows only; bundle unchanged
+by it).
