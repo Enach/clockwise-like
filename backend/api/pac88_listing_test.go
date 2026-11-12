@@ -332,6 +332,18 @@ func TestPAC88_C2_ValidationMessagesAndOrder(t *testing.T) {
 			t.Errorf("display_time_zone %q: %d %s, want the display-zone 400", z, a.code, a.body)
 		}
 	}
+	// The name rule alone, whatever this host's tz database holds (Go's
+	// embedded zoneinfo has no right/ or localtime; a Debian host has both).
+	for _, z := range []string{"Local", "localtime", "posixrules", "right/Europe/Paris", "right/UTC", strings.Repeat("A", 65)} {
+		if displayZoneNameAllowed(z) {
+			t.Errorf("name %q allowed, want refused before loading", z)
+		}
+	}
+	for _, z := range []string{"posix/Europe/Paris", "Europe/Paris", "Etc/GMT+12", "America/Argentina/Buenos_Aires", "localtimes"} {
+		if !displayZoneNameAllowed(z) {
+			t.Errorf("name %q refused, want allowed (loading decides)", z)
+		}
+	}
 	for _, z := range []string{"UTC", "Etc/UTC", "Etc/GMT+12", "Etc/GMT-14", "Asia/Calcutta", "US/Eastern", "America/Argentina/Buenos_Aires"} {
 		if a := b.get(link.Slug, pac88Q("display_time_zone", z, "date", "2027-03-02")); a.code != http.StatusOK || a.display != z {
 			t.Errorf("display_time_zone %q: %d %s, want 200 echoing it", z, a.code, a.body)

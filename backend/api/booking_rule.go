@@ -193,14 +193,7 @@ const maxOverviewDays = 42
 // localtime, posixrules: AC-28), is a leap-second variant (right/...) or does
 // not load from the tz database. The name is never canonicalised.
 func loadDisplayZone(name string) (*time.Location, bool) {
-	if len(name) > 64 || !displayZonePattern.MatchString(name) {
-		return nil, false
-	}
-	switch name {
-	case "Local", "localtime", "posixrules":
-		return nil, false
-	}
-	if strings.HasPrefix(name, "right/") {
+	if !displayZoneNameAllowed(name) {
 		return nil, false
 	}
 	loc, err := time.LoadLocation(name)
@@ -208,6 +201,21 @@ func loadDisplayZone(name string) (*time.Location, bool) {
 		return nil, false
 	}
 	return loc, true
+}
+
+// displayZoneNameAllowed is the name half of loadDisplayZone, independent of
+// the host's tz database: on a Debian-like host localtime and posixrules link
+// to the server's own zone, and right/... files load with instants off by
+// the leap seconds Go ignores.
+func displayZoneNameAllowed(name string) bool {
+	if len(name) > 64 || !displayZonePattern.MatchString(name) {
+		return false
+	}
+	switch name {
+	case "Local", "localtime", "posixrules":
+		return false
+	}
+	return !strings.HasPrefix(name, "right/")
 }
 
 // zoneDayStart is the first instant whose calendar date in z is day's date
