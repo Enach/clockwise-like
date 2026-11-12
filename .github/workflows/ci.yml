@@ -1,13 +1,12 @@
 # CI on GitHub-hosted runners: the repo's own gate, `make verify` (factory §3).
-# Runs on every pull request and every push to main, and is called by
-# release.yml so no image is published from a red main.
+# Runs on every pull request and every push to main; release.yml publishes
+# only main commits on which this job ("verify") passed in both repos.
 name: ci
 
 on:
   pull_request:
   push:
     branches: [main]
-  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
