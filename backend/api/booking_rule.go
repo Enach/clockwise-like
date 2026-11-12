@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Enach/paceday/backend/api/gen"
@@ -170,4 +173,118 @@ func cheapRefusal(link *storage.SchedulingLink, loc *time.Location, start, end t
 		return gen.TooSoon, true
 	}
 	return "", false
+}
+
+// --- PAC-88: the day zone, the overview range and the listing's days ---------
+
+// displayZonePattern is the contract's display_time_zone pattern.
+var displayZonePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$`)
+
+// errInvalidDisplayZone is the 400 body of a refused display_time_zone
+// (contract PAC-88 section 2.4, AC-32).
+const errInvalidDisplayZone = "invalid display_time_zone, use an IANA time zone name"
+
+// maxOverviewDays is the overview's bound: a six-week month grid (PAC-88
+// contract section 2.2).
+const maxOverviewDays = 42
+
+// loadDisplayZone loads a requested display zone. ok is false for a name that
+// fails the pattern or 64 characters, names the server's own zone (Local,
+// localtime, posixrules: AC-28), is a leap-second variant (right/...) or does
+// not load from the tz database. The name is never canonicalised.
+func loadDisplayZone(name string) (*time.Location, bool) {
+	if !displayZoneNameAllowed(name) {
+		return nil, false
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, false
+	}
+	return loc, true
+}
+
+// displayZoneNameAllowed is the name half of loadDisplayZone, independent of
+// the host's tz database: on a Debian-like host localtime and posixrules link
+// to the server's own zone, and right/... files load with instants off by
+// the leap seconds Go ignores.
+func displayZoneNameAllowed(name string) bool {
+	if len(name) > 64 || !displayZonePattern.MatchString(name) {
+		return false
+	}
+	switch name {
+	case "Local", "localtime", "posixrules":
+		return false
+	}
+	return !strings.HasPrefix(name, "right/")
+}
+
+// zoneDayStart is the first instant whose calendar date in z is day's date
+// (y-m-d of day, read as a plain date) or later. No midnight is computed, so
+// a zone whose midnight is skipped needs no special case: the answer is the
+// first instant that reads as that date (or the next one, for a day the zone
+// skipped entirely). Offsets are within +-14 h, so the search bracket of
+// +-36 h around the date's UTC midnight always holds the boundary.
+func zoneDayStart(day time.Time, z *time.Location) time.Time {
+	y, m, d := day.Date()
+	base := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	target := base.Format(time.DateOnly)
+	lo, hi := base.Unix()-36*3600, base.Unix()+36*3600
+	for hi-lo > 1 {
+		mid := lo + (hi-lo)/2
+		if time.Unix(mid, 0).In(z).Format(time.DateOnly) >= target {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return time.Unix(hi, 0).UTC()
+}
+
+// neededLinkDays are the link days (calendar days in loc, at noon) a request
+// for the z days from..to (inclusive, plain dates) needs: the link-zone dates
+// of every instant of those days (PAC-88 contract section 2.1). Two link days
+// for one z day, three where either zone changes offset, at most n+2 for n.
+func neededLinkDays(from, to time.Time, z, loc *time.Location) []time.Time {
+	start := zoneDayStart(from, z)
+	end := zoneDayStart(to.AddDate(0, 0, 1), z)
+	first := calendarDay(start, loc)
+	last := calendarDay(end.Add(-time.Second), loc)
+	out := make([]time.Time, 0, daysBetween(first, last)+1)
+	for i := 0; i <= daysBetween(first, last); i++ {
+		out = append(out, time.Date(first.Year(), first.Month(), first.Day()+i, 12, 0, 0, 0, loc))
+	}
+	return out
+}
+
+// offeredOnLinkDays is offeredSlots for several link days with one calendar
+// read per host: the offered slots (UTC instants, ascending) of every link
+// day in days that is inside the horizon and one of the link's days. Days
+// failing those checks are answered before any host is read; when none is
+// left, no host is read at all (PAC-88 C-3).
+func (h *bookingHandlers) offeredOnLinkDays(ctx context.Context, link *storage.SchedulingLink, loc *time.Location, days []time.Time, duration int, now time.Time) ([]engine.AvailableSlot, error) {
+	out := make([]engine.AvailableSlot, 0)
+	today := calendarDay(now, loc)
+	open := make([]time.Time, 0, len(days))
+	for _, d := range days {
+		if inHorizon(link, today, d) && linkOpenOn(link, d) {
+			open = append(open, d)
+		}
+	}
+	if len(open) == 0 {
+		return out, nil
+	}
+	perDay, err := h.eng.CollectiveSlotsDays(ctx, link, open, duration)
+	if err != nil {
+		return nil, err
+	}
+	earliest := now.Add(time.Duration(link.MinNoticeMinutes) * time.Minute)
+	for _, slots := range perDay {
+		for _, slot := range slots {
+			if !slot.Start.Before(earliest) {
+				out = append(out, engine.AvailableSlot{Start: slot.Start.UTC(), End: slot.End.UTC()})
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Start.Before(out[j].Start) })
+	return out, nil
 }

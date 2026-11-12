@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -162,7 +163,25 @@ func durationAllowed(link *storage.SchedulingLink, duration int) bool {
 // (PAC-72 D-5, D-12), pinned by the contract's BookingSlotUnavailableError.
 var errSlotUnavailable = string(gen.SlotIsNoLongerAvailable)
 
+// publicSlotsDTO is PublicSlotsResponse: every key always present (PAC-88
+// contract section 2.5).
+type publicSlotsDTO struct {
+	AvailableDates  []string               `json:"available_dates"`
+	DisplayTimeZone string                 `json:"display_time_zone"`
+	RangeFrom       string                 `json:"range_from"`
+	RangeTo         string                 `json:"range_to"`
+	Slots           []engine.AvailableSlot `json:"slots"`
+	TimeZone        string                 `json:"time_zone"`
+}
+
 // GET /api/book/{slug}/slots?date=YYYY-MM-DD&duration=30
+// GET /api/book/{slug}/slots?from=YYYY-MM-DD&to=YYYY-MM-DD&display_time_zone=Zone
+//
+// PAC-88: the answer's days are days of the day zone (display_time_zone when
+// given, else the link's zone); an offered start falls on day D exactly when
+// its date read in that zone is D. Without date the answer is the bounded
+// overview (at most 42 days, default today + 41 in the day zone). Each
+// accepted host's calendar is read at most once per request.
 func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 	// NEW-booking-rate-limit: counted before anything else, so 429 precedes
 	// every other status.
@@ -184,11 +203,12 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "link is no longer accepting bookings", http.StatusGone)
 		return
 	}
+	q := r.URL.Query()
 	duration := 30
 	if len(link.DurationOptions) > 0 {
 		duration = link.DurationOptions[0]
 	}
-	if raw := r.URL.Query().Get("duration"); raw != "" {
+	if raw := q.Get("duration"); raw != "" {
 		duration, err = strconv.Atoi(raw)
 		if err != nil || !durationAllowed(link, duration) {
 			writeError(w, "invalid duration", http.StatusBadRequest)
@@ -202,50 +222,102 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, "link zone", err, http.StatusInternalServerError)
 		return
 	}
+
 	now := h.now()
-	dateStr := r.URL.Query().Get("date")
-	if dateStr == "" {
-		// The horizon's days (calendar days in the link's zone) that offer
-		// at least one slot. A day whose busy time cannot be gathered from
-		// storage is omitted (PAC-72 D-7).
-		days := []string{}
-		today := calendarDay(now, loc)
-		for i := 0; i < horizonDays(link); i++ {
-			date := today.AddDate(0, 0, i)
-			slots, e := h.offeredSlots(r.Context(), link, loc, date, duration, now)
-			if e != nil {
-				// PAC-81 AC-A2, PAC-72 AC-39: a budget cut or an ended
-				// request is a 503, never a truncated list of dates.
-				if budgetCut(e) || r.Context().Err() != nil {
-					budget.WriteExpired(w)
-					return
-				}
-				continue
-			}
-			if len(slots) > 0 {
-				days = append(days, date.Format(time.DateOnly))
-			}
+	// PAC-88 checks, in the contract's order (section 2.4).
+	dayZone, dayZoneName := loc, loc.String()
+	if name := q.Get("display_time_zone"); name != "" {
+		z, ok := loadDisplayZone(name)
+		if !ok {
+			writeError(w, errInvalidDisplayZone, http.StatusBadRequest)
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"available_dates": days, "slots": []engine.AvailableSlot{}})
+		dayZone, dayZoneName = z, name
+	}
+	dateStr, fromStr, toStr := q.Get("date"), q.Get("from"), q.Get("to")
+	if dateStr != "" && (fromStr != "" || toStr != "") {
+		writeError(w, "date cannot be combined with from or to", http.StatusBadRequest)
 		return
 	}
-	date, err := parseCalendarDay(dateStr, loc)
+	var from, to time.Time
+	if dateStr != "" {
+		if from, err = time.Parse(time.DateOnly, dateStr); err != nil {
+			writeError(w, "invalid date format, use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		to = from
+	} else {
+		var fromErr, toErr error
+		if fromStr != "" {
+			from, fromErr = time.Parse(time.DateOnly, fromStr)
+		}
+		if fromErr != nil {
+			writeError(w, "invalid from, use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		if toStr != "" {
+			to, toErr = time.Parse(time.DateOnly, toStr)
+		}
+		if toErr != nil {
+			writeError(w, "invalid to, use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		if (fromStr == "") != (toStr == "") {
+			writeError(w, "from and to must be given together", http.StatusBadRequest)
+			return
+		}
+		if fromStr == "" {
+			y, m, d := now.In(dayZone).Date()
+			from = time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+			to = from.AddDate(0, 0, maxOverviewDays-1)
+		}
+		if to.Before(from) {
+			writeError(w, "to must not be before from", http.StatusBadRequest)
+			return
+		}
+		if daysBetween(from, to) >= maxOverviewDays {
+			writeError(w, "range must not exceed 42 days", http.StatusBadRequest)
+			return
+		}
+	}
+
+	offered, err := h.offeredOnLinkDays(r.Context(), link, loc, neededLinkDays(from, to, dayZone, loc), duration, now)
 	if err != nil {
-		writeError(w, "invalid date format, use YYYY-MM-DD", http.StatusBadRequest)
-		return
-	}
-	available, err := h.offeredSlots(r.Context(), link, loc, date, duration, now)
-	if budgetCut(err) {
-		budget.WriteExpired(w) // AC-A18: a host not read, never a partial 200
-		return
-	}
-	if err != nil {
+		// PAC-81 AC-A2, AC-A18, PAC-72 AC-39: a budget cut or an ended
+		// request is a 503, never a partial 200; a storage failure is the
+		// 500 in both modes (PAC-88 C-4), never an omitted day.
+		if budgetCut(err) || r.Context().Err() != nil {
+			budget.WriteExpired(w)
+			return
+		}
 		writeError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	out := publicSlotsDTO{
+		AvailableDates: []string{}, Slots: []engine.AvailableSlot{},
+		TimeZone: loc.String(), DisplayTimeZone: dayZoneName,
+		RangeFrom: from.Format(time.DateOnly), RangeTo: to.Format(time.DateOnly),
+	}
+	if dateStr != "" {
+		for _, s := range offered {
+			if s.Start.In(dayZone).Format(time.DateOnly) == out.RangeFrom {
+				out.Slots = append(out.Slots, s)
+			}
+		}
+	} else {
+		seen := map[string]bool{}
+		for _, s := range offered {
+			d := s.Start.In(dayZone).Format(time.DateOnly)
+			if d >= out.RangeFrom && d <= out.RangeTo && !seen[d] {
+				seen[d] = true
+				out.AvailableDates = append(out.AvailableDates, d)
+			}
+		}
+		sort.Strings(out.AvailableDates)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"slots": available, "available_dates": []string{}})
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 // POST /api/book/{slug}

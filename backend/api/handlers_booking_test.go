@@ -41,6 +41,21 @@ func (f *fakeBookingFlow) CollectiveSlots(_ context.Context, link *storage.Sched
 	return f.slotsResult, f.slotsErr
 }
 
+// CollectiveSlotsDays follows the PAC-88 range method (one call per request):
+// out[i] is this fake's CollectiveSlots for days[i], so its assertions do not
+// change.
+func (f *fakeBookingFlow) CollectiveSlotsDays(ctx context.Context, link *storage.SchedulingLink, days []time.Time, duration int) ([][]engine.AvailableSlot, error) {
+	out := make([][]engine.AvailableSlot, len(days))
+	for i, d := range days {
+		slots, err := f.CollectiveSlots(ctx, link, d, duration)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = slots
+	}
+	return out, nil
+}
+
 func (f *fakeBookingFlow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes string) (*storage.Booking, error) {
 	if link != nil {
 		f.confirmLinkID = link.ID
