@@ -602,7 +602,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		if err != nil || !admin {
 			return reasonNotAdmin, ""
 		}
-		if !h.stepupIdentityMatches(user, storage.Identity{Provider: storage.IdentityGoogle, Subject: id.Subject}) {
+		if !h.stepupIdentityMatches(ctx, user, storage.Identity{Provider: storage.IdentityGoogle, Subject: id.Subject}) {
 			return reasonIdentityMismatch, ""
 		}
 		return "", ""
@@ -633,7 +633,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 	if !auth.HasQualifyingEntraRole(roles) {
 		return reasonNotAdmin, ""
 	}
-	if !h.stepupIdentityMatches(user, storage.Identity{Provider: storage.IdentityMicrosoft, Tenant: strings.ToLower(tid), Subject: strings.ToLower(id.ObjectID)}) {
+	if !h.stepupIdentityMatches(ctx, user, storage.Identity{Provider: storage.IdentityMicrosoft, Tenant: strings.ToLower(tid), Subject: strings.ToLower(id.ObjectID)}) {
 		return reasonIdentityMismatch, ""
 	}
 	return "", tid
@@ -730,9 +730,11 @@ func (h *ssoHandlers) breakGlassAccount(user *storage.User) bool {
 // ssoAdminStepupCallback): when the account is bound at the step-up's
 // authority (Google; or Microsoft in the same tenant), the step-up identity
 // must be the bound one. A binding at another authority, or none, leaves
-// today's checks to decide alone. A failed read fails closed.
-func (h *ssoHandlers) stepupIdentityMatches(user *storage.User, stepup storage.Identity) bool {
-	bound, err := storage.GetBoundIdentity(h.ah.db, user.ID)
+// today's checks to decide alone. A failed read fails closed. The read waits
+// for a pooled connection only until the request's context ends (PAC-81
+// AC-A9; PAC-90 AC-5 found it unbounded).
+func (h *ssoHandlers) stepupIdentityMatches(ctx context.Context, user *storage.User, stepup storage.Identity) bool {
+	bound, err := storage.GetBoundIdentity(storage.Bind(ctx, h.ah.db), user.ID)
 	if err != nil {
 		log.Printf("sso step-up: read binding of %s: %v", user.ID, err)
 		return false

@@ -126,5 +126,17 @@ Test names are as listed in the manifest, with these readings and additions:
   (budget; section 3.1's "including writers that only expose Unwrap").
 - The AC-1b seam wraps the save step's querier only while the seam is set; with
   it nil the insert runs on `storage.BindConn` exactly as before.
-- AC-8b: PAC-71 (#242) is unmerged at the time of this PR, so AC-8b and the
-  `guardedResponseWriter.Flush` change land with PAC-71 (section 5).
+- AC-8b: PAC-71 (#242) merged first (main 80f68a4), so PAC-90 is second and
+  carries AC-8b (section 5): `guardedResponseWriter.Flush` decides first and
+  forwards only when the handler's response stands; test
+  `TestPAC90_GuardedFlushStaleSessionIs401`. The 401's header handling is
+  otherwise unchanged (a separate PAC-71 fix owns it).
+- Amendment (after merging main with PAC-71): AC-5 found that PAC-71's
+  step-up check 4b (`stepupIdentityMatches`, `api/handlers_sso_stepup.go`)
+  read the binding with a context-less query on the pool, so with the pool
+  held the handler goroutine waited past the budget (PAC-81 AC-A9). The
+  fixture cannot hold the connection anywhere else (check 4b is the last
+  step before the record). The read now runs on `storage.Bind(ctx, db)`;
+  `stepupIdentityMatches` takes the request context. allowedPaths widened by
+  this one function; no behaviour change while the pool is free (a failed
+  read still fails closed).

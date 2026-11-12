@@ -17,8 +17,8 @@
       "allowedPaths": [
         "backend/engine/booking.go (ConfirmBooking's reservation/insert block, main :382-419, and new package-level test-seam variables beside beforeBookingConn only; completeBooking, sendConfirmationEmail, sendMail and the slot code are item 5 / PAC-88 territory and stay untouched)",
         "backend/engine/pac90_test.go (new)",
-        "backend/api/middleware.go (loggingMiddleware and statusWriter only; nothing PAC-71 adds or changes: requireAuth, guardedResponseWriter, guarded)",
-        "backend/api/handlers_sso_stepup.go (finishStepup only: one package-level test seam between the reservation and budget.Commit; no behaviour change)",
+        "backend/api/middleware.go (loggingMiddleware and statusWriter; and, PAC-71 having merged first, guardedResponseWriter.Flush for AC-8b per section 5; nothing else PAC-71 added)",
+        "backend/api/handlers_sso_stepup.go (finishStepup only: one package-level test seam between the reservation and budget.Commit; no behaviour change. Amended at stage 4 after PAC-71 merged: stepupIdentityMatches binds its read to the request context, PAC-81 AC-A9, found by AC-5; see contract md section 9)",
         "backend/api/pac90_test.go (new; may reuse helpers from pac81_paths_test.go and pac50_sso_stepup_test.go without editing them)",
         "backend/internal/budget/budget.go (writer.Flush only; no Unwrap, Hijack still refused)",
         "backend/internal/budget/pac90_test.go (new)",
