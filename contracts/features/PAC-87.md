@@ -195,7 +195,7 @@ reads, so committing it before the stage-4 code would break `main`'s tests on
 this branch). The SQL below is normative; stage 4 commits it verbatim (header
 comments may be trimmed, statements not changed).
 
-**Number: `035_llm_org_ai_consent_period`** (was `036`; renumbered at stage 4, see the note at the end of this section). Main's last is `034` (PAC-84,
+**Number: `036_llm_org_ai_consent_period`.** Main's last is `034` (PAC-84,
 `32ecacf`); PAC-71 holds `035`. Either order works because this pair touches
 only `org_ai_configurations`, `org_ai_confirmations` and reads `settings`,
 none of which PAC-71's migration touches. Rule: whichever of PAC-71 and
@@ -227,20 +227,6 @@ not at `034` ("roll back the later release first",
 `storage/encryption_ops.go:736-746`), so with `036` applied PAC-84's in-place
 downgrade needs this down step first, and after PAC-71 ships it ends anyway
 (owner, 2026-11-12).
-
-*Stage 4, 2026-11-12 (factory, after review): renumbered to
-`035_llm_org_ai_consent_period`.* PAC-71 is blocked on an owner check, so
-PAC-87 is expected to merge first; by the rule above it takes `035`
-(main's last is `034`) and **PAC-71 renumbers to `036`** when it merges.
-The SQL text is unchanged. Consequences, as stated above for this order:
-once PAC-71's `036` is deployed, PAC-87 can no longer be reverted in place
-(fix forward or the pre-deploy backup). Merge condition for PAC-71 (review
-finding 1): its in-request session re-check must also guard the settings
-write, i.e. `RecheckSessionGeneration(ctx, tx)` is the first statement of
-`SaveSettingsEndingOrgAIConfirmation`'s transaction, before the users-row
-lock (`FOR KEY SHARE` then `FOR NO KEY UPDATE` on the same row, no
-deadlock). Where the reasoning above names PAC-87's migration `036`, it
-now reads `035`, and PAC-71's `035` reads `036`.
 
 ### 3.1 Up
 

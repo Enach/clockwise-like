@@ -90,7 +90,7 @@ var migrationCeiling atomic.Uint32
 // SetMigrationCeilingForTest makes every Open/Migrate in this process stop at
 // version v (it never migrates down) until the returned restore is called.
 // Tests only: the PAC-84 downgrade tests hold a database at the encryption
-// migration (034) although a later one (035 and up) is embedded, because
+// migration (034) although a later one (PAC-71's 035) is embedded, because
 // downgrade-schema runs only from 034 (owner decision 2026-11-12, PAC-84
 // contract "Stage-4 amendments").
 func SetMigrationCeilingForTest(v uint) (restore func()) {

@@ -15,7 +15,7 @@ import (
 
 // PAC-87 (spec docs/specs/PAC-87.md; contract contracts/features/PAC-87.md):
 // consent periods, the operator record's consent fields, the settings write
-// ordered against a confirmation, leaving an organisation, and migration 035.
+// ordered against a confirmation, leaving an organisation, and migration 036.
 
 // pac87Org is an organisation with an admin holding a fresh grant per change.
 type pac87Org struct {
@@ -468,7 +468,7 @@ func TestPAC87_RejoinWithAPreDeployConfirmationAsksAgain(t *testing.T) {
 	}
 }
 
-// pac87Seed is AC-18's population before migration 035: A at version 7 on
+// pac87Seed is AC-18's population before migration 036: A at version 7 on
 // OpenAI forbidding personal keys; X follower confirmed 7, Y follower
 // confirmed 5, Z on OpenAI with a key holding 7.
 type pac87Seed struct {
@@ -534,16 +534,16 @@ func constraintExists(t *testing.T, db *sql.DB, name string) bool {
 	return n == 1
 }
 
-// PAC87-AC-18, -19: migration 035 up keeps followers confirmed at the
+// PAC87-AC-18, -19: migration 036 up keeps followers confirmed at the
 // current version, ends older confirmations and those of members not
 // following; down keeps only followers confirmed at exactly the current
 // state; neither touches a stored choice or key; up, down, up.
-func TestMigration035_ConsentPeriod(t *testing.T) {
+func TestMigration036_ConsentPeriod(t *testing.T) {
 	db, to := migrationTestDB(t)
 	to(34)
 	s := seedPAC87(t, db)
 	before := settingsFacts(t, db)
-	to(35)
+	to(36)
 	if !constraintExists(t, db, "org_ai_confirmations_consent_since_version_check") || constraintExists(t, db, "org_ai_confirmations_configuration_version_check") ||
 		!constraintExists(t, db, "org_ai_configurations_consent_since_check") {
 		t.Fatal("constraint names after up")
@@ -619,7 +619,7 @@ func TestMigration035_ConsentPeriod(t *testing.T) {
 		}
 	}
 	rows.Close()
-	to(35)
+	to(36)
 	if state(s.x).Confirmed() || state(s.z).Confirmed() {
 		t.Fatal("a confirmation ended by down came back with up")
 	}

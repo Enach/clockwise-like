@@ -572,7 +572,7 @@ func TestPAC84_RotateDataKey(t *testing.T) {
 // downgrade-schema succeeds and the inventory holds the plaintexts.
 //
 // downgrade-schema runs only from the encryption migration's version (034):
-// once a later migration ships (035 and up) it refuses and the way back is
+// once a later migration ships (PAC-71's 035) it refuses and the way back is
 // a backup restore (owner decision 2026-11-12, contract "Stage-4
 // amendments"). The database here is therefore held at 034.
 func TestPAC84_DecryptAllAndDowngrade(t *testing.T) {
