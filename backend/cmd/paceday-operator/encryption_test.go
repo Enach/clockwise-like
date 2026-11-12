@@ -40,6 +40,27 @@ func newOpEnv(t *testing.T) *opEnv {
 	return &opEnv{t: t, dsn: dsn, db: db, key: secretboxtest.KeyValue("op-key")}
 }
 
+// newOpEnvAtEncryption is newOpEnv with every migration in this process (the
+// test's and the CLI's) stopped at the encryption migration (034).
+// downgrade-schema runs only from 034; once a later migration ships
+// (PAC-71's 035) the CLI's own migrate-up would take the database past it,
+// so the downgrade path is proven on a database held at 034 (owner decision
+// 2026-11-12, contract "Stage-4 amendments"). TestPAC84_DowngradeRefusedAbove034
+// covers the shipped schema.
+func newOpEnvAtEncryption(t *testing.T) *opEnv {
+	t.Helper()
+	want, err := storage.EncryptionMigrationVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(storage.SetMigrationCeilingForTest(want))
+	e := newOpEnv(t)
+	if v, dirty, _, err := storage.SchemaVersion(context.Background(), e.db); err != nil || v != want || dirty {
+		t.Fatalf("the test database is not at the encryption migration: %d %v %v", v, dirty, err)
+	}
+	return e
+}
+
 func (e *opEnv) run(env map[string]string, args ...string) (int, string, string) {
 	e.t.Helper()
 	all := map[string]string{"DATABASE_URL": e.dsn}
@@ -225,7 +246,7 @@ func TestPAC84_OperatorLockAndLiveBackend(t *testing.T) {
 // 1, version clean) and succeeds after; reset-lost-key refuses when a key
 // opens a data key (exit 4) and resets with a new key.
 func TestPAC84_OperatorDecryptDowngradeReset(t *testing.T) {
-	e := newOpEnv(t)
+	e := newOpEnvAtEncryption(t)
 	u := e.seedPlain()
 	if code, _, _ := e.run(e.keyed(), "convert", "--operator", "o", "--reason", "r"); code != exitOK {
 		t.Fatal("convert")
@@ -357,7 +378,7 @@ func TestPAC84_OperatorFailureIsAudited(t *testing.T) {
 // this work's migration: status reports it and changes nothing, the
 // mutating ones refuse (exit 1, audited) and the version stays below.
 func TestPAC84_OperatorAfterDowngradeNeverMigratesUp(t *testing.T) {
-	e := newOpEnv(t)
+	e := newOpEnvAtEncryption(t)
 	e.seedPlain()
 	for _, args := range [][]string{
 		{"convert", "--operator", "o", "--reason", "r"},

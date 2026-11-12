@@ -22,6 +22,7 @@
         "backend/storage (org_ai.go: consent_since_version on writes, confirmation check/record, ReadOrgAIState; settings write ordering: one transaction holding the caller's users row FOR NO KEY UPDATE, contract section 5a)",
         "backend/storage/orgs.go (stage 4 amendment, factory decision 2026-11-12: SetUserOrg ends the member's org-AI confirmations for any organisation other than the one joined, so leaving and rejoining asks again)",
         "backend/storage/settings.go (stage 4 amendment: the settings save runs inside the section-5a transaction; SaveSettingsForUserAt's signature and behaviour unchanged)",
+        "backend/storage/db.go, backend/storage/encryption_test.go, backend/cmd/paceday-operator/encryption_test.go (stage 4 amendment: PAC-71's SetMigrationCeilingForTest and its PAC-84 test hunks ported verbatim from impl/pac-71-identity-binding-backend, so the PAC-84 downgrade tests hold their database at 034 now that 036 is embedded; identical hunks, so either merge order resolves trivially)",
         "backend/storage/migrations/036_llm_org_ai_consent_period.{up,down}.sql (text normative in contracts/features/PAC-87.md section 3; number per its either-order rule)",
         "backend/nlp (llm_factory.go decision table: rows 9 and 10, row-9 probe and redaction)",
         "backend/api (handlers_org_ai.go, handlers_settings.go, handlers for parse/probe/brief only where the decision is consumed; no response shape change)",
@@ -199,6 +200,7 @@
   ],
   "stage4Notes": [
     "2026-11-12 backend-implementer: factory decision on the plan's open item - a member who leaves an organisation has their org-AI confirmation removed when they leave, so rejoining asks again. The only membership change in the backend is storage.SetUserOrg (sign-in by email domain); it now deletes the member's confirmations for every other organisation in the same transaction, and ConfirmOrgAI re-checks membership under the users-row lock (a confirmation racing a move records nothing; the operation answers its existing 403 org_membership_required). Paths added above: backend/storage/orgs.go, backend/storage/settings.go. No interface change.",
+    "Embedding 036 makes PAC-84's downgrade-schema tests (which require version 034) fail on main's base, exactly as PAC-71's 035 did; PAC-71 fixed it with a test-only migration ceiling. That mechanism and the two test edits are ported verbatim (no production behaviour change: the ceiling is 0 outside tests). If PAC-71 merges first these hunks already exist on main.",
     "Confirmations of a former organisation that exist before this deploy are removed at the member's next sign-in while they belong to another organisation (SetUserOrg runs at every sign-in); the migration text is normative and was not extended."
   ],
   "followUps": [
