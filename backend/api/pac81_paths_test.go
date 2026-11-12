@@ -275,6 +275,21 @@ func (e *cutEngine) CollectiveSlots(ctx context.Context, _ *storage.SchedulingLi
 	return []engine.AvailableSlot{{Start: time.Now().Add(72 * time.Hour), End: time.Now().Add(73 * time.Hour)}}, nil
 }
 
+// CollectiveSlotsDays follows the PAC-88 range method (one call per request):
+// out[i] is this fake's CollectiveSlots for days[i], so its assertions do not
+// change.
+func (e *cutEngine) CollectiveSlotsDays(ctx context.Context, link *storage.SchedulingLink, days []time.Time, duration int) ([][]engine.AvailableSlot, error) {
+	out := make([][]engine.AvailableSlot, len(days))
+	for i, d := range days {
+		slots, err := e.CollectiveSlots(ctx, link, d, duration)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = slots
+	}
+	return out, nil
+}
+
 func (e *cutEngine) ConfirmBooking(context.Context, *storage.SchedulingLink, string, string, time.Time, time.Time, string) (*storage.Booking, error) {
 	return nil, errors.New("unused")
 }

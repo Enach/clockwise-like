@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
-	"github.com/Enach/paceday/backend/internal/budget"
-	"github.com/Enach/paceday/backend/internal/peritem"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -139,9 +137,10 @@ func TestPAC72_HorizonPerLink(t *testing.T) {
 			code, body := b.book(link.Slug, pac72At(past, "10:00"), 30)
 			b.refusedAs(fmt.Sprintf("D+%d", n), code, body, before, "")
 			b.bookOK(fmt.Sprintf("D+%d", n-1), link.Slug, pac72At(last, "10:00"), 30)
-			all := b.slots(link.Slug, "", 30)
-			if all.code != http.StatusOK || len(all.dates) != n || all.dates[len(all.dates)-1] != last.Format(time.DateOnly) {
-				t.Errorf("date-less listing = %d, %d dates, want %d ending %s", all.code, len(all.dates), n, last.Format(time.DateOnly))
+			// PAC-88 (contract section 7): the horizon of n days is read
+			// as ceil(n/42) bounded overviews.
+			if dates := b.horizonDates(link.Slug, 30, pac72Mon, n+1); len(dates) != n || dates[len(dates)-1] != last.Format(time.DateOnly) {
+				t.Errorf("overviews of the horizon: %d dates, want %d ending %s", len(dates), n, last.Format(time.DateOnly))
 			}
 			if code, info := b.info(link.Slug); code != http.StatusOK || info.BookingHorizonDays != n {
 				t.Errorf("link info horizon = %d (%d), want %d", info.BookingHorizonDays, code, n)
@@ -760,38 +759,9 @@ func TestPAC72_SettingsReadFailure(t *testing.T) {
 	}
 }
 
-// AC-39: a 365-day horizon whose date-less listing outlasts the request
-// budget answers PAC-81's 503, never a shorter 200.
-func TestPAC72_LongHorizonDatelessListingIs503(t *testing.T) {
-	b := newPAC72Bench(t, pac72At(pac72Mon, "06:00"))
-	owner, _ := b.host("pac72-ac39@example.com")
-	link := b.link("pac72-ac39", owner, func(l *storage.SchedulingLink) { everyDay(l); l.BookingHorizonDays = 365 }, owner)
-	b.cal.mu.Lock()
-	b.cal.delay = 20 * time.Millisecond
-	b.cal.mu.Unlock()
-	// A small stop margin, so per-host reads start until the budget is
-	// nearly spent: the listing runs out partway through the 365 days
-	// (365 x 20 ms is far beyond the 1 s budget), not before its first day.
-	t.Cleanup(peritem.SetForTest(peritem.Settings{Workers: 4, Margin: 50 * time.Millisecond}))
-	r := chi.NewRouter()
-	r.Use(budget.Middleware(time.Second, nil))
-	r.Get("/api/book/{slug}/slots", b.h.getSlots)
-	rec := httptest.NewRecorder()
-	began := time.Now()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/book/"+link.Slug+"/slots?duration=30", nil))
-	if rec.Code != http.StatusServiceUnavailable || strings.TrimSpace(rec.Body.String()) != `{"error":"request timed out"}` {
-		t.Fatalf("date-less listing = %d %s, want 503 request timed out", rec.Code, rec.Body.String())
-	}
-	if took := time.Since(began); took < 500*time.Millisecond {
-		t.Fatalf("the listing answered after %v: it did not run partway before the budget ended", took)
-	}
-	// The same listing for one date fits in the budget.
-	rec = httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/book/"+link.Slug+"/slots?duration=30&date=2030-06-03", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("one date = %d %s, want 200", rec.Code, rec.Body.String())
-	}
-}
+// AC-39: TestPAC72_LongHorizonDatelessListingIs503 is replaced by PAC-88 C-9
+// (TestPAC88_C9_LongHorizonOverviewFitsTheBudget): its premise, a
+// whole-horizon date-less read, no longer exists (contract PAC-88 section 7).
 
 // AC-40: with specific refusals and busy-time storage failing, a start the
 // cheap checks refuse gets its 409 reason, not the 500 (order of
