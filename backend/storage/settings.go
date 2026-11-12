@@ -266,7 +266,7 @@ const settingsColumns = `
 // GetOrCreateSettingsByUser returns userID's settings, creating the row with
 // the product defaults the first time (PAC-24). Settings always belong to a
 // user: there is no shared row and no way to read one without a user id.
-func GetOrCreateSettingsByUser(db DBTX, userID uuid.UUID) (*Settings, error) {
+func GetOrCreateSettingsByUser(db Querier, userID uuid.UUID) (*Settings, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("GetOrCreateSettingsByUser: userID is required")
 	}
@@ -333,17 +333,7 @@ func SaveSettingsForUser(db DBTX, userID uuid.UUID, s *Settings) error {
 // or changes the schedule or the timezone while it stays on, and is otherwise
 // left exactly as stored. The comparison is against the stored row inside the
 // upsert, so a save built from a stale read cannot rewind it.
-func SaveSettingsForUserAt(db DBTX, userID uuid.UUID, s *Settings, now time.Time) error {
-	return saveSettingsAt(db, userID, s, now)
-}
-
-// settingsExecer is the one call a settings save makes: *sql.DB, *sql.Tx or a bound
-// DBTX (PAC-87 runs the save inside the settings-write transaction).
-type settingsExecer interface {
-	Exec(query string, args ...any) (sql.Result, error)
-}
-
-func saveSettingsAt(db settingsExecer, userID uuid.UUID, s *Settings, now time.Time) error {
+func SaveSettingsForUserAt(db Querier, userID uuid.UUID, s *Settings, now time.Time) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveSettingsForUser: userID is required")
 	}
@@ -475,7 +465,7 @@ func saveSettingsAt(db settingsExecer, userID uuid.UUID, s *Settings, now time.T
 
 // SaveRecapSettingsForUser writes only the seven recap columns of userID's
 // row (PAC-24): the recap PATCH no longer rewrites the rest of the row.
-func SaveRecapSettingsForUser(db DBTX, userID uuid.UUID, s *Settings) error {
+func SaveRecapSettingsForUser(db Querier, userID uuid.UUID, s *Settings) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveRecapSettingsForUser: userID is required")
 	}

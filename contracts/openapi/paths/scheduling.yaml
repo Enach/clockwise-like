@@ -97,6 +97,8 @@ paths:
             format: date
             example: '2025-01-06'
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: >
             Focus block rows. `[]` when the week has no rows (PAC-28).
@@ -482,6 +484,8 @@ paths:
             schema:
               $ref: '#/components/schemas/NLPParseRequest'
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: >-
             Parse result. Carries `not_configured` when the caller has no AI
@@ -840,6 +844,8 @@ paths:
             schema:
               $ref: '#/components/schemas/LLMTestRequest'
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: >-
             The configuration probed is configured, its destination is approved, and
@@ -1145,7 +1151,11 @@ paths:
            an SSO write never consumes an `llm_org_key_write` grant (PAC-50
            AC-27, P2-AC-2). Without such a grant: an address on the
            deployment's break-glass list (`PACEDAY_ADMIN_EMAILS`, compared
-           case-insensitively) whose session JWT was issued less than 10
+           case-insensitively), held by the caller's ACCOUNT
+           domain-confirmed (PAC-71: the account's stored address and
+           `addressStanding`, never the session's email claim; an account
+           that carries it unconfirmed, or no longer carries it, is not
+           break-glass), whose session JWT was issued less than 10
            minutes ago, and not more than one minute in the future, is
            authorised without a grant (PAC-50 AC-14a); the same address with
            an older session is the 403
@@ -1615,6 +1625,8 @@ paths:
         earliest-created user's own row - and returned `llmApiKey` in cleartext
         (API-002, API-003).
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: The settings document.
           content:
@@ -1762,6 +1774,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SettingsUpdate'
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: The re-read settings document for the caller.
           content:
@@ -1814,6 +1828,8 @@ paths:
         Before PAC-24 this read the singleton row, so every user saw and edited
         one shared recap configuration (API-002).
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: Daily-recap settings.
           content:
@@ -1854,6 +1870,8 @@ paths:
             schema:
               $ref: '#/components/schemas/DailyRecapPatch'
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '204':
           description: Updated. No body.
         '400':
@@ -1894,6 +1912,8 @@ paths:
         enabled (API-002), and it was built in the server's zone. Both now come
         from the caller's row.
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: Rendered Slack blocks.
           content:
@@ -1925,6 +1945,8 @@ paths:
         send could be addressed to a channel another user had configured
         (API-002).
       responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '200':
           description: Sent.
           content:

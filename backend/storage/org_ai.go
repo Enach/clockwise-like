@@ -393,6 +393,13 @@ type orgAIWrittenDetails struct {
 // is stored.
 func WriteOrgAIConfig(ctx context.Context, db *sql.DB, w OrgAIWrite) (OrgAIWriteOutcome, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return OrgAIWriteOutcome{}, err
 	}
@@ -576,6 +583,13 @@ func lockUserRow(ctx context.Context, tx *sql.Tx, userID uuid.UUID) (uuid.NullUU
 // current configuration.
 func ConfirmOrgAI(ctx context.Context, db *sql.DB, userID, orgID uuid.UUID, version int64, now time.Time) (OrgAIConfirmStatus, OrgAIConfig, error) {
 	tx, err := db.BeginTx(ctx, nil)
+	// PAC-71 in-request re-check, in this transaction.
+	if err == nil {
+		if rerr := RecheckSessionGeneration(ctx, tx); rerr != nil {
+			_ = tx.Rollback()
+			err = rerr
+		}
+	}
 	if err != nil {
 		return 0, OrgAIConfig{}, err
 	}
@@ -631,7 +645,7 @@ const (
 // §3.4, P87-D3; contract §5a). One transaction: the caller's users row FOR
 // NO KEY UPDATE (the lock ConfirmOrgAI takes first), the stored choice
 // re-read inside it (never the copy the handler read before), the save, the
-// end of the confirmation, commit. A concurrent confirmation of the same
+// end of the confirmation, commit; PAC-71's session re-check runs first. A concurrent confirmation of the same
 // user therefore lands wholly before (and is ended by the change) or wholly
 // after (an explicit confirmation after the change). before, when not nil,
 // runs before each storage access (tests only). ended reports whether a
@@ -647,6 +661,13 @@ func SaveSettingsEndingOrgAIConfirmation(ctx context.Context, db *sql.DB, userID
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// PAC-71's in-request session re-check, first in this transaction and
+	// before the users-row lock (its FOR KEY SHARE, then FOR NO KEY UPDATE
+	// on the same row: no deadlock between two of the user's requests). A
+	// revoked or stale session saves nothing and ends nothing.
+	if err := RecheckSessionGeneration(ctx, tx); err != nil {
+		return false, err
+	}
 	at(SettingsWriteLock)
 	if _, err := lockUserRow(ctx, tx, userID); err != nil {
 		return false, err
@@ -661,7 +682,7 @@ func SaveSettingsEndingOrgAIConfirmation(ctx context.Context, db *sql.DB, userID
 	}
 	next := s.storedProvider()
 	at(SettingsWriteSave)
-	if err := saveSettingsAt(tx, userID, s, time.Now()); err != nil {
+	if err := SaveSettingsForUserAt(tx, userID, s, time.Now()); err != nil {
 		return false, err
 	}
 	if next != stored && next != LLMChoiceOrganization {
@@ -679,4 +700,13 @@ func SaveSettingsEndingOrgAIConfirmation(ctx context.Context, db *sql.DB, userID
 	}
 	at(SettingsWriteDone)
 	return ended, nil
+}
+
+// deleteOrgAIConfirmations ends every stored confirmation of the user
+// (DeleteOrgAIConfirmations, under PAC-71's re-check). Since PAC-87 the
+// settings write ends a confirmation through
+// SaveSettingsEndingOrgAIConfirmation instead.
+func deleteOrgAIConfirmations(ctx context.Context, db Querier, userID uuid.UUID) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM org_ai_confirmations WHERE user_id = $1`, userID)
+	return err
 }

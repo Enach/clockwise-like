@@ -1114,7 +1114,8 @@ func TestPAC84_PerFieldFailure(t *testing.T) {
 	}
 }
 
-// AC-32: operator_audit equals PAC-71's 033 definition; its CHECK admits
+// AC-32: operator_audit equals PAC-71's definition (035_identity_binding,
+// written as 033 when this test was added); its CHECK admits
 // exactly the eight actions.
 func TestPAC84_OperatorAuditPinned(t *testing.T) {
 	db, _, _ := openEncDB(t)
@@ -1145,7 +1146,7 @@ func TestPAC84_OperatorAuditPinned(t *testing.T) {
 		"created_at timestamp with time zone NO now()",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("operator_audit differs from PAC-71's 033:\n%s", strings.Join(got, "\n"))
+		t.Fatalf("operator_audit differs from PAC-71's 035_identity_binding:\n%s", strings.Join(got, "\n"))
 	}
 	ctx := context.Background()
 	for _, a := range []string{"free_address", "reassign", "advance_all", AuditEncryptionConvert, AuditEncryptionRotate,

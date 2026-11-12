@@ -135,7 +135,7 @@ func (h *settingsHandlers) patchSettings(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	s, err := storage.GetOrCreateSettingsByUser(h.db, userID)
+	s, err := storage.GetOrCreateSettingsByUserCtx(r.Context(), h.db, userID)
 	if err != nil {
 		writeServerError(w, r, "patchSettings", err, http.StatusInternalServerError)
 		return
