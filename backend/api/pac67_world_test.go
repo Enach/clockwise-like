@@ -221,7 +221,7 @@ func assertBody(t *testing.T, rec *httptest.ResponseRecorder, code int, body str
 }
 
 const (
-	teamsLost = `{"error":"teams: connection lost — reconnect at /api/auth/microsoft"}`
+	teamsLost = `{"error":"teams: connection lost — reconnect Outlook in Settings (POST /api/auth/microsoft/connect)"}`
 	zoomLost  = `{"error":"zoom: connection lost — reconnect at /api/auth/zoom"}`
 )
 

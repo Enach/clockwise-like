@@ -37,7 +37,7 @@ func ListPersonalCalendars(db DBTX) ([]PersonalCalendar, error) {
 	return queryPersonalCalendars(db, `SELECT `+personalCalendarCols+` FROM personal_calendars ORDER BY id`)
 }
 
-func queryPersonalCalendars(db DBTX, q string, args ...any) ([]PersonalCalendar, error) {
+func queryPersonalCalendars(db Querier, q string, args ...any) ([]PersonalCalendar, error) {
 	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -54,13 +54,13 @@ func queryPersonalCalendars(db DBTX, q string, args ...any) ([]PersonalCalendar,
 	return cals, rows.Err()
 }
 
-func GetPersonalCalendar(db DBTX, id int64) (*PersonalCalendar, error) {
+func GetPersonalCalendar(db Querier, id int64) (*PersonalCalendar, error) {
 	return scanPersonalCalendar(db.QueryRow(`SELECT `+personalCalendarCols+` FROM personal_calendars WHERE id = $1`, id))
 }
 
 // InsertPersonalCalendar stores c. The id is taken first, so the secrets are
 // sealed for this row in the one insert (PAC-84 contract 3.3).
-func InsertPersonalCalendar(db DBTX, c *PersonalCalendar) (int64, error) {
+func InsertPersonalCalendar(db Querier, c *PersonalCalendar) (int64, error) {
 	var id int64
 	if err := db.QueryRow(`SELECT nextval(pg_get_serial_sequence('personal_calendars', 'id'))`).Scan(&id); err != nil {
 		return 0, err
@@ -79,7 +79,7 @@ func InsertPersonalCalendar(db DBTX, c *PersonalCalendar) (int64, error) {
 // UpdatePersonalCalendar changes the given fields of userID's calendar id.
 // A url left out (nil) keeps the stored text byte-identical (PAC-84 K-10);
 // a url given is sealed for this row.
-func UpdatePersonalCalendar(db DBTX, id int64, userID uuid.UUID, name, url *string, enabled *bool) (*PersonalCalendar, error) {
+func UpdatePersonalCalendar(db Querier, id int64, userID uuid.UUID, name, url *string, enabled *bool) (*PersonalCalendar, error) {
 	var sealedURL *string
 	if url != nil {
 		s, err := secretbox.Seal(bindPersonal("url", id), *url)
@@ -104,7 +104,7 @@ func UpdatePersonalCalendar(db DBTX, id int64, userID uuid.UUID, name, url *stri
 	return c, nil
 }
 
-func DeletePersonalCalendarForUser(db DBTX, id int64, userID uuid.UUID) (bool, error) {
+func DeletePersonalCalendarForUser(db Querier, id int64, userID uuid.UUID) (bool, error) {
 	result, err := db.Exec(`DELETE FROM personal_calendars WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return false, err
@@ -113,7 +113,7 @@ func DeletePersonalCalendarForUser(db DBTX, id int64, userID uuid.UUID) (bool, e
 	return n > 0, err
 }
 
-func MarkPersonalCalendarSynced(db DBTX, id int64, userID uuid.UUID) error {
+func MarkPersonalCalendarSynced(db Querier, id int64, userID uuid.UUID) error {
 	_, err := db.Exec(`UPDATE personal_calendars SET last_synced_at = NOW() WHERE id = $1 AND user_id = $2`, id, userID)
 	return err
 }
@@ -138,7 +138,7 @@ func GetPersonalBlocker(db DBTX, calID int64, eventID string) (*PersonalBlocker,
 	return &b, nil
 }
 
-func UpsertPersonalBlocker(db DBTX, calID int64, personalEventID, workEventID string) error {
+func UpsertPersonalBlocker(db Querier, calID int64, personalEventID, workEventID string) error {
 	_, err := db.Exec(
 		`INSERT INTO personal_blockers (personal_calendar_id, personal_event_id, work_event_id) VALUES ($1,$2,$3)
 		 ON CONFLICT (personal_calendar_id, personal_event_id) DO UPDATE SET work_event_id = EXCLUDED.work_event_id`,
@@ -167,7 +167,7 @@ func ListPersonalBlockers(db DBTX, calID int64) ([]PersonalBlocker, error) {
 	return blockers, rows.Err()
 }
 
-func DeletePersonalBlocker(db DBTX, calID int64, personalEventID string) error {
+func DeletePersonalBlocker(db Querier, calID int64, personalEventID string) error {
 	_, err := db.Exec(
 		`DELETE FROM personal_blockers WHERE personal_calendar_id = $1 AND personal_event_id = $2`,
 		calID, personalEventID,
@@ -183,7 +183,7 @@ func SaveZoomTokens(db DBTX, userID uuid.UUID, accessToken, refreshToken string)
 }
 
 // ListPersonalCalendarsByUser returns calendars owned by the given user.
-func ListPersonalCalendarsByUser(db DBTX, userID uuid.UUID) ([]PersonalCalendar, error) {
+func ListPersonalCalendarsByUser(db Querier, userID uuid.UUID) ([]PersonalCalendar, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("ListPersonalCalendarsByUser: userID is required")
 	}

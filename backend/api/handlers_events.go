@@ -26,7 +26,7 @@ type eventHandlers struct {
 // two errors it distinguishes (PAC-21).
 func (h *eventHandlers) calClient(ctx context.Context) (*calendar.CalendarClient, error) {
 	userID := userIDFromCtx(ctx)
-	token, err := engine.LoadCalendarToken(h.db, userID)
+	token, err := engine.LoadCalendarTokenCtx(ctx, h.db, userID)
 	if err != nil {
 		return nil, err
 	}

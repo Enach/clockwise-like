@@ -9,7 +9,7 @@ import (
 
 // SaveFocusBlock records a focus block created on userID's calendar. The owner
 // is stored so readers can scope blocks to the user they belong to (PAC-64).
-func SaveFocusBlock(db DBTX, userID uuid.UUID, googleEventID, date string, start, end time.Time) error {
+func SaveFocusBlock(db Querier, userID uuid.UUID, googleEventID, date string, start, end time.Time) error {
 	_, err := db.Exec(`
 		INSERT INTO focus_blocks (user_id, google_event_id, start_time, end_time, date, created_at)
 		VALUES ($5, $1, $2, $3, $4, NOW())
@@ -55,7 +55,7 @@ func ListFocusBlocksForUserWeek(db DBTX, userID uuid.UUID, weekStart time.Time) 
 
 // DeleteFocusBlock removes userID's focus block for googleEventID. Another
 // user's block with that event ID is left alone.
-func DeleteFocusBlock(db DBTX, userID uuid.UUID, googleEventID string) error {
+func DeleteFocusBlock(db Querier, userID uuid.UUID, googleEventID string) error {
 	_, err := db.Exec(`DELETE FROM focus_blocks WHERE user_id = $1 AND google_event_id = $2`, userID, googleEventID)
 	return err
 }
@@ -76,7 +76,7 @@ func FocusMinutesForDay(db DBTX, userID uuid.UUID, date string) (int, error) {
 // effort and never fails the caller, but it is never silent either: an entry
 // with no subject is refused before it reaches the database, and a failed
 // insert is written to the server log.
-func WriteAuditLog(db DBTX, userID uuid.UUID, action, details string) {
+func WriteAuditLog(db Querier, userID uuid.UUID, action, details string) {
 	if userID == uuid.Nil {
 		log.Printf("audit: %s not recorded: no subject", action)
 		return
