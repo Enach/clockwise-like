@@ -3,8 +3,8 @@
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-87",
   "status": "draft (contract-author revision 1, 2026-11-12; awaiting contract-challenger)",
   "contractRevision": "1 (PAC-87); amends NEW-llm-bring-your-own Part 2 contract revision 3.1",
-  "contractHash": "TBD",
-  "contractHashOf": "TBD",
+  "contractHash": "bf8c476f52bb4898849110060860854a9b9619b22463f4a98ed4d5a006ab84b4",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after make openapi in an LF clone of factory/pac-87-k at 757dffa (golang:1.25-bookworm, api-gate pattern). Base: main 32ecacf, c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346. Reproduce: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml. If PAC-88 (booking.yaml) merges first, the second to merge regenerates and records the new hash; the PAC-87 fragment text does not change.",
   "contractDoc": "contracts/features/PAC-87.md",
   "specDoc": "docs/specs/PAC-87.md (challenged accept-with-changes 2026-11-02, changes applied; branch factory/pac-87-spec at cbccf33). Amends docs/specs/NEW-llm-bring-your-own-part2.md.",
   "amends": "contracts/features/NEW-llm-bring-your-own-part2.{md,yaml} (contract revision 3.1): table rows 5, 9, 10; confirmOrganizationAI's per-version rule; patchSettings' confirmation deletion rule.",
@@ -56,13 +56,34 @@
   },
   "operationsAdded": [],
   "operationsChanged": [
-    {"operationId": "confirmOrganizationAI", "change": "Description only. Accepted when the shown configurationVersion lies in the current consent period (consent start <= V <= current version) and the configuration is complete; 409 configuration_changed only after a provider change (incl. removal, P->Q->P) or for V above the current version; stores the consent period, not V; for a row-10 caller the 200 AIStatus is row 9. Request and response schemas unchanged."},
-    {"operationId": "patchOrganizationAI", "change": "Description only. Conflict rule unchanged; members re-asked only on a provider change; forbidding moves members after one confirmation; operator record gains consent_period_started and consent_since_version."},
-    {"operationId": "getOrganizationAI", "change": "Description only (what each operation names; consent period not exposed)."},
-    {"operationId": "parseNaturalLanguage", "change": "Description and one example: rows 4/9 one consistent read under a current-period confirmation; row 10 = organization_unconfirmed [user]; example personalKeysForbidden renamed personalKeysForbiddenUnconfirmed."},
-    {"operationId": "testLLMConnection", "change": "Description only: row 9 probes as row 4 (AC-14); row 10 409 is organization_unconfirmed [user]."},
-    {"operationId": "refreshMeetingBrief", "change": "Description only (habits.yaml): rows 4/9; row 10 is the 409."},
-    {"operationId": "patchSettings / getSettings", "change": "Description only: only a CHANGE of llmProvider to '' or another provider ends the confirmation, ordered against a concurrent confirmation (AC-23); row 9 reading of llmProvider and aiStatus."}
+    {
+      "operationId": "confirmOrganizationAI",
+      "change": "Description only. Accepted when the shown configurationVersion lies in the current consent period (consent start <= V <= current version) and the configuration is complete; 409 configuration_changed only after a provider change (incl. removal, P->Q->P) or for V above the current version; stores the consent period, not V; for a row-10 caller the 200 AIStatus is row 9. Request and response schemas unchanged."
+    },
+    {
+      "operationId": "patchOrganizationAI",
+      "change": "Description only. Conflict rule unchanged; members re-asked only on a provider change; forbidding moves members after one confirmation; operator record gains consent_period_started and consent_since_version."
+    },
+    {
+      "operationId": "getOrganizationAI",
+      "change": "Description only (what each operation names; consent period not exposed)."
+    },
+    {
+      "operationId": "parseNaturalLanguage",
+      "change": "Description and one example: rows 4/9 one consistent read under a current-period confirmation; row 10 = organization_unconfirmed [user]; example personalKeysForbidden renamed personalKeysForbiddenUnconfirmed."
+    },
+    {
+      "operationId": "testLLMConnection",
+      "change": "Description only: row 9 probes as row 4 (AC-14); row 10 409 is organization_unconfirmed [user]."
+    },
+    {
+      "operationId": "refreshMeetingBrief",
+      "change": "Description only (habits.yaml): rows 4/9; row 10 is the 409."
+    },
+    {
+      "operationId": "patchSettings / getSettings",
+      "change": "Description only: only a CHANGE of llmProvider to '' or another provider ends the confirmation, ordered against a concurrent confirmation (AC-23); row 9 reading of llmProvider and aiStatus."
+    }
   ],
   "componentsChanged": [
     "AINotConfigured (description: rows 9 and 10, 'Confirmed' per consent period, message for row 10; enum unchanged)",
@@ -74,10 +95,10 @@
   "operatorRecord": "sso_events kind llm_org_ai_written, details gains consent_period_started (bool, true exactly on a provider change incl. first setup and removal) and consent_since_version (int); never a value or key; no API reads it (P87-D7).",
   "gates": {
     "contractApproval": "contract-challenger review on factory/pac-87-spec",
-    "assembler": "TBD",
-    "migrationRegister": "TBD",
-    "goGen": "TBD",
-    "webGate": "Not run at this stage (description-only change; the web PR runs REGEN=1 web-gate).",
+    "assembler": "make openapi-check (api half, LF clone): OK: bundle is in sync (106 paths), rc 0",
+    "migrationRegister": "OK: MIGRATION.md covers all 128 operations (10 generated); MIGRATION.md unchanged by make openapi",
+    "goGen": "OK: backend/api/gen matches the contract (doc comments only regenerated); go build ./... rc 0",
+    "webGate": "SKIPPED at this stage (WEB=/nonexistent): descriptions only; the web PR runs REGEN=1 web-gate.",
     "stage4": "make verify in both repos; backend PR deploys first",
     "defaultBranch": "main",
     "ci": "local",
@@ -119,13 +140,41 @@
     "audit": "consent_period_started, consent_since_version in the operator record details (section 5)."
   },
   "consumersAffected": [
-    {"consumer": "Enach/smart-calendar-flow generated types/schemas", "breaks": "no", "detail": "Descriptions only; strict zod schemas unchanged."},
-    {"consumer": "smart-calendar-flow aiProviders.ts offersOrganizationAI (+test :148), AINotConfiguredNotice (+test :75), OrgAIConsentDialog.test.tsx:51", "breaks": "behaviour", "detail": "Row 10 now arrives as organization_unconfirmed; the personal_keys_forbidden+[user] branch is dead and removed in the web PR."},
-    {"consumer": "pre-PAC-87 web builds during the deploy window", "breaks": "no", "detail": "Row 10 shows the server sentence and 'Review and confirm' (confirm only, choice not rewritten); missing until the web PR: the dialog's kept-choice sentence, the Settings row-9 line, the admin pre-save sentences (contract section 4)."},
-    {"consumer": "clockwise-like backend tests pac73p2_rows_test.go:291,:351, storage/org_ai_test.go:301, nlp/llm_factory.go:29-31", "breaks": "yes", "detail": "Rewritten in stage 4."},
-    {"consumer": "e2e/tests/llm-org-ai.spec.ts:119-120", "breaks": "yes", "detail": "Reads org_ai_confirmations.consent_since_version."},
-    {"consumer": "e2e/TESTIDS-REQUIRED.md:104", "breaks": "yes", "detail": "ai-use-org is row 7 only; row 10 uses ai-org-confirm."},
-    {"consumer": "mcp", "breaks": "no", "detail": "Passes the backend's sentence through (mcp/tools.go:195)."}
+    {
+      "consumer": "Enach/smart-calendar-flow generated types/schemas",
+      "breaks": "no",
+      "detail": "Descriptions only; strict zod schemas unchanged."
+    },
+    {
+      "consumer": "smart-calendar-flow aiProviders.ts offersOrganizationAI (+test :148), AINotConfiguredNotice (+test :75), OrgAIConsentDialog.test.tsx:51",
+      "breaks": "behaviour",
+      "detail": "Row 10 now arrives as organization_unconfirmed; the personal_keys_forbidden+[user] branch is dead and removed in the web PR."
+    },
+    {
+      "consumer": "pre-PAC-87 web builds during the deploy window",
+      "breaks": "no",
+      "detail": "Row 10 shows the server sentence and 'Review and confirm' (confirm only, choice not rewritten); missing until the web PR: the dialog's kept-choice sentence, the Settings row-9 line, the admin pre-save sentences (contract section 4)."
+    },
+    {
+      "consumer": "clockwise-like backend tests pac73p2_rows_test.go:291,:351, storage/org_ai_test.go:301, nlp/llm_factory.go:29-31",
+      "breaks": "yes",
+      "detail": "Rewritten in stage 4."
+    },
+    {
+      "consumer": "e2e/tests/llm-org-ai.spec.ts:119-120",
+      "breaks": "yes",
+      "detail": "Reads org_ai_confirmations.consent_since_version."
+    },
+    {
+      "consumer": "e2e/TESTIDS-REQUIRED.md:104",
+      "breaks": "yes",
+      "detail": "ai-use-org is row 7 only; row 10 uses ai-org-confirm."
+    },
+    {
+      "consumer": "mcp",
+      "breaks": "no",
+      "detail": "Passes the backend's sentence through (mcp/tools.go:195)."
+    }
   ],
   "migrationRegister": "contracts/openapi/MIGRATION.md: no row changes status (description-only changes; the touched operations keep their rows, as Part 2 did). Regenerated by make openapi; any diff is committed.",
   "rollback": "Stop the backend, run the 036 down step, start the previous image (image-only rollback is impossible: the previous image cannot start at schema 036, and the reverted code reads the renamed column). Down keeps only confirmations of followers recorded at exactly the current state; every other follower and every row-9 member is asked again, nothing sent before they confirm; no configuration, key, stored choice or operator record is lost; P87-D5 deletions are not restored. Release note: a rollback is a visible re-ask. Rolling forward again re-runs up. No HTTP schema to revert (descriptions only).",
@@ -135,7 +184,15 @@
     "OQ-P2-3 forbid before setup complete, with a warning: as shipped (2026-11-01).",
     "OQ-P2-4 one org-AI change per fresh break-glass sign-in: as shipped (2026-11-01)."
   ],
-  "factoryAssumed": ["P87-D1", "P87-D2", "P87-D3", "P87-D4", "P87-D5", "P87-D6", "P87-D7 (spec section 8)"],
+  "factoryAssumed": [
+    "P87-D1",
+    "P87-D2",
+    "P87-D3",
+    "P87-D4",
+    "P87-D5",
+    "P87-D6",
+    "P87-D7 (spec section 8)"
+  ],
   "followUps": [
     "Backend test that a personal-keys forbid with no key set is stored (spec section 6 finding; OQ-P2-3)."
   ]
