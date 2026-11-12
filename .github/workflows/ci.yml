@@ -30,6 +30,9 @@ jobs:
           repository: Enach/smart-calendar-flow
           path: web
       - run: mv web ../smart-calendar-flow
+      # docker/frontend.dockerfile (e2e and release) builds from frontend/ = the
+      # web repo ("CI clones it at run-time"). Copied before npm ci, so no node_modules.
+      - run: rm -rf frontend && cp -r ../smart-calendar-flow frontend && rm -rf frontend/.git
 
       - uses: actions/setup-go@v5
         with:
