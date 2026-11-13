@@ -1737,3 +1737,128 @@ revisions 1–5) is kept below the body unchanged, and its line numbers refer to
    follows PAC-72's offerable-start rule (`handlers_booking.go:415-464`).
 
 Status stays challenged until challenge round 6.
+
+## Challenge — 2026-11-13 (round 6)
+
+I reviewed revision 6 (`8ec95d2`) against `origin/main` `68540f6`, the web repo
+at `origin/main` `ae72939`, the Linear issue and its comments,
+`docs/factory/api-audit.md`, `contracts/openapi/paths/booking.yaml`,
+`contracts/features/PAC-30.md` and `PAC-84.md`, and the owner decision in
+`.claude/factory/owner-decisions.md`. I re-read every §2 citation; I ran no
+probe and no gate (spec-only change).
+
+**Verdict**: accept-with-changes
+
+The revision does what the owner decided and no more: an owner-only, read-only
+archive, and erasure of names and emails only, only on deleted links, at
+latest-meeting-end + 90 days. Readings R-1–R-5 are each the plain reading or
+are flagged as a factory decision the owner can overturn without blocking
+(OQ-8, OQ-10). The PAC-25 404 is pinned rather than contested, and retiring
+AC-20/AC-20a is right: `createBooking` on main checks exhaustion once and has
+no second end-time error (`handlers_booking.go:324-486`), and the audit marks
+API-073 fixed (`api-audit.md:331`). Two items block.
+
+### Blocking
+1. **Whether a run "records" anything when nothing is due is contradictory, and
+   "shortly after start" cannot be tested.** §3.5 says "a run that finds
+   nothing due changes nothing and records nothing", then "each run writes one
+   operator-visible log line"; AC-26 expects "only the run's summary line";
+   AC-35 needs a run to be observable and requires one "shortly after start",
+   which no test can tell apart from "after the first 24-hour tick". The
+   runbook item "which log line shows that a run happened" depends on the
+   answer. *Resolve:* say a run with nothing due writes no audit entry and
+   changes no data, and still writes its summary line (with zero counts); and
+   bound the start-up run so a test can fail it, for example: it starts as
+   part of start-up, before the first periodic tick.
+2. **AC-27 and §3.5 require that the name and email be "no longer stored
+   anywhere in the database". A correct implementation fails that test when
+   the booker is also a Paceday user**, because their own account holds the
+   same address, and a co-host invite or team membership may too. The claim
+   also reaches tables this spec never touches. *Resolve:* scope the guarantee
+   to the booking and to everything this feature writes (archive, audit entry,
+   log line, error report), and say plainly that data the booker gave Paceday
+   in another capacity, such as their own account, is not affected.
+
+### Non-blocking
+1. **The owner's confirmation is not in the record.** `owner-decisions.md`
+   still says "confirm if this was meant otherwise" and no Linear comment
+   carries a confirmation; §0 relies on the orchestrator's report. Whoever
+   maintains that file should replace the caveat with the confirmation and its
+   date.
+2. **AC-6 and D-9 disagree.** AC-6 leaves to the contract whether the
+   live-link bookings read serves a deleted link to its owner; D-9 says every
+   path but the archive answers not found. State one rule: the owner reaches a
+   deleted link's bookings only as part of the archive, by whatever operation
+   the contract defines for it, and every other path answers not found.
+3. **AC-7's "after erasure" cannot hold for a booking in the future**: erasure
+   is due only 90 days after the latest end. Reword so the after-erasure check
+   computes busy time for the booking's period with the clock past the due
+   instant.
+4. **§3.2 says the archive shows the erasure "date"; AC-21 checks an
+   "instant".** Align them (the instant, shown to the owner as a date).
+5. **File names in §§3–5.** AC-32 cites `handlers_booking.go:359-363`; §5
+   cites `PublicBooking.tsx:397` and `booking.yaml:880-881`. The spec-author
+   rule forbids file names there; move the citations to §2.
+6. **The existing activity-log writer cannot meet AC-33's atomicity.**
+   `WriteAuditLog` logs and swallows an insert failure
+   (`backend/storage/focus_blocks.go:79-87`), so "erased and audited, or
+   untouched" needs the plan to write the entry in the same unit as the
+   erasure. Not a spec defect; a note for the plan.
+7. **Size.** The spec now adds a background job and a web surface. Shipping
+   the deleted state without the archive would hide bookings the owner decided
+   to keep visible, so those two belong together; erasure could follow in a
+   later PR, but the delete confirmation must not promise erasure (AC-25)
+   before erasure ships. Note for the plan.
+8. **AC-36 covers "configured" and "not configured" but not the third case
+   §3.5 names**, an unrelated secret that cannot be decrypted. Add it or drop
+   the sentence.
+
+### Criteria I could not falsify
+- AC-35 as written ("shortly after start"): Blocking 1.
+- AC-37's prose half is review-only, as the AC says; its listing half is
+  testable. Acceptable as stated.
+
+Every other new criterion fails today (no deleted state, archive or erasure
+exists) and has a test that passes once built: AC-21–AC-34 and AC-36 with an
+injected clock and an injected storage fault; AC-25 in Playwright. AC-19
+passes today and pins PAC-25 (`TestPAC25GetLink*`,
+`handlers_scheduling_links_test.go:683-828`).
+
+### Citations I checked and found wrong
+- §2.1 "the only later change to `scheduling_links` is
+  `032_scheduling_link_horizon_refusal`": `019_backend_contract_fields.up.sql:2-5`
+  also alters it (adds `min_notice_minutes`, `usage_type`, `max_uses`). The
+  point (no lifecycle column, no deletion time) still holds.
+
+Checked and correct: `handlers_scheduling_links.go:82-85, 104-107, 172-204,
+224-232, 410, 441-470, 473-515, 525, 534-537, 552-573, 589-591, 614, 649-675,
+677-708, 718, 727-730, 760-781, 784-804, 820-843`; `scheduling_links.go:109,
+118-160, 171, 178, 186-190, 343-361, 381-395, 422-429, 440-461, 469-495,
+521-526`; `handlers_booking.go:80-88, 123, 132-133, 193, 202-203, 324-486`;
+`guarded_writes.go:142-148`; `guarded.go:10-17`; `emptiness.go:39-41`;
+`audit_log.go:23-48`; `focus_blocks.go:79-87`; `engine/booking.go:484-491,
+642, 658-660, 683-686, 729, 766-831`; `scheduler/cron.go:36-38, 57-58`;
+`main.go:45-58, 193-194, 224-272`; `migrations/009:3, 12, 26-36`;
+`034:6-10`; `PAC-84.md:96-113`; `booking.yaml:869-893, 1050-1080, 2300,
+2542`; `api-audit.md:264, 307-309, 331, 478`; `runbook.md:238, 265-296,
+328-365`; `seed.sql:270, 287-290, 334-340`; `public-booking.spec.ts:91-106`;
+web `Links.tsx:145-150, 333-339, 352-355, 376-379, 443, 467`,
+`PublicBooking.tsx:393-399`, `schedulingLinks.ts:159-174, 351, 400-407`,
+`LinkBookingsDialog.tsx:81`. Grep: nothing in `backend/` or `mcp/` updates a
+booking row; `mcp/` has no scheduling-link caller.
+
+### Consumers this breaks
+- smart-calendar-flow `src/pages/Links.tsx:376-379`: the delete
+  confirmation's copy changes (AC-25), and the app needs an archive view. No
+  web change was needed before revision 6; one is now.
+- smart-calendar-flow `src/api/schedulingLinks.ts:351`: a stale tab editing a
+  link deleted elsewhere gets not found on its pre-edit fetch (unchanged from
+  earlier rounds).
+- clockwise-like `factory/pac-40-contract` (rev 2): its C-1 answers 403 to a
+  stranger on `getSchedulingLink`, which contradicts main and AC-19, and it
+  has no archive or erasure. It must be redone against revision 6.
+  clockwise-like#234 and smart-calendar-flow#126 were built on it and are
+  superseded.
+- clockwise-like `e2e/seed/seed.sql:270`: its comment goes stale if the use
+  count becomes stored (unchanged).
+- No consumer in `mcp/`.
