@@ -1,9 +1,11 @@
 # Spec — PAC-91: booking page in a frame — links leave the frame, framing decided on the path the browser sees
 
 - **Linear**: https://linear.app/paceday/issue/PAC-91/booking-page-in-a-frame-links-must-leave-the-frame-target-top-or-other
-- **Status**: revision 2 — challenged 2026-11-12 (spec-challenger,
-  accept-with-changes; changes applied in place, see "Challenge log" at the
-  end)
+- **Status**: revision 3 — 2026-11-13 stage-4 catch-up (AC-16's second
+  frame, the §2.5 note on `/book//abc`, the TLS proxy requirement in D-3;
+  from the nginx review of Enach/clockwise-like#256, see "Revision 3" at the
+  end). Revision 2 challenged 2026-11-12 (spec-challenger,
+  accept-with-changes; changes applied in place, see "Challenge log")
 - **Author**: spec-author
 - **Inherited scope**: none. `docs/factory/api-audit.md` has no finding on
   framing; no API endpoint or `x-uncertain` marker is involved. The
@@ -41,9 +43,10 @@ page to appear inside a hostile frame:
    different page by the app. Reproduced during this survey (section 2.5):
    `/app/team/invite/..%2F..%2F..%2Fbook%2Fx` is served as framable, and the
    app routes it to the team-invite page, which (signed out) redirects
-   client-side to the home page — all inside the frame. The same happens
-   without any encoding: nginx merges repeated slashes, so `/book//abc` is
-   framable while the app shows its not-found page (challenge, section 2.5).
+   client-side to the home page — all inside the frame. nginx also merges
+   repeated slashes, so `/book//abc` is framable to nginx; through the real
+   stack the file server then redirects it to `/book/abc`, so it ends on the
+   genuine booking page (section 2.5, revision 3).
 
 The cost is low today: the session cookie is `SameSite=Lax`, so a
 cross-site frame carries no session and shows only signed-out pages. But it
@@ -158,9 +161,20 @@ Probes run during this survey (scratch only, nothing committed):
   | `//book/abc` | `*` |
   | `/book/x/../app` | browsers send `/book/app` (booking page) |
 
-  `/book//abc` is the cheapest variant: a browser sends it as written
-  (the URL standard keeps empty segments), so a hostile page needs no
-  encoding at all. Double encoding (`/xyz/..%252Fbook%252Fabc`) is **not** a
+  `/book//abc` is the cheapest variant **to nginx**: a browser sends it as
+  written (the URL standard keeps empty segments), so a hostile page needs
+  no encoding at all. **Correction (revision 3):** the "App route `*`"
+  column holds only when the upstream answers `200` with the index for the
+  raw path, as the `nginx/test` stub does. The real file server
+  (`docker/fileserver`, Go `ServeMux`) answers `/book//abc`, `//book/abc`,
+  `/book/x/../app`, `/book/./abc` and `/book/abc/.` with a **301 to the
+  cleaned booking path** (confirmed with the real file server in the review
+  of Enach/clockwise-like#256), so through the full stack a frame on those
+  addresses can only end on the genuine booking page. nginx still refuses
+  them (AC-12, defence in depth: the 301 carries `DENY`); the addresses that
+  reach the app as another page end to end are the encoded-slash ones the
+  file server answers `200` (`/app/team/invite/..%2F..%2F..%2Fbook%2Fx`,
+  `/settings/..%2Fbook/x`, `/xyz/..%2Fbook%2Fabc`, …). Double encoding (`/xyz/..%252Fbook%252Fabc`) is **not** a
   gap: `$uri` keeps `%2F` and is refused. `%2e%2e` written as a whole
   segment (`/xyz/%2e%2e/book/abc`) is resolved by the browser before
   sending, so the request is `/book/abc` and the app agrees.
@@ -393,11 +407,16 @@ AC-15. Given every non-framable case already in
 [nginx]
 
 AC-16. Given another origin frames `BASE_URL/app/team/invite/..%2F..%2F..%2Fbook%2Fx`
-and `BASE_URL/book//<slug>` next to the real booking page, when the page
-loads, then the browser reports a `frame-ancestors` violation for each of
-those two frames and neither contains `#root`, while the booking frame still
-renders (existing control). Today both render the app (team-invite redirect
-to home; not-found). [e2e]
+and `BASE_URL/settings/..%2Fbook/<slug>` next to the real booking page, when
+the page loads, then the browser reports a `frame-ancestors` violation for
+each of those two frames and neither contains `#root`, while the booking
+frame still renders (existing control). Today both render the app
+(team-invite redirect to home; not-found). And `BASE_URL/book//<slug>`
+answers the file server's `301` to `/book/<slug>` carrying
+`frame-ancestors 'none'` and `X-Frame-Options: DENY` (header check). It is
+not framed in the browser half: the real file server redirects it to the
+genuine booking page, so a frame has nothing else to end on (section 2.5,
+revision 3). [e2e]
 
 ### D. Documentation
 
@@ -472,7 +491,7 @@ The two halves have no deploy ordering constraint.
 | D-0 | Only the booking page may be framed; every other route stays unframeable. | **owner** (PAC-81 Q-O2) |
 | D-1 | Do **both** fixes the issue offers: links on the booking page open at the top level, **and** the app refuses to render framed off the booking page. Links alone leave the raw-path gap (section 2.5) and any future link; the guard alone leaves the booker stuck with a notice inside the host's widget. | factory-assumed |
 | D-2 | Links target the top level (replace the embedding page), as the issue proposes, rather than a new tab. The four links (three on the booking page, one in the frame notice) take their target from **one shared definition**, so answering OQ-1 "new tab" changes one value (`_top` to `_blank`; browsers imply `noopener` for `_blank`) plus AC-4's expected outcome, nothing else. | factory-assumed; see OQ-1 |
-| D-3 | nginx decides framability on the **raw path** — the request target as received (`$request_uri`, which keeps the query and every escape), cut at its first `?` — **and** on the normalised `$uri`: both must be `/book/`, one plain segment (AC-12/AC-13), optional `/`. The raw test is case-insensitive about escapes (`%2f` = `%2F`) and ignores the query entirely, so encoded slashes in tracking parameters never refuse a booking page (AC-14). Reverses the PAC-81 review's acceptance of `/book/x/../app` as framable. Feasibility checked by the challenger with a scratch build of the shipped config (section "Challenge log"); the mechanism is the plan's to choose. | factory-assumed |
+| D-3 | nginx decides framability on the **raw path** — the request target as received (`$request_uri`, which keeps the query and every escape), cut at its first `?` — **and** on the normalised `$uri`: both must be `/book/`, one plain segment (AC-12/AC-13), optional `/`. The raw test is case-insensitive about escapes (`%2f` = `%2F`) and ignores the query entirely, so encoded slashes in tracking parameters never refuse a booking page (AC-14). Reverses the PAC-81 review's acceptance of `/book/x/../app` as framable. Feasibility checked by the challenger with a scratch build of the shipped config (section "Challenge log"); the mechanism is the plan's to choose. **Deployment requirement (revision 3):** the rule holds only if the TLS-terminating proxy in front of nginx forwards the request target unchanged — no decoding, no slash merging, no dot-segment resolution. A proxy that merged `//` would hand nginx `/book/abc` for a browser address `/book//abc` (framable to nginx, not-found to the app; the web guard then shows its notice). Stated in `docs/security.md` B1. | factory-assumed |
 | D-4 | The frame guard applies to **any** frame, same-origin included. Paceday never frames itself (no `<iframe>` in the web app), and nginx already refuses same-origin framing of other routes. "Framed" means the app's window is not the top-level window, a comparison that works across origins without reading anything from the embedder (reading the embedder's location would throw). It is a fact of the page load, but the **route** is re-evaluated on every client-side location change (AC-10). "The booking page" for the guard is the route the app itself renders as the booking page (`/book/:slug` as the router matches it), not a second string rule. | factory-assumed |
 | D-5 | The guard's notice copy and look are the implementer's choice, held to the design gate; it must name Paceday and offer one top-level link. | factory-assumed |
 | D-6 | The file server is not changed (section 5). | factory-assumed |
@@ -603,3 +622,25 @@ Checked and correct: `nginx.conf:41-53, 84, 89-97, 138-140`;
   passing on real booking URLs; `e2e/tests/time-format.spec.ts:79` clicks a
   "paceday" link in the signed-in shell, not on the booking page; no web
   test asserts the booking links' behaviour (§2.7).
+
+## Revision 3 — 2026-11-13 (stage-4 catch-up)
+
+From the nginx half's review (Enach/clockwise-like#256, merged 36f5936),
+applied with the e2e follow-up (`impl/pac-91-e2e`) that pairs with the web
+PR (`impl/pac-91-web`). No acceptance criterion is added or dropped; no
+decision changes.
+
+1. **AC-16** frames `/settings/..%2Fbook/<slug>` instead of
+   `/book//<slug>`. The real file server answers `/book//<slug>` with a 301
+   to `/book/<slug>` (Go `ServeMux` path cleaning), so in the full stack the
+   frame can only end on the genuine booking page: nothing to refuse end to
+   end. `/book//<slug>` stays in AC-16 as a header check (301, `DENY`). This
+   matches `e2e/tests/framing.spec.ts` as merged with #256.
+2. **§1 and §2.5**: the note that `/book//abc` shows the app's not-found
+   page holds only for an upstream answering 200 for the raw path (the
+   `nginx/test` stub); the real file server 301s it, and `//book/abc`,
+   `/book/x/../app`, `/book/./abc`, `/book/abc/.` likewise. nginx's AC-12
+   rows are unchanged (defence in depth).
+3. **D-3 deployment requirement**: the TLS proxy must forward the request
+   target unchanged (no decoding, no slash merging). Recorded in
+   `docs/security.md` B1.
