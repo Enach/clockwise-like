@@ -9838,7 +9838,14 @@ components:
             confirmed, or could not be attempted; Zoom only). After PAC-67 the falsifying command above
             must return these writers as well. No test checks this enum against the writers today (none
             exists in backend/api or backend/storage; contract challenge, non-blocking); the PAC-67 backend
-            stage ADDS one covering all ten (manifest CONTRACT-6).
+            stage ADDS one covering all ten (manifest CONTRACT-6). PAC-40 adds one kind, written by the
+            booker-erasure job, not by a request: `scheduling_link_bookers_erased` (the bookers'' names
+            and emails of one of the subject''s deleted scheduling links were erased; exactly one entry
+            per link per erasure, spec §3.5, AC-31). The subject is the link''s owner. The entry is written
+            in the same database transaction as the erasure, so its writer is a transactional sibling
+            of `storage.WriteAuditLog` that returns its error instead of logging it; CONTRACT-6''s test
+            is amended to recognise that writer and to expect eleven values (contracts/features/PAC-40.md
+            §5).
 
 
             The enum is closed on purpose. `audit_log.action` is an unconstrained `TEXT` column, so the
@@ -9887,6 +9894,7 @@ components:
           - connection_lost
           - provider_disconnected
           - revocation_unconfirmed
+          - scheduling_link_bookers_erased
         details:
           type: string
           description: 'Scanned from the DB into a Go `string`, so on the wire this is ALWAYS a JSON string
@@ -9903,12 +9911,15 @@ components:
             values: `connection_lost` is `{"provider":"outlook"|"zoom"|"google"}`, `provider_disconnected`
             is `{"provider":"outlook"|"zoom","revocation": "confirmed"|"unconfirmed"|"not_offered"}` (the
             `revocation` vocabulary of `ProviderDisconnectResult`), and `revocation_unconfirmed` is `{"provider":"zoom"}`.
-            No token material and no actor-supplied text ever appears in them. NOT GUARANTEED: `meeting_scheduled`,
-            `meeting_created`, `meeting_moved` and `nlp_confirmed` are built by concatenating values into
-            a JSON literal with no escaping (`SmartScheduler.CreateMeeting` in backend/engine/smart_schedule.go,
-            `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go, `CompressionEngine.Apply`
-            in backend/engine/compression.go, `nlpHandlers.confirm` in backend/api/handlers_nlp.go). Sites
-            are cited by enclosing function, not line, for the reason given in the operation description;
+            No token material and no actor-supplied text ever appears in them. Also ALWAYS VALID JSON:
+            PAC-40''s `scheduling_link_bookers_erased` marshals a struct with `encoding/json`: `{"link_id":"<uuid>","link_title":"<the
+            owner''s title>","bookings_erased":<n>, "last_booking_end_at":"<RFC3339>","ran_at":"<RFC3339>"}`.
+            It never carries a booker''s name or email (AC-31); `link_title` is the subject''s own text.
+            NOT GUARANTEED: `meeting_scheduled`, `meeting_created`, `meeting_moved` and `nlp_confirmed`
+            are built by concatenating values into a JSON literal with no escaping (`SmartScheduler.CreateMeeting`
+            in backend/engine/smart_schedule.go, `scheduleHandlers.createMeeting` in backend/api/handlers_schedule.go,
+            `CompressionEngine.Apply` in backend/engine/compression.go, `nlpHandlers.confirm` in backend/api/handlers_nlp.go).
+            Sites are cited by enclosing function, not line, for the reason given in the operation description;
             `grep -rn ''WriteAuditLog('' --include=''*.go'' backend/` shows all seven argument expressions
             on one line each.
 
