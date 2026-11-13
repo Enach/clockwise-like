@@ -252,6 +252,37 @@ export const LINKS = {
     hostUserId: BOOKING_HOSTS.d6.id,
     coHostUserId: USERS.betaReport.id,
   },
+  /**
+   * PAC-40 AC-18 only (tests/pac40-lifecycle.spec.ts): single_use, booked once
+   * by `bookingId`; the test sets that booking cancelled and the link stays
+   * used up (D-6). Never the shared `exhausted` link.
+   */
+  pac40CancelledSingleUse: {
+    id: 'cececece-cece-4ece-8ece-cececececece',
+    slug: 'e2e-pac40-cancelled-single-use',
+    title: 'E2E PAC-40 Cancelled Single Use',
+    hostUserId: USERS.alphaReport.id,
+    bookingId: 'dececece-cece-4ece-8ece-cececececece',
+  },
+  /**
+   * PAC-40: seeded already DELETED (deleted_at 2026-01-15T12:00:00Z), owned by
+   * USERS.second, one booking. Read-only: gone from every live path, present
+   * only in its owner's archive (tests/pac40-lifecycle.spec.ts).
+   */
+  pac40Archived: {
+    id: 'cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf',
+    slug: 'e2e-pac40-archived',
+    title: 'E2E PAC-40 Archived Link',
+    ownerUserId: USERS.second.id,
+    deletedAt: '2026-01-15T12:00:00Z',
+    booking: {
+      id: 'dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf',
+      name: 'E2E PAC-40 Archived Booker',
+      email: 'pac40.archived.booker@paceday.test',
+      start: '2020-01-08T10:00:00Z',
+      end: '2020-01-08T10:30:00Z',
+    },
+  },
 } as const;
 
 /** Hosted by CONNECTED.seam: AC-22's collective slots and booking confirmation. */

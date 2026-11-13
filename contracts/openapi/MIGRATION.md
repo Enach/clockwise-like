@@ -40,9 +40,9 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **130**
+- operations: **132**
 - generated: **12**
-- handwritten: **118**
+- handwritten: **120**
 
 ## Register
 
@@ -149,6 +149,8 @@ from the contract and any edit is reported as drift.
 | suggestMeetingSlots               | POST   | /api/schedule/suggest                           | schedule         | handwritten | |
 | listSchedulingLinks               | GET    | /api/scheduling-links                           | scheduling-links | handwritten | |
 | createSchedulingLink              | POST   | /api/scheduling-links                           | scheduling-links | handwritten | |
+| listArchivedSchedulingLinks       | GET    | /api/scheduling-links/archive                   | scheduling-links | handwritten | |
+| getArchivedSchedulingLink         | GET    | /api/scheduling-links/archive/{id}              | scheduling-links | handwritten | |
 | listSchedulingLinkHostInvites     | GET    | /api/scheduling-links/host-invites              | scheduling-links | handwritten | |
 | acceptSchedulingLinkHostInvite    | POST   | /api/scheduling-links/host-invites/{id}/accept  | scheduling-links | handwritten | |
 | declineSchedulingLinkHostInvite   | POST   | /api/scheduling-links/host-invites/{id}/decline | scheduling-links | handwritten | |

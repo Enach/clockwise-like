@@ -17,7 +17,7 @@
         "e2e/tests (AC-1 and AC-14: room picked in the web is a resource attendee on the stored event)",
         "e2e/fake-google (only if the stand-in must keep a resource attendee's flag or return an earlier room on the next read; spec OQ-4, stand-in code, not product code)",
         "e2e/seed (amendment 2026-11-13, approved by the factory coordinator: one dedicated Google-connected user, CONNECTED.rooms, that AC-1 and AC-14 own; every existing connected user already owns another journey's stand-in calendar and specs run in parallel against one stand-in, e2e README rule 6)",
-        "e2e/TESTIDS-REQUIRED.md (amendment 2026-11-13, approved by the factory coordinator: the room-picker test ids the PAC-41 journeys use, section 8)",
+        "e2e/TESTIDS-REQUIRED.md (amendment 2026-11-13, approved by the factory coordinator: the room-picker test ids the PAC-41 journeys use, section 9; it was section 8 until PAC-40 part A took that number on main)",
         "docs/factory/api-audit.md (API-040, API-041, API-046 to Fixed (PAC-41) when the web PR merges)"
       ],
       "forbiddenPaths": [

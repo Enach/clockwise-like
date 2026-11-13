@@ -271,8 +271,9 @@ DELETE FROM team_analytics_cache
 -- One link per mutating test, each with a DIFFERENT host user and a DIFFERENT
 -- time window, so no two booking tests can make each other fail.
 --   uses_count is NOT a column: storage/scheduling_links.go computes it as
---   COUNT(bookings WHERE status <> 'cancelled'), so "exhausted" is seeded by
---   inserting a booking, not by setting a counter.
+--   COUNT(bookings) for the link, whatever their status (PAC-40 D-6: a
+--   cancelled booking does not give its use back), so "exhausted" is seeded
+--   by inserting a booking, not by setting a counter.
 --   min_notice_minutes = 0 so every slot in the window is bookable today.
 
 INSERT INTO scheduling_links
@@ -317,7 +318,26 @@ VALUES
   -- stand-in, so an event there makes a start unofferable.
   ('c9999999-9999-4999-8999-999999999999', 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3',
    'e2e-offerable-30min', 'E2E Offerable Link', '{30}', '{1,2,3,4,5}',
-   '09:00', '12:00', 0, 0, 0, 'reusable', NULL, true);
+   '09:00', '12:00', 0, 0, 0, 'reusable', NULL, true),
+  -- PAC-40 AC-18, owned by tests/pac40-lifecycle.spec.ts alone: single-use,
+  -- booked once (below); the test sets that booking cancelled in the database
+  -- and the link must stay used up. Separate from the shared exhausted link.
+  ('cececece-cece-4ece-8ece-cececececece', '33333333-3333-4333-8333-333333333333',
+   'e2e-pac40-cancelled-single-use', 'E2E PAC-40 Cancelled Single Use', '{30}', '{1,2,3,4,5}',
+   '15:00', '17:00', 0, 0, 0, 'single_use', NULL, true);
+
+-- PAC-40: a link already DELETED (deleted_at set, active false: migration
+-- 037's CHECK), owned by USERS.second, with one booking. Read-only fixture of
+-- tests/pac40-lifecycle.spec.ts: gone from every live path, in its owner's
+-- archive only.
+INSERT INTO scheduling_links
+  (id, owner_user_id, slug, title, duration_options, days_of_week,
+   window_start_time, window_end_time, buffer_before, buffer_after,
+   min_notice_minutes, usage_type, max_uses, active, deleted_at)
+VALUES
+  ('cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf', '22222222-2222-4222-8222-222222222222',
+   'e2e-pac40-archived', 'E2E PAC-40 Archived Link', '{30}', '{1,2,3,4,5}',
+   '09:00', '17:00', 0, 0, 0, 'reusable', NULL, false, '2026-01-15T12:00:00Z');
 
 -- Host rows. 'accepted' is what storage.GetAcceptedHosts() filters on; a link
 -- with no accepted host renders with zero hosts and zero coverage. The UI and
@@ -333,7 +353,9 @@ INSERT INTO scheduling_link_hosts (link_id, user_id, status, responded_at) VALUE
   ('c7777777-7777-4777-8777-777777777777', 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'accepted', NOW()),
   ('c8888888-8888-4888-8888-888888888888', 'e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'accepted', NOW()),
   ('c8888888-8888-4888-8888-888888888888', '44444444-4444-4444-8444-444444444444', 'accepted', NOW()),
-  ('c9999999-9999-4999-8999-999999999999', 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'accepted', NOW());
+  ('c9999999-9999-4999-8999-999999999999', 'b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'accepted', NOW()),
+  ('cececece-cece-4ece-8ece-cececececece', '33333333-3333-4333-8333-333333333333', 'accepted', NOW()),
+  ('cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf', '22222222-2222-4222-8222-222222222222', 'accepted', NOW());
 
 -- The booking that exhausts the single-use link. Dated far in the past so it
 -- can never overlap a window a live test books into.
@@ -341,7 +363,15 @@ INSERT INTO bookings (id, link_id, booker_name, booker_email, start_time, end_ti
 VALUES
   ('d3333333-3333-4333-8333-333333333333', 'c3333333-3333-4333-8333-333333333333',
    'E2E Past Booker', 'past.booker@paceday.test',
-   '2020-01-06T15:00:00Z', '2020-01-06T15:30:00Z', 'confirmed', 'seeded — exhausts the link');
+   '2020-01-06T15:00:00Z', '2020-01-06T15:30:00Z', 'confirmed', 'seeded — exhausts the link'),
+  -- PAC-40 AC-18: books the dedicated single-use link once; the test cancels it.
+  ('dececece-cece-4ece-8ece-cececececece', 'cececece-cece-4ece-8ece-cececececece',
+   'E2E PAC-40 Cancelled Booker', 'pac40.cancelled.booker@paceday.test',
+   '2020-01-07T15:00:00Z', '2020-01-07T15:30:00Z', 'confirmed', 'seeded — PAC-40 AC-18 cancels it'),
+  -- PAC-40: the deleted fixture's booking, read back through the archive.
+  ('dfdfdfdf-dfdf-4fdf-8fdf-dfdfdfdfdfdf', 'cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfcf',
+   'E2E PAC-40 Archived Booker', 'pac40.archived.booker@paceday.test',
+   '2020-01-08T10:00:00Z', '2020-01-08T10:30:00Z', 'confirmed', 'seeded — PAC-40 archive fixture');
 
 -- ── PAC-88: booking page time zone (contract PAC-88 section 6) ───────────────
 -- Four hosts connected through the stand-in (seed/ids.ts PAC88_HOSTS, all in

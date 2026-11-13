@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/api/gen"
 	"github.com/Enach/paceday/backend/engine"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
@@ -470,6 +471,11 @@ func (h *schedulingLinkHandlers) listLinks(w http.ResponseWriter, r *http.Reques
 }
 
 // GET /api/scheduling-links/{id}
+//
+// PAC-40: GetSchedulingLinkByID answers nil for a deleted link, so every
+// by-id handler below (fetch, edit, delete, bookings, invite, leave) answers a
+// deleted link with the unknown-id 404 for every caller, owner included,
+// before the owner or host check and before reading a body (contract §3).
 func (h *schedulingLinkHandlers) getLink(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -549,16 +555,20 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		updated.Slug = normalizeSlug(*patch.Slug)
 		slugPatched = true
 	}
-	if patch.DurationOptions != nil {
+	// The canonical spelling wins whenever it is carried (present and not
+	// null; [] counts as carried and fails validation), as on create; the
+	// alias is used only when the canonical spelling is absent or null
+	// (PAC-40 D-5, API-049, AC-14, AC-14a).
+	switch {
+	case patch.DurationOptions != nil:
 		updated.DurationOptions = patch.DurationOptions
-	}
-	if patch.Durations != nil {
+	case patch.Durations != nil:
 		updated.DurationOptions = patch.Durations
 	}
-	if patch.DaysOfWeek != nil {
+	switch {
+	case patch.DaysOfWeek != nil:
 		updated.DaysOfWeek = patch.DaysOfWeek
-	}
-	if patch.Days != nil {
+	case patch.Days != nil:
 		updated.DaysOfWeek = dayNumbers(patch.Days)
 	}
 	if patch.WindowStart != nil {
@@ -624,6 +634,12 @@ func (h *schedulingLinkHandlers) updateLink(w http.ResponseWriter, r *http.Reque
 		writeServerError(w, r, "update failed", err, http.StatusInternalServerError)
 		return
 	}
+	if result == nil {
+		// Deleted after the read above (the UPDATE re-checks deleted_at IS
+		// NULL): nothing was written, co-hosts included (PAC-40 K4-1, AC-6b).
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
 	if patch.CoHostEmails != nil {
 		// Set the co-host list by difference: hosts no longer listed are removed,
 		// new ones are invited as pending, and everyone else keeps their status.
@@ -667,8 +683,15 @@ func (h *schedulingLinkHandlers) deleteLink(w http.ResponseWriter, r *http.Reque
 		writeError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if err := storage.DeleteSchedulingLinkCtx(r.Context(), h.db, id); err != nil {
+	deleted, err := storage.DeleteSchedulingLinkCtx(r.Context(), h.db, id)
+	if err != nil {
 		writeServerError(w, r, "delete failed", err, http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		// A concurrent delete committed after the read above: one 204, this
+		// one 404, and deleted_at is not moved (PAC-40 K4-2, AC-6b).
+		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -841,4 +864,135 @@ func (h *schedulingLinkHandlers) leaveLink(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Owner archive of deleted links (PAC-40 §3.2, contract §2.1-§2.4) -------
+
+// bookerErasureEnabled is BookerErasurePolicy.enabled: a property of the
+// server build, never an operator setting (contract §2.4). It is false in
+// this build (PR split A, contract §6): the erasure job is not here, so no
+// archived link carries an erasure_due_at and no booking is ever erased.
+// Part B sets it true together with the job.
+const bookerErasureEnabled = false
+
+// bookerRetentionDays is BookerErasurePolicy.retention_days: erasure is due
+// 90 x 24 h after a deleted link's last booking end (owner, 2026-10-27). The
+// contract pins it (minimum = maximum = 90); a different value is a contract
+// change, not a setting.
+const bookerRetentionDays = 90
+
+func bookerErasurePolicy() gen.BookerErasurePolicy {
+	return gen.BookerErasurePolicy{Enabled: bookerErasureEnabled, RetentionDays: bookerRetentionDays}
+}
+
+// archivedLinkDTO maps a stored archived link to the wire, every instant in
+// UTC (Z suffix). erasure_due_at is set only for a link awaiting erasure in a
+// build whose job runs.
+func archivedLinkDTO(a *storage.ArchivedLink) gen.ArchivedSchedulingLink {
+	dto := gen.ArchivedSchedulingLink{
+		Id: a.ID, Title: a.Title, Slug: a.Slug, DeletedAt: a.DeletedAt.UTC(),
+		BookingsCount: a.BookingsCount,
+	}
+	if a.LastBookingEndAt != nil {
+		t := a.LastBookingEndAt.UTC()
+		dto.LastBookingEndAt = &t
+	}
+	if a.ErasedAt != nil {
+		t := a.ErasedAt.UTC()
+		dto.ErasedAt = &t
+	}
+	switch {
+	case a.BookingsCount == 0:
+		dto.ErasureState = gen.NoBookings
+	case a.AwaitingErasure > 0:
+		dto.ErasureState = gen.AwaitingErasure
+		if bookerErasureEnabled && dto.LastBookingEndAt != nil {
+			due := dto.LastBookingEndAt.Add(bookerRetentionDays * 24 * time.Hour)
+			dto.ErasureDueAt = &due
+		}
+	default:
+		dto.ErasureState = gen.Erased
+	}
+	return dto
+}
+
+// archivedBookingDTO maps a stored booking to the archive's record. Every
+// instant is UTC, so it is serialised with a Z suffix (the web's schema
+// accepts only that). An erased
+// booking (booker_erased_at set) answers null name and email, never the empty strings
+// the database keeps (contract §2.2); a booking not erased answers both
+// exactly as stored, as the live bookings read did (AC-22).
+func archivedBookingDTO(b *storage.ArchivedBooking) gen.ArchivedSchedulingLinkBooking {
+	dto := gen.ArchivedSchedulingLinkBooking{
+		Id: b.ID, LinkId: b.LinkID, StartTime: b.StartTime.UTC(), EndTime: b.EndTime.UTC(),
+		Status: b.Status, Notes: b.Notes, CreatedAt: b.CreatedAt.UTC(),
+	}
+	if b.BookerErasedAt != nil {
+		t := b.BookerErasedAt.UTC()
+		dto.BookerErasedAt = &t
+		return dto
+	}
+	name, email := b.BookerName, b.BookerEmail
+	dto.BookerName, dto.BookerEmail = &name, &email
+	return dto
+}
+
+// GET /api/scheduling-links/archive
+//
+// The caller's own deleted links, most recently deleted first, plus the
+// erasure policy the delete confirmation is built from. Owner only by
+// construction (the read is filtered on the caller); read-only.
+func (h *schedulingLinkHandlers) listArchivedLinks(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	links, err := storage.ListArchivedSchedulingLinks(h.db, userID)
+	if err != nil {
+		writeServerError(w, r, "list archive", err, http.StatusInternalServerError)
+		return
+	}
+	out := gen.ArchivedSchedulingLinkListResponse{
+		Links:         make([]gen.ArchivedSchedulingLink, 0, len(links)),
+		BookerErasure: bookerErasurePolicy(),
+	}
+	for _, link := range links {
+		out.Links = append(out.Links, archivedLinkDTO(link))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// GET /api/scheduling-links/archive/{id}
+//
+// One archived link and every booking. A single lookup filtered on "owner =
+// caller AND deleted", so an unknown id, a live or paused link and another
+// owner's deleted link all get the same 404 body; never 403 (AC-6a, AC-23).
+func (h *schedulingLinkHandlers) getArchivedLink(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromCtx(r.Context())
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	link, err := storage.GetArchivedSchedulingLink(h.db, userID, id)
+	if err != nil {
+		writeServerError(w, r, "get archived link", err, http.StatusInternalServerError)
+		return
+	}
+	if link == nil {
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+	bookings, err := storage.GetArchivedBookings(h.db, link.ID)
+	if err != nil {
+		writeServerError(w, r, "get archived bookings", err, http.StatusInternalServerError)
+		return
+	}
+	out := gen.ArchivedSchedulingLinkDetail{
+		Link:     archivedLinkDTO(link),
+		Bookings: make([]gen.ArchivedSchedulingLinkBooking, 0, len(bookings)),
+	}
+	for _, b := range bookings {
+		out.Bookings = append(out.Bookings, archivedBookingDTO(b))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }

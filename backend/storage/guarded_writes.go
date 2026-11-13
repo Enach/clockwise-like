@@ -140,11 +140,13 @@ func DeletePersonalCalendarForUserCtx(ctx context.Context, db DBTX, id int64, us
 }
 
 // DeleteSchedulingLinkCtx is DeleteSchedulingLink under the in-request re-check (PAC-71, contract §5).
-func DeleteSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID) (err error) {
+func DeleteSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID) (r0 bool, err error) {
 	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		return DeleteSchedulingLink(q, id)
+		var e error
+		r0, e = DeleteSchedulingLink(q, id)
+		return e
 	})
-	return err
+	return r0, err
 }
 
 // DeleteTeamCtx is DeleteTeam under the in-request re-check (PAC-71, contract §5).
