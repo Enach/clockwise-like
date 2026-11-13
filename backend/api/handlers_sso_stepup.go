@@ -608,16 +608,25 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		return "", ""
 	}
 
+	// PAC-89 step 1a: Microsoft's personal-account tenant is refused before
+	// Graph is asked anything (owner, PAC-71 personal accounts; spec D-4).
+	// id.TenantID is the verifier's lower-case GUID.
+	if id.TenantID == auth.MicrosoftConsumerTenant {
+		return reasonTIDMismatch, ""
+	}
 	running(reasonTIDMismatch)
-	tid, verified, err := p.MicrosoftOrganization(ctx, id.AccessToken)
-	if err != nil || tid == "" || tid != id.TenantID || !containsFold(verified, org.Domain) {
+	// Tenant ids are equal ignoring case (PAC-89 spec D-6); the pin is the
+	// token's lower-case tenant.
+	tid := id.TenantID
+	orgTID, verified, err := p.MicrosoftOrganization(ctx, id.AccessToken)
+	if err != nil || orgTID == "" || !strings.EqualFold(orgTID, tid) || !containsFold(verified, org.Domain) {
 		return reasonTIDMismatch, ""
 	}
 	pinned, err := storage.GetOrgMSTenantID(ctx, h.ah.db, org.ID)
 	if err != nil {
 		return reasonTIDMismatch, ""
 	}
-	if pinned != "" && pinned != tid {
+	if pinned != "" && !strings.EqualFold(pinned, tid) {
 		return reasonTIDChanged, ""
 	}
 	if !strings.EqualFold(id.PreferredUsername, sessEmail) && !strings.EqualFold(id.Email, sessEmail) {
@@ -633,7 +642,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 	if !auth.HasQualifyingEntraRole(roles) {
 		return reasonNotAdmin, ""
 	}
-	if !h.stepupIdentityMatches(ctx, user, storage.Identity{Provider: storage.IdentityMicrosoft, Tenant: strings.ToLower(tid), Subject: strings.ToLower(id.ObjectID)}) {
+	if !h.stepupIdentityMatches(ctx, user, storage.Identity{Provider: storage.IdentityMicrosoft, Tenant: tid, Subject: id.ObjectID}) {
 		return reasonIdentityMismatch, ""
 	}
 	return "", tid

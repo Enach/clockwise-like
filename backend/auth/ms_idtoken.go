@@ -18,16 +18,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Enach/paceday/backend/config"
 	"github.com/Enach/paceday/backend/internal/outbound"
 )
 
 // PAC-71 Microsoft sign-in ID-token verifier (contract revision 3.1,
 // microsoftOAuthCallback SIGN-IN step 2; owner OQ-8 and OQ-9, 2026-11-01).
 //
-// It is tenant-pinned and used by sign-in only: the tenant id is checked to
-// be a canonical GUID before any key is fetched, and the keys come from that
-// tenant's own discovery document. It is deliberately NOT the PAC-50 step-up
-// verifier (stepup.go), which reads the /common keys.
+// It is tenant-pinned: the tenant id is checked to be a canonical GUID before
+// any key is fetched, and the keys come from that tenant's own discovery
+// document. PAC-89: it is also the PAC-50 step-up's Microsoft verifier (one
+// implementation of the rules, spec D-1). A verifier's key address and
+// expected issuer are its own (KeysURL, Issuer): sign-in's are Microsoft's,
+// the step-up's follow the identity-provider decision (config.IdPEndpoint),
+// and every cache entry is identified by the key address it was fetched
+// from, never by the tenant alone (contract PAC-89 section 2.2, AC-18).
 
 // MicrosoftConsumerTenant is Microsoft's documented tenant id of every
 // personal Microsoft account.
@@ -48,6 +53,9 @@ var MicrosoftKeysURL = func(tid string) string {
 	return "https://login.microsoftonline.com/" + tid + "/discovery/v2.0/keys"
 }
 
+// microsoftIssuer is the production v2.0 issuer template of sign-in.
+const microsoftIssuer = "https://login.microsoftonline.com/" + config.TenantPlaceholder + "/v2.0"
+
 var msGUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // IsGUID reports whether s is a canonical 8-4-4-4-12 hex GUID.
@@ -66,6 +74,16 @@ type MicrosoftIdentity struct {
 	ObjectID string // lower-case GUID
 }
 
+// MicrosoftIDClaims is what an accepted ID token says to the PAC-50 step-up:
+// the identity plus the claims its admin checks read (PAC-89 contract 2.1).
+type MicrosoftIDClaims struct {
+	MicrosoftIdentity
+	Email             string
+	PreferredUsername string
+	WIDs              []string
+	WIDsPresent       bool
+}
+
 // MicrosoftIDTokenVerifier verifies sign-in ID tokens. Its key cache is per
 // tenant: kept up to 24 hours, refetched at most once a minute on an unknown
 // kid, at most 1000 tenants with the least recently used evicted first. The
@@ -78,10 +96,16 @@ type MicrosoftIdentity struct {
 type MicrosoftIDTokenVerifier struct {
 	HTTPClient *http.Client
 	Now        func() time.Time
+	// KeysURL is the per-tenant key address. Nil means MicrosoftKeysURL,
+	// read at each verification (sign-in, and its test seam).
+	KeysURL func(tid string) string
+	// Issuer is the expected `iss`, with config.TenantPlaceholder standing
+	// for the tenant. Empty means Microsoft's v2.0 issuer.
+	Issuer string
 
 	mu      sync.Mutex
-	tenants map[string]*list.Element // tid -> element holding *msTenantKeys
-	flights map[string]*msFlight     // tid -> the fetch in flight
+	tenants map[string]*list.Element // key address -> element holding *msTenantKeys
+	flights map[string]*msFlight     // key address -> the fetch in flight
 	lru     *list.List               // front = most recently used
 	fetches int                      // number of key fetches made (for tests)
 }
@@ -94,7 +118,7 @@ type msFlight struct {
 }
 
 type msTenantKeys struct {
-	tid         string
+	addr        string // the key address the keys were fetched from
 	keys        map[string]*rsa.PublicKey
 	fetchedAt   time.Time
 	lastRefetch time.Time
@@ -138,80 +162,131 @@ type msIDClaims struct {
 // by that tenant's published key, iss and ver, aud = clientID (a string or a
 // one-element array), a GUID oid, exp/nbf with 60 s of skew, and nonce.
 func (v *MicrosoftIDTokenVerifier) Verify(ctx context.Context, raw, clientID, nonce string) (*MicrosoftIdentity, error) {
+	id, _, err := v.verify(ctx, raw, clientID, nonce)
+	return id, err
+}
+
+// msStepupClaims is the part of the payload only the step-up reads.
+type msStepupClaims struct {
+	Email             string    `json:"email"`
+	PreferredUsername string    `json:"preferred_username"`
+	WIDs              *[]string `json:"wids"`
+}
+
+// VerifyClaims applies exactly Verify's rules and, for an accepted token,
+// also returns the claims the PAC-50 step-up reads (PAC-89 spec D-1).
+func (v *MicrosoftIDTokenVerifier) VerifyClaims(ctx context.Context, raw, clientID, nonce string) (*MicrosoftIDClaims, error) {
+	id, payload, err := v.verify(ctx, raw, clientID, nonce)
+	if err != nil {
+		return nil, err
+	}
+	var c msStepupClaims
+	if err := decodeSegment(payload, &c); err != nil {
+		return nil, idTokenErr("payload: %v", err)
+	}
+	out := &MicrosoftIDClaims{MicrosoftIdentity: *id, Email: c.Email, PreferredUsername: c.PreferredUsername}
+	if c.WIDs != nil {
+		out.WIDs, out.WIDsPresent = *c.WIDs, true
+	}
+	return out, nil
+}
+
+// keysURL is this verifier's key address for tid (a lower-case GUID).
+func (v *MicrosoftIDTokenVerifier) keysURL(tid string) string {
+	if v.KeysURL != nil {
+		return v.KeysURL(tid)
+	}
+	return MicrosoftKeysURL(tid)
+}
+
+func (v *MicrosoftIDTokenVerifier) issuer() string {
+	if v.Issuer != "" {
+		return v.Issuer
+	}
+	return microsoftIssuer
+}
+
+// verify applies every rule and returns the identity and the payload
+// segment it was read from.
+func (v *MicrosoftIDTokenVerifier) verify(ctx context.Context, raw, clientID, nonce string) (*MicrosoftIdentity, string, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
-		return nil, idTokenErr("not a compact JWS")
+		return nil, "", idTokenErr("not a compact JWS")
 	}
 	var h msIDHeader
 	if err := decodeSegment(parts[0], &h); err != nil {
-		return nil, idTokenErr("header: %v", err)
+		return nil, "", idTokenErr("header: %v", err)
 	}
 	if h.Alg != "RS256" {
-		return nil, idTokenErr("alg %q is not RS256", h.Alg)
+		return nil, "", idTokenErr("alg %q is not RS256", h.Alg)
 	}
 	if h.Kid == "" {
-		return nil, idTokenErr("no kid")
+		return nil, "", idTokenErr("no kid")
 	}
 	var c msIDClaims
 	if err := decodeSegment(parts[1], &c); err != nil {
-		return nil, idTokenErr("payload: %v", err)
+		return nil, "", idTokenErr("payload: %v", err)
 	}
 	// The tenant is checked before anything is fetched, so no other value
 	// ever reaches a URL.
 	if !IsGUID(c.Tid) {
-		return nil, idTokenErr("tid is not a GUID")
+		return nil, "", idTokenErr("tid is not a GUID")
 	}
 	tid := strings.ToLower(c.Tid)
-	key, err := v.key(ctx, tid, h.Kid)
+	key, err := v.key(ctx, v.keysURL(tid), h.Kid)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return nil, idTokenErr("signature encoding")
+		return nil, "", idTokenErr("signature encoding")
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig); err != nil {
-		return nil, idTokenErr("signature does not verify")
+		return nil, "", idTokenErr("signature does not verify")
 	}
-	if !issuerNames(c.Iss, tid) {
-		return nil, idTokenErr("iss %q does not name the token's tenant", c.Iss)
+	if !issuerNames(v.issuer(), c.Iss, tid) {
+		return nil, "", idTokenErr("iss %q does not name the token's tenant", c.Iss)
 	}
 	if c.Ver != "2.0" {
-		return nil, idTokenErr("ver %q is not 2.0", c.Ver)
+		return nil, "", idTokenErr("ver %q is not 2.0", c.Ver)
 	}
 	if !audienceIs(c.Aud, clientID) {
-		return nil, idTokenErr("aud is not the client id")
+		return nil, "", idTokenErr("aud is not the client id")
 	}
 	if !IsGUID(c.Oid) {
-		return nil, idTokenErr("oid absent or not a GUID")
+		return nil, "", idTokenErr("oid absent or not a GUID")
 	}
 	now := v.Now()
 	if c.Exp == nil {
-		return nil, idTokenErr("no exp")
+		return nil, "", idTokenErr("no exp")
 	}
 	exp, err := c.Exp.Int64()
 	if err != nil || !now.Before(time.Unix(exp, 0).Add(msClockSkew)) {
-		return nil, idTokenErr("expired")
+		return nil, "", idTokenErr("expired")
 	}
 	if c.Nbf != nil {
 		nbf, err := c.Nbf.Int64()
 		if err != nil || now.Add(msClockSkew).Before(time.Unix(nbf, 0)) {
-			return nil, idTokenErr("not yet valid")
+			return nil, "", idTokenErr("not yet valid")
 		}
 	}
 	if nonce == "" || subtle.ConstantTimeCompare([]byte(c.Nonce), []byte(nonce)) != 1 {
-		return nil, idTokenErr("nonce does not match the request")
+		return nil, "", idTokenErr("nonce does not match the request")
 	}
-	return &MicrosoftIdentity{TenantID: tid, ObjectID: strings.ToLower(c.Oid)}, nil
+	return &MicrosoftIdentity{TenantID: tid, ObjectID: strings.ToLower(c.Oid)}, parts[1], nil
 }
 
-// issuerNames reports whether iss is the v2.0 issuer of tenant tid
-// (lower-case): "https://login.microsoftonline.com/" + tid + "/v2.0", with the
-// scheme, host and path compared exactly and the tenant part compared
-// case-insensitively (a GUID's hex digits may come in either case).
-func issuerNames(iss, tid string) bool {
-	const prefix, suffix = "https://login.microsoftonline.com/", "/v2.0"
+// issuerNames reports whether iss is template (for sign-in
+// "https://login.microsoftonline.com/{tenantid}/v2.0") naming tenant tid
+// (lower-case): the scheme, host and path compared exactly and the tenant
+// part compared case-insensitively (a GUID's hex digits may come in either
+// case).
+func issuerNames(template, iss, tid string) bool {
+	prefix, suffix, ok := strings.Cut(template, config.TenantPlaceholder)
+	if !ok {
+		return false
+	}
 	if !strings.HasPrefix(iss, prefix) || !strings.HasSuffix(iss, suffix) || len(iss) < len(prefix)+len(suffix) {
 		return false
 	}
@@ -243,14 +318,15 @@ func audienceIs(raw json.RawMessage, clientID string) bool {
 	return false
 }
 
-// key returns the tenant's key kid, fetching the tenant's keys when they are
-// not cached or older than 24 h, and refetching at most once a minute when
-// kid is unknown. A request that finds a fetch for the tenant in flight waits
-// for it (single flight) and then looks kid up in what it returned.
-func (v *MicrosoftIDTokenVerifier) key(ctx context.Context, tid, kid string) (*rsa.PublicKey, error) {
+// key returns the key kid published at addr (one tenant's key address),
+// fetching the keys when they are not cached or older than 24 h, and
+// refetching at most once a minute when kid is unknown. A request that finds
+// a fetch for addr in flight waits for it (single flight) and then looks kid
+// up in what it returned.
+func (v *MicrosoftIDTokenVerifier) key(ctx context.Context, addr, kid string) (*rsa.PublicKey, error) {
 	now := v.Now()
 	v.mu.Lock()
-	entry := v.lookup(tid)
+	entry := v.lookup(addr)
 	fresh := entry != nil && now.Sub(entry.fetchedAt) < msKeysTTL
 	if fresh {
 		if k, ok := entry.keys[kid]; ok {
@@ -258,7 +334,7 @@ func (v *MicrosoftIDTokenVerifier) key(ctx context.Context, tid, kid string) (*r
 			return k, nil
 		}
 	}
-	if f, ok := v.flights[tid]; ok {
+	if f, ok := v.flights[addr]; ok {
 		v.mu.Unlock()
 		select {
 		case <-f.done:
@@ -275,22 +351,22 @@ func (v *MicrosoftIDTokenVerifier) key(ctx context.Context, tid, kid string) (*r
 		entry.lastRefetch = now
 	}
 	f := &msFlight{done: make(chan struct{})}
-	v.flights[tid] = f
+	v.flights[addr] = f
 	v.mu.Unlock()
 
 	// The fetch serves every request waiting on it, so it does not end with
 	// this request's context; it is bounded by the identity-provider limit.
-	keys, err := v.fetch(context.WithoutCancel(ctx), tid)
+	keys, err := v.fetch(context.WithoutCancel(ctx), addr)
 
 	v.mu.Lock()
 	if err == nil {
-		e := v.store(tid, keys, now)
+		e := v.store(addr, keys, now)
 		if fresh {
 			e.lastRefetch = entry.lastRefetch
 		}
 	}
 	f.keys, f.err = keys, err
-	delete(v.flights, tid)
+	delete(v.flights, addr)
 	close(f.done)
 	v.mu.Unlock()
 	return pick(keys, err, kid)
@@ -307,10 +383,10 @@ func pick(keys map[string]*rsa.PublicKey, err error, kid string) (*rsa.PublicKey
 	return k, nil
 }
 
-// lookup returns the tenant's cache entry and marks it recently used. Callers
-// hold v.mu.
-func (v *MicrosoftIDTokenVerifier) lookup(tid string) *msTenantKeys {
-	el, ok := v.tenants[tid]
+// lookup returns the cache entry of a key address and marks it recently used.
+// Callers hold v.mu.
+func (v *MicrosoftIDTokenVerifier) lookup(addr string) *msTenantKeys {
+	el, ok := v.tenants[addr]
 	if !ok {
 		return nil
 	}
@@ -318,30 +394,32 @@ func (v *MicrosoftIDTokenVerifier) lookup(tid string) *msTenantKeys {
 	return el.Value.(*msTenantKeys)
 }
 
-// store caches keys for tid, evicting the least recently used tenant beyond
-// the cap. Callers hold v.mu.
-func (v *MicrosoftIDTokenVerifier) store(tid string, keys map[string]*rsa.PublicKey, now time.Time) *msTenantKeys {
-	if el, ok := v.tenants[tid]; ok {
+// store caches keys fetched from addr, evicting the least recently used entry
+// beyond the cap. Callers hold v.mu.
+func (v *MicrosoftIDTokenVerifier) store(addr string, keys map[string]*rsa.PublicKey, now time.Time) *msTenantKeys {
+	if el, ok := v.tenants[addr]; ok {
 		e := el.Value.(*msTenantKeys)
 		e.keys, e.fetchedAt = keys, now
 		v.lru.MoveToFront(el)
 		return e
 	}
-	e := &msTenantKeys{tid: tid, keys: keys, fetchedAt: now}
-	v.tenants[tid] = v.lru.PushFront(e)
+	e := &msTenantKeys{addr: addr, keys: keys, fetchedAt: now}
+	v.tenants[addr] = v.lru.PushFront(e)
 	for v.lru.Len() > msKeysMaxTenants {
 		last := v.lru.Back()
 		v.lru.Remove(last)
-		delete(v.tenants, last.Value.(*msTenantKeys).tid)
+		delete(v.tenants, last.Value.(*msTenantKeys).addr)
 	}
 	return e
 }
 
-// Cached reports whether tid's keys are cached (for tests).
+// Cached reports whether tid's keys, at this verifier's key address for tid,
+// are cached (for tests).
 func (v *MicrosoftIDTokenVerifier) Cached(tid string) bool {
+	addr := v.keysURL(strings.ToLower(tid))
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	_, ok := v.tenants[strings.ToLower(tid)]
+	_, ok := v.tenants[addr]
 	return ok
 }
 
@@ -354,13 +432,13 @@ type jwkSet struct {
 	} `json:"keys"`
 }
 
-func (v *MicrosoftIDTokenVerifier) fetch(ctx context.Context, tid string) (map[string]*rsa.PublicKey, error) {
+func (v *MicrosoftIDTokenVerifier) fetch(ctx context.Context, addr string) (map[string]*rsa.PublicKey, error) {
 	v.mu.Lock()
 	v.fetches++
 	v.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, outbound.Current().Identity)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, MicrosoftKeysURL(tid), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr, nil)
 	if err != nil {
 		return nil, idTokenErr("keys request: %v", err)
 	}

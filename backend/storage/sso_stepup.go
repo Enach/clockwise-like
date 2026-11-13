@@ -214,8 +214,8 @@ func RecordSSOStepupOutcome(ctx context.Context, db DBTX, o SSOStepupOutcome) (*
 		details.Outcome = "granted"
 		if o.PinTenant != "" {
 			res, err := tx.ExecContext(ctx, `
-				UPDATE organizations SET ms_tenant_id = $2
-				WHERE id = $1 AND (ms_tenant_id IS NULL OR ms_tenant_id = $2)`, *o.OrgID, o.PinTenant)
+				UPDATE organizations SET ms_tenant_id = lower($2)
+				WHERE id = $1 AND (ms_tenant_id IS NULL OR lower(ms_tenant_id) = lower($2))`, *o.OrgID, o.PinTenant)
 			if err != nil {
 				return nil, err
 			}

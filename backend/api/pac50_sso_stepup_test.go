@@ -62,6 +62,16 @@ func googleAdmin(email, hd string) func(*stepupIdP) {
 	}
 }
 
+// Microsoft tenant fixtures (PAC-89): canonical GUIDs, one spelled in
+// upper-case hex, never the consumer tenant.
+const (
+	msTenantT1  = "1a1a1a1a-0000-4000-8000-000000000001"
+	msTenantT2  = "2B2B2B2B-0000-4000-8000-0000000000FF" // upper-case hex
+	msTenantT9  = "9c9c9c9c-0000-4000-8000-000000000009"
+	msTenantABC = "abcabcab-0000-4000-8000-0000000000ab"
+	msTenant17  = "17171717-0000-4000-8000-000000000017"
+)
+
 func microsoftAdmin(email, tid, domain string) func(*stepupIdP) {
 	return func(i *stepupIdP) {
 		i.claims = map[string]any{"tid": tid, "preferred_username": email, "wids": []string{ordinaryMember, globalAdmin}}
@@ -199,20 +209,20 @@ func TestStepupMicrosoft_Denials(t *testing.T) {
 		mutate func(i *stepupIdP, email, domain string)
 		reason string
 	}{
-		{"domain not verified (AC-9a)", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, "t1", d)(i); i.verified = []string{"sub." + d} }, "tid_mismatch"},
-		{"organisation id differs from tid", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, "t1", d)(i); i.orgID = "t9" }, "tid_mismatch"},
-		{"organisation lookup fails (D-3)", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, "t1", d)(i); i.orgStatus = 403 }, "tid_mismatch"},
-		{"pinned to another tenant (AC-9c)", "t1", func(i *stepupIdP, email, d string) { microsoftAdmin(email, "t2", d)(i) }, "tid_changed"},
+		{"domain not verified (AC-9a)", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT1, d)(i); i.verified = []string{"sub." + d} }, "tid_mismatch"},
+		{"organisation id differs from tid", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT1, d)(i); i.orgID = msTenantT9 }, "tid_mismatch"},
+		{"organisation lookup fails (D-3)", "", func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT1, d)(i); i.orgStatus = 403 }, "tid_mismatch"},
+		{"pinned to another tenant (AC-9c)", msTenantT1, func(i *stepupIdP, email, d string) { microsoftAdmin(email, msTenantT2, d)(i) }, "tid_changed"},
 		{"ordinary member only (AC-10)", "", func(i *stepupIdP, email, d string) {
-			microsoftAdmin(email, "t1", d)(i)
+			microsoftAdmin(email, msTenantT1, d)(i)
 			i.claims["wids"] = []string{ordinaryMember}
 		}, "not_admin"},
 		{"no wids, role lookup fails (D-3)", "", func(i *stepupIdP, email, d string) {
-			microsoftAdmin(email, "t1", d)(i)
+			microsoftAdmin(email, msTenantT1, d)(i)
 			i.claims["wids"] = nil
 			i.rolesStatus = 403
 		}, "not_admin"},
-		{"email mismatch (AC-13a)", "", func(i *stepupIdP, email, d string) { microsoftAdmin("other@"+d, "t1", d)(i) }, "email_mismatch"},
+		{"email mismatch (AC-13a)", "", func(i *stepupIdP, email, d string) { microsoftAdmin("other@"+d, msTenantT1, d)(i) }, "email_mismatch"},
 		{"provider error (D-3)", "", nil, "token_invalid"},
 	}
 	for _, c := range cases {
@@ -257,7 +267,7 @@ func TestStepupMicrosoft_AdminGetsAGrantAndPinsTenant(t *testing.T) {
 	for _, viaGraph := range []bool{false, true} {
 		e := newSSOEnv(t)
 		u, org := e.member(t, "m-grant")
-		e.ms.set(microsoftAdmin(u.Email, "tenant-abc", org.Domain))
+		e.ms.set(microsoftAdmin(u.Email, msTenantABC, org.Domain))
 		if viaGraph {
 			e.ms.set(func(i *stepupIdP) { i.claims["wids"] = nil; i.roles = []string{ordinaryMember, globalAdmin} })
 		}
@@ -267,8 +277,8 @@ func TestStepupMicrosoft_AdminGetsAGrantAndPinsTenant(t *testing.T) {
 		if e.liveGrants(t, u.ID) != 1 {
 			t.Fatal("no grant")
 		}
-		if tid, _ := storage.GetOrgMSTenantID(context.Background(), e.db, org.ID); tid != "tenant-abc" {
-			t.Fatalf("pin = %q, want tenant-abc", tid)
+		if tid, _ := storage.GetOrgMSTenantID(context.Background(), e.db, org.ID); tid != msTenantABC {
+			t.Fatalf("pin = %q, want %s", tid, msTenantABC)
 		}
 		wantOneStepupEvent(t, e, u, org, "microsoft", "granted", "")
 		if rec := e.do(t, http.MethodDelete, "/api/admin/sso/"+org.Domain, "", sess); rec.Code != http.StatusNotFound {
@@ -387,7 +397,7 @@ func TestStepup_DoesNotTouchSettingsOrTokens(t *testing.T) {
 	before := snapshot()
 	sess := session(t, u, time.Now())
 	e.google.set(googleAdmin(u.Email, org.Domain))
-	e.ms.set(microsoftAdmin(u.Email, "tenant-17", org.Domain))
+	e.ms.set(microsoftAdmin(u.Email, msTenant17, org.Domain))
 	for _, p := range []string{"google", "microsoft"} {
 		rec := e.stepup(t, p, sess)
 		wantOutcome(t, rec, rec.Code, "stepup=granted")

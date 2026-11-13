@@ -60,7 +60,10 @@ type StepupProvider struct {
 	oauth    *oauth2.Config
 	ep       config.IdPEndpoint
 	client   *http.Client
-	verifier *gooidc.IDTokenVerifier
+	verifier *gooidc.IDTokenVerifier // Google
+	// msIDTokens (Microsoft) is PAC-71's tenant-pinned verifier, with this
+	// provider's per-tenant key address, issuer and client (PAC-89).
+	msIDTokens *MicrosoftIDTokenVerifier
 }
 
 // NewGoogleStepup configures the Google step-up. Its scopes are the identity
@@ -100,8 +103,7 @@ func (p *StepupProvider) ExtraScopes() []string {
 
 func newStepup(name, clientID, clientSecret, redirectURL string, ep config.IdPEndpoint, scopes []string) *StepupProvider {
 	client := newIdPHTTPClient(ep.Guard)
-	keys := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), ep.JWKSURL)
-	return &StepupProvider{
+	p := &StepupProvider{
 		Name: name,
 		oauth: &oauth2.Config{
 			ClientID: clientID, ClientSecret: clientSecret, RedirectURL: redirectURL, Scopes: scopes,
@@ -109,11 +111,31 @@ func newStepup(name, clientID, clientSecret, redirectURL string, ep config.IdPEn
 		},
 		ep:     ep,
 		client: client,
-		// The issuer is checked by hand after verification: Microsoft's
-		// depends on the token's tid, and Google publishes two spellings.
-		verifier: gooidc.NewVerifier(ep.Issuer, keys, &gooidc.Config{ClientID: clientID, SkipIssuerCheck: true}),
 	}
+	if name == StepupMicrosoft {
+		// PAC-89: sign-in's rules, one implementation (spec D-1). The keys
+		// come from the token's own tenant at this deployment's key address
+		// (Microsoft's, or a declared stand-in's), fetched by this
+		// provider's client (no proxy, no redirect, the connection guard for
+		// a stand-in) and bounded by the identity-provider limit (D-12).
+		v := NewMicrosoftIDTokenVerifier()
+		v.HTTPClient = client
+		v.Issuer = ep.Issuer
+		template := ep.TenantKeysURL
+		v.KeysURL = func(tid string) string { return strings.Replace(template, config.TenantPlaceholder, tid, 1) }
+		p.msIDTokens = v
+		return p
+	}
+	keys := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), ep.JWKSURL)
+	// The issuer is checked by hand after verification: Google publishes two
+	// spellings.
+	p.verifier = gooidc.NewVerifier(ep.Issuer, keys, &gooidc.Config{ClientID: clientID, SkipIssuerCheck: true})
+	return p
 }
+
+// MicrosoftIDTokens is the Microsoft step-up's ID-token verifier (nil for
+// Google). Tests use it to set the clock and count key fetches.
+func (p *StepupProvider) MicrosoftIDTokens() *MicrosoftIDTokenVerifier { return p.msIDTokens }
 
 // errPeerRefused is returned when a guarded connection would leave the
 // permitted ranges.
@@ -203,7 +225,8 @@ var ErrStepupToken = errors.New("step-up token invalid")
 
 // Exchange trades the code for tokens and verifies the ID token: signature
 // against the provider's keys, audience, expiry, issuer and that its nonce is
-// the one this step-up sent.
+// the one this step-up sent. A Microsoft ID token is held to sign-in's rules
+// (PAC-89): the returned TenantID and ObjectID are lower-case GUIDs.
 func (p *StepupProvider) Exchange(ctx context.Context, code, nonce string) (*StepupIdentity, error) {
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, p.client)
 	tok, err := p.oauth.Exchange(ctx, code)
@@ -214,6 +237,17 @@ func (p *StepupProvider) Exchange(ctx context.Context, code, nonce string) (*Ste
 	if !ok || raw == "" {
 		return nil, fmt.Errorf("%w: no id_token", ErrStepupToken)
 	}
+	if p.msIDTokens != nil {
+		c, err := p.msIDTokens.VerifyClaims(ctx, raw, p.oauth.ClientID, nonce)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrStepupToken, err)
+		}
+		return &StepupIdentity{
+			Email: c.Email, TenantID: c.TenantID, PreferredUsername: c.PreferredUsername,
+			WIDs: c.WIDs, WIDsPresent: c.WIDsPresent,
+			AccessToken: tok.AccessToken, ObjectID: c.ObjectID,
+		}, nil
+	}
 	idt, err := p.verifier.Verify(gooidc.ClientContext(ctx, p.client), raw)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStepupToken, err)
@@ -222,7 +256,7 @@ func (p *StepupProvider) Exchange(ctx context.Context, code, nonce string) (*Ste
 	if err := idt.Claims(&c); err != nil {
 		return nil, fmt.Errorf("%w: claims: %v", ErrStepupToken, err)
 	}
-	if !p.issuerOK(c.Issuer, c.TenantID) {
+	if !p.issuerOK(c.Issuer) {
 		return nil, fmt.Errorf("%w: unexpected issuer %q", ErrStepupToken, c.Issuer)
 	}
 	if nonce == "" || c.Nonce != nonce {
@@ -240,10 +274,9 @@ func (p *StepupProvider) Exchange(ctx context.Context, code, nonce string) (*Ste
 	return id, nil
 }
 
-func (p *StepupProvider) issuerOK(iss, tid string) bool {
-	if p.Name == StepupMicrosoft {
-		return tid != "" && !strings.ContainsAny(tid, "/?#") && iss == strings.Replace(p.ep.Issuer, config.TenantPlaceholder, tid, 1)
-	}
+// issuerOK is the Google step-up's issuer check (Microsoft's is part of
+// MicrosoftIDTokenVerifier).
+func (p *StepupProvider) issuerOK(iss string) bool {
 	if iss == p.ep.Issuer {
 		return true
 	}
