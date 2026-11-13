@@ -14,8 +14,8 @@
   - the room-list 401-versus-500 distinction already stated in contract revision 3.
 
   The owner's two product answers become their own tickets, each with its own spec
-  (D-7). Room details (OQ-1) are **FOLLOW-UP-ROOM-DETAILS**. Releasing or keeping an
-  earlier room (OQ-5) is **FOLLOW-UP-ROOM-RELEASE**. Until those land, PAC-41 ships the
+  (D-7). Room details (OQ-1) are **PAC-100**. Releasing or keeping an
+  earlier room (OQ-5) is **PAC-102**. Until those land, PAC-41 ships the
   interim behaviour set out in D-1 and D-6.
 - **Inherited scope**:
   - **Resolved by this spec**: API-040 (`docs/factory/api-audit.md:298` on main: room
@@ -225,7 +225,7 @@ their own tickets (D-7).
   the server reports it. When the form already holds a room address and the room list
   contains that room, the picker shows it as selected.
 - **Until room release exists, an earlier room stays booked, and the user is told
-  before saving** (D-6, interim until FOLLOW-UP-ROOM-RELEASE). Paceday adds rooms and
+  before saving** (D-6, interim until PAC-102). Paceday adds rooms and
   never releases them. If the event already holds a room, picking another room adds it
   alongside the first. Leaving room booking (switching to free text or clearing the
   room) also leaves the first room booked. The event as Paceday loads it does not show
@@ -233,10 +233,10 @@ their own tickets (D-7).
   the user in two situations: whenever they are booking a room, and whenever they leave
   room booking during that edit. The message says that saving adds the chosen room,
   does not release a room the event already holds, and that a held room is released in
-  the calendar itself. FOLLOW-UP-ROOM-RELEASE replaces these notices with the owner's
+  the calendar itself. PAC-102 replaces these notices with the owner's
   release-or-keep question.
 - **The room list claims only what it knows** (D-1, D-3, interim until
-  FOLLOW-UP-ROOM-DETAILS). Each room shows its name, both in the list and on the
+  PAC-100). Each room shows its name, both in the list and on the
   selected-room card. Neither shows an availability verdict, a building, floor or
   capacity line, or an empty placeholder for them. Every listed room can be picked. The
   search hint describes what search actually matches.
@@ -261,7 +261,7 @@ their own tickets (D-7).
   record, as today.
 - **Demo mode shows the same product** (D-5). Demo rooms have a name and an identifier
   that is a real room address of the form the live product books, and nothing else.
-  Demo coverage uses the same two states and no provider. When FOLLOW-UP-ROOM-DETAILS
+  Demo coverage uses the same two states and no provider. When PAC-100
   gives live rooms details, demo rooms gain them in the same change.
 - **The room list's answer is pinned.** A test protects the server's room-list answer,
   because booking now depends on it. The answer is an identifier that is the bookable
@@ -288,7 +288,7 @@ the list renders, then no row shows an availability verdict ("Available" or "Bus
 row is disabled, and no row renders a secondary detail line. And when the user picks one
 of them, the selected-room card shows the room's name and renders no secondary detail
 line either. *(Fails today: every row reads "✓ Available" and has an empty detail line,
-and so does the selected card.)* *(Interim. FOLLOW-UP-ROOM-DETAILS replaces the "no
+and so does the selected card.)* *(Interim. PAC-100 replaces the "no
 detail line" half for rooms that carry details.)*  [unit]
 
 AC-4. Given the form already holds a room address and the room list contains a room
@@ -342,18 +342,18 @@ those last three rows names it. If it does not, each row carries the note "split
 PAC-41 (D-4); follow-up issue not yet filed", and AC-11 is met by that note. Either way,
 none of the three is marked Fixed.  [contract]
 
-AC-12. *(D-6, interim until FOLLOW-UP-ROOM-RELEASE.)* Given an event open for editing,
+AC-12. *(D-6, interim until PAC-102.)* Given an event open for editing,
 when the user is in room booking (searching for a room, or with a room selected), then
 before they save the form shows text with two points: saving adds the chosen room and
 does not release a room the event already holds, and a held room is released in the
 calendar itself. *(Fails today: no such text exists.)*  [unit]
 
-AC-13. *(D-6, interim until FOLLOW-UP-ROOM-RELEASE.)* Given the user entered room
+AC-13. *(D-6, interim until PAC-102.)* Given the user entered room
 booking during this edit, when they switch to free text or clear the selected room,
 then before they save the form shows text saying that a room already booked on the event
 stays booked. *(Fails today: no such text exists.)*  [unit]
 
-AC-14. *(D-6, interim; pins the outcome D-6 accepts. FOLLOW-UP-ROOM-RELEASE replaces
+AC-14. *(D-6, interim; pins the outcome D-6 accepts. PAC-102 replaces
 it and does not delete it silently.)* Given an event on a signed-in Google user's
 calendar that holds room "Helsinki" booked through Paceday:
 - (a) when the user reopens it, picks room "Oslo" and saves, then the stored event holds
@@ -396,19 +396,19 @@ and AC-14.
 ## 5. Explicitly out of scope
 
 - **Room details: capacity, building and floor** (owner OQ-1, D-7). They become
-  FOLLOW-UP-ROOM-DETAILS, its own spec. That ticket reads directory data that today
+  PAC-100, its own spec. That ticket reads directory data that today
   needs admin-granted permissions, depends on PAC-68's optional "extended access" step,
   and must fall back gracefully. None of that is a contract-accuracy fix.
 - **Room availability.** The owner's OQ-1 answer covers details, not availability.
   No ticket is filed for availability. D-3 removes the unverified badge.
 - **Releasing or replacing an earlier room, the release-or-keep question, and the
   remembered choice as a user setting** (owner OQ-5, D-7). These become
-  FOLLOW-UP-ROOM-RELEASE, its own spec. That ticket needs three things: loaded events
+  PAC-102, its own spec. That ticket needs three things: loaded events
   that carry their room, a server path that releases a room, and a new user setting.
   Until it lands, D-6's interim applies.
 - **Rooms for Outlook users.** Room booking reads Google room calendars only. Whether
   the owner's "from Google Workspace and Microsoft 365" means Microsoft 365 users get a
-  room list at all is OQ-7, carried to FOLLOW-UP-ROOM-DETAILS.
+  room list at all is OQ-7, carried to PAC-100.
 - **A provider mark on coverage, or an "is on Paceday" coverage state** (D-2, OQ-6).
 - **API-077.** Owned by PAC-47 (header, OQ-2).
 - **A newly added co-host who is a Paceday user showing "On Paceday" before accepting.**
@@ -446,7 +446,7 @@ change was live stay on their events after a revert, and nothing is deleted.
 
 ## 8. Open questions
 
-- **OQ-1, answered (owner, 2026-10-27).** Becomes FOLLOW-UP-ROOM-DETAILS (D-7).
+- **OQ-1, answered (owner, 2026-10-27).** Becomes PAC-100 (D-7).
 - **OQ-2, PAC-47 also inherits API-046 and API-077.** Owner: whichever of PAC-41 and
   PAC-47 reaches its build stage second. Resolve by reading the audit register:
   - If API-046 is already Fixed, the second ticket must keep it fixed and must not
@@ -459,17 +459,17 @@ change was live stay on their events after a revert, and nothing is deleted.
   Google stand-in stores the event body it is given. Nobody has verified whether it
   keeps a resource attendee's flag, or returns an earlier room on the next read. If it
   does not, the stand-in gains that (stand-in code, not product code).
-- **OQ-5, answered (owner, 2026-10-27).** Becomes FOLLOW-UP-ROOM-RELEASE (D-7).
+- **OQ-5, answered (owner, 2026-10-27).** Becomes PAC-102 (D-7).
 - **OQ-6, confirm D-2.** Owner: product owner. Should "On Paceday" ever be decided from
   free/busy? Resolve by a yes/no on the Linear issue.
 - **OQ-7, does OQ-1's "Microsoft 365" include a room list for Outlook users?**
-  *(Revision 2.)* Owner: product owner, via FOLLOW-UP-ROOM-DETAILS. Today an Outlook-only
+  *(Revision 2.)* Owner: product owner, via PAC-100. Today an Outlook-only
   user gets "room booking needs a connected Google calendar" (AC-16). This does not
   block PAC-41; AC-16's message stays true until that ticket changes the room source.
 - **OQ-8, confirm D-6's interim and D-7's split.** *(Revision 2.)* Owner: product owner.
   The owner asked for a release-or-keep question. PAC-41 ships a notice instead and
-  leaves the question to FOLLOW-UP-ROOM-RELEASE. Resolve by a yes/no on the Linear
-  issue. A "no, ship them together" makes PAC-41 wait for FOLLOW-UP-ROOM-RELEASE and
+  leaves the question to PAC-102. Resolve by a yes/no on the Linear
+  issue. A "no, ship them together" makes PAC-41 wait for PAC-102 and
   deletes AC-12 to AC-14.
 
 ## Decisions
@@ -500,7 +500,7 @@ otherwise.*
 
 - **D-1 (revised in Revision 2): PAC-41 does not grow the server's room.** The owner's
   OQ-1 answer sets the product direction: rooms will carry details. That is built by
-  FOLLOW-UP-ROOM-DETAILS, not here. In PAC-41 the web shrinks to the `{id, name}` the
+  PAC-100, not here. In PAC-41 the web shrinks to the `{id, name}` the
   server emits today. The room's identifier is its bookable address, so the user loses
   nothing they have today; every detail shown today is either empty or invented.
 - **D-2: drop the third coverage status and the provider mark rather than implement
@@ -520,9 +520,9 @@ otherwise.*
   capacity and the invented busy rooms, and their identifiers become real room
   addresses (AC-10). Demo coverage loses "on Paceday" and the provider. The owner's OQ-1
   answer does not change this, because no live room carries details until
-  FOLLOW-UP-ROOM-DETAILS lands. That ticket restores demo details in the same change
+  PAC-100 lands. That ticket restores demo details in the same change
   that gives them to live rooms.
-- **D-6 (revised in Revision 2): interim until FOLLOW-UP-ROOM-RELEASE. An earlier room
+- **D-6 (revised in Revision 2): interim until PAC-102. An earlier room
   stays booked, and the user is told before saving.** The owner wants the user asked
   whether to release or keep. That needs a server release path and loaded events that
   carry their room, and neither exists. PAC-41 must not start booking rooms silently
@@ -532,7 +532,7 @@ otherwise.*
     only option PAC-41 can offer, and the notice says so.
   - Residual gap: a user who reopens an event and edits only the location text, never
     entering room booking, sees no notice, because the form cannot know a room is held.
-    FOLLOW-UP-ROOM-RELEASE closes this.
+    PAC-102 closes this.
   - Pending OQ-8.
 - **D-7 (new in Revision 2): split the owner's two answers into two new tickets, and
   keep PAC-41 to contract accuracy.**
@@ -556,11 +556,11 @@ citation on api `68540f6` and web `ae72939`.*
 
 - **Scope (D-7, new).** PAC-41 is now a contract-accuracy ticket. The owner's OQ-1
   (room details) and OQ-5 (release or keep, with a remembered setting) each become their
-  own ticket and spec: FOLLOW-UP-ROOM-DETAILS and FOLLOW-UP-ROOM-RELEASE. §5 and §8 say
+  own ticket and spec: PAC-100 and PAC-102. §5 and §8 say
   so, and OQ-8 asks the owner to confirm the split.
 - **D-1, D-5, D-6 revised.** D-1 is narrowed to "PAC-41 does not grow the room". D-5
   keeps demo rooms at `{id, name}` until live rooms carry details. D-6 becomes the
-  interim until FOLLOW-UP-ROOM-RELEASE. AC-3 and AC-12 to AC-14 are marked as interim,
+  interim until PAC-102. AC-3 and AC-12 to AC-14 are marked as interim,
   and each names the ticket that replaces it.
 - **AC-16 rewritten.** PAC-83 removed the fallback to demo data when the server is
   unreachable (`src/api/demoGate.ts:37-50`). Revision 1's exception ("an unreachable
@@ -574,7 +574,7 @@ citation on api `68540f6` and web `ae72939`.*
   `noInventedData.test.ts:61`, the only test that names room search. §6 adds that test
   to what must not change.
 - **OQ-7 (new).** Does "Microsoft 365" in OQ-1 mean Outlook users get a room list?
-  Carried to FOLLOW-UP-ROOM-DETAILS.
+  Carried to PAC-100.
 - Unchanged in meaning: AC-1, AC-2, AC-4 to AC-11 and AC-15. Reworded without a
   change in meaning: AC-8 (sentence split), AC-10 ("demo session", bullets) and AC-11
   ("build stage", bullets). AC-3 gained an interim note. *(Corrected in Revision 2.1,
@@ -617,7 +617,7 @@ review re-derived every §2 claim from the code rather than from the author's no
 1. **OWNER (OQ-8).** The owner's OQ-5 answer asks the user to choose; PAC-41 ships a
    notice that offers only "keep". D-6 argues this is a subset of the answer, not a
    contradiction, and I agree it is the only honest interim without a release path.
-   Whether to ship the interim or hold PAC-41 for FOLLOW-UP-ROOM-RELEASE is still the
+   Whether to ship the interim or hold PAC-41 for PAC-102 is still the
    owner's call.
 2. **Interim work is replaced later.** The AC-12/AC-13 notices, AC-3's "no detail line"
    and the demo shrink (D-5) are all superseded by the follow-ups. That is an accepted
@@ -627,7 +627,7 @@ review re-derived every §2 claim from the code rather than from the author's no
    client today (`backend/api/handlers_events.go:248,315`), so an Outlook-selected user
    with a Google credential picks a Google room for a Google event. That is consistent.
    Once PAC-47 routes event writes by the selected provider, the same user could pick a
-   Google room for an Outlook event. That belongs in PAC-47's or FOLLOW-UP-ROOM-DETAILS'
+   Google room for an Outlook event. That belongs in PAC-47's or PAC-100'
    scope (OQ-7), not PAC-41's.
 4. **A lost Google connection gets "could not be loaded" with no route to reconnect.**
    This is truthful (contract revision 3: it is the 500), and PAC-67 surfaces lost
