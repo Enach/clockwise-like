@@ -2706,7 +2706,7 @@ components:
           enum: [google, microsoft, sso, generic, choose]
           description: |
             Decided in this order (PAC-97, PAC-98):
-            0. An address with no domain (nothing after the first "@") is
+            0. An address with no domain (no "@", or nothing after the first "@") is
                "choose", with no SSO read and no lookup. It is not a personal
                address.
             1. A domain on the fixed consumer list (gmail.com, googlemail.com,
