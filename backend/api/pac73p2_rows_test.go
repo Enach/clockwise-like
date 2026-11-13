@@ -180,10 +180,16 @@ func TestPAC73P2_EveryRowOneAnswer(t *testing.T) {
 		b.mustPatch(`{"llmProvider":""}`)
 		b.allThree("off", "", "user")
 	})
-	t.Run("row 10", func(t *testing.T) {
+	t.Run("rows 10 and 9", func(t *testing.T) { // PAC87-AC-20: row 10 is organization_unconfirmed; row 9 sends
 		b := p2Member(t, "p2-row10", fc)
 		b.mustPatch(`{"llmProvider":"openai","llmApiKey":"` + p2KeyU + `"}`)
-		b.allThree("personal_keys_forbidden", "", "user")
+		b.allThree("organization_unconfirmed", "", "user")
+		b.mustConfirm(1)
+		st := b.aiStatus()
+		if st["configured"] != true || st["configuration"] != "organization" || st["provider"] != "openai" || st["notConfigured"] != nil {
+			t.Fatalf("row 9 aiStatus = %v", st)
+		}
+		b.parseSends("row 9", p2KeyA, "api.openai.com")
 	})
 	t.Run("row 11", func(t *testing.T) {
 		b := p2Member(t, "p2-row11", fi)
@@ -286,46 +292,44 @@ func TestPAC73P2_WhoseConfigurationIsSent(t *testing.T) {
 	own.parseSends("own key after the org key is removed", p2KeyU, "api.anthropic.com")
 }
 
-// P2-AC-18 to P2-AC-21: forbidding personal keys moves nobody and sends no
-// personal key.
+// P2-AC-18 to P2-AC-21 as amended by PAC-87 (OQ-P2-2; PAC87-AC-8, -9,
+// -13): forbidding personal keys moves a member on their own provider onto
+// the organisation's AI after one confirmation, without rewriting their
+// choice or keys; no personal key is ever sent while forbidden.
 func TestPAC73P2_PersonalKeysForbidden(t *testing.T) {
 	admin := newBYOK(t, "p2-ac18-admin")
 	org := p2Org(t, admin, "p2-ac18.example")
 	p2Admin(t, admin.user, org, p2OpenAI(p2KeyA))
 	m2 := p2Member(t, "p2-ac18-m2", org)
 	m2.mustPatch(`{"llmProvider":"openai","llmApiKey":"` + p2KeyU + `"}`)
-	m3 := p2Member(t, "p2-ac18-m3", org) // never changes their choice
+	m3 := p2Member(t, "p2-ac18-m3", org) // never confirms
 	m3.mustPatch(`{"llmProvider":"anthropic","llmApiKey":"` + p2KeyU + `"}`)
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{PersonalKeysAllowed: bp(false)})
 
-	m2.allThree("personal_keys_forbidden", "", "user")
+	m2.allThree("organization_unconfirmed", "", "user") // row 10
 	w := m2.parse()
-	if !strings.Contains(w.Body.String(), "kept but not used") || !strings.Contains(w.Body.String(), "Use my organisation") {
-		t.Errorf("row 10 sentence = %s", w.Body.String())
+	if b := w.Body.String(); !strings.Contains(b, "access") || !strings.Contains(b, "(OpenAI) and any key you saved are kept") || strings.Contains(b, "Use my organisation") {
+		t.Errorf("row 10 sentence = %s", b)
 	}
-	// Confirming alone does not move M2.
-	m2.mustConfirm(1)
-	m2.allThree("personal_keys_forbidden", "", "user")
 	// P2-AC-20: forbidden probes, nothing reaches any host.
 	for _, body := range []string{`{"llmProvider":"openai"}`, `{"llmProvider":"anthropic","llmApiKey":"k"}`, `{"llmApiKey":"k"}`, `{"llmProvider":"organization","llmApiKey":"k"}`} {
 		conflict409(t, "probe "+body, m2.probe(body), "personal_keys_forbidden", "", "organization_admin")
 	}
 	m2.noRequests("forbidden probes")
-	// P2-AC-21: a personal key is still accepted and stored, never sent.
-	doc := m2.mustPatch(`{"llmProvider":"openai","llmApiKey":"` + p2KeyU + `"}`)
-	if ks, _ := doc["llmApiKeysSet"].(map[string]any); ks["openai"] != true {
-		t.Fatalf("llmApiKeysSet = %v", doc["llmApiKeysSet"])
-	}
-	m2.allThree("personal_keys_forbidden", "", "user")
-	// Choosing "Use my organisation's AI" and confirming the displayed
-	// version moves M2 to row 4; the OpenAI key is still stored.
-	m2.mustPatch(`{"llmProvider":"organization"}`)
-	m2.parseNotConfigured("organization_unconfirmed", "", "user") // the openai write ended the confirmation
+	// Confirming alone moves M2 (row 9); the stored choice and key are kept.
 	m2.mustConfirm(1)
 	m2.parseSends("M2 on the organisation", p2KeyA, "api.openai.com")
-	if s := m2.settings(); s.LLMAPIKeys.OpenAI != p2KeyU {
-		t.Fatal("M2's own key was rewritten")
+	// P2-AC-21: a personal key is still accepted and stored, never sent;
+	// storing OpenAI unchanged keeps row 9 (P87-D3).
+	doc := m2.mustPatch(`{"llmProvider":"openai","llmApiKey":"` + p2KeyU + `"}`)
+	if ks, _ := doc["llmApiKeysSet"].(map[string]any); ks["openai"] != true || doc["llmProvider"] != "openai" {
+		t.Fatalf("settings = %v", doc)
 	}
+	m2.parseSends("M2 after re-saving OpenAI", p2KeyA, "api.openai.com")
+	if s := m2.settings(); s.LLMAPIKeys.OpenAI != p2KeyU || s.LLMProvider != "openai" {
+		t.Fatal("M2's own choice or key was rewritten")
+	}
+	m3.allThree("organization_unconfirmed", "", "user") // M2's confirmation is not M3's
 	// Allowed again: M3 is back on their own key with no action.
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{PersonalKeysAllowed: bp(true)})
 	m3.parseSends("M3 after personal keys are allowed again", p2KeyU, "api.anthropic.com")
@@ -341,9 +345,9 @@ func TestPAC73P2_PersonalKeysForbidden(t *testing.T) {
 	m3.allThree("personal_keys_forbidden", "", "organization_admin")
 	f := p2Member(t, "p2-ac19-f", org)
 	f.allThree("nothing_configured", "", "organization_admin")
-	// A new provider (a provider change from nothing) keeps it too.
+	// A new provider (a provider change from nothing) keeps it too; row 10.
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{Provider: sp("anthropic"), APIKey: sp(p2KeyA)})
-	m3.allThree("personal_keys_forbidden", "", "user")
+	m3.allThree("organization_unconfirmed", "", "user")
 }
 
 // P2-AC-22 to P2-AC-25, P2-AC-36, P2-AC-38, P2-AC-42: telling and asking
@@ -388,20 +392,21 @@ func TestPAC73P2_ConfirmationPerVersion(t *testing.T) {
 	// P2-AC-25: M's confirmation does not confirm M3.
 	m3.parseNotConfigured("organization_unconfirmed", "", "user")
 
-	// P2-AC-23: a model or personal-keys change does not re-ask; a key, a
-	// destination or a provider change does.
+	// P2-AC-23 as amended by PAC-87 (OQ-P2-1; PAC87-AC-1 to -4): a model,
+	// personal-keys, key or destination change does not re-ask; a provider
+	// change does.
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{Model: sp("gpt-4o")})
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{PersonalKeysAllowed: bp(false)})
 	m.parseSends("after model and personal-keys changes", p2KeyA, "api.openai.com")
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{PersonalKeysAllowed: bp(true)})
-	for i, patch := range []storage.OrgAIPatch{{APIKey: sp(p2KeyA2)}, {BaseURL: sp("https://api.openai.com")}, {Provider: sp("anthropic"), APIKey: sp(p2KeyA)}} {
-		cfg := p2Admin(t, admin.user, org, patch)
-		m.allThree("organization_unconfirmed", "", "user")
-		m.mustConfirm(cfg.Version)
-		if i == 2 {
-			m.parseSends("after re-confirming", p2KeyA, "api.anthropic.com")
-		}
-	}
+	p2Admin(t, admin.user, org, storage.OrgAIPatch{APIKey: sp(p2KeyA2)})
+	m.parseSends("after a key rotation", p2KeyA2, "api.openai.com")
+	p2Admin(t, admin.user, org, storage.OrgAIPatch{APIKey: sp(p2KeyA2)}) // re-entering the same key
+	m.parseSends("after re-entering the key", p2KeyA2, "api.openai.com")
+	cfg := p2Admin(t, admin.user, org, storage.OrgAIPatch{Provider: sp("anthropic"), APIKey: sp(p2KeyA)})
+	m.allThree("organization_unconfirmed", "", "user")
+	m.mustConfirm(cfg.Version)
+	m.parseSends("after re-confirming", p2KeyA, "api.anthropic.com")
 
 	// P2-AC-36: choosing one's own provider or off ends the confirmation;
 	// a settings write of "organization" records none (P2-AC-38).
@@ -424,17 +429,21 @@ func TestPAC73P2_ConfirmationPerVersion(t *testing.T) {
 	m.mustConfirm(cur.Version)
 	m.mustPatch(`{"llmProvider":"openai","llmApiKey":"` + p2KeyU + `"}`)
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{PersonalKeysAllowed: bp(false)})
-	m.allThree("personal_keys_forbidden", "", "user")
+	m.allThree("organization_unconfirmed", "", "user") // row 10 (PAC87-AC-12)
 	p2Admin(t, admin.user, org, storage.OrgAIPatch{PersonalKeysAllowed: bp(true)})
 
-	// P2-AC-38: V displayed, admin moves to V+1, the confirm of V is refused.
+	// P2-AC-38 as amended by PAC-87 (PAC87-AC-5): V displayed, the admin
+	// rotates the key (V+1), the confirm of V is accepted and the next
+	// parse carries the current key.
 	m.mustPatch(`{"llmProvider":"organization"}`)
+	m.parseNotConfigured("organization_unconfirmed", "", "user")
 	shown := cur.Version
 	next := p2Admin(t, admin.user, org, storage.OrgAIPatch{APIKey: sp(p2KeyW)})
-	if w := m.confirm(shown); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), fmt.Sprintf(`"configurationVersion":%d`, next.Version)) {
-		t.Fatalf("confirm of the displayed, now stale version = %d %s", w.Code, w.Body.String())
+	if next.Version != shown+1 {
+		t.Fatalf("rotation = %+v", next)
 	}
-	m.parseNotConfigured("organization_unconfirmed", "", "user")
+	m.mustConfirm(shown)
+	m.parseSends("after confirming the version shown before a rotation", p2KeyW, "api.anthropic.com")
 
 	// P2-AC-42: confirmed V, removal, a new setup repeating the provider and
 	// key: a version never had before, row 5, nothing sent.
@@ -445,6 +454,9 @@ func TestPAC73P2_ConfirmationPerVersion(t *testing.T) {
 		t.Fatalf("versions %d -> %d -> %d, want strictly increasing", next.Version, removed.Version, again.Version)
 	}
 	m.allThree("organization_unconfirmed", "", "user")
+	if w := m.confirm(next.Version); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), fmt.Sprintf(`"configurationVersion":%d`, again.Version)) {
+		t.Fatalf("confirm of a version before the removal = %d %s", w.Code, w.Body.String())
+	}
 	m.mustConfirm(again.Version)
 	m.parseSends("after confirming the new setup", p2KeyW, "api.openai.com")
 }
@@ -480,7 +492,8 @@ func TestPAC73P2_ProbeAndTheOrganisation(t *testing.T) {
 	m.sentOnly("anthropic with a key", p2KeyU, "api.anthropic.com")
 }
 
-// P2-AC-27: rows 5, 10 and 11 refresh nothing, whatever the stored brief.
+// P2-AC-27: rows 5, 10 and 11 refresh nothing, whatever the stored brief
+// (PAC-87: row 10 is organization_unconfirmed [user]).
 func TestPAC73P2_BriefRefreshInRows5_10_11ChangesNothing(t *testing.T) {
 	admin := newBYOK(t, "p2-ac27-admin")
 	org := p2Org(t, admin, "p2-ac27.example")
@@ -498,7 +511,7 @@ func TestPAC73P2_BriefRefreshInRows5_10_11ChangesNothing(t *testing.T) {
 		b      *byok
 		reason string
 		en     []string
-	}{{row5, "organization_unconfirmed", []string{"user"}}, {row10, "personal_keys_forbidden", []string{"user"}}, {row11, "personal_keys_forbidden", []string{"organization_admin"}}} {
+	}{{row5, "organization_unconfirmed", []string{"user"}}, {row10, "organization_unconfirmed", []string{"user"}}, {row11, "personal_keys_forbidden", []string{"organization_admin"}}} {
 		for _, state := range []string{"none", "pending", "ready", "failed"} {
 			ev := "evt-p2-" + state + "-" + tc.b.user.String()[:6]
 			if state != "none" {

@@ -5011,62 +5011,70 @@ paths:
         \ as\n  `unsupported`, `unsupported` is a 400 (contract challenge\n  2026-10-28, blocking 1).\n\
         * **`organization`**: decided as a request of a caller who follows\n  their organisation (rows\
         \ 4-6). In row 4 the probe tests the\n  organisation's configuration exactly as the caller's requests\
-        \ use\n  it: its provider, model, destination and key at the confirmed\n  version, nothing of\
-        \ the caller's (spec D-18). A submitted\n  `llmModel` or `llmApiKey` is never combined with an\
-        \ organisation\n  configuration: in row 4 it is the 400 below; in rows 5 and 6 it is\n  that row's\
-        \ 409; while personal keys are forbidden, a submitted\n  `llmApiKey` is the 409 `personal_keys_forbidden`\
-        \ of step 1a. Nothing\n  is sent in any of these cases (spec P2-AC-20, P2-AC-28).\n* **Absent**:\
-        \ the caller's SAVED choice, decided exactly as their parse\n  and brief refresh would decide\
-        \ it (spec §3 table, AC-40). When the\n  saved choice is a provider, a submitted `llmModel` /\
-        \ `llmApiKey`\n  replaces the stored model / bound key for this probe only. When it is\n  not\
-        \ (`\"\"`, `organization`, `unsupported`), the answer is that row's\n  409, and a submitted key\
-        \ is sent nowhere.\n\n**NEW-llm-bring-your-own Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`\
-        \ §3.5, revision 1).** \"Names a provider\" means `llmProvider` is one of `openai`, `anthropic`,\
-        \ `azure_openai`, `bedrock`, `vertex`; `\"\"`, `organization` and `unsupported` do not name a\
-        \ provider. Naming a provider always probes the caller's OWN configuration for it, even when it\
-        \ is the organisation's provider: naming a provider never selects the organisation's key (spec\
-        \ P2-D6; this replaces the parent spec's \"names exactly the organisation's provider\" clause).\
-        \ The organisation's configuration is probed only by `{}` (saved choice in row 4) or `{\"llmProvider\"\
-        :\"organization\"}`, and then the 200's `configuration` is `organization`. While the caller's\
-        \ organisation forbids personal keys (owner O-12), a probe that names a provider or carries `llmApiKey`\
-        \ (whatever `llmProvider` is, including `organization` and `unsupported`) is the 409 `personal_keys_forbidden`\
-        \ with `enablers: [organization_admin]`, and nothing is sent (P2-AC-20). Otherwise a caller whose\
-        \ decided row is 5, 6, 7, 8, 10 or 11 gets that row's 409; in particular `{\"llmProvider\":\"\
-        unsupported\"}` with a saved `unsupported` choice in an organisation that forbids personal keys\
-        \ is row 10 (`[user]`) or 11 (`[organization_admin]`), decided as the saved choice. Row 9 is reserved\
-        \ and never answered.\n**No key in provider error text (spec §3.1a, P2-AC-39; contract revision\
+        \ use\n  it: its provider, model, destination and key of one consistent\n  read, under a confirmation\
+        \ covering that read's provider (PAC-87\n  §3.1), nothing of the caller's (spec D-18). A submitted\n\
+        \  `llmModel` or `llmApiKey` is never combined with an organisation\n  configuration: in row 4\
+        \ it is the 400 below; in rows 5 and 6 it is\n  that row's 409; while personal keys are forbidden,\
+        \ a submitted\n  `llmApiKey` is the 409 `personal_keys_forbidden` of step 1a. Nothing\n  is sent\
+        \ in any of these cases (spec P2-AC-20, P2-AC-28).\n* **Absent**: the caller's SAVED choice, decided\
+        \ exactly as their parse\n  and brief refresh would decide it (spec §3 table, AC-40). When the\n\
+        \  saved choice is a provider, a submitted `llmModel` / `llmApiKey`\n  replaces the stored model\
+        \ / bound key for this probe only. When it is\n  not (`\"\"`, `organization`, `unsupported`),\
+        \ the answer is that row's\n  409, and a submitted key is sent nowhere.\n\n**NEW-llm-bring-your-own\
+        \ Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md` §3.5, revision 1).** \"Names a provider\"\
+        \ means `llmProvider` is one of `openai`, `anthropic`, `azure_openai`, `bedrock`, `vertex`; `\"\
+        \"`, `organization` and `unsupported` do not name a provider. Naming a provider always probes\
+        \ the caller's OWN configuration for it, even when it is the organisation's provider: naming a\
+        \ provider never selects the organisation's key (spec P2-D6; this replaces the parent spec's \"\
+        names exactly the organisation's provider\" clause). The organisation's configuration is probed\
+        \ only by `{}` (saved choice in row 4 or row 9) or `{\"llmProvider\":\"organization\"}`, and then\
+        \ the 200's `configuration` is `organization`. While the caller's organisation forbids personal\
+        \ keys (owner O-12), a probe that names a provider or carries `llmApiKey` (whatever `llmProvider`\
+        \ is, including `organization` and `unsupported`) is the 409 `personal_keys_forbidden` with `enablers:\
+        \ [organization_admin]`, and nothing is sent (P2-AC-20). Otherwise a caller whose decided row\
+        \ is 5, 6, 7, 8, 10 or 11 gets that row's 409; in particular `{\"llmProvider\":\"unsupported\"\
+        }` with a saved `unsupported` choice in an organisation that forbids personal keys is row 10 (`organization_unconfirmed`,\
+        \ `[user]`), row 9 (the organisation's configuration) or row 11 (`personal_keys_forbidden`, `[organization_admin]`),\
+        \ decided as the saved choice.\n**Row 9 (PAC-87 §3.3, AC-14).** For a caller in row 9 (own or\
+        \ removed provider stored, the organisation forbids personal keys, complete, confirmed) the probe\
+        \ is a row-4 probe in every respect: `{}` tests the organisation's configuration exactly as the\
+        \ caller's requests use it and never carries the caller's stored model, key or destination; `{}`\
+        \ with only `llmModel` is the 400 `llmModel and llmApiKey cannot be used with your organisation's\
+        \ AI configuration`; naming a provider or carrying `llmApiKey` is the 409 above. Nothing is sent\
+        \ in the refused cases.\n**No key in provider error text (spec §3.1a, P2-AC-39; contract revision\
         \ 3).** The 502's body is the fixed `upstream provider error` in every row, so no answer carries\
         \ provider or gateway error text. The upstream error string goes only to the server log and Sentry,\
-        \ after every occurrence of every key sent with this request (in row 4 the confirmed version's\
-        \ key, even if replaced since) and of the caller's keys (stored and submitted) is replaced by\
-        \ `[redacted]` (exact strings; an encoded echo can reach those operator-only surfaces, spec §5).\n\
-        **Order of decisions.** (1) The body's shape: the 400. (1a, Part 2) Personal keys forbidden and\
-        \ the body names a provider or carries `llmApiKey`: the 409. Step 1a wins over every later step,\
-        \ so a confirmed follower's `{\"llmApiKey\":\"…\"}` or `{\"llmProvider\":\"organization\",\"llmApiKey\"\
-        :\"…\"}` while forbidden is this 409, never the 400 of step 2a (spec §3.5, P2-AC-20; contract\
-        \ revision 3). (2) Which configuration, as above: when there is none, the 409 and nothing is sent;\
-        \ (2a, Part 2) when it is the organisation's (row 4) and the body carries `llmModel` (or, with\
-        \ personal keys allowed, `llmApiKey`), the 400. (3) The destination check: the 422 and nothing\
-        \ sent. (4) The request: the 200 or the 502. Step 2 precedes step 3, so a caller with no key whose\
-        \ stored destination would also be refused gets the 409 `needs_key`, not the 422: by the spec's\
-        \ table only a configured caller sends anything, so only a configured caller's destination is\
-        \ checked. This replaces PAC-70's \"a refused destination with no key is a 422\" (`contracts/features/NEW-llm-bring-your-own.md`\
-        \ §6); nothing is sent in either case.\n**THE DESTINATION IS NEVER SUPPLIED BY THE CALLER (PAC-24,\
-        \ unchanged).** Every value that contributes to the URL - `llmBaseUrl`, `azureEndpoint`, `azureDeployment`,\
-        \ `azureApiVersion`, `awsRegion`, `bedrockModel`, `vertexModel` - is read from the CALLER'S OWN\
-        \ stored settings (in row 4, Part 2: from the organisation's stored configuration at the confirmed\
-        \ version, and nothing of the caller's) and from nowhere else. The body may carry only `llmProvider`,\
-        \ `llmModel` and `llmApiKey`, none of which reaches a URL (`llmModel` is a JSON body field of\
-        \ the `openai` and `anthropic` requests only). PAC-24 rejected per-property overrides because\
-        \ `{\"llmProvider\":\"openai\",\"llmBaseUrl\":\"https://attacker.example\"}` would have paired\
-        \ a caller-chosen host with the stored key; that argument holds for every key-carrying provider,\
-        \ so the closed body stays. The body is REQUIRED: `{}` probes the saved choice, and an absent\
-        \ body is a 400.\n**Approved destinations (PAC-66, PAC-66-B; carried, with the changes marked\
-        \ NEW).** A request is sent only to a destination the OPERATOR approved for the provider in use.\
-        \ No request property and no stored setting can add to the approved set, and a destination approved\
-        \ for one provider is never one for another.\n* `openai` / `anthropic`: the effective destination\
-        \ is the stored\n  `llmBaseUrl`, or the vendor's public host (`https://api.openai.com`,\n  `https://api.anthropic.com`,\
-        \ always approved) when it is `\"\"`. Extra\n  destinations come from `PACEDAY_LLM_APPROVED_HOSTS_OPENAI`\
+        \ after every occurrence of every key sent with this request (in rows 4 and 9 the organisation's\
+        \ key read for it, even if replaced since) and of the caller's keys (stored and submitted) is\
+        \ replaced by `[redacted]` (exact strings; an encoded echo can reach those operator-only surfaces,\
+        \ spec §5).\n**Order of decisions.** (1) The body's shape: the 400. (1a, Part 2) Personal keys\
+        \ forbidden and the body names a provider or carries `llmApiKey`: the 409. Step 1a wins over every\
+        \ later step, so a confirmed follower's `{\"llmApiKey\":\"…\"}` or `{\"llmProvider\":\"organization\"\
+        ,\"llmApiKey\":\"…\"}` while forbidden is this 409, never the 400 of step 2a (spec §3.5, P2-AC-20;\
+        \ contract revision 3). (2) Which configuration, as above: when there is none, the 409 and nothing\
+        \ is sent; (2a, Part 2) when it is the organisation's (row 4, or row 9 under PAC-87) and the body\
+        \ carries `llmModel` (or, with personal keys allowed, `llmApiKey`), the 400. (3) The destination\
+        \ check: the 422 and nothing sent. (4) The request: the 200 or the 502. Step 2 precedes step 3,\
+        \ so a caller with no key whose stored destination would also be refused gets the 409 `needs_key`,\
+        \ not the 422: by the spec's table only a configured caller sends anything, so only a configured\
+        \ caller's destination is checked. This replaces PAC-70's \"a refused destination with no key\
+        \ is a 422\" (`contracts/features/NEW-llm-bring-your-own.md` §6); nothing is sent in either case.\n\
+        **THE DESTINATION IS NEVER SUPPLIED BY THE CALLER (PAC-24, unchanged).** Every value that contributes\
+        \ to the URL - `llmBaseUrl`, `azureEndpoint`, `azureDeployment`, `azureApiVersion`, `awsRegion`,\
+        \ `bedrockModel`, `vertexModel` - is read from the CALLER'S OWN stored settings (in rows 4 and\
+        \ 9, Part 2 and PAC-87: from the organisation's stored configuration as read for this request,\
+        \ and nothing of the caller's) and from nowhere else. The body may carry only `llmProvider`, `llmModel`\
+        \ and `llmApiKey`, none of which reaches a URL (`llmModel` is a JSON body field of the `openai`\
+        \ and `anthropic` requests only). PAC-24 rejected per-property overrides because `{\"llmProvider\"\
+        :\"openai\",\"llmBaseUrl\":\"https://attacker.example\"}` would have paired a caller-chosen host\
+        \ with the stored key; that argument holds for every key-carrying provider, so the closed body\
+        \ stays. The body is REQUIRED: `{}` probes the saved choice, and an absent body is a 400.\n**Approved\
+        \ destinations (PAC-66, PAC-66-B; carried, with the changes marked NEW).** A request is sent only\
+        \ to a destination the OPERATOR approved for the provider in use. No request property and no stored\
+        \ setting can add to the approved set, and a destination approved for one provider is never one\
+        \ for another.\n* `openai` / `anthropic`: the effective destination is the stored\n  `llmBaseUrl`,\
+        \ or the vendor's public host (`https://api.openai.com`,\n  `https://api.anthropic.com`, always\
+        \ approved) when it is `\"\"`. Extra\n  destinations come from `PACEDAY_LLM_APPROVED_HOSTS_OPENAI`\
         \ /\n  `_ANTHROPIC`. Only `https` on the default port. NEW (owner decision\n  O-10, spec AC-18):\
         \ an operator entry may carry a path prefix\n  (`https://gw.example/openai`) for an OpenAI-compatible\
         \ gateway. A\n  stored `llmBaseUrl` is approved when it is exactly an entry's origin\n  followed\
@@ -5112,14 +5120,14 @@ paths:
             unsupported, openai, anthropic, azure_openai, bedrock, vertex`); `llmProvider: "unsupported"`
             when the caller''s saved choice does not read as `unsupported` (message `llmProvider unsupported
             can be probed only when it is your saved choice`); (Part 2) `llmModel` or `llmApiKey` when
-            the probe decided on the organisation''s configuration (row 4; message `llmModel and llmApiKey
-            cannot be used with your organisation''s AI configuration`), nothing sent; or a body carrying
-            any property other than `llmProvider`, `llmModel` and `llmApiKey` (`additionalProperties:
-            false`). The last case is how a caller attempting to supply a destination - `llmBaseUrl`,
-            `azureEndpoint`, `awsRegion`, … - is refused, and it must be refused here rather than ignored,
-            so that a client is told its override did nothing instead of being left to believe it probed
-            what it named. JSON error shape (writeError). The response never contains the submitted or
-            a stored key.
+            the probe decided on the organisation''s configuration (row 4, or row 9 under PAC-87; message
+            `llmModel and llmApiKey cannot be used with your organisation''s AI configuration`), nothing
+            sent; or a body carrying any property other than `llmProvider`, `llmModel` and `llmApiKey`
+            (`additionalProperties: false`). The last case is how a caller attempting to supply a destination
+            - `llmBaseUrl`, `azureEndpoint`, `awsRegion`, … - is refused, and it must be refused here
+            rather than ignored, so that a client is told its override did nothing instead of being left
+            to believe it probed what it named. JSON error shape (writeError). The response never contains
+            the submitted or a stored key.
 
             '
           content:
@@ -5882,11 +5890,18 @@ paths:
 
         **NEW-llm-bring-your-own Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`
 
-        revision 1).** In row 4 the brief is generated with the organisation''s configuration
+        revision 1; PAC-87 `docs/specs/PAC-87.md` §3.1-§3.3).** In rows 4 and 9 the brief is
 
-        at the version the caller confirmed (read with the confirmation as one consistent
+        generated with the organisation''s configuration as read for this request, in one
 
-        state; otherwise row 5, the 409). In row 4 a provider or gateway failure stores and
+        statement with the caller''s confirmation, when that confirmation covers the
+
+        configuration''s current consent period (no provider change since; otherwise row 5
+
+        or row 10, the 409, and nothing is fetched or written; PAC-87 AC-8). Nothing of the
+
+        caller''s own provider settings is used in row 9. In rows 4 and 9 a provider or gateway failure
+        stores and
 
         returns a FIXED `brief_text`, `The organisation''s AI provider returned an error.`,
 
@@ -5898,9 +5913,11 @@ paths:
 
         contract revision 3). The provider text goes only to the server log and Sentry,
 
-        with every occurrence of every key sent with this request (the confirmed version''s
+        with every occurrence of every key sent with this request (the organisation''s key
 
-        key, even if replaced since) and of the caller''s keys replaced by `[redacted]`
+        read for it, even if replaced since) and of the caller''s keys (stored, also in row
+
+        9) replaced by `[redacted]`
 
         (exact strings; an encoded echo can reach those operator-only surfaces, spec §5).
 
@@ -5908,7 +5925,7 @@ paths:
 
         `LLM error: <provider text>`, with the caller''s own keys replaced by `[redacted]`
 
-        before it is stored, returned, logged or reported. In row 4 a destination refusal''s
+        before it is stored, returned, logged or reported. In rows 4 and 9 a destination refusal''s
 
         text names the organisation''s AI destination and its administrator, never the
 
@@ -6057,29 +6074,33 @@ paths:
         A destination refusal on a configured caller (PAC-66, PAC-66-B) is unchanged: 200 `{"intent":"unknown","error":"<sentence>"}`,
         with no `not_configured`, and nothing sent.
 
-        **Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`, revision 1).** In row 4 the request
-        uses the caller''s organisation''s configuration and nothing of the caller''s (parent D-18): exactly
-        the values of the `configurationVersion` the caller''s stored confirmation names. The configuration
-        and the confirmation are read as one consistent state; when the stored configuration''s version
-        is not the confirmed one (an administrator changed it before or while the request was decided),
-        the answer is row 5 and nothing is sent. No request sends values of another version or combines
-        values of two versions (spec P2-AC-37). In row 5 the caller has not confirmed the organisation''s
-        current configuration: the not-configured 200, nothing sent until they confirm in Paceday (owner
-        O-13; confirmOrganizationAI). In row 10 (personal keys forbidden, the caller on their own provider)
-        nothing is sent until the caller chooses "Use my organisation''s AI" (patchSettings `llmProvider:
-        organization`) and confirms (spec P2-D2, current default). Row 9 is reserved and never answered
-        (see AINotConfigured). In row 4 a destination refusal''s sentence names the organisation''s AI
-        destination and its administrator, never the caller''s own Settings (spec P2-AC-41). The MCP tool
-        `clockwise_parse_command` receives the same body; no MCP tool confirms (spec P2-AC-33).
+        **Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`, revision 1; PAC-87, `docs/specs/PAC-87.md`
+        §3.1-§3.3).** In rows 4 and 9 the request uses the caller''s organisation''s configuration and
+        nothing of the caller''s (parent D-18): the provider, key, destination and model of ONE consistent
+        read of the configuration, read in the same statement as the caller''s confirmation, and only
+        when that read''s consent period is the one the confirmation covers (no provider change since
+        the confirmation; see AINotConfigured "Confirmed"). A request racing with a key or destination
+        change sends either the old or the new values, each complete; a request racing with a provider
+        change sends the old configuration consistently or answers row 5 / 10 and sends nothing. No request
+        combines values of two reads (PAC-87 AC-6, replacing P2-AC-37''s "only the confirmed version").
+        In row 5 the caller has not confirmed the organisation''s current provider: the not-configured
+        200, nothing sent until they confirm in Paceday (owner O-13; confirmOrganizationAI). In row 10
+        (personal keys forbidden, the caller on their own or a removed provider, not confirmed) nothing
+        is sent until the caller confirms; confirming does not change their stored choice, and they are
+        then in row 9 (owner OQ-P2-2, PAC-87). In rows 4 and 9 a destination refusal''s sentence names
+        the organisation''s AI destination and its administrator, never the caller''s own Settings (spec
+        P2-AC-41). The MCP tool `clockwise_parse_command` receives the same body; no MCP tool confirms
+        (spec P2-AC-33).
 
         **No provider error text reaches the caller from the organisation''s configuration (spec §3.1a,
         P2-D16, P2-AC-39; contract revision 3).** A provider or gateway failure of the parse is the 500
         below with the fixed `internal error`, in every row (as before Part 2), so no answer carries provider
         or gateway error text. The provider text goes only to the server log and Sentry, and before it
-        does every occurrence of every key sent with this request (the confirmed version''s key in row
-        4, even if an administrator has replaced it since) and of the caller''s own keys (stored and submitted)
-        is replaced by `[redacted]`. That replacement is of exact strings: an encoded or partial echo
-        of a key can still reach the server log or Sentry (operator-only; spec §5), never an answer.
+        does every occurrence of every key sent with this request (the organisation''s key that was read
+        for it in rows 4 and 9, even if an administrator has replaced it since) and of the caller''s own
+        keys (stored and submitted; in row 9 too, PAC-87 §3.3, although none of them is sent) is replaced
+        by `[redacted]`. That replacement is of exact strings: an encoded or partial echo of a key can
+        still reach the server log or Sentry (operator-only; spec §5), never an answer.
 
         API-080 is fixed here (spec AC-35, D-20): a result with no time range carries neither `range_start`
         nor `range_end`, never `0001-01-01T00:00:00Z`.
@@ -6128,21 +6149,28 @@ paths:
                         OpenAI. Your text and meeting details (titles, attendee emails, Slack and Notion
                         excerpts) are sent to your organisation''s AI provider account, which its administrators
                         can access outside Paceday. Confirm in Paceday to turn AI on.'
-                personalKeysForbidden:
-                  summary: (Part 2) row 10, the caller is on their own OpenAI key and the organisation
-                    forbids personal keys
+                personalKeysForbiddenUnconfirmed:
+                  summary: (PAC-87) row 10, the caller is on their own Anthropic key, the organisation
+                    forbids personal keys and provides OpenAI, and the caller has not confirmed OpenAI
                   value:
                     intent: unknown
-                    error: 'AI features are off: your organisation does not allow personal API keys, so
-                      your own OpenAI key is kept but not used. Choose "Use my organisation''s AI" in
-                      Settings to use your organisation''s AI.'
+                    error: 'AI features are off until you confirm: your organisation does not allow personal
+                      API keys and provides AI through OpenAI. Your text and meeting details (titles,
+                      attendee emails, Slack and Notion excerpts) are sent to your organisation''s AI
+                      provider account, which its administrators can access outside Paceday. Your own
+                      choice (Anthropic) and any key you saved are kept, and are used again if your organisation
+                      allows personal keys. Confirm in Paceday to use your organisation''s AI.'
                     not_configured:
-                      reason: personal_keys_forbidden
+                      reason: organization_unconfirmed
                       enablers:
                       - user
-                      message: 'AI features are off: your organisation does not allow personal API keys,
-                        so your own OpenAI key is kept but not used. Choose "Use my organisation''s AI"
-                        in Settings to use your organisation''s AI.'
+                      message: 'AI features are off until you confirm: your organisation does not allow
+                        personal API keys and provides AI through OpenAI. Your text and meeting details
+                        (titles, attendee emails, Slack and Notion excerpts) are sent to your organisation''s
+                        AI provider account, which its administrators can access outside Paceday. Your
+                        own choice (Anthropic) and any key you saved are kept, and are used again if your
+                        organisation allows personal keys. Confirm in Paceday to use your organisation''s
+                        AI.'
         '400':
           description: '`missing text field` - JSON error shape (writeError).'
           content:
@@ -6218,8 +6246,9 @@ paths:
         never on the caller: not on whether the caller is an administrator (Paceday stores no admin role;
         PAC-50''s proof exists only around a write), not on whether the caller holds a live grant, is
         on the break-glass list, has confirmed, or just made the last change (parent spec D-7, P2-AC-7).
-        Per-caller state (whether the caller has confirmed the current version) is on the caller''s settings
-        read (`AIStatus`), not here.
+        Per-caller state (whether the caller''s confirmation covers the current provider) is on the caller''s
+        settings read (`AIStatus`), not here. The consent period (PAC-87) is not a property of this answer:
+        see OrganizationAIConfiguration `configurationVersion`.
 
         The key is NEVER returned (owner O-7, PAC-24): `keySet` is the only thing a reader learns about
         it. An organisation that never set a configuration answers `configured: false`, `keySet: false`,
@@ -6227,8 +6256,9 @@ paths:
         configuration was removed (`provider: ""`) answers the same except that `configurationVersion`
         is the removal''s version (never `0` again; versions are never reused within an organisation,
         contract revision 3, spec P2-D17) and `personalKeysAllowed` and `updatedAt` are as stored. A client
-        keeps the `configurationVersion` it displayed: patchOrganizationAI and confirmOrganizationAI both
-        name it.
+        keeps the `configurationVersion` it displayed: patchOrganizationAI names it as the state the change
+        was made from, confirmOrganizationAI as the state the member was shown (PAC-87: the confirmation
+        covers that state''s provider).
 
         Checks: membership (403), then 200. Read-only: nothing is consumed, written or recorded.
 
@@ -6358,30 +6388,47 @@ paths:
         \ is\n   never left unrecorded and a rolled-back one is never recorded.\n\nBeing a team owner,\
         \ or having made the last change, proves nothing. Every successful change is recorded for operators,\
         \ in the write's transaction (who, when, `stepup` or `breakglass`, the names of the properties\
-        \ that changed; never the key; P2-AC-6). No API reads that record.\n**What a change does to members**\
-        \ (spec §3.1): `configurationVersion` advances by one when the change alters `provider` (including\
-        \ `provider: \"\"`, the removal), writes `apiKey` (any present `apiKey`, including `\"\"` and\
-        \ including a value equal to the stored key: the server never compares keys, so re-entering the\
-        \ same key re-asks members), or alters any destination property (`baseUrl`, `azureEndpoint`, `azureDeployment`,\
-        \ `azureApiVersion`, `awsRegion`), including removing them; members who follow the organisation\
-        \ must then confirm again before anything is sent to it (spec P2-D4, factory-assumed pending the\
-        \ owner, OQ-P2-1; P2-AC-23). A change of only `model` and/or `personalKeysAllowed` does not advance\
-        \ it, so such a change is never a conflict for another administrator's change and, for `model`\
-        \ and `personalKeysAllowed`, the later change wins. Forbidding personal keys moves nobody onto\
-        \ this configuration: members on their own provider answer row 10 or 11 until they choose `llmProvider:\
-        \ organization` and confirm (spec P2-D2, current default).\n**A version is never reused within\
-        \ an organisation** (contract revision 3, spec P2-D17, P2-AC-42), including across `provider:\
-        \ \"\"` and a later setup: the removal empties the configuration and keeps its version count,\
-        \ so the next setup names the removal's version and gets the next one. A confirmation of a removed\
-        \ configuration therefore never matches a later configuration.\nApproved destinations: the organisation's\
-        \ `baseUrl`, `azureEndpoint` and `awsRegion` are checked on write with exactly the rules of patchSettings\
-        \ for a user's (PAC-66, PAC-66-B, owner O-10 path prefixes), for the organisation's provider,\
-        \ and again on every send (`testLLMConnection`). Because every member reads them (spec P2-D18,\
-        \ contract revision 3), the organisation's addresses are also held to a stricter shape: `baseUrl`\
-        \ must be exactly an approved origin plus that entry's path prefix with no query, fragment or\
-        \ userinfo (the user rule, which leaves no room for a credential in the path); `azureEndpoint`\
-        \ must be `https://<host>` with at most one trailing `/` and no path, query, fragment or userinfo\
-        \ (stricter than a user's, whose path is not checked on write).\n"
+        \ that changed, the new `configurationVersion`, and (PAC-87, P87-D7) whether the change starts\
+        \ a new consent period, i.e. whether members will be asked to confirm again, with that period's\
+        \ start version; never a value or the key; P2-AC-6). No API reads that record.\n**What a change\
+        \ does to administrators** (unchanged, P2-AC-40): `configurationVersion` advances by one when\
+        \ the change alters `provider` (including `provider: \"\"`, the removal), writes `apiKey` (any\
+        \ present `apiKey`, including `\"\"` and including a value equal to the stored key: the server\
+        \ never compares keys), or alters any destination property (`baseUrl`, `azureEndpoint`, `azureDeployment`,\
+        \ `azureApiVersion`, `awsRegion`), including removing them. Another administrator's form shown\
+        \ the older version is then a conflict. A change of only `model` and/or `personalKeysAllowed`\
+        \ does not advance it, so such a change is never a conflict for another administrator's change\
+        \ and, for `model` and `personalKeysAllowed`, the later change wins.\n**What a change does to\
+        \ members** (PAC-87 §3.1, owner OQ-P2-1 of 2026-11-01, replacing P2-D4 / P2-AC-23): members are\
+        \ asked to confirm again ONLY when the change alters `provider`: a change of provider, the first\
+        \ setup, and the removal (`provider: \"\"`) each start a new CONSENT PERIOD (P87-D1, so P -> Q\
+        \ -> P and remove-then-set-up-P again both ask again). A key write (rotation or re-entry) and\
+        \ any destination change keep the current consent period: confirmed members stay confirmed and\
+        \ their next request is sent with the new key or destination without asking. **Accepted consequence\
+        \ (owner's answer):** a new key, Azure endpoint or deployment, Bedrock region or gateway may belong\
+        \ to another account of the same provider or to a gateway run by someone else, whose administrators\
+        \ can access members' data from the next request on; members are not asked again. A client's administrator\
+        \ form says so before saving (PAC-87 §3.6, P87-D6). A change of only `model` or `personalKeysAllowed`\
+        \ asks nobody again (as before).\n**Forbidding personal keys** (PAC-87 §3.2, owner OQ-P2-2): members\
+        \ on their own or a removed provider are not moved until they confirm: they answer row 10 (`organization_unconfirmed`,\
+        \ `[user]`) when the configuration is complete, row 11 when not, and nothing is sent on their\
+        \ behalf. After they confirm (confirmOrganizationAI, no settings write) they are in row 9: requests\
+        \ use this configuration and nothing of theirs, and their own choice, model, destination values\
+        \ and keys stay stored, unused, and are used again when personal keys are allowed (rows 2-3, no\
+        \ action). A confirmation survives lifting and re-imposing the ban while the provider is unchanged\
+        \ (P87-D2).\n**A version is never reused within an organisation** (contract revision 3, spec P2-D17,\
+        \ P2-AC-42), including across `provider: \"\"` and a later setup: the removal empties the configuration\
+        \ and keeps its version count, so the next setup names the removal's version and gets the next\
+        \ one. Each consent period is identified by the version that started it, so a consent period is\
+        \ never reused either, and a confirmation of a removed configuration never covers a later configuration\
+        \ (P87-D1).\nApproved destinations: the organisation's `baseUrl`, `azureEndpoint` and `awsRegion`\
+        \ are checked on write with exactly the rules of patchSettings for a user's (PAC-66, PAC-66-B,\
+        \ owner O-10 path prefixes), for the organisation's provider, and again on every send (`testLLMConnection`).\
+        \ Because every member reads them (spec P2-D18, contract revision 3), the organisation's addresses\
+        \ are also held to a stricter shape: `baseUrl` must be exactly an approved origin plus that entry's\
+        \ path prefix with no query, fragment or userinfo (the user rule, which leaves no room for a credential\
+        \ in the path); `azureEndpoint` must be `https://<host>` with at most one trailing `/` and no\
+        \ path, query, fragment or userinfo (stricter than a user's, whose path is not checked on write).\n"
       requestBody:
         required: true
         content:
@@ -6517,10 +6564,32 @@ paths:
       - organization-ai
       summary: Confirm that my AI requests may go to my organisation's AI provider account
       description: 'NEW-llm-bring-your-own Part 2 (spec §3.4, P2-AC-22 to P2-AC-25; owner O-13: tell and
-        ask once, nothing is sent before the user confirms). The caller confirms the organisation''s configuration
-        at `configurationVersion`, the version they were shown (from getOrganizationAI). Recorded for
-        (caller, caller''s organisation): a later confirmation of a newer version replaces it; confirming
-        the current version again is accepted and changes nothing.
+        ask once, nothing is sent before the user confirms), amended by PAC-87 (`docs/specs/PAC-87.md`
+        §3.1, §3.4; owner OQ-P2-1 and OQ-P2-2 of 2026-11-01). The caller names `configurationVersion`,
+        the version of the configuration they were shown (from getOrganizationAI, or the `organization`
+        of a 409). What is confirmed is the organisation''s PROVIDER for the current consent period, not
+        one version: the confirmation stays valid across key rotations, destination changes, model changes
+        and personal-keys changes, and ends only when a later change starts a new consent period (a change
+        of provider, including removal; see patchOrganizationAI).
+
+        **Accepted or refused (PAC-87 AC-5).** The server keeps, per organisation, the version that started
+        the current consent period (the "consent start"; it is the `configurationVersion` produced by
+        the latest provider change, removal or first setup, and for every organisation existing at the
+        PAC-87 deploy its version at that moment). Versions only grow and every provider change advances
+        the version, so a shown version V lies in the current consent period exactly when consent start
+        <= V <= current `configurationVersion`; then no provider change happened between what was shown
+        and now, including P -> Q -> P and remove-then-set-up-P, where the provider shown equals the current
+        one but the consent start is newer than V. Such a confirmation is recorded even when a key or
+        destination changed since it was shown. Otherwise (V older than the consent start, or V above
+        the current version) it is the 409 `configuration_changed` and nothing is recorded. The check
+        and the record are one atomic step against the configuration as stored at that moment: an administrator''s
+        provider change can never land between them and leave a confirmation recorded for a provider the
+        caller was not shown.
+
+        **What is stored.** For (caller, caller''s organisation), the consent start of the period confirmed
+        (never the shown version). A caller is "confirmed" exactly when that stored value equals the organisation''s
+        current consent start, compared in the same single read that decides a request. Confirming again
+        in the same period changes nothing; a confirmation in a newer period replaces the older one.
 
         Before calling this, a client tells the user, naming the organisation''s `provider`, that their
         text and meeting details (event titles, attendee emails, and the Slack and Notion excerpts used
@@ -6529,18 +6598,22 @@ paths:
         this only on the user''s explicit confirmation. Choosing "Use my organisation''s AI" in Settings
         shows the same notice and, on the user''s confirm, confirms the version DISPLAYED (the client
         calls this with that version, then patchSettings with `llmProvider: organization`); if this answers
-        409, the client shows the current configuration''s notice instead. This operation is the ONLY
-        way a confirmation is recorded: patchSettings never records one, whatever its body (spec P2-D14,
-        P2-AC-38), and a patchSettings that stores `""` or a provider DELETES the caller''s confirmation
-        (P2-AC-36).
+        409, the client shows the current configuration''s notice instead. From row 10 (PAC-87) the client
+        calls ONLY this operation, never patchSettings: the caller''s own choice is kept, and the notice
+        adds that it is kept and used again if the organisation allows personal keys. This operation is
+        the ONLY way a confirmation is recorded: patchSettings never records one, whatever its body (spec
+        P2-D14, P2-AC-38); a patchSettings that CHANGES the stored choice to `""` or to a different provider
+        ends the caller''s confirmation (PAC-87 §3.4, P87-D3; see patchSettings).
 
-        The confirmation is what lets row 4 of the table on AINotConfigured send anything, and only for
-        the version it names; it does not change the caller''s stored choice. It confirms nobody else
-        (P2-AC-25). No MCP tool calls it (spec P2-D9).
+        The confirmation is what lets rows 4 and 9 of the table on AINotConfigured send anything, and
+        only while its consent period is current; it does not change the caller''s stored choice. It confirms
+        nobody else (P2-AC-25). No MCP tool calls it (spec P2-D9).
 
         Checks: body (400), membership (403), then the organisation''s current state (409), then 200.
         When the current configuration is not complete, the 409 is `organization_not_configured` whatever
         `configurationVersion` says (it wins over `configuration_changed`: there is nothing to confirm).
+        Confirmations write no operator record (PAC-87 §3.7); the stored confirmation with its time is
+        the trace.
 
         '
       requestBody:
@@ -6553,9 +6626,13 @@ paths:
         '200':
           description: 'Recorded. The caller''s AI status afterwards, as the settings read would give
             it: for a caller who follows the organisation it is now `configured: true` with `configuration:
-            organization` (row 4); for a caller on their own provider (rows 2, 3, 10, 11), on a removed
-            provider, or on "off", it is unchanged, and the confirmation is kept until a settings write
-            stores `""` or a provider (spec P2-D2: confirming does not move a caller off their own choice).
+            organization` (row 4); for a caller in row 10 (own or removed provider, organisation forbids
+            personal keys, complete) it is now `configured: true` with `configuration: organization` and
+            the organisation''s `provider` (row 9, PAC-87 AC-8), and their stored choice is unchanged;
+            for a caller on their own provider while personal keys are allowed (rows 2, 3), on a removed
+            provider in row 7 or 8, or on "off" (row 1, which always wins), it is unchanged. In every
+            case the confirmation is kept until a later consent period starts or a settings write changes
+            the stored choice to `""` or a different provider (PAC-87 §3.4).
 
             '
           content:
@@ -6590,11 +6667,13 @@ paths:
         '409':
           description: 'Nothing is recorded (P2-AC-24). `reason` `organization_not_configured`: the organisation''s
             configuration is not complete, so there is nothing to confirm (this wins when both apply).
-            `configuration_changed`: the configuration is complete and `configurationVersion` is not the
-            current one (an administrator changed the configuration after the caller was shown it). `organization`
-            carries the current configuration so the client can show the notice again with what is true
-            now. 409 because the request is well formed and conflicts with the current state of the organisation''s
-            configuration (RFC 9110 §15.5.10).
+            `configuration_changed`: the configuration is complete and `configurationVersion` is not in
+            the current consent period (an administrator changed the provider, or removed and set up the
+            configuration again, after the caller was shown it; PAC-87: a key or destination change alone
+            is no longer a conflict here), or is above the current version. `organization` carries the
+            current configuration so the client can show the notice again with what is true now. 409 because
+            the request is well formed and conflicts with the current state of the organisation''s configuration
+            (RFC 9110 §15.5.10).
 
             '
           content:
@@ -8002,10 +8081,18 @@ paths:
         \ Nothing here reads, writes or reveals an organisation's\n  configuration or key: that is getOrganizationAI\
         \ and\n  patchOrganizationAI (Part 2). Writing `llmProvider: organization`\n  does not confirm\
         \ the organisation's configuration, alone or inside\n  a whole settings document (confirmOrganizationAI\
-        \ does; spec P2-D14,\n  P2-AC-38). Writing `llmProvider` as `\"\"` or as one of the five\n  providers\
-        \ DELETES the caller's stored confirmation for their\n  organisation, whether or not the stored\
-        \ choice changes, so a later\n  return to `organization` asks again (spec §3.4, P2-AC-36); this\
-        \ is a\n  side effect, never a refusal. While the caller's organisation\n  forbids personal keys,\
+        \ does; spec P2-D14,\n  P2-AC-38). PAC-87 (§3.4, P87-D3, replacing P2-AC-36's \"whether or\n \
+        \ not the stored choice changes\"): a write that CHANGES the stored\n  `llmProvider` to `\"\"\
+        ` or to a provider different from the one\n  stored ends the caller's stored confirmation for\
+        \ their\n  organisation, so a later return to `organization`, or a later ban\n  on personal keys,\
+        \ asks again; a write that stores the SAME value\n  (a whole settings document sent back unchanged,\
+        \ a key or model for\n  the stored provider) keeps it, so a member in row 9 is not moved\n  back\
+        \ to row 10 by an unrelated save. Writing `organization` keeps\n  it. \"Changes\" is decided against\
+        \ the choice stored when the write\n  is applied, and the write and a concurrent confirmation\
+        \ by the same\n  caller are ordered: either the confirmation is recorded first and\n  then ended\
+        \ by the change, or the change is stored first and the\n  confirmation recorded after it; never\
+        \ the changed choice stored\n  with an earlier confirmation still live (PAC-87 AC-23). This is\
+        \ a\n  side effect, never a refusal. While the caller's organisation\n  forbids personal keys,\
         \ choosing a provider and writing a key for it\n  are accepted and stored, and that key is never\
         \ sent (spec P2-D8,\n  P2-AC-21).\n\nBefore PAC-24 there was no PATCH; the only write was a full-replace\
         \ PUT that persisted every omitted field as its Go zero value (API-004).\n"
@@ -8810,25 +8897,35 @@ components:
 
         can change that. One row of the table in
 
-        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1 (Part 2; rows 1-8
+        `docs/specs/PAC-87.md` §3.2 (which replaces the table of
 
-        are the parent spec''s, rows 9-11 are new), decided from the caller''s
+        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.1; rows 1-8 are the
 
-        stored choice and their organisation''s configuration at the moment of
+        parent spec''s, rows 9-11 Part 2''s, row 9 answered since PAC-87),
 
-        the request. Rows are evaluated IN THE ORDER LISTED (9-11 right after
+        decided from the caller''s stored choice and their organisation''s
 
-        1). "Complete": the organisation''s configuration is `configured`
+        configuration at the moment of the request. Rows are evaluated IN
 
-        (OrganizationAIConfiguration). "Forbids": its `personalKeysAllowed` is
+        THE ORDER LISTED (9-11 right after 1). "Complete": the organisation''s
 
-        false. "Confirmed": the caller''s stored confirmation
+        configuration is `configured` (OrganizationAIConfiguration).
 
-        (confirmOrganizationAI) names exactly the `configurationVersion` the
+        "Forbids": its `personalKeysAllowed` is false. "Confirmed" (PAC-87
 
-        request reads, the two read as one consistent state; a patchSettings
+        §3.1): the caller''s stored confirmation (confirmOrganizationAI) is of
 
-        that stores `""` or a provider deletes it (spec revision 1).
+        the organisation''s CURRENT CONSENT PERIOD, i.e. no change of provider
+
+        (including removal and setting up again) happened since it was
+
+        recorded; key, destination, model and personal-keys changes do not
+
+        end it. The configuration and the confirmation are read in one
+
+        statement. A patchSettings that changes the stored choice to `""` or
+
+        to a different provider ends it (PAC-87 §3.4).
 
 
         | Row | Stored choice | Condition | `reason` | `enablers` |
@@ -8837,9 +8934,11 @@ components:
 
         | 1 | `""` (off) | - | `off` | user |
 
-        | 9 | (reserved) | never answered under spec P2-D2''s current default (OQ-P2-2) | - | - |
+        | 9 | a provider, or `unsupported` | forbids; complete; confirmed | (configured: organisation)
+        | - |
 
-        | 10 | a provider, or `unsupported` | forbids; complete | `personal_keys_forbidden` | user |
+        | 10 | a provider, or `unsupported` | forbids; complete; not confirmed | `organization_unconfirmed`
+        (PAC-87; was `personal_keys_forbidden`) | user |
 
         | 11 | a provider, or `unsupported` | forbids; not complete | `personal_keys_forbidden` | organization_admin
         |
@@ -8865,33 +8964,60 @@ components:
 
         brief refresh, the probe naming nothing, and the settings read (spec
 
-        P2-AC-29). Row 1 wins over everything: "off" is never overridden by
+        P2-AC-29, PAC-87 AC-20). Row 1 wins over everything: "off" is never
 
-        the organisation (parent D-9, P2-AC-16). While the organisation
+        overridden by the organisation, whatever confirmation the caller
 
-        forbids personal keys, no personal key, stored or submitted, is ever
+        holds (parent D-9, P2-AC-16). While the organisation forbids personal
 
-        sent (owner O-12), and nobody is moved onto the organisation''s
+        keys, no personal key, stored or submitted, is ever sent (owner O-12).
 
-        configuration (spec P2-D2, current default, pending the owner): a
+        A caller on their own or a removed provider is moved onto the
 
-        caller on their own or a removed provider answers row 10 or 11 and
+        organisation''s configuration only after confirming once (owner
 
-        nothing is sent until they choose `organization` (patchSettings) and
+        OQ-P2-2, 2026-11-01): row 10 until they confirm, row 9 after; the
 
-        confirm. The caller''s stored choice and keys are not rewritten, so
+        caller''s stored choice, model, destination values and keys are not
 
-        allowing personal keys again puts the caller back in row 2 or 3.
+        rewritten, not sent and not used in row 9, so allowing personal keys
 
-        `organization_unconfirmed` means the caller can turn AI on in one step
+        again puts the caller back in row 2 or 3 with no action.
 
-        by confirming (owner O-13; nothing is sent before);
 
-        `personal_keys_forbidden` with `enablers: [user]` (row 10) means the
+        `organization_unconfirmed` (rows 5 and 10) means: the caller can turn
 
-        caller can turn AI on by choosing "Use my organisation''s AI", which
+        AI on in ONE step, by confirming the organisation''s AI
 
-        shows the O-13 notice and confirms. Only rows 2 and 4 send anything. A stored `bedrock`,
+        (confirmOrganizationAI, owner O-13; nothing is sent before), and
+
+        that step changes nothing else; in particular a client never changes
+
+        the caller''s stored choice for it. A client that needs to tell row
+
+        10 from row 5 (to add that the caller''s own choice is kept) reads
+
+        the caller''s stored `Settings.llmProvider` (`organization` in row 5,
+
+        a provider or `unsupported` in row 10); `message` already differs.
+
+        Row 10 reuses this reason, rather than keeping
+
+        `personal_keys_forbidden` or adding a value, because it now has row
+
+        5''s meaning and so that a web build from before PAC-87 renders it
+
+        correctly (its "Review and confirm" action confirms without changing
+
+        the stored choice) and still parses it (the web validates this
+
+        schema with a closed enum): `contracts/features/PAC-87.md` §2.
+
+        Since PAC-87 `personal_keys_forbidden` occurs only with `enablers:
+
+        [organization_admin]` (row 11, and the probe refusal below); `[user]`
+
+        no longer occurs with it. Only rows 2, 4 and 9 send anything. A stored `bedrock`,
 
         `azure_openai` or `vertex` choice is a supported provider: with no key
 
@@ -8960,11 +9086,15 @@ components:
             are off, which may be false for the caller (see `testLLMConnection`). For `organization_unconfirmed`
             it says that the caller''s text and meeting details would be sent to their organisation''s
             AI provider account, which its administrators can access outside Paceday, and that nothing
-            is sent until they confirm in Paceday (owner O-13). For `personal_keys_forbidden` with `enablers:
-            [user]` (row 10) it says the organisation does not allow personal keys, that the caller''s
-            own provider and key are kept but not used, and to choose "Use my organisation''s AI" in Settings
-            (spec P2-AC-18). No message, in any row, contains the words "read", "reads" or "see" (spec
-            P2-AC-26). Wording is not contractual beyond that, and it never carries a key.
+            is sent until they confirm in Paceday (owner O-13). In row 10 (PAC-87 §3.5, AC-8, AC-15) it
+            says the organisation does not allow personal keys and provides AI through its provider (named),
+            contains the same consent sentence (the organisation''s provider account''s administrators
+            can **access** the data), says the caller''s own choice and any key they saved are kept and
+            used again if the organisation allows personal keys, and says to confirm in Paceday. For `personal_keys_forbidden`
+            (row 11) it says the organisation does not allow personal keys and that an administrator of
+            the organisation can set up its AI. No message, in any row, contains the words "read", "reads"
+            or "see" (spec P2-AC-26, PAC-87 AC-15). Wording is not contractual beyond that, and it never
+            carries a key.
 
             '
       required:
@@ -8986,7 +9116,7 @@ components:
       properties:
         configured:
           type: boolean
-          description: True exactly in rows 2 and 4 (row 9 is reserved).
+          description: True exactly in rows 2, 4 and 9 (row 9 since PAC-87).
         provider:
           type: string
           enum:
@@ -9002,8 +9132,11 @@ components:
           - own
           - organization
           description: 'NEW-llm-bring-your-own Part 2. Present exactly when `configured` is true: `own`
-            in row 2 (the caller''s provider, key and destination), `organization` in row 4 (the organisation''s
-            at the confirmed version, and nothing of the caller''s, parent D-18).
+            in row 2 (the caller''s provider, key and destination), `organization` in rows 4 and 9 (the
+            organisation''s configuration, and nothing of the caller''s, parent D-18). In row 9 (PAC-87)
+            the caller''s stored `Settings.llmProvider` is still their own provider or `unsupported`,
+            kept and not used, while `provider` here is the organisation''s: a client shows the own choice
+            as kept and AI as running on the organisation''s AI.
 
             '
         inOrganization:
@@ -11420,9 +11553,9 @@ components:
             values for it, and the submitted key or else the key bound to it; never a key bound to another
             provider (and, while the caller''s organisation forbids personal keys, the 409 `personal_keys_forbidden`).
             `""` is the 409 `off`. `organization` is decided as a follower''s request (rows 4-6; in row
-            4 it tests the organisation''s configuration at the confirmed version). Only the five provider
-            values "name a provider" (testLLMConnection, Part 2). `unsupported` is accepted only when
-            the caller''s saved choice reads as `unsupported` and is then decided as the saved choice
+            4 it tests the organisation''s configuration as the caller''s requests use it). Only the five
+            provider values "name a provider" (testLLMConnection, Part 2). `unsupported` is accepted only
+            when the caller''s saved choice reads as `unsupported` and is then decided as the saved choice
             (the row 7/8 409, a submitted key sent nowhere); otherwise it is a 400. `ollama` is not in
             the set (400). The same set as `Settings.llmProvider`. The approved-destination check follows
             this value when present, not the saved provider (PAC-66 AC-18, PAC-66-B AC-B11). Nothing submitted
@@ -11476,7 +11609,7 @@ components:
           - own
           - organization
           description: 'NEW-llm-bring-your-own Part 2. `organization` when the probe tested the organisation''s
-            configuration (row 4), `own` otherwise.
+            configuration (row 4, or row 9 under PAC-87), `own` otherwise.
 
             '
       required:
@@ -12314,8 +12447,9 @@ components:
           type: boolean
           description: 'Owner O-12. `true` (the default) means a member''s own provider and key take precedence
             for that member (rows 2-3). `false` means no member''s personal key is sent: a member on their
-            own or a removed provider has no AI (rows 10-11) until they choose "Use my organisation''s
-            AI" and confirm (spec P2-D2, current default, pending the owner); followers are unaffected
+            own or a removed provider uses the organisation''s AI after confirming once (row 10, then
+            row 9; owner OQ-P2-2, PAC-87), keeping their own settings for when personal keys are allowed
+            again; while the configuration is not complete they have no AI (row 11); followers are unaffected
             (rows 4-6).
 
             '
@@ -12328,9 +12462,16 @@ components:
             an organisation: removal keeps the count, so a configuration set after a removal never has
             a version an earlier configuration had (contract revision 3, spec P2-D17, P2-AC-42). A version
             fixes `provider`, the key and the destination properties; `model` and `personalKeysAllowed`
-            are not part of it, and a request in row 4 sends the model read together with the version.
-            A member''s confirmation is for one version (confirmOrganizationAI); an administrator''s change
-            names the version it was made from (patchOrganizationAI).
+            are not part of it, and a request in rows 4 and 9 sends the model read together with them.
+            An administrator''s change names the version it was made from (patchOrganizationAI).
+
+            **Consent periods (PAC-87 §3.1).** A member''s confirmation is not for one version: it is
+            for the CONSENT PERIOD the version belongs to. A consent period starts at every version produced
+            by a change of `provider` (first setup, change, removal) and contains every later version
+            up to the next such change; key and destination changes advance the version inside the same
+            period. The period is identified by its first version, so periods are never reused. This answer
+            does not carry the period''s first version (see `contracts/features/PAC-87.md` §1 for why);
+            a client needs only the version it showed, which confirmOrganizationAI names.
 
             '
         updatedAt:
@@ -12440,14 +12581,21 @@ components:
       additionalProperties: false
     OrganizationAIConsentRequest:
       type: object
-      description: Body of confirmOrganizationAI.
+      description: 'Body of confirmOrganizationAI. Unchanged by PAC-87: the caller still names the version
+        shown, and the server decides from what it stores whether that version lies in the current consent
+        period.
+
+        '
       required:
       - configurationVersion
       properties:
         configurationVersion:
           type: integer
           minimum: 1
-          description: The `configurationVersion` of the configuration the user was shown and confirmed.
+          description: 'The `configurationVersion` of the configuration the user was shown and confirmed.
+            Accepted when it lies in the current consent period (PAC-87; see confirmOrganizationAI).
+
+            '
       additionalProperties: false
     OrganizationAIWriteForbiddenResponse:
       description: 'The 403 of patchOrganizationAI (NEW-llm-bring-your-own Part 2), the
@@ -13668,15 +13816,18 @@ components:
             has confirmed it (confirmOrganizationAI). Accepted on write whether or not the caller belongs
             to an organisation (for a caller with none it is row 6 with `enablers: [user]`). `openai`,
             `anthropic`, `azure_openai`, `bedrock`, `vertex`: the caller''s own key-based provider (rows
-            2-3; rows 10-11 while the caller''s organisation forbids personal keys, Part 2). Writing `""`
-            or a provider deletes the caller''s organisation confirmation (Part 2, spec P2-AC-36). A row
-            stored on `bedrock`, `azure_openai` or `vertex` before this change keeps that choice and its
-            stored destination values, and needs a key (spec AC-8, AC-40). `unsupported`: a READ value
-            only in effect. The stored choice is a provider Paceday no longer supports (`ollama`; rows
-            7-8). The stored value is not rewritten (spec D-10), so a rollback restores it. A write carrying
-            `unsupported` is accepted only when the caller''s row already reads as `unsupported` (the
-            document read and written back unchanged, spec AC-9); otherwise it is a 400. `ollama` is never
-            returned and is a 400 on write (spec AC-6, AC-7).
+            2-3; rows 9-11 while the caller''s organisation forbids personal keys, Part 2 and PAC-87).
+            In row 9 the stored provider stays the caller''s choice, kept and not used: `aiStatus` then
+            reports `configuration: organization` and the ORGANISATION''s provider, so a client tells
+            row 9 from row 4 by this property not being `organization`. Changing the stored value to `""`
+            or to a different provider ends the caller''s organisation confirmation; storing the same
+            value again does not (PAC-87 §3.4, P87-D3). A row stored on `bedrock`, `azure_openai` or `vertex`
+            before this change keeps that choice and its stored destination values, and needs a key (spec
+            AC-8, AC-40). `unsupported`: a READ value only in effect. The stored choice is a provider
+            Paceday no longer supports (`ollama`; rows 7-8). The stored value is not rewritten (spec D-10),
+            so a rollback restores it. A write carrying `unsupported` is accepted only when the caller''s
+            row already reads as `unsupported` (the document read and written back unchanged, spec AC-9);
+            otherwise it is a 400. `ollama` is never returned and is a 400 on write (spec AC-6, AC-7).
 
             '
         llmModel: &id025
@@ -13721,7 +13872,9 @@ components:
           readOnly: true
           description: 'Read-only (NEW-llm-bring-your-own, spec AC-8, AC-21): whether AI works for the
             caller now and, when it does not, why and who can turn it on. The same reason the caller''s
-            parse, brief refresh and probe would give. Accepted and ignored on write.
+            parse, brief refresh and probe would give. In row 9 (PAC-87) it is `configured: true`, `configuration:
+            organization` with the organisation''s `provider` while `llmProvider` stays the caller''s
+            own choice. Accepted and ignored on write.
 
             '
         llmBaseUrl: &id030

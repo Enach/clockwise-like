@@ -113,7 +113,7 @@ breaks those selectors without breaking the feature.
 |---|---|---|
 | `ai-off-notice` | the "AI features are off" notice shown by the dashboard's scheduling bar and the AI section of Settings | `tests/llm-bring-your-own.spec.ts` (spec AC-21, AC-34) asserts the notice, not an error, appears for a user with no AI configuration. Provided by smart-calendar-flow in the NEW-llm-bring-your-own PR. |
 
-## 4c. Organisation AI — `src/components/settings/OrganizationAISection.tsx`, `src/components/OrgAIConsentDialog.tsx`, `src/components/AINotConfiguredNotice.tsx` (PAC-73 Part 2)
+## 4c. Organisation AI — `src/components/settings/OrganizationAISection.tsx`, `src/components/OrgAIConsentDialog.tsx`, `src/components/AINotConfiguredNotice.tsx` (PAC-73 Part 2, PAC-87)
 
 | Test id | Element | Why |
 |---|---|---|
@@ -124,9 +124,12 @@ breaks those selectors without breaking the feature.
 | `org-ai-stepup-outcome` | the step-up outcome stated in the organisation AI section | P2-AC-32: an organisation-AI landing is stated there and not in the SSO section. |
 | `org-ai-forbid-warning` | the warning before forbidding personal keys on an incomplete configuration | P2-AC-30. |
 | `org-ai-consent` / `org-ai-consent-text` / `org-ai-consent-changed` | the one-time notice dialog, its text, and its "changed meanwhile" note | P2-AC-22, P2-AC-26, P2-AC-38 (owner O-13 wording: "access", never read/reads/see). |
-| `ai-org-confirm` | the notice's confirm action in row 5 | P2-AC-22. |
-| `ai-use-org` | the notice's "Use my organisation's AI" action in rows 7 and 10 | P2-AC-18, P2-AC-31. |
-| `ai-personal-keys-forbidden` | the Settings note that a member's own choice and key are kept but not used | P2-AC-31. |
+| `ai-org-confirm` | the notice's "Review and confirm" action in rows 5 and 10 (PAC-87: row 10 confirms without changing the stored choice) | P2-AC-22; `tests/llm-org-ai.spec.ts` PAC87-AC-16. |
+| `ai-use-org` | the notice's "Use my organisation's AI" action in row 7 only (PAC-87: never offered from row 10) | P2-AC-31; PAC87-AC-16 asserts it is absent from row 10. |
+| `ai-personal-keys-forbidden` | the Settings note that a member's own choice and key are kept but not used | P2-AC-31; PAC87-AC-16 (rows 9 and 10). |
+| `ai-runs-on-org` | the Settings line for a member in row 9: "AI runs on your organisation's AI (‹provider›)" | `tests/llm-org-ai.spec.ts` PAC87-AC-15, PAC87-AC-16. Provided by smart-calendar-flow PAC-87 (impl/pac-87-web, #143). |
+| `org-ai-consent-kept` | the consent dialog's sentence that the member's own choice and key are kept (shown when the stored choice is not `organization`) | PAC87-AC-15, PAC87-AC-16. Provided by smart-calendar-flow #143. |
+| `org-ai-presave` / `org-ai-presave-<kind>` | the administrator form's pre-save block and each sentence (`provider_changed`, `provider_removed`, `key_or_destination`, `forbid_complete`) | PAC87-AC-17 (unit-tested in the web; available to e2e). Provided by smart-calendar-flow #143. |
 
 ## 5. Demo, unreachable and failure markers (PAC-83, contract `contracts/features/PAC-83.md` §5.1)
 

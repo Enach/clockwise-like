@@ -26,7 +26,9 @@ type p2Org struct {
 }
 
 func p2State(s *storage.Settings, o p2Org) AIState {
-	st := AIState{Settings: s, Org: storage.OrgAIState{Config: storage.OrgAIConfig{PersonalKeysAllowed: !o.forbids, Version: 7}}}
+	// Version 7 in a consent period that began at 5 (a key rotation since
+	// the provider was set up, PAC-87).
+	st := AIState{Settings: s, Org: storage.OrgAIState{Config: storage.OrgAIConfig{PersonalKeysAllowed: !o.forbids, Version: 7, ConsentSince: 5}}}
 	if o.in {
 		id := uuid.New()
 		st.Org.OrgID = &id
@@ -35,7 +37,7 @@ func p2State(s *storage.Settings, o p2Org) AIState {
 		st.Org.Config.Provider, st.Org.Config.APIKey, st.Org.Config.Model = ProviderAnthropic, p2OrgKey, "claude-org"
 	}
 	if o.confirmed {
-		st.Org.ConfirmedVersion = 7
+		st.Org.ConfirmedSince = 5
 	}
 	return st
 }
@@ -52,7 +54,7 @@ func p2Settings(choice, stored string, key bool) *storage.Settings {
 }
 
 // P2-AC-29 at unit level: one state, one row, one reason, who can fix it;
-// only rows 2 and 4 configured. Row 9 is reserved and never answered.
+// only rows 2, 4 and 9 configured (PAC87-AC-20 at unit level).
 func TestDecideState_EveryRow(t *testing.T) {
 	inOrg := p2Org{in: true}
 	complete := p2Org{in: true, complete: true}
@@ -65,8 +67,10 @@ func TestDecideState_EveryRow(t *testing.T) {
 		config   string
 	}{
 		{"1 off (forbidden, complete, confirmed)", p2Settings("", "", false), p2Org{in: true, complete: true, forbids: true, confirmed: true}, ReasonOff, "user", ""},
-		{"10 own provider, forbids, complete", p2Settings("openai", "", true), p2Org{in: true, complete: true, forbids: true, confirmed: true}, ReasonPersonalKeysForbidden, "user", ""},
-		{"10 removed provider, forbids, complete", p2Settings("unsupported", "ollama", false), p2Org{in: true, complete: true, forbids: true}, ReasonPersonalKeysForbidden, "user", ""},
+		{"9 own provider, forbids, complete, confirmed", p2Settings("openai", "", true), p2Org{in: true, complete: true, forbids: true, confirmed: true}, "", "", ConfigurationOrganization},
+		{"9 removed provider, forbids, complete, confirmed", p2Settings("unsupported", "ollama", false), p2Org{in: true, complete: true, forbids: true, confirmed: true}, "", "", ConfigurationOrganization},
+		{"10 own provider, forbids, complete", p2Settings("openai", "", true), p2Org{in: true, complete: true, forbids: true}, ReasonOrganizationUnconfirmed, "user", ""},
+		{"10 removed provider, forbids, complete", p2Settings("unsupported", "ollama", false), p2Org{in: true, complete: true, forbids: true}, ReasonOrganizationUnconfirmed, "user", ""},
 		{"11 own provider, forbids, not complete", p2Settings("openai", "", true), p2Org{in: true, forbids: true}, ReasonPersonalKeysForbidden, "organization_admin", ""},
 		{"2 own key in a complete org", p2Settings("openai", "", true), complete, "", "", ConfigurationOwn},
 		{"3 own provider without key", p2Settings("bedrock", "", false), complete, ReasonNeedsKey, "user", ""},
@@ -119,18 +123,18 @@ func TestDecideState_Row4UsesOnlyTheOrganisation(t *testing.T) {
 	s.LLMAPIKeys.Set(ProviderOpenAI, p2OwnKey)
 	st := p2State(s, p2Org{in: true, confirmed: true})
 	st.Org.Config = storage.OrgAIConfig{Provider: ProviderAzureOpenAI, APIKey: p2OrgKey, AzureEndpoint: "https://org.openai.azure.com",
-		AzureDeployment: "org-dep", PersonalKeysAllowed: true, Version: 7}
+		AzureDeployment: "org-dep", PersonalKeysAllowed: true, Version: 7, ConsentSince: 5}
 	c, ok := DecideState(st).Client.(*AzureOpenAIClient)
 	if !ok || c.APIKey != p2OrgKey || c.Endpoint != "https://org.openai.azure.com" || c.Deployment != "org-dep" || c.APIVersion != defaultAzureAPIVersion {
 		t.Fatalf("row 4 azure client = %+v", c)
 	}
-	st.Org.Config = storage.OrgAIConfig{Provider: ProviderOpenAI, APIKey: p2OrgKey, PersonalKeysAllowed: true, Version: 7}
+	st.Org.Config = storage.OrgAIConfig{Provider: ProviderOpenAI, APIKey: p2OrgKey, PersonalKeysAllowed: true, Version: 7, ConsentSince: 5}
 	o, ok := DecideState(st).Client.(*OpenAIClient)
 	if !ok || o.BaseURL != "" || o.APIKey != p2OrgKey || o.Model != defaultOpenAIModel {
 		t.Fatalf("row 4 openai client = %+v (the member's gateway and model must not be used)", o)
 	}
 	for _, p := range []string{ProviderAnthropic, ProviderBedrock, ProviderVertex} {
-		st.Org.Config = storage.OrgAIConfig{Provider: p, APIKey: p2OrgKey, Model: "org-model", AWSRegion: "eu-west-3", PersonalKeysAllowed: true, Version: 7}
+		st.Org.Config = storage.OrgAIConfig{Provider: p, APIKey: p2OrgKey, Model: "org-model", AWSRegion: "eu-west-3", PersonalKeysAllowed: true, Version: 7, ConsentSince: 5}
 		switch c := DecideState(st).Client.(type) {
 		case *AnthropicClient:
 			if c.Model != "org-model" || c.APIKey != p2OrgKey || c.BaseURL != "" {
@@ -148,10 +152,15 @@ func TestDecideState_Row4UsesOnlyTheOrganisation(t *testing.T) {
 			t.Errorf("%s: client %T", p, c)
 		}
 	}
-	// A confirmation of another version is not a confirmation.
-	st.Org.ConfirmedVersion = 6
+	// PAC-87 §1: a confirmation of an earlier consent period is not a
+	// confirmation; one of the current period is, whatever the version.
+	st.Org.Config.ConsentSince, st.Org.ConfirmedSince = 7, 6
 	if d := DecideState(st); d.NotConfigured == nil || d.NotConfigured.Reason != ReasonOrganizationUnconfirmed {
 		t.Fatalf("stale confirmation = %+v, want row 5", d)
+	}
+	st.Org.Config.Version, st.Org.ConfirmedSince = 9, 7
+	if d := DecideState(st); d.Client == nil || !d.Organization() {
+		t.Fatalf("confirmation of the current period after two rotations = %+v, want row 4", d)
 	}
 }
 
@@ -203,11 +212,29 @@ func TestDecideProbeState_Part2(t *testing.T) {
 			}
 		})
 	}
-	// A member on their own provider while forbidden: the probe naming
-	// nothing answers row 10 (P2-AC-18).
+	// A member on their own provider while forbidden, not confirmed: the
+	// probe naming nothing answers row 10 (PAC87-AC-8).
 	own := p2Settings("openai", "", true)
-	if d, _ := DecideProbeState(p2State(own, forbidden), ProbeRequest{}); d.NotConfigured == nil || d.NotConfigured.Reason != ReasonPersonalKeysForbidden || d.NotConfigured.Enablers[0] != EnablerUser {
+	notConfirmed := p2Org{in: true, complete: true, forbids: true}
+	if d, _ := DecideProbeState(p2State(own, notConfirmed), ProbeRequest{}); d.NotConfigured == nil || d.NotConfigured.Reason != ReasonOrganizationUnconfirmed || strings.Join(d.NotConfigured.Enablers, ",") != EnablerUser {
 		t.Fatalf("own provider, forbidden, {} = %+v", d)
+	}
+	// PAC87-AC-14: row 9's probe. Naming the own provider, or a key, is the
+	// personal-keys refusal; a model alone is row 4's 400; {} tests the
+	// organisation and never carries the stored model or key.
+	row9 := p2State(own, forbidden)
+	for _, req := range []ProbeRequest{{Provider: str("openai")}, {Key: str(p2OwnKey)}} {
+		if d, bad := DecideProbeState(row9, req); bad != "" || d.NotConfigured == nil || d.NotConfigured.Reason != ReasonPersonalKeysForbidden || strings.Join(d.NotConfigured.Enablers, ",") != EnablerOrganizationAdmin {
+			t.Errorf("row 9 probe %+v = %+v %q", req, d.NotConfigured, bad)
+		}
+	}
+	if _, bad := DecideProbeState(row9, ProbeRequest{Model: str("m2")}); bad != MsgProbeOrganizationNoModel {
+		t.Errorf("row 9 probe with a model = %q", bad)
+	}
+	d, bad := DecideProbeState(row9, ProbeRequest{})
+	c, ok := d.Client.(*AnthropicClient)
+	if bad != "" || !ok || d.Configuration != ConfigurationOrganization || c.APIKey != p2OrgKey || c.Model != "claude-org" {
+		t.Fatalf("row 9 probe {} = %+v %+v %q", d, d.Client, bad)
 	}
 }
 
@@ -262,12 +289,18 @@ func TestNotConfiguredSentences_O13Wording(t *testing.T) {
 			t.Errorf("no sentence for %s was checked", r)
 		}
 	}
-	// Row 10's sentence holds for a member on a removed provider, who has
-	// no key (spec revision 2.1 NB4).
+	// PAC87-AC-10, -15: row 10's sentence names the organisation's
+	// provider and the kept own choice (Ollama for a removed provider), says
+	// "access", that the own choice and key are kept and used again, and to
+	// confirm; it no longer offers to change the choice.
 	d := DecideState(p2State(p2Settings("unsupported", "ollama", false), p2Org{in: true, complete: true, forbids: true}))
-	if !strings.Contains(d.NotConfigured.Message, "Ollama") || !strings.Contains(d.NotConfigured.Message, "kept but not used") ||
-		!strings.Contains(d.NotConfigured.Message, `"Use my organisation's AI"`) {
-		t.Errorf("row 10 for Ollama = %q", d.NotConfigured.Message)
+	want := "AI features are off until you confirm: your organisation does not allow personal API keys and provides AI through Anthropic. " +
+		consentSentence + " Your own choice (Ollama) and any key you saved are kept, and are used again if your organisation allows personal keys. Confirm in Paceday to use your organisation's AI."
+	if d.NotConfigured.Message != want {
+		t.Errorf("row 10 for Ollama = %q, want %q", d.NotConfigured.Message, want)
+	}
+	if m := DecideState(p2State(p2Settings("openai", "", true), p2Org{in: true, complete: true, forbids: true})).NotConfigured.Message; !strings.Contains(m, "(OpenAI)") || strings.Contains(m, "Use my organisation") {
+		t.Errorf("row 10 for OpenAI = %q", m)
 	}
 	if !strings.Contains(DecideState(p2State(p2Settings("organization", "", false), p2Org{in: true, complete: true})).NotConfigured.Message, "Anthropic") {
 		t.Error("row 5 does not name the organisation's provider")
