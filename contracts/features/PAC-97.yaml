@@ -1,0 +1,182 @@
+{
+  "featureId": "PAC-97",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-97",
+  "status": "contract revision 1, awaiting contract-challenger",
+  "contractRevision": "1",
+  "contractHash": "cc48d6908a8fa9cc6712b0be43ebd1748253f4d99fbe17172ad01bef5af51e87",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi` in an LF clone of factory/pac-97-c at d4b32d8 (base origin/main bc7b144; golang:1.25-bookworm, oapi-codegen v2.4.1), 2026-11-13: make openapi rc 0 (130 operations, 12 generated; regenerated openapi.yaml and backend/api/gen/paceday.gen.go, committed), make openapi-check WEB=/nonexistent rc 0, cd backend && go build ./... ok. Main bc7b144 alone = d02f9be12fd1b329db6c4102e365f36d3261d883c28376373e74244892dbd40f. Reproduce with: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml.",
+  "contractDoc": "contracts/features/PAC-97.md",
+  "specDoc": "docs/specs/PAC-97.md (spec-challenger accept-with-changes 2026-11-13, changes applied in the body; Challenge log at the end)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "Sign-in detection for a company domain without SSO follows the domain's MX records (strong Google or Microsoft match only) instead of the Microsoft openid-configuration tenant probe; every other case answers the new value `choose`, on which the web offers both provider buttons with the typed email as login hint. The web treats unknown values as `choose`, and remembers the typed email in sessionStorage so the failure notices can offer both providers. A DNS stand-in for the e2e stack.",
+  "mergeAfter": "origin/main bc7b144. No dependency on open PRs; PAC-87 ordering in mergeConditions.",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/auth/sso_detect.go (MX rule, resolver seam, bounded cache, shared lookup; remove isMicrosoftTenant and tenantCache) and backend/auth/sso_detect_test.go (replace the live-call and cache-seeding tests, AC-14)",
+        "backend/auth/*_test.go (new: fake resolver, AC-1..AC-15)",
+        "backend/domain/domain.go only for a DNS-name validity helper and its test (AC-13); the consumer list is unchanged",
+        "backend/api/handlers_sso.go (detect: pass the detector; no status change) and backend/api/pac97_*_test.go (new, AC-16, AC-17)",
+        "backend/api/pac35_auth_flows_test.go, backend/api/ratelimit_detect_test.go: only to install a fail-on-use resolver (AC-14); assertions unchanged",
+        "backend/config (new DNS stand-in decision next to endpoints.go, AC-28) and its tests",
+        "backend/main.go (wiring the resolver and the stand-in decision)",
+        "e2e/fake-google (a small DNS responder, D-9) or a new e2e/fake-dns, e2e/docker-compose.e2e.yml (stand-in variable and address on the pinned network), e2e/tests/pac97-*.spec.ts (new, AC-27), e2e/seed (test domains), e2e/README.md, e2e/SEAM-REQUIRED.md",
+        "docs/factory/api-audit.md (API-010 row to 'Fixed (PAC-35)'; API-092 note for the new outcome)",
+        "docs/plans/PAC-97.md",
+        "contracts/features/PAC-97.{md,yaml} (contractHash field only, if main's bundle moved)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; contracts/openapi/openapi.yaml and backend/api/gen by hand",
+        "backend/api/ratelimit_detect.go limits and keying (API-062 deferred, spec section 5)",
+        "the SSO start, OIDC callback, Google and Microsoft starts and callbacks, loginHintFrom",
+        "backend/domain/domain.go genericDomains (consumer addresses unchanged)",
+        "any HTTP call from detection (spec section 3, D-5)",
+        "backend/storage/migrations (no migration)",
+        "mcp/"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/components/auth/AuthDialog.tsx (choose step, unknown value -> choose, remembering the email) and AuthDialog*.test.tsx",
+        "src/pages/Index.tsx (failure notices offer both providers with the remembered email) and Index*.test.tsx, pac71Landing.test.tsx",
+        "src/components/auth/** (new: choose step, remembered-email helper) and tests",
+        "src/contexts/AuthContext* or the sign-out path, only to clear the remembered email (AC-26)",
+        "src/api/generated (regenerated with REGEN=1 web-gate, never edited)"
+      ],
+      "forbiddenPaths": [
+        "keeping the email in localStorage, IndexedDB, a cookie or a URL other than the provider start's login_hint (AC-26)",
+        "changing the password step (GenericStep) or what a 'generic' answer shows (spec section 5, B-1 follow-up)",
+        "reading any value from the failure URL other than the fixed error values (spec section 6)",
+        "a demo entry or fallback after a sign-in failure (PAC-83)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {
+      "operationId": "detectAuthProvider",
+      "change": "Description only: a company domain without an SSO row is answered from its MX records; a failed or slow lookup is a 200 'choose', never an error; only a failed SSO-row read is a 500. No status added or removed; request unchanged; rate limit unchanged."
+    }
+  ],
+  "componentsChanged": [
+    "schemas.SsoDetectResponse.type: enum gains `choose` ([google, microsoft, sso, generic, choose]); description replaces the tenant probe with the ordered rule (generic only for consumer/unparseable; sso; MX strong match; choose otherwise) and states that an unknown value is treated as choose. provider_name and redirect_url unchanged (only for sso)."
+  ],
+  "nonHttpInterface": {
+    "dnsStandIn": "One environment variable (name chosen by the plan; suggested PACEDAY_MX_RESOLVER) naming a DNS server ip:port that detection queries instead of the system resolver. Refused at startup unless PACEDAY_ALLOW_STANDINS is true and the address is a config.PermittedPeer; a startup notice names it (spec D-9, AC-28).",
+    "webClient": "contracts/features/PAC-97.md section 3: choose step with both available provider buttons carrying login_hint, back keeps the email; unknown type -> choose; email remembered in sessionStorage, cleared on completed sign-in and sign-out; failure notices offer both providers with it."
+  },
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-97-spec, then the stage-4 PRs",
+    "assembler": "LF clone of factory/pac-97-c at d4b32d8 (golang:1.25-bookworm, api-gate pattern), 2026-11-13: make openapi rc 0; OK: bundle is in sync (108 paths)",
+    "migrationRegister": "same clone: OK: MIGRATION.md covers all 130 operations (12 generated)",
+    "goGen": "same clone: OK: backend/api/gen matches the contract (SsoDetectResponseTypeChoose added); cd backend && go build ./... ok",
+    "openapiCheckApi": "same clone: make openapi-check WEB=/nonexistent rc 0 (web half SKIPPED by design at this stage)",
+    "webGate": "Not run at this stage: the web half of openapi-check reports drift until the paired web PR regenerates src/api/generated (REGEN=1 web-gate).",
+    "stage4": "api-gate.sh, web-gate.sh, e2e gate (make verify in both repos); the api PR body records the bundle sha256 equal to contractHash.",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] gorgias.com fixture (Google MX, fake Microsoft endpoint reporting a tenant): google, zero Microsoft requests.",
+    "AC-2  [unit] every fixture row of spec section 4 gives its Expected answer (table-driven, incl. smtp.google.com, googlemail.com, .mail.protection.outlook.com, .mail.eo.outlook.com, .mx.microsoft, olc (choose), sovereign (choose), gateways, migrating, backup, gateway-first, lookalike, null MX, NXDOMAIN, no MX, slow, SERVFAIL, partial answer with error, null MX mixed, upper case + trailing dot, single label).",
+    "AC-3  [unit] SSO row wins with today's name and path; zero DNS queries.",
+    "AC-4  [unit] consumer domains and invalid email: generic; zero DNS queries.",
+    "AC-5  [unit] slow resolver, no caller deadline: choose within budget + 500 ms, no error.",
+    "AC-6  [unit] caller cancelled: choose within 100 ms; cancellation not cached; another waiter on the shared lookup unaffected; every lookup carries a deadline <= budget.",
+    "AC-7  [unit] SERVFAIL and slow: 200 choose, never 500, never a provider.",
+    "AC-8  [unit] failure cached 1 min (zero queries before, answer choose), then re-queried (injected clock).",
+    "AC-9  [unit] definite answer cached 1 h (zero queries before, exactly one after).",
+    "AC-10 [unit] cache bound N (production 10 000): N+1 domains -> at most N entries, oldest evicted.",
+    "AC-11 [unit][-race] 50 concurrent detections of one domain: one query, one answer.",
+    "AC-12 [unit] privacy: only the domain is queried, zero HTTP requests, no local part in logs.",
+    "AC-13 [unit] invalid, single-label, non-ASCII or over-long names: choose, zero queries; valid names queried as FQDN with trailing dot.",
+    "AC-14 [unit] auth and backend/api detection tests pass with a fail-on-use production resolver; the live-call and cache-seeding tests are gone.",
+    "AC-15 [unit] production construction uses the system resolver; the seam cannot be set from configuration without the stand-in guard.",
+    "AC-16 [api] mimecast fixture through the real router: 200, strict decode into the generated type, type choose, no provider_name, no redirect_url.",
+    "AC-17 [api] TestPAC35_Detect_EveryDocumentedStatus unchanged; 21st request in a minute still 429.",
+    "AC-18 [contract] enum includes choose; description documents the MX rule, no tenant probe, generic only for consumer/unparseable; openapi-check passes; web TS union includes choose.",
+    "AC-19 [vitest] choose: both available provider buttons for the typed email (sign-in or sign-up labels), no password field, no navigation until a click; each click navigates with login_hint.",
+    "AC-20 [vitest] only Microsoft available: only its button; neither: says so and offers back.",
+    "AC-21 [vitest] back from choose keeps the email.",
+    "AC-22 [vitest] unknown type ('future') -> choose step, not the password step.",
+    "AC-23 [vitest] google/microsoft navigate with the hint as today.",
+    "AC-24 [vitest] generic -> password step as today.",
+    "AC-25 [vitest] after ?error=auth_failed / signin_refused the retry offers both providers for the remembered email with login_hint; fresh tab unchanged.",
+    "AC-26 [vitest] remembered email cleared on completed sign-in and on sign-out; only sessionStorage; never in a URL except login_hint; never sent to the API; storage throwing still works without prefill.",
+    "AC-27 [e2e] DNS stand-in: Google-MX test domain -> next request /api/auth/google with login_hint; gateway test domain -> both buttons, no navigation, Microsoft click -> /api/auth/microsoft with hint; hermeticity check passes.",
+    "AC-28 [unit] DNS stand-in refused without PACEDAY_ALLOW_STANDINS or outside PermittedPeer; accepted with both, notice printed, only the stand-in queried."
+  ],
+  "amendedExistingTests": [
+    "backend/auth/sso_detect_test.go TestDetectAuthProvider_CustomDomain_DefaultsGoogle (live HTTPS call) and TestIsMicrosoftTenant_Cached (package cache seeding): removed, replaced by AC-1/AC-2/AC-9.",
+    "backend/api/pac35_auth_flows_test.go and ratelimit_detect_test.go: install the fail-on-use resolver only (AC-14); assertions unchanged.",
+    "smart-calendar-flow AuthDialog.test.tsx :76-87, :89-94, :96-113, :115-121: unchanged (AC-23, AC-24, PAC-71 AC-32)."
+  ],
+  "resolvesFindings": [
+    "API-010: audit row is stale (fixed by PAC-35); the implementer marks it 'Fixed (PAC-35)'.",
+    "API-092 (detect share): the new 'choose' outcome gets a Go assertion through the router (AC-16)."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "Spec OQ-1: .mx.microsoft confirmed (Microsoft Learn DANE page; zone delegated) and .mail.eo.outlook.com added.",
+    "Spec OQ-2: build the e2e DNS stand-in (AC-27, AC-28).",
+    "Spec OQ-3: API-062 deferred (spec section 5).",
+    "D-4 name: `choose`."
+  ],
+  "doesNotResolve": [
+    "API-062 (per-replica detect rate limit): unchanged, contract prose already says so.",
+    "B-1 (spec section 5): the web's password step posts to /api/auth/login and /api/auth/register, which do not exist; consumer addresses still land there. Separate ticket (orchestrator files it; owner question: build password sign-in or send consumer addresses to the provider choice)."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "Enach/smart-calendar-flow (older build)",
+      "breaks": "degrades",
+      "detail": "Receives 'choose' and shows the password step (AuthDialog.tsx:136-138; apiFetch does not validate the enum), which is the B-1 dead end. Avoided by deploying the web first; residual = tabs loaded before the web deploy and still open after the backend deploy."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow (web PR)",
+      "breaks": "n/a",
+      "detail": "Implements contract section 3; against today's backend it never receives 'choose' and behaves as today for google/microsoft/sso/generic."
+    },
+    {
+      "consumer": "smart-calendar-flow src/api/generated",
+      "breaks": "regenerated",
+      "detail": "SsoDetectResponse.type union and zod enum gain 'choose'. The zod schema is not used to parse this answer."
+    },
+    {
+      "consumer": "backend/api/gen",
+      "breaks": "regenerated",
+      "detail": "SsoDetectResponseTypeChoose constant; the handler encodes the handwritten auth.DetectResult."
+    },
+    {
+      "consumer": "e2e/tests/sso-stepup.spec.ts",
+      "breaks": "no",
+      "detail": "SSO-row domain; never reaches the MX lookup."
+    },
+    {
+      "consumer": "mcp",
+      "breaks": "no",
+      "detail": "No reference to detection or login_hint."
+    }
+  ],
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "The api PR's contracts/openapi/openapi.yaml sha256 equals contractHash (or a recorded later revision).",
+    "Deploy order: the web PR merges and is deployed before the api PR merges (spec section 7, OQ-4). The orchestrator records the web deploy in the api PR.",
+    "PAC-87 (impl/pac-87-api, contractHash recorded, ahead in the pipeline) changes habits.yaml and scheduling.yaml, not auth.yaml, but the same bundle and backend/api/gen: PAC-87 is expected to merge first; PAC-97 merges second, re-runs make openapi in an LF clone on top of it, commits the regenerated bundle and gen, and records the new contractHash here (fragment text unchanged). If PAC-97 merges first, PAC-87 does the same.",
+    "B-1 follow-up ticket filed before the api PR merges.",
+    "No migration in either PR."
+  ],
+  "rollback": "Code only: no migration, nothing stored. Roll back the api PR first: the tenant probe and google default return (the gorgias.com bug returns); the new web handles the old answers unchanged (AC-23, AC-24). Then the web PR if needed; a web rollback while the new api is live sends 'choose' users to the password step (B-1 dead end), so never roll back the web alone.",
+  "ownerDecided": [
+    "D-1 order: generic, sso, MX strong match, else choose; no silent redirect on a weak signal (issue, 2026-11-13).",
+    "Personal Microsoft accounts wait for PAC-77 (2026-11-01): the Outlook.com consumer MX is a non-match."
+  ],
+  "followUps": [
+    "B-1: the password step's server routes do not exist (spec section 5); owner question folded from spec OQ-5.",
+    "Optional: remember the provider a domain's users actually signed in with (spec section 5, needs a privacy decision)."
+  ],
+  "challenge": "pending (contract-challenger)"
+}
