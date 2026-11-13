@@ -9,6 +9,23 @@
 # not run the CI again: both main commits must already carry a green "verify"
 # check (ci.yml on push to main in each repo). A version that already exists is
 # not rebuilt.
+#
+# The cross-repo types check (the web repo's src/api/generated against this
+# repo's bundle) runs here, not on pushes to main: a paired contract change
+# merges api first and web minutes later, and the mains disagree in between by
+# design (ci.yml skips it there with OPENAPI_CROSS_REPO=skip). The pair job runs
+# it on the exact two SHAs plan picked. A pair that fails is never published.
+# The grace period runs from when the mismatch could have started: the newer of
+# the last commit touching contracts/openapi/openapi.yaml at the api SHA and the
+# last commit touching src/api/generated at the web SHA (commit dates from the
+# GitHub API), so an unrelated merge on either main does not restart it. While
+# that is less than PAIR_MISMATCH_GRACE_MINUTES old, a mismatch is the normal
+# gap between the two merges of a paired change: the run stays green with a
+# warning, like "main not green", and the next trigger retries. Once it is at
+# least that old, the pair job fails, so the run goes red and GitHub notifies
+# the owner; it stays red on every trigger until the types match again. A date
+# that cannot be read, is not ISO 8601, or is more than 5 minutes in the future
+# also fails the job.
 name: release
 
 on:
@@ -26,6 +43,10 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  # Grace period for a cross-repo types mismatch (pair job, header comment).
+  PAIR_MISMATCH_GRACE_MINUTES: 60
 
 jobs:
   plan:
@@ -68,9 +89,101 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  publish:
+  # The cross-repo types check on the exact pair plan picked. A mismatch never
+  # publishes. Within the grace period it is "not releasable yet" (the web half
+  # of a contract change has not merged): green, a warning, retry. After it,
+  # the job fails so the owner hears about it.
+  pair:
     needs: plan
     if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      # No credentials left in .git: this job runs third-party node binaries
+      # and never pushes.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.backend_sha }}
+          persist-credentials: false
+      # Where the Makefile expects it (WEB ?= ../smart-calendar-flow).
+      - uses: actions/checkout@v4
+        with:
+          repository: Enach/smart-calendar-flow
+          ref: ${{ needs.plan.outputs.frontend_sha }}
+          path: web
+          persist-credentials: false
+      - run: mv web ../smart-calendar-flow
+
+      # Only what the check needs: the web repo's pinned generators
+      # (openapi-typescript, typed-openapi) come with its lockfile.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Web dependencies
+        working-directory: ../smart-calendar-flow
+        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_REPO: ${{ github.repository }}
+          WEB_REPO: Enach/smart-calendar-flow
+          BACKEND_SHA: ${{ needs.plan.outputs.backend_sha }}
+          FRONTEND_SHA: ${{ needs.plan.outputs.frontend_sha }}
+        run: |
+          set -euo pipefail
+          pair="b${BACKEND_SHA:0:7}-f${FRONTEND_SHA:0:7}"
+          if make openapi-check-web 2>&1 | tee pair.log; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "cross-repo types check passed on $pair"
+            exit 0
+          fi
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          now=$(date +%s)
+          # last_change REPO SHA PATH: date and epoch of the last commit touching
+          # PATH at SHA, in lc_date / lc_epoch. Any doubt fails the job: an API
+          # error (gh prints its error body on stdout), a non-ISO date, or a
+          # date more than 5 minutes in the future.
+          unreadable() {
+            echo "::error title=release: pair mismatched::types mismatch on $pair, and the last change to $3 in $1@${2:0:7} could not be dated ($4), so the grace period cannot be applied"
+            exit 1
+          }
+          last_change() {
+            lc_date=$(gh api "repos/$1/commits?sha=$2&path=$3&per_page=1" --jq '.[0].commit.committer.date // ""') \
+              || unreadable "$1" "$2" "$3" "API error: ${lc_date:0:200}"
+            [[ $lc_date =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+              || unreadable "$1" "$2" "$3" "not an ISO date: '${lc_date:0:200}'"
+            lc_epoch=$(date -d "$lc_date" +%s) || unreadable "$1" "$2" "$3" "date cannot parse '$lc_date'"
+            [ "$lc_epoch" -le $(( now + 300 )) ] || unreadable "$1" "$2" "$3" "$lc_date is in the future"
+          }
+          last_change "$API_REPO" "$BACKEND_SHA" contracts/openapi/openapi.yaml
+          b_date=$lc_date; b_epoch=$lc_epoch
+          last_change "$WEB_REPO" "$FRONTEND_SHA" src/api/generated
+          f_date=$lc_date; f_epoch=$lc_epoch
+          # The mismatch cannot be older than the newer of the two changes.
+          since=$(( b_epoch > f_epoch ? b_epoch : f_epoch ))
+          age_min=$(( (now - since) / 60 ))
+          grace=$PAIR_MISMATCH_GRACE_MINUTES
+          detail="web generated types (smart-calendar-flow ${FRONTEND_SHA:0:7}, src/api/generated last changed $f_date) do not match the api bundle (${BACKEND_SHA:0:7}, openapi.yaml last changed $b_date); mismatch possible for ${age_min} min, grace ${grace} min"
+          if [ "$age_min" -lt "$grace" ]; then
+            title="Not released yet: cross-repo types mismatch (within grace)"
+            msg="$detail. Not releasing $pair; expected while the web half of a contract change is unmerged. The next trigger retries."
+            echo "::warning title=release: pair not releasable yet::$msg"
+            rc=0
+          else
+            title="Release blocked: cross-repo types mismatch past the grace period"
+            msg="$detail. Not releasing $pair. Neither side has changed for at least ${grace} min and they still disagree: regenerate the web types (make openapi in smart-calendar-flow) and merge, or merge the missing half of the paired change."
+            echo "::error title=release: pair mismatched past grace::$msg"
+            rc=1
+          fi
+          { echo "### $title"; echo; echo "$msg"; echo; echo '```'; tail -n 60 pair.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+  publish:
+    needs: [plan, pair]
+    if: needs.plan.outputs.build == 'true' && needs.pair.outputs.ok == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
