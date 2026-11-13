@@ -4,7 +4,11 @@
   "status": "contract revision 3, challenged (K4, accept-with-changes, changes applied); awaiting stage 4",
   "contractRevision": "3",
   "contractHash": "9c2c7cbc3abe8ae082b0b920cd39e0e6383fc175de6c6c1dfcd59c1a77426e4a",
-  "contractHashPartA": "d5cf6be903c182c18bc98a8b0f259c649dbe521982698e0de7ec68b4518ff9d9",
+  "contractHashPartA": "72e66cb1f2a71ae61b1ada9a3e52983482aaef9f60c5173fec44775c32b9a93f",
+  "contractHashPartAHistory": [
+    "d5cf6be903c182c18bc98a8b0f259c649dbe521982698e0de7ec68b4518ff9d9: part A at 07f912d on origin/main 68540f6 (bundle 5367da00...). Shipped by impl/pac-40-api @ 1cd9f62.",
+    "72e66cb1f2a71ae61b1ada9a3e52983482aaef9f60c5173fec44775c32b9a93f: 2026-11-13, impl/pac-40-api after merging origin/main 81f55f6 (main bundle 99558226125c5613fc30392f121858992fcb3cb54ab0de5045a6625c7bce2080: PAC-41 contract a0be6ca, PAC-89 bdae641, PAC-98 81f55f6 changed auth.yaml and calendar.yaml; PAC-40 part A changes booking.yaml only, no fragment overlap, no fragment text changed). make openapi in an LF clone (golang:1.25-bookworm, oapi-codegen v2.4.1, api-gate pattern, host repo read-only) rc 0 and regenerated nothing (the merged openapi.yaml and backend/api/gen already matched); make openapi-check WEB=/nonexistent rc 0 (110 paths; MIGRATION.md 132 operations, 12 generated; gen matches). Not a contract revision. contractHash (part B, 9c2c7cbc...) is on the old base too: B-api re-runs make openapi on its own base and records its hash."
+  ],
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi` in an LF clone of factory/pac-40-k3 (golang:1.25-bookworm, oapi-codegen v2.4.1, api-gate pattern, host repo mounted read-only), 2026-11-13, base origin/main 68540f6 (bundle 5367da004130aa9037752baa1e17be951f9d4130d46e0cf0ce6e467975603328). contractHash = full revision 3 at commit 1c04056 (booking.yaml + calendar.yaml). contractHashPartA = part A at commit 07f912d (booking.yaml only; AuditEntry.action unchanged), the bundle A-api ships. Both: make openapi rc 0 (132 operations, 12 generated), make openapi-check WEB=/nonexistent rc 0, cd backend && go build ./... ok. Reproduce with: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml.",
   "contractDoc": "contracts/features/PAC-40.md",
   "specDoc": "docs/specs/PAC-40.md revision 6.2 (accepted in spec-challenger round 6 after 6.1; 6.2 corrects section 0 only: readings R-1..R-5 are factory-assumed from the owner's 2026-10-27 decision and await owner confirmation, OQ-8/9/10)",
@@ -147,7 +151,8 @@
       "pr": "A-api",
       "repo": "Enach/clockwise-like",
       "bundleCommit": "07f912d",
-      "bundleSha256": "d5cf6be903c182c18bc98a8b0f259c649dbe521982698e0de7ec68b4518ff9d9",
+      "bundleSha256": "72e66cb1f2a71ae61b1ada9a3e52983482aaef9f60c5173fec44775c32b9a93f",
+      "bundleSha256History": "d5cf6be9... at 07f912d on 68540f6; 72e66cb1... after merging origin/main 81f55f6 (contractHashPartAHistory)",
       "contains": "migration 037, deleted state, archive (enabled=false, erasure_due_at null, nothing erased), aliases, uses_count; AC-1..AC-19 except AC-7's second half, AC-21 (without the due instant), AC-22..AC-24",
       "howToTakeBundleA": "Start from origin/main; git checkout 07f912d -- contracts/openapi backend/api/gen (and the PAC-40 docs); check openapi.yaml sha256 = d5cf6be9... and git diff origin/main -- contracts/openapi/paths/calendar.yaml is empty. Never build A on the factory/pac-40-spec tip (bundle B, failing PAC-67 enum test). Contract section 6."
     },
