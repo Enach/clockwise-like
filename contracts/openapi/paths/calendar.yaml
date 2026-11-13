@@ -382,11 +382,16 @@ paths:
         The list reads the caller's stored Google credential whatever `calendar_provider`
         is: a caller with no stored Google credential gets the 401 `calendar not
         connected` (every Outlook-only caller is one); an Outlook-selected caller who also
-        holds a Google credential (the same email signed in with Google earlier) gets that
-        Google calendar's rooms. A stored Google credential decides this even when it
-        cannot be used: one the provider has permanently refused to renew (a PAC-67
-        loss) answers the 500, as does one that cannot be decrypted (PAC-84,
-        TestPAC84_GoogleUndecryptable on the same calendar-client path), never the 401.
+        holds a Google credential (one who connected Google while signed in, or whose
+        Google sign-in reached the same account, PAC-71) gets that Google calendar's
+        rooms. A stored Google credential decides this even when it cannot be used: one
+        the provider has permanently refused to renew (a PAC-67 loss), one that expired
+        with no refresh token, and one that cannot be decrypted (PAC-84) all answer the
+        500, never the 401. The credential load and its 401/500 mapping are the ones
+        TestPAC84_GoogleUndecryptable pins on `GET /api/calendar/events`; no test pins
+        them on this operation. The 401 is shared: a session that has ended answers it
+        too, with the `{"error":"unauthorized"}` body (MiddlewareUnauthorized), so a
+        client tells "calendar not connected" apart by the body, never by the status.
       parameters:
         - name: q
           in: query
@@ -409,7 +414,8 @@ paths:
           $ref: "#/components/responses/CalendarNotConnected"
         "500":
           description: >-
-            Google CalendarList API error, or the stored credential could not be read. Body:
+            Google CalendarList API error, or the stored Google credential could not be
+            read, decrypted or renewed (PAC-67, PAC-84). Body:
             `{"error":"internal error"}`. The detail is written to the server log and Sentry
             only (PAC-21).
           content:

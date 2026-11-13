@@ -1,8 +1,9 @@
 # Contract — PAC-41: the room and free/busy participant shapes, stated as the server emits them
 
 - **Linear issue**: [PAC-41](https://linear.app/paceday/issue/PAC-41)
-- **Spec**: `docs/specs/PAC-41.md`, revision 1 (`c2d9003`, branch `factory/pac-41-spec`,
-  carried on this branch)
+- **Spec**: `docs/specs/PAC-41.md`, accepted at Revision 2.1 (2026-11-13), carried on this
+  branch. Revision 1 (`c2d9003`) was the draft this contract was first written against
+  (section 0).
 - **Stage**: contract-author, then contract-challenger
 - **Fragment edited**: `contracts/openapi/paths/calendar.yaml` (plus its companion
   `calendar.notes.md`, items 1, 2 and 6)
@@ -16,6 +17,9 @@
 ---
 
 ## 0. The spec is challenged, not yet re-challenged
+
+*(Historical, kept for the record. Since 2026-11-13 the spec is accepted at Revision 2.1;
+see the manifest's `specDoc` and `mergeConditions`.)*
 
 The spec's status line reads "challenged (Revision 1 answers the 2026-10-27 challenge)".
 The challenge returned **accept-with-changes** with four blocking items, and Revision 1
@@ -125,8 +129,9 @@ No breaking change: nothing on the wire changed.
 - **C-1**: no `pattern` on `CalendarRoom.id` (§3.3).
 - **C-2**: no declared `start`/`end` on `listRooms` (§3.2).
 - **C-3**: the three resolved findings are `Claimed (PAC-41)` until the web PR merges (§3.5).
-- Spec D-2 to D-5 are inherited unchanged. D-1 and D-6 are superseded by the owner
-  answers of 2026-10-27 to OQ-1 and OQ-5; see the maintenance section at the end.
+- Spec D-2 to D-5 are inherited. D-1 and D-6 are narrowed to interim decisions by the
+  owner answers of 2026-10-27 to OQ-1 and OQ-5 (spec D-7: PAC-100, PAC-102); see the
+  maintenance section at the end.
 
 Open owner questions carried from the spec: OQ-1 (room details/availability), OQ-3
 (confirm the D-4 split and file the follow-up; no follow-up issue existed in Linear on
@@ -402,13 +407,13 @@ data, with a graceful fallback and an optional extended-access step) and OQ-5 / 
 (ask whether to release or keep the earlier room, with a remembered choice in Settings).
 Both are now recorded in the spec's Decisions as "owner, 2026-10-27".
 
-They supersede D-1 and D-6 as product direction. They do not make this contract
-wrong, because the server still emits `{id, name}` and never releases a room. Each
-answer is its own feature with its own spec (spec OQ-1, OQ-5); when those land,
-`CalendarRoom` gains optional fields. AC-12 to AC-14 (the "earlier room stays booked"
-notices) and the demo half of D-5 must be replaced by a spec revision before the spec
-is accepted. That revision is spec-author's work, not this stage's, and it is now a
-merge condition in the manifest.
+They narrow D-1 and D-6 to interim decisions (narrowed / interim, not superseded):
+spec Revision 2 (D-7) keeps both as PAC-41's interim behaviour and moves the owner's
+answers to their own tickets, PAC-100 (room details) and PAC-102 (release or keep).
+They do not make this contract wrong, because the server still emits `{id, name}` and
+never releases a room. When those tickets land, `CalendarRoom` gains optional fields
+(PAC-100) and AC-12 to AC-14 are replaced (PAC-102). Spec Revision 2.1 carries this and
+is accepted; the merge condition it set is met.
 
 ### Regeneration
 
@@ -424,3 +429,146 @@ gate results are in the PR comments.
 
 Not re-challenged: the revision 3 description sentence and the recorded owner
 answers have not been through contract-challenger.
+
+## Challenge — 2026-11-13 (revision 3)
+
+Contract-challenger on contract revision 3 (`2396085`), against api `origin/main`
+`68540f6` (already merged into this branch) and web `origin/main` `ae72939`. The fixes
+below were then made in the contract-author role as **revision 4**, descriptions only.
+
+**Verdict**: accept-with-changes (applied in place as revision 4)
+
+### Requests wrongly permitted
+None. `listRooms` declares `q` only and has no body; `queryFreeBusy` is unchanged.
+
+### Responses the client cannot handle
+None new. A room's `name` is Google's `summary` and may in principle be `""`
+(`backend/calendar/rooms_attendees.go:39`); the schema allows it and the picker shows
+an empty name. Not a revision 3 change; noted only.
+
+### Contract/implementation divergences
+1. **"(the same email signed in with Google earlier)"**: the revision 2/3 explanation of
+   how an Outlook-selected caller holds a Google credential describes matching by
+   email, which PAC-71 removed. Today a Google credential lands on an account through
+   the signed-in connect step (`callback` connect branch, `UpsertUserToken`,
+   `backend/api/handlers_pac71_auth.go:136-146`) or through a Google sign-in that
+   `storage.ResolveSignIn` binds to the same account by identity (`:164-176`). An
+   Outlook user whose address merely matches a Google account does not get it.
+   **Fixed:** "(one who connected Google while signed in, or whose Google sign-in
+   reached the same account, PAC-71)". The spec's §2.4a has the same parenthetical; it
+   is current-behaviour prose, not a criterion, and is left to the next spec revision.
+2. **"TestPAC84_GoogleUndecryptable on the same calendar-client path"** overstates the
+   evidence. The test drives `GET /api/calendar/events`, i.e.
+   `calendarHandlers.getCalendarClient` (`backend/api/handlers_calendar.go:137-145`), not
+   `eventHandlers.calClient` (`handlers_events.go:27-35`), which `listRooms` uses. The two
+   are line-for-line twins: same `engine.LoadCalendarTokenCtx`, same
+   `auth.UserTokenSource`, same `writeCalendarFailure` mapping. So the claim about
+   `/api/rooms` holds by reading, but **no test pins the 401-vs-500 split on
+   `/api/rooms`**. **Fixed:** the description now says the PAC-84 test pins the shared
+   credential load on `GET /api/calendar/events` and that no test pins it on this
+   operation.
+3. **One more "stored but unusable" case was missing.** A stored Google credential whose
+   access token has expired and which holds no refresh token makes
+   `renewingSource.Token` return `&LostError{Err: errNoRefreshToken}`, not recorded
+   (`backend/auth/credential_lifecycle.go:147-148`). `ListRooms` then fails and the
+   answer is the 500 (`handlers_events.go:320-324`), not the 401. **Fixed:** named
+   alongside the PAC-67 loss and the PAC-84 decryption failure.
+4. **The 500 response text** said only "the stored credential could not be read". A
+   PAC-67 loss is read fine and fails at renewal. **Fixed:** "could not be read,
+   decrypted or renewed (PAC-67, PAC-84)".
+
+### The 500-vs-401 sentence, attacked
+- `GET /api/rooms`, caller with a stored Google row whose refresh token Google refuses
+  with `invalid_grant`: `Token()` re-loads the row, calls the token endpoint, records the
+  loss and returns `LostError{Recorded: true}` (`credential_lifecycle.go:155-164`). The
+  row is not deleted (`DeleteUserToken` is called only by the disconnect handler,
+  `handlers_auth.go:162`, and the operator reset). `CalendarList.List` fails through the
+  oauth2 transport, so `writeServerError` answers `500 {"error":"internal error"}`.
+  Holds.
+- Same, refresh token sealed with a lost key: `scanToken` → `storage.OpenSecret` fails
+  (`backend/auth/token_store.go:144-150`) → `LoadCalendarTokenCtx` wraps it as
+  `ErrCredentialStore` (`backend/engine/cal_iface.go:45-46`) → `writeCalendarFailure`
+  sees no `ErrCalendarNotConnected` → 500 (`backend/api/server_errors.go:75-81`). Holds.
+- After the operator's PAC-84 reset deletes the undecryptable row
+  (`backend/storage/encryption_ops.go:417-423`), the caller has no stored credential and
+  gets the 401 `calendar not connected`. Consistent with "a **stored** Google credential
+  decides this".
+- Session generation advanced between `requireAuth`'s read and the token load: the
+  in-request re-check inside `LoadUserTokenCtx` returns `ErrStaleSession`, which
+  `LoadCalendarTokenCtx` wraps as `ErrCredentialStore`, so the handler writes the 500,
+  but `guardedResponseWriter` replaces it with
+  `401 text/plain {"error":"unauthorized"}\n` (`backend/api/middleware.go:157-215`). So
+  a credential-store failure can surface as a 401, but only as the session-ended 401,
+  never as `calendar not connected`. A generation that cannot be read at that point
+  gives the `SessionGenerationUnavailable` 500. Both are consistent with the sentence
+  and with the shared responses.
+
+### The shared 401 on the room list
+`listRooms` uses `#/components/responses/CalendarNotConnected`, which has two bodies:
+`application/json {"error":"calendar not connected"}` (`CalendarNotConnectedError`, an
+enum of one) and `text/plain {"error":"unauthorized"}\n` (`MiddlewareUnauthorized`, which
+since PAC-71 also names the in-request re-check). That matches the server. Revision 3's
+operation text, though, said only "a caller with no stored Google credential gets the
+401 `calendar not connected`". A client author reading only the operation could branch
+on the status alone, which is the mistake AC-16 forbids. **Fixed:** the operation now
+says the 401 is shared, that a session that has ended answers it with
+`{"error":"unauthorized"}`, and that a client tells "calendar not connected" apart by the
+body, never by the status. The web can do that: `interpretResponse` JSON-parses a
+`text/plain` body (`smart-calendar-flow src/api/client.ts:538-556`), so `e.data.error` is
+`"unauthorized"` or `"calendar not connected"`.
+
+### AC-16 rewrite, confirmed
+Each branch of AC-16 (Revision 2.1) maps to a contract answer:
+- the "calendar not connected" refusal → 401 JSON `CalendarNotConnectedError`;
+- session ended → 401 `MiddlewareUnauthorized`, the same status with the `unauthorized`
+  answer (from `requireAuth` or from the in-request re-check above);
+- any other failure → the 500 JSON (`ApiHttpError` 500: a lost, expired or
+  undecryptable credential, a Google error, an unreadable session generation), a
+  non-JSON 5xx from the proxy (`ApiGatewayError`), or no answer (`ApiUnreachableError`).
+  Since PAC-83 there is no demo fallback (`src/api/demoGate.ts`).
+
+No 401 on this operation carries any other body. The manifest's `acceptanceTests` are
+now the Revision 2.1 text (AC-16 rewritten; AC-3, AC-8, AC-10, AC-11 and AC-12 to AC-14
+reworded with their interim notes). Nothing is narrowed.
+
+### Consumers affected
+- `smart-calendar-flow src/api/generated/types.ts`: the `listRooms` JSDoc changes.
+  **PR #128 (`factory/pac-41-contract-types`, `a26cb1b`, generated at revision 3) is
+  stale and must be regenerated against revision 4.** No type changes.
+- `backend/api/gen`: unchanged (`make openapi` in an LF copy regenerated only the bundle).
+- `mcp/tools.go:207-215`: sends `q` only; unaffected. Its tool description says "name
+  prefix" while the server matches a substring of the name or the id: an MCP wording
+  nit, not a contract issue.
+- `e2e/tests/seam.spec.ts:350-352`: reads no keys; unaffected.
+
+### Uncertainties not actually resolved
+None claimed (`resolvesUncertain` is empty; no `x-uncertain` on these operations).
+
+### Non-blocking
+- The AC-15 backend PR may add, beside the 200 key-set test, one `/api/rooms` case for
+  an undecryptable or lost credential (500, not 401), so the sentence in finding 2 is
+  pinned on this operation too. Not an acceptance criterion; recommended.
+- `ListRooms` reads only the first `CalendarList` page (no `pageToken`,
+  `rooms_attendees.go:25`). The 200's "capped only by what Google returns" is true but
+  hides that rooms beyond the first page are never listed. Pre-existing; not inherited.
+
+### Verified clean
+- `CalendarRoom` is `{ID, Name}` with no `omitempty` (`rooms_attendees.go:11-14`); the
+  empty list is `[]` (`handlers_events.go:325-327`).
+- `listRooms` reads only `q`, lowercased, not trimmed (`handlers_events.go:314`).
+- `FreeBusyParticipant`: three keys (`handlers_freebusy.go:23-27`), `status` only
+  `known`/`unknown` (`engine/freebusy_service.go:111,180-183`), `busy` never null
+  (`:185-187`).
+- Naming and security conventions unchanged: no `security` key on `listRooms`, shared
+  responses untouched, `operationId`s unchanged.
+- `make openapi-check` (api half, LF copy, `golang:1.25-bookworm`): bundle in sync (108
+  paths), MIGRATION.md covers 130 operations (12 generated), gen matches. rc=0.
+
+### Revision 4 (applied)
+`contracts/openapi/paths/calendar.yaml`: the `listRooms` description and its 500 text, as
+above. Bundle regenerated in an LF copy; `backend/api/gen` unchanged. `contractHash`
+`77f0a60841bec8b9399ba8786f6c9ffc8329d4610f803f3f196f2a6354d29f7e`. Manifest:
+`contractRevision` 4; `specDoc` and `mergeConditions` for the accepted Revision 2.1;
+`acceptanceTests` re-copied; `followUps` OQ-1 → PAC-100 and OQ-5 → PAC-102.
+Not run: the full api gate (it needs the host checkout on this branch, which this run
+does not change) and the web gate for the regenerated #128.
