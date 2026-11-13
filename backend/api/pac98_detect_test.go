@@ -10,6 +10,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/Enach/paceday/backend/api/gen"
+	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/domain"
 )
 
 // PAC-98 AC-6 (and API-092 for the changed outcomes): through the real
@@ -75,4 +77,35 @@ func httptestDetectBody(r http.Handler, remote, body string) *httptest.ResponseR
 	req.RemoteAddr = remote
 	r.ServeHTTP(rec, req)
 	return rec
+}
+
+// PAC-98 review: the domains detection answers google without a lookup
+// (backend/auth/sso_detect.go) must be exactly the domains on which a verified
+// Google address is authoritative evidence (googleConsumerDomains here,
+// handlers_pac71_auth.go, PAC-71; outside PAC-98's allowed paths, so the two
+// sets are pinned equal rather than merged). Detection is the oracle for the
+// auth set: over every consumer-list entry and every entry of the evidence
+// set, google from detection <=> authoritative here.
+func TestPAC98_GoogleConsumerSetsAgree(t *testing.T) {
+	candidates := map[string]bool{}
+	for _, d := range domain.GenericDomains() {
+		candidates[d] = true
+	}
+	for d := range googleConsumerDomains {
+		candidates[d] = true
+		if !domain.IsGenericDomain(d) {
+			t.Errorf("%q is authoritative Google evidence but not on the consumer list", d)
+		}
+	}
+	det := auth.NewDetector(auth.DetectorOptions{Resolver: forbiddenMXResolver{}})
+	db := openTestDB(t)
+	for d := range candidates {
+		res, err := det.Detect(t.Context(), db, "user@"+d)
+		if err != nil {
+			t.Fatalf("Detect(%s): %v", d, err)
+		}
+		if got, want := res.Type == auth.DetectGoogle, googleConsumerDomains[d]; got != want {
+			t.Errorf("%s: detection google = %v, PAC-71 authoritative Google consumer domain = %v; the two sets must be equal", d, got, want)
+		}
+	}
 }
