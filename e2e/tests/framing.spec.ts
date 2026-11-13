@@ -93,13 +93,11 @@ test.describe('PAC-81 Q-O2: framing', () => {
   // visitor to the home page; the not-found page) are now refused like any
   // other page.
   //
-  // Deviation from the spec's AC-16 text, found at stage 4: the spec frames
-  // /book//<slug>, but the real file server (docker/fileserver, Go ServeMux)
-  // answers it with a 301 to /book/<slug>, so whatever the browser does with
-  // the refused redirect, the only document it can render there is the
-  // genuine booking page: no gap, and nothing to observe in a frame. Its 301
-  // carries DENY (header test below). /settings/..%2Fbook/<slug> (200 from the
-  // file server, the app's not-found page) takes its place as a refused frame.
+  // Spec AC-16 (revision 3) frames /settings/..%2Fbook/<slug> (200 from the
+  // file server, the app's not-found page) rather than /book//<slug>: the
+  // real file server (docker/fileserver, Go ServeMux) answers /book//<slug>
+  // with a 301 to /book/<slug>, so the only document a frame can end on there
+  // is the genuine booking page. That 301 carries DENY (header test below).
   test('PAC-91: crafted addresses that normalise to /book/ are refused', async ({ page, cspViolations }) => {
     test.info().annotations.push({ type: CSP_VIOLATIONS_EXPECTED, description: 'the two refused crafted frames' });
     const bookUrl = `${BASE_URL}/book/${LINKS.uiBooking.slug}`;
@@ -146,29 +144,57 @@ test.describe('PAC-81 Q-O2: framing', () => {
     }
   });
 
-  // PAC-91 AC-4 (spec D-2, owner OQ-1 open: default "_top").
-  test.fixme(
-    "PAC-91: the framed booking page's home link opens Paceday at the top level",
-    // BLOCKED on the PAC-91 web change (Enach/smart-calendar-flow, after
-    // PAC-88 #144 merges): until it ships, the booking page's "paceday" link
-    // is a client-side <Link to="/"> that navigates inside the frame, and it
-    // has no test id. Unblocks when the web image with booking-home-link
-    // (target TOP_LEVEL_LINK_TARGET = "_top") is published; contract
-    // PAC-91 mergeConditions. The test then: frames /book/<slug> from
-    // embedder(), clicks frame.getByTestId('booking-home-link'), and expects
-    // page.url() to become `${BASE_URL}/` and no frame on the page to show a
-    // non-booking Paceday URL (OQ-1 "new tab": a popup at `${BASE_URL}/`,
-    // embedder URL unchanged, frame still at /book/<slug>).
-    async () => {},
-  );
+  // PAC-91 AC-4 (spec D-2, owner OQ-1 open: default "_top"). The booking
+  // page's "paceday" link targets the top-level browsing context, so clicking
+  // it inside a frame replaces the embedding page with Paceday's home page
+  // instead of navigating the frame. Needs the PAC-91 web image
+  // (Enach/smart-calendar-flow impl/pac-91-web). If OQ-1 is answered "new
+  // tab" (TOP_LEVEL_LINK_TARGET = "_blank"), this expectation becomes: a
+  // popup at `${BASE_URL}/`, the embedder's URL unchanged, the frame still on
+  // /book/<slug>.
+  test("PAC-91: the framed booking page's home link opens Paceday at the top level", async ({ page }) => {
+    const bookUrl = `${BASE_URL}/book/${LINKS.uiBooking.slug}`;
+    const site = await embedder(`<!doctype html><html><body>
+      <iframe name="book" src="${bookUrl}" width="800" height="600"></iframe>
+    </body></html>`);
+    try {
+      const failed: string[] = [];
+      page.on('requestfailed', (r) => failed.push(`${r.url()} ${r.failure()?.errorText}`));
+      await page.goto(`${site.origin}/embed.html`);
 
-  // PAC-91 AC-5, guard (passes today): unframed, the home link still lands on
-  // the home page. booking-home-link once the web change ships; the role and
-  // name until then.
+      const book = page.frame({ name: 'book' });
+      expect(book, 'the booking frame exists').not.toBeNull();
+      await expect(book!.getByRole('heading', { name: LINKS.uiBooking.title }), `failed requests: ${failed.join('; ')}`).toBeVisible({
+        timeout: 15_000,
+      });
+      const home = book!.getByTestId('booking-home-link');
+      await expect(home).toHaveAttribute('href', '/');
+      await expect(home).toHaveAttribute('target', '_top');
+
+      await home.click();
+
+      // The top-level page is now Paceday's home page, unframed...
+      await expect(page).toHaveURL(`${BASE_URL}/`, { timeout: 15_000 });
+      await expect(page.locator('#root')).toHaveCount(1);
+      // ...and no frame anywhere shows a Paceday page other than the booking page.
+      const paceday = new URL(BASE_URL).origin;
+      const framed = page
+        .frames()
+        .filter((f) => f !== page.mainFrame())
+        .map((f) => f.url())
+        .filter((u) => u.startsWith(paceday) && !new URL(u).pathname.startsWith('/book/'));
+      expect(framed).toEqual([]);
+    } finally {
+      await site.close();
+    }
+  });
+
+  // PAC-91 AC-5, guard: unframed, the home link still lands on the home page
+  // (now a full document load, not an in-app transition).
   test("PAC-91: unframed, the booking page's home link goes to the home page", async ({ page }) => {
     await page.goto(`/book/${LINKS.uiBooking.slug}`);
     await expect(page.getByRole('heading', { name: LINKS.uiBooking.title })).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId('booking-home-link').or(page.getByRole('link', { name: 'paceday', exact: true })).click();
+    await page.getByTestId('booking-home-link').click();
     await expect(page).toHaveURL(`${BASE_URL}/`);
   });
 

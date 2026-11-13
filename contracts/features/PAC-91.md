@@ -82,7 +82,7 @@ SPA location unless noted (spec OQ-2, run 2026-11-12 on
 | `/settings/..%2Fbook/x` | same; app shows not-found |
 | `/xyz/..%2Fbook%2Fabc`, `/xyz/..%2fbook%2fabc`, `/xyz/%2E%2E%2Fbook%2Fabc` | same, any case |
 | `/%2Fbook/x`, `/book%2Fx`, `/book%2fx` | encoded slash outside the segment |
-| `/book//abc`, `//book/abc` | empty segment; nginx merges slashes, app shows not-found |
+| `/book//abc`, `//book/abc` | empty segment; nginx merges slashes. App shows not-found only behind an upstream answering 200 (the `nginx/test` stub); the real file server 301s both to `/book/abc` (spec revision 3) |
 | `/book/x/../app`, `/book/./abc`, `/book/abc/.` | literal dot segments in the raw path (reverses `partc_test.go:53`) |
 | `/book/x%2F`, `/book/x%2f`, `/book/x%5C..%5Capp`, `/book/x%5c..%5capp` | encoded slash/backslash inside the segment |
 | `/book/..`, `/book/.`, `/book/%2e`, `/book/%2E%2e/`, `/book/.%2e?x` | dot segment in any spelling |
