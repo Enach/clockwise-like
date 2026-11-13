@@ -58,29 +58,8 @@ func TestDetectAuthProvider_SSODomain(t *testing.T) {
 	}
 }
 
-func TestDetectAuthProvider_CustomDomain_DefaultsGoogle(t *testing.T) {
-	db := openTestDB(t)
-	// "example.internal" is not generic, not SSO-configured, not a MS tenant
-	// (MS heuristic will fail for a non-existent domain — that's fine, defaults to Google)
-	result, err := DetectAuthProvider(context.Background(), db, "user@paceday-test-nonexistent.internal")
-	if err != nil {
-		t.Fatalf("DetectAuthProvider: %v", err)
-	}
-	// Should be google or microsoft depending on heuristic, but not generic or sso
-	if result.Type == "generic" || result.Type == "sso" {
-		t.Errorf("unexpected type %q for custom domain", result.Type)
-	}
-}
-
-func TestIsMicrosoftTenant_Cached(t *testing.T) {
-	// Seed cache with a known result
-	cacheTenant("cached-domain.example", true)
-
-	result, err := isMicrosoftTenant(context.Background(), "cached-domain.example")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result {
-		t.Error("expected cached result to be true")
-	}
-}
+// TestDetectAuthProvider_CustomDomain_DefaultsGoogle (a live HTTPS call to
+// login.microsoftonline.com) and TestIsMicrosoftTenant_Cached (package cache
+// seeding) are gone with the probe they tested (PAC-97 AC-14). Their ground
+// is covered without live DNS or HTTP by pac97_detect_test.go: AC-1, AC-2
+// (every fixture) and AC-9 (the cache).

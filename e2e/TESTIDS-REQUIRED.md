@@ -165,6 +165,24 @@ by the PAC-91 web change (Enach/smart-calendar-flow, branch `impl/pac-91-web`).
 
 ---
 
+## 7. Sign-in provider choice — `src/components/auth/AuthDialog.tsx`, `src/components/auth/**` (PAC-97)
+
+Detection's new answer `choose` (spec `docs/specs/PAC-97.md` AC-19..AC-22,
+contract `contracts/features/PAC-97.md` section 3). Implemented by the web PR
+smart-calendar-flow#147; used by `tests/pac97-signin-detect.spec.ts` (AC-27).
+
+| Test id | Element | Used for |
+|---|---|---|
+| `auth-choose-step` | the choose step's container; heading "Choose how to sign in" (or "...sign up") | AC-27: the step is shown, not the password step |
+| `auth-choose-email` | the span showing the typed email | AC-27: the step is for the typed address |
+| `auth-choose-google` | button "Continue with Google" / "Sign up with Google" | AC-27: the click requests `/api/auth/google?login_hint=<email>` |
+| `auth-choose-microsoft` | button "Continue with Microsoft" / "Sign up with Microsoft" | AC-27: the Microsoft half (shown only when Microsoft is configured) |
+| `auth-choose-back` | button "Use a different email" | AC-21 (e2e: the email is kept) |
+| `auth-choose-unavailable` | the "sign-in with a provider is not available" text | AC-20 (vitest only) |
+
+The remembered email lives in `sessionStorage` key `paceday:signin-email`
+(AC-25, AC-26).
+
 ## Contract gaps found while writing this suite
 
 Not test ids — genuine `api`/`web` drift, listed here because they materially

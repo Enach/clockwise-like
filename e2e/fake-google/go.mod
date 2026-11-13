@@ -2,7 +2,10 @@ module github.com/Enach/paceday/e2e/fake-google
 
 go 1.25.0
 
-require google.golang.org/api v0.292.0
+require (
+	golang.org/x/net v0.58.0
+	google.golang.org/api v0.292.0
+)
 
 require (
 	cloud.google.com/go/auth v0.22.0 // indirect
@@ -22,7 +25,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

@@ -62,3 +62,32 @@ func DeriveOrgName(d string) string {
 	}
 	return strings.Join(words, " ")
 }
+
+// IsQueryableDNSName reports whether d is a name sign-in detection may send to
+// a DNS resolver (PAC-97 AC-13, D-7): ASCII letters, digits and hyphens only,
+// at least two labels, each label 1-63 characters that neither starts nor
+// ends with a hyphen, and at most 253 characters in all. A trailing dot, an
+// empty label, a single label ("intranet"), whitespace, an underscore and any
+// non-ASCII character are refused, so a name that is not a public host name
+// never leaves the server.
+func IsQueryableDNSName(d string) bool {
+	if d == "" || len(d) > 253 {
+		return false
+	}
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if len(l) == 0 || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}

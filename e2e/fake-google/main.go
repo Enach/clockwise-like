@@ -37,6 +37,12 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
 		os.Exit(healthcheck("http://127.0.0.1" + addr + "/__fixture/health"))
 	}
+	// PAC-97: the DNS stand-in for sign-in detection (dns.go), same process.
+	dnsAddr := os.Getenv("DNS_LISTEN_ADDR")
+	if dnsAddr == "" {
+		dnsAddr = ":5353"
+	}
+	go func() { log.Fatal(serveDNS(dnsAddr)) }()
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           NewServer(NewStore()),
