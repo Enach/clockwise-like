@@ -16,20 +16,27 @@
  * room-selected, room-booking-notice.
  *
  * The journeys own CONNECTED.rooms (seed/ids.ts): its calendar is read and
- * written by nothing else (README rule 6).
+ * written by nothing else (README rule 6). They also run in parallel with
+ * each other, so each one seeds its event at its own hour (never overlapping
+ * on the week grid), names its rooms and title with a random run id, and
+ * deletes its event and room calendars in finally.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { Page } from '@playwright/test';
-import { test, expect } from '../fixtures';
+import { test, expect, type ApiClient } from '../fixtures';
 import { atUtc, weekDay } from '../lib/dates';
 import { fake, type FakeEvent } from '../fake';
 import { CONNECTED } from '../seed/ids';
 
 const ROOMS_USER = CONNECTED.rooms;
 
+/** Each journey's own hour (UTC), so their events never overlap on the grid. */
+const HOUR = { ac1: '09:00', ac14a: '12:00', ac14b: '15:00' } as const;
+
 type StoredAttendee = { email: string; resource?: boolean };
 
-function roomAddress(slug: string, run: number): string {
+function roomAddress(slug: string, run: string): string {
   return `c_e2e-${slug}-${run}@resource.calendar.google.com`;
 }
 
@@ -39,18 +46,34 @@ function dayThisWeek(): Date {
   return weekDay(0, [1, 2, 3].find((d) => d !== todayIdx)!);
 }
 
-async function seedEvent(title: string, extra: Partial<FakeEvent> = {}): Promise<string> {
-  const day = dayThisWeek();
+/** Thirty minutes from `hhmm` (UTC) on this week's day. */
+async function seedEvent(title: string, hhmm: string, extra: Partial<FakeEvent> = {}): Promise<string> {
+  const start = atUtc(dayThisWeek(), hhmm);
+  const end = new Date(Date.parse(start) + 30 * 60_000).toISOString();
   const [stored] = await fake.seedEvents(ROOMS_USER.email, [
-    { summary: title, start: { dateTime: atUtc(day, '10:00') }, end: { dateTime: atUtc(day, '10:30') }, ...extra },
+    { summary: title, start: { dateTime: start }, end: { dateTime: end }, ...extra },
   ]);
   return stored!.id;
+}
+
+/**
+ * Remove what a journey created: its event (through the API, so the stand-in
+ * deletes it as Google would) and its room calendars. The status check is
+ * soft, so a cleanup problem is reported without hiding the journey's own
+ * failure.
+ */
+async function cleanUp(api: ApiClient, eventId: string | undefined, rooms: string[]): Promise<void> {
+  if (eventId) {
+    const res = await api.delete(`/api/events/${eventId}`);
+    expect.soft(res.status(), `cleanup: delete event ${eventId}`).toBe(204);
+  }
+  for (const room of rooms) await fake.clearCalendar(room);
 }
 
 async function storedRooms(eventId: string): Promise<{ rooms: string[]; location?: string }> {
   const ev = (await fake.events(ROOMS_USER.email)).find((e) => e.id === eventId);
   expect(ev, `event ${eventId} on the stand-in`).toBeTruthy();
-  const attendees = ((ev as { attendees?: StoredAttendee[] }).attendees ?? []);
+  const attendees = (ev as { attendees?: StoredAttendee[] }).attendees ?? [];
   return {
     rooms: attendees.filter((a) => a.resource === true).map((a) => a.email).sort(),
     location: (ev as { location?: string }).location,
@@ -82,15 +105,17 @@ async function save(page: Page, eventId: string): Promise<void> {
 
 test.describe('PAC-41 room booking (through the stand-in)', () => {
   test('AC-1: a room picked in the editor is a resource attendee of the stored event', async ({
+    apiAs,
     pageAs,
     assertNotDemo,
   }) => {
-    const run = Date.now();
+    const run = randomUUID();
     const helsinki = roomAddress('helsinki', run);
+    let id: string | undefined;
     await fake.defineCalendar(helsinki, 'Helsinki');
     try {
       const title = `E2E room ${run}`;
-      const id = await seedEvent(title);
+      id = await seedEvent(title, HOUR.ac1);
 
       const page = await pageAs(ROOMS_USER);
       await openEditor(page, title);
@@ -100,19 +125,20 @@ test.describe('PAC-41 room booking (through the stand-in)', () => {
       expect(await storedRooms(id)).toMatchObject({ rooms: [helsinki] });
       await assertNotDemo(page);
     } finally {
-      await fake.clearCalendar(helsinki);
+      await cleanUp(apiAs(ROOMS_USER), id, [helsinki]);
     }
   });
 
   test('AC-14 (a): picking another room keeps the earlier one booked', async ({ apiAs, pageAs }) => {
-    const run = Date.now();
+    const run = randomUUID();
     const helsinki = roomAddress('helsinki', run);
     const oslo = roomAddress('oslo', run);
+    let id: string | undefined;
     await fake.defineCalendar(helsinki, 'Helsinki');
     await fake.defineCalendar(oslo, 'Oslo');
     try {
       const title = `E2E room swap ${run}`;
-      const id = await seedEvent(title);
+      id = await seedEvent(title, HOUR.ac14a);
       // Helsinki booked through Paceday.
       const booked = await apiAs(ROOMS_USER).patch(`/api/events/${id}`, { room_resource_email: helsinki });
       expect(booked.status(), await booked.text()).toBe(200);
@@ -125,18 +151,18 @@ test.describe('PAC-41 room booking (through the stand-in)', () => {
 
       expect((await storedRooms(id)).rooms).toEqual([helsinki, oslo].sort());
     } finally {
-      await fake.clearCalendar(helsinki);
-      await fake.clearCalendar(oslo);
+      await cleanUp(apiAs(ROOMS_USER), id, [helsinki, oslo]);
     }
   });
 
   test('AC-14 (b): a free-text location keeps the earlier room booked', async ({ apiAs, pageAs }) => {
-    const run = Date.now();
+    const run = randomUUID();
     const helsinki = roomAddress('helsinki', run);
+    let id: string | undefined;
     await fake.defineCalendar(helsinki, 'Helsinki');
     try {
       const title = `E2E room text ${run}`;
-      const id = await seedEvent(title);
+      id = await seedEvent(title, HOUR.ac14b);
       const booked = await apiAs(ROOMS_USER).patch(`/api/events/${id}`, { room_resource_email: helsinki });
       expect(booked.status(), await booked.text()).toBe(200);
 
@@ -149,7 +175,7 @@ test.describe('PAC-41 room booking (through the stand-in)', () => {
 
       expect(await storedRooms(id)).toEqual({ rooms: [helsinki], location: 'Café' });
     } finally {
-      await fake.clearCalendar(helsinki);
+      await cleanUp(apiAs(ROOMS_USER), id, [helsinki]);
     }
   });
 });

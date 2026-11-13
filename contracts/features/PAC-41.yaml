@@ -37,6 +37,8 @@
         "src/api/coverageCache.ts (stops copying provider)",
         "src/components/LocationPicker.tsx, src/components/EventEditForm.tsx (room address from id; no badge or detail line; notices AC-12/AC-13; failure states AC-16)",
         "src/components/links/CoverageBadge.tsx, src/components/links/LinkEditDrawer.tsx (no paceday_user from coverage; no provider anywhere in the chip)",
+        "src/demo/clientMocks.ts (amendment 2026-11-13: the demo rooms and demo free/busy live here since PAC-83 moved them out of src/api/client.ts; D-5, AC-10)",
+        "src/api/operations.ts (amendment 2026-11-13: one NOT_OPERATIONS line registering the pure helper client.roomListFailure, which the PAC-83 registry test requires of every exported client function)",
         "tests beside each of the above"
       ],
       "forbiddenPaths": [
@@ -134,7 +136,8 @@
   ],
 
   "amendments": [
-    "2026-11-13, build stage (impl/pac-41-api), approved by the factory coordinator: allowedPaths.backend widened to e2e/seed and e2e/TESTIDS-REQUIRED.md. Reason: AC-1 and AC-14 are [e2e] criteria that need a Google-connected user whose stand-in calendar no other journey reads or clears (README rule 6), and none was free; without the seed user the journeys could only be test.fixme (that interim was PAC-103, now superseded). No contract, bundle or contractHash change."
+    "2026-11-13, build stage (impl/pac-41-api), approved by the factory coordinator: allowedPaths.backend widened to e2e/seed and e2e/TESTIDS-REQUIRED.md. Reason: AC-1 and AC-14 are [e2e] criteria that need a Google-connected user whose stand-in calendar no other journey reads or clears (README rule 6), and none was free; without the seed user the journeys could only be test.fixme (that interim was PAC-103, now superseded). No contract, bundle or contractHash change.",
+    "2026-11-13, build stage review (web #151 / api #266), approved by the factory coordinator: allowedPaths.frontend widened to src/demo/clientMocks.ts and src/api/operations.ts, which the web PR already edits. Reason: the manifest named src/api/client.ts for the demo rooms and coverage, but PAC-83 had moved them to src/demo/clientMocks.ts; and the new exported pure helper roomListFailure must be listed in src/api/operations.ts NOT_OPERATIONS or the PAC-83 registry test fails. No contract, bundle or contractHash change."
   ],
   "rollback": "Revert this contract PR and the paired types PR; both are description-only, so nothing on the wire, in storage or in either app's behaviour changes. The implementation PRs revert independently (spec section 7); rooms booked while they were live stay on their events, nothing is deleted."
 }
