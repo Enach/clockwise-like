@@ -1,7 +1,7 @@
 # Spec — PAC-89: SSO admin step-up verifies Microsoft ID tokens with the tenant-pinned verifier
 
 - **Linear**: https://linear.app/paceday/issue/PAC-89/sso-admin-step-up-move-microsoft-id-token-verification-onto-pac-71s
-- **Status**: challenged 2026-11-13 (accept-with-changes, applied in place; revision 2). Ready for contract.
+- **Status**: challenged 2026-11-13 (accept-with-changes, applied in place; revision 2). Contract revision 1 (ae84e8b). Stage 4: implemented in impl/pac-89-api (plan docs/plans/PAC-89.md).
 - **Author**: spec-author; revision 2 by spec-challenger (see the Challenge log at the end)
 - **Inherited scope**: none blocking. `contracts/openapi` carries no `x-uncertain` marker on the step-up operations. Audit rows touching the endpoints: API-001 (`docs/factory/api-audit.md:259`, write half closed by PAC-50) and API-092 (`api-audit.md:350`, step-up statuses asserted by PAC-50). This change adds no new status and no new documented outcome, so neither row moves.
 - **Origin**: PAC-71 contract revision 3.1, item 3.1-10 (`contracts/features/PAC-71.md:542`) and candidate follow-up `stepupVerifierTenantPinned` (`contracts/features/PAC-71.yaml:303`), filed as PAC-89.

@@ -70,7 +70,21 @@ type stepupIdP struct {
 	rolesStatus int
 	roles       []string
 	tokenStatus int
+
+	// PAC-89 (Microsoft): header overrides the ID token's JOSE header (a nil
+	// value omits the field); tenantKeysOff publishes no key at the
+	// per-tenant key addresses (only at /common); keysHook, when set,
+	// answers every key request instead. keyPaths and graphHits record the
+	// key requests and the Graph requests made.
+	header        map[string]any
+	tenantKeysOff bool
+	keysHook      http.HandlerFunc
+	keyPaths      []string
+	graphHits     int
 }
+
+// msDefaultOID is the stand-in's Microsoft object id when a test sets none.
+const msDefaultOID = "0a5e0000-0000-4000-8000-0000000000a1"
 
 func newStepupIdP(t *testing.T, kind string) *stepupIdP {
 	t.Helper()
@@ -80,7 +94,21 @@ func newStepupIdP(t *testing.T, kind string) *stepupIdP {
 	}
 	idp := &stepupIdP{t: t, kind: kind, key: key, clientID: kind + "-stepup-client",
 		claims: map[string]any{}, dirStatus: 200, orgStatus: 200, rolesStatus: 200, tokenStatus: 200}
-	jwks := func(w http.ResponseWriter, _ *http.Request) {
+	jwks := func(w http.ResponseWriter, r *http.Request) {
+		if kind == "microsoft" {
+			idp.mu.Lock()
+			idp.keyPaths = append(idp.keyPaths, r.URL.Path)
+			hook, off := idp.keysHook, idp.tenantKeysOff && r.PathValue("tid") != "common"
+			idp.mu.Unlock()
+			if hook != nil {
+				hook(w, r)
+				return
+			}
+			if off {
+				_, _ = w.Write([]byte(`{"keys":[]}`))
+				return
+			}
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
 			"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "k1",
 			"n": b64url(key.N.Bytes()), "e": b64url(big.NewInt(int64(key.E)).Bytes()),
@@ -125,11 +153,13 @@ func newStepupIdP(t *testing.T, kind string) *stepupIdP {
 			})
 		})
 	} else {
-		mux.HandleFunc("/common/discovery/v2.0/keys", jwks)
+		// PAC-89: each tenant's keys at its own address; /common too.
+		mux.HandleFunc("/{tid}/discovery/v2.0/keys", jwks)
 		mux.HandleFunc("/organizations/oauth2/v2.0/token", token)
 		mux.HandleFunc("/v1.0/organization", func(w http.ResponseWriter, r *http.Request) {
 			idp.mu.Lock()
 			defer idp.mu.Unlock()
+			idp.graphHits++
 			if r.Header.Get("Authorization") != "Bearer stepup-access-microsoft" || idp.orgStatus != 200 {
 				http.Error(w, `{"error":{}}`, 403)
 				return
@@ -143,6 +173,7 @@ func newStepupIdP(t *testing.T, kind string) *stepupIdP {
 		mux.HandleFunc("/v1.0/me/memberOf/microsoft.graph.directoryRole", func(w http.ResponseWriter, r *http.Request) {
 			idp.mu.Lock()
 			defer idp.mu.Unlock()
+			idp.graphHits++
 			if r.Header.Get("Authorization") != "Bearer stepup-access-microsoft" || idp.rolesStatus != 200 {
 				http.Error(w, `{"error":{}}`, 403)
 				return
@@ -182,13 +213,18 @@ func (idp *stepupIdP) sign() string {
 	}
 	if idp.kind == "google" {
 		c["iss"] = idp.srv.URL
+	} else {
+		// PAC-89: a v2.0 token with a GUID object id, as Microsoft issues.
+		c["ver"], c["oid"] = "2.0", msDefaultOID
 	}
 	for k, v := range idp.claims {
 		c[k] = v
 	}
 	if idp.kind == "microsoft" {
-		if tid, ok := c["tid"].(string); ok {
-			c["iss"] = idp.srv.URL + "/" + tid + "/v2.0"
+		if _, set := idp.claims["iss"]; !set {
+			if tid, ok := c["tid"].(string); ok {
+				c["iss"] = idp.srv.URL + "/" + tid + "/v2.0"
+			}
 		}
 	}
 	for k, v := range c {
@@ -196,7 +232,15 @@ func (idp *stepupIdP) sign() string {
 			delete(c, k)
 		}
 	}
-	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT", "kid": "k1"})
+	h := map[string]any{"alg": "RS256", "typ": "JWT", "kid": "k1"}
+	for k, v := range idp.header {
+		if v == nil {
+			delete(h, k)
+		} else {
+			h[k] = v
+		}
+	}
+	header, _ := json.Marshal(h)
 	body, _ := json.Marshal(c)
 	in := b64url(header) + "." + b64url(body)
 	sum := sha256.Sum256([]byte(in))
