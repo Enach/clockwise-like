@@ -1,0 +1,137 @@
+{
+  "featureId": "PAC-89",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-89/sso-admin-step-up-move-microsoft-id-token-verification-onto-pac-71s",
+  "status": "draft (contract revision 1, 2026-11-13; awaiting contract-challenger)",
+  "contractRevision": "unchanged bundle (PAC-89 changes no HTTP operation); PAC-89 interface revision 1",
+  "contractHash": "5367da004130aa9037752baa1e17be951f9d4130d46e0cf0ce6e467975603328",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main 68540f6 (last bundle change b0c0d7a, PAC-97) and on factory/pac-89-spec (byte-identical: git diff origin/main -- contracts/openapi is empty). Reproduce with `git show origin/main:contracts/openapi/openapi.yaml | sha256sum` (LF blob) and `python scripts/openapi_assemble.py --check` -> OK: bundle is in sync (108 paths). If main's bundle moves before PAC-89 merges, the stage-4 PR records main's new hash here and changes nothing else: PAC-89 must not alter the bundle.",
+  "contractDoc": "contracts/features/PAC-89.md",
+  "specDoc": "docs/specs/PAC-89.md (revision 2: spec-challenger 2026-11-13 accept-with-changes, applied in place; OQ-F1 and OQ-F3 resolved; OQ-F2 optional follow-up)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "interfaceKind": "No HTTP change. Non-HTTP interface pinned in contracts/features/PAC-89.md section 2: Microsoft step-up ID-token rules and their per-deployment parameters (2.1), key cache identity (2.2), Microsoft callback check order with the consumer-tenant refusal and case-insensitive tenant comparisons (2.3), tenant pin storage (2.4).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/auth/ms_idtoken.go (parameterise key address, issuer base and client; return the step-up's extra claims; sign-in behaviour unchanged)",
+        "backend/auth/stepup.go (Microsoft verification onto the shared rules; Google path unchanged)",
+        "backend/auth/*_test.go (new unit tests for AC-3, AC-10, AC-12, AC-18; pac50_signin_scopes_test.go construction lines only if the constructor signature changes)",
+        "backend/config/idp.go (only to expose the Microsoft per-tenant key/issuer base; production values unchanged)",
+        "backend/api/handlers_sso_stepup.go (consumer-tenant refusal, case-insensitive tenant comparisons, lower-case pin, provider wiring)",
+        "backend/api/handlers_pac71_auth.go (only the microsoftIDTokens wiring, if the cache is shared)",
+        "backend/storage/sso_stepup.go (case-insensitive guard of the conditional pin write)",
+        "backend/api/pac89_stepup_test.go (new)",
+        "backend/api/pac50_sso_helpers_test.go, backend/api/pac50_sso_stepup_test.go, backend/api/pac90_test.go (Microsoft fixtures only: GUIDs, ver, oid, per-tenant key path; assertions unchanged)",
+        "backend/api/pac71_address_test.go (Microsoft check-4b subtest fixtures only, :297-318)",
+        "docs/plans/PAC-89.md",
+        "docs/specs/PAC-89.md (status line only)",
+        "contracts/features/PAC-89.{md,yaml} (contractHash field only, if main's bundle moved)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** (no HTTP change; any bundle diff is a contract defect)",
+        "backend/api/gen/** (generated)",
+        "backend/storage/migrations/** (no migration, spec D-6)",
+        "backend/auth/ms_idtoken_test.go, backend/api/pac71_msid_test.go, backend/api/pac71_msid_helpers_test.go (AC-15)",
+        "Google step-up fixtures and assertions (AC-15)",
+        "e2e/** (no Microsoft stand-in in e2e, spec section 5)",
+        "the step-up scope lists in backend/auth/stepup.go:70-79 (AC-16)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [],
+      "forbiddenPaths": [
+        "everything: no web change; src/api/generated is not regenerated"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [],
+  "componentsChanged": [],
+  "operationsNotChanged": [
+    "ssoAdminStepupCallback (auth.yaml:2161): stricter step 1 and an earlier tid_mismatch for the consumer tenant, both inside the documented outcomes",
+    "microsoftOAuthCallback (auth.yaml): sign-in rules unchanged; the step 2 sentence about the step-up verifier is left as is (followUps)"
+  ],
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-89-spec",
+    "assembler": "python scripts/openapi_assemble.py --check -> rc 0, OK: bundle is in sync (108 paths); openapi_migration_report.py --check rc 0 (130 operations, 12 generated); openapi_gen_go.sh --check rc 0; bundle sha256 unchanged from main",
+    "backendGate": "make verify in clockwise-like (lint, openapi-check, test with Docker Postgres, coverage at or above the floor); new auth logic has unit tests (CLAUDE.md rule 1)",
+    "webGate": "none (no web change)",
+    "e2eGate": "make e2e unchanged and green (no new e2e)",
+    "stage4": "make verify output in the PR body; the PR states the bundle sha256 is unchanged and presents fixture changes separately from assertion changes (spec section 6).",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1 Given a Microsoft step-up whose ID token has a GUID `tid` A, a valid signature by A's key, and an `iss` naming tenant B ≠ A, when the callback runs, then it is denied as token-invalid. `[contract]` *(This passes today because of the exact issuer comparison (§2.1). It is required by the issue as a regression guard and is not falsifiable today. AC-2 to AC-12 and AC-17 are, except the halves each marks as a guard; AC-13 to AC-16 are guards; AC-18 is falsifiable against a naive shared cache.)*",
+    "AC-2 Given a token for tenant A signed by a key that the stand-in publishes only at the shared multi-tenant key address and not at tenant A's address, when the callback runs, then it is denied as token-invalid. A token signed by a key published at tenant A's address is accepted, other checks permitting. `[contract]`",
+    "AC-3 Given a token whose `tid` is not a canonical GUID (`t1`, `common`, `organizations`, a value containing `/` or `..`, empty, absent), when the callback runs, then it is denied as token-invalid **and** the key server records zero requests for that callback. `[contract]` + `[unit]`",
+    "AC-4 Given a token with `ver` absent or `1.0`, otherwise valid, then denied as token-invalid. `[contract]`",
+    "AC-5 Given a token whose `aud` is a two-element array containing the client id, otherwise valid, then denied as token-invalid. Given `aud` as the client id string, or as a one-element array of it, it is accepted. `[contract]`",
+    "AC-6 Given a token whose `oid` is absent or not a GUID, otherwise valid, then denied as **token-invalid**. Today it reaches the identity comparison instead. `[contract]`",
+    "AC-7 Given a token with `exp` 30 s in the past, it is accepted. With `exp` 90 s in the past, it is denied as token-invalid. Given `nbf` 2 minutes in the future, it is denied as token-invalid. The clock is injected. `[contract]`",
+    "AC-8 Given a token signed with RS256 but whose header names another algorithm, or that has no `kid`, then denied as token-invalid. Given a nonce different from the step-up's, or no nonce, then denied as token-invalid. `[contract]` *(The `alg` and nonce halves are regression guards. The missing-`kid` half is falsifiable today: go-oidc tries every cached key when the header has no `kid`, so a `kid`-less token signed by a published key is accepted. (`go-oidc/v3@v3.20.0/oidc/jwks.go:157-165`).)*",
+    "AC-9 Given a validly signed v2.0 token whose `tid` is Microsoft's personal-account tenant (`9188040d-6c67-4c5b-b112-36a304b66dad`), and a stand-in whose Graph `/organization` would answer that id with the org domain verified, when the callback runs, then it is denied with reason **`tid_mismatch`** (§9 D-4), zero live grants, one denied event, pin unchanged and **zero** Graph requests. `[contract]` *(Falsifiable today: today this fixture is granted.)*",
+    "AC-10 Given two Microsoft step-ups for the same tenant within 24 hours, then the tenant's keys are fetched once. Given 20 concurrent step-up verifications for a tenant that is not cached, then exactly one key fetch is made, and all 20 complete. Given a `kid` unknown to a cached tenant, then at most one refetch is made per minute. Given tokens for tenants A and B, then one fetch is made to A's key address and one to B's. `[unit]` *(The first two clauses are regression guards: go-oidc already caches without TTL and single-flights (§2.1). The rate-limit clause and the per-tenant clause are falsifiable today: the shared key set refetches on every unknown `kid` and fetches only the multi-tenant address.)*",
+    "AC-11 Given the identity-provider limit set to 300 ms for the test (`outbound.SetForTest`) and a key server that accepts the connection but never answers, when a step-up callback verifies, then it answers the token-invalid redirect within 2 s, never a 5xx. *(Falsifiable today: the step-up's key fetch ignores the identity limit and waits for its own 15 s client timeout or the request budget.)* Given a key server that answers 500 or a body over 1 MiB, then denied as token-invalid. `[contract]`",
+    "AC-12 Given a deployment with the Microsoft identity provider redirected to a stand-in under declared test mode, then every step-up key fetch goes to the stand-in, under the tenant's own path, through the connection guard, and none goes to Microsoft's host. The expected issuer is the stand-in's per-tenant issuer. Given a production deployment, then the key fetch address is exactly Microsoft's per-tenant key address for the token's tenant. `[unit]`",
+    "AC-13 Given a Microsoft administrator whose token passes every check (GUID tenant, `ver` 2.0, GUID `oid`), when the step-up completes, then a grant is issued and the tenant is pinned, with or without `wids` (Graph fallback). This is PAC-50 AC-9b/AC-11a/AC-11b, re-run with fixtures that now carry GUID tenants, `ver` and a GUID `oid`. The pinned tenant is lower-case. `[contract]`",
+    "AC-14 Given each existing Microsoft denial case (`tid_mismatch` ×3, `tid_changed`, `not_admin` ×2, `email_mismatch` in `pac50_sso_stepup_test.go:195-255`; and the three Microsoft check-4b cases of `pac71_address_test.go:297-318`: bound `oid` granted, other GUID `oid` `identity_mismatch`, bound in another GUID tenant granted), when re-run with conforming GUID fixtures, then each yields the same outcome and reason as today. `[contract]`",
+    "AC-15 The Google step-up's tests and the PAC-71 sign-in tests (`backend/auth/ms_idtoken_test.go`, `backend/api/pac71_msid_test.go`, and every non-Microsoft-step-up case of `pac71_address_test.go`) pass with **no change to their assertions or fixtures**. `[contract]`",
+    "AC-16 The scopes that each step-up's authorization request carries, and its listed extra scopes, are byte-identical to today's (PAC-50 AC-24). `[unit]` *(Guard. `pac50_signin_scopes_test.go` assertions unchanged; its provider construction lines may change only if the constructor's signature does.)*",
+    "AC-17 Tenant case. (a) Given an org pinned to tenant GUID G spelled in upper-case hex (seeded directly), and an otherwise conforming step-up whose token `tid` and Graph id are G in lower case, then it is **granted**, and the stored pin afterwards equals lower(G). (b) Given no pin and a Graph `/organization` id equal to the token's `tid` but in the other case, then granted, and the pin is lower(G). (c) Given a pin of another GUID, then `tid_changed` as today, pin unchanged. `[contract]` *(a and b are falsifiable today: both comparisons are exact.)*",
+    "AC-18 Given a test-mode deployment whose Microsoft provider is redirected to a stand-in, after a step-up for tenant A has cached the stand-in's keys for A, when a sign-in ID token for A signed by that stand-in key is verified by sign-in's verifier, then it is refused, and sign-in's fetch goes to its own key address (`MicrosoftKeysURL(A)`), not served from the step-up's entry. `[unit]`"
+  ],
+  "resolvesFindings": [
+    "contracts/features/PAC-71.yaml followUps.stepupVerifierTenantPinned (PAC-71 contract revision 3.1, item 3.1-10)"
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "OQ-F1 (spec): tenant case -> case-insensitive at handlers_sso_stepup.go:613, :620 and storage/sso_stepup.go:218; lower-case pins; no migration.",
+    "OQ-F3 (spec): cache entries identified by key address; sharing with sign-in allowed only under AC-18."
+  ],
+  "doesNotResolve": [
+    "API-001, API-092 (docs/factory/api-audit.md:259, :350): no row moves; no new status or outcome.",
+    "OQ-F2 (spec): sign-in following the Microsoft stand-in redirection; optional follow-up."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "clockwise-like backend/api/pac50_sso_stepup_test.go, pac50_sso_helpers_test.go, pac90_test.go:246",
+      "breaks": "fixtures (by design)",
+      "detail": "Non-GUID tenants, no ver, keys at /common: become GUIDs, ver 2.0, GUID oid, per-tenant key path. Assertions unchanged."
+    },
+    {
+      "consumer": "clockwise-like backend/api/pac71_address_test.go:297-318",
+      "breaks": "fixtures (by design)",
+      "detail": "Microsoft check-4b subtest uses tenant-abc / O2 / O1-<uuid>; becomes GUIDs; its three outcomes unchanged."
+    },
+    {
+      "consumer": "clockwise-like backend/auth/pac50_signin_scopes_test.go:41-42",
+      "breaks": "no",
+      "detail": "Scope assertions unchanged (AC-16); construction lines change only if the constructor signature does."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow SsoAdminStepupSection.tsx:33, OrganizationAISection.tsx:52",
+      "breaks": "no",
+      "detail": "tid_mismatch copy also covers the consumer-tenant refusal; no new reason."
+    },
+    {
+      "consumer": "Microsoft administrators",
+      "breaks": "no (spec D-13)",
+      "detail": "v2.0 organizations-endpoint ID tokens already satisfy sign-in's rules; residual risks shared with sign-in: server clock skew over 60 s, app-specific signing keys."
+    }
+  ],
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "contracts/openapi/openapi.yaml byte-identical to main's (sha256 in the PR body).",
+    "PAC-71 sign-in test files and Google step-up tests untouched (AC-15).",
+    "make verify green with Docker, output pasted in the PR."
+  ],
+  "followUps": [
+    "auth.yaml microsoftOAuthCallback step 2 (:461-464) still describes the step-up verifier as reading /common keys (revision 3.1 history); reword at the next contract revision that touches auth.yaml (paired web regeneration). Owner: orchestrator.",
+    "OQ-F2: let sign-in's verifier follow PACEDAY_MICROSOFT_IDP_BASE_URL under declared test mode, and add a Microsoft stand-in to e2e (spec section 5). Owner: orchestrator decides whether to file."
+  ],
+  "rollback": "Revert the backend PR; no migration, no contract revision. Pins rewritten to lower case by AC-17a stay matched by the reverted exact comparisons while Graph answers lower-case ids (spec section 7). Grants remain valid until they expire.",
+  "challenge": "Spec challenged 2026-11-13 (accept-with-changes, applied). Contract awaiting contract-challenger."
+}
