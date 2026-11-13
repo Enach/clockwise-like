@@ -156,7 +156,9 @@ api bundle) runs: in full on every PR, against the paired branch; **not** on
 pushes to main (CI sets `OPENAPI_CROSS_REPO=skip`, since the two halves of a
 contract change merge minutes apart); and in `release.yml` on the exact pair of
 main SHAs to publish (`make openapi-check-web`), which does not publish a pair
-that fails.
+that fails. A mismatch is a warning while the younger of the two main commits
+is under `PAIR_MISMATCH_GRACE_MINUTES` (60) old, the normal gap between paired
+merges; past that it fails the release run, which is what notifies the owner.
 
 **Rules for agents:**
 
