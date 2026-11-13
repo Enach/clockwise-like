@@ -1,7 +1,8 @@
 # Spec — PAC-40: A deleted scheduling link does not go away, the same request means different things on create and edit, and cancelling a booking re-opens a used-up link
 
 - **Linear**: https://linear.app/paceday/issue/PAC-40
-- **Status**: accepted (challenge round 6, 2026-11-13, after revision 6.1)
+- **Status**: accepted (challenge round 6, 2026-11-13, after revision 6.1;
+  revision 6.2 corrects §0's account of the owner's confirmation only)
 - **Author**: spec-author
 - **Revision**: 6, written against `origin/main` at `68540f6` (web
   `smart-calendar-flow` `origin/main` at `ae72939`). Every citation in §2 is to
@@ -45,16 +46,19 @@ The owner's decision, as recorded on 2026-10-27: "the owner can see a deleted
 link's past bookings in an archive; bookers' names and emails are erased 90
 days after the link's last booking date." The record carries the caveat that
 the owner replied "okay" to a proposed option and that the reading should be
-confirmed. The factory orchestrator reported on 2026-11-13, when it
-commissioned this revision, that the owner confirmed the recorded answer; this
-spec treats it as confirmed. The caveat is still in
-`owner-decisions.md` and in no Linear comment; whoever holds that file should
-replace it with the confirmation (challenge round 6, non-blocking 1).
+confirmed. The owner gave that decision; the owner has **not** confirmed the
+factory's readings of it below. (Revisions 6 and 6.1 said the owner had
+confirmed the reading; that was inaccurate and is corrected in revision 6.2.)
 
-This spec reads the answer as follows. Each reading is the plainest one the
-words allow; where the words leave a choice, the choice is a factory decision
-listed under Decisions and open to correction by the owner without blocking
-this spec (OQ-8, OQ-9, OQ-10).
+The five readings R-1 to R-5 below are therefore **assumed by the factory**
+from the recorded decision and **await the owner's confirmation**. Each is the
+plainest reading the words allow; where the words leave a choice, the choice is
+a factory decision listed under Decisions and put to the owner as an open
+question — OQ-8 (what R-4 erases: are notes kept?), OQ-9 (R-5: deleted links
+only, no retention for live or paused links) and OQ-10 (R-5: "last booking
+date" is the latest meeting end). The spec is built on these readings until the
+owner answers; an answer that differs changes only the passages those open
+questions name.
 
 - **R-1 "the owner"** — the link's owner only. Accepted co-hosts do not get
   the archive: the owner's sentence names the owner, and today only the owner
@@ -1947,3 +1951,13 @@ Unchanged from round 6: the web delete confirmation and a new archive view;
 `factory/pac-40-contract` rev 2 and PRs clockwise-like#234 and
 smart-calendar-flow#126 are superseded and must be redone against this
 revision.
+
+## Revision 6.2 — 2026-11-13 (§0 correction, with contract revision 3)
+
+§0 said the owner had confirmed the factory's reading of the 2026-10-27
+decision. That was inaccurate: the owner gave the recorded decision but has not
+confirmed readings R-1 to R-5. §0 now says the readings are assumed by the
+factory from the recorded decision and await the owner's confirmation, with the
+choices inside them put to the owner as OQ-8, OQ-9 and OQ-10. No requirement,
+acceptance criterion or decision changed, so acceptance stands. Revision 6's
+change note (item 1) is history and is left as written.
