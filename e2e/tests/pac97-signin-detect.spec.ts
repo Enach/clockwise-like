@@ -22,7 +22,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { Page, Request } from '@playwright/test';
+import type { Page, Request, Route } from '@playwright/test';
 
 import { test, expect } from '../fixtures';
 
@@ -51,18 +51,38 @@ function recordProviderStarts(page: Page): Request[] {
   return starts;
 }
 
-/** Opens the sign-in dialog, types the email, continues, and returns detection's answer. */
+/**
+ * Opens the sign-in dialog, types the email, continues, and returns detection's answer.
+ *
+ * On google or microsoft the page navigates away at once, and the browser
+ * then drops the detect response body. So the request is passed through to
+ * the real backend with route.fetch() and the body is read there, before the
+ * page sees it; the page gets the backend's response unchanged. Nothing is
+ * stubbed: status, headers and body are the backend's own.
+ */
 async function continueWithEmail(page: Page, email: string): Promise<string> {
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await dialog.getByLabel('Work email').fill(email);
-  const detected = page.waitForResponse(
-    (r) => new URL(r.url()).pathname === '/api/auth/detect' && r.request().method() === 'POST',
-  );
-  await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
-  const res = await detected;
-  expect(res.status()).toBe(200);
-  return ((await res.json()) as { type: string }).type;
+
+  let resolveAnswer: (a: { status: number; body: string }) => void = () => {};
+  const answer = new Promise<{ status: number; body: string }>((resolve) => (resolveAnswer = resolve));
+  const passThrough = async (route: Route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    const response = await route.fetch();
+    const body = await response.text();
+    resolveAnswer({ status: response.status(), body });
+    await route.fulfill({ response, body });
+  };
+  await page.route('**/api/auth/detect', passThrough);
+  try {
+    await dialog.getByRole('button', { name: 'Continue', exact: true }).click();
+    const res = await answer;
+    expect(res.status).toBe(200);
+    return (JSON.parse(res.body) as { type: string }).type;
+  } finally {
+    await page.unroute('**/api/auth/detect', passThrough);
+  }
 }
 
 test.describe('PAC-97 — sign-in detection by MX', () => {
