@@ -570,6 +570,101 @@ citation on api `68540f6` and web `ae72939`.*
 - Unchanged: AC-1, AC-2, AC-4 to AC-11 and AC-15 (wording identical apart from AC-10's
   "demo session" and AC-11's "build stage"), D-2, D-3, D-4, OQ-2 to OQ-4, OQ-6.
 
+## Challenge — 2026-11-13 (Revision 2)
+
+*spec-challenger, reviewing Revision 2 as committed (`af25dc6`) against api `68540f6`, web
+`ae72939`, the PAC-41 Linear issue text and comments, and the owner answers of
+2026-10-27. Independence caveat: the same factory run authored Revision 2, so this
+review re-derived every §2 claim from the code rather than from the author's notes.*
+
+**Verdict**: accept-with-changes
+
+### Blocking
+
+1. **§3 relies on session-expiry handling that does not exist, and AC-16 leaves the
+   session-ended 401 undefined.**
+   - §3 says "Any session-expiry handling that applies to every request elsewhere still
+     applies here". No such per-request handling exists. Only a 401 on the
+     current-user probe signs the user out (`src/contexts/AuthContext.tsx:62-69`). For
+     other calls, the generic message takes the body text (`src/api/client.ts:429-441`).
+   - The room list's 401 is shared. The `CalendarNotConnected` response covers both
+     `{"error":"calendar not connected"}` and the middleware's text/plain
+     `{"error":"unauthorized"}` for a session that has ended
+     (`contracts/openapi/openapi.yaml`, `components.responses.CalendarNotConnected`;
+     `backend/api/middleware.go:52`). The contract adds that the two are told apart by
+     body or Content-Type, and that no web code signs out on this 401.
+   - So a builder can read §3 as "add session handling" or as "do nothing". A test can
+     key AC-16's first branch on the status alone, which would show "needs a connected
+     Google calendar" to a user whose session merely expired. That is the
+     token-expired-mid-request case.
+
+   *Resolves when* §3 states what the picker shows when the session has ended, and AC-16
+   names that case explicitly. AC-16's first branch must be decided by the "calendar not
+   connected" answer itself, not by the status code.
+
+### Non-blocking
+
+1. **OWNER (OQ-8).** The owner's OQ-5 answer asks the user to choose; PAC-41 ships a
+   notice that offers only "keep". D-6 argues this is a subset of the answer, not a
+   contradiction, and I agree it is the only honest interim without a release path.
+   Whether to ship the interim or hold PAC-41 for FOLLOW-UP-ROOM-RELEASE is still the
+   owner's call.
+2. **Interim work is replaced later.** The AC-12/AC-13 notices, AC-3's "no detail line"
+   and the demo shrink (D-5) are all superseded by the follow-ups. That is an accepted
+   cost of D-7. Each follow-up spec must name the PAC-41 criteria it replaces, so none
+   is deleted silently.
+3. **Cross-ticket risk with PAC-47.** Room listing and event PATCH both use the Google
+   client today (`backend/api/handlers_events.go:248,315`), so an Outlook-selected user
+   with a Google credential picks a Google room for a Google event. That is consistent.
+   Once PAC-47 routes event writes by the selected provider, the same user could pick a
+   Google room for an Outlook event. That belongs in PAC-47's or FOLLOW-UP-ROOM-DETAILS'
+   scope (OQ-7), not PAC-41's.
+4. **A lost Google connection gets "could not be loaded" with no route to reconnect.**
+   This is truthful (contract revision 3: it is the 500), and PAC-67 surfaces lost
+   connections elsewhere. A more specific message would need the server to tell a lost
+   connection apart from other failures, which is a server change and out of scope.
+5. **The Revision 2 summary understates its own wording changes.** AC-8 and AC-11 were
+   reworded (same meaning), and AC-3 gained an interim note. The summary says only
+   AC-10 and AC-11 changed. Correct the summary.
+6. **OQ-3 is still unfiled.** AC-11's fallback note covers it.
+
+### Criteria I could not falsify
+
+- None. Each AC from AC-1 to AC-16 has a test that fails on `ae72939` and passes
+  afterwards, except AC-9 and AC-15, which are stated pins. AC-1 and AC-14 still depend
+  on OQ-4 (whether the stand-in keeps the resource flag). AC-16 becomes fully
+  falsifiable once Blocking 1 names the session-ended case.
+
+### Citations I checked and found wrong
+
+- None in Revision 2's §2 after re-reading. Checked:
+  - api: `rooms_attendees.go:11-14,24-42`; `handlers_events.go:27-35,47-49,94-144,190-195,312-330,320-324`;
+    `server_errors.go:67-82`; `credential_lifecycle.go:33-47`; `cal_iface.go:23-46`;
+    `pac84_decrypt_failure_test.go:124`; `handlers_freebusy.go:23-27,83`;
+    `freebusy_service.go:34,111,181-183`; `calendar.yaml:32-34,238-240,368-406,1592-1613,1647-1659`;
+    `pac21_calendar_not_connected_test.go:87`; `pac26_wire_keys_test.go:72-80`;
+    `handlers_events_test.go:448-487`; `api-audit.md:286,298,299,304,305,332,333,335,336`.
+  - web: `types.ts:183-191,278-287`; `clientMocks.ts:87-95,346-367,374-384,713-739`;
+    `demoGate.ts:17-24,37-50`; `client.ts:429-441,1185-1186`; `contract.ts:109`;
+    `LocationPicker.tsx:20,35-38,46-53,60-80,74,121,131-135,154,163-166,172-193`;
+    `EventEditForm.tsx:84,100,142`; `coverageCache.ts:103-119,137-164`;
+    `LinkEditDrawer.tsx:217-224,228-229`; `CoverageBadge.tsx:10-27,72-90,84-85`;
+    `noInventedData.test.ts:61`; `PRODUCT.md:83,89`.
+  - Generated types: `CalendarRoom` and `FreeBusyParticipant` at `types.ts:4365,4799`.
+    No hand-written use.
+
+### Consumers this breaks
+
+- None while the server is unchanged.
+  - `mcp/tools.go:207-215` (`clockwise_search_rooms`) sends `q` only.
+  - `e2e/tests/seam.spec.ts:350` reads no keys.
+  - `getCoverageMap` has no caller outside `coverageCache.ts`.
+  - The `CoverageBadge` and `ChipState` consumer is `LinkEditDrawer.tsx:30,624` only.
+  - `is_paceday_user` in `teams.ts`, `manager.ts` and `AnalyticsTab.tsx` is a different
+    field (account membership from team data) and is untouched.
+  - The narrowed search signature (AC-5) has callers only in `LocationPicker.tsx:35,49`
+    and the demo mock.
+
 ## History
 
 *The sections below are the record of Revision 1 and its challenge, kept as written. Line citations in them refer to api `6d751f9` and web `ad52160`.*
