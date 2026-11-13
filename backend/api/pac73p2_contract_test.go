@@ -76,7 +76,9 @@ func TestPAC73P2_ContractDocumentsPart2(t *testing.T) {
 	if i := strings.Index(upd, "\n        apiKey:"); i < 0 || !strings.Contains(upd[i:i+200], "writeOnly: true") {
 		t.Error("OrganizationAIConfigurationUpdate.apiKey is not writeOnly")
 	}
-	if !strings.Contains(raw, "DELETES the caller's stored confirmation") {
-		t.Error("patchSettings does not document that storing off or a provider ends the confirmation")
+	// PAC-87 §3.4 (P87-D3) replaced "whether or not the stored choice
+	// changes": only a change of the stored choice ends the confirmation.
+	if !strings.Contains(raw, "ends the caller's stored confirmation for") {
+		t.Error("patchSettings does not document that changing the stored choice ends the confirmation")
 	}
 }

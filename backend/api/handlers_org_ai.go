@@ -533,9 +533,11 @@ func parseConsentBody(raw []byte) (int64, bool) {
 }
 
 // ConfirmOrganizationAI is confirmOrganizationAI: body (400), membership
-// (403), the organisation's current state (409), then the confirmation is
-// recorded and the caller's AI status returned (200). The only way a
-// confirmation is recorded (spec P2-D14).
+// (403), the organisation's current state (409: not complete, or a provider
+// change since the version shown, PAC-87 §1), then the confirmation of the
+// current consent period is recorded and the caller's AI status returned
+// (200; row 9 for a row-10 caller, PAC-87 AC-8). The only way a confirmation
+// is recorded (spec P2-D14); it never writes the caller's settings.
 func (s *generatedServer) ConfirmOrganizationAI(ctx context.Context, _ gen.ConfirmOrganizationAIRequestObject) (gen.ConfirmOrganizationAIResponseObject, error) {
 	h := s.orgAI
 	version, ok := parseConsentBody(rawBodyFrom(ctx))
@@ -551,6 +553,8 @@ func (s *generatedServer) ConfirmOrganizationAI(ctx context.Context, _ gen.Confi
 		return gen.ConfirmOrganizationAI500JSONResponse{Error: serverFailure(ctx, "confirmOrganizationAI", err, http.StatusInternalServerError)}, nil
 	}
 	switch status {
+	case storage.OrgAIConfirmNotMember: // left the organisation meanwhile
+		return gen.ConfirmOrganizationAI403JSONResponse{Error: gen.OrgMembershipRequired}, nil
 	case storage.OrgAIConfirmNotConfigured:
 		return gen.ConfirmOrganizationAI409JSONResponse(orgAIConflict(current, gen.OrganizationNotConfigured, msgOrgAINotConfiguredYet)), nil
 	case storage.OrgAIConfirmChanged:

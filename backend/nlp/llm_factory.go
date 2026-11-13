@@ -12,11 +12,14 @@ import (
 
 // NEW-llm-bring-your-own (spec §3, Part 2 spec
 // docs/specs/NEW-llm-bring-your-own-part2.md §3.1): which AI configuration a
-// request runs on. Rows of the table, evaluated in this order; only rows 2
-// and 4 send anything:
+// request runs on. Rows of the table, evaluated in this order; only rows 2,
+// 4 and 9 send anything (PAC-87, docs/specs/PAC-87.md §3.2):
 //
 //	1  off                                      -> "off" [user]
-//	10 own/removed provider; forbids; complete  -> "personal_keys_forbidden" [user]
+//	9  own/removed provider; forbids; complete; confirmed
+//	                                            -> configured: organisation
+//	10 own/removed provider; forbids; complete; not confirmed
+//	                                            -> "organization_unconfirmed" [user]
 //	11 own/removed provider; forbids; not compl -> "personal_keys_forbidden" [organization_admin]
 //	2  a provider with its key                  -> configured: own
 //	3  a provider without key                   -> "needs_key" [user]
@@ -26,10 +29,15 @@ import (
 //	7  removed provider; org complete           -> "provider_removed_organization_available" [user]
 //	8  removed provider; otherwise              -> "provider_removed" [user (+admin in org)]
 //
-// Row 9 is reserved (spec P2-D2's current default, OQ-P2-2) and never
-// answered. Every AI-backed operation (parse, brief refresh, probe) and the
-// settings read decide through here, so one state gives one reason
-// everywhere (P2-AC-29).
+// "Confirmed" is a confirmation of the organisation's current consent
+// period (PAC-87 §3.1): it survives key, destination, model and
+// personal-keys changes and ends on a provider change. Row 9 (owner OQ-P2-2)
+// is a row-4 request in every respect: only the organisation's values are
+// sent, the member's stored choice, model, destination and keys are kept
+// and never used, and an undecryptable member key never stops it. Every
+// AI-backed operation (parse, brief refresh, probe) and the settings read
+// decide through here, so one state gives one reason everywhere (P2-AC-29,
+// PAC87-AC-20).
 
 // Not-configured reasons and enablers, as the contract's AINotConfigured.
 const (
@@ -80,7 +88,7 @@ type Decision struct {
 }
 
 // Organization reports whether the decision runs on the organisation's
-// configuration (row 4).
+// configuration (rows 4 and 9).
 func (d Decision) Organization() bool { return d.Configuration == ConfigurationOrganization }
 
 // Redact replaces every occurrence of every secret of d in msg with
@@ -229,8 +237,13 @@ func decide(st AIState, choice string, key, model *string, saved bool, own []str
 	case choice == storage.LLMChoiceOff:
 		return notConfigured(ReasonOff, "", saved, s, st, EnablerUser)
 	case org.Forbids() && (IsKeyProvider(choice) || choice == storage.LLMChoiceUnsupported):
-		if complete {
-			return notConfigured(ReasonPersonalKeysForbidden, "", saved, s, st, EnablerUser) // row 10
+		switch {
+		case complete && org.Confirmed(): // row 9: moved onto the organisation's AI
+			return organizationDecision(org.Config, secrets)
+		case complete: // row 10: one confirmation, no settings write
+			d := notConfigured(ReasonOrganizationUnconfirmed, "", saved, s, st, EnablerUser)
+			d.NotConfigured.Message = row10Message(saved, s, st)
+			return d
 		}
 		return notConfigured(ReasonPersonalKeysForbidden, "", saved, s, st, EnablerOrganizationAdmin) // row 11
 	case IsKeyProvider(choice):
@@ -253,13 +266,7 @@ func decide(st AIState, choice string, key, model *string, saved bool, own []str
 	case choice == storage.LLMChoiceOrganization:
 		switch {
 		case complete && org.Confirmed():
-			c := org.Config
-			if err := c.KeyErr(); err != nil {
-				// PAC-84: the organisation's key cannot be decrypted.
-				return Decision{Provider: c.Provider, Configuration: ConfigurationOrganization, Err: err}
-			}
-			return Decision{Provider: c.Provider, Client: newOrgClient(c),
-				Configuration: ConfigurationOrganization, Secrets: append(secrets, c.APIKey)}
+			return organizationDecision(org.Config, secrets) // row 4
 		case complete:
 			return notConfigured(ReasonOrganizationUnconfirmed, "", saved, s, st, EnablerUser)
 		case org.Forbids():
@@ -278,6 +285,19 @@ func decide(st AIState, choice string, key, model *string, saved bool, own []str
 		}
 		return notConfigured(ReasonProviderRemoved, "", saved, s, st, EnablerUser)
 	}
+}
+
+// organizationDecision is rows 4 and 9: the organisation's configuration of
+// one consistent read, nothing of the caller's but their keys for redaction
+// (secrets). The caller's own key is never checked here, so one that cannot
+// be decrypted does not stop the request (PAC-87 §3.3, AC-22).
+func organizationDecision(c storage.OrgAIConfig, secrets []string) Decision {
+	if err := c.KeyErr(); err != nil {
+		// PAC-84: the organisation's key cannot be decrypted.
+		return Decision{Provider: c.Provider, Configuration: ConfigurationOrganization, Err: err}
+	}
+	return Decision{Provider: c.Provider, Client: newOrgClient(c),
+		Configuration: ConfigurationOrganization, Secrets: append(secrets, c.APIKey)}
 }
 
 // newProviderClient builds the client for a key-based provider with key,
@@ -394,10 +414,9 @@ func notConfiguredMessage(reason, provider string, saved bool, s *storage.Settin
 			return "There is no AI provider to test. Choose a provider and add your key in Settings."
 		}
 	case ReasonPersonalKeysForbidden:
-		if adminOnly {
-			return prefix + upperFirst(saved, "your organisation does not allow personal API keys and has not finished setting up its AI. An administrator of your organisation can set it up.")
-		}
-		return prefix + upperFirst(saved, "your organisation does not allow personal API keys, so your own choice ("+choiceName(s)+") and any key you saved for it are kept but not used. Choose \"Use my organisation's AI\" in Settings to use your organisation's AI.")
+		// Row 11 only (PAC-87: row 10 is organization_unconfirmed, and the
+		// probe's refusal builds its own sentence).
+		return prefix + upperFirst(saved, "your organisation does not allow personal API keys and has not finished setting up its AI. An administrator of your organisation can set it up.")
 	case ReasonProviderRemovedOrganizationAvailable:
 		if saved {
 			return "AI features are off: " + removedName(s) + " is no longer supported. Your organisation provides AI: choose \"Use my organisation's AI\" in Settings."
@@ -413,6 +432,20 @@ func notConfiguredMessage(reason, provider string, saved bool, s *storage.Settin
 		}
 		return removedName(s) + " is no longer supported, so it cannot be tested. " + tail
 	}
+}
+
+// row10Message is row 10's sentence (PAC-87 §3.5; contract example
+// personalKeysForbiddenUnconfirmed): the organisation's provider, the consent
+// sentence ("access", never "read"), the caller's own choice and key kept and
+// used again if personal keys are allowed, and confirm.
+func row10Message(saved bool, s *storage.Settings, st AIState) string {
+	orgName := displayNames[st.Org.Config.Provider]
+	rest := "your organisation does not allow personal API keys and provides AI through " + orgName + ". " +
+		consentSentence + " Your own choice (" + choiceName(s) + ") and any key you saved are kept, and are used again if your organisation allows personal keys."
+	if saved {
+		return "AI features are off until you confirm: " + rest + " Confirm in Paceday to use your organisation's AI."
+	}
+	return upperFirst(false, rest) + " Confirm in Paceday to test it."
 }
 
 // upperFirst capitalises the sentence when it is not after "AI features are

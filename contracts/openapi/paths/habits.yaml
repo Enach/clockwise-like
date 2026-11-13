@@ -524,20 +524,24 @@ paths:
         a configured caller is unchanged: 200, `status: "failed"`, stored.
 
         **NEW-llm-bring-your-own Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`
-        revision 1).** In row 4 the brief is generated with the organisation's configuration
-        at the version the caller confirmed (read with the confirmation as one consistent
-        state; otherwise row 5, the 409). In row 4 a provider or gateway failure stores and
+        revision 1; PAC-87 `docs/specs/PAC-87.md` §3.1-§3.3).** In rows 4 and 9 the brief is
+        generated with the organisation's configuration as read for this request, in one
+        statement with the caller's confirmation, when that confirmation covers the
+        configuration's current consent period (no provider change since; otherwise row 5
+        or row 10, the 409, and nothing is fetched or written; PAC-87 AC-8). Nothing of the
+        caller's own provider settings is used in row 9. In rows 4 and 9 a provider or gateway failure stores and
         returns a FIXED `brief_text`, `The organisation's AI provider returned an error.`,
         which contains nothing the provider or gateway returned, so no form of the
         organisation's key (verbatim, JSON-escaped, percent-encoded) can reach the caller
         through the 200 or any later `getMeetingBrief` (spec §3.1a, P2-D16, P2-AC-39;
         contract revision 3). The provider text goes only to the server log and Sentry,
-        with every occurrence of every key sent with this request (the confirmed version's
-        key, even if replaced since) and of the caller's keys replaced by `[redacted]`
+        with every occurrence of every key sent with this request (the organisation's key
+        read for it, even if replaced since) and of the caller's keys (stored, also in row
+        9) replaced by `[redacted]`
         (exact strings; an encoded echo can reach those operator-only surfaces, spec §5).
         In row 2 (the caller's own key) a failed brief's text keeps Part 1's form,
         `LLM error: <provider text>`, with the caller's own keys replaced by `[redacted]`
-        before it is stored, returned, logged or reported. In row 4 a destination refusal's
+        before it is stored, returned, logged or reported. In rows 4 and 9 a destination refusal's
         text names the organisation's AI destination and its administrator, never the
         caller's own Settings (P2-AC-41).
       responses:
