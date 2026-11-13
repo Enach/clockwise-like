@@ -1,7 +1,9 @@
 # Spec — PAC-41: Room contract mismatch, and free/busy coverage states the server never produces
 
 - **Linear**: https://linear.app/paceday/issue/PAC-41
-- **Status**: challenged (Revision 1 answers the 2026-10-27 challenge)
+- **Status**: challenged (Revision 1 answers the 2026-10-27 challenge). Owner answers
+  to OQ-1 and OQ-5 (2026-10-27) supersede D-1 and D-6 (see Decisions). A revision
+  that replaces AC-12 to AC-14 and revisits D-5 is needed before acceptance.
 - **Author**: spec-author
 - **Read on**: api `main` at `6d751f9`, web `main` at `ad52160` (2026-10-27;
   both re-checked unchanged for Revision 1)
@@ -466,7 +468,41 @@ their events after a revert; nothing is deleted.
 
 ## Decisions
 
-*None had a recorded owner answer. Each is the most conservative option consistent
+### Owner answers (owner, 2026-10-27; recorded 2026-11-13 by the contract stage)
+
+Recorded from `.claude/factory/owner-decisions.md` (2026-10-27), which overrides any
+"assumed by the factory" decision below. Recording them here is all the contract
+stage does. Replacing the affected acceptance criteria is a spec revision, done by
+spec-author and re-challenged. That has not happened yet.
+
+- **OQ-1 — answered yes (owner, 2026-10-27).** Rooms carry capacity, and building
+  and floor where available, from Google Workspace and Microsoft 365 directory data
+  (Google Admin SDK Directory `resources.calendars`; Microsoft Graph
+  `places/microsoft.graph.room`). If the tenant does not grant the needed admin
+  permission, it falls back gracefully: no capacity is shown and nothing breaks.
+  Sign-in never starts requiring a new admin consent. Per the 2026-10-27 PAC-68
+  OQ-2 answer, an optional "extended access" step grants the broader permission and
+  says plainly what is lost without it (no room capacity, building or floor). Per
+  OQ-1's own text, this is a new feature with its own spec. **Effect here:** D-1
+  ("the server does not grow") is superseded as product direction. Today's wire is
+  still `{id, name}`, so this ticket's contract, which describes what the server
+  emits, stays accurate. The demo half of D-5 (demo rooms lose building, floor and
+  capacity) must be revisited by the spec revision.
+- **OQ-5 / D-6 — answered (owner, 2026-10-27).** When a user changes or removes a
+  room on an event, Paceday asks whether to release the earlier room or keep it
+  booked. A "remember my choice" option saves the answer as a user setting, which can
+  be changed or reset on the Settings page. This needs server support for releasing a
+  room. **Effect here:** D-6 ("an earlier room stays booked, and the user is told")
+  is superseded. Per OQ-5's own text, AC-12 to AC-14 are replaced, and the release
+  path is its own spec. Until the spec revision lands, AC-12 to AC-14 below describe
+  a superseded decision and must not be built as written.
+- Still unanswered: OQ-3 (confirm D-4 and file the follow-up issue), OQ-6 (confirm
+  D-2), D-3, and the contract-stage assumptions C-1 to C-3
+  (`contracts/features/PAC-41.md` §6).
+
+### Factory decisions
+
+*None had a recorded owner answer when written. Each is the most conservative option consistent
 with PRODUCT.md and the earlier owner decisions in docs/specs/\*.md, and each is
 **assumed by the factory, pending owner confirmation**.*
 

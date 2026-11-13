@@ -383,7 +383,10 @@ paths:
         is: a caller with no stored Google credential gets the 401 `calendar not
         connected` (every Outlook-only caller is one); an Outlook-selected caller who also
         holds a Google credential (the same email signed in with Google earlier) gets that
-        Google calendar's rooms.
+        Google calendar's rooms. A stored Google credential decides this even when it
+        cannot be used: one the provider has permanently refused to renew (a PAC-67
+        loss) answers the 500, as does one that cannot be decrypted (PAC-84,
+        TestPAC84_GoogleUndecryptable on the same calendar-client path), never the 401.
       parameters:
         - name: q
           in: query
