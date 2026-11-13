@@ -9,6 +9,13 @@
 # not run the CI again: both main commits must already carry a green "verify"
 # check (ci.yml on push to main in each repo). A version that already exists is
 # not rebuilt.
+#
+# The cross-repo types check (the web repo's src/api/generated against this
+# repo's bundle) runs here, not on pushes to main: a paired contract change
+# merges api first and web minutes later, and the mains disagree in between by
+# design (ci.yml skips it there with OPENAPI_CROSS_REPO=skip). The pair job runs
+# it on the exact two SHAs plan picked. A pair that fails is not published and
+# is logged as a warning, like "main not green": the next trigger retries.
 name: release
 
 on:
@@ -68,9 +75,56 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-  publish:
+  # The cross-repo types check on the exact pair plan picked. A mismatch is not
+  # a failed run, it is "not releasable yet" (the web half of a contract change
+  # has not merged): the job stays green, says why, and publish does not run.
+  pair:
     needs: plan
     if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.backend_sha }}
+      # Where the Makefile expects it (WEB ?= ../smart-calendar-flow).
+      - uses: actions/checkout@v4
+        with:
+          repository: Enach/smart-calendar-flow
+          ref: ${{ needs.plan.outputs.frontend_sha }}
+          path: web
+      - run: mv web ../smart-calendar-flow
+
+      # Only what the check needs: the web repo's pinned generators
+      # (openapi-typescript, typed-openapi) come with its lockfile.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Web dependencies
+        working-directory: ../smart-calendar-flow
+        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+
+      - id: check
+        env:
+          BACKEND_SHA: ${{ needs.plan.outputs.backend_sha }}
+          FRONTEND_SHA: ${{ needs.plan.outputs.frontend_sha }}
+        run: |
+          set -uo pipefail
+          if make openapi-check-web 2>&1 | tee pair.log; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "cross-repo types check passed on b${BACKEND_SHA:0:7}-f${FRONTEND_SHA:0:7}"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            msg="web generated types (smart-calendar-flow ${FRONTEND_SHA:0:7}) do not match the api bundle (${BACKEND_SHA:0:7}): not releasing this pair. Expected while the web half of a contract change is unmerged; the next trigger retries. If it persists, regenerate with make openapi in the web repo."
+            echo "::warning title=release: pair not releasable::$msg"
+            { echo "### Not released: cross-repo types mismatch"; echo; echo "$msg"; echo; echo '```'; tail -n 60 pair.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  publish:
+    needs: [plan, pair]
+    if: needs.plan.outputs.build == 'true' && needs.pair.outputs.ok == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

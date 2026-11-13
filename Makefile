@@ -42,7 +42,7 @@ SELF := $(MAKE) --no-print-directory -f $(ROOT)/Makefile
 .DEFAULT_GOAL := help
 
 .PHONY: help clone-frontend install-hooks db-shell \
-        openapi openapi-check lint test coverage e2e \
+        openapi openapi-check openapi-check-web lint test coverage e2e \
         verify verify-banner verify-summary
 
 help:
@@ -52,7 +52,8 @@ help:
 	@echo "  test           backend suite (throwaway postgres, via docker) + mcp suite"
 	@echo "  coverage       the same suites with profiles, gated at $(BACKEND_COVERAGE_MIN)%/$(MCP_COVERAGE_MIN)%"
 	@echo "  openapi        assemble the contract, regenerate Go code, refresh MIGRATION.md, regenerate web types"
-	@echo "  openapi-check  the same, as a gate: fails on any drift"
+	@echo "  openapi-check  the same, as a gate: fails on any drift (OPENAPI_CROSS_REPO=skip: not the web half)"
+	@echo "  openapi-check-web  only the web half: the web repo's generated types match this bundle"
 	@echo "  e2e            the Playwright suite in e2e/ (it brings its own compose stack up)"
 	@echo "  clone-frontend / install-hooks / db-shell — local setup"
 
@@ -98,15 +99,30 @@ openapi:
 	fi
 
 ## Gate: bundle matches fragments, generated code matches bundle, register is complete
+# OPENAPI_CROSS_REPO=skip leaves out the web half (the web repo's generated
+# types against this bundle) and only that. ci.yml sets it on pushes to main:
+# a paired contract change merges api first and web minutes later, so the two
+# mains disagree in between by design. The check is not dropped, it moves:
+# release.yml runs `openapi-check-web` on the exact pair of main SHAs it would
+# publish, and does not publish a pair that fails. PRs keep the full check.
+OPENAPI_CROSS_REPO ?= check
 openapi-check:
 	python3 $(ROOT)/scripts/openapi_assemble.py --check
 	python3 $(ROOT)/scripts/openapi_migration_report.py --check
 	$(ROOT)/scripts/openapi_gen_go.sh --check
-	@if [ -d "$(WEB)" ]; then \
-		$(MAKE) --no-print-directory -C "$(WEB)" openapi-check CONTRACT="$(BUNDLE)"; \
+	@if [ "$(OPENAPI_CROSS_REPO)" = "skip" ]; then \
+		echo "::notice title=openapi-check::cross-repo half (web generated types vs this bundle) deferred to release.yml (OPENAPI_CROSS_REPO=skip)"; \
+	elif [ -d "$(WEB)" ]; then \
+		$(SELF) openapi-check-web; \
 	else \
 		echo "SKIPPED: web generated types (no repo at $(WEB)) — factory §2 gate 4 is only half checked."; \
 	fi
+
+## The cross-repo half alone: the web repo's generated types match this bundle.
+# Fails, rather than skips, when there is no web repo: release.yml relies on it.
+openapi-check-web:
+	@test -d "$(WEB)" || { echo "no web repo at $(WEB); pass WEB=..." >&2; exit 1; }
+	$(MAKE) --no-print-directory -C "$(WEB)" openapi-check CONTRACT="$(BUNDLE)" OPENAPI_CROSS_REPO=check
 
 # ── Static analysis ──────────────────────────────────────────────────────────
 
@@ -197,7 +213,9 @@ verify:
 	@mkdir -p "$(VERIFY_DIR)"
 	@$(SELF) verify-banner | tee "$(VERIFY_DIR)/banner.txt"
 	@$(SELF) lint          && echo "lint           PASS" >> "$(VERIFY_DIR)/steps.txt"
-	@$(SELF) openapi-check && echo "openapi-check  PASS" >> "$(VERIFY_DIR)/steps.txt"
+	@$(SELF) openapi-check && if [ "$(OPENAPI_CROSS_REPO)" = "skip" ]; then \
+		echo "openapi-check  PASS (api half; cross-repo half deferred to release)" >> "$(VERIFY_DIR)/steps.txt"; \
+	else echo "openapi-check  PASS" >> "$(VERIFY_DIR)/steps.txt"; fi
 	@$(SELF) test          && echo "test           PASS" >> "$(VERIFY_DIR)/steps.txt"
 	@COVERAGE_SUMMARY_FILE="$(VERIFY_DIR)/coverage.txt" $(SELF) coverage \
 		&& echo "coverage       PASS" >> "$(VERIFY_DIR)/steps.txt"

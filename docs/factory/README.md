@@ -151,6 +151,13 @@ make verify        # everything below, in order, fail-fast
 └── make e2e       # Playwright against docker compose
 ```
 
+Where the cross-repo half of `openapi-check` (web generated types against the
+api bundle) runs: in full on every PR, against the paired branch; **not** on
+pushes to main (CI sets `OPENAPI_CROSS_REPO=skip`, since the two halves of a
+contract change merge minutes apart); and in `release.yml` on the exact pair of
+main SHAs to publish (`make openapi-check-web`), which does not publish a pair
+that fails.
+
 **Rules for agents:**
 
 1. You may not open a PR without pasting `make verify` output into the body.
