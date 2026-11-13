@@ -77,6 +77,8 @@ func TestPAC26WireStructsAreFullyTagged(t *testing.T) {
 		calendar.GenericEvent{},
 		storage.UserProfile{},
 		storage.ManagerTeamMember{},
+		// PAC-41 AC-15: booking sends a listed room's id as room_resource_email.
+		calendar.Room{},
 	} {
 		typ := reflect.TypeOf(v)
 		for i := 0; i < typ.NumField(); i++ {
