@@ -1,7 +1,7 @@
 # Spec — PAC-40: A deleted scheduling link does not go away, the same request means different things on create and edit, and cancelling a booking re-opens a used-up link
 
 - **Linear**: https://linear.app/paceday/issue/PAC-40
-- **Status**: challenged
+- **Status**: accepted (challenge round 6, 2026-11-13, after revision 6.1)
 - **Author**: spec-author
 - **Revision**: 6, written against `origin/main` at `68540f6` (web
   `smart-calendar-flow` `origin/main` at `ae72939`). Every citation in §2 is to
@@ -133,7 +133,12 @@ Citations are to `clockwise-like` at `68540f6` and `smart-calendar-flow` at
 - One stored flag means both. The table has a single boolean `active`, default
   true (`backend/storage/migrations/009_scheduling_links.up.sql:12`). No later
   migration adds a lifecycle column or a deletion time (migrations 010–036; the
-  only later change to `scheduling_links` is `032_scheduling_link_horizon_refusal`).
+  later changes to `scheduling_links` add settings only:
+  `019_backend_contract_fields.up.sql:2-5` and
+  `032_scheduling_link_horizon_refusal.up.sql`). `bookings` is unchanged since
+  009.
+- A booker cannot submit an empty name or email: both are trimmed and required
+  (`handlers_booking.go:359-363`).
 - Deleting sets that flag false and nothing else (`scheduling_links.go:186-190`,
   run under the PAC-71 session re-check by `DeleteSchedulingLinkCtx`,
   `backend/storage/guarded_writes.go:142-148`), called from `deleteLink`
@@ -366,8 +371,9 @@ OQ-6's subject and outside this spec.
   separate from their list of links, read-only, and empty for an owner who has
   deleted nothing.
 - Each archived link shows its title, the address it had, when it was deleted,
-  how many bookings it has, and either the date on which its bookers' names and
-  emails will be erased or the date on which they were erased. A deleted link
+  how many bookings it has, and either when its bookers' names and emails will
+  be erased (the instant they become due, §3.5, shown to the owner as a date)
+  or when they were erased. A deleted link
   with no bookings says there is nothing to erase. Most recently deleted links
   come first.
 - For each archived link the owner can see all of its bookings (R-2), with the
@@ -380,6 +386,9 @@ OQ-6's subject and outside this spec.
   accepted co-hosts, not its pending invitees, not anyone else. To all of them
   an attempt to read an archived link or its bookings answers exactly as for a
   link that never existed.
+- The owner reaches a deleted link and its bookings only as part of the
+  archive, through whatever the contract defines for it. Every other path
+  that names the link answers the owner not found too (§3.1, D-9).
 - Nothing in the archive changes a link or a booking: no edit, resume, invite,
   restore or delete.
 - When the owner deletes a link, the confirmation they are asked for says that
@@ -423,10 +432,13 @@ paused links, and links that were inactive before this change are never
 erased by this rule (R-5, D-1, OQ-9).
 
 **What is erased.** For every booking of a due link: the booker's name and the
-booker's email address. Afterwards no copy of either remains in any row of
-Paceday's database that the application maintains — not in the booking, not
-in the audit entry, not in any other table the erasure writes. The erased
-state is recorded on the booking so the archive can show it (§3.2).
+booker's email address. Afterwards the booking no longer holds either, and
+neither appears in anything this feature writes or shows: the archive, the
+audit entry, the run's log line, or an error report. The erased state is
+recorded on the booking so the archive can show it (§3.2). Data the booker
+gave Paceday in another capacity is not affected: if the booker also has a
+Paceday account, or was invited as a co-host or team member, those records
+keep their own copy of the address under their own rules.
 
 **What is kept.** Everything else: the link and its deletion time, its host
 rows, each booking's existence, meeting start and end, status, notes (D-11,
@@ -444,8 +456,8 @@ page that held an erased value is reclaimed by Postgres' routine cleanup, not
 at the moment of erasure. The runbook says all of this (below).
 
 **When it runs.** Automatically, inside the backend, with no operator action:
-once shortly after the backend starts and then at least once every 24 hours
-(D-13). While the backend is running, a link is erased no later than 24 hours
+once as part of start-up, before the first periodic run (not after waiting a
+period), and then at least once every 24 hours (D-13). While the backend is running, a link is erased no later than 24 hours
 after it becomes due; a link that became due while the backend was down is
 erased by the first run after it starts. An operator can also see which
 deleted links are due or overdue, and when the last run happened, without
@@ -453,7 +465,8 @@ seeing any booker's name or email.
 
 **Idempotence and safety.**
 
-- A run that finds nothing due changes nothing and records nothing.
+- A run that finds nothing due changes no data and writes no audit entry; it
+  still writes its summary log line, with zero counts.
 - Running again after a successful erasure changes no stored value and writes
   no further audit entry. A booking once erased stays erased.
 - Each link is erased as one unit: either all of its due bookings are erased
@@ -476,8 +489,8 @@ seeing any booker's name or email.
 
 **Audit.** Each erasure of a link writes one entry in the link owner's activity
 log, saying which link (title and id), how many bookings were erased, the last
-booking date that made it due, and when it ran. Each run writes one
-operator-visible log line with the number of links examined, links erased,
+booking date that made it due, and when it ran. Every run, including one that
+finds nothing due, writes exactly one operator-visible summary log line with the number of links examined, links erased,
 bookings erased and failures. No audit entry, log line or error report carries
 a booker's name or email, before or after erasure.
 
@@ -545,10 +558,10 @@ an owner gets for leaving a live link) and nothing changes.  [contract]
 removed, and 400 "owner cannot leave link")*
 
 AC-6. Given a deleted link, when its owner invites a co-host to it or deletes
-it again, then each answers not found and nothing changes. The owner reads its
-bookings through the archive (AC-22); whether the operation that lists a live
-link's bookings also serves a deleted link to its owner is the contract's
-choice, and the contract states it.  [contract]
+it again, or asks for its bookings by any path other than the archive, then
+each answers not found and nothing changes. The owner reads its bookings
+through the archive (AC-22).  [contract] *(fails today: invite answers 201,
+delete 204, bookings 200)*
 
 AC-6a. Given a deleted link and a signed-in user who is neither its owner nor
 an accepted co-host, when that user fetches it by id, edits it, deletes it,
@@ -559,10 +572,11 @@ gives them on edit, delete, bookings and invite — and nothing changes.
 [contract] *(fails today: edit, delete, bookings and invite answer 403; fetch
 already answers not found since PAC-25)*
 
-AC-7. Given a deleted link that has a confirmed booking in the future, when a
-host's busy time is computed for that period, then the booked time is still
-busy — before and after that link's bookers' details are erased.  [unit]
-*(passes today; pins busy time once a deleted state and erasure exist)*
+AC-7. Given a deleted link that has a confirmed booking, when a host's busy
+time is computed for the booking's period, then the booked time is busy; and
+after erasure has run with its clock past that booking's due instant, the same
+computation for the same period still returns it as busy.  [unit] *(the first
+half passes today; pins busy time once a deleted state and erasure exist)*
 
 AC-8. Given a deleted link with slug S, when anyone creates or edits another link
 to use slug S, then it is rejected as taken, as for any existing slug — before
@@ -627,13 +641,14 @@ resumes, restores or deletes the link.  [e2e] *(fails today)*
 
 AC-26. Given a deleted link whose bookings end at T1 < T2 (the later one
 cancelled), when erasure runs at T2 + 90 days − 1 second, then nothing is
-stored differently and no audit entry or log line about the link is written
-(only the run's summary line); and T1 + 90 days having passed does not make
-the link due.  [unit]
+stored differently, no audit entry is written, and the run writes exactly one
+summary log line reporting zero links erased; and T1 + 90 days having passed
+does not make the link due.  [unit]
 
 AC-27. Given the AC-26 link, when erasure runs at T2 + 90 days, then for both
-bookings the booker's name and email are no longer stored anywhere in the
-database, and each booking's start, end, status, notes, creation time and
+bookings the booking no longer holds the booker's name or email, neither value
+appears in the audit entry, the run's log output or any error report, and each
+booking's start, end, status, notes, creation time and
 calendar-event references, and the link's record, deletion time, host rows and
 uses count, are exactly as before.  [unit]
 
@@ -662,8 +677,7 @@ AC-32. Given the state after AC-27, when the owner reads the archive and the
 link's bookings in it, then the link shows when it was erased and each booking
 shows its start, end, status, notes and creation time, with name and email in
 an explicit erased state that is distinguishable from any value a booker can
-submit (a booker cannot submit an empty name or email,
-`handlers_booking.go:359-363`).  [contract]
+submit (§2.1, last bullet).  [contract]
 
 AC-33. Given two due deleted links A and B where storing A's erasure fails,
 when erasure runs, then B is erased with its audit entry; A is wholly
@@ -679,15 +693,18 @@ runs at T3 + 90 days − 1 second, then the new booking is untouched; at
 T3 + 90 days, then it is erased, the earlier bookings are unchanged, and a
 second audit entry is written for this erasure.  [unit]
 
-AC-35. Given the backend starts with a deleted link overdue for erasure, then
-the erasure runs without any operator action shortly after start and the link
-is erased; and given a clock advanced 24 hours from the last run, then another
-run happens. The run is a tracked unit of the PAC-81 drain and does not start
-once shutdown has begun.  [unit] (injectable clock and trigger)
+AC-35. Given the backend starts with a deleted link overdue for erasure and its
+periodic trigger never fires, then the erasure runs once as part of start-up,
+without any operator action, and the link is erased; given the periodic trigger
+then fires once (the clock advanced 24 hours), then exactly one more run
+happens and writes its summary line. Given shutdown has begun, then no new run
+starts, and a run in progress is awaited by the PAC-81 drain.  [unit]
+(injectable clock and trigger)
 
 AC-36. Given AC-26 and AC-27 run once on a deployment with at-rest encryption
-configured and once with none configured, then both give the same result.
-[unit]
+configured, once with none configured, and once with encryption configured and
+an unrelated stored secret that cannot be decrypted, then all three give the
+same result.  [unit]
 
 AC-37. The operations runbook has a section covering every item listed under
 "Runbook" in §3.5, and the operator can list due and overdue deleted links
@@ -746,8 +763,8 @@ AC-19. Given an active link with an accepted co-host and a pending invitee, when
 its owner or the accepted co-host fetches it by id, then it is returned with
 its hosts; when the pending invitee or any other signed-in user fetches it,
 then the answer is identical in status and body to the one for an id that
-never existed.  [contract] *(passes today since PAC-25 —
-`TestPAC25GetLink*`; pins it across this change)*
+never existed.  [contract] *(passes today since PAC-25, whose tests are
+listed in §2.8; pins it across this change)*
 
 AC-20, AC-20a — retired in revision 6: they protected the API-073 removal,
 which NEW-booking-rate-limit has shipped (§2.9).
@@ -777,8 +794,8 @@ which NEW-booking-rate-limit has shipped (§2.9).
   audit or the issue. The erasure rule nevertheless covers any booking that
   ends up on a deleted link (AC-34).
 - **What a paused link's public page says.** It stays "Link not found" as
-  today; the booker copy that mentions "paused" (`PublicBooking.tsx:397`) is
-  reached only by "used up". Changing it is a frontend copy decision (OQ-3).
+  today; the booker copy that mentions "paused" is reached only by "used up"
+  (§2.2). Changing it is a frontend copy decision (OQ-3).
 - **Accept / decline / leave on a paused link** — unchanged, PAC-30 D-5 stands
   for paused links.
 - **Unbounded duration options and the "end must be after start" answer**
@@ -792,8 +809,8 @@ which NEW-booking-rate-limit has shipped (§2.9).
   (duplicate invite routes), **API-072** (ambiguous 404 on invite), **API-019**
   (bookings list shape) — same operations, different defects, not lifecycle.
 - **The 403 a non-owner gets on a live link's edit, delete, bookings and
-  invite.** Unchanged (`booking.yaml:880-881` records it as out of PAC-25's
-  scope too); only deleted links change for those callers (AC-6a).
+  invite.** Unchanged, and out of PAC-25's scope too (§2.8); only deleted
+  links change for those callers (AC-6a).
 
 ## 6. What must not change
 
@@ -966,8 +983,10 @@ data.
   bookings were cancelled by a database edit (§2.7), and closing never widens
   who can book.
 - **D-9 — A deleted link answers every caller as an id that never existed**,
-  including callers with no role on it (AC-6a), with the owner's archive the
-  only exception. Answering a stranger with the refusal a live link gives would
+  including its owner and accepted co-hosts and callers with no role on it
+  (AC-2, AC-6, AC-6a). The only exception is the owner reading the link and
+  its bookings as part of the archive (§3.2), by whatever operation the
+  contract defines for that. Answering a stranger with the refusal a live link gives would
   tell them the id once existed.
 - **D-10 — The window aliases are left as they are.** §3.3's rule is limited to
   durations and days (§5, OQ-7).
@@ -1862,3 +1881,69 @@ booking row; `mcp/` has no scheduling-link caller.
 - clockwise-like `e2e/seed/seed.sql:270`: its comment goes stale if the use
   count becomes stored (unchanged).
 - No consumer in `mcp/`.
+
+## Revision 6.1 — 2026-11-13 (answers challenge round 6)
+
+Both blocking findings were checked against source at `68540f6` and accepted.
+
+1. **Blocking 1, run observability and the start-up run.** §3.5 now says a run
+   with nothing due changes no data and writes no audit entry but always writes
+   exactly one summary log line (zero counts); "shortly after start" is
+   replaced by "as part of start-up, before the first periodic run". AC-26 now
+   expects that summary line; AC-35 now has a test that fails if the start-up
+   run is missing (trigger that never fires) and pins exactly one more run per
+   periodic trigger.
+2. **Blocking 2, "no longer stored anywhere in the database".** §3.5 and AC-27
+   now scope the guarantee to the booking and to everything this feature
+   writes or shows (archive, audit entry, log line, error report), and state
+   that a booker's own account, co-host invite or team membership keeps its
+   own copy under its own rules.
+
+Non-blocking, all applied except 1, 6 and 7, which are notes for others:
+- 2: §3.2 and D-9 now say the owner reaches a deleted link and its bookings
+  only as part of the archive; AC-6 adds "any path other than the archive"
+  and is marked failing today.
+- 3: AC-7 now checks the booking's own period after an erasure whose clock is
+  past the due instant.
+- 4: §3.2 now says the instant, shown to the owner as a date.
+- 5: file and test names removed from AC-19, AC-32 and §5; the empty-name rule
+  moved to §2.1.
+- 8: AC-36 adds the undecryptable-unrelated-secret case.
+- Citation: §2.1 now names `019_backend_contract_fields.up.sql:2-5` as well.
+- 1 (owner-decisions caveat), 6 (audit writer atomicity, for the plan) and 7
+  (PR split, for the plan) need no spec change; they are carried in the
+  Linear comment.
+
+No decision changed. Status set to accepted after the round 6 re-check below.
+
+## Challenge — 2026-11-13 (round 6, re-check of revision 6.1)
+
+**Verdict**: accept
+
+I re-read the changed passages (§2.1, §3.2, §3.5, AC-6, AC-7, AC-19, AC-26,
+AC-27, AC-32, AC-35, AC-36, §5, D-9) against round 6's findings and the code
+they cite. Both blocking items are resolved: AC-26 and AC-35 now name an
+observable that a missing or late start-up run fails, and AC-27 no longer
+fails on a booker who is also a Paceday user. AC-6, §3.2 and D-9 now state one
+rule. No new citation was introduced except `019_backend_contract_fields.up.sql:2-5`,
+which I checked.
+
+### Blocking
+None.
+
+### Non-blocking (carried, no spec change needed)
+1. `owner-decisions.md` still carries the "confirm if this was meant
+   otherwise" caveat on the PAC-40 entry; the confirmation the orchestrator
+   reported should be written there.
+2. Plan: write the activity-log entry in the same unit as the erasure; the
+   existing writer swallows insert failures (`focus_blocks.go:79-87`).
+3. Plan: if erasure ships after the archive, AC-25's delete copy must not
+   promise erasure until it ships.
+4. Owner, optional: OQ-8 (erase notes too?), OQ-9 (retention for live links),
+   OQ-10 (confirm "last booking date" = latest meeting end).
+
+### Consumers this breaks
+Unchanged from round 6: the web delete confirmation and a new archive view;
+`factory/pac-40-contract` rev 2 and PRs clockwise-like#234 and
+smart-calendar-flow#126 are superseded and must be redone against this
+revision.
