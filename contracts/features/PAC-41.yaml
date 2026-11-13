@@ -2,11 +2,11 @@
   "featureId": "PAC-41",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-41",
   "status": "draft",
-  "contractRevision": "2",
-  "contractHash": "ee12b9a39115a8a4ba51edfb72993dad2c4833183ee679dda0caf0d50758addb",
+  "contractRevision": "3",
+  "contractHash": "227460b8240b2cf4163ff0c4d1c942b25eab45b4b0b658d9d6f3cdaf50ccfe9c",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml as committed on factory/pac-41-contract (LF, as git stores it), assembled by scripts/openapi_assemble.py. Reproduce with: `git show HEAD:contracts/openapi/openapi.yaml | sha256sum`.",
   "contractDoc": "contracts/features/PAC-41.md",
-  "specDoc": "docs/specs/PAC-41.md on branch factory/pac-41-spec at c2d9003 (revision 1), carried on this branch. NOT yet accepted or merged: its status line reads 'challenged (Revision 1 answers the 2026-10-27 challenge)'; the challenge returned accept-with-changes and has not re-run on revision 1. This contract is a draft against revision 1 (see PAC-41.md section 0).",
+  "specDoc": "docs/specs/PAC-41.md on branch factory/pac-41-spec at c2d9003 (revision 1), carried on this branch. NOT yet accepted or merged: its status line reads 'challenged (Revision 1 answers the 2026-10-27 challenge)'; the challenge returned accept-with-changes and has not re-run on revision 1. This contract is a draft against revision 1 (see PAC-41.md section 0). Owner answers of 2026-10-27 to OQ-1 (rooms carry capacity/building/floor from directory data) and OQ-5 (ask to release or keep the earlier room, remembered as a user setting) are recorded in the spec Decisions (recorded 2026-11-13); they supersede D-1 and D-6, so a spec revision replacing AC-12 to AC-14 and revisiting D-5 is required before acceptance.",
   "sourceOfTruth": "Enach/clockwise-like",
 
   "repositories": {
@@ -40,12 +40,12 @@
       "forbiddenPaths": [
         "src/api/generated (no hand edit)"
       ],
-      "pairedBranch": "factory/pac-41-contract-types (df887a4): types.ts and schemas.types.d.ts regenerated from this contract at 2fe4cee (revision 2; first regenerated as cc63793 from 9bd9316). Description comments only; no type changes."
+      "pairedBranch": "factory/pac-41-contract-types: types.ts and schemas.types.d.ts regenerated from this contract at revision 3 (main merged 2026-11-13; earlier df887a4 from 2fe4cee at revision 2, cc63793 from 9bd9316). Description comments only; no type changes."
     }
   },
 
   "operationsChanged": [
-    { "operationId": "listRooms", "method": "GET", "path": "/api/rooms", "change": "Description only: q is the only parameter read, no time-window or availability filter, start/end ignored (API-040); each room is exactly {id, name} (API-041); the list reads the caller's stored Google credential whatever calendar_provider is: a caller with no stored Google credential gets the 401 calendar not connected (every Outlook-only caller is one), and an Outlook-selected caller who also holds a Google credential gets that Google calendar's rooms (revision 2). Parameters, responses and schemas unchanged." }
+    { "operationId": "listRooms", "method": "GET", "path": "/api/rooms", "change": "Description only: q is the only parameter read, no time-window or availability filter, start/end ignored (API-040); each room is exactly {id, name} (API-041); the list reads the caller's stored Google credential whatever calendar_provider is: a caller with no stored Google credential gets the 401 calendar not connected (every Outlook-only caller is one), and an Outlook-selected caller who also holds a Google credential gets that Google calendar's rooms (revision 2); a stored but unusable Google credential (a PAC-67 loss, or one PAC-84 cannot decrypt) answers the 500, never the 401 (revision 3, main merged 2026-11-13). Parameters, responses and schemas unchanged." }
   ],
   "operationsNotChanged": [
     { "operationId": "queryFreeBusy", "method": "POST", "path": "/api/freebusy", "note": "Neither the operation nor its parameters or responses change; only the FreeBusyParticipant schema description is reworded. So API-077 on this operation is not inherited (spec header, OQ-2): it stays with PAC-47." }
@@ -61,7 +61,7 @@
     "C-1: no `pattern` on CalendarRoom.id. The list keeps any id containing `resource.calendar.google.com`; a pattern would describe what should be, not what is (factory section 7 rule 2). Assumed by the factory, pending owner confirmation.",
     "C-2: no new query parameter and no deprecated `start`/`end` declaration on listRooms. Declaring ignored parameters would invite clients to send them. Assumed by the factory, pending owner confirmation.",
     "C-3: API-040, API-041 and API-046 are marked Claimed (PAC-41), not Fixed, on this branch: each is a web-side defect and is fixed only when the web PR merges. Assumed by the factory, pending owner confirmation.",
-    "Spec decisions D-1 to D-6 are inherited unchanged, all assumed by the factory, pending owner confirmation (spec OQ-1, OQ-3, OQ-5, OQ-6)."
+    "Spec D-2 to D-5 are inherited unchanged, assumed by the factory, pending owner confirmation (spec OQ-3, OQ-6). D-1 and D-6 are superseded by the owner answers of 2026-10-27 to OQ-1 and OQ-5 (spec Decisions, owner answers); this contract still describes today's wire, which those answers do not change until their own specs land."
   ],
 
   "gates": {
@@ -116,14 +116,15 @@
   ],
 
   "followUps": {
-    "OQ-1": "Does the product want room details or room availability? Owner: product owner.",
+    "OQ-1": "Answered yes by the owner on 2026-10-27 (room capacity, building, floor from Google/Microsoft directory data, graceful fallback, optional extended access). Needs its own spec; not filed yet.",
     "OQ-3": "Confirm D-4 and file the follow-up issue for API-047, API-075, API-078. Owner: product owner.",
     "OQ-4": "Can the Google stand-in observe AC-1 and AC-14? Owner: e2e-author at stage 5.",
-    "OQ-5": "Should Paceday replace and release rooms? Owner: product owner.",
+    "OQ-5": "Answered by the owner on 2026-10-27: ask whether to release or keep the earlier room, with a remembered choice as a user setting; needs server support for releasing a room. Replaces AC-12 to AC-14 via a spec revision and its own spec; not filed yet.",
     "OQ-6": "Confirm D-2 (On Paceday never decided from free/busy). Owner: product owner."
   },
 
   "mergeConditions": [
+    "The spec revision required by the owner answers to OQ-1 and OQ-5 (2026-10-27) lands and is challenged; if it changes this contract's scope, the contract is revised and challenged again.",
     "Do not merge until docs/specs/PAC-41.md is accepted (the spec challenge has not re-run on revision c2d9003). If that changes an acceptance criterion, this contract is revised and challenged again.",
     "The paired web branch factory/pac-41-contract-types merges with this contract (description-only regeneration)."
   ],

@@ -125,7 +125,8 @@ No breaking change: nothing on the wire changed.
 - **C-1**: no `pattern` on `CalendarRoom.id` (§3.3).
 - **C-2**: no declared `start`/`end` on `listRooms` (§3.2).
 - **C-3**: the three resolved findings are `Claimed (PAC-41)` until the web PR merges (§3.5).
-- Spec D-1 to D-6 are inherited unchanged.
+- Spec D-2 to D-5 are inherited unchanged. D-1 and D-6 are superseded by the owner
+  answers of 2026-10-27 to OQ-1 and OQ-5; see the maintenance section at the end.
 
 Open owner questions carried from the spec: OQ-1 (room details/availability), OQ-3
 (confirm the D-4 split and file the follow-up; no follow-up issue existed in Linear on
@@ -351,3 +352,75 @@ bundle change is the `listRooms` description.
 - The e2e gate is not touched by this stage.
 - The api gate is re-run on the commit that adds this section; its result is in the
   PR body.
+
+## Maintenance — 2026-11-13 (contract revision 3, main merged)
+
+`origin/main` (33 commits since `6d751f9`, up to `68540f6`) was merged into this branch.
+The only conflict was `docs/factory/api-audit.md`: main's API-039 row (its `LLMProvider`
+half was fixed by NEW-llm-bring-your-own) was taken, and the API-040/041 rows keep their PAC-41 text.
+
+### The shapes, re-read against main `68540f6`
+
+- `calendar.Room` is still `{ID, Name}` with no `omitempty`
+  (`backend/calendar/rooms_attendees.go:11-14`, unchanged since `6d751f9`). `listRooms`
+  is still `handlers_events.go:312-330` and reads only `q`.
+- `freeBusyParticipantDTO` is still `{Email, Status, Busy}`
+  (`backend/api/handlers_freebusy.go:23-27`, file unchanged). `Status` is still
+  `ParticipantBusy.Coverage`. `engine/freebusy_service.go` now sets it at `:111`
+  (`unknown`) and `:181-183` (`known`/`unknown`), still with no third value and no
+  provider. PAC-67 changed only how the requester's credential is renewed and when
+  a degraded answer is cached.
+- The 401 rule still holds, through new code. `calClient` (`handlers_events.go:27-35`)
+  is now `engine.LoadCalendarTokenCtx` -> `auth.LoadUserTokenCtx` (session-generation
+  guarded, PAC-71) -> `auth.LoadUserToken` (`backend/auth/token_store.go:111-121`, still
+  `SELECT ... FROM oauth_tokens WHERE user_id`). No row still means
+  `ErrCalendarNotConnected`, which is the 401. The token source is now
+  `auth.UserTokenSource` (PAC-67).
+- New since revision 2, and now stated in the `listRooms` description: a stored
+  Google credential decides the 401 even when it cannot be used.
+  - A credential the provider has permanently refused to renew (a PAC-67 loss): the
+    row stays, so `UserTokenSource` returns `auth.LostError`, `ListRooms` fails, and
+    the answer is `writeServerError` 500 `internal error`.
+  - A credential that cannot be decrypted (PAC-84): `LoadCalendarTokenCtx` wraps it
+    as `ErrCredentialStore`, so the answer is the 500.
+    `TestPAC84_GoogleUndecryptable` pins this on `GET /api/calendar/events`, which
+    uses the same `calClient` path.
+
+  Neither case is the 401. This is a description change only; the 500 response
+  already covered "the stored credential could not be read".
+
+Rejected alternative: leaving the description as it was. It is not false, but it
+only names the no-row case, and a client reading "no stored Google credential -> 401"
+could expect a lost connection to give the 401 as well. AC-16's "could not be loaded"
+branch is what a lost connection reaches.
+
+### Owner answers recorded
+
+`.claude/factory/owner-decisions.md` (2026-10-27) answers spec OQ-1 (rooms carry
+capacity, and building and floor where available, from Google and Microsoft directory
+data, with a graceful fallback and an optional extended-access step) and OQ-5 / D-6
+(ask whether to release or keep the earlier room, with a remembered choice in Settings).
+Both are now recorded in the spec's Decisions as "owner, 2026-10-27".
+
+They supersede D-1 and D-6 as product direction. They do not make this contract
+wrong, because the server still emits `{id, name}` and never releases a room. Each
+answer is its own feature with its own spec (spec OQ-1, OQ-5); when those land,
+`CalendarRoom` gains optional fields. AC-12 to AC-14 (the "earlier room stays booked"
+notices) and the demo half of D-5 must be replaced by a spec revision before the spec
+is accepted. That revision is spec-author's work, not this stage's, and it is now a
+merge condition in the manifest.
+
+### Regeneration
+
+Done in an LF docker clone (`golang:1.25-bookworm`, `make openapi`):
+- Only `contracts/openapi/openapi.yaml` changed (the `listRooms` description).
+- `backend/api/gen` was already in sync after the merge.
+- `openapi-check` (api half): bundle in sync (108 paths), MIGRATION.md covers 130
+  operations (12 generated), gen matches.
+- `contractHash` `227460b8240b2cf4163ff0c4d1c942b25eab45b4b0b658d9d6f3cdaf50ccfe9c`.
+
+The web types are regenerated against this on `factory/pac-41-contract-types`. The
+gate results are in the PR comments.
+
+Not re-challenged: the revision 3 description sentence and the recorded owner
+answers have not been through contract-challenger.
