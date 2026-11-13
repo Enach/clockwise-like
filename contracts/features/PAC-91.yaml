@@ -58,7 +58,7 @@
     "headers": "framable: CSP shared policy + frame-ancestors *, no X-Frame-Options; otherwise frame-ancestors 'none' + X-Frame-Options DENY; every other header and directive identical; all responses incl. errors.",
     "webLinkTarget": "src/lib/framing.ts TOP_LEVEL_LINK_TARGET = \"_top\" used by the three booking-page links and the notice link; OQ-1 'new tab' = change to \"_blank\" (one line) + AC-4 expectation.",
     "webFrameDetection": "isFramed(): window.self !== window.top equivalent; never reads the embedder; tests stub it.",
-    "webGuard": "FrameGuard inside BrowserRouter, above AuthProvider; synchronous per render: unframed -> children; framed + matchPath('/book/:slug') -> children; else only the notice. No effect-based decision, no API request, no redirect while the notice shows.",
+    "webGuard": "FrameGuard inside BrowserRouter, above AuthProvider; synchronous per render: unframed -> children; framed + matchPath('/book/:slug') -> children; else only the notice. No effect-based decision, no API request, no redirect while the notice shows. Enforced in production builds only (frameGuardEnabled() = !__PACEDAY_DEMO_BUILD__); non-production builds (Lovable preview, dev) are unguarded (factory decision following owner PAC-83 OQ-1, 2026-11-13).",
     "testIds": [
       "frame-notice",
       "frame-notice-open",
