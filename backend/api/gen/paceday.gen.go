@@ -84,6 +84,13 @@ const (
 	RecomputeAccepted AnalyticsRecomputeAckStatus = "recompute accepted"
 )
 
+// Defines values for ArchivedSchedulingLinkErasureState.
+const (
+	AwaitingErasure ArchivedSchedulingLinkErasureState = "awaiting_erasure"
+	Erased          ArchivedSchedulingLinkErasureState = "erased"
+	NoBookings      ArchivedSchedulingLinkErasureState = "no_bookings"
+)
+
 // Defines values for AuditEntryAction.
 const (
 	ConnectionLost        AuditEntryAction = "connection_lost"
@@ -1002,6 +1009,78 @@ type AnalyticsWeekWithBreakdown struct {
 	WeekStart openapi_types.Date `json:"week_start"`
 }
 
+// ArchivedSchedulingLink One deleted link in its owner's archive (PAC-40 §3.2, AC-21). Carries no co-host roster, no settings and no booker data: it says which link it was, when it was deleted, and where its bookers' details stand.
+type ArchivedSchedulingLink struct {
+	// BookingsCount Number of bookings the link received, every status included (the same rule as `SchedulingLink.uses_count`). Erasure never changes it.
+	BookingsCount int `json:"bookings_count"`
+
+	// DeletedAt The deletion instant, UTC, recorded by `deleteSchedulingLink`.
+	DeletedAt time.Time `json:"deleted_at"`
+
+	// ErasedAt When this link's bookings were last erased (the latest `booker_erased_at` among its bookings). Null when none has been erased. Always set with `erasure_state: erased`; also set alongside `awaiting_erasure` when a booking arrived after an earlier erasure.
+	ErasedAt *time.Time `json:"erased_at"`
+
+	// ErasureDueAt The instant at which the bookers' names and emails become due for erasure: `last_booking_end_at` + 90 x 24 hours (AC-21). Shown to the owner as a date. Null when `erasure_state` is not `awaiting_erasure`, and always null while `BookerErasurePolicy.enabled` is false (nothing will be erased, so no date is promised).
+	ErasureDueAt *time.Time `json:"erasure_due_at"`
+
+	// ErasureState `no_bookings`: the link has no bookings, so there is nothing to erase (the archive says so). `awaiting_erasure`: at least one booking still holds its booker's name and email. `erased`: the link has bookings and every one of them has been erased. A link that was `erased` returns to `awaiting_erasure` if a booking lands on it afterwards (spec §3.5, OQ-4 race, AC-34). Read with `erasure_due_at`: an `awaiting_erasure` link whose `erasure_due_at` is in the past is overdue and is erased by the next run (at most 24 hours later while the backend runs).
+	ErasureState ArchivedSchedulingLinkErasureState `json:"erasure_state"`
+	Id           openapi_types.UUID                 `json:"id"`
+
+	// LastBookingEndAt The link's last booking date: the latest `end_time` of any of its bookings, cancelled ones included (spec R-5, D-12). Null when the link has no bookings.
+	LastBookingEndAt *time.Time `json:"last_booking_end_at"`
+
+	// Slug The link's former address (`/book/{slug}` on the web origin). Still reserved: no other link can take it (D-3), and it answers 404 publicly.
+	Slug string `json:"slug"`
+
+	// Title The title the link had when it was deleted.
+	Title string `json:"title"`
+}
+
+// ArchivedSchedulingLinkErasureState `no_bookings`: the link has no bookings, so there is nothing to erase (the archive says so). `awaiting_erasure`: at least one booking still holds its booker's name and email. `erased`: the link has bookings and every one of them has been erased. A link that was `erased` returns to `awaiting_erasure` if a booking lands on it afterwards (spec §3.5, OQ-4 race, AC-34). Read with `erasure_due_at`: an `awaiting_erasure` link whose `erasure_due_at` is in the past is overdue and is erased by the next run (at most 24 hours later while the backend runs).
+type ArchivedSchedulingLinkErasureState string
+
+// ArchivedSchedulingLinkBooking One booking of an archived link (PAC-40 AC-22, AC-32). Same fields and names as `SchedulingLinkBookingRecord`, except that the booker's name and email can be in the ERASED state. Erased is explicit and cannot be confused with a value: `booker_erased_at` is set and `booker_name` and `booker_email` are both null (a booker cannot submit a missing or blank name or email, so null is never a typed value). Before erasure `booker_erased_at` is null and both strings are exactly what the booker typed, equal to what `listSchedulingLinkBookings` returned while the link was live (AC-22). Every other field is unchanged by erasure (AC-27).
+type ArchivedSchedulingLinkBooking struct {
+	// BookerEmail Null if and only if `booker_erased_at` is set.
+	BookerEmail *string `json:"booker_email"`
+
+	// BookerErasedAt When an erasure run removed this booker's name and email; null before.
+	BookerErasedAt *time.Time `json:"booker_erased_at"`
+
+	// BookerName Null if and only if `booker_erased_at` is set.
+	BookerName *string            `json:"booker_name"`
+	CreatedAt  time.Time          `json:"created_at"`
+	EndTime    time.Time          `json:"end_time"`
+	Id         openapi_types.UUID `json:"id"`
+	LinkId     openapi_types.UUID `json:"link_id"`
+
+	// Notes Kept at erasure (spec D-11; if the owner answers OQ-8 "yes", notes become erasable too, which is a contract change). Always present, possibly the empty string.
+	Notes     string    `json:"notes"`
+	StartTime time.Time `json:"start_time"`
+
+	// Status Same values as `SchedulingLinkBookingRecord.status`, cancelled included.
+	Status string `json:"status"`
+}
+
+// ArchivedSchedulingLinkDetail GET /api/scheduling-links/archive/{id}.
+type ArchivedSchedulingLinkDetail struct {
+	// Bookings Every booking of the link, never null; `[]` when it has none.
+	Bookings []ArchivedSchedulingLinkBooking `json:"bookings"`
+
+	// Link One deleted link in its owner's archive (PAC-40 §3.2, AC-21). Carries no co-host roster, no settings and no booker data: it says which link it was, when it was deleted, and where its bookers' details stand.
+	Link ArchivedSchedulingLink `json:"link"`
+}
+
+// ArchivedSchedulingLinkListResponse GET /api/scheduling-links/archive.
+type ArchivedSchedulingLinkListResponse struct {
+	// BookerErasure PAC-40 copy hook. Whether this deployment erases bookers' names and emails from deleted links, and after how long. Carried by `listArchivedSchedulingLinks` only (not by `listSchedulingLinks`, whose consumers decode it as a map of arrays). The web builds the delete confirmation from it (spec §3.2 last bullet, AC-25): it promises erasure ONLY when `enabled` is true, and while the policy is not loaded (or the read failed) it does not promise erasure. `enabled` is a property of the server build, not an operator setting (no environment variable changes it; a deployment does not opt out of the owner's decision): false only in a build that ships the deleted state and the archive without the erasure job (PR split, contracts/features/PAC-40.md §6), true in every build that has the job.
+	BookerErasure BookerErasurePolicy `json:"booker_erasure"`
+
+	// Links Always present, never null; `[]` for an owner who has deleted nothing.
+	Links []ArchivedSchedulingLink `json:"links"`
+}
+
 // AttendeeSuggestion calendar.AttendeeSuggestion. Both keys are always emitted (no omitempty); `name` is "" when Google supplied no display name.
 type AttendeeSuggestion struct {
 	// Email Original casing from the Google event, not the lowercased dedupe key.
@@ -1079,6 +1158,15 @@ type AuthStatusResponse struct {
 // error/fallback paths also report "google", so "google" does not prove
 // Google was configured.
 type AuthStatusResponseProvider string
+
+// BookerErasurePolicy PAC-40 copy hook. Whether this deployment erases bookers' names and emails from deleted links, and after how long. Carried by `listArchivedSchedulingLinks` only (not by `listSchedulingLinks`, whose consumers decode it as a map of arrays). The web builds the delete confirmation from it (spec §3.2 last bullet, AC-25): it promises erasure ONLY when `enabled` is true, and while the policy is not loaded (or the read failed) it does not promise erasure. `enabled` is a property of the server build, not an operator setting (no environment variable changes it; a deployment does not opt out of the owner's decision): false only in a build that ships the deleted state and the archive without the erasure job (PR split, contracts/features/PAC-40.md §6), true in every build that has the job.
+type BookerErasurePolicy struct {
+	// Enabled True when the erasure job (spec §3.5) runs in this build. While false, no archived link has an `erasure_due_at` and no booking is ever erased.
+	Enabled bool `json:"enabled"`
+
+	// RetentionDays Days after the link's last booking end at which erasure becomes due (90 x 24 hours; owner decision 2026-10-27). Sent whatever `enabled` is, so the figure the copy quotes is pinned by the contract, not by web text. A different value is a contract change.
+	RetentionDays int `json:"retention_days"`
+}
 
 // BookingError Shared error envelope written by api.writeError (handlers_settings.go:388): Content-Type application/json, body `{"error": "<message>"}`. The one exception in this domain is the requireAuth 401 (text/plain). Every 5xx, including the Zoom OAuth callback's, is this envelope (PAC-21).
 type BookingError struct {
@@ -1366,7 +1454,7 @@ type CreatePublicBookingRequest struct {
 	Start time.Time `json:"start"`
 }
 
-// CreateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two accepted spellings; the canonical one wins when both are sent. Nothing is required at the JSON level, but validation rejects an empty title.
+// CreateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkInput. Several fields have two accepted spellings. For durations and days the canonical spelling wins whenever it is carried (present and not null; `[]` counts as carried), on create and PATCH alike (PAC-40 D-5). The window aliases follow their own rule (see each field). Nothing is required at the JSON level, but validation rejects an empty title.
 type CreateSchedulingLinkRequest struct {
 	// BookingHorizonDays PAC-72 revision 2 (owner decision D-1). Absent or null means 60. Outside 1..365 is a 422 "booking_horizon_days must be between 1 and 365".
 	BookingHorizonDays *int `json:"booking_horizon_days"`
@@ -1376,17 +1464,17 @@ type CreateSchedulingLinkRequest struct {
 	// CoHostEmails Emails are lowercased and trimmed, then resolved to existing accounts and added as `pending` hosts. Addresses with no account are skipped silently - the response gives no indication that an invite was dropped.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
-	// Days Alias for days_of_week, used only when days_of_week is absent. Accepts "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently dropped, which can turn a non-empty list into a 422 "at least one day".
-	Days *[]string `json:"days,omitempty"`
+	// Days Alias for days_of_week, used only when days_of_week is absent or null. Accepts "mon"/"monday"/"1" etc, case-insensitive; unrecognised entries are silently dropped, which can turn a non-empty list into a 422 "at least one day".
+	Days *[]string `json:"days"`
 
-	// DaysOfWeek Canonical spelling, 0=Sunday..6=Saturday. Wins over `days`. Defaults to [1,2,3,4,5] when both are absent.
-	DaysOfWeek *[]int `json:"days_of_week,omitempty"`
+	// DaysOfWeek Canonical spelling, 0=Sunday..6=Saturday. Wins over `days` whenever it is carried (present and not null), even as `[]` (then a 422). Defaults to [1,2,3,4,5] when both are absent or null.
+	DaysOfWeek *[]int `json:"days_of_week"`
 
-	// DurationOptions Canonical spelling. Wins over `durations`. Defaults to [30] when both are absent (a present-but-empty array is a 422).
-	DurationOptions *[]int `json:"duration_options,omitempty"`
+	// DurationOptions Canonical spelling. Wins over `durations` whenever it is carried (present and not null), even as `[]`, which is then a 422 "at least one duration is required" whatever `durations` says. Defaults to [30] when both are absent or null.
+	DurationOptions *[]int `json:"duration_options"`
 
-	// Durations Alias for duration_options, used only when duration_options is absent.
-	Durations *[]int `json:"durations,omitempty"`
+	// Durations Alias for duration_options, used only when duration_options is absent or null.
+	Durations *[]int `json:"durations"`
 
 	// MaxUses Required and must be positive when usage_type is `recurring`. Ignored (forced to null) otherwise.
 	MaxUses          *int `json:"max_uses"`
@@ -1404,17 +1492,17 @@ type CreateSchedulingLinkRequest struct {
 	// UsageType Lowercased and trimmed before validation; an empty string becomes `reusable`.
 	UsageType *CreateSchedulingLinkRequestUsageType `json:"usage_type,omitempty"`
 
-	// WindowEnd Alias, used only when window_end_time is empty.
-	WindowEnd *string `json:"window_end,omitempty"`
+	// WindowEnd Alias, used only when window_end_time is absent, null or the empty string. Not covered by PAC-40's precedence rule (D-10, OQ-7).
+	WindowEnd *string `json:"window_end"`
 
-	// WindowEndTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00".
-	WindowEndTime *string `json:"window_end_time,omitempty"`
+	// WindowEndTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "17:00". An explicit null is the same as absent (the server decodes it to the empty string).
+	WindowEndTime *string `json:"window_end_time"`
 
-	// WindowStart Alias, used only when window_start_time is empty.
-	WindowStart *string `json:"window_start,omitempty"`
+	// WindowStart Alias, used only when window_start_time is absent, null or the empty string. Not covered by PAC-40's precedence rule: PATCH treats an empty canonical value differently (PAC-40 D-10, OQ-7).
+	WindowStart *string `json:"window_start"`
 
-	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00".
-	WindowStartTime *string `json:"window_start_time,omitempty"`
+	// WindowStartTime Canonical spelling. "HH:MM" or "HH:MM:SS". Defaults to "09:00". An explicit null is the same as absent (the server decodes it to the empty string).
+	WindowStartTime *string `json:"window_start_time"`
 }
 
 // CreateSchedulingLinkRequestRefusalMessage PAC-72 revision 2 (owner decisions D-2/D-5), see `BookingRefusalMessage`. Absent or null means `generic`. Any other value is a 422 "refusal_message must be generic or specific".
@@ -3093,6 +3181,7 @@ type SchedulingErrorResponse struct {
 
 // SchedulingLink backend/api/handlers_scheduling_links.go schedulingLinkDTO. Note the DTO field names deliberately differ from the storage json tags (`durations` vs `duration_options`, `days` vs `days_of_week`, `owner_id` vs `owner_user_id`, `window_start` vs `window_start_time`).
 type SchedulingLink struct {
+	// Active false means paused: the owner switched the link off and can switch it back on with PATCH. A deleted link is never returned, so this field never describes one (PAC-40).
 	Active bool `json:"active"`
 
 	// BookingHorizonDays How many days ahead the link can be booked, counting today in the link's zone (PAC-72 revision 2, owner decision D-1). 60 for every link created before PAC-72 revision 2 and for any link created without it.
@@ -3133,7 +3222,7 @@ type SchedulingLink struct {
 	Title     string                  `json:"title"`
 	UsageType SchedulingLinkUsageType `json:"usage_type"`
 
-	// UsesCount Count of non-cancelled bookings, computed by subquery at read time.
+	// UsesCount Number of booking rows stored for this link, whatever their status, so cancelled bookings are included and the figure never goes down when a booking is cancelled (PAC-40 D-6, API-051). Bookings made before PAC-40 count under the same rule (D-8). Exhaustion (410 on the public paths) is judged on this figure. No product path removes a booking row (cancel keeps it, delete of a link is a soft delete, D-2), so through the API the figure only grows. A row removed outside the product (e2e teardown, a manual database edit) is no longer counted. Erasing bookers' names and emails removes no row and never changes this figure (PAC-40 §3.4). Whether the server stores or computes the figure is not part of the contract, provided it equals this count.
 	UsesCount int    `json:"uses_count"`
 	WindowEnd string `json:"window_end"`
 
@@ -3163,7 +3252,7 @@ type SchedulingLinkBookingRecord struct {
 	Notes     string    `json:"notes"`
 	StartTime time.Time `json:"start_time"`
 
-	// Status DB default is `confirmed`; `cancelled` rows are excluded from uses_count and from conflict checks.
+	// Status DB default is `confirmed`. `cancelled` rows are excluded from conflict checks but still count in the link's `uses_count` (PAC-40 D-6). No API path sets `cancelled` today.
 	Status string `json:"status"`
 }
 
@@ -3229,11 +3318,12 @@ type SchedulingLinkInviteResponse struct {
 // SchedulingLinkInviteResponseStatus defines model for SchedulingLinkInviteResponse.Status.
 type SchedulingLinkInviteResponseStatus string
 
-// SchedulingLinkListResponse GET /api/scheduling-links. Both arrays are always present, never null.
+// SchedulingLinkListResponse GET /api/scheduling-links. Both arrays are always present, never null. Deleted links are in neither (PAC-40 AC-1); they are in the owner's archive.
 type SchedulingLinkListResponse struct {
+	// Owned Links the caller owns, live or paused. Deleted links are never included (PAC-40).
 	Owned []SchedulingLink `json:"owned"`
 
-	// Shared Links where the caller is an accepted co-host but not the owner.
+	// Shared Links where the caller is an accepted co-host but not the owner. Deleted links are never included (PAC-40).
 	Shared []SchedulingLink `json:"shared"`
 }
 
@@ -4259,7 +4349,7 @@ type TeamSlotList struct {
 
 // UpdateSchedulingLinkRequest backend/api/handlers_scheduling_links.go schedulingLinkPatch. Scalars are Go pointers, so an absent key leaves the stored value alone; slices are plain slices, so an absent key and an explicit `null` are indistinguishable and both mean "leave unchanged", while `[]` means "clear" (and then usually fails 422).
 type UpdateSchedulingLinkRequest struct {
-	// Active Setting false is the same soft-deactivation that DELETE performs.
+	// Active Pause (false) or resume (true). Not the same as DELETE: a paused link stays listed and fetchable by its owner and accepted co-hosts, and its public page answers 404 until resumed. Cannot reach a deleted link: PATCH on one answers 404 whatever this value is (PAC-40 AC-3, AC-11).
 	Active *bool `json:"active"`
 
 	// BookingHorizonDays PAC-72 revision 2. Absent or null leaves the stored value; outside 1..365 is a 422 "booking_horizon_days must be between 1 and 365". A shorter horizon refuses later starts from then on; bookings already made beyond it are kept.
@@ -4270,13 +4360,17 @@ type UpdateSchedulingLinkRequest struct {
 	// CoHostEmails When present, the complete co-host list: unlisted non-owner hosts are removed, new ones are added as `pending`, existing ones keep their status (PAC-61). Unknown emails are skipped silently.
 	CoHostEmails *[]openapi_types.Email `json:"co_host_emails,omitempty"`
 
-	// Days Applied after days_of_week, so `days` wins when both are sent - again the opposite of create.
-	Days            *[]string `json:"days,omitempty"`
-	DaysOfWeek      *[]int    `json:"days_of_week,omitempty"`
-	DurationOptions *[]int    `json:"duration_options,omitempty"`
+	// Days Alias for days_of_week, applied only when days_of_week is absent or null. Ignored when days_of_week is carried (PAC-40; before PAC-40 the alias won on PATCH).
+	Days *[]string `json:"days"`
 
-	// Durations Applied AFTER duration_options, so when both are sent `durations` wins - the opposite precedence from create.
-	Durations *[]int `json:"durations,omitempty"`
+	// DaysOfWeek Canonical spelling. When carried (present and not null) it wins over `days`, as on create (PAC-40 D-5); `[]` counts as carried and fails 422.
+	DaysOfWeek *[]int `json:"days_of_week"`
+
+	// DurationOptions Canonical spelling. When carried (present and not null) it wins over `durations`, as on create (PAC-40 D-5, API-049); `[]` counts as carried and fails 422 "at least one duration is required", leaving the link unchanged.
+	DurationOptions *[]int `json:"duration_options"`
+
+	// Durations Alias for duration_options, applied only when duration_options is absent or null. Ignored when duration_options is carried (PAC-40; before PAC-40 the alias won on PATCH).
+	Durations *[]int `json:"durations"`
 
 	// MaxUses An explicit null is indistinguishable from an absent key (both leave the stored value), so max_uses cannot be cleared by PATCH except by switching usage_type away from `recurring`.
 	MaxUses          *int `json:"max_uses"`
@@ -4290,11 +4384,11 @@ type UpdateSchedulingLinkRequest struct {
 	Title     *string                               `json:"title"`
 	UsageType *UpdateSchedulingLinkRequestUsageType `json:"usage_type"`
 
-	// WindowEnd Alias, applied only when window_end_time is absent.
+	// WindowEnd Alias, applied only when window_end_time is absent or null; same empty-string caveat as window_start (PAC-40 D-10, OQ-7).
 	WindowEnd     *string `json:"window_end"`
 	WindowEndTime *string `json:"window_end_time"`
 
-	// WindowStart Alias, applied only when window_start_time is absent.
+	// WindowStart Alias, applied only when window_start_time is absent or null. An empty-string window_start_time is carried and wins (then 422), unlike create; unchanged by PAC-40 (D-10, OQ-7).
 	WindowStart     *string `json:"window_start"`
 	WindowStartTime *string `json:"window_start_time"`
 }
@@ -6906,6 +7000,12 @@ type ServerInterface interface {
 	// Create a scheduling link owned by the caller.
 	// (POST /api/scheduling-links)
 	CreateSchedulingLink(w http.ResponseWriter, r *http.Request)
+	// The caller's archive of the links they deleted (owner only, read-only).
+	// (GET /api/scheduling-links/archive)
+	ListArchivedSchedulingLinks(w http.ResponseWriter, r *http.Request)
+	// One archived link and all its bookings (owner only, read-only).
+	// (GET /api/scheduling-links/archive/{id})
+	GetArchivedSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Pending co-host invitations addressed to the caller.
 	// (GET /api/scheduling-links/host-invites)
 	ListSchedulingLinkHostInvites(w http.ResponseWriter, r *http.Request)
@@ -6918,7 +7018,7 @@ type ServerInterface interface {
 	// Alias of GET /api/scheduling-links/host-invites (identical handler).
 	// (GET /api/scheduling-links/invites)
 	ListSchedulingLinkInvitesAlias(w http.ResponseWriter, r *http.Request)
-	// Deactivate a scheduling link (owner only).
+	// Delete a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath)
 	// Fetch one scheduling link by id (owner or accepted co-host).
@@ -7593,6 +7693,18 @@ func (_ Unimplemented) CreateSchedulingLink(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// The caller's archive of the links they deleted (owner only, read-only).
+// (GET /api/scheduling-links/archive)
+func (_ Unimplemented) ListArchivedSchedulingLinks(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// One archived link and all its bookings (owner only, read-only).
+// (GET /api/scheduling-links/archive/{id})
+func (_ Unimplemented) GetArchivedSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Pending co-host invitations addressed to the caller.
 // (GET /api/scheduling-links/host-invites)
 func (_ Unimplemented) ListSchedulingLinkHostInvites(w http.ResponseWriter, r *http.Request) {
@@ -7617,7 +7729,7 @@ func (_ Unimplemented) ListSchedulingLinkInvitesAlias(w http.ResponseWriter, r *
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Deactivate a scheduling link (owner only).
+// Delete a scheduling link (owner only).
 // (DELETE /api/scheduling-links/{id})
 func (_ Unimplemented) DeleteSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -10795,6 +10907,61 @@ func (siw *ServerInterfaceWrapper) CreateSchedulingLink(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// ListArchivedSchedulingLinks operation middleware
+func (siw *ServerInterfaceWrapper) ListArchivedSchedulingLinks(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListArchivedSchedulingLinks(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetArchivedSchedulingLink operation middleware
+func (siw *ServerInterfaceWrapper) GetArchivedSchedulingLink(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "id" -------------
+	var id SchedulingLinkIdPath
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetArchivedSchedulingLink(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSchedulingLinkHostInvites operation middleware
 func (siw *ServerInterfaceWrapper) ListSchedulingLinkHostInvites(w http.ResponseWriter, r *http.Request) {
 
@@ -12241,6 +12408,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/scheduling-links", wrapper.CreateSchedulingLink)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/scheduling-links/archive", wrapper.ListArchivedSchedulingLinks)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/scheduling-links/archive/{id}", wrapper.GetArchivedSchedulingLink)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/scheduling-links/host-invites", wrapper.ListSchedulingLinkHostInvites)
@@ -17234,6 +17407,95 @@ func (response CreateSchedulingLink500JSONResponse) VisitCreateSchedulingLinkRes
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ListArchivedSchedulingLinksRequestObject struct {
+}
+
+type ListArchivedSchedulingLinksResponseObject interface {
+	VisitListArchivedSchedulingLinksResponse(w http.ResponseWriter) error
+}
+
+type ListArchivedSchedulingLinks200JSONResponse ArchivedSchedulingLinkListResponse
+
+func (response ListArchivedSchedulingLinks200JSONResponse) VisitListArchivedSchedulingLinksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListArchivedSchedulingLinks401TextResponse string
+
+func (response ListArchivedSchedulingLinks401TextResponse) VisitListArchivedSchedulingLinksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type ListArchivedSchedulingLinks500JSONResponse BookingError
+
+func (response ListArchivedSchedulingLinks500JSONResponse) VisitListArchivedSchedulingLinksResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetArchivedSchedulingLinkRequestObject struct {
+	Id SchedulingLinkIdPath `json:"id"`
+}
+
+type GetArchivedSchedulingLinkResponseObject interface {
+	VisitGetArchivedSchedulingLinkResponse(w http.ResponseWriter) error
+}
+
+type GetArchivedSchedulingLink200JSONResponse ArchivedSchedulingLinkDetail
+
+func (response GetArchivedSchedulingLink200JSONResponse) VisitGetArchivedSchedulingLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetArchivedSchedulingLink400JSONResponse BookingError
+
+func (response GetArchivedSchedulingLink400JSONResponse) VisitGetArchivedSchedulingLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetArchivedSchedulingLink401TextResponse string
+
+func (response GetArchivedSchedulingLink401TextResponse) VisitGetArchivedSchedulingLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(401)
+
+	_, err := w.Write([]byte(response))
+	return err
+}
+
+type GetArchivedSchedulingLink404JSONResponse BookingError
+
+func (response GetArchivedSchedulingLink404JSONResponse) VisitGetArchivedSchedulingLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetArchivedSchedulingLink500JSONResponse BookingError
+
+func (response GetArchivedSchedulingLink500JSONResponse) VisitGetArchivedSchedulingLinkResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListSchedulingLinkHostInvitesRequestObject struct {
 }
 
@@ -19293,6 +19555,12 @@ type StrictServerInterface interface {
 	// Create a scheduling link owned by the caller.
 	// (POST /api/scheduling-links)
 	CreateSchedulingLink(ctx context.Context, request CreateSchedulingLinkRequestObject) (CreateSchedulingLinkResponseObject, error)
+	// The caller's archive of the links they deleted (owner only, read-only).
+	// (GET /api/scheduling-links/archive)
+	ListArchivedSchedulingLinks(ctx context.Context, request ListArchivedSchedulingLinksRequestObject) (ListArchivedSchedulingLinksResponseObject, error)
+	// One archived link and all its bookings (owner only, read-only).
+	// (GET /api/scheduling-links/archive/{id})
+	GetArchivedSchedulingLink(ctx context.Context, request GetArchivedSchedulingLinkRequestObject) (GetArchivedSchedulingLinkResponseObject, error)
 	// Pending co-host invitations addressed to the caller.
 	// (GET /api/scheduling-links/host-invites)
 	ListSchedulingLinkHostInvites(ctx context.Context, request ListSchedulingLinkHostInvitesRequestObject) (ListSchedulingLinkHostInvitesResponseObject, error)
@@ -19305,7 +19573,7 @@ type StrictServerInterface interface {
 	// Alias of GET /api/scheduling-links/host-invites (identical handler).
 	// (GET /api/scheduling-links/invites)
 	ListSchedulingLinkInvitesAlias(ctx context.Context, request ListSchedulingLinkInvitesAliasRequestObject) (ListSchedulingLinkInvitesAliasResponseObject, error)
-	// Deactivate a scheduling link (owner only).
+	// Delete a scheduling link (owner only).
 	// (DELETE /api/scheduling-links/{id})
 	DeleteSchedulingLink(ctx context.Context, request DeleteSchedulingLinkRequestObject) (DeleteSchedulingLinkResponseObject, error)
 	// Fetch one scheduling link by id (owner or accepted co-host).
@@ -22063,6 +22331,56 @@ func (sh *strictHandler) CreateSchedulingLink(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateSchedulingLinkResponseObject); ok {
 		if err := validResponse.VisitCreateSchedulingLinkResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListArchivedSchedulingLinks operation middleware
+func (sh *strictHandler) ListArchivedSchedulingLinks(w http.ResponseWriter, r *http.Request) {
+	var request ListArchivedSchedulingLinksRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListArchivedSchedulingLinks(ctx, request.(ListArchivedSchedulingLinksRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListArchivedSchedulingLinks")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListArchivedSchedulingLinksResponseObject); ok {
+		if err := validResponse.VisitListArchivedSchedulingLinksResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetArchivedSchedulingLink operation middleware
+func (sh *strictHandler) GetArchivedSchedulingLink(w http.ResponseWriter, r *http.Request, id SchedulingLinkIdPath) {
+	var request GetArchivedSchedulingLinkRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetArchivedSchedulingLink(ctx, request.(GetArchivedSchedulingLinkRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetArchivedSchedulingLink")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetArchivedSchedulingLinkResponseObject); ok {
+		if err := validResponse.VisitGetArchivedSchedulingLinkResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
