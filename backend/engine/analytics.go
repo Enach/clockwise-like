@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
@@ -54,7 +55,7 @@ func (e *AnalyticsEngine) ForceCompute(ctx context.Context, userID uuid.UUID, da
 func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekStart time.Time) (*storage.AnalyticsWeek, error) {
 	weekEnd := weekStart.AddDate(0, 0, 7)
 
-	settings, err := storage.GetOrCreateSettingsByUser(e.DB, userID)
+	settings, err := storage.GetOrCreateSettingsByUserCtx(ctx, e.DB, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get settings: %w", err)
 	}
@@ -187,7 +188,7 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 		}
 	}
 
-	result, err := storage.UpsertAnalyticsWeek(e.DB, &storage.AnalyticsWeek{
+	result, err := storage.UpsertAnalyticsWeekCtx(ctx, e.DB, &storage.AnalyticsWeek{
 		UserID:                      userID,
 		WeekStart:                   weekStart,
 		TotalWorkingMinutes:         totalWorkingMinutes,
@@ -208,11 +209,11 @@ func (e *AnalyticsEngine) compute(ctx context.Context, userID uuid.UUID, weekSta
 }
 
 func (e *AnalyticsEngine) calOpsForUser(ctx context.Context, userID uuid.UUID) (calendarOps, error) {
-	token, err := LoadCalendarToken(e.DB, userID)
+	token, err := LoadCalendarTokenCtx(ctx, e.DB, userID)
 	if err != nil {
 		return nil, err
 	}
-	ts := e.OAuthConfig.TokenSource(ctx, token)
+	ts := auth.UserTokenSource(ctx, e.DB, e.OAuthConfig, userID, token)
 	client, err := calendar.NewClient(ctx, ts)
 	if err != nil {
 		return nil, err

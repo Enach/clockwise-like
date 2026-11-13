@@ -18,13 +18,21 @@ services:
 
   backend:
     build: ./backend
+    # PAC-84: the encryption key comes from encryption.env beside this file
+    # (mode 600, outside the backup set; docs/runbook.md, "Encryption key").
+    # required: false (Docker Compose >= 2.24.0) so a missing file reaches the
+    # backend, which refuses with its own message. Never name
+    # PACEDAY_ENCRYPTION_KEY or _PREVIOUS under environment: below (an empty
+    # entry would override the file).
+    env_file:
+      - path: ./encryption.env
+        required: false
     environment:
       - PORT=8080
       - DATABASE_URL=postgres://clockwise:${POSTGRES_PASSWORD:-clockwise}@postgres:5432/clockwise?sslmode=disable
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL:-}
-      - SESSION_SECRET=${SESSION_SECRET:-changeme}
       - JWT_SECRET=${JWT_SECRET:-}
       - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-}
       # IPs/CIDRs whose X-Real-IP the backend trusts (PAC-39). Empty = none.
@@ -47,15 +55,17 @@ services:
       - NOTION_CLIENT_ID=${NOTION_CLIENT_ID:-}
       - NOTION_CLIENT_SECRET=${NOTION_CLIENT_SECRET:-}
       - NOTION_REDIRECT_URI=${NOTION_REDIRECT_URI:-}
-      # LLM provider credentials (OpenAI, Anthropic, AWS Bedrock, Azure OpenAI,
-      # Vertex AI, Ollama) are configured per-user in the Settings page and
-      # stored in the database.
-      # PAC-66: Azure OpenAI, Vertex AI and Bedrock send THIS deployment's cloud
-      # identity, so they work only toward inference hosts approved here (see
-      # .env.example). Unset means the provider is not enabled.
+      # AI provider, model and API key are chosen per user in the Settings
+      # page and stored in the database: Paceday supplies no LLM credential
+      # (NEW-llm-bring-your-own). Only the destinations those keys may reach
+      # are approved here (see .env.example). Unset means not enabled for
+      # Azure OpenAI, Vertex AI and Bedrock; the public OpenAI and Anthropic
+      # APIs are built in.
       - PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI=${PACEDAY_LLM_APPROVED_HOSTS_AZURE_OPENAI:-}
       - PACEDAY_LLM_APPROVED_HOSTS_VERTEX=${PACEDAY_LLM_APPROVED_HOSTS_VERTEX:-}
       - PACEDAY_LLM_APPROVED_HOSTS_BEDROCK=${PACEDAY_LLM_APPROVED_HOSTS_BEDROCK:-}
+      - PACEDAY_LLM_APPROVED_HOSTS_OPENAI=${PACEDAY_LLM_APPROVED_HOSTS_OPENAI:-}
+      - PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC=${PACEDAY_LLM_APPROVED_HOSTS_ANTHROPIC:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,8 +102,19 @@ services:
     image: nginx:alpine
     ports:
       - "80:80"
+    # PAC-81 Part B: the render step writes the trusted-proxy list, the CSP
+    # and the upstreams that nginx.conf needs, then starts nginx
+    # (nginx/paceday-render.sh lists the settings).
+    entrypoint: ["/bin/sh", "/paceday/render.sh"]
+    command: ["nginx", "-g", "daemon off;"]
+    environment:
+      NGINX_TRUSTED_PROXIES: ${NGINX_TRUSTED_PROXIES:-}
+      NGINX_CSP_SENTRY_ORIGIN: ${NGINX_CSP_SENTRY_ORIGIN:-}
+      NGINX_CSP_CONNECT_ORIGINS: ${NGINX_CSP_CONNECT_ORIGINS:-}
+      API_BASE_URL: ${API_BASE_URL:-}
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/paceday-render.sh:/paceday/render.sh:ro
     depends_on:
       - backend
       - frontend

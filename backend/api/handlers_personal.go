@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/budget"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -50,7 +52,7 @@ func toPersonalCalendarDTO(c *storage.PersonalCalendar) personalCalendarDTO {
 }
 
 func (h *personalHandlers) list(w http.ResponseWriter, r *http.Request) {
-	cals, err := storage.ListPersonalCalendarsByUser(h.db, userIDFromCtx(r.Context()))
+	cals, err := storage.ListPersonalCalendarsByUserCtx(r.Context(), h.db, userIDFromCtx(r.Context()))
 	if err != nil {
 		writeServerError(w, r, "list", err, http.StatusInternalServerError)
 		return
@@ -85,7 +87,7 @@ func (h *personalHandlers) create(w http.ResponseWriter, r *http.Request) {
 		UserID: userIDFromCtx(r.Context()), Provider: req.Provider, Name: req.Name,
 		URL: req.URL, Enabled: req.Enabled,
 	}
-	id, err := storage.InsertPersonalCalendar(h.db, pc)
+	id, err := storage.InsertPersonalCalendarCtx(r.Context(), h.db, pc)
 	if err != nil {
 		writeServerError(w, r, "create", err, http.StatusInternalServerError)
 		return
@@ -111,7 +113,7 @@ func (h *personalHandlers) patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	cal, err := storage.UpdatePersonalCalendar(h.db, id, userIDFromCtx(r.Context()), req.Name, req.URL, req.Enabled)
+	cal, err := storage.UpdatePersonalCalendarCtx(r.Context(), h.db, id, userIDFromCtx(r.Context()), req.Name, req.URL, req.Enabled)
 	if err != nil {
 		writeServerError(w, r, "patch", err, http.StatusInternalServerError)
 		return
@@ -130,7 +132,7 @@ func (h *personalHandlers) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	deleted, err := storage.DeletePersonalCalendarForUser(h.db, id, userIDFromCtx(r.Context()))
+	deleted, err := storage.DeletePersonalCalendarForUserCtx(r.Context(), h.db, id, userIDFromCtx(r.Context()))
 	if err != nil {
 		writeServerError(w, r, "delete", err, http.StatusInternalServerError)
 		return
@@ -142,8 +144,8 @@ func (h *personalHandlers) delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *personalHandlers) ownedCalendar(id int64, userID uuid.UUID) (*storage.PersonalCalendar, error) {
-	cal, err := storage.GetPersonalCalendar(h.db, id)
+func (h *personalHandlers) ownedCalendar(ctx context.Context, id int64, userID uuid.UUID) (*storage.PersonalCalendar, error) {
+	cal, err := storage.GetPersonalCalendarCtx(ctx, h.db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +161,7 @@ func (h *personalHandlers) preview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	if _, err := h.ownedCalendar(id, userIDFromCtx(r.Context())); err != nil {
+	if _, err := h.ownedCalendar(r.Context(), id, userIDFromCtx(r.Context())); err != nil {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return
 	}
@@ -184,19 +186,24 @@ func (h *personalHandlers) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := userIDFromCtx(r.Context())
-	if _, err := h.ownedCalendar(id, userID); err != nil {
+	if _, err := h.ownedCalendar(r.Context(), id, userID); err != nil {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return
 	}
-	if err := h.blocker.Sync(r.Context(), id); err != nil {
+	// PAC-81 AC-A17: a sync the budget stopped early answers the budget's
+	// 503 and does not stamp last_synced_at; a re-run finishes it.
+	if err := h.blocker.Sync(r.Context(), id); budgetCut(err) {
+		budget.WriteExpired(w)
+		return
+	} else if err != nil {
 		writeCalendarFailure(w, r, "sync", err)
 		return
 	}
-	if err := storage.MarkPersonalCalendarSynced(h.db, id, userID); err != nil {
+	if err := storage.MarkPersonalCalendarSyncedCtx(r.Context(), h.db, id, userID); err != nil {
 		writeServerError(w, r, "mark synced", err, http.StatusInternalServerError)
 		return
 	}
-	cal, err := storage.GetPersonalCalendar(h.db, id)
+	cal, err := storage.GetPersonalCalendarCtx(r.Context(), h.db, id)
 	if err != nil || cal == nil || cal.UserID != userID {
 		writeError(w, "personal calendar not found", http.StatusNotFound)
 		return

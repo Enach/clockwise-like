@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
@@ -74,7 +75,9 @@ func (fc *FocusCron) Start() {
 			case <-fc.stop:
 				return
 			case <-t.C:
-				go fc.tick(fc.now())
+				// PAC-81 AC-A6: each tick is a tracked unit, awaited by the drain.
+				at := fc.now()
+				lifecycle.Go(lifecycle.Unit{Kind: "cron", ID: "focus-scheduler"}, func(context.Context) { fc.tick(at) })
 			}
 		}
 	}()
@@ -106,6 +109,13 @@ func (fc *FocusCron) tick(at time.Time) bool {
 		return true
 	}
 	for _, c := range candidates {
+		// PAC-81: once the drain has ended (or shutdown cancelled the work),
+		// stop before advancing anyone's watermark: a user whose run never
+		// happened must stay due for the next tick after restart.
+		if lifecycle.Default().Context().Err() != nil {
+			fc.logf("focus scheduler: tick at %s stopped by shutdown", at.Format(time.RFC3339))
+			return true
+		}
 		fc.consider(c, at)
 	}
 	return true
@@ -136,6 +146,9 @@ func (fc *FocusCron) consider(c storage.AutoScheduleCandidate, at time.Time) {
 		return
 	}
 
+	if lifecycle.Default().Context().Err() != nil {
+		return // shutting down: leave the watermark for the next run
+	}
 	advanced, err := storage.AdvanceAutoScheduleWatermark(fc.db, c.UserID, c.LastRun, at)
 	if err != nil {
 		fc.logf("focus scheduler: advancing the watermark for user %s: %v", c.UserID, err)
@@ -151,7 +164,8 @@ func (fc *FocusCron) consider(c storage.AutoScheduleCandidate, at time.Time) {
 
 // runOne runs one user's focus scheduling, abandoning it after runTimeout.
 func (fc *FocusCron) runOne(userID uuid.UUID, week time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), fc.runTimeout)
+	// Cancelled at the end of the shutdown drain (PAC-81 AC-A7).
+	ctx, cancel := context.WithTimeout(lifecycle.Default().Context(), fc.runTimeout)
 	defer cancel()
 
 	type outcome struct {

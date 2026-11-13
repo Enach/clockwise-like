@@ -15,6 +15,8 @@ paths:
         Returns `engine.HabitTemplates` verbatim. Static, not user-scoped, never empty.
         The handler writes no explicit status code, so Go's implicit 200 applies.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: The static template list (always 12 entries).
           content:
@@ -36,6 +38,8 @@ paths:
         returns immediately. The request body is never read. Errors from the background
         job are swallowed and are not observable through this endpoint.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: Reoptimization started. Note the status is 200, not 202 (contrast POST /api/analytics/recompute).
           content:
@@ -304,8 +308,12 @@ paths:
         The week is the Monday-anchored week containing `date`. A cached row is returned
         when it was computed within the last 24h, otherwise the week is recomputed and
         upserted synchronously (this call may hit the Google Calendar API).
-        The response is a hand-built map, not the raw `storage.AnalyticsWeek` struct, so
-        its `week_start` is a plain date and it carries an extra `breakdown` array.
+        The response carries the same fields as a GET /api/analytics/trends row, in the
+        same formats and on the same scales, plus a `breakdown` array (PAC-42):
+        `week_start` is the calendar date of the week's Monday (`YYYY-MM-DD`), equal
+        byte for byte to the trend row for the same week, and every proportion in the
+        response (`habit_completion_rate`, `focus_score`, each `breakdown[].percentage`)
+        is a percentage where 100 means the whole.
       parameters:
         - name: date
           in: query
@@ -326,19 +334,16 @@ paths:
                 $ref: '#/components/schemas/AnalyticsWeekWithBreakdown'
         "401":
           $ref: '#/components/responses/Unauthorized'
-        "404":
-          description: |
-            Emitted when the engine returns a nil result with a nil error. Body is
-            `{"error":"not found"}`.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-          x-uncertain: "Believed unreachable in practice: compute() always returns a row from the INSERT ... RETURNING, or an error. Documented because the branch exists."
         "500":
           description: >-
             Compute failed. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21).
+            server log and Sentry only (PAC-21). There is no 404 (PAC-42, audit U-01): the
+            week is either served from a stored row or computed and upserted, and the
+            upsert's `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` yields a row on both
+            the insert and the conflict path (observed, contracts/features/PAC-42.md
+            section 4). The former `{"error":"not found"}` branch for a nil result is
+            removed; should an implementation keep a guard for it, that guard answers
+            this 500.
           content:
             application/json:
               schema:
@@ -352,9 +357,12 @@ paths:
       description: |
         Reads previously persisted rows only — it never computes. Ordered
         `week_start DESC` (newest first). A nil slice is normalised to `[]`.
-        Items are the RAW `storage.AnalyticsWeek` struct, which differs from
-        /api/analytics/week: `week_start` is a full RFC3339 timestamp here, and there is
-        no `breakdown` field.
+        Each item has the same fields as the GET /api/analytics/week response, in the
+        same formats and on the same scales, minus `breakdown` (PAC-42): `week_start` is
+        the calendar date of the week's Monday (`YYYY-MM-DD`), and `habit_completion_rate`
+        and `focus_score` are percentages where 100 means the whole. The `breakdown`
+        array exists only on /api/analytics/week (API-055 second half, out of PAC-42's
+        scope).
       parameters:
         - name: weeks
           in: query
@@ -433,6 +441,8 @@ paths:
         detached context and returns immediately. The request body is never read, and no
         parameters select the week. Errors from the background job are swallowed.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "202":
           description: Recompute accepted.
           content:
@@ -496,13 +506,67 @@ paths:
         The request body is never read.
         The returned `status` is "ready" on success and "failed" when the source fetch or
         LLM step failed — a "failed" brief is still returned with HTTP 200.
+
+        **NEW-llm-bring-your-own: "AI not configured" changes nothing.** Before anything
+        else - before any brief is written and before Slack or Notion is searched - the
+        server decides which AI configuration the request runs on, by the table in
+        `docs/specs/NEW-llm-bring-your-own.md` §3 (summarised on `AINotConfigured`). When
+        the caller has none, the answer is the 409 below: no `pending` or `failed` brief
+        is written at any point, whatever was stored for the event (no brief, pending,
+        ready or failed) stays exactly as it was, so `getMeetingBrief` afterwards answers
+        exactly what it answered before, and no Slack, Notion or AI provider request is
+        made (spec AC-14, D-12). Before this change a `pending` brief was written first and
+        then replaced by a `failed` one, losing a ready brief.
+
+        A configured request uses only the caller's own key-based provider with the key
+        bound to it; no identity of the machine Paceday runs on and no deployment-level
+        key is used (spec O-2, O-3, AC-2). A destination refusal or a provider failure on
+        a configured caller is unchanged: 200, `status: "failed"`, stored.
+
+        **NEW-llm-bring-your-own Part 2 (spec `docs/specs/NEW-llm-bring-your-own-part2.md`
+        revision 1; PAC-87 `docs/specs/PAC-87.md` §3.1-§3.3).** In rows 4 and 9 the brief is
+        generated with the organisation's configuration as read for this request, in one
+        statement with the caller's confirmation, when that confirmation covers the
+        configuration's current consent period (no provider change since; otherwise row 5
+        or row 10, the 409, and nothing is fetched or written; PAC-87 AC-8). Nothing of the
+        caller's own provider settings is used in row 9. In rows 4 and 9 a provider or gateway failure stores and
+        returns a FIXED `brief_text`, `The organisation's AI provider returned an error.`,
+        which contains nothing the provider or gateway returned, so no form of the
+        organisation's key (verbatim, JSON-escaped, percent-encoded) can reach the caller
+        through the 200 or any later `getMeetingBrief` (spec §3.1a, P2-D16, P2-AC-39;
+        contract revision 3). The provider text goes only to the server log and Sentry,
+        with every occurrence of every key sent with this request (the organisation's key
+        read for it, even if replaced since) and of the caller's keys (stored, also in row
+        9) replaced by `[redacted]`
+        (exact strings; an encoded echo can reach those operator-only surfaces, spec §5).
+        In row 2 (the caller's own key) a failed brief's text keeps Part 1's form,
+        `LLM error: <provider text>`, with the caller's own keys replaced by `[redacted]`
+        before it is stored, returned, logged or reported. In rows 4 and 9 a destination refusal's
+        text names the organisation's AI destination and its administrator, never the
+        caller's own Settings (P2-AC-41).
       responses:
         "200":
-          description: The regenerated brief.
+          description: The regenerated brief (AI was configured for the caller).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/MeetingBriefResponse'
+        "409":
+          description: |
+            NEW-llm-bring-your-own. AI is not configured for the caller (table on
+            AINotConfigured, rows 1, 3, 5-8, 10 and 11; Part 2 adds 5, 7, 10 and 11, including
+            a caller who has not confirmed the organisation's configuration, owner O-13).
+            Nothing was written and nothing was sent (spec AC-14, P2-AC-27). `error` is a sentence saying that AI features are
+            off, why and who can turn them on; `notConfigured` carries the same facts. The
+            same reason the caller's parse and probe give (spec AC-40). 409 because the
+            request is well formed and is refused only because of the current state of the
+            caller's AI configuration; it is neither a server error nor a provider error.
+            No consumer existed when this was added: neither the web app nor the MCP server
+            calls this operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LLMNotConfiguredResponse'
         "400":
           description: '"event_id required" as PLAIN TEXT. Believed unreachable via chi routing.'
           content:
@@ -513,8 +577,15 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "500":
           description: >-
-            Brief generation returned an error. Body: `{"error":"internal error"}`. The
-            detail is written to the server log and Sentry only (PAC-21).
+            Brief generation returned an error, or (NEW-llm-bring-your-own) the caller's
+            settings could not be loaded or the caller's organisation membership could
+            not be read, so which AI configuration applies could not be decided; in that case nothing was written (no `pending` or `failed` brief, the
+            stored brief unchanged) and nothing was fetched or sent, as for the 409 (spec
+            AC-14). Before this change the handler ignored a settings-load error and went on
+            to write a `pending` and then a `failed` brief
+            (`backend/api/handlers_meeting_briefs.go:75-90`). Body:
+            `{"error":"internal error"}`. The detail is written to the server log and Sentry
+            only (PAC-21).
           content:
             application/json:
               schema:
@@ -532,6 +603,8 @@ paths:
         Note this route sits inside the authenticated group, so the browser must already
         carry the `auth_token` cookie when it navigates here.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "302":
           description: Redirect to Slack's authorize page.
           headers:
@@ -622,6 +695,8 @@ paths:
         Always 200. Any storage error (including "no row") is collapsed into
         `{"connected": false}` — the `workspace_name` key is then absent entirely.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: Connection status.
           content:
@@ -642,6 +717,8 @@ paths:
         connection that does not exist is also 204 — this endpoint is idempotent and
         never reports 404.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "204":
           description: Disconnected. Empty body.
         "401":
@@ -657,6 +734,8 @@ paths:
         to Notion. Browser navigation endpoint, no body. Unlike Slack, no `scope` is
         requested — the query carries `response_type=code` and `owner=user`.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "302":
           description: Redirect to Notion's authorize page.
           headers:
@@ -744,6 +823,8 @@ paths:
       summary: Whether Notion is connected for this user
       description: 'Always 200. Any storage error collapses into `{"connected": false}` with no `workspace_name` key.'
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "200":
           description: Connection status.
           content:
@@ -760,6 +841,8 @@ paths:
       summary: Delete the stored Notion connection
       description: Idempotent. The storage error is discarded, so this is always 204.
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         "204":
           description: Disconnected. Empty body.
         "401":
@@ -791,7 +874,10 @@ components:
     Unauthorized:
       description: |
         No `auth_token` cookie and no `Authorization: Bearer <jwt>` header, or the token
-        failed validation, or its `sub` is not a UUID. Emitted by `requireAuth`.
+        failed validation, or its `sub` is not a UUID, or (PAC-71) its `gen` is not the
+        account's current session generation, detected by `requireAuth` or by the
+        in-request re-check on account data (security scheme `bearerAuth`, SESSION
+        GENERATION). Emitted by `requireAuth`, or with the same bytes by that re-check.
         QUIRK: the body is the JSON text `{"error":"unauthorized"}` but it is written with
         `http.Error`, which overwrites the Content-Type to `text/plain; charset=utf-8`.
         Clients must not rely on the declared media type here.
@@ -1107,16 +1193,22 @@ components:
         percentage:
           type: number
           format: double
-          description: '`minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded. Note buffer_minutes is excluded from the breakdown, so the five percentages need not sum to 100.'
+          description: >-
+            A percentage where 100 means the whole of `total_working_minutes` (PAC-42: the
+            same scale as `habit_completion_rate` and `focus_score` in the same response):
+            `minutes / total_working_minutes * 100`, or 0 when total is 0. Not rounded.
+            No maximum is declared because the value is not bounded by 100: the total
+            counts Monday–Friday working windows only, while meeting and personal minutes
+            count every timed event in the seven days at any hour. buffer_minutes is
+            excluded from the breakdown, so the five percentages need not sum to 100.
         color:
           type: string
 
     AnalyticsWeekWithBreakdown:
       type: object
       description: |
-        Response of GET /api/analytics/week. Built by `weekWithBreakdown` as a
-        `map[string]any`, so it deliberately differs from AnalyticsWeekRow: `week_start`
-        is a plain date string and `breakdown` is added.
+        Response of GET /api/analytics/week. The same fields as AnalyticsWeekRow, in the
+        same formats and on the same scales, plus `breakdown` (PAC-42).
       required:
         - id
         - user_id
@@ -1148,7 +1240,12 @@ components:
         week_start:
           type: string
           format: date
-          description: The Monday of the week, formatted "2006-01-02". DIFFERENT from the trends endpoint, which emits a full timestamp.
+          description: >-
+            The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g.
+            "2025-01-06"), with no time of day and no zone: the stored DATE value. Same
+            format as AnalyticsWeekRow.week_start, so the two are equal strings for the
+            same week (PAC-42, API-055). Never the zero date "0001-01-01" (PAC-42 fixes
+            the read path that produced it).
         total_working_minutes:
           type: integer
           description: Sum of the configured work windows Mon–Fri. Falls back to 2400 (480×5) when it computes to ≤0 and the working-hours mode is not "by_day".
@@ -1160,8 +1257,13 @@ components:
           type: integer
         buffer_minutes:
           type: integer
-          description: Never populated by `compute` — the engine leaves it at 0 in every write path.
-          x-uncertain: "The column exists and round-trips through storage, but AnalyticsEngine.compute never sets BufferMinutes, so this is always 0 for engine-computed weeks."
+          description: >-
+            Always 0 for engine-computed weeks: AnalyticsEngine.compute never sets it, so
+            every write path stores 0. This is open defect API-057
+            (docs/factory/api-audit.md), not intended behaviour; computing it is out of
+            PAC-42's scope (spec D-5, pending owner confirmation, OQ-8). The column
+            round-trips through storage, so a row written by other means would report its
+            stored value.
         personal_minutes:
           type: integer
           description: Calendar events with zero attendees.
@@ -1175,7 +1277,15 @@ components:
         habit_completion_rate:
           type: number
           format: double
-          description: completed / (scheduled + completed) occurrences in the week, as a 0..1 FRACTION (not a percentage). 0 when there are none.
+          description: >-
+            A percentage where 100 means every counted habit occurrence was completed
+            (PAC-42, API-058: the same scale as `focus_score` and `breakdown[].percentage`
+            in this response): `completed / (scheduled + completed) * 100` over the
+            week's occurrences. 0 when there are none. Not rounded. Storage keeps the
+            unscaled ratio; the multiplication by 100 is applied when the response is
+            built (spec D-3).
+          minimum: 0
+          maximum: 100
         largest_focus_block_minutes:
           type: integer
         top_meeting_titles:
@@ -1185,7 +1295,10 @@ components:
             $ref: '#/components/schemas/MeetingTitle'
         focus_score:
           type: integer
-          description: '`focus*100/(focus+meeting)` clamped to ≤100; 50 when both are 0.'
+          description: >-
+            A percentage where 100 means all focus and meeting time was focus:
+            `focus*100/(focus+meeting)` (integer division) clamped to ≤100; 50 when both
+            are 0.
           minimum: 0
           maximum: 100
         estimated_meeting_cost_minutes:
@@ -1204,9 +1317,8 @@ components:
     AnalyticsWeekRow:
       type: object
       description: |
-        Raw `storage.AnalyticsWeek` as returned by GET /api/analytics/trends. Same field
-        set as AnalyticsWeekWithBreakdown minus `breakdown`, and with `week_start`
-        serialised as a full RFC3339 timestamp because the Go field is a `time.Time`.
+        One item of GET /api/analytics/trends. Same fields as AnalyticsWeekWithBreakdown,
+        in the same formats and on the same scales, minus `breakdown` (PAC-42).
       required:
         - id
         - user_id
@@ -1236,8 +1348,13 @@ components:
           format: uuid
         week_start:
           type: string
-          format: date-time
-          description: 'Midnight UTC of the Monday, e.g. "2026-03-02T00:00:00Z" — NOT the "2026-03-02" shape used by /api/analytics/week.'
+          format: date
+          description: >-
+            The calendar date of the Monday the week starts on, `YYYY-MM-DD` (e.g.
+            "2025-01-06"), with no time of day and no zone: the stored DATE value. Same
+            format as AnalyticsWeekWithBreakdown.week_start, so the two are equal strings
+            for the same week (PAC-42, API-055; this was an RFC3339 timestamp before).
+            Never the zero date "0001-01-01" (PAC-42 fixes the read path that produced it).
         total_working_minutes:
           type: integer
         meeting_minutes:
@@ -1248,6 +1365,7 @@ components:
           type: integer
         buffer_minutes:
           type: integer
+          description: Always 0 for engine-computed weeks (open defect API-057); see AnalyticsWeekWithBreakdown.buffer_minutes.
         personal_minutes:
           type: integer
         free_minutes:
@@ -1259,7 +1377,15 @@ components:
         habit_completion_rate:
           type: number
           format: double
-          description: 0..1 fraction.
+          description: >-
+            A percentage where 100 means every counted habit occurrence was completed
+            (PAC-42, API-058; reported unscaled before PAC-42): `completed / (scheduled +
+            completed) * 100`, 0 when there are none, not rounded. Equal to the single-week
+            value for the same stored week. Rows stored before PAC-42 are reported on this
+            scale too: storage keeps the unscaled ratio for every week and the
+            multiplication by 100 is applied on read (spec D-3).
+          minimum: 0
+          maximum: 100
         largest_focus_block_minutes:
           type: integer
         top_meeting_titles:
@@ -1270,6 +1396,11 @@ components:
             $ref: '#/components/schemas/MeetingTitle'
         focus_score:
           type: integer
+          description: >-
+            A percentage where 100 means all focus and meeting time was focus; same
+            computation and range as AnalyticsWeekWithBreakdown.focus_score.
+          minimum: 0
+          maximum: 100
         estimated_meeting_cost_minutes:
           type: integer
         computed_at:

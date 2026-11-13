@@ -42,7 +42,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '500':
-          description: 'Storage failure. Body: {"error":"internal error"}'
+          description: >-
+            Storage failure. Body: {"error":"internal error"}. Includes a failed
+            read of the link owner's settings, needed for `time_zone` (PAC-72
+            revision 3.1): never answered with the UTC fallback.
           content:
             application/json:
               schema:
@@ -52,6 +55,108 @@ paths:
       tags: [booking]
       summary: Book a slot on a public scheduling link.
       security: []
+      description: >-
+        Rate limited per client (NEW-booking-rate-limit). A client may make at
+        most 20 requests to this operation per fixed 10-minute window; the
+        window starts at the client's first counted request and is not extended
+        by refused requests. The limit is checked and the request counted
+        atomically, as the very first step of the handler: before the link
+        lookup, before the body is read and before any validation, so every
+        request counts whatever it would otherwise have answered (201, 400, 404,
+        409, 410, 500 or 503), and a refused request answers 429 even for an
+        unknown slug and never writes a booking. Concurrent requests cannot
+        exceed the limit. The count is per client across all links, not per
+        link or per host, and is separate from the slot-listing budget of
+        `getPublicBookingSlots`. A client is identified exactly as for
+        `detectAuthProvider` (PAC-39): the socket peer address, or the
+        `X-Real-IP` header only when the socket peer is inside `TRUSTED_PROXIES`
+        (comma-separated IPs or CIDRs; empty or unset trusts nobody; an
+        unparseable entry trusts less, never more). `X-Forwarded-For` is never
+        read. A client is one exact IPv4 or IPv6 address, with no prefix
+        grouping. Counts live in process memory: the limit is per backend
+        process (20 per replica, as API-062's residue), and a restart clears
+        them. Clients whose window has ended are forgotten by a sweep that runs
+        on a request, at most once per window, so memory stays bounded. CORS
+        preflight (`OPTIONS`) is answered by the CORS middleware and is not
+        counted. Offerable-start rule (PAC-72, fixes API-094): a booking is
+        accepted only when the interval it would store, [start, end), is exactly
+        a slot that `getPublicBookingSlots` would offer for this link and this
+        duration at the moment the request is handled. Listing and booking
+        apply one rule: (1) the duration is one of the link's durations (else
+        400, checked first); (2) the start falls on one of the link's
+        `days_of_week` and inside its daily window, on the 15-minute grid
+        counted from `window_start_time`, with zero seconds and zero fraction, and
+        start + duration ends no later than `window_end_time` (these are the
+        create/update request and storage names; the owner's `SchedulingLink`
+        read model calls the same fields `days`, `window_start` and
+        `window_end`); (3) every accepted
+        host is free for the whole slot: no non-transparent calendar event
+        (widened by the link's buffers; buffers apply to calendar events only,
+        and events are read only for the daily window), no focus block, and no
+        booking that is not `cancelled` (pending or confirmed) on any link the
+        host owns or co-hosts, this link included; (4) the start is at least
+        `min_notice_minutes` after the request is handled; (5) the start's
+        date in the link's zone is today (in that zone) or one of the next
+        `booking_horizon_days` - 1 days (PAC-72 revision 2, owner decision D-1:
+        a per-link setting, 1..365, default 60); (6) the link has at least one
+        accepted host. The link's zone (PAC-72 revision 2, owner decision D-9)
+        is the link OWNER's profile time zone (`settings.timezone`), whoever
+        the co-hosts are and whatever zone the server process runs in; when the
+        owner has no settings row or the stored name is not a loadable IANA
+        zone, the zone is UTC. A failed READ of the owner's settings (a
+        storage error) is not "no settings row": it is the 500 and nothing is
+        written, never the UTC fallback (PAC-72 revision 3.1, D-7). Days,
+        hours, the grid, "today" and the horizon are all evaluated in that
+        zone, as wall-clock times: a slot start whose wall time does not exist
+        on a daylight-saving change day is not offered, and a wall time that
+        occurs twice is offered once, at its first occurrence. Window edges on
+        such a day: a `window_start_time` or `window_end_time` that does not
+        exist that day is taken at the instant of the change (the first
+        existing instant after the gap), so the window never grows; an edge in
+        a repeated hour is taken at its first occurrence; the 15-minute grid
+        stays counted in wall time from `window_start_time`. The zone used is
+        exposed as `PublicLinkInfo.time_zone`, to anyone who has the link
+        (owner decision D-9 makes it the page's default display). Order of
+        evaluation: the owner's zone is read first; a start refused by the
+        horizon, the days/hours/grid or the notice is refused with that reason
+        without reading any host's busy time, so a storage failure on busy
+        time cannot turn such a start into a 500 (the listing likewise answers
+        a date outside the horizon before any host read). A start on a day
+        before today (link zone) is not `beyond_horizon` (that names the far
+        edge only); it is always inside the notice, so it is `too_soon` unless
+        `outside_link_hours` comes first. `start` is
+        compared as an instant, so any UTC offset denoting a grid instant is
+        the same start; the stored and returned start and end are exactly the
+        slot's, in UTC. A start the rule does not offer answers 409 and nothing
+        is written: no booking row, no calendar event, no email. The 409 body
+        depends on the link's `refusal_message` setting (PAC-72 revision 2,
+        owner decisions D-2/D-5): `generic` (the default) answers the single
+        body `{"error":"slot is no longer available"}` whatever rule failed;
+        `specific` answers one reason, see the 409 response. The 409 check runs
+        after the 429, 404, 410 and 400 checks. Host calendars must be readable
+        (owner decision PAC-72 D-6, 2026-11-01, as implemented by PAC-81 Part
+        A): each accepted host's calendar is read for the slot's day window
+        (at most 4 concurrent reads, each limited as on
+        `getPublicBookingSlots`); a host whose calendar cannot be read (not
+        connected, a provider error, a refused credential, or its own time
+        limit) is busy for the whole window, so the slot is not offered and the
+        booking is refused with the 409 (reason `host_busy`); nothing is
+        written. A host not read because the request budget ran out is the
+        503, never a 409. A storage failure while reading the link's accepted
+        hosts, a host's focus blocks or the bookings on the hosts' links
+        answers 500 and writes nothing, never 409. Not guaranteed: two
+        concurrent requests for the same or overlapping starts can both pass
+        the check before either is written (no storage-level exclusion; out of
+        scope for PAC-72). Still open (API-051, owned by PAC-40): `uses_count`
+        is recomputed from live bookings, so cancelling a booking re-opens an
+        exhausted single-use link. When the start is accepted, the booking row
+        is saved, then a calendar event (with
+        the booker email as a guest) is attempted on each accepted host's
+        calendar, best effort: a host whose user record or calendar client
+        cannot be loaded is skipped and a failed event creation is ignored, so a
+        201 does not mean any host's calendar was written. Operation-level
+        `security: []` is kept: this operation is public and is registered
+        outside requireAuth; the rate limit is not authentication.
       requestBody:
         required: true
         content:
@@ -60,17 +165,43 @@ paths:
               $ref: '#/components/schemas/CreatePublicBookingRequest'
       responses:
         '201':
-          description: Booking confirmed and host calendar events written.
+          description: >-
+            Booking saved (PAC-81, spec AC-A19). The stored and returned `start`
+            and `end` equal the offered slot exactly, in UTC (PAC-72). Once the
+            booking row is saved,
+            the host calendar events (best effort, as described above) and the
+            confirmation email are completed as one unit that does not depend on
+            this request: it has its own per-call time limits, and a deploy waits
+            for it within the drain (an abandoned unit is logged with the booking
+            id and the hosts done and not done). The server waits for that unit
+            only until the request budget runs out, then answers this 201 anyway,
+            so a host's calendar event may be written after the response. The
+            body is the same either way and carries no event data. With
+            responsive calendars every host event exists when the 201 is sent, as
+            before. A retry behaves as before PAC-81: 409 when the start is no
+            longer offered (the retried booking itself now occupies it), 410
+            when the link is exhausted; no request returns another request's
+            booking.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicBookingConfirmation'
         '400':
           description: >-
-            Validation failure. Messages: "invalid request body";
+            Validation failure, checked before the offerable-start rule (a 400
+            is never turned into a 409). Messages: "invalid request body";
             "name, email, and start are required"; "invalid start time, use RFC3339";
-            "invalid end time, use RFC3339"; "duration does not match end time";
-            "invalid duration".
+            "invalid end time, use RFC3339"; "duration does not match end time"
+            (`end` sent together with `duration` or `duration_minutes`, and
+            end - start is not exactly that many minutes, seconds and fractions
+            included); "invalid duration" (the resolved length is not exactly a
+            whole number of minutes that is one of the link's durations, or 30
+            when the link has none; never rounded or truncated to an accepted
+            duration); "end must be after start" (reachable only when
+            the end computed from `duration_minutes` overflows, which needs a
+            link duration option above about 153,722,867 minutes; an ordinary
+            end at or before start answers "duration does not match end time" or
+            "invalid duration" instead).
           content:
             application/json:
               schema:
@@ -82,43 +213,177 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '409':
-          description: 'An overlapping non-cancelled booking already exists. Body: {"error":"slot is no longer available"}'
+          description: >-
+            The start is not one `getPublicBookingSlots` would offer now (PAC-72).
+            Nothing is written. Causes and, when the link's `refusal_message` is
+            `specific`, the `reason` each one answers: the start's date (link
+            zone) is after today + `booking_horizon_days` - 1 (`beyond_horizon`);
+            the start is on a day not in the link's `days_of_week`, outside its
+            daily window, off the 15-minute grid counted from
+            `window_start_time` (including any non-zero seconds or fraction), or
+            start + duration ends after `window_end_time` (`outside_link_hours`);
+            the start is inside `min_notice_minutes` (`too_soon`); a booking
+            that is not cancelled on THIS link overlaps the slot (`taken`); an
+            accepted host is busy - a calendar event widened by the link's
+            buffers, a focus block, a pending or confirmed booking on another
+            link the host owns or co-hosts, a calendar that could not be read
+            (D-6) - or the link has no accepted host (`host_busy`). When several
+            causes hold, the reason is the first in this order:
+            `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`,
+            `host_busy`. With `refusal_message` `generic` (the default) the body
+            is always exactly `{"error":"slot is no longer available"}` and has
+            no `reason`, so a refusal does not reveal which rule failed. The
+            setting is read when the request is handled.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BookingError'
+                $ref: '#/components/schemas/BookingSlotUnavailableError'
         '410':
           description: 'Link exhausted. Body: {"error":"link is no longer accepting bookings"}'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
-        '422':
-          description: 'Start is inside the min_notice_minutes window. Body: {"error":"booking is too soon"}'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BookingError'
+        '429':
+          $ref: '#/components/responses/BookingCreateRateLimited'
         '500':
           description: >-
             Storage or engine failure. `error` is one of "internal error" or "booking
-            conflict check failed". The detail is written to the server log and Sentry only
-            (PAC-21).
+            conflict check failed". "booking conflict check failed" is the answer
+            when busy time cannot be gathered from storage (the link's accepted
+            hosts, a host's focus blocks, or the bookings on any link a host owns
+            or co-hosts) or when the link owner's settings (the link's zone)
+            cannot be read; nothing is written and the answer is never 409, and a
+            failed settings read is never answered with the UTC fallback
+            (PAC-72 revision 3.1, D-7). A host
+            whose external calendar cannot be read is not a 500 (it is busy: the
+            409, D-6). The detail is written to the server log and Sentry only
+            (PAC-21). A 500 from this operation does NOT prove that no booking was
+            saved: when the insert was sent and its result is lost (for example the
+            database connection drops), the outcome is unknown and the answer is
+            this 500 (PAC-81 contract revision 2). Only the 503 proves that nothing
+            was saved.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          description: >-
+            The request budget ran out BEFORE the booking insert was sent (PAC-81,
+            spec AC-A2, AC-A19; contract revision 2). From the moment the insert
+            is sent this request is never answered with this 503: the server
+            waits for the insert's own result (bounded by the insert's own
+            duration, not by the budget) and answers 201 if the row was saved, or
+            the 500 if the insert failed. So this 503 proves that no booking was
+            saved for this request (no calendar event, no email), and a client
+            may retry it. Shared body `{"error":"request timed out"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestBudgetExpiredError'
 
   /api/book/{slug}/slots:
     get:
       operationId: getPublicBookingSlots
       tags: [booking]
-      summary: Available slots for a date, or the list of dates that have any slot.
+      summary: Available slots for one day, or the days of a bounded range that have any slot.
       description: >-
-        Two distinct modes. With `date`: `slots` is populated and `available_dates` is
-        always the empty array. Without `date`: the handler probes the next 60 calendar
-        days from `time.Now()` and returns those day strings in `available_dates`, with
-        `slots` always the empty array. Both keys are always present in both modes.
+        Days are calendar days in the DAY ZONE: `display_time_zone` when the
+        request carries it, otherwise the link's zone (`PublicLinkInfo.time_zone`)
+        (PAC-88, owner decision PAC-72 D-9). Two distinct modes. With `date` (one
+        day in the day zone): `slots` holds every offered slot whose start falls
+        on that day in the day zone, in ascending start order, and
+        `available_dates` is always the empty array. Without `date` (the day
+        overview): `available_dates` holds, in ascending order, the days from
+        `from` to `to` inclusive (at most 42 days; when both are omitted, today
+        in the day zone and the next 41 days) on which at least one offered
+        slot starts in the day zone, and `slots` is always the empty array.
+        Every answer states the link's zone it was computed in (`time_zone`),
+        the day zone (`display_time_zone`) and the days it covered
+        (`range_from`, `range_to`). A day of the day zone is never cut into
+        parts: every offered start is listed under exactly one day, its
+        calendar date in the day zone, whichever of the link's days it belongs
+        to (a day zone other than the link's makes one day overlap two, around
+        an offset change three, of the link's days; they are one answer). The
+        day zone changes only how offered starts are grouped into days: the set
+        of offered instants, the booking rule, the refusals and the link's own
+        "today", horizon, days and hours (all in the link's zone) are the same
+        for every day zone. Without `display_time_zone` and with `date`, the
+        lists are exactly the PAC-72 answer for that link-zone day. Both list
+        keys are always present in both modes. A slot is offered by the same rule
+        `createPublicBooking` accepts (PAC-72; see that operation for the six parts
+        and the link's zone): duration, link days and daily window on the 15-minute
+        grid, every accepted host free, minimum notice, horizon, at least one
+        accepted host. Days, hours, "today" and the horizon are evaluated in the
+        link's zone (the link owner's profile time zone, UTC when it has none; the
+        zone used is `PublicLinkInfo.time_zone`), whatever zone the server process
+        runs in; slot instants are returned in UTC. A day not in the link's
+        `days_of_week` offers no slot. A `date`, or a whole `from`..`to` range,
+        with no offered start (before today, after the horizon's last day, not
+        a link day, fully booked) answers 200 with an empty list, never an
+        error; a link with no accepted host answers 200 with no slot and no
+        date in both modes. When busy time cannot be gathered from storage (the
+        link's accepted hosts, a host's focus blocks, or the bookings on any
+        link a host owns or co-hosts) for any link day the answer needs, both
+        modes answer 500 for the whole request (PAC-88 spec section 3.4: never
+        a day that silently looks empty; this replaces the earlier date-less
+        behaviour of omitting that day). The cost of an answer is bounded by
+        the days it covers, never by the link's horizon: the overview covers at
+        most 42 days whatever `booking_horizon_days` is (1 to 365), and, in
+        both modes, each accepted host's external calendar is read at most once
+        per request, over one window spanning every link day the answer needs
+        (link days outside the horizon or not among `days_of_week` need no
+        read). That one read is complete for its whole window: every page of
+        the provider's answer is read, and a read that cannot be completed (a
+        later page fails, or the read's own limit ends first) is an unreadable
+        calendar (busy, D-6 below), never a partial list of events. The
+        storage half of busy time (focus blocks, bookings) likewise covers
+        every needed link day, however many storage queries that takes. The earlier date-less read of the whole horizon (and its 503 on
+        long horizons, PAC-72 revision 3.1) no longer exists: a request without
+        `date`, `from` and `to` is the 42-day overview starting today in the
+        day zone.
+        Hosts (PAC-81, spec AC-A18): each accepted host's calendar is read on at
+        most 4 concurrent reads per request, each limited to its own 15 s (shortened
+        to the budget left minus a 10 s stop margin). A host whose calendar cannot be
+        read is BUSY for the whole requested window (owner decision PAC-72 D-6,
+        2026-11-01; it replaces the earlier "treated as free"): not connected, a
+        provider error, or a read that fails on its own time limit. Every link is
+        collective (every accepted host must be free; there is no round-robin or
+        any-host kind), so a link with such a host offers no slot in the window
+        read (no slot for that `date`, no day of that overview); the answer is
+        still a 200. A
+        host that was not read because the request budget ran out (a read not
+        started at the stop margin, or cut short by the budget) is neither free
+        nor busy: the answer is the 503. A read that hits a deadline shortened by the budget (budget left minus
+        the margin was below 15 s) counts as cut short by the budget, not as failing
+        on its own limit: the answer is the 503, never a 200 that silently omits that host or,
+        without `date`, a day. Neither mode has a partial shape.
+        Validation order (PAC-88 keeps the existing order and appends its checks
+        where the `date` check was): rate limit (429), link lookup (404, 410),
+        `duration` (400), the link's zone (500), then the query in this order:
+        `display_time_zone`, `date` combined with `from` or `to`, `date`,
+        `from`, `to`, `from` without `to` or the reverse, `to` before `from`,
+        a range over 42 days (each a 400 with its own message, see the 400
+        below). An empty query value (`date=`, `from=`, `to=`,
+        `display_time_zone=`) is the same as an absent one. Unknown query
+        parameters are ignored.
+        Caching: the answer carries no `Cache-Control`, `ETag` or
+        `Last-Modified` header (none before PAC-88, none added), so no browser
+        stores it heuristically; it depends on the clock and on hosts'
+        calendars, and a client may reuse it only within one page visit.
+        Rate limited per client (NEW-booking-rate-limit), separately from and more
+        loosely than `createPublicBooking`: at most 120 requests per client per
+        fixed 1-minute window, in every mode and with or without
+        `display_time_zone`; one overview request counts once whatever its
+        range (unchanged by PAC-88). The limit is checked and the
+        request counted atomically as the handler's first step, before the link
+        lookup and before the query is validated, so every request counts whatever
+        it would otherwise have answered, and a refused request answers 429 even
+        for an unknown slug. Booking requests do not consume this budget and slot
+        requests do not consume the booking budget. Client identification, the
+        per-process caveat, the sweep and the CORS preflight exemption are exactly
+        as described on `createPublicBooking`; this limiter has its own counts and
+        its own sweep.
       security: []
       parameters:
         - name: slug
@@ -126,14 +391,64 @@ paths:
           required: true
           schema:
             type: string
+        - name: display_time_zone
+          in: query
+          required: false
+          description: >-
+            PAC-88: the IANA name of the zone whose calendar days `date`, `from`,
+            `to` and the answer's days are (the day zone). Optional; absent or
+            empty means the link's zone. Accepted when it matches the pattern,
+            is not `Local`, `localtime` or `posixrules` (files some systems link
+            to the server's own zone) and does not start with `right/` (the
+            leap-second variants, whose instants are off by seconds), and
+            `time.LoadLocation` loads it from the server's
+            tz database (the backend image's tzdata, `backend/Dockerfile`);
+            names are case-sensitive and the tz database's links (e.g.
+            `Asia/Calcutta`) are accepted as themselves. Anything else is the
+            400 `invalid display_time_zone, use an IANA time zone name`, never
+            an answer in another zone (spec AC-32). The answer echoes the name
+            as sent in `display_time_zone`.
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$'
+            example: America/New_York
         - name: date
           in: query
           required: false
-          description: Day to enumerate, parsed with Go layout "2006-01-02". Omit for the 60-day availability summary.
+          description: >-
+            Day to enumerate, parsed with Go layout "2006-01-02" as a calendar day
+            in the day zone (`display_time_zone` when given, else the link's
+            zone `PublicLinkInfo.time_zone`, PAC-72 revision 2). A day with no
+            offered start (before today, after the horizon's last day) answers
+            200 with no slots. Cannot be combined with `from` or `to`. Omit for
+            the day overview.
           schema:
             type: string
             format: date
             example: '2026-08-12'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            PAC-88: first day (inclusive, YYYY-MM-DD, a calendar day in the day
+            zone) of the day overview. Given together with `to` or not at all,
+            and only without `date`. Omitted with `to`: today in the day zone.
+          schema:
+            type: string
+            format: date
+            example: '2027-03-01'
+        - name: to
+          in: query
+          required: false
+          description: >-
+            PAC-88: last day (inclusive, YYYY-MM-DD, day zone) of the day
+            overview; not before `from`, and `from`..`to` spans at most 42 days
+            (a six-week month grid). Omitted with `from`: `from` + 41 days.
+          schema:
+            type: string
+            format: date
+            example: '2027-04-11'
         - name: duration
           in: query
           required: false
@@ -153,8 +468,16 @@ paths:
                 $ref: '#/components/schemas/PublicSlotsResponse'
         '400':
           description: >-
-            "invalid duration" (non-numeric or not in the link's duration set) or
-            "invalid date format, use YYYY-MM-DD".
+            The `BookingError` envelope with one of these messages, in the
+            validation order given above: "invalid duration" (non-numeric or not
+            in the link's duration set); "invalid display_time_zone, use an IANA
+            time zone name" (PAC-88, spec AC-32: not matching the pattern,
+            `Local`, `localtime`, `posixrules`, a `right/` name, or not
+            loadable from the server's tz database); "date
+            cannot be combined with from or to"; "invalid date format, use
+            YYYY-MM-DD"; "invalid from, use YYYY-MM-DD"; "invalid to, use
+            YYYY-MM-DD"; "from and to must be given together"; "to must not be
+            before from"; "range must not exceed 42 days".
           content:
             application/json:
               schema:
@@ -171,12 +494,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '429':
+          $ref: '#/components/responses/BookingSlotsRateLimited'
         '500':
-          description: 'Storage or engine failure. Body: {"error":"internal error"}'
+          description: >-
+            Storage or engine failure, including, in both modes, busy time that
+            cannot be gathered from storage for any link day the answer needs
+            (PAC-72; PAC-88 extends it to the overview, which no longer omits
+            such a day), and a failed read of the link owner's settings (the
+            link's zone; PAC-72 revision 3.1): the whole request is this 500,
+            never the UTC fallback and never a list with days omitted. Body:
+            {"error":"internal error"}
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+        '503':
+          $ref: '#/components/responses/RequestBudgetExpired'
 
   # ---------------------------------------------------------------------------
   # PUBLIC Zoom OAuth (routes.go:37-38, inside /api/auth but OUTSIDE the
@@ -195,6 +529,8 @@ paths:
         caller's own settings, so there must be a caller (session cookie, which
         the browser sends on this top-level navigation).
       responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '302':
@@ -231,6 +567,16 @@ paths:
         otherwise); before PAC-24 it wrote the single shared settings row.
         Error bodies here use `http.Error`, i.e. `text/plain; charset=utf-8` plain text,
         NOT the shared JSON error envelope.
+
+
+        Since PAC-67 (spec AC-3, AC-11, AC-12, AC-24) this is also the Zoom
+        RECONNECT, and what it stores changes; no response, status or Location
+        changes. The access token's expiry (from the exchange's `expires_in`) is
+        stored with the tokens so the credential can be renewed when it expires.
+        When the exchange returns no refresh token, the caller's stored refresh
+        token is kept rather than overwritten with an empty one (AC-11). Storing
+        the credential ends any recorded loss of the caller's Zoom connection, so
+        the `zoom` row of `listConferenceProviders` reports connected again.
       parameters:
         - name: code
           in: query
@@ -288,6 +634,12 @@ paths:
         The caller is inserted as an `accepted` host. Each entry of `co_host_emails`
         is resolved by lowercased email; unknown emails are silently skipped (no error,
         no host row). An empty/omitted `slug` is auto-generated from the owner's name.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): an entry of `co_host_emails` resolves to an account only when
+        exactly one account holds that address DOMAIN-CONFIRMED (compared
+        case-insensitively); an address carried only unconfirmed, by several accounts
+        (letter-case collision), or by none is skipped exactly as an unknown email is
+        today (no error, no host row).
       requestBody:
         required: true
         content:
@@ -320,8 +672,10 @@ paths:
         '500':
           description: >-
             `error` is one of "user not found", "slug generation failed", "slug check
-            failed" or "internal error" (insert or owner-host insert failed). The detail is
-            written to the server log and Sentry only (PAC-21).
+            failed" or "internal error" (insert or owner-host insert failed, or the
+            owner's settings, needed for `time_zone`, could not be read; PAC-72
+            revision 3.1, never the UTC fallback). The detail is written to the
+            server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -340,7 +694,10 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
-          description: 'Body: {"error":"internal error"}'
+          description: >-
+            Body: {"error":"internal error"}. Includes a failed read of an owner's
+            settings, needed for each link's `time_zone` (PAC-72 revision 3.1),
+            never the UTC fallback.
           content:
             application/json:
               schema:
@@ -511,18 +868,38 @@ paths:
     get:
       operationId: getSchedulingLink
       tags: [scheduling-links]
-      summary: Fetch one scheduling link by id.
+      summary: Fetch one scheduling link by id (owner or accepted co-host).
       description: >-
-        No ownership or membership check: any authenticated user who knows the UUID
-        receives the full link including every host's email, name and avatar.
-        `is_owner` is computed against the caller and `my_status` is only emitted when
-        the caller is one of the hosts.
-      x-uncertain: >-
-        Missing authorization looks unintentional next to PATCH/DELETE/bookings which
-        all enforce owner-only; treating it as deliberate would be a guess.
+        Readable only by the link's owner and by co-hosts whose host row on the link
+        is `accepted` (PAC-25, API-006). That is the same set of callers who receive the
+        link from `GET /api/scheduling-links`, so this read discloses nothing the list
+        does not. Every other authenticated caller (no host row, a `pending` or
+        `declined` invitation, a co-host who left or was removed) receives the same
+        `404 {"error":"not found"}` as for an id that matches no link, with no part of
+        the link in the body, so the answer does not reveal whether a link exists. A
+        refused read is never `403` (PAC-25 D-1; contrast the owner-only siblings
+        PATCH, DELETE, `/bookings` and `/hosts`, which still answer `403` and are out
+        of scope). Check order: `400` malformed id; then the link lookup; then the
+        caller's own host-status lookup on that link; then `404` for no link or a caller
+        who may not read it; then `200`. A storage error on either lookup answers `500`
+        `{"error":"internal error"}`, never `404` (an outage is not reported as "not
+        found") and never `200` (the reader check does not fail open). An allowed reader
+        receives the full record including every host row (accepted, pending and
+        declined) with each host's email, name and avatar; `is_owner` is computed
+        against the caller and `my_status` is the caller's own host status. Building
+        that record reads the roster (the link's host rows and each host's user record);
+        a storage error on that read also answers `500` `{"error":"internal error"}`,
+        never `200` with `hosts: []` or with a host's email missing (PAC-25 C-2). An
+        accepted co-host therefore still sees pending and declined invitees' emails, as
+        through the list (PAC-25 D-2).
       responses:
         '200':
-          description: The link, with hosts.
+          description: >-
+            The link, with hosts. Returned only to the owner (`is_owner: true`) or an
+            accepted co-host (`is_owner: false`, `my_status: accepted`), and only when
+            the whole roster was read: `hosts` is never emptied and no host's email is
+            dropped because a storage read failed. A failed roster read is `500`, not
+            this response.
           content:
             application/json:
               schema:
@@ -536,13 +913,26 @@ paths:
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '404':
-          description: 'Body: {"error":"not found"}. Also returned for soft-deleted (active=false) links only if the row was hard-removed; GetSchedulingLinkByID ignores `active`, so a soft-deleted link still returns 200.'
+          description: >-
+            Body exactly `{"error":"not found"}`. Returned when no link has that id, AND
+            when the link exists but the caller is neither its owner nor an accepted
+            co-host (never invited, invitation pending or declined, left or removed).
+            The two cases are indistinguishable by status and body (PAC-25 D-1). A
+            soft-deleted link (`active=false`) is NOT a 404 for its owner or accepted
+            co-hosts: GetSchedulingLinkByID ignores `active`, so they still receive 200
+            (API-050, not resolved by PAC-25).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BookingError'
+              example:
+                error: not found
         '500':
-          description: 'Body: {"error":"internal error"}'
+          description: >-
+            Body: {"error":"internal error"}. A storage error on the link lookup, on the
+            caller's host-status lookup, on the roster read (PAC-25 C-2), or on the
+            read of the owner's settings needed for `time_zone` (PAC-72 revision
+            3.1, never the UTC fallback).
           content:
             application/json:
               schema:
@@ -558,6 +948,15 @@ paths:
         difference (PAC-61): non-owner hosts whose email is not listed are removed,
         listed emails that are not yet hosts are added as `pending`, and listed hosts
         keep their status (accepted, pending or declined).
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the two halves follow different rules. KEEP SET (revoking and
+        keeping): an existing host is kept when its account's stored address equals a
+        listed address case-insensitively, at ANY standing, so an accepted co-host stored
+        as `Pat@Acme.com` is kept by a list containing `pat@acme.com` (before PAC-71 the
+        lowercased lookup missed it and removed the host). NEW ENTRIES (granting): a
+        listed address that matches no existing host is invited as `pending` only when
+        exactly one account holds it DOMAIN-CONFIRMED; otherwise it is skipped, as an
+        unknown address is today.
       requestBody:
         required: true
         content:
@@ -601,8 +1000,10 @@ paths:
           $ref: '#/components/responses/SchedulingLinkValidationError'
         '500':
           description: >-
-            `error` is "internal error" (lookup or update failed) or "slug check failed".
-            The detail is written to the server log and Sentry only (PAC-21).
+            `error` is "internal error" (lookup or update failed, or the owner's
+            settings, needed for `time_zone`, could not be read; PAC-72 revision 3.1,
+            never the UTC fallback) or "slug check failed". The detail is written to
+            the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -706,6 +1107,11 @@ paths:
         host of the link changes nothing: their row is returned as is with 200, so an
         accepted or declined host keeps that status (PAC-61). Response is the raw
         `storage.LinkHost` row, not the host DTO used inside SchedulingLink.
+
+        PAC-71 (spec §3 "What standing allows", AC-28, AC-29, AC-40, AC-43; D-5, D-17): the invitee is resolved only to an account that holds the email
+        DOMAIN-CONFIRMED (exactly one, compared case-insensitively). An address carried
+        only unconfirmed, by several accounts, or by none answers the existing 404
+        "user not found", with nothing written.
       parameters:
         - $ref: '#/components/parameters/SchedulingLinkIdPath'
       requestBody:
@@ -742,7 +1148,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BookingError'
         '404':
-          description: '"not found" (no such link) or "user not found" (no account with that email).'
+          description: '"not found" (no such link) or "user not found" (no account holds that email domain-confirmed; PAC-71).'
           content:
             application/json:
               schema:
@@ -911,9 +1317,56 @@ paths:
       description: >-
         Provider comes from the CALLER'S stored settings (`ConferencingProvider`),
         not from the request; the Teams credential is the caller's own (PAC-24;
-        before it, both came from the single shared settings row). No field validation at all: a missing `title`, `start` or `end`
-        decodes to the Go zero value and is forwarded to the provider as-is.
-        Not referenced anywhere in the frontend.
+        before it, both came from the single shared settings row).
+
+
+        Since PAC-67 (finding API-052, resolved here under factory section 7.1)
+        the body is validated before any credential is read or any provider is
+        called: `title` must be present and contain at least one character that
+        is not whitespace, `start` and `end` must be present RFC 3339 date-times,
+        and `end` must be after `start`. Anything else is the 400 "invalid body".
+        "Whitespace" is exactly the set ECMA-262 `\s` matches (WhiteSpace and
+        LineTerminator), so the server's test and the schema's `pattern: '\S'`
+        on `CreateConferenceRequest.title` accept and refuse the same titles
+        (contract challenge finding 1). Neither Go's `strings.TrimSpace`
+        (`unicode.IsSpace`: adds U+0085, lacks U+FEFF) nor Go's `regexp` `\S`
+        (ASCII only) is that set, so the server cannot use either as is. A
+        `start` or `end` equal to `0001-01-01T00:00:00Z` cannot be told apart from
+        an absent one and is refused as absent. Before PAC-67 a missing field
+        decoded to the Go zero value and was forwarded to the provider (a blank
+        title and the year 1).
+
+
+        Since PAC-67 (spec AC-3 to AC-5, AC-7 to AC-12) the Teams and Zoom
+        credentials are renewed when the stored access token has expired, using
+        the caller's own refresh token, and the renewed credential is stored for
+        the caller only (a rotated refresh token replaces the stored one). A
+        token that has not expired is used as is, with no renewal request. When
+        the provider PERMANENTLY refuses the renewal (OAuth `invalid_grant` or
+        equivalent) the request fails with the 400 "connection lost" sentence for
+        that provider, the loss is recorded for the caller (the matching row of
+        `listConferenceProviders` reports not connected, and the caller's activity
+        log gets ONE `connection_lost` entry per loss however many requests hit
+        it, written best-effort: see CONNECTION ENTRIES on `listAuditEntries`),
+        and the stored credential is kept (spec D-1). A TEMPORARY renewal
+        failure (timeout, network, provider 5xx) is the 500 below: it never says
+        reconnect and records nothing (AC-10).
+
+
+        A Teams or Zoom credential whose access token has expired and that holds
+        NO refresh token cannot be renewed: no renewal request is sent and the
+        request fails with the same 400 "connection lost" sentence for that
+        provider. Nothing is recorded and no activity entry is written, because
+        such a credential is never reported connected (see
+        `ConferenceProviderStatus.connected`), so there is no loss to start. A
+        Zoom credential whose expiry is not stored (one stored before PAC-67) is
+        treated as expired, so it is renewed before it is used.
+
+
+        API-091 (no frontend consumer) is resolved for this operation by keeping
+        it: it is the standalone meeting-creation path spec PAC-67 AC-3, AC-5 and
+        AC-8 test through, so those Go contract tests are its second opinion.
+        Still not referenced anywhere in the frontend.
       requestBody:
         required: true
         content:
@@ -933,14 +1386,26 @@ paths:
             dash in the three provider sentences is U+2014 EM DASH, exactly as the
             server writes it today; the new stored-credential sentence uses the same
             character on purpose, so the three read alike:
-            "invalid body"; "teams: not connected — visit /api/auth/microsoft to
-            authenticate" (also returned when reading the stored Microsoft token
+            "invalid body" (the body is not JSON, or, since PAC-67, fails the
+            validation in the operation description: API-052); since PAC-71
+            "teams: not connected — connect Outlook in Settings (POST
+            /api/auth/microsoft/connect)" (before PAC-71 it pointed at the
+            sign-in start /api/auth/microsoft, which since PAC-71 is a sign-in
+            and never connects for a signed-in user; also returned when reading the stored Microsoft token
             fails, not only when there is none: the server does not separate the two
             on this path; see the PAC-21 contract's doesNotResolve); "zoom: not
             connected — visit /api/auth/zoom to authenticate"; "zoom: stored
             credential is invalid — reconnect at /api/auth/zoom" (the stored Zoom
             token does not decode; before PAC-21 was finished this was
-            "zoom: invalid token: " plus the JSON decoder's error).
+            "zoom: invalid token: " plus the JSON decoder's error); NEW in PAC-67,
+            "teams: connection lost — reconnect Outlook in Settings (POST
+            /api/auth/microsoft/connect)" (since PAC-71; before, "reconnect at
+            /api/auth/microsoft") and "zoom: connection lost — reconnect at
+            /api/auth/zoom" (the provider permanently refused the renewal of the
+            caller's credential, on this request or on an
+            earlier one whose loss is still recorded; spec AC-8 "fails with an error
+            telling A to reconnect"; also the answer when the access token has
+            expired and no refresh token is stored, which records nothing).
           content:
             application/json:
               schema:
@@ -949,8 +1414,12 @@ paths:
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: >-
-            Settings load or meeting creation failed. Body: `{"error":"internal error"}`.
-            The detail is written to the server log and Sentry only (PAC-21).
+            Settings load or meeting creation failed, or (since PAC-67) renewing the
+            Teams or Zoom credential failed TEMPORARILY (timeout, network, provider
+            5xx; spec AC-10): nothing is recorded and the credential is still reported
+            connected. Body: `{"error":"internal error"}`, which never tells the caller
+            to reconnect. The detail is written to the server log and Sentry only
+            (PAC-21).
           content:
             application/json:
               schema:
@@ -968,6 +1437,32 @@ paths:
         Connection state and the Meet email describe the CALLER'S own settings and
         credentials (PAC-24).
         Length is therefore 1..4.
+
+
+        Since PAC-67 `connected` means USABLE, not merely stored (spec PAC-67 §3,
+        AC-8, AC-12 to AC-14, AC-21, AC-23): a credential whose renewal the provider
+        permanently refused is kept (spec D-1) but reported `connected: false`
+        until the caller reconnects that provider; a temporary failure never
+        changes it. The exact predicate of each row is on
+        `ConferenceProviderStatus.connected`: a credential that can never be
+        renewed (no refresh token) is not usable either and reads
+        `connected: false`. This holds for every row whatever the caller's calendar
+        provider: the `teams` row reports a lost Outlook credential even when the
+        calendar provider is Google, and the `google_meet` row a lost Google
+        credential even when it is Outlook (AC-21). A loss recorded while the
+        credential was used for someone else (team availability, a public booking
+        page, a scheduled job) changes the OWNER's rows only, never the
+        requester's (spec D-12).
+
+
+        API-070 (resolved here under factory section 7.1, contract side): the
+        variable length and the always-connected `custom` row were already
+        documented above and are confirmed against `providers` in
+        backend/api/handlers_conferencing.go; they are intended, not defects. What
+        remains of the finding is a test that indexes the array by position and so
+        passes only on a fully configured server; the PAC-67 backend stage looks
+        rows up by `provider` instead (contracts/features/PAC-67.yaml
+        resolvesFindings).
       responses:
         '200':
           description: Provider statuses.
@@ -994,19 +1489,83 @@ paths:
     post:
       operationId: disconnectZoom
       tags: [conferencing]
-      summary: Clear the stored Zoom tokens.
+      summary: Disconnect the caller's Zoom credential and ask Zoom to revoke it.
       description: >-
-        Takes no request body. Clears the CALLER'S Zoom tokens and returns the
-        caller's conferencing provider to `meet`; other users are untouched.
-        Before PAC-24 the tokens were server-wide.
+        Takes no request body. Acts on the CALLER only; other users' credentials,
+        settings and activity logs are untouched. Before PAC-24 the tokens were
+        server-wide.
+
+
+        Since PAC-67 (spec AC-14 to AC-16, D-2, D-9), in this order:
+        (1) LOCAL REMOVAL, one atomic change: the caller's stored Zoom credential is
+        read into memory and then removed whether or not it decodes, any recorded
+        loss of it is cleared, and the caller's conferencing provider becomes
+        `meet` unconditionally (spec D-9, unchanged from before PAC-67). A failure
+        up to and including this step is the 500 below, and then nothing has
+        changed.
+        (2) RENEWAL FOR REVOCATION, only when needed: when the removed access token
+        is empty, has expired, or has no stored expiry (a credential stored before
+        PAC-67), and a refresh token was stored, the server first renews it at
+        Zoom's token endpoint with the removed refresh token, as a meeting creation
+        would. The renewed access and refresh tokens are held in memory for this
+        request only and are NEVER stored: the credential stays removed. When that
+        renewal fails, refused permanently or temporarily, or when it is needed
+        and no refresh token was stored, nothing is sent to the revocation
+        endpoint and the answer is `revocation: unconfirmed`. That is not a loss:
+        nothing is recorded and no `connection_lost` entry is written (the
+        credential no longer exists). A disconnect while a loss is recorded is
+        this case, since the refresh token was already refused.
+        (3) REVOCATION: the unexpired or just-renewed access token is sent to Zoom's
+        token revocation endpoint (`POST https://zoom.us/oauth/revoke`, client
+        credentials in Basic auth, `token` = the access token). The answer is
+        `revocation: confirmed` when Zoom answers success, and
+        `revocation: unconfirmed` when Zoom refuses, answers an error, or cannot
+        be reached. A stored credential that does not decode (non-blank
+        `zoom_tokens` that is not valid JSON, the state behind the "zoom: stored
+        credential is invalid" 400 of `createConferenceLink`) cannot be revoked at
+        all: steps 2 and 3 send nothing and the answer is
+        `revocation: unconfirmed`. The local removal stands in every case (spec
+        D-2). No `connection_lost` entry is ever written by a disconnect.
+        (4) ACTIVITY ENTRIES for the caller, written after the outcome is known:
+        `confirmed` writes one `provider_disconnected` entry (details
+        `{"provider":"zoom","revocation":"confirmed"}`); `unconfirmed`, including
+        the undecodable and failed-renewal cases, writes two, one
+        `provider_disconnected` (details
+        `{"provider":"zoom","revocation":"unconfirmed"}`) and one
+        `revocation_unconfirmed` (details `{"provider":"zoom"}`) (spec AC-15,
+        AC-16; round-5 challenge NB-2). These writes are BEST-EFFORT, like every
+        kind in the activity log (`storage.WriteAuditLog`): a failed insert is
+        written to the server log and does not change the response, because the
+        credential is already removed and the 200 is the only truthful answer.
+        Such a disconnect has fewer entries than listed, possibly none; the 200
+        body is then the only record the user gets of the outcome.
+        A caller with no stored Zoom credential (blank `zoom_tokens`) gets 200 with
+        `revocation: nothing_stored`: the conferencing provider still becomes
+        `meet`, nothing is sent to Zoom and no activity entry is written.
+
+
+        Before PAC-67 this answered 204 with no body and sent nothing to Zoom. The
+        only consumer (smart-calendar-flow `zoomDisconnect`, typed `void`) resolves
+        a 200 JSON body as it did the 204 and ignores it, so it keeps working; it
+        owes the "revocation could not be confirmed" message (spec section 5).
       responses:
-        '204':
-          description: Tokens cleared. Empty body.
+        '200':
+          description: >-
+            The Zoom credential is gone locally (or there was none); `revocation` says
+            what Zoom answered. Never a failure status because of revocation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderDisconnectResult'
         '401':
           $ref: '#/components/responses/BookingUnauthorized'
         '500':
           description: >-
-            Clearing the tokens failed. Body: `{"error":"internal error"}`. The detail is
+            Reading the caller's stored Zoom credential, or the local removal (step 1),
+            failed. NOTHING was changed locally, nothing was sent to Zoom and no activity
+            entry was written, so a retry is safe. Nothing that fails after step 1 is a
+            500: renewal and revocation failures are `revocation: unconfirmed`, and a
+            failed activity-entry write is logged only. Body: `{"error":"internal error"}`. The detail is
             written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1033,6 +1592,24 @@ paths:
         private extended properties. (3) `google_meet`: asks Google to mint a Meet link.
         (4) anything else (`zoom`, `teams`): creates a meeting through the provider
         factory and stores the join URL in extended properties.
+
+
+        Since PAC-67 (spec AC-3, AC-8, AC-10, AC-12, AC-23, D-10) every credential
+        this operation uses is renewed when expired and the renewal is stored for
+        the caller. The event is read with the caller's GOOGLE credential before
+        the Teams or Zoom credential is touched. When Google permanently refuses
+        that renewal the answer is the existing 404 "event not found" (unchanged,
+        spec D-7, D-10), the Google loss is recorded for the caller (the
+        `google_meet` row and, for a Google calendar provider, `getAuthStatus`
+        report not connected; one `connection_lost` entry naming `google`), and the
+        Teams or Zoom credential is neither read, renewed nor reported. When the
+        Teams or Zoom renewal is permanently refused the answer is the 400
+        "connection lost" sentence for that provider and that loss is recorded
+        likewise. A temporary renewal failure records nothing: Google's gives the
+        404 as today, Teams' or Zoom's gives the 502 "upstream provider error". A
+        Teams or Zoom credential whose access token has expired and that holds no
+        refresh token gets the same 400 "connection lost" sentence with no
+        renewal request, and records nothing (as on `createConferenceLink`).
       requestBody:
         required: true
         content:
@@ -1059,11 +1636,15 @@ paths:
             has no start or end, or, new in PAC-21, Google's value does not parse;
             before PAC-21 was finished a parse failure returned Go's time.Parse error
             text); 'unsupported conference provider "<provider>"' (echoes the
-            request's own `provider`); "teams: not connected — visit
-            /api/auth/microsoft to authenticate" (also returned when reading the
+            request's own `provider`); "teams: not connected — connect Outlook in
+            Settings (POST /api/auth/microsoft/connect)" (PAC-71 wording; also returned when reading the
             stored Microsoft token fails); "zoom: not connected — visit
             /api/auth/zoom to authenticate"; "zoom: stored credential is invalid —
-            reconnect at /api/auth/zoom".
+            reconnect at /api/auth/zoom"; NEW in PAC-67, "teams: connection lost —
+            reconnect Outlook in Settings (POST /api/auth/microsoft/connect)" (PAC-71
+            wording) and "zoom: connection lost — reconnect at /api/auth/zoom" (the provider permanently refused the renewal of the
+            caller's Teams or Zoom credential, or its access token has expired and no
+            refresh token is stored; see the operation description).
           content:
             application/json:
               schema:
@@ -1073,7 +1654,10 @@ paths:
         '404':
           description: >-
             Body: `{"error":"event not found"}` (fixed text; the Google error is not
-            appended, PAC-21). Any GetEvent failure maps to 404.
+            appended, PAC-21). Any GetEvent failure maps to 404, including, since
+            PAC-67, a permanently refused or temporarily failing renewal of the
+            caller's Google credential (spec D-10: unchanged on purpose; the loss is
+            reported on Google's status surfaces and in the activity log instead).
           content:
             application/json:
               schema:
@@ -1097,8 +1681,9 @@ paths:
         '502':
           description: >-
             Upstream provider problem. `error` is one of "Google Meet creation is still
-            pending", "upstream provider error" (the provider's create-meeting call failed)
-            or "conference provider returned no join URL". The detail is written to the
+            pending", "upstream provider error" (the provider's create-meeting call
+            failed, or, since PAC-67, renewing the Teams or Zoom credential failed
+            temporarily; spec AC-10) or "conference provider returned no join URL". The detail is written to the
             server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -1149,10 +1734,61 @@ components:
         format: uuid
 
   responses:
+    BookingCreateRateLimited:
+      description: >-
+        The client has already made 20 requests to `createPublicBooking` in its
+        current 10-minute window (NEW-booking-rate-limit). Nothing was looked up
+        or written. Body: `{"error":"rate limit exceeded"}`, Content-Type
+        application/json, the same envelope and message as the detect limiter's
+        429. `Retry-After` is the whole number of seconds until the client's
+        window ends, rounded up, never less than 1 and never more than 600. The
+        header is not listed in `Access-Control-Expose-Headers`, so a page on
+        another origin cannot read it; the web booking page does not need it.
+      headers:
+        Retry-After:
+          required: true
+          description: >-
+            Delay-seconds form of RFC 9110 section 10.2.3 (never the HTTP-date
+            form): seconds remaining in the client's booking window, rounded up.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 600
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BookingRateLimitError'
+
+    BookingSlotsRateLimited:
+      description: >-
+        The client has already made 120 requests to `getPublicBookingSlots` in its
+        current 1-minute window (NEW-booking-rate-limit). Nothing was looked up.
+        Body: `{"error":"rate limit exceeded"}`, Content-Type application/json.
+        `Retry-After` is the whole number of seconds until the client's window
+        ends, rounded up, never less than 1 and never more than 60. Not exposed
+        to cross-origin pages, as for `BookingCreateRateLimited`.
+      headers:
+        Retry-After:
+          required: true
+          description: >-
+            Delay-seconds form of RFC 9110 section 10.2.3 (never the HTTP-date
+            form): seconds remaining in the client's slot-listing window, rounded
+            up.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BookingRateLimitError'
+
     BookingUnauthorized:
       description: >-
         Emitted by the requireAuth middleware when the `auth_token` cookie and the
-        `Authorization: Bearer` header are both absent or invalid. The body is the JSON
+        `Authorization: Bearer` header are both absent or invalid, or (PAC-71) when the
+        session's `gen` is not the account's current session generation (also by the
+        in-request re-check on account data, with the same bytes). The body is the JSON
         text `{"error":"unauthorized"}` but the response is sent with `http.Error`, so
         the Content-Type header is `text/plain; charset=utf-8`, not application/json.
       content:
@@ -1170,7 +1806,9 @@ components:
         before window_end"; "buffers must be zero or positive"; "min_notice_minutes
         must be zero or positive"; "usage_type must be reusable, recurring, or
         single_use"; "max_uses must be set to a positive integer for recurring links";
-        "slug cannot be empty" (PATCH only).
+        "slug cannot be empty" (PATCH only); "booking_horizon_days must be
+        between 1 and 365"; "refusal_message must be generic or specific"
+        (both PAC-72 revision 2).
       content:
         application/json:
           schema:
@@ -1181,7 +1819,7 @@ components:
     BookingError:
       type: object
       description: >-
-        Shared error envelope written by api.writeError (handlers_settings.go:206):
+        Shared error envelope written by api.writeError (handlers_settings.go:388):
         Content-Type application/json, body `{"error": "<message>"}`. The one
         exception in this domain is the requireAuth 401 (text/plain). Every 5xx,
         including the Zoom OAuth callback's, is this envelope (PAC-21).
@@ -1193,6 +1831,76 @@ components:
           description: >-
             Human-readable, server-chosen message. Never the text of a Go, driver or
             provider error (PAC-21): those go to the server log and Sentry only.
+
+    BookingRateLimitError:
+      type: object
+      description: >-
+        The `BookingError` envelope with its one possible message pinned, so a
+        client can tell a rate-limit refusal from every other error by status
+        and body alone (NEW-booking-rate-limit). Written by api.writeError.
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum: ['rate limit exceeded']
+
+    BookingSlotUnavailableError:
+      type: object
+      description: >-
+        The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the
+        link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5).
+        `generic` (the default): exactly `{"error":"slot is no longer
+        available"}`, no `reason` key, whatever rule failed. `specific`: both
+        keys, `reason` naming the first failed rule and `error` the one text
+        paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` -
+        "slot is outside the link's days or hours"; `beyond_horizon` - "slot is
+        beyond the link's booking horizon"; `host_busy` - "a host is busy at
+        that time"; `taken` - "slot is already booked". "slot is no longer
+        available" never carries a `reason`, and a specific text never appears
+        without its `reason`. The pairing is not expressible in this schema
+        (no `oneOf`, see contracts/features/PAC-72.md); it is asserted by the
+        implementation's tests, which compare the exact (error, reason) pair
+        for every cause. Written by api.writeError (generic) or the same
+        envelope plus `reason` (specific).
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum:
+            - 'slot is no longer available'
+            - 'slot is too soon'
+            - "slot is outside the link's days or hours"
+            - "slot is beyond the link's booking horizon"
+            - 'a host is busy at that time'
+            - 'slot is already booked'
+        reason:
+          $ref: '#/components/schemas/BookingRefusalReason'
+
+    BookingRefusalReason:
+      type: string
+      description: >-
+        Why `createPublicBooking` refused a start (PAC-72 revision 2). Sent only
+        when the link's `refusal_message` is `specific`. Precedence when several
+        hold: `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`,
+        `host_busy`. `outside_link_hours` covers a day not among the link's
+        days, a start or end outside its daily window and a start off the
+        15-minute grid. `taken` is a non-cancelled booking on this same link;
+        `host_busy` is any other busy time of an accepted host (calendar event
+        widened by buffers, focus block, booking on another link, unreadable
+        calendar per D-6) or a link with no accepted host.
+      enum: [too_soon, outside_link_hours, beyond_horizon, host_busy, taken]
+
+    BookingRefusalMessage:
+      type: string
+      description: >-
+        The link owner's choice of 409 body for refused public bookings (PAC-72
+        revision 2, owner decisions D-2/D-5). `generic`: one message, "slot is
+        no longer available", for every refusal, revealing nothing about the
+        hosts' calendars. `specific`: the reason (see `BookingRefusalReason`),
+        which tells a visitor, for example, that a host is busy at that time.
+      enum: [generic, specific]
 
     # ---- Public booking ------------------------------------------------------
 
@@ -1215,9 +1923,20 @@ components:
     PublicLinkCoverage:
       type: object
       description: >-
-        How many accepted hosts had a loadable calendar token when the page was
-        rendered. `total` counts accepted hosts whose user record resolved; `checked`
-        counts those with a usable OAuth token. Always present, even as {0,0}.
+        How many accepted hosts had a STORED Google calendar token when the page was
+        rendered. `total` counts accepted hosts whose user record resolved;
+        `checked` counts those among them for whom a Google token row loads,
+        whether or not that token still works. Nothing is renewed or tested to
+        compute it. A host whose Google credential is dead, including one whose
+        loss Paceday has recorded (PAC-67), still counts as checked, while the
+        host's calendar cannot be read, so that host is busy and no slot is
+        offered (owner decision PAC-72 D-6; before 2026-11-01 the slots were
+        computed without that host's calendar); a host with no Google
+        token row at all (for example one on Outlook) is not counted as checked.
+        This is deliberate: counting only usable tokens would tell every visitor
+        with the link that a host's connection is dead (spec PAC-67 D-14, AC-28).
+        Before PAC-67 this description said "a usable OAuth token", which was not
+        what the server counted (factory section 7.2). Always present, even as {0,0}.
       required: [total, checked]
       additionalProperties: false
       properties:
@@ -1229,7 +1948,9 @@ components:
     PublicLinkInfo:
       type: object
       description: backend/api/handlers_booking.go publicLinkDTO.
-      required: [slug, title, durations, hosts, min_notice_minutes, usage_type, coverage]
+      required:
+        [slug, title, durations, hosts, min_notice_minutes, usage_type, coverage,
+         time_zone, booking_horizon_days]
       additionalProperties: false
       properties:
         slug:
@@ -1254,6 +1975,30 @@ components:
           enum: [reusable, recurring, single_use]
         coverage:
           $ref: '#/components/schemas/PublicLinkCoverage'
+        time_zone:
+          type: string
+          description: >-
+            IANA name of the zone the link's days, hours, "today" and booking
+            horizon are evaluated in (PAC-72 revision 2, owner decision D-9):
+            the link owner's profile time zone, or `UTC` when the owner has no
+            settings row or its stored name is not a loadable IANA zone. It is
+            the zone actually used by `getPublicBookingSlots` and
+            `createPublicBooking` for this link at the time of the read, so a
+            booking page can show times in it by default (display and the
+            visitor's zone switcher are PAC-88; `getPublicBookingSlots` states
+            the zone it used in `PublicSlotsResponse.time_zone`). Never empty. Disclosed to anyone
+            who has the link, on every link: owner decision D-9 makes the
+            owner's zone the page's default display. A failed read of the
+            owner's settings is the operation's 500, never `UTC`.
+          example: Europe/Paris
+        booking_horizon_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            The link's booking horizon (PAC-72 revision 2, owner decision D-1):
+            today (in `time_zone`) and the next `booking_horizon_days` - 1 days
+            can be listed and booked; later dates offer no slot.
 
     PublicBookingSlot:
       type: object
@@ -1271,24 +2016,67 @@ components:
     PublicSlotsResponse:
       type: object
       description: >-
-        Both keys are always present. Exactly one is populated depending on whether the
-        `date` query parameter was supplied.
-      required: [slots, available_dates]
+        Every key is always present. Exactly one list is populated depending on
+        whether the `date` query parameter was supplied. `time_zone`,
+        `display_time_zone`, `range_from` and `range_to` are PAC-88. A server
+        without them (before PAC-88, or after its rollback) ignores
+        `display_time_zone`, `from` and `to`; a client that sent
+        `display_time_zone` and finds `display_time_zone` absent from the
+        answer, or different from what it sent, must not read the answer's
+        days as days of the zone it asked for (contract PAC-88 section 5).
+      required: [slots, available_dates, time_zone, display_time_zone, range_from, range_to]
       additionalProperties: false
       properties:
         slots:
           type: array
-          description: Populated only when `date` was given; otherwise the empty array.
+          description: >-
+            Populated only when `date` was given: the offered slots whose start
+            falls on `date` in `display_time_zone`, in ascending start order;
+            otherwise the empty array.
           items:
             $ref: '#/components/schemas/PublicBookingSlot'
         available_dates:
           type: array
           description: >-
-            Populated only when `date` was omitted; YYYY-MM-DD strings for days within
-            the next 60 that have at least one bookable slot. Otherwise the empty array.
+            Populated only when `date` was omitted; YYYY-MM-DD strings (calendar
+            days in `display_time_zone`), ascending, without duplicates: the
+            days from `range_from` to `range_to` on which at least one offered
+            slot starts in that zone (an offered slot is within the link's
+            horizon, on one of its `days_of_week` and inside its hours, all in
+            the link's zone). Otherwise the empty array.
           items:
             type: string
             format: date
+        time_zone:
+          type: string
+          description: >-
+            PAC-88 (spec AC-31): IANA name of the link's zone this answer was
+            computed in (days, hours, grid, "today", horizon), read in this
+            request by the same rule as `PublicLinkInfo.time_zone`, so the two
+            are equal when read at the same moment. A client holding a
+            different `PublicLinkInfo.time_zone` re-reads the link (the host
+            changed zone, spec AC-26). Never empty.
+          example: Europe/Paris
+        display_time_zone:
+          type: string
+          description: >-
+            PAC-88: the day zone of `date`, `available_dates`, `range_from` and
+            `range_to`: the request's `display_time_zone` exactly as sent when
+            it was given, otherwise equal to `time_zone`. Never empty.
+          example: Asia/Tokyo
+        range_from:
+          type: string
+          format: date
+          description: >-
+            PAC-88: first day (day zone) the answer covers: `date` with `date`,
+            otherwise the overview's resolved `from`.
+        range_to:
+          type: string
+          format: date
+          description: >-
+            PAC-88: last day (day zone) the answer covers: `date` with `date`,
+            otherwise the overview's resolved `to` (at most `range_from` + 41
+            days).
 
     CreatePublicBookingRequest:
       type: object
@@ -1310,14 +2098,25 @@ components:
         start:
           type: string
           format: date-time
-          description: RFC3339. Must be at least `min_notice_minutes` in the future, else 422.
+          description: >-
+            RFC3339, any UTC offset; compared as an instant. Must be the start of a
+            slot `getPublicBookingSlots` would offer now for this link and the
+            resolved duration (on the 15-minute grid, zero seconds, within the link's
+            days, window and booking horizon in the link's zone, at least
+            `min_notice_minutes` ahead, every accepted host free), else 409.
         end:
           type: string
           format: date-time
           description: >-
-            RFC3339, optional. When present it wins: the resulting length must equal
-            `duration`/`duration_minutes` if either was also sent, else 400. When
-            absent, end = start + resolved duration.
+            RFC3339, optional. When present it wins: end - start must be exactly
+            the requested length in minutes if one was sent (else 400 "duration
+            does not match end time"); the requested length is `duration` when it
+            is present and not null, else `duration_minutes`, and a requested
+            length of 0 or null counts as not sent (no comparison is made). The
+            length must be exactly a whole number of minutes that is one of the
+            link's durations (else 400 "invalid duration"); a length with seconds
+            or a fraction is never rounded. When absent, end = start + resolved
+            duration.
         notes:
           type: string
           description: Free text; no length limit enforced.
@@ -1325,15 +2124,20 @@ components:
           type: integer
           nullable: true
           description: >-
-            Minutes. Takes precedence over `duration_minutes` when both are sent. This
-            is the field the frontend actually populates.
+            Minutes. Takes precedence over `duration_minutes` whenever it is present
+            and not null, even when it is 0. A requested length of 0 or null counts as
+            not sent: with `end` no length comparison is made, without `end` the
+            fallback below applies (so `"duration":0` with `"duration_minutes":60`
+            books the fallback length, not 60). This is the field the frontend
+            actually populates.
         duration_minutes:
           type: integer
           nullable: true
           description: >-
-            Minutes. Overridden by `duration` when both are present. When neither is
-            sent and `end` is absent, the length falls back to durations[0] (else 30).
-            The resolved value must be in the link's duration set, else 400.
+            Minutes. Overridden by `duration` when that is present and not null. When
+            no length is sent (both absent or null, or the one that applies is 0) and
+            `end` is absent, the length falls back to durations[0] (else 30). The
+            resolved value must be in the link's duration set, else 400.
 
     PublicBookingConfirmation:
       type: object
@@ -1419,7 +2223,8 @@ components:
       required:
         [id, owner_id, title, slug, durations, days, window_start, window_end,
          buffer_before, buffer_after, min_notice_minutes, usage_type, uses_count,
-         active, hosts, created_at, is_owner]
+         active, hosts, created_at, is_owner, booking_horizon_days,
+         refusal_message, time_zone]
       additionalProperties: false
       properties:
         id:
@@ -1462,6 +2267,26 @@ components:
         min_notice_minutes:
           type: integer
           minimum: 0
+        booking_horizon_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            How many days ahead the link can be booked, counting today in the
+            link's zone (PAC-72 revision 2, owner decision D-1). 60 for every
+            link created before PAC-72 revision 2 and for any link created
+            without it.
+        refusal_message:
+          $ref: '#/components/schemas/BookingRefusalMessage'
+        time_zone:
+          type: string
+          description: >-
+            Read-only. The zone the link's days and hours are evaluated in: the
+            owner's profile time zone, `UTC` when the owner has none (PAC-72
+            revision 2, owner decision D-9). Not stored on the link; it follows
+            the owner's settings, so changing the owner's time zone moves the
+            link's hours with it. Same value as `PublicLinkInfo.time_zone`.
+          example: Europe/Paris
         usage_type:
           type: string
           enum: [reusable, recurring, single_use]
@@ -1581,6 +2406,25 @@ components:
           type: integer
           minimum: 0
           default: 0
+        booking_horizon_days:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 365
+          default: 60
+          description: >-
+            PAC-72 revision 2 (owner decision D-1). Absent or null means 60.
+            Outside 1..365 is a 422 "booking_horizon_days must be between 1 and
+            365".
+        refusal_message:
+          type: string
+          nullable: true
+          enum: [generic, specific]
+          default: generic
+          description: >-
+            PAC-72 revision 2 (owner decisions D-2/D-5), see
+            `BookingRefusalMessage`. Absent or null means `generic`. Any other value is
+            a 422 "refusal_message must be generic or specific".
         usage_type:
           type: string
           enum: [reusable, recurring, single_use]
@@ -1663,6 +2507,24 @@ components:
           type: integer
           nullable: true
           minimum: 0
+        booking_horizon_days:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 365
+          description: >-
+            PAC-72 revision 2. Absent or null leaves the stored value; outside
+            1..365 is a 422 "booking_horizon_days must be between 1 and 365".
+            A shorter horizon refuses later starts from then on; bookings
+            already made beyond it are kept.
+        refusal_message:
+          type: string
+          nullable: true
+          enum: [generic, specific]
+          description: >-
+            PAC-72 revision 2, see `BookingRefusalMessage`. Absent or null
+            leaves the stored value; any other value is a 422
+            "refusal_message must be generic or specific".
         usage_type:
           type: string
           nullable: true
@@ -1803,19 +2665,32 @@ components:
     CreateConferenceRequest:
       type: object
       description: >-
-        POST /api/conference/create. No handler-side validation; every field silently
-        defaults to the Go zero value when absent.
+        POST /api/conference/create. Since PAC-67 (API-052) all three fields are
+        required and validated before any provider is called; a body that fails is
+        the 400 "invalid body". Before PAC-67 every field silently defaulted to the
+        Go zero value when absent and was forwarded to the provider.
+      required: [title, start, end]
       additionalProperties: false
       properties:
         title:
           type: string
+          minLength: 1
+          pattern: '\S'
+          description: >-
+            Must contain at least one character that is not whitespace in the
+            ECMA-262 `\s` sense. `pattern` states exactly the test the server
+            applies (see `createConferenceLink`), so a blank title such as "   "
+            cannot be expressed by a client that validates against this schema.
         start:
           type: string
           format: date-time
-          description: Decoded into time.Time. Absent means the zero time, which is forwarded to the provider.
+          description: >-
+            `0001-01-01T00:00:00Z` (Go's zero time) is refused with the 400 "invalid
+            body", like an absent `start`: the server cannot tell the two apart.
         end:
           type: string
           format: date-time
+          description: Must be strictly after `start`.
 
     ConferenceMeetingDetails:
       type: object
@@ -1827,19 +2702,29 @@ components:
       properties:
         provider:
           type: string
-          description: Provider-supplied label.
+          enum: [meet, zoom, teams]
+          description: >-
+            A literal set by the concrete provider (U-12, resolved by PAC-67 from
+            backend/conference: `MeetProvider.CreateMeeting` writes "meet",
+            `ZoomProvider.CreateMeeting` "zoom", `TeamsProvider.CreateMeeting`
+            "teams"; `grep -n 'Provider:' backend/conference/*.go` shows the three).
+            Note "meet", not "google_meet": this is not the
+            `ConferenceProviderStatus.provider` vocabulary.
         joinUrl:
           type: string
-          format: uri
+          description: >-
+            Always present (no omitempty). The join URL for zoom and teams. For meet
+            it is the EMPTY STRING: `MeetProvider` creates nothing (a Meet link is
+            minted by Google Calendar on event creation), so the standalone create
+            with a `meet` conferencing provider answers `{"provider":"meet","joinUrl":""}`.
+            Because of that the earlier `format: uri` was not true of every response
+            and is removed (U-12, factory section 7.2).
         meetingId:
           type: string
-          description: Omitted when empty.
+          description: Omitted when empty (always omitted for meet).
         password:
           type: string
           description: Omitted when empty.
-      x-uncertain: >-
-        `provider` is whatever the concrete provider implementation puts there; the
-        exact string set was not verified against meet.go / zoom.go / teams.go.
 
     ConferenceProviderStatus:
       type: object
@@ -1852,7 +2737,19 @@ components:
           enum: [google_meet, zoom, teams, custom]
         connected:
           type: boolean
-          description: Always present. `custom` is hardcoded to true.
+          description: >-
+            Always present. `custom` is hardcoded to true. Since PAC-67 the other rows
+            mean USABLE (see `listConferenceProviders`), with these predicates over the
+            caller's own credentials: `google_meet`, a Google token row is stored AND
+            no loss of it is recorded; `zoom`, a stored Zoom credential decodes AND
+            holds a refresh token AND no loss of it is recorded; `teams`, a stored
+            Microsoft credential decodes AND holds a refresh token AND no loss of it
+            is recorded, the same predicate as `getAuthStatus` for an Outlook
+            calendar provider. Before PAC-67 `zoom` was true for any non-blank stored
+            value (including one that does not decode) and `teams` for any stored
+            Microsoft credential, with or without a refresh token, which could
+            report a credential that can never be renewed as connected (contract
+            challenge finding 5).
         email:
           type: string
           description: Set only for google_meet (the configured calendar email); omitted when empty.
@@ -1861,6 +2758,10 @@ components:
           description: >-
             json `enabled,omitempty` on a bool, so `false` is OMITTED entirely - the key
             only ever appears as `true`, and only for teams. Absence must be read as false.
+            Since PAC-67 it follows teams' `connected` exactly (same predicate): a lost,
+            disconnected or never-renewable (no refresh token) Microsoft credential
+            omits it, so no field of the row reports Teams usable (spec PAC-67
+            section 4 preamble).
         auto_with:
           type: string
           enum: [google, outlook]

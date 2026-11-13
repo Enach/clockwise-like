@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/lifecycle"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/google/uuid"
 )
@@ -75,8 +77,8 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	}
 
 	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
-	if err != nil {
-		return // user has no Slack connection
+	if err != nil || conn.TokenErr != nil {
+		return // no Slack connection, or (PAC-84 AC-17) its token cannot be decrypted: skip this user
 	}
 
 	loc, err := time.LoadLocation(settings.Timezone)
@@ -118,6 +120,9 @@ func (s *DailyRecapService) RunForUser(ctx context.Context, userID uuid.UUID, us
 	_ = insertRecapSend(s.DB, rec)
 }
 
+// recapUserTimeout bounds one user's recap send (a test seam).
+var recapUserTimeout = 55 * time.Second
+
 // RunAll iterates all users with recap_enabled and calls RunForUser.
 // Called every minute by the cron in main.go.
 func (s *DailyRecapService) RunAll(ctx context.Context) {
@@ -126,9 +131,29 @@ func (s *DailyRecapService) RunAll(ctx context.Context) {
 		log.Printf("daily recap: list users error: %v", err)
 		return
 	}
-	for _, u := range users {
-		go s.RunForUser(ctx, u.id, u.name)
-		time.Sleep(time.Second) // stagger sends to respect Slack rate limits
+	for i, u := range users {
+		if i > 0 {
+			// Stagger sends to respect Slack rate limits; stop at shutdown
+			// or when the run's own deadline ends (PAC-81 AC-A6).
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return
+			}
+		}
+		if lifecycle.Default().ShuttingDown() {
+			return
+		}
+		id, name := u.id, u.name
+		// Each per-user send is a tracked unit, awaited by the drain.
+		// Its own context: the group's (cancelled at the end of the drain)
+		// with its own limit, not the cron run's, which ends as soon as
+		// RunAll returns, right after the last user's send starts.
+		lifecycle.Go(lifecycle.Unit{Kind: "daily-recap", ID: id.String()}, func(work context.Context) {
+			runCtx, cancel := context.WithTimeout(work, recapUserTimeout)
+			defer cancel()
+			s.RunForUser(runCtx, id, name)
+		})
 	}
 }
 
@@ -469,7 +494,7 @@ func sendSlackMessage(ctx context.Context, botToken, sendTo, channelID, workspac
 	req.Header.Set("Authorization", "Bearer "+botToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.ProviderClient().Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -498,7 +523,7 @@ func resolveSlackUserID(ctx context.Context, botToken, _ string) (string, error)
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+botToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.ProviderClient().Do(req)
 	if err != nil {
 		return "", err
 	}

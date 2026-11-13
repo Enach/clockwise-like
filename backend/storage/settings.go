@@ -144,53 +144,76 @@ func (s *Settings) LunchWindow(day time.Time) (start, end string, enabled bool) 
 }
 
 type Settings struct {
-	ID                      int64                `json:"-"`
-	WorkStart               string               `json:"workStart"`
-	WorkEnd                 string               `json:"workEnd"`
-	Timezone                string               `json:"timezone"`
-	FocusMinBlockMinutes    int                  `json:"focusMinBlockMinutes"`
-	FocusMaxBlockMinutes    int                  `json:"focusMaxBlockMinutes"`
-	FocusDailyTargetMinutes int                  `json:"focusDailyTargetMinutes"`
-	OutOfHoursMeetingsPerWeek int                `json:"outOfHoursMeetingsPerWeek"`
-	AutoDeclineOutsideWorkingHours bool           `json:"autoDeclineOutsideWorkingHours"`
-	FocusLabel              string               `json:"focusLabel"`
-	FocusColor              string               `json:"focusColor"`
-	LunchStart              string               `json:"lunchStart"`
-	LunchEnd                string               `json:"lunchEnd"`
-	ProtectLunch            bool                 `json:"protectLunch"`
-	BufferBeforeMinutes     int                  `json:"bufferBeforeMinutes"`
-	BufferAfterMinutes      int                  `json:"bufferAfterMinutes"`
-	BufferEnabled           bool                 `json:"bufferEnabled"`
-	BufferMinMeetingMinutes int                  `json:"bufferMinMeetingMinutes"`
-	BufferSkipBackToBack    bool                 `json:"bufferSkipBackToBack"`
-	WorkingHours            WorkingHoursSchedule `json:"workingHours"`
-	LunchBreaks             LunchBreakSchedule   `json:"lunchBreaks"`
-	CompressionEnabled      bool                 `json:"compressionEnabled"`
-	AutoScheduleEnabled     bool                 `json:"autoScheduleEnabled"`
-	AutoScheduleCron        string               `json:"autoScheduleCron"`
-	LLMProvider             string               `json:"llmProvider"`
-	LLMModel                string               `json:"llmModel"`
-	// LLMAPIKey is write-only (PAC-24): never encoded in a response. Writes go
-	// through the settings handler, which reads it from the request itself.
-	LLMAPIKey               string               `json:"-"`
-	// LLMAPIKeySet reports whether a key is on file. Read-only; never stored.
-	LLMAPIKeySet            bool                 `json:"llmApiKeySet"`
-	LLMBaseURL              string               `json:"llmBaseUrl"`
+	ID                             int64                `json:"-"`
+	WorkStart                      string               `json:"workStart"`
+	WorkEnd                        string               `json:"workEnd"`
+	Timezone                       string               `json:"timezone"`
+	FocusMinBlockMinutes           int                  `json:"focusMinBlockMinutes"`
+	FocusMaxBlockMinutes           int                  `json:"focusMaxBlockMinutes"`
+	FocusDailyTargetMinutes        int                  `json:"focusDailyTargetMinutes"`
+	OutOfHoursMeetingsPerWeek      int                  `json:"outOfHoursMeetingsPerWeek"`
+	AutoDeclineOutsideWorkingHours bool                 `json:"autoDeclineOutsideWorkingHours"`
+	FocusLabel                     string               `json:"focusLabel"`
+	FocusColor                     string               `json:"focusColor"`
+	LunchStart                     string               `json:"lunchStart"`
+	LunchEnd                       string               `json:"lunchEnd"`
+	ProtectLunch                   bool                 `json:"protectLunch"`
+	BufferBeforeMinutes            int                  `json:"bufferBeforeMinutes"`
+	BufferAfterMinutes             int                  `json:"bufferAfterMinutes"`
+	BufferEnabled                  bool                 `json:"bufferEnabled"`
+	BufferMinMeetingMinutes        int                  `json:"bufferMinMeetingMinutes"`
+	BufferSkipBackToBack           bool                 `json:"bufferSkipBackToBack"`
+	WorkingHours                   WorkingHoursSchedule `json:"workingHours"`
+	LunchBreaks                    LunchBreakSchedule   `json:"lunchBreaks"`
+	CompressionEnabled             bool                 `json:"compressionEnabled"`
+	AutoScheduleEnabled            bool                 `json:"autoScheduleEnabled"`
+	AutoScheduleCron               string               `json:"autoScheduleCron"`
+	// LLMProvider is the caller's AI choice as the contract reads it: "" (off),
+	// "organization", one of the five key-based providers, or "unsupported"
+	// for a stored value Paceday no longer supports (ollama). The stored value
+	// itself is StoredLLMProvider and is never rewritten by a read
+	// (NEW-llm-bring-your-own, contract §4).
+	LLMProvider string `json:"llmProvider"`
+	// StoredLLMProvider is llm_provider exactly as stored. A save of a
+	// document whose LLMProvider is "unsupported" writes it back unchanged.
+	StoredLLMProvider string `json:"-"`
+	LLMModel          string `json:"llmModel"`
+	// LLMAPIKeys holds one key per provider, each bound to the provider it was
+	// entered for (spec D-5). Write-only (PAC-24): never encoded in a response.
+	LLMAPIKeys LLMAPIKeys `json:"-"`
+	// LLMUnboundAPIKey is a key stored before keys were bound to providers,
+	// on an account whose provider at upgrade was not openai or anthropic. It
+	// is never sent and never deleted implicitly (spec D-5, AC-16).
+	LLMUnboundAPIKey string `json:"-"`
+	// LLMAPIKeySet reports whether a key bound to the selected provider is on
+	// file. Read-only; never stored.
+	LLMAPIKeySet bool `json:"llmApiKeySet"`
+	// LLMAPIKeysSet reports, per provider, whether a key bound to it is on
+	// file. Read-only; never stored.
+	LLMAPIKeysSet LLMAPIKeysSet `json:"llmApiKeysSet"`
+	// LLMUnboundAPIKeySet reports whether LLMUnboundAPIKey is set. Read-only.
+	LLMUnboundAPIKeySet bool `json:"llmUnboundApiKeySet"`
+	// AIStatus is computed by the API layer for the caller (it needs the
+	// caller's organisation). Read-only; never stored.
+	AIStatus   AIStatus `json:"aiStatus"`
+	LLMBaseURL string   `json:"llmBaseUrl"`
 	// AWS Bedrock
 	AWSRegion    string `json:"awsRegion"`
-	AWSProfile   string `json:"awsProfile"`
 	BedrockModel string `json:"bedrockModel"`
 	// Azure OpenAI
 	AzureEndpoint   string `json:"azureEndpoint"`
 	AzureDeployment string `json:"azureDeployment"`
 	AzureAPIVersion string `json:"azureApiVersion"`
 	// Google Vertex AI
-	GCPProject  string `json:"gcpProject"`
-	GCPLocation string `json:"gcpLocation"`
 	VertexModel string `json:"vertexModel"`
-	// Ollama
-	OllamaBaseURL string `json:"ollamaBaseUrl"`
-	OllamaModel   string `json:"ollamaModel"`
+	// Retired by NEW-llm-bring-your-own (spec D-10): no longer read for any
+	// request, validated or returned, but kept in storage and written back
+	// unchanged for one release so that a rollback restores them.
+	AWSProfile    string `json:"-"`
+	GCPProject    string `json:"-"`
+	GCPLocation   string `json:"-"`
+	OllamaBaseURL string `json:"-"`
+	OllamaModel   string `json:"-"`
 	// Calendar providers
 	CalendarProvider string `json:"calendarProvider"`
 	MicrosoftTokens  string `json:"-"` // JSON blob, not exposed in API
@@ -200,16 +223,19 @@ type Settings struct {
 	ConferencingProvider string `json:"conferencingProvider"`
 	ZoomTokens           string `json:"-"` // JSON blob, not exposed in API
 	// Daily recap
-	RecapEnabled       bool      `json:"recapEnabled"`
-	RecapSendTime      string    `json:"recapSendTime"` // "HH:MM"
-	RecapSendTo        string    `json:"recapSendTo"`   // "dm" or "channel"
-	RecapChannelID     string    `json:"recapChannelId"`
-	RecapIncludeBriefs bool      `json:"recapIncludeBriefs"`
-	RecapIncludeFocus  bool      `json:"recapIncludeFocus"`
-	RecapIncludeHabits bool      `json:"recapIncludeHabits"`
+	RecapEnabled       bool   `json:"recapEnabled"`
+	RecapSendTime      string `json:"recapSendTime"` // "HH:MM"
+	RecapSendTo        string `json:"recapSendTo"`   // "dm" or "channel"
+	RecapChannelID     string `json:"recapChannelId"`
+	RecapIncludeBriefs bool   `json:"recapIncludeBriefs"`
+	RecapIncludeFocus  bool   `json:"recapIncludeFocus"`
+	RecapIncludeHabits bool   `json:"recapIncludeHabits"`
 	// TimeFormat is the user's time-of-day display: "12h" (default) or "24h" (PAC-55).
-	TimeFormat         string    `json:"timeFormat"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	TimeFormat string    `json:"timeFormat"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	// secrets holds what a read stored and opened for each secret column
+	// (PAC-84, settings_secrets.go). Never encoded.
+	secrets settingsSecrets
 }
 
 // settingsColumns is the one column list every settings read uses.
@@ -223,6 +249,8 @@ const settingsColumns = `
 		buffer_enabled, buffer_min_meeting_minutes, buffer_skip_back_to_back,
 		compression_enabled, auto_schedule_enabled, auto_schedule_cron,
 		llm_provider, llm_model, llm_api_key, llm_base_url,
+		llm_api_key_openai, llm_api_key_anthropic, llm_api_key_azure_openai,
+		llm_api_key_bedrock, llm_api_key_vertex,
 		aws_region, aws_profile, bedrock_model,
 		azure_endpoint, azure_deployment, azure_api_version,
 		gcp_project, gcp_location, vertex_model,
@@ -238,7 +266,7 @@ const settingsColumns = `
 // GetOrCreateSettingsByUser returns userID's settings, creating the row with
 // the product defaults the first time (PAC-24). Settings always belong to a
 // user: there is no shared row and no way to read one without a user id.
-func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) {
+func GetOrCreateSettingsByUser(db Querier, userID uuid.UUID) (*Settings, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("GetOrCreateSettingsByUser: userID is required")
 	}
@@ -247,6 +275,8 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 		return nil, err
 	}
 	s := &Settings{}
+	var rawUnbound, rawOpenAI, rawAnthropic, rawAzure, rawBedrock, rawVertex string
+	var rawMicrosoft, rawWebcal, rawZoom string
 	err := db.QueryRow(`SELECT`+settingsColumns+` FROM settings WHERE user_id = $1`, userID).Scan(
 		&s.ID, &s.WorkStart, &s.WorkEnd, &s.Timezone,
 		&s.FocusMinBlockMinutes, &s.FocusMaxBlockMinutes, &s.FocusDailyTargetMinutes,
@@ -255,13 +285,15 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 		&s.BufferBeforeMinutes, &s.BufferAfterMinutes,
 		&s.BufferEnabled, &s.BufferMinMeetingMinutes, &s.BufferSkipBackToBack,
 		&s.CompressionEnabled, &s.AutoScheduleEnabled, &s.AutoScheduleCron,
-		&s.LLMProvider, &s.LLMModel, &s.LLMAPIKey, &s.LLMBaseURL,
+		&s.StoredLLMProvider, &s.LLMModel, &rawUnbound, &s.LLMBaseURL,
+		&rawOpenAI, &rawAnthropic, &rawAzure,
+		&rawBedrock, &rawVertex,
 		&s.AWSRegion, &s.AWSProfile, &s.BedrockModel,
 		&s.AzureEndpoint, &s.AzureDeployment, &s.AzureAPIVersion,
 		&s.GCPProject, &s.GCPLocation, &s.VertexModel,
 		&s.OllamaBaseURL, &s.OllamaModel,
-		&s.CalendarProvider, &s.MicrosoftTokens, &s.WebcalURL, &s.CalendarEmail,
-		&s.ConferencingProvider, &s.ZoomTokens,
+		&s.CalendarProvider, &rawMicrosoft, &rawWebcal, &s.CalendarEmail,
+		&s.ConferencingProvider, &rawZoom,
 		&s.RecapEnabled, &s.RecapSendTime, &s.RecapSendTo,
 		&s.RecapChannelID, &s.RecapIncludeBriefs, &s.RecapIncludeFocus, &s.RecapIncludeHabits,
 		&s.WorkingHours, &s.LunchBreaks,
@@ -271,7 +303,16 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 	if err != nil {
 		return nil, err
 	}
-	s.LLMAPIKeySet = s.LLMAPIKey != ""
+	// PAC-84: each secret is opened on its own; a failure is recorded on s
+	// and never fails the read (contract 6.2).
+	s.openSettingsSecrets(userID, map[string]string{
+		SettingsColLLMUnboundKey: rawUnbound, "llm_api_key_openai": rawOpenAI,
+		"llm_api_key_anthropic": rawAnthropic, "llm_api_key_azure_openai": rawAzure,
+		"llm_api_key_bedrock": rawBedrock, "llm_api_key_vertex": rawVertex,
+		SettingsColMicrosoftTokens: rawMicrosoft, SettingsColZoomTokens: rawZoom, SettingsColWebcalURL: rawWebcal,
+	})
+	s.LLMProvider = ReadLLMProvider(s.StoredLLMProvider)
+	s.RefreshKeyFlags()
 	s.UpdatedAt = s.UpdatedAt.UTC()
 	s.normalizeSchedules()
 	return s, nil
@@ -281,7 +322,7 @@ func GetOrCreateSettingsByUser(db *sql.DB, userID uuid.UUID) (*Settings, error) 
 // no other user's. The calendar and conferencing credentials
 // (microsoft_tokens, zoom_tokens) are not written here: they have their own
 // writers.
-func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+func SaveSettingsForUser(db DBTX, userID uuid.UUID, s *Settings) error {
 	return SaveSettingsForUserAt(db, userID, s, time.Now())
 }
 
@@ -292,11 +333,23 @@ func SaveSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
 // or changes the schedule or the timezone while it stays on, and is otherwise
 // left exactly as stored. The comparison is against the stored row inside the
 // upsert, so a save built from a stale read cannot rewind it.
-func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.Time) error {
+func SaveSettingsForUserAt(db Querier, userID uuid.UUID, s *Settings, now time.Time) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveSettingsForUser: userID is required")
 	}
 	s.normalizeSchedules()
+	// PAC-84: every secret written is sealed for this row, or is the text
+	// read, byte-identical, when the save did not change it (contract 6.2).
+	sec := map[string]string{}
+	for _, col := range []string{SettingsColLLMUnboundKey, SettingsColWebcalURL,
+		"llm_api_key_openai", "llm_api_key_anthropic", "llm_api_key_azure_openai",
+		"llm_api_key_bedrock", "llm_api_key_vertex"} {
+		v, err := s.storedSecretText(col, userID)
+		if err != nil {
+			return fmt.Errorf("SaveSettingsForUser: %s: %w", col, err)
+		}
+		sec[col] = v
+	}
 	_, err := db.Exec(`
 		INSERT INTO settings (
 			user_id, work_start, work_end, timezone,
@@ -318,12 +371,15 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 			working_hours, lunch_breaks,
 			time_format,
 			auto_schedule_last_run,
+			llm_api_key_openai, llm_api_key_anthropic, llm_api_key_azure_openai,
+			llm_api_key_bedrock, llm_api_key_vertex,
 			updated_at
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
 			$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,
 			$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,
 			CASE WHEN $19::boolean THEN $52::timestamptz END,
+			$53,$54,$55,$56,$57,
 			NOW()
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
@@ -367,6 +423,11 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 			working_hours=EXCLUDED.working_hours,
 			lunch_breaks=EXCLUDED.lunch_breaks,
 			time_format=EXCLUDED.time_format,
+			llm_api_key_openai=EXCLUDED.llm_api_key_openai,
+			llm_api_key_anthropic=EXCLUDED.llm_api_key_anthropic,
+			llm_api_key_azure_openai=EXCLUDED.llm_api_key_azure_openai,
+			llm_api_key_bedrock=EXCLUDED.llm_api_key_bedrock,
+			llm_api_key_vertex=EXCLUDED.llm_api_key_vertex,
 			auto_schedule_last_run = CASE
 				WHEN EXCLUDED.auto_schedule_enabled AND (
 					NOT settings.auto_schedule_enabled
@@ -383,12 +444,12 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 		s.BufferBeforeMinutes, s.BufferAfterMinutes,
 		s.BufferEnabled, s.BufferMinMeetingMinutes, s.BufferSkipBackToBack,
 		s.CompressionEnabled, s.AutoScheduleEnabled, s.AutoScheduleCron,
-		s.LLMProvider, s.LLMModel, s.LLMAPIKey, s.LLMBaseURL,
+		s.storedProvider(), s.LLMModel, sec[SettingsColLLMUnboundKey], s.LLMBaseURL,
 		s.AWSRegion, s.AWSProfile, s.BedrockModel,
 		s.AzureEndpoint, s.AzureDeployment, s.AzureAPIVersion,
 		s.GCPProject, s.GCPLocation, s.VertexModel,
 		s.OllamaBaseURL, s.OllamaModel,
-		s.CalendarProvider, s.WebcalURL, s.CalendarEmail,
+		s.CalendarProvider, sec[SettingsColWebcalURL], s.CalendarEmail,
 		s.ConferencingProvider,
 		s.RecapEnabled, recapSendTimeOrDefault(s.RecapSendTime), recapSendToOrDefault(s.RecapSendTo), s.RecapChannelID,
 		s.RecapIncludeBriefs, s.RecapIncludeFocus, s.RecapIncludeHabits,
@@ -396,13 +457,15 @@ func SaveSettingsForUserAt(db *sql.DB, userID uuid.UUID, s *Settings, now time.T
 		s.WorkingHours, s.LunchBreaks,
 		timeFormatOrDefault(s.TimeFormat),
 		now,
+		sec["llm_api_key_openai"], sec["llm_api_key_anthropic"], sec["llm_api_key_azure_openai"],
+		sec["llm_api_key_bedrock"], sec["llm_api_key_vertex"],
 	)
 	return err
 }
 
 // SaveRecapSettingsForUser writes only the seven recap columns of userID's
 // row (PAC-24): the recap PATCH no longer rewrites the rest of the row.
-func SaveRecapSettingsForUser(db *sql.DB, userID uuid.UUID, s *Settings) error {
+func SaveRecapSettingsForUser(db Querier, userID uuid.UUID, s *Settings) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("SaveRecapSettingsForUser: userID is required")
 	}
@@ -454,7 +517,7 @@ type AutoScheduleCandidate struct {
 // ListAutoScheduleCandidates returns exactly the users whose own settings row
 // has auto_schedule_enabled, in a stable order (the row's creation order).
 // Values are returned as stored; the scheduler validates them.
-func ListAutoScheduleCandidates(db *sql.DB) ([]AutoScheduleCandidate, error) {
+func ListAutoScheduleCandidates(db DBTX) ([]AutoScheduleCandidate, error) {
 	rows, err := db.Query(`SELECT user_id, auto_schedule_cron, timezone, auto_schedule_last_run
 		FROM settings
 		WHERE auto_schedule_enabled = TRUE
@@ -481,7 +544,7 @@ func ListAutoScheduleCandidates(db *sql.DB) ([]AutoScheduleCandidate, error) {
 
 // GetAutoScheduleLastRun returns userID's watermark, or nil when it is null or
 // the user has no settings row.
-func GetAutoScheduleLastRun(db *sql.DB, userID uuid.UUID) (*time.Time, error) {
+func GetAutoScheduleLastRun(db DBTX, userID uuid.UUID) (*time.Time, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("GetAutoScheduleLastRun: userID is required")
 	}
@@ -502,7 +565,7 @@ func GetAutoScheduleLastRun(db *sql.DB, userID uuid.UUID) (*time.Time, error) {
 // observed (nil meaning null). It reports whether it did. The scheduler calls
 // it before every run, so a save that disabled the feature or reset the
 // watermark between the listing and the run wins, and no slot runs twice.
-func AdvanceAutoScheduleWatermark(db *sql.DB, userID uuid.UUID, observed *time.Time, to time.Time) (bool, error) {
+func AdvanceAutoScheduleWatermark(db DBTX, userID uuid.UUID, observed *time.Time, to time.Time) (bool, error) {
 	if userID == uuid.Nil {
 		return false, fmt.Errorf("AdvanceAutoScheduleWatermark: userID is required")
 	}
@@ -523,7 +586,7 @@ func AdvanceAutoScheduleWatermark(db *sql.DB, userID uuid.UUID, observed *time.T
 }
 
 // ListUsersWithAutoDecline returns users whose automatic outside-hours decline is enabled.
-func ListUsersWithAutoDecline(db *sql.DB) ([]uuid.UUID, error) {
+func ListUsersWithAutoDecline(db DBTX) ([]uuid.UUID, error) {
 	rows, err := db.Query(`SELECT user_id FROM settings WHERE user_id IS NOT NULL AND auto_decline_outside_working_hours = TRUE`)
 	if err != nil {
 		return nil, err
@@ -538,4 +601,21 @@ func ListUsersWithAutoDecline(db *sql.DB) ([]uuid.UUID, error) {
 		out = append(out, userID)
 	}
 	return out, rows.Err()
+}
+
+// GetUserTimezone returns userID's stored settings.timezone without creating a
+// settings row (PAC-72 D-9: a public booking request reads the link owner's
+// zone and must not create settings for them). found is false when the user
+// has no settings row. A storage failure is the error, never "no row": the
+// caller answers it with a server error rather than falling back to UTC
+// (PAC-72 revision 2.1, D-7).
+func GetUserTimezone(db DBTX, userID uuid.UUID) (tz string, found bool, err error) {
+	err = db.QueryRow(`SELECT timezone FROM settings WHERE user_id = $1`, userID).Scan(&tz)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return tz, true, nil
 }

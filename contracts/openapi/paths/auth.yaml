@@ -44,6 +44,11 @@ paths:
         account the user typed is preselected. Google still shows its consent
         screen every time (`oauth2.ApprovalForce`); the hint chooses the
         account, it does not skip the screen.
+        Since PAC-71 this is the SIGN-IN start only (spec §3 "Connecting a
+        calendar"): a flow it starts is always a sign-in, whether or not the
+        browser holds a session. The signed-in "connect a calendar" controls
+        use `startGoogleConnect` instead. The scope set is unchanged
+        (exactly `calendar` and `userinfo.email`, PAC-50 AC-24).
       security: []
       parameters:
         - $ref: '#/components/parameters/LoginHint'
@@ -71,16 +76,124 @@ paths:
     get:
       operationId: googleOAuthCallback
       tags: [auth]
-      summary: Google OAuth callback
+      summary: Google OAuth callback (sign-in, or a signed-in user's calendar connect)
       description: |
-        Validates the `oauth_state` cookie against the `state` query param,
-        exchanges the code, upserts the user, stores the OAuth token, associates
-        the org, issues the `auth_token` JWT cookie, then redirects to
-        `<FRONTEND_URL>/auth/callback`.
-        Since PAC-35 (API-011) the redirect to `/auth/callback` happens only when
-        the session cookie was actually set. If the session cannot be issued
-        (empty signing secret, or token generation fails) the user is sent to
-        the sign-in failure state instead; see the `302` response.
+        Since PAC-71 this one redirect target serves two flows, and ONLY the
+        state cookie that the `state` query parameter matches decides which
+        (spec §3 "Connecting a calendar", D-24):
+        - it equals the `google_connect_state` cookie, which only
+          `startGoogleConnect` sets: the CONNECT branch;
+        - otherwise it equals the `oauth_state` cookie, which only
+          `startGoogleOAuth` sets: the SIGN-IN branch;
+        - neither cookie is present or equal: the 400 "invalid state", as
+          today. Nothing is exchanged or written.
+        The two cookies hold independent random values, so at most one can
+        match. A session cookie, an Authorization header or any other query
+        parameter never selects a branch: a flow that `startGoogleConnect`
+        did not start is a sign-in, wherever it was started (spec AC-14,
+        PAC-47 D-18).
+
+        SIGN-IN branch (spec §3 "Identities", "The sign-in rule", migration
+        rules (a) and (b)). Steps 1 to 3 are today's; the rest is PAC-71's.
+        1. `oauth_state` checked (400) and expired; the code is exchanged
+           (500 on failure).
+        2. Google's v2 userinfo is read with the access token (500 on
+           failure, as today). Sign-in still requests exactly `calendar` and
+           `userinfo.email` (PAC-50 AC-24, spec D-14). From the answer:
+           `id` is the Google subject (identity = authority `google` +
+           `id`); `email` is the reported address; `verified_email` and
+           `hd` are evidence (spec OQ-3 item 5; see PAC-71.md §3 for what is
+           and is not established).
+        3. Evidence for the reported address: AUTHORITATIVE when
+           `verified_email` is true and either `hd` equals the address's
+           domain (exact, case-insensitive; a subdomain does not count) or
+           the domain is `gmail.com` or `googlemail.com`; MAILBOX when
+           `verified_email` is true otherwise; NONE when it is false or
+           absent.
+        4. The account is chosen ONLY by identity, never by address for a
+           bound identity. Addresses are compared case-insensitively.
+           a. The identity is bound to an account: that account, whatever
+              address Google now reports. Its stored address and address
+              standing are not changed (spec D-7).
+           b. Otherwise, if two or more accounts carry the address in any
+              letter case (a case collision): REFUSED.
+           c. Otherwise, if one account carries the address and it is bound
+              (to any other identity, at any authority): REFUSED.
+           d. Otherwise, if one account carries the address and it is
+              unbound (created before PAC-71), it binds to this identity in
+              ONE atomic step (lock the account, re-check every condition,
+              write the binding and standing, advance the session generation;
+              all or nothing) when:
+              - rule (a): the account's recorded identifier (`users.provider_id`)
+                has the Google format `^[0-9]{1,255}$`, equals `id`, and the
+                evidence is MAILBOX or AUTHORITATIVE; or
+              - rule (b): the evidence is AUTHORITATIVE and the account is
+                EMPTY (PAC-71.md §6: no account data of any kind, every
+                setting at its named default in normal form).
+              The standing is DOMAIN_CONFIRMED for AUTHORITATIVE evidence,
+              UNCONFIRMED for MAILBOX. If neither rule holds, or the re-check
+              under the lock fails (a competing binding or write won):
+              REFUSED, and the account stays unbound with nothing stored.
+           e. Otherwise (no account carries the address): with AUTHORITATIVE
+              evidence an account is created, bound, DOMAIN_CONFIRMED; with
+              MAILBOX evidence created, bound, UNCONFIRMED; with NONE:
+              REFUSED. Creation is atomic against a concurrent creation for
+              the same address in any letter case: the loser is REFUSED.
+        5. For the chosen, created or newly bound account (never another):
+           the Google token is stored on it (ending a recorded Google loss,
+           PAC-67), PAC-68's organisation rule is evaluated for it, name and
+           picture are overwritten as today, and a session is issued whose
+           `gen` is the account's current generation (after any advance in
+           step 4). A binding writes the subject into `users.provider_id`
+           (spec §7 "Re-applying"); a bound sign-in leaves it alone.
+           `users.provider` keeps meaning "provider of the first sign-in".
+           A migration binding never changes the work calendar.
+
+        REFUSED (spec §3 "Refusal"): the one fixed redirect
+        `<FRONTEND_URL>/?error=signin_refused`, the same for every cause, so
+        it never reveals whether an account exists for the address (spec
+        D-6). A refusal creates no account, binds nothing, stores no token,
+        changes no organisation, work calendar, standing or generation, and
+        neither sets nor expires `auth_token`: a session the browser already
+        holds is kept. The cause, and the account it concerns, go to the
+        server log only.
+
+        CONNECT branch (spec §3 "Connecting a calendar", PAC-47 §3 item 3,
+        D-4, D-24). Checks run in this order; the first failure decides:
+        1. The state is one `startGoogleConnect` issued, at most 300 seconds
+           ago, for provider google; it names the user U and the generation
+           g that the starting session carried. Else: NOT CREDITED.
+        2. The request's session (the `auth_token` cookie, validated as
+           requireAuth validates it; a provider redirect carries no
+           Authorization header) is valid, names U, and carries `gen` g.
+           Else (no session, another user's, or another generation):
+           NOT CREDITED.
+        3. U's current generation is read, uncached, and equals g. Else:
+           NOT CREDITED. If it cannot be read: the 500 below.
+        4. `code` is present and non-empty. Else (the provider returned
+           without a code, typically `error=access_denied` because the user
+           cancelled or the provider refused): NOT CREDITED, nothing is
+           exchanged. The user lands on the web app, never on a JSON page of
+           the API origin.
+        5. The code is exchanged (500 on failure). Userinfo is not read and
+           nothing about the Google account's identity or address is used:
+           whatever identity and address it has, nothing is bound.
+        6. The token is stored on U, in one transaction that re-reads U's
+           current generation and stores only while it still equals g
+           (spec AC-47). If it moved: nothing is stored, NOT CREDITED.
+           Storing ends a recorded Google loss of U (PAC-67 AC-12).
+        7. CREDITED.
+        A connect, credited or not, binds no identity, adds no sign-in
+        method, creates no account, issues no session, never sets or
+        expires `auth_token`, evaluates no organisation membership, and
+        changes nothing else on any account: not U's name, picture,
+        address, standing, recorded identifier, work calendar (spec D-15) or
+        generation. Every connect-branch response, the redirects and the
+        500 alike, expires the `google_connect_state` cookie, so a state is
+        used at most once.
+        The SIGN-IN branch keeps today's behaviour for a missing `code` (the
+        exchange of an empty code fails: the 500 below); PAC-71 does not
+        change it.
       security: []
       parameters:
         - name: state
@@ -89,46 +202,167 @@ paths:
           schema: { type: string }
         - name: code
           in: query
-          required: true
+          required: false
+          description: |
+            The authorization code. Absent when the provider returns an
+            `error` instead (the user cancelled, or the provider refused):
+            CONNECT branch gives NOT CREDITED (step 4); SIGN-IN branch keeps
+            today's 500.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            Set by the provider instead of `code` when the user cancelled or
+            the provider refused (for example `access_denied`). Never echoed
+            into a Location; logged only.
           schema: { type: string }
       responses:
         '302':
           description: |
-            One of exactly two destinations (PAC-35, API-011):
+            SIGN-IN branch, one of exactly three destinations:
             - Success: the `auth_token` cookie is set and Location is
               `<FRONTEND_URL>/auth/callback` (no query string, unlike the
               Microsoft/SSO callbacks).
-            - Session not issued (signing secret empty, or token generation
-              failed) after the user and token were saved: NO `auth_token`
+            - Refused (PAC-71): Location `<FRONTEND_URL>/?error=signin_refused`,
+              NO `auth_token` cookie set or expired, nothing written (see
+              REFUSED above).
+            - Session not issued (signing secret empty, token generation
+              failed, or the account's generation could not be read for the
+              token) after the account and token were saved: NO `auth_token`
               cookie is set or expired, and Location is the sign-in failure
-              state `<FRONTEND_URL>/?error=auth_failed`. Never `/auth/callback`.
-            The user row and stored Google token written before that point are
-            kept; nothing is deleted on the failure path. The cause is written
-            to the server log and Sentry only; the Location carries no cause.
+              state `<FRONTEND_URL>/?error=auth_failed` (PAC-35, API-011).
+              What was saved before that point is kept; nothing is deleted.
+            CONNECT branch, one of exactly two destinations, neither setting
+            nor expiring `auth_token`:
+            - CREDITED: Location
+              `<FRONTEND_URL>/auth/callback?provider=google&connect=credited`.
+            - NOT CREDITED: Location `<FRONTEND_URL>/?connect=not_credited`;
+              nothing stored on any account.
+            The cause of a refusal or failure is written to the server log
+            and Sentry only; no Location carries a cause, address or
+            provider detail beyond the fixed values above.
           headers:
             Location:
               schema:
                 type: string
+                pattern: '/(auth/callback(\?provider=google&connect=credited)?|\?error=(auth_failed|signin_refused)|\?connect=not_credited)$'
               description: |
-                `<FRONTEND_URL>/auth/callback` on success;
-                `<FRONTEND_URL>/?error=auth_failed` when the session could not be issued.
+                `<FRONTEND_URL>` followed by exactly one of:
+                `/auth/callback` (sign-in success);
+                `/?error=signin_refused` (sign-in refused);
+                `/?error=auth_failed` (session could not be issued);
+                `/auth/callback?provider=google&connect=credited` (connect credited);
+                `/?connect=not_credited` (connect credited to nobody).
             Set-Cookie:
               schema:
                 type: string
               description: |
-                On success: auth_token=<HS256 JWT>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax.
-                On the failure redirect: no `auth_token` cookie at all.
+                Sign-in success: auth_token=<HS256 JWT carrying `gen`>; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax.
+                Refusal, failure redirect and every connect outcome: no `auth_token` cookie at all.
+                Connect outcomes also expire `google_connect_state`
+                (`google_connect_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`).
         '400':
-          description: Missing or mismatched `oauth_state` cookie ("invalid state").
+          description: |
+            Neither `google_connect_state` nor `oauth_state` is present and
+            equal to `state` ("invalid state"). Nothing is exchanged or
+            written.
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
           description: >-
-            Token exchange, userinfo fetch, user upsert or token save failed. Body:
-            `{"error":"internal error"}`. The detail is written to the server log and Sentry
-            only (PAC-21).
+            Token exchange, userinfo fetch (sign-in), account creation or binding, token
+            save, or reading the generation (connect step 3) failed. Body:
+            `{"error":"internal error"}`. The detail is written to the server log and
+            Sentry only (PAC-21). A failed binding or creation writes nothing (it is one
+            transaction); no session is issued or changed. On the CONNECT branch this
+            500 also expires `google_connect_state`; on the SIGN-IN branch
+            `oauth_state` is already expired (step 1), as today.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/google/connect:
+    post:
+      operationId: startGoogleConnect
+      tags: [auth]
+      summary: Start connecting a Google calendar to the signed-in account (never a sign-in)
+      description: |
+        New in PAC-71 (spec §3 "Connecting a calendar", AC-12 to AC-14,
+        AC-32, D-4, D-24). Protected by requireAuth, so it carries the
+        SESSION GENERATION rules of the security scheme. It is the only way
+        to start a Google CONNECT; the four signed-in controls (Settings
+        work-calendar control, connection status control, Dashboard
+        "Connect calendar" banner, onboarding calendar step) call it instead
+        of navigating to `startGoogleOAuth`.
+
+        Takes no request body (any body is ignored) and no parameter. It
+        answers 200 with the provider authorization URL in a JSON body; it
+        NEVER redirects. The web app then navigates the window to
+        `authorize_url`. This is what makes a start by another site useless
+        (spec §3 "Cross-site request model"): another site can make the
+        victim's browser send this POST with the victim's cookie (a form
+        post), but cannot read the response, so it never learns the URL or
+        the state; a GET (navigation, GET form, image, script, frame) is not
+        this operation and starts nothing; and the state it would need is
+        bound to the victim's browser by the `google_connect_state` cookie
+        and to the victim's account and generation by the server.
+        INVARIANT this argument rests on: the API never answers a
+        cross-origin request with `Access-Control-Allow-Credentials: true`
+        for an origin other than the one configured web origin (today
+        `corsMiddleware`, backend/api/middleware.go: `*` without
+        credentials, or exactly `FRONTEND_URL` with credentials). A change
+        that reflects an arbitrary origin with credentials breaks it and
+        must revise this contract.
+
+        Effects: the server issues a new opaque state bound to (the caller's
+        user id, the session's `gen`, provider `google`, an expiry 300
+        seconds later) in a form only the server can create and check (a
+        server-side record or a server-keyed MAC; the plan decides), and
+        sets it as the `google_connect_state` cookie. Nothing else is
+        written: no credential, no setting, no work calendar (the Settings
+        work-calendar control and onboarding change the work calendar by the
+        user's own explicit choice BEFORE calling this, as today), no
+        session. A second start replaces the cookie; only the latest state
+        of this browser can complete.
+
+        `authorize_url` is the same Google authorization URL
+        `startGoogleOAuth` builds (same client, same redirect URI
+        `GOOGLE_REDIRECT_URL` = this server's `/api/auth/callback`, exactly
+        the scopes `calendar` and `userinfo.email`, offline access and
+        forced consent), with this state and no `login_hint`. The callback
+        recognises the connect by the state alone (see
+        `googleOAuthCallback`, CONNECT branch).
+      responses:
+        '200':
+          description: The connect is started; navigate the window to `authorize_url`.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `google_connect_state=<opaque state>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax`,
+                plus `Secure` under the deployment rule every cookie follows
+                (PAC-20, backend/api/cookies.go). Never an `auth_token` cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectStartResponse'
+        '401':
+          description: |
+            requireAuth's rejection, including a session whose `gen` is not
+            the account's current generation (PAC-71). Nothing is issued.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            The account's generation could not be read, or the state could not be
+            issued. Body: `{"error":"internal error"}`; the detail goes to the server
+            log and Sentry only (PAC-21). No cookie is set.
           content:
             application/json:
               schema:
@@ -144,6 +378,21 @@ paths:
         Configuration is read from env at request time (MICROSOFT_CLIENT_ID);
         if the client id is blank the route 503s.
         Since PAC-35 (API-064) a valid `login_hint` is forwarded to Microsoft.
+        Since PAC-71 this is the SIGN-IN start only: a flow it starts is
+        always a sign-in, whether or not the browser holds a session. The
+        signed-in "connect a calendar" controls use `startMicrosoftConnect`.
+        Since PAC-71 contract revision 3.1 (owner, 2026-11-01, spec OQ-8,
+        OQ-9, D-14, AC-11) the scope parameter is exactly
+        `openid profile Calendars.ReadWrite User.Read offline_access`, in
+        that order: today's three scopes preceded by the basic `openid` and
+        `profile` (both user-level consent, never an admin consent), so
+        Microsoft returns a signed ID token carrying `tid` and `oid`. No
+        other scope is added (no `email`). PAC-50 AC-24's scope-pinning test
+        compares the joined string in order and is amended to allow exactly
+        this string. The request also carries
+        `nonce=<N>`, where N is the lowercase hex SHA-256 of the state value
+        in the `ms_oauth_state` cookie, so the callback can bind the ID
+        token to this browser's sign-in without a new cookie.
       security: []
       parameters:
         - $ref: '#/components/parameters/LoginHint'
@@ -156,7 +405,12 @@ paths:
             Location:
               schema: { type: string, format: uri }
               description: |
-                auth.GetMicrosoftAuthURL(cfg, state), plus `login_hint=<hint>`
+                auth.GetMicrosoftAuthURL(cfg, state): Microsoft's `/common`
+                authorize endpoint with `scope=openid profile
+                Calendars.ReadWrite User.Read offline_access` (space-separated,
+                URL-encoded, exactly in that order), `state`,
+                `nonce=<lowercase hex SHA-256 of state>` (PAC-71 revisions 3
+                and 3.1), plus `login_hint=<hint>`
                 (URL-encoded) when the request's `login_hint` passed the
                 LoginHint rule. No other query parameter of this request is
                 copied into it.
@@ -174,20 +428,159 @@ paths:
     get:
       operationId: microsoftOAuthCallback
       tags: [auth]
-      summary: Microsoft OAuth callback
+      summary: Microsoft OAuth callback (sign-in, or a signed-in user's Outlook connect)
       description: |
-        Validates `ms_oauth_state`, exchanges the code, fetches the Graph profile
-        and upserts the user, then saves the Microsoft token on THAT USER'S OWN
-        settings row (making Outlook their calendar provider), sets the session
-        cookie and redirects. Since PAC-24 the profile fetch is required, not
-        best-effort: without it there is no user to attach the credential to, so
-        nothing is saved. Before PAC-24 the token was saved on the single shared
-        settings row and the provider flipped for everyone.
-        Since PAC-35 (API-011, API-012) three failures after a successful code
-        exchange end on the app's sign-in failure state rather than on a JSON
-        error page on the API origin: the Graph profile could not be read (or
-        carried no email), the user could not be saved, or the session could
-        not be issued. See the `302` response.
+        Since PAC-71 this one redirect target serves two flows, and ONLY the
+        state cookie that the `state` query parameter matches decides which
+        (spec §3 "Connecting a calendar", D-24):
+        - it equals the `ms_connect_state` cookie, which only
+          `startMicrosoftConnect` sets: the CONNECT branch;
+        - otherwise it equals the `ms_oauth_state` cookie, which only
+          `startMicrosoftOAuth` sets: the SIGN-IN branch;
+        - neither: the 400 "invalid state", as today.
+        A session cookie never selects a branch: a Microsoft flow that
+        `startMicrosoftConnect` did not start is a sign-in, wherever it was
+        started (PAC-47 D-18, spec AC-14). An unconfigured client is the 503
+        on both branches, checked after the state as today.
+
+        SIGN-IN branch. Step 1 and the `/me` read are today's (PAC-24,
+        PAC-35); the rest is PAC-71's. Since contract revision 3 (owner,
+        2026-11-01, spec OQ-8) the tenant comes from the signed ID token and
+        the organisation lookup is evidence only; since revision 3.1 (owner,
+        OQ-9) the object id comes from the same signed ID token and `/me`
+        is a mandatory cross-check (PAC-71.md §3).
+        1. `ms_oauth_state` checked (400) and expired; the code is exchanged
+           (500 on failure). Sign-in requests exactly
+           `openid profile Calendars.ReadWrite User.Read offline_access`
+           (`startMicrosoftOAuth`), so the token response carries an
+           `id_token`.
+        2. ID TOKEN, TENANT AND OBJECT ID (spec §3 "The Microsoft tenant
+           fails closed", D-23, AC-11b). The `id_token` of the token response
+           is accepted only when ALL of these hold; otherwise REFUSED, before
+           anything is looked up or written. Sign-in uses its OWN
+           tenant-pinned verifier; it does NOT reuse the PAC-50 step-up
+           verifier (`backend/auth/stepup.go:103`, `:245`), which reads the
+           `/common` keys and rejects a `tid` only when it contains `/?#`
+           (revision 3.1):
+           - it is present, a compact JWS, header `alg` `RS256`, with a
+             `kid`;
+           - its payload `tid` is a GUID (canonical 8-4-4-4-12 hex, compared
+             case-insensitively), checked BEFORE any key is fetched, so no
+             other value ever reaches a URL;
+           - its signature verifies with the key named by `kid` in
+             Microsoft's published keys for that tenant,
+             `https://login.microsoftonline.com/{tid}/discovery/v2.0/keys`
+             (revision 3.1: each fetch has a 10-second limit, the
+             identity-provider class of PAC-81 Part A; keys are cached per
+             tenant for up to 24 hours; an unknown `kid` triggers at most one
+             refetch per tenant per minute; at most 1000 tenants are cached,
+             the least recently used evicted first. The first fetch for a
+             tenant that is not cached (new, expired after 24 hours, or
+             evicted) is not subject to the per-minute refetch limit. Fetches
+             are single-flight per tenant: a request that needs a tenant's
+             keys while a fetch of them is in flight waits for that fetch
+             (within its own request) instead of starting another or being
+             refused as rate-limited. A fetch that errors or exceeds the
+             limit, or a `kid` still unknown after the refetch or while that
+             tenant's refetch is rate-limited, is REFUSED);
+           - `iss` is `https://login.microsoftonline.com/{tid}/v2.0` with the
+             token's own `tid`: scheme, host and path compared exactly, the
+             `{tid}` part compared case-insensitively (a GUID's hex digits
+             may come in either case); and `ver` is `2.0`;
+           - `aud` is either the string `MICROSOFT_CLIENT_ID`, or a JSON
+             array of exactly one element that is that string; any other
+             shape or value (another client, an extra audience, an empty
+             array) is REFUSED (revision 3.1);
+           - `oid` is present and a GUID (canonical 8-4-4-4-12 hex); absent
+             or malformed is REFUSED (revision 3.1, owner OQ-9: the object
+             id comes from the signed token);
+           - `exp` is in the future and `nbf`, when present, is not
+             (60 seconds of clock skew allowed);
+           - `nonce` equals the lowercase hex SHA-256 of the `state` that
+             matched `ms_oauth_state` (step 1), binding the token to this
+             browser's sign-in request.
+           The tenant is the token's `tid`. CLASSIFICATION: a `tid` equal to
+           `9188040d-6c67-4c5b-b112-36a304b66dad` (Microsoft's documented
+           tenant for every personal Microsoft account) is a PERSONAL
+           account and is REFUSED here, before `/me` or `/organization` is
+           read (owner, 2026-11-01: personal Microsoft sign-in waits for
+           follow-up PAC-77; spec AC-5, AC-11c). Any other GUID `tid` is a
+           WORK account in that tenant, with object id = the token's `oid`.
+           The ID token's `sub`, `email`, `preferred_username` and `name`
+           are not used.
+        3. Graph `GET /v1.0/me?$select=id,mail,displayName` with the access
+           token. Unreadable, or no `mail`: the sign-in failure state (a)
+           below, nothing saved (PAC-35, unchanged). OBJECT-ID CROSS-CHECK
+           (revision 3.1, owner OQ-9, mandatory): `/me`'s `id`, read with the
+           access token of the same token response as the verified ID token,
+           must equal the token's `oid` (case-insensitive GUID); anything
+           else is REFUSED (spec AC-11b). The identity is authority
+           (`microsoft`, tenant from step 2) + object id (`oid` from step 2).
+        4. EVIDENCE for `mail` (spec §3 evidence table, AC-51): Graph
+           `GET /v1.0/organization?$select=id,verifiedDomains` with the same
+           access token (documented least-privileged delegated permission:
+           `User.Read`, already granted). AUTHORITATIVE only when the answer
+           is a 200 whose `value` holds exactly one entry, that entry's `id`
+           equals the step-2 tenant (case-insensitive), and an entry of its
+           `verifiedDomains` has `name` equal to the address's domain (exact,
+           case-insensitive). Anything else (an error, a timeout, a 4xx, an
+           empty or multi-entry `value`, another tenant's id, the domain not
+           listed) is NONE evidence and is logged: it is NEVER a refusal by
+           itself and never "tenant unobtainable". A bound identity still
+           signs in (and PAC-68 evaluates membership as not joined); an
+           unknown identity or a migration binding is decided by step 5 with
+           NONE evidence (rule 5 and rules (a)/(b) then refuse). A Microsoft
+           work account never has MAILBOX evidence.
+        5. The account is chosen exactly as `googleOAuthCallback`'s SIGN-IN
+           step 4 (bound identity first; case collision, bound carrier or
+           unknown identity on a carried address REFUSED; unbound
+           pre-existing account binds atomically under rule (a) or (b) or is
+           REFUSED; new account created with AUTHORITATIVE evidence, REFUSED
+           with NONE), with one difference in rule (a): the recorded
+           identifier must have the Microsoft work format (a GUID,
+           `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+           and equal `/me`'s `id` case-insensitively, with AUTHORITATIVE
+           evidence (the Google and Microsoft formats are disjoint, so no
+           recorded value can fit both; spec AC-37).
+        6. For the chosen, created or newly bound account (never another):
+           the Microsoft credential is stored on it as PAC-67 stores it (a
+           response without a refresh token keeps the stored one, AC-11;
+           storing ends a recorded Outlook loss, AC-12); PAC-68's
+           organisation rule is evaluated for it; a session carrying its
+           current `gen` is issued. Work calendar: an account CREATED here
+           gets `outlook`, as today. For an account REACHED through its bound
+           identity, every sign-in still sets `outlook`: that is today's
+           reset, PAC-47's to remove (PAC-47 D-17; spec §5, D-15), and
+           PAC-71 does not change it. A MIGRATION BINDING (rule (a) or (b))
+           never changes the work calendar (spec AC-31, AC-41).
+
+        REFUSED: the one fixed redirect `<FRONTEND_URL>/?error=signin_refused`
+        with the same guarantees as `googleOAuthCallback` (nothing created,
+        bound or stored; no organisation, work calendar, standing or
+        generation change; `auth_token` neither set nor expired; cause in the
+        server log only). The same redirect for every cause, including an ID
+        token that does not check, Microsoft's keys being unreadable (so an
+        outage of Microsoft's key endpoint refuses every Microsoft sign-in),
+        and a personal Microsoft account (spec §5 "Microsoft availability";
+        owner OQ-8, 2026-11-01). A Graph `/organization` outage is not a
+        refusal cause (step 4).
+
+        CONNECT branch: the checks, order and outcomes of
+        `googleOAuthCallback`'s CONNECT branch, with the `ms_connect_state`
+        cookie and provider `outlook`, including step 4 (no `code`, as when
+        the user cancels at Microsoft: NOT CREDITED, a redirect to the web
+        app, never a JSON page) and the expiry of `ms_connect_state` on
+        every connect-branch response, the 500 included. Neither `/me` nor `/organization` is
+        read and no ID token is requested or read (the connect start
+        requests neither `openid` nor `profile`), so any Microsoft account (work or personal, any
+        tenant, any address) can be connected and nothing about it is bound. The
+        credential is stored on U as PAC-67 stores it (refresh token kept
+        when none is returned; a recorded Outlook loss ends), in the
+        transaction that re-checks U's generation (spec AC-47), and the
+        connect NEVER changes U's work calendar (spec D-15, AC-12, AC-31):
+        unlike today's sign-in, it does not set `outlook`. The Settings
+        work-calendar control sets `outlook` by the user's explicit choice
+        before starting the connect, as today.
       security: []
       parameters:
         - name: state
@@ -196,52 +589,86 @@ paths:
           schema: { type: string }
         - name: code
           in: query
-          required: true
+          required: false
+          description: |
+            The authorization code. Absent when the provider returns an
+            `error` instead (the user cancelled, or the provider refused):
+            CONNECT branch gives NOT CREDITED (step 4); SIGN-IN branch keeps
+            today's 500.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            Set by the provider instead of `code` when the user cancelled or
+            the provider refused (for example `access_denied`). Never echoed
+            into a Location; logged only.
           schema: { type: string }
       responses:
         '302':
           description: |
-            One of exactly two destinations (PAC-35):
+            SIGN-IN branch, one of exactly three destinations:
             - Success: Location `<FRONTEND_URL>/auth/callback?provider=outlook`,
               with the `auth_token` cookie set.
+            - Refused (PAC-71): Location `<FRONTEND_URL>/?error=signin_refused`,
+              NO `auth_token` cookie set or expired, nothing written.
             - Sign-in failure state, Location `<FRONTEND_URL>/?error=auth_failed`,
               with NO `auth_token` cookie set or expired, when any of these
               happens after the code exchange succeeded:
-              (a) the Graph profile could not be read, or carried no email
-                  (nothing is saved; API-012, was a 502);
-              (b) the user upsert failed (nothing is saved; API-012, was a 500
-                  with `{"error":"save user failed"}`);
-              (c) the session could not be issued (signing secret empty, or
-                  token generation failed) after the user and the Microsoft
+              (a) the Graph profile could not be read, or carried no `mail`
+                  (nothing is saved; API-012);
+              (b) creating or binding the account failed (nothing is saved:
+                  one transaction; API-012);
+              (c) the session could not be issued (signing secret empty,
+                  token generation failed, or the generation could not be
+                  read for the token) after the account and the Microsoft
                   token were saved; they are kept (API-011).
-            The cause is written to the server log and Sentry only; the
-            Location carries no cause, provider name or detail.
+            CONNECT branch, one of exactly two destinations, neither setting
+            nor expiring `auth_token`:
+            - CREDITED: `<FRONTEND_URL>/auth/callback?provider=outlook&connect=credited`.
+            - NOT CREDITED: `<FRONTEND_URL>/?connect=not_credited`; nothing
+              stored on any account.
+            The cause is written to the server log and Sentry only; no
+            Location carries a cause, provider detail or address.
             State mismatch, token exchange failure, token save failure and an
             unconfigured client are NOT redirects; they are the 400, 500 and
             503 below (spec PAC-35 D-1).
           headers:
             Location:
-              schema: { type: string }
+              schema:
+                type: string
+                pattern: '/(auth/callback\?provider=outlook(&connect=credited)?|\?error=(auth_failed|signin_refused)|\?connect=not_credited)$'
               description: |
-                `<FRONTEND_URL>/auth/callback?provider=outlook` on success;
-                `<FRONTEND_URL>/?error=auth_failed` on the failures (a)-(c).
+                `<FRONTEND_URL>` followed by exactly one of:
+                `/auth/callback?provider=outlook` (sign-in success);
+                `/?error=signin_refused` (sign-in refused);
+                `/?error=auth_failed` (failures (a)-(c));
+                `/auth/callback?provider=outlook&connect=credited` (connect credited);
+                `/?connect=not_credited` (connect credited to nobody).
             Set-Cookie:
               schema: { type: string }
               description: |
-                On success: auth_token JWT for the upserted user. On the failure
-                redirect: no `auth_token` cookie at all.
+                Sign-in success: auth_token JWT (carrying `gen`) for the
+                chosen account. Refusal, failure redirect and every connect
+                outcome: no `auth_token` cookie at all. Connect outcomes
+                expire `ms_connect_state`
+                (`ms_connect_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`).
         '400':
-          description: Missing or mismatched `ms_oauth_state` cookie ("invalid state").
+          description: Neither `ms_connect_state` nor `ms_oauth_state` is present and equal to `state` ("invalid state").
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '500':
           description: >-
-            Token exchange or token save failed. Body: `{"error":"internal error"}`. The
-            detail is written to the server log and Sentry only (PAC-21). A failed user
-            upsert is no longer a 500, and an unreadable Graph profile is no longer a 502:
-            since PAC-35 both are the failure redirect under `302`.
+            Token exchange or token save failed, or (connect) the generation could not be
+            read. Body: `{"error":"internal error"}`. The detail is written to the server
+            log and Sentry only (PAC-21). On the CONNECT branch this 500 also expires
+            `ms_connect_state`. A failed account creation or binding is not a
+            500 but the failure redirect (b) under `302`; an unreadable Graph profile is
+            (a). A failed or refused `/organization` read is neither: it is NONE evidence
+            (SIGN-IN step 4); an ID token that does not check, or unreadable Microsoft
+            keys, is the refusal.
           content:
             application/json:
               schema:
@@ -250,6 +677,154 @@ paths:
           description: >-
             `MICROSOFT_CLIENT_ID` is unset. Body: `{"error":"Microsoft OAuth not
             configured"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/microsoft/connect:
+    post:
+      operationId: startMicrosoftConnect
+      tags: [auth]
+      summary: Start connecting an Outlook (Microsoft) calendar to the signed-in account (never a sign-in)
+      description: |
+        New in PAC-71. The Microsoft twin of `startGoogleConnect`: same
+        protection, same JSON-body-never-redirect rule and the same
+        cross-site argument (and the same CORS invariant it rests on), same state binding (caller's user id, session
+        `gen`, provider `outlook`, 300-second expiry), set as the
+        `ms_connect_state` cookie. Nothing else is written; in particular
+        the work calendar is not changed (spec D-15).
+
+        `authorize_url` uses the same client, `/common` authority and
+        redirect URI `MICROSOFT_REDIRECT_URL` (= this server's
+        `/api/auth/microsoft/callback`) as `startMicrosoftOAuth`, with this
+        state and no `login_hint`, but exactly the scopes
+        `Calendars.ReadWrite User.Read offline_access` and no `nonce`:
+        unlike sign-in (contract revisions 3 and 3.1), a connect identifies
+        nobody, so it requests no `openid`, no `profile` and no ID token. Configuration is read from env at request
+        time, as `startMicrosoftOAuth` does. The callback recognises the
+        connect by the state alone (`microsoftOAuthCallback`, CONNECT
+        branch).
+      responses:
+        '200':
+          description: The connect is started; navigate the window to `authorize_url`.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `ms_connect_state=<opaque state>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax`,
+                plus `Secure` under the deployment rule (PAC-20). Never an
+                `auth_token` cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectStartResponse'
+        '401':
+          description: |
+            requireAuth's rejection, including a session whose `gen` is not
+            the account's current generation (PAC-71). Nothing is issued.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            The account's generation could not be read, or the state could not be
+            issued. Body: `{"error":"internal error"}` (PAC-21). No cookie is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >-
+            `MICROSOFT_CLIENT_ID` is unset. Body: `{"error":"Microsoft OAuth not
+            configured"}`. No cookie is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/microsoft/disconnect:
+    post:
+      operationId: disconnectMicrosoft
+      tags: [auth]
+      summary: Disconnect the caller's Outlook (Microsoft) credential (the session is kept)
+      description: |
+        New in PAC-67 (spec AC-13, AC-16, AC-17, D-3, D-5, D-8). Protected by
+        requireAuth. Takes no request body (any body is ignored). Acts on the
+        CALLER only; no other user's credential, settings or activity log is
+        read or written.
+
+        Effects, in this order. Steps 1 and 2 are ONE atomic change: either
+        both happen or neither does (then the answer is the 500 below).
+        1. The caller's stored Microsoft credential (access token, refresh
+           token, expiry) is removed WHETHER OR NOT IT DECODES (a stored value
+           that is not valid JSON, on which `LoadMicrosoftToken` fails, is
+           removed like any other, answers `not_offered` and writes the entry
+           of step 5; it is never a 500), and any recorded loss of it is
+           cleared: a later Microsoft sign-in starts a fresh connection.
+        2. When the caller's conferencing provider is `teams` it becomes
+           `meet` (spec D-8); any other conferencing provider is unchanged.
+        3. The caller's calendar provider is NOT changed (spec D-3): a caller
+           on `outlook` stays on `outlook` and `getAuthStatus` reports
+           `{connected: false, provider: "outlook"}` until they sign in with
+           Microsoft again or choose another provider in settings.
+        4. Nothing is sent to Microsoft. Microsoft offers no revocation of one
+           application's grant for one user that Paceday can call with the
+           user's own delegated token: deleting the delegated permission
+           grant (`DELETE /oauth2PermissionGrants/{id}`) needs
+           `DelegatedPermissionGrant.ReadWrite.All` and an administrator role
+           for work or school accounts and is not supported for personal
+           accounts, and the only per-user server call left
+           (`revokeSignInSessions`) signs the user out of every application,
+           which spec D-5 forbids (OQ-1, resolved in
+           contracts/features/PAC-67.md §3). The answer therefore always
+           carries `revocation: not_offered` when a credential was removed,
+           and the client tells the user the grant can be removed from their
+           Microsoft account (AC-17).
+        5. One `provider_disconnected` activity entry is written for the
+           caller, details `{"provider":"outlook","revocation":"not_offered"}`,
+           after steps 1 and 2 have succeeded. The write is BEST-EFFORT, like
+           every kind in the activity log (`storage.WriteAuditLog`): a failed
+           insert is written to the server log and the 200 stands, because
+           the credential is already removed; that disconnect then has no
+           entry. No `revocation_unconfirmed` entry is written: nothing was
+           attempted, so nothing failed (round-5 challenge NB-2).
+
+        A caller with no stored Microsoft credential gets 200 with
+        `revocation: nothing_stored`: step 2 still applies, nothing else
+        changes, and no activity entry is written.
+
+        After a 200 the `teams` row of `listConferenceProviders` reports
+        `connected: false` with `enabled` omitted.
+
+        Unlike `disconnectCalendar`, there is no 409: the operation applies to
+        every caller whatever their calendar provider, and it does not touch
+        the Google credential or the webcal link.
+      responses:
+        '200':
+          description: |
+            The Microsoft credential is gone (or there was none). The session
+            is kept: no Set-Cookie.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderDisconnectResult'
+        '401':
+          description: No/invalid JWT (text/plain body carrying JSON text).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            The caller's settings could not be read, or the atomic change of steps 1
+            and 2 failed. NOTHING was changed: the credential is still stored, the
+            conferencing provider is unchanged and no activity entry is written, so a
+            retry is safe. A stored credential that does not decode is NOT this case
+            (see step 1), and nothing that fails after steps 1 and 2 is a 500: a failed
+            activity-entry write is logged only. Body: `{"error":"internal error"}`. The detail
+            is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
               schema:
@@ -270,6 +845,10 @@ paths:
         by default, so no proxy is trusted) and holds a valid IP. Still open
         (API-062): the map is per process, so the effective limit is
         20/min x replicas.
+
+        A company domain without an SSO row is answered from its MX records
+        (see `SsoDetectResponse.type`); a failed or slow lookup is a 200
+        "choose", never an error. Only a failed SSO-row read is a 500.
       security: []
       requestBody:
         required: true
@@ -323,8 +902,17 @@ paths:
         at another domain is dropped, so this route never sends one
         organisation's IdP an address outside that organisation's domain.
         Unchanged by PAC-35 (spec D-5): the 404, 500 and 501 answers below.
-        API-060 (SAML and incomplete OIDC rows accepted at create time) stays
-        with PAC-22.
+        Since PAC-22 (API-060, spec D-1) createSsoProvider refuses SAML and
+        incomplete OIDC configurations, so the 501 below is reachable only for
+        rows stored before PAC-22; those rows are neither rewritten nor
+        deleted, and this route keeps refusing them exactly as before. The 500
+        (issuer discovery failed) stays reachable for any row whose discovery
+        fails: a row stored before PAC-22 with an empty issuer, and equally a
+        row written since whose issuer is unreachable or unusable
+        (createSsoProvider requires only a non-empty issuer, so `" "` is
+        accepted). Only an active row is looked up: a configuration
+        suspended through setSsoProviderState (PAC-22) answers the 404, as if
+        no SSO were configured.
       security: []
       parameters:
         - name: domain
@@ -351,7 +939,7 @@ paths:
               schema: { type: string }
               description: 'sso_state=<32 hex chars>|<domain>; Path=/; Max-Age=300; HttpOnly; SameSite=Lax'
         '404':
-          description: '"SSO not configured for this domain" — no provider row (also returned when the lookup errors).'
+          description: '"SSO not configured for this domain" — no active provider row: none exists, or it is suspended (PAC-22). Also returned when the lookup errors.'
           content:
             application/json:
               schema:
@@ -386,6 +974,34 @@ paths:
         user goes to the sign-in failure state (see `302`).
         Inconsistent error encoding: the 404 and 500 use the JSON helpers while
         the 400s and the 403 use http.Error (text/plain).
+
+        Since PAC-71 (spec §3 "Identities", "The sign-in rule", D-10) the
+        account is no longer found by email. After the PAC-45 domain check
+        (the 403 below, unchanged), the identity is authority = the issuer
+        the ID token was verified against (its `iss`) + subject = its `sub`.
+        Two issuers are two authorities even when one asserts the other's
+        subjects. Evidence for the asserted email is AUTHORITATIVE unless the
+        ID token carries `email_verified` with the value false, which is
+        NONE. Then:
+        - the identity is bound to an account: that account, whatever email
+          the IdP now asserts (its stored address and standing unchanged);
+        - otherwise, if any account carries the email in any letter case
+          (bound or not, created before PAC-71 or not): REFUSED. An issuer
+          is never authoritative over an existing account, and SSO never
+          binds an account created before PAC-71 (migration rules (a) and (b)
+          are Google and Microsoft only; spec D-10, owner question OQ-2,
+          factory default "no");
+        - otherwise: AUTHORITATIVE creates an account bound to the identity,
+          DOMAIN_CONFIRMED (atomic against a concurrent creation for the
+          same address; the loser is REFUSED); NONE is REFUSED.
+        The session issued carries the account's current `gen`. A binding or
+        creation writes the subject into `users.provider_id`; it is never
+        used for migration rule (a).
+        REFUSED is the same fixed redirect as the other two callbacks,
+        `<FRONTEND_URL>/?error=signin_refused`, with the same guarantees
+        (nothing created, bound or stored; no organisation, standing or
+        generation change; `auth_token` neither set nor expired). The SSO
+        flow has no connect branch.
       security: []
       parameters:
         - name: domain
@@ -403,26 +1019,32 @@ paths:
       responses:
         '302':
           description: |
-            One of exactly two destinations (PAC-35, API-011):
+            One of exactly three destinations (PAC-35, API-011; PAC-71):
             - Success: the `auth_token` cookie is set and Location is
               `<FRONTEND_URL>/auth/callback?provider=sso`.
-            - Session not issued (signing secret empty, or token generation
-              failed) after the user was saved: NO `auth_token` cookie is set
-              or expired, and Location is the sign-in failure state
-              `<FRONTEND_URL>/?error=auth_failed`. The saved user row is kept.
+            - Refused (PAC-71): Location `<FRONTEND_URL>/?error=signin_refused`,
+              NO `auth_token` cookie set or expired, nothing written.
+            - Session not issued (signing secret empty, token generation
+              failed, or the generation could not be read for the token)
+              after the account was saved: NO `auth_token` cookie is set or
+              expired, and Location is the sign-in failure state
+              `<FRONTEND_URL>/?error=auth_failed`. The saved account is kept.
             Every other failure stays a non-302 response below (spec PAC-35
             D-1).
           headers:
             Location:
-              schema: { type: string }
+              schema:
+                type: string
+                pattern: '/(auth/callback\?provider=sso|\?error=(auth_failed|signin_refused))$'
               description: |
                 `<FRONTEND_URL>/auth/callback?provider=sso` on success;
+                `<FRONTEND_URL>/?error=signin_refused` when refused;
                 `<FRONTEND_URL>/?error=auth_failed` when the session could not be issued.
             Set-Cookie:
               schema: { type: string }
               description: |
-                On success: auth_token JWT cookie. On the failure redirect: no
-                `auth_token` cookie at all.
+                On success: auth_token JWT cookie (carrying `gen`). On the
+                refusal and the failure redirect: no `auth_token` cookie at all.
         '400':
           description: '"missing state cookie", "invalid state", or "no email in OIDC token claims".'
           content:
@@ -441,14 +1063,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '404':
-          description: '"SSO not configured for this domain" — JSON, unlike the other errors here.'
+          description: '"SSO not configured for this domain" — JSON, unlike the other errors here. No active provider row: none exists, or it is suspended (PAC-22). A sign-in started before a suspension that reaches this callback after it gets this 404 and no session. Also returned when the lookup errors.'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: >-
-            OIDC setup, code exchange or user upsert failed. Body: `{"error":"internal
+            OIDC setup, code exchange, or account creation (one transaction, nothing kept) failed. Body: `{"error":"internal
             error"}`. The detail is written to the server log and Sentry only (PAC-21).
           content:
             application/json:
@@ -466,7 +1088,31 @@ paths:
         `calendarProvider` and, on the outlook branch, reads the caller's own
         stored Microsoft credential.
         On an internal failure it does NOT error — it 200s with
-        {connected:false, provider:"google", email:""}.
+        {connected:false, provider:"google", email:""}. Since PAC-71 two
+        cases are excluded from that fallback (security scheme, SESSION
+        GENERATION): a session whose generation is no longer current is the
+        401, including when the in-request re-check on the settings or
+        credential read finds the generation moved; and a generation that
+        cannot be read is the 500.
+
+        Since PAC-67 `connected` means USABLE, not merely stored (spec PAC-67
+        §3, AC-8, AC-12, AC-13, AC-21). A credential whose renewal the provider
+        permanently refused (OAuth `invalid_grant` or equivalent) is kept
+        (spec D-1) but is recorded as lost, and while that loss is recorded
+        this operation reports `connected: false` for it. A temporary failure
+        (network, timeout, provider 5xx) is never recorded as a loss and never
+        turns this to false (AC-10). Per branch:
+        - `outlook`: true when the caller holds a stored Microsoft credential
+          with a refresh token AND no loss of it is recorded; false after
+          `disconnectMicrosoft` (the credential is gone) and after a loss.
+        - `google` (blank or any unrecognised provider): true when the caller
+          holds a stored Google token row AND no loss of it is recorded.
+        - `webcal`: unchanged.
+        Only the caller's own credentials are consulted. A loss recorded while
+        the credential was being used for someone else (a teammate's team
+        availability request, a public booking page, a scheduled job) is the
+        OWNER's: it changes the owner's answer here, never the requester's
+        (spec D-12). The response shape is unchanged; no field is added.
 
         PAC-24 resolves API-009. Before it, this branched on the SINGLETON
         settings row's calendar_provider and returned that row's
@@ -487,13 +1133,26 @@ paths:
                 $ref: '#/components/schemas/AuthStatusResponse'
         '401':
           description: |
-            No/invalid JWT. Body is the literal JSON text `{"error":"unauthorized"}`
-            but Content-Type is `text/plain; charset=utf-8` because http.Error
-            overwrites the header the middleware just set.
+            No/invalid JWT, or (PAC-71) a session whose `gen` is not the
+            account's current generation, detected by requireAuth or by the
+            in-request re-check. Body is the literal JSON text
+            `{"error":"unauthorized"}` but Content-Type is
+            `text/plain; charset=utf-8` because http.Error overwrites the
+            header the middleware just set.
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            Only (PAC-71) the account's current session generation could not be read.
+            Body `{"error":"internal error"}`, application/json; the session cookie is
+            neither replaced nor expired (spec AC-48). Every other internal failure is
+            still the 200 fallback above.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/disconnect:
     delete:
@@ -518,7 +1177,11 @@ paths:
         - `outlook` or `webcal`: deletes NOTHING (the stored Google token, if
           the caller holds one, the Microsoft credential and the webcal link
           are all kept) and answers 409 `CalendarDisconnectUnsupported`.
-          Disconnect for these calendars is not implemented (spec PAC-35 OQ-5).
+          Disconnect for these calendars is not implemented HERE (spec PAC-35
+          OQ-5). Since PAC-67 the Microsoft credential has its own operation,
+          `disconnectMicrosoft` (`POST /api/auth/microsoft/disconnect`); this
+          operation's 409 for `outlook` and `webcal` is unchanged by it (spec
+          PAC-67 OQ-3).
         - The settings row cannot be read (or created): deletes nothing and
           answers 500.
           The provider is never guessed as Google on this path, so a read
@@ -569,6 +1232,9 @@ paths:
         Clients read it under that name; the server does not rename it.
         Scheduling-link and booking hosts carry the same stored value as
         `avatar_url` (`SchedulingLinkHost`, `PublicHost`), unchanged by PAC-35.
+        Since PAC-71 the response carries `addressStanding`, so the web app's
+        Settings can say that an unconfirmed address cannot accept
+        invitations yet (spec §3 "What standing allows").
       responses:
         '200':
           description: The user row (with its org when one is associated).
@@ -593,6 +1259,15 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            Only (PAC-71) the account's current session generation could not be read.
+            Body `{"error":"internal error"}`; no Set-Cookie (spec AC-48). Other read
+            failures answer as before this change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/auth/logout:
     post:
@@ -602,7 +1277,11 @@ paths:
       description: |
         Expires the `auth_token` cookie. Note it is behind requireAuth, so logging
         out with an already-expired token returns 401 rather than succeeding
-        (unchanged by PAC-35, spec section 5).
+        (unchanged by PAC-35, spec section 5). Since PAC-71 the same holds
+        for a session whose generation is no longer current (401). Logout
+        still only expires this browser's cookie; it does not advance the
+        generation (spec §3 "Sessions"; "sign out everywhere" is follow-up
+        F3).
       responses:
         '204':
           description: |
@@ -614,11 +1293,19 @@ paths:
               schema: { type: string }
               description: 'auth_token=; Path=/; Max-Age=-1; HttpOnly; SameSite=Lax'
         '401':
-          description: No/invalid JWT.
+          description: No/invalid JWT, or a session whose generation is no longer current (PAC-71).
           content:
             text/plain:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
+        '500':
+          description: >-
+            (PAC-71) The account's current session generation could not be read. Body
+            `{"error":"internal error"}`; the cookie is NOT expired (spec AC-48).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/integrations/availability:
     get:
@@ -642,12 +1329,178 @@ paths:
     post:
       operationId: createSsoProvider
       tags: [auth]
-      summary: Create or update the SSO provider for a domain
+      summary: Create or replace the OIDC SSO configuration for the caller's org domain
       description: |
-        Upsert keyed on domain. The caller must belong to an org and the supplied
-        domain must match that org's domain (domain.DomainMatchesOrg).
-        `enabled` is always forced to true — there is no way to disable a provider
-        through this API.
+        Upsert keyed on domain: a second POST for the same domain replaces the
+        configuration (there is no PATCH/PUT). It is a replace for every value
+        a reader can see (PAC-22 spec §3.2): `provider_name`, `provider_type`,
+        `oidc_issuer` and `oidc_client_id` are supplied on every write and
+        stored as supplied.
+
+        The client secret is the one exception (PAC-22 spec D-12, D-13, D-14):
+        - `oidc_client_secret` supplied (a non-empty string): it replaces the
+          stored secret.
+        - `oidc_client_secret` left out (the property absent): the stored
+          secret is kept, unchanged, but only when all of these hold at the
+          moment the write is stored: a configuration exists for the domain,
+          it is of provider type `oidc`, its stored client secret is
+          non-empty, and the submitted `oidc_issuer` and `oidc_client_id` are
+          byte-for-byte equal to the stored ones (no case folding, no
+          trailing-slash or whitespace normalisation). Otherwise the write is
+          refused (400, step 4) and nothing changes. This binds a kept secret
+          to the place it is sent at sign-in: the issuer decides the token
+          endpoint the secret goes to (PAC-22 spec §2.2, D-13).
+        - `oidc_client_secret` given as `""` or `null`: refused (400, step
+          2f). No write clears the client secret; removing the configuration
+          (deleteSsoProvider) is the way to remove it.
+        A create (no configuration for the domain) has nothing to keep, so it
+        must supply the secret.
+
+        Every write passes this gate, in this order, before the provider
+        store is written; the first step that fails decides the response.
+        The gate is PAC-50's (spec docs/specs/PAC-50.md §4.2); steps 2 and 4
+        are PAC-22's request checks 1-5 and 6, placed in it (PAC-50 contract
+        revision 8).
+
+        1. Membership: the caller must belong to an org, and the org is always
+           the caller's own; nothing in the body chooses it. Otherwise 403
+           `org membership required`, or `org not found` when the org row is
+           gone. Decided before the body is read, so before every 400, and
+           before the break-glass check, so a break-glass email with no org
+           gets this same 403. It carries no `stepup_url`.
+        2. Body, each refusal a 400 that stores nothing and consumes no grant.
+           In this order:
+           a. The body is a JSON object, and each declared property present
+              is `null` or a value of its declared type (`invalid JSON`).
+              `null` is not a type error: it counts as empty, so it is
+              decided by step d or f like a missing or `""` value
+              (`"domain":null` gives `domain, provider_name and
+              provider_type are required`; `"oidc_client_secret":null`
+              gives `oidc_client_secret must not be empty`), as `main`'s
+              PAC-22 decoder does (PAC-50 contract revision 8.1, N1).
+           b. None of `saml_entry_point`, `saml_issuer`, `saml_cert` is
+              present, whatever its value (including `""` and `null`). The
+              first present, in that order, is named: `saml_entry_point is
+              not supported`, `saml_issuer is not supported`, `saml_cert is
+              not supported` (PAC-22 spec D-8, AC-18). Such a value is
+              refused, never stored and never silently dropped.
+           c. No other property outside the schema (PAC-50, spec §4.2 step 3,
+              AC-16a): the first undeclared property, in byte order of the
+              property names, is refused with `unknown property: <name>`, the
+              PAC-24 settings convention. Property names are case-sensitive,
+              so `OIDC_CLIENT_SECRET` or `org_id` is an undeclared property.
+              (Before PAC-50 an undeclared property was ignored, although the
+              schema said `additionalProperties: false`.)
+           d. `domain`, `provider_name` and `provider_type` are non-empty
+              (`domain, provider_name and provider_type are required`).
+           e. `provider_type` is `oidc`. `saml` is refused with
+              `provider_type 'saml' is not supported` (PAC-22 spec D-1, AC-8):
+              the product cannot complete a SAML sign-in. Any other value is
+              refused with `provider_type must be 'oidc'`.
+           f. `oidc_issuer` and `oidc_client_id` are each present and
+              non-empty, in that order: `oidc_issuer is required`,
+              `oidc_client_id is required` (PAC-22 spec D-2, AC-7). Missing,
+              `null` and `""` are the same refusal. Then, when
+              `oidc_client_secret` is present, it is a non-empty string: `""`
+              and `null` are refused with `oidc_client_secret must not be
+              empty` (PAC-22 spec D-12, AC-26). Values are stored as given (not
+              trimmed).
+        3. Domain: `domain` must equal the caller's org domain, exact and
+           case-insensitive. Otherwise 403 `provider_domain_mismatch` (owner
+           decision 2026-10-27, RFC 9110 §15.5.4: the request is understood
+           and the caller is not permitted to configure that domain). A
+           subdomain does NOT match: with org `acme.com`, `sub.acme.com` is a
+           403, and so is a foreign domain such as `other.com`. Nothing is
+           trimmed: `" acme.com "` is a 403 too. Nothing is written and a live
+           grant is NOT consumed. (Before PAC-50 this was the suffix rule
+           domain.DomainMatchesOrg, which accepted any subdomain, with the
+           403 `can only configure SSO for your own domain`; ex-PAC-46.)
+        4. Kept secret (PAC-22 check 6), only when `oidc_client_secret` is
+           absent, against the row this write would be stored under: the row
+           under the lower-cased `domain` (PAC-50 stores domains lower-cased
+           and its migration lower-cases older rows, so `ACME.com` is checked
+           against the `acme.com` row). After step 3 the domain is the
+           caller's org domain, so the row read is always the caller's own
+           organisation's. 400 `oidc_client_secret is required` when there is
+           no configuration, or it is not of type `oidc`, or its stored client
+           secret is empty (PAC-22 spec AC-7, AC-25); 400 `oidc_client_secret
+           is required when oidc_issuer or oidc_client_id changes` when the
+           submitted issuer or client id differs from the stored one (PAC-22
+           spec D-13, AC-24). Like every refusal above, decided before
+           authorization: it consumes no grant.
+        5. Authorization, one of:
+           a. a live admin step-up grant for (caller, caller's org) whose
+              purpose is SSO configuration writes (`sso_write`), obtained
+              through GET /api/admin/sso/stepup less than 10 minutes earlier.
+              The request carries nothing that names it: the server selects
+              the caller's newest live `sso_write` grant and consumes it in
+              the same statement, so one grant authorizes exactly one write,
+              and two concurrent writes on one grant yield one success and
+              one 403. A grant issued for another purpose (a later feature
+              that reuses this admin proof, such as the organisation AI key)
+              is never consumed by an SSO write, and an `sso_write` grant is
+              never consumed by a write of another purpose (PAC-50 contract
+              revision 8.1, N5; spec §4.8).
+              Every 400 and 403 above happens before this step and leaves
+              the grant live; a failure after it (the store-time 400 of step
+              6, the 500 below) leaves it consumed.
+           b. break-glass: the caller's ACCOUNT holds a listed address
+              DOMAIN-CONFIRMED, i.e. the address stored on the session's
+              account (`users.email`, compared lower-cased) is listed in the
+              deployment's `PACEDAY_ADMIN_EMAILS` (exact, lower-cased) and
+              that account's `addressStanding` is `domain_confirmed`
+              (PAC-71, spec §3 "PAC-50 admin step-up and break-glass", D-13,
+              AC-38; before PAC-71 the session's `email` CLAIM was compared,
+              which a session of an account that no longer carries the
+              address, or carries it unconfirmed, could pass) AND the
+              session JWT was issued less than 10 minutes ago and not more
+              than one minute in the future (a token stamped further ahead is
+              not fresh). Qualifying except for freshness gives 403
+              `sso_write_requires_fresh_login`. An account that carries a
+              listed address UNCONFIRMED, or whose session claim is listed
+              but whose stored address is not, is not break-glass at all.
+           (a) is tried first: a break-glass caller who also holds a live
+           grant consumes that grant on the write.
+           Neither gives 403 `sso_write_requires_admin_stepup` with
+           `stepup_url`, `stepup_scopes` and `without_stepup`. A 403 rather
+           than a 401: the session is valid, the privilege is not there.
+           Every 403 leaves the provider table unchanged.
+        6. Store: the domain is stored lower-cased, so `ACME.com` replaces the
+           existing `acme.com` row rather than adding a second one.
+           Interleaved writes (PAC-22 spec D-14, AC-27, AC-28): another write
+           to the same domain can be stored between this request's checks and
+           its store, so what a replace keeps is decided again, atomically
+           with the store, against the configuration as it is at that moment
+           and under the same key as step 4. When the secret is left out, the
+           store keeps the stored secret only if the conditions of step 4
+           still hold; if they do not (the issuer or client id now differs,
+           there is no secret to keep, the configuration was removed or is no
+           longer `oidc`), the request is refused with the 400 step 4 would
+           give against that state and nothing it carried is stored. The
+           grant consumed in step 5a stays consumed (PAC-50 spec §4.2 step
+           5a: the consume is the last step before the write; §9 D-14). A
+           stored configuration never pairs one write's issuer or client id
+           with a secret kept from a configuration that had a different issuer
+           or client id, and never holds an empty secret written by this
+           operation. The active state is never written by a replace: the
+           configuration keeps the state stored at the moment the replace is
+           stored, so a setSsoProviderState transition stored while the
+           replace was in flight is never undone (PAC-22 AC-28).
+           Each stored write is recorded server-side for operators (PAC-50
+           spec §4.6, `op` `create` or `update`, `via` `stepup` or
+           `breakglass`); a refused or failed store records nothing. No
+           operation exposes that record.
+
+        Active state (PAC-22 spec §3.3, D-3, resolves API-066). This operation
+        never changes whether SSO is active: a new configuration is created
+        active, and a replaced configuration keeps the state stored at the
+        moment the replace is stored. Only setSsoProviderState changes it.
+        (Before PAC-22 every write forced `enabled` to true.)
+
+        Configurations stored before PAC-22 (a SAML row, an OIDC row with an
+        empty issuer, client id or secret) are not rewritten or deleted by
+        these checks. They stay readable through listSsoProviders and can be
+        suspended, resumed and deleted.
       requestBody:
         required: true
         content:
@@ -656,13 +1509,43 @@ paths:
               $ref: '#/components/schemas/SsoProviderCreateRequest'
       responses:
         '201':
-          description: The stored provider row.
+          description: |
+            The stored configuration, for a create and for a replace alike,
+            as an SsoProvider: it never carries the client secret or a signing
+            certificate under any name, nor anything derived from either
+            (API-001 disclosure half, PAC-22 spec AC-1, AC-2). No property
+            carries the supplied or the stored secret. The byte-level form (the
+            secret does not occur in the body or the headers, raw or
+            JSON-escaped, in any letter case) holds for a secret that does
+            not itself occur in the response's non-secret values, as PAC-22
+            spec AC-1 and AC-2 arrange with long, test-unique values: a secret
+            of `okta` or `true` can coincide with `provider_name`,
+            `oidc_issuer` or `has_oidc_client_secret: true`, which is not a
+            disclosure.
+            After a replace that left the secret out, `has_oidc_client_secret`
+            is true (the kept secret, PAC-22 spec AC-22). `domain` is the
+            lower-cased domain (PAC-50).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SsoProviderResponse'
+                $ref: '#/components/schemas/SsoProvider'
         '400':
-          description: '"invalid JSON"; "domain, provider_name and provider_type are required"; "provider_type must be ''oidc'' or ''saml''".'
+          description: |
+            JSON error; nothing is stored or changed. One of, in the order of
+            the gate (step 2, then step 4): `invalid JSON`; `saml_entry_point
+            is not supported`; `saml_issuer is not supported`; `saml_cert is
+            not supported`; `unknown property: <name>` (PAC-50); `domain,
+            provider_name and provider_type are required`; `provider_type
+            'saml' is not supported`; `provider_type must be 'oidc'`;
+            `oidc_issuer is required`; `oidc_client_id is required`;
+            `oidc_client_secret must not be empty`; `oidc_client_secret is
+            required`; `oidc_client_secret is required when oidc_issuer or
+            oidc_client_id changes`. The body never echoes a submitted or a
+            stored value, except the undeclared property's name. A live grant
+            is NOT consumed, except by the store-time refusal of step 6 (one of
+            the last two messages, given after the grant was consumed). A domain
+            that is not the org domain is not a 400: it is the 403
+            `provider_domain_mismatch`.
           content:
             application/json:
               schema:
@@ -674,15 +1557,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required"; "org not found"; "can only configure SSO for your own domain".'
+          description: |
+            The caller may not write SSO configuration. The `error` field tells
+            the four cases apart (see SsoWriteForbiddenResponse): membership
+            (step 1, before any 400), `provider_domain_mismatch` (step 3: the
+            body's `domain` is not exactly the org domain, a subdomain, a
+            foreign domain, or one with surrounding whitespace; replaces the
+            pre-PAC-50 403 `can only configure SSO for your own domain`; a live
+            grant is not consumed), the step-up, or a fresh login (step 5).
+            Only `sso_write_requires_admin_stepup` carries `stepup_url`. The
+            provider table is unchanged.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/SsoWriteForbiddenResponse'
         '500':
           description: >-
-            Save failed. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21).
+            Storage failed: the stored-row read of step 4 (before any grant is
+            consumed), the grant lookup in step 5a, or the save after the gate
+            passed. Body: `{"error":"internal error"}`. The detail is written to the
+            server log and Sentry only (PAC-21). A grant consumed for this request
+            stays consumed; the retry needs a new step-up.
           content:
             application/json:
               schema:
@@ -690,16 +1585,33 @@ paths:
     get:
       operationId: listSsoProviders
       tags: [auth]
-      summary: List the SSO providers belonging to the caller's org
+      summary: List the SSO configurations belonging to the caller's org
+      description: |
+        Any member of the org may call it (unchanged by PAC-22; restricting
+        who may read is out of PAC-22's scope, spec §5). Since PAC-22 the
+        response is an SsoProviderList: a named container, not a bare array
+        (spec §3.7), whose items never carry the client secret or a signing
+        certificate under any name, nor anything derived from either, whoever
+        the caller is (API-001 disclosure half, spec AC-1): no property of
+        the response carries either stored secret, or anything derived from
+        either, under any name. The byte-level form of that guarantee (neither
+        stored value occurs in the body or the headers, raw or JSON-escaped,
+        in any letter case) holds for a secret that does not itself occur in
+        the response's non-secret values, as spec AC-1 arranges with long,
+        test-unique values; a secret such as `okta` or `true` can coincide
+        with a provider name, an issuer or a fixed token, and that is not a
+        disclosure. Suspended configurations are listed,
+        with `state: suspended`; so are configurations stored before PAC-22
+        that could not be written today (a SAML row, an incomplete OIDC row).
+        A configuration is listed when its domain equals the org's domain
+        exactly (the join is on `organizations.domain`).
       responses:
         '200':
-          description: Providers for the caller's org; `[]` when there are none.
+          description: The org's configurations; `{"providers":[]}` when there are none.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/SsoProviderResponse'
+                $ref: '#/components/schemas/SsoProviderList'
         '401':
           description: No/invalid JWT (text/plain).
           content:
@@ -707,7 +1619,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required" — the user has no org_id.'
+          description: '"org membership required" — the user has no org_id (also returned when the user lookup errors).'
           content:
             application/json:
               schema:
@@ -725,19 +1637,45 @@ paths:
     delete:
       operationId: deleteSsoProvider
       tags: [auth]
-      summary: Delete the SSO provider for a domain
+      summary: Delete the SSO provider for the caller's org domain
       description: |
-        Deletes by domain after checking the domain belongs to the caller's org.
-        Deleting a domain that has no provider row still returns 204 — the
-        storage layer does not check rows-affected.
+        Same gate as createSsoProvider, in the same order (spec §4.2), with no
+        body to check: membership (403 `org membership required` / `org not
+        found`), then the `{domain}` segment, lower-cased and not trimmed, must
+        equal the caller's org domain exactly (403 `provider_domain_mismatch`,
+        owner decision 2026-10-27; a subdomain does not match, nor does a
+        foreign domain, nor `%20acme.com`; no grant is consumed), then
+        authorization (a live step-up grant, consumed, or break-glass with a
+        fresh session; otherwise 403 `sso_write_requires_admin_stepup` with
+        `stepup_url`, `stepup_scopes` and `without_stepup`, or
+        `sso_write_requires_fresh_login`).
+        The segment is a target, never an authorization: it chooses which row,
+        and only ever within the caller's own org domain.
+
+        The row deleted is the lower-cased domain, so `DELETE
+        /api/admin/sso/ACME.com` removes the `acme.com` row, whatever its
+        state: a suspended configuration (PAC-22) is deleted like an active
+        one. Since PAC-50 a delete that removes no row is a 404 and is not
+        recorded (API-067 fixed; before PAC-50 it answered 204 having deleted
+        nothing). The grant is consumed before the delete runs, so a 404 has
+        used it (spec §9 D-5). A delete that removes a row is recorded for
+        operators (spec §4.6, `op` `delete`).
+
+        `DELETE /api/admin/sso/stepup` is this operation with `{domain}` =
+        `stepup` (the step-up paths define only GET): it gets the same gate,
+        so an org member gets 403 `provider_domain_mismatch` and nothing is
+        consumed.
       parameters:
         - name: domain
           in: path
           required: true
-          schema: { type: string }
+          schema:
+            type: string
+            minLength: 1
+          description: The caller's org domain, in any casing, e.g. "acme.com".
       responses:
         '204':
-          description: Deleted (or nothing existed). No body.
+          description: The row existed and was deleted. No body.
         '401':
           description: No/invalid JWT (text/plain).
           content:
@@ -745,20 +1683,635 @@ paths:
               schema:
                 $ref: '#/components/schemas/PlainTextError'
         '403':
-          description: '"org membership required"; "org not found"; "can only delete SSO for your own domain".'
+          description: |
+            The caller may not write SSO configuration; see
+            SsoWriteForbiddenResponse. Nothing is deleted. Includes
+            `provider_domain_mismatch` when `{domain}` is not exactly the
+            caller's org domain (replaces the pre-PAC-50 403 `can only delete
+            SSO for your own domain`); no grant is consumed then.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteForbiddenResponse'
+        '404':
+          description: |
+            `sso provider not found`: authorized, but no provider row exists
+            for the org domain (added by PAC-50, API-067). Nothing is recorded.
+            The grant is spent (spec §9 D-5).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: >-
-            Delete failed. Body: `{"error":"internal error"}`. The detail is written to the
-            server log and Sentry only (PAC-21).
+            Storage failed: the grant lookup, or the delete after the gate passed.
+            Body: `{"error":"internal error"}`. The detail is written to the server
+            log and Sentry only (PAC-21). A grant consumed for this request stays
+            consumed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /api/admin/sso/{domain}/state:
+    put:
+      operationId: setSsoProviderState
+      tags: [auth]
+      summary: Suspend or resume the SSO configuration for a domain
+      description: |
+        Added by PAC-22 (spec §3.3, §3.5, §3.6; resolves API-066). The only
+        operation that changes whether SSO is active, and it changes nothing
+        else. The request names its target (`{domain}`, as deleteSsoProvider
+        does) and the state it wants; it never toggles. It carries no
+        configuration value and no secret, so suspending and resuming never
+        need the client secret (PAC-22 spec AC-10, AC-12).
+
+        While a configuration is suspended, sign-in behaves as if no SSO were
+        configured for its domain: detectAuthProvider does not answer `sso`
+        and startSsoLogin answers 404. The configuration itself is kept and
+        stays listed. **Suspension stops new sign-ins; it does not end
+        sessions** already issued through the provider (PAC-22 spec §3.5).
+
+        **An SSO configuration write, behind PAC-50's gate** (PAC-22 spec D-5,
+        D-6; PAC-50 contract revision 8). The caller must be permitted to
+        change SSO configuration under exactly the rule that authorizes
+        createSsoProvider and deleteSsoProvider (a live admin step-up grant,
+        consumed, or break-glass with a fresh session), never membership
+        alone, and every refusal of that rule is a SsoWriteForbiddenResponse.
+        **Not served before PAC-50 is on `main`** (PAC-22 D-16): no route
+        answers this operation until PAC-50's gate exists, so no SSO write is
+        ever served ungated. Serving it is PAC-22's follow-up on top of
+        PAC-50; what follows is how it behaves once served.
+
+        Checks run in this order; the first that fails decides the response:
+
+        1. Membership: the caller belongs to an org, else 403
+           `org membership required` (or `org not found`), as at step 1 of
+           createSsoProvider.
+        2. Body: a JSON object, else `invalid JSON`. A body that is not
+           JSON, and a body that is valid JSON but not an object (`[]`,
+           `"active"`, `true`, `1`, `null`), all get `invalid JSON`; then the
+           object's properties in body order:
+           the first property other than `state` is refused
+           (`unknown property: <name>`), so no configuration value can ride
+           along, and a second `state` is refused (`duplicate property:
+           state`), so a body never asks for two states and no decoder's
+           "last one wins" decides a kill switch; then `state` is `active` or
+           `suspended` (`state must be 'active' or 'suspended'`, for a missing
+           or `null` state too).
+        3. Domain: `{domain}`, lower-cased and not trimmed, must equal the
+           caller's org domain exactly, case-insensitively, else 403
+           `provider_domain_mismatch` (SsoWriteDomainMismatch), as on the
+           other two SSO writes (owner decision 2026-10-27; PAC-22 spec D-15,
+           PAC-50 spec §9 D-10). A subdomain of the org domain, another org's
+           domain and a padded segment (`%20acme.com`) are all refused (PAC-22
+           spec AC-21).
+        4. Authorization: step 5 of createSsoProvider (a live step-up grant,
+           consumed, tried first; or break-glass with a fresh session), else
+           403 `sso_write_requires_admin_stepup` (with `stepup_url`,
+           `stepup_scopes` and `without_stepup`) or
+           `sso_write_requires_fresh_login`. Steps 1-3 are decided from the
+           request alone and leave the grant unspent.
+        5. Lookup of the configuration for the lower-cased domain, whatever
+           its state: none gives 404 `sso provider not found`; nothing is
+           created and nothing is recorded, and the grant is spent
+           (PAC-22 spec D-9, AC-19; as deleteSsoProvider's 404, PAC-50 spec
+           §9 D-5).
+        6. If the configuration is already in the requested state, nothing
+           changes and the answer is 200 with the configuration as stored
+           (PAC-22 spec AC-20). Otherwise only the active state is written: no
+           configuration value is read from the request or written, so a
+           replace stored while this request is in flight keeps its values
+           and this request keeps its state (PAC-22 spec AC-28).
+           `updated_at` is not changed by this operation in either case: it
+           records the last configuration write (createSsoProvider).
+        7. Recording: every transition that found its configuration,
+           including one that changed nothing, is recorded where PAC-50
+           records configuration writes (PAC-50 spec §4.6), as
+           `sso_provider_written` with `op` `suspend` (state `suspended`) or
+           `resume` (state `active`) and `via` `stepup` or `breakglass`,
+           naming the organisation, the acting user and the provider (PAC-22
+           spec D-10, AC-16). No operation exposes that record.
+           The state write and its record are one transaction, as PAC-50's
+           configuration writes are: either both happen or neither does.
+
+        Steps 5 to 7 see one and the same row: the state write and its
+        record apply to the row the lookup found, and to nothing else. A
+        configuration removed (deleteSsoProvider) after
+        this request's lookup and before its write is stored is answered
+        exactly as one that was never there: 404 `sso provider not found`,
+        nothing written, nothing recorded, the grant spent (PAC-22 spec
+        D-9: never success for a configuration that does not exist). A
+        removal stored after this request's write is an ordinary later
+        removal.
+
+        This operation acts on configurations stored before PAC-22 that
+        createSsoProvider would refuse today (a SAML row, an incomplete OIDC
+        row) exactly as on any other (PAC-22 spec AC-8).
+
+        `PUT /api/admin/sso/stepup/state` (PAC-50 defines only GET under
+        `/api/admin/sso/stepup`) is this operation with `{domain}` =
+        `stepup`, which is never an org domain: 403 `provider_domain_mismatch`.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+          description: The caller's org domain, in any casing, e.g. "acme.com".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SsoProviderStateRequest'
+      responses:
+        '200':
+          description: |
+            The configuration after the request, as an SsoProvider; `state`
+            is the requested state. The same answer when it was already in
+            that state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoProvider'
+        '400':
+          description: |
+            JSON error; nothing changes and no grant is spent. One
+            of: `invalid JSON` (also for valid JSON that is not an object);
+            `unknown property: <name>`; `duplicate
+            property: state`; `state must be 'active' or 'suspended'`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: No/invalid JWT (text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: |
+            The caller may not write SSO configuration; see
+            SsoWriteForbiddenResponse. `org membership required` / `org not
+            found` (step 1); `provider_domain_mismatch`, the target is not
+            exactly the caller's org domain (step 3, PAC-22 spec AC-21, D-15;
+            no grant is spent); `sso_write_requires_admin_stepup` or
+            `sso_write_requires_fresh_login` (step 4). The configuration's
+            state is unchanged and nothing is recorded (PAC-22 spec AC-15,
+            AC-21).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteForbiddenResponse'
+        '404':
+          description: |
+            `sso provider not found`: the caller is permitted, but no
+            configuration exists for the domain, including one removed
+            after the lookup and before the state write would be stored.
+            Nothing is created, written or recorded; the grant is
+            spent (PAC-22 spec D-9, AC-19).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: >-
+            Storage failed: the grant lookup, the configuration lookup, or the
+            state write. Body: `{"error":"internal error"}`. The detail is written to
+            the server log and Sentry only (PAC-21). A grant consumed for this
+            request stays consumed. The state write and its `sso_provider_written`
+            record are one transaction, so after a 500 the state is the one stored
+            before the request and nothing is recorded for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/stepup:
+    get:
+      operationId: startSsoAdminStepup
+      tags: [auth]
+      summary: Begin an admin step-up for an SSO write or an organisation-AI change
+      description: |
+        Added by PAC-50 (spec §4.3). Behind the session; the org is the
+        caller's, never a parameter. Sets a purpose-bound state cookie and
+        redirects the browser to the chosen identity provider for a fresh
+        sign-in whose result is checked for administrator status over the
+        caller's org domain (Google: `hd` equals the org domain and the
+        Directory reports `isAdmin` or `isDelegatedAdmin`; Microsoft: the
+        tenant has the org domain verified and the user holds a qualifying
+        Entra role). The outcome comes back through
+        GET /api/admin/sso/stepup/callback.
+
+        This is the `stepup_url` of SsoWriteStepupRequired and of
+        SsoStepupOptions: the client appends `?provider=google` or
+        `?provider=microsoft` after asking the user which account administers
+        their organisation (offering only the providers that are keys of
+        `stepup_scopes`, the ones configured on this deployment), then
+        navigates the browser there (a top-level navigation, not a fetch),
+        resolving the path against its configured API base's origin, not the
+        page's. A client with no refused write in hand (the web app's
+        Settings, spec AC-25) obtains those values from getSsoStepupOptions.
+
+        **Purpose (NEW-llm-bring-your-own Part 2, spec
+        `docs/specs/NEW-llm-bring-your-own-part2.md` §3.3, P2-D1).** The
+        optional `purpose` names the write the resulting grant may authorise:
+        `sso_write` (the default when absent: PAC-50's flow, byte-identical)
+        or `llm_org_key_write` (one change of the organisation's AI
+        configuration, patchOrganizationAI). The purpose is bound into the
+        signed state cookie and the callback issues the grant with it; a
+        grant is only ever consumed by a write of its own purpose (PAC-50
+        AC-27, spec P2-AC-2). The checks the callback makes and the scopes
+        requested do not depend on the purpose. A client that received
+        OrganizationAIWriteStepupRequired navigates to `stepup_url` with
+        `?provider=<p>&purpose=<stepup_purpose>`; a client that omits
+        `purpose` obtains an SSO grant, which the organisation-AI change
+        refuses without consuming it.
+
+        Checks run in this order; the first that fails decides the response,
+        and none of them sets the state cookie: `provider` (400), `purpose`
+        (400), membership (403), the provider configured on this deployment
+        (503), the state value generated (500). So an orgless caller with
+        `?provider=okta` gets the 400, and an orgless caller naming an
+        unconfigured provider gets the 403.
+
+        The step-up is optional and separate from sign-in (owner decision
+        2026-10-27, PAC-68 OQ-2 / PAC-50 OQ-2). Sign-in (startGoogleOAuth,
+        startMicrosoftOAuth, the OIDC SSO start) never requests these scopes
+        nor any scope needing admin consent; only this round-trip does. The
+        broader scopes are listed in `stepup_scopes` and what is lost without
+        the step-up in `without_stepup` (SsoWriteStepupRequired,
+        SsoStepupOptions), so a client can explain both before it navigates
+        here. Declining costs nothing else: the app keeps working, and the
+        step-up can be started again at any time by navigating to
+        `stepup_url`, from Settings (spec §9 D-13) or at the next SSO write,
+        which answers SsoWriteStepupRequired again while there is no live
+        grant. A grant is single-use and expires after 10 minutes, so the
+        step-up is meant to be started for a write the user is about to make.
+        The resulting tokens are discarded after the check; nothing is written
+        to the user's settings or token store, and the calendar consent is not
+        widened. Google adds the read-only directory-user scope; Microsoft adds
+        delegated directory-role and organisation read scopes (whether
+        `User.Read` suffices for the organisation's verified domains is spec
+        OQ-2's technical sub-question, open for the plan; it does not change
+        this interface).
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/SsoStepupProvider'
+          description: Which identity provider to step up with. Missing, or any other value, is a 400.
+        - name: purpose
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SsoStepupPurpose'
+          description: |
+            NEW-llm-bring-your-own Part 2. The write the grant will authorise.
+            Absent means `sso_write` (PAC-50 unchanged). Present and not in the
+            enum (including empty), or present more than once (whatever the
+            values), is the 400 `purpose must be 'sso_write' or
+            'llm_org_key_write'` (contract revision 2).
+      responses:
+        '302':
+          description: Redirect to the identity provider's authorization endpoint.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+              description: |
+                The provider's authorization URL; its redirect_uri is
+                `<APP_URL>/api/admin/sso/stepup/callback`.
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `sso_stepup_state=<opaque>; Path=/api/admin/sso/stepup;
+                Max-Age=600; HttpOnly; SameSite=Lax`, plus `Secure` unless the
+                deployment sets `PACEDAY_INSECURE_COOKIES=true` (the PAC-20
+                rule every cookie follows, `config.DecideSecureCookies`; a
+                deployment property, not observed per request; spec §4.3). The value binds the caller's user id, org id, the
+                chosen provider, the purpose (`sso_write` when absent;
+                NEW-llm-bring-your-own Part 2) and a nonce, and cannot be
+                forged, nor replayed by or for another user.
+        '400':
+          description: |
+            No state cookie is set. Two forms:
+            - `provider` missing or empty: text/plain
+              `Query argument provider is required, but not found`. The
+              operation is mounted on the router directly, not through the
+              generated request wrapper; the handler writes these exact bytes
+              itself, the ones the generated wrapper's default error handler
+              writes for a missing required query parameter, so the body does
+              not change if the operation later moves to the generated server
+              (spec §9 D-9).
+            - `provider` present but not in the enum: JSON
+              `provider must be 'google' or 'microsoft'`.
+            - `purpose` present but not in the enum (NEW-llm-bring-your-own
+              Part 2): JSON `purpose must be 'sso_write' or
+              'llm_org_key_write'`. Checked after `provider`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain). No state cookie is set.
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: |
+            `org membership required`: the caller has no org, or its org row
+            is gone (this operation does not distinguish the second case as
+            `org not found`), so there is no org domain to step up for. No
+            state cookie is set. (Assumed by the factory at stage 2, pending
+            owner confirmation; spec "Decisions", D-1.) The body is
+            SsoWriteMembershipRequired, the same schema as the membership 403
+            of getSsoStepupOptions and of the SSO writes, so a generated
+            client has one type for this refusal (PAC-50 contract revision
+            8.1, N4; the bytes are unchanged, `{"error":"org membership
+            required"}`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
+        '503':
+          description: |
+            `<provider> step-up not configured`: the deployment has no OAuth
+            client for the chosen provider, or has no `APP_URL` (the
+            callback's redirect_uri cannot be built without it, so with
+            `APP_URL` unset every provider answers this 503). No state cookie
+            is set. Same
+            precedent as startMicrosoftOAuth's 503. A provider answers this
+            503 if and only if it is not a key of `stepup_scopes`. (Assumed by
+            the factory at stage 2, pending owner confirmation; spec
+            "Decisions", D-2.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The state value could not be generated. Body:
+            `{"error":"internal error"}`; the detail is written to the server
+            log and Sentry only (PAC-21). No state cookie is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/sso/stepup/options:
+    get:
+      operationId: getSsoStepupOptions
+      tags: [auth]
+      summary: What the SSO admin step-up would request, without making a write
+      description: |
+        Added by PAC-50 contract revision 8 (spec §9 D-13, AC-25; owner
+        decision 2026-10-27: the step-up can be started again from Settings).
+        Behind the session; the org is the caller's, never a parameter. It
+        gives a signed-in org member the `stepup_url`, `stepup_scopes` and
+        `without_stepup` that the step-up 403 (SsoWriteStepupRequired)
+        carries, so a page with no SSO write to make (the web app's Settings)
+        can explain the optional step-up and offer it before any navigation.
+
+        The values follow the 403's rules and are built from the same
+        components (SsoStepupUrl, SsoStepupScopes, SsoWithoutStepup). On one
+        deployment, this response's `stepup_scopes` and `without_stepup` are
+        equal to the step-up 403's: a provider is a key of `stepup_scopes` if
+        and only if startSsoAdminStepup would not answer 503 for it (spec §9
+        D-2, D-9), each list is exactly what that start requests beyond the
+        identity scopes, and an empty object means no step-up can be started
+        on this deployment.
+
+        Read-only. It consults and consumes no grant, sets and clears no
+        cookie, writes nothing and records nothing (no SSO event). Its answer
+        does not depend on whether the caller holds a live grant or is on the
+        break-glass list: it says what the step-up would request, not whether
+        this caller needs it, and a break-glass operator gets the same 200.
+        The `sso_stepup_state` cookie's Path (`/api/admin/sso/stepup`) covers
+        this path, so a browser in the middle of a step-up sends it here;
+        this operation ignores it.
+
+        **Purpose (NEW-llm-bring-your-own Part 2, spec P2-AC-30).** The
+        optional `purpose` says which write the client is about to offer the
+        step-up for. `stepup_url` and `stepup_scopes` do not depend on it;
+        `without_stepup` does: `[sso_configuration_writes]` for `sso_write`
+        (the default when absent, byte-identical to PAC-50) and
+        `[organization_ai_configuration_writes]` for `llm_org_key_write`. The
+        client navigates to `stepup_url` with `?provider=<p>` and, for
+        `llm_org_key_write`, `&purpose=llm_org_key_write`.
+
+        Checks: `purpose` (400), membership (403), then 200. Calling it costs
+        nothing, so a client may call it whenever it renders the entry point.
+      parameters:
+        - name: purpose
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SsoStepupPurpose'
+          description: |
+            NEW-llm-bring-your-own Part 2. Absent means `sso_write`. Any value
+            outside the enum, including empty, or the parameter present more
+            than once, is the 400 (contract revision 2).
+      responses:
+        '500':
+          $ref: '#/components/responses/SessionGenerationUnavailable'
+        '200':
+          description: The step-up's URL, what it would request from each configured provider, and what is lost without it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoStepupOptions'
+        '400':
+          description: |
+            NEW-llm-bring-your-own Part 2. `purpose` present but not in the
+            enum: `{"error":"purpose must be 'sso_write' or 'llm_org_key_write'"}`.
+            Nothing is read or recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: No/invalid JWT (from requireAuth, text/plain).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+        '403':
+          description: |
+            The caller has no org (`org membership required`, also when the
+            user lookup fails) or its org row is gone (`org not found`): there
+            is no org domain to step up for (as at the start, spec §9 D-1, and
+            as at step 1 of the SSO writes). The body is
+            SsoWriteMembershipRequired; it carries no `stepup_url`. A client
+            offers no step-up entry point to such a caller (spec AC-25).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoWriteMembershipRequired'
+
+  /api/admin/sso/stepup/callback:
+    get:
+      operationId: ssoAdminStepupCallback
+      tags: [auth]
+      summary: Finish an admin step-up and record its outcome
+      description: |
+        Added by PAC-50 (spec §4.3). The identity provider's redirect target.
+        Behind the session: the browser's top-level navigation back from the
+        provider carries the SameSite=Lax `auth_token` cookie. Without a
+        session the answer is 401 and nothing is issued or recorded.
+
+        With a session, every outcome is a 302 to the web app's settings page,
+        `<FRONTEND_URL>/settings`, with the outcome in the query string (see
+        the 302's Location). Checks run in this order
+        and the first failure decides the `reason`:
+
+        0. The `sso_stepup_state` cookie is present, unexpired, untampered,
+           matches `state`, and is bound to the session's user and current
+           org; else `state_mismatch`.
+        1. The authorization code is exchanged and the ID token verified
+           (signature, audience, issuer, expiry). A provider `error`, a
+           missing `code` or any failure here gives `token_invalid`.
+        2. Google: `hd` present (`no_hd`) and equal to the org domain
+           (`hd_mismatch`). Microsoft: the organisation answer's id equals
+           the token's `tid` and its verified domains contain the org domain
+           (`tid_mismatch`; a failed organisation lookup is also
+           `tid_mismatch`); an org already pinned to a different tenant gives
+           `tid_changed` and the pin stays. On success the org's tenant is
+           pinned (idempotent).
+        3. The token's email (Microsoft: `preferred_username`/`email`) equals
+           the session email; else `email_mismatch`. A Google token whose
+           `email_verified` is not true is also `email_mismatch`.
+        4. Administrator: Google Directory `isAdmin` or `isDelegatedAdmin`;
+           Microsoft `wids` (or, when absent, the directory-role lookup)
+           containing a qualifying role template id (spec §4.4). Anything
+           else, including a lookup error, gives `not_admin`.
+        4b. (PAC-71, spec §3 "PAC-50 admin step-up and break-glass", D-13,
+           AC-21) When the caller's account is bound to an identity at the
+           step-up's authority (Google; or Microsoft with the same tenant as
+           the step-up token's `tid`), the step-up token's identity must be
+           that bound identity: Google `sub` equal to the bound Google
+           subject; Microsoft `oid` equal to the bound object id. Else
+           `identity_mismatch`. When the account's binding is at another
+           authority (another provider, another tenant, an SSO issuer) or
+           it has none, this check does not apply and today's checks 0 to 4
+           decide alone. It runs after every existing check, so a step-up
+           that fails one of them keeps today's reason. The step-up's scopes
+           and consent are unchanged. It relies on two provider facts that
+           are a merge condition of PAC-71 (PAC-71.md §3, §8): the step-up
+           ID token's Google `sub` equals the v2 userinfo `id` recorded at
+           sign-in, and the Microsoft `oid` equals Graph `/me` `id`. If
+           either did not hold, this check would fail closed
+           (`identity_mismatch`) for every bound administrator at that
+           provider.
+        5. A grant for (caller, caller's org, provider) is issued with the
+           purpose bound in the state (`sso_write` unless the start named
+           `llm_org_key_write`; NEW-llm-bring-your-own Part 2), valid for 10
+           minutes and good for one write of that purpose (spec §4.8; a write
+           of another purpose cannot spend it, PAC-50 AC-27). A state signed
+           before NEW-llm-bring-your-own Part 2 was deployed carries no
+           purpose; it is read as `sso_write` (contract revision 2), so a
+           step-up in flight across the deploy completes as PAC-50's.
+
+        "Byte-identical to PAC-50" for an absent or `sso_write` purpose
+        (NEW-llm-bring-your-own Part 2) covers what a client can observe: the
+        302 and its Location, the 400 bodies, the options read and the
+        landing Location. It does not cover the signed state cookie's value,
+        which now also binds the purpose and is opaque to clients.
+
+        Every outcome with a session, granted or denied, is recorded
+        server-side for operators (spec §4.6) and clears the state cookie.
+        No outcome touches the session, the user's settings or token store.
+        The mapping of a provider `error`, a missing `code`, a failed
+        organisation lookup and an unverified Google email onto the enum is
+        assumed by the factory at stage 2, pending owner confirmation (spec
+        "Decisions", D-3).
+
+        The web app's Settings page reads the outcome from this query
+        (`stepup`, and `reason` on a denial) and states it (spec AC-25); a
+        step-up started from a refused write elsewhere also lands there.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: { type: string }
+          description: Echo of the state the start operation sent. Absent, or not matching the cookie, gives denied/`state_mismatch`.
+        - name: code
+          in: query
+          required: false
+          schema: { type: string }
+          description: Authorization code. Absent gives denied/`token_invalid`.
+        - name: error
+          in: query
+          required: false
+          schema: { type: string }
+          description: Set by the provider when the user cancelled or the provider refused. Present gives denied/`token_invalid`.
+      responses:
+        '302':
+          description: Redirect to the web app's settings page with the outcome.
+          headers:
+            Location:
+              schema:
+                type: string
+                pattern: '/settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin|identity_mismatch))(&purpose=llm_org_key_write)?$'
+              description: |
+                `<FRONTEND_URL>/settings?stepup=granted`, or
+                `<FRONTEND_URL>/settings?stepup=denied&reason=<reason>`, where
+                `<reason>` is one of the nine values in the pattern (spec
+                §4.6; the same enum the server records): `state_mismatch`,
+                `token_invalid`, `no_hd`, `hd_mismatch` (Google only),
+                `tid_mismatch`, `tid_changed` (Microsoft only),
+                `email_mismatch`, `not_admin`, and since PAC-71
+                `identity_mismatch` (check 4b). Never a raw token or provider
+                error text. Built from the configured frontend URL, never a
+                literal path (contrast API-084).
+
+                NEW-llm-bring-your-own Part 2: when the state's purpose is
+                `llm_org_key_write`, `&purpose=llm_org_key_write` is appended,
+                granted or denied, so the web returns the admin to the
+                organisation AI section (spec P2-AC-32). A `sso_write` outcome
+                carries no `purpose` parameter: its Location is byte-identical
+                to PAC-50's. A `state_mismatch` whose cookie signature does not
+                verify carries no purpose (none can be trusted).
+            Set-Cookie:
+              schema: { type: string }
+              description: |
+                `sso_stepup_state=; Path=/api/admin/sso/stepup; Max-Age=0;
+                HttpOnly; SameSite=Lax` (Go `MaxAge: -1`, which net/http
+                serialises as `Max-Age=0`), plus `Secure` under the same
+                deployment rule as the start's cookie (PAC-20). The state is
+                single-use.
+        '401':
+          description: |
+            No grant, no record, no redirect. Two forms:
+            - no/invalid JWT: text/plain, from requireAuth;
+            - a valid JWT whose user row no longer exists: JSON
+              `{"error":"unauthorized"}`, the convention `main`'s handlers
+              already use for that case (handlers_me.go, handlers_org.go).
+          content:
+            text/plain:
+              schema:
+                $ref: '#/components/schemas/PlainTextError'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Issuing the grant, pinning the tenant or writing the record failed
+            in storage. Body: `{"error":"internal error"}`; the detail is
+            written to the server log and Sentry only (PAC-21). No usable grant
+            exists afterwards. (Assumed by the factory at stage 2, pending owner
+            confirmation; spec "Decisions", D-4.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
     bearerAuth:
@@ -767,12 +2320,64 @@ components:
       bearerFormat: JWT
       description: |
         HS256 JWT issued by backend/auth/jwt.go GenerateToken. Claims: `sub`
-        (user uuid, string), `email`, `exp` (+7 days), `iat`.
+        (user uuid, string), `email`, `exp` (+7 days), `iat`, and since PAC-71
+        `gen` (see SESSION GENERATION below).
         middleware.requireAuth accepts it as `Authorization: Bearer <jwt>`.
         Since PAC-39 (API-008) the header wins over the `auth_token` cookie: when
         a `Bearer ` header is present its token is the only credential
         considered, whatever the cookie holds, and an invalid bearer token is a
         401 with no fallback to the cookie.
+
+        SESSION GENERATION (PAC-71, spec §3 "Sessions", D-20). Every account
+        has a session generation, a non-negative integer that starts at 0
+        for every account (existing accounts included) and only ever
+        increases. Every session token the server issues since PAC-71 carries
+        the generation of its account at issue time as the integer claim
+        `gen`. A token without `gen` (every token issued before PAC-71, and a
+        test helper's token that omits it) is read as `gen` 0. A `gen` that is
+        present but not a non-negative integer makes the token invalid.
+        The generation advances (by one, in the same transaction as the
+        change that causes it) when, and only when: a sign-in binds an
+        account created before PAC-71 (migration rule (a) or (b)); an
+        operator frees an account's address or replaces or writes its
+        binding (operator procedure, server-side command only, no HTTP
+        operation); or the operator runs the one-time "advance every
+        account's generation" command (spec OQ-6: whether a release runs it
+        is the owner's decision). A refusal, a connect and an ordinary sign-in
+        of a bound identity never advance it.
+
+        On EVERY protected operation of this document (every operation
+        without `security: []`), requireAuth additionally reads the account's
+        current generation, uncached, after the signature, expiry and `sub`
+        checks:
+        - token `gen` != the account's current generation (older, or newer
+          than any the account has had): 401, the same response as any other
+          requireAuth rejection (body the JSON text `{"error":"unauthorized"}`,
+          Content-Type `text/plain; charset=utf-8`, no Set-Cookie);
+        - no account row for `sub`: unchanged from today (the request
+          proceeds; handlers that need the row answer as they document),
+          except that every IN-REQUEST RE-CHECK below finds no current
+          generation and so answers the 401;
+        - the generation cannot be read (database error or timeout): 500,
+          Content-Type `application/json`, body exactly
+          `{"error":"internal error"}`, no Set-Cookie; never 401, because the
+          web app treats 401 as "signed out" (spec AC-48). Every protected
+          operation documents a 500 for this reason.
+        IN-REQUEST RE-CHECK (spec §3 "An older-generation request never
+        reaches what a binding stored", D-20 r4): every read or write of the
+        session account's ACCOUNT DATA made while serving the request
+        re-confirms, in the same statement or transaction as the read or
+        write, that the account's current generation still equals the
+        token's `gen`. On a mismatch the read returns nothing, the write
+        stores nothing, no provider call is made with anything the read
+        would have returned, and the operation answers the same 401 as
+        above, whatever it had already decided. ACCOUNT DATA is exactly the
+        closed list in contracts/features/PAC-71.md §5 (credentials, AI keys,
+        connections, every settings column, and every other kind spec §3
+        rule (b) counts); reads of OTHER accounts' data (a teammate's
+        credential for team availability, a host's credential on a public
+        page) and work done by scheduled jobs carry no session and are not
+        covered.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -783,6 +2388,27 @@ components:
         frontend uses (both fetch wrappers send `credentials: "include"` and
         never set an Authorization header). It is consulted only when the request
         carries no `Authorization: Bearer` header (PAC-39, API-008).
+        Since PAC-71 the token carries the `gen` claim and every protected
+        operation applies the SESSION GENERATION rules described on
+        `bearerAuth` (stale generation: 401; generation unreadable: 500
+        `{"error":"internal error"}`; the in-request re-check on account
+        data).
+
+  responses:
+    SessionGenerationUnavailable:
+      description: |
+        PAC-71 (spec §3 "Sessions", AC-48; security scheme SESSION
+        GENERATION). The account's current session generation could not be
+        read, so requireAuth (or the in-request re-check) could not decide
+        whether the session is still current. Fails closed as a server
+        error, never as 401 (the web app treats 401 as signed out): body
+        exactly `{"error":"internal error"}`, Content-Type
+        `application/json`, no Set-Cookie, nothing written. On operations
+        that document their own 500, this is one more cause of it.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
 
   parameters:
     LoginHint:
@@ -867,6 +2493,10 @@ components:
       properties:
         connected:
           type: boolean
+          description: |
+            Whether the caller's calendar connection for `provider` is usable
+            (PAC-67): stored, and not recorded as lost after a permanent
+            refusal of its renewal. See `getAuthStatus`.
         provider:
           type: string
           enum: [google, outlook, webcal]
@@ -906,10 +2536,47 @@ components:
           description: The caller's calendar provider, as `getAuthStatus` reports it.
       additionalProperties: false
 
+    ProviderDisconnectResult:
+      type: object
+      description: |
+        Body of the 200 of `disconnectMicrosoft` and `disconnectZoom` (PAC-67,
+        spec AC-13 to AC-17, D-2). Says which provider was disconnected and
+        what became of the grant at the provider. The local credential is gone
+        whatever `revocation` says: a revocation that could not be confirmed
+        never blocks local removal (spec D-2). Carries no token material.
+      required: [provider, revocation]
+      properties:
+        provider:
+          type: string
+          enum: [outlook, zoom]
+          description: '`outlook` from `disconnectMicrosoft`, `zoom` from `disconnectZoom`.'
+        revocation:
+          type: string
+          enum: [confirmed, unconfirmed, not_offered, nothing_stored]
+          description: |
+            - `confirmed`: the provider answered success to the revocation
+              request (Zoom only).
+            - `unconfirmed`: a credential was removed and its revocation is
+              not confirmed (Zoom only): either a revocation was attempted and
+              the provider refused it, answered an error, or could not be
+              reached; or no revocation could be attempted, because the stored
+              credential does not decode or its expired access token could not
+              be renewed (see `disconnectZoom`). The client must tell the user
+              that revocation at the provider could not be confirmed (spec
+              AC-15, D-2) and must not show a plain success.
+            - `not_offered`: the provider offers no revocation of this one
+              grant that Paceday may call, so none was attempted (Outlook
+              always, spec AC-17, D-5). The client tells the user the grant
+              can be removed from their account at the provider.
+            - `nothing_stored`: the caller held no credential for this
+              provider; nothing was removed or sent, and no activity entry
+              was written.
+      additionalProperties: false
+
     CurrentUserResponse:
       type: object
       description: storage.User (backend/storage/users.go) serialized directly.
-      required: [id, email, name, avatarUrl, provider, createdAt]
+      required: [id, email, name, avatarUrl, provider, addressStanding, createdAt]
       properties:
         id:
           type: string
@@ -947,6 +2614,29 @@ components:
             handlers_sso.go "sso"; tests and the e2e seed write "google").
             A CHECK constraint is not added (spec PAC-35 section 7: no
             migration).
+            Unchanged by PAC-71 (spec §6): it is NOT the provider of the
+            account's bound identity, which this response does not expose
+            (listing sign-in methods is follow-up F1).
+        addressStanding:
+          type: string
+          enum: [domain_confirmed, unconfirmed]
+          x-enum-varnames: [AddressStandingDomainConfirmed, AddressStandingUnconfirmed]
+          description: |
+            New in PAC-71 (spec §3 "Evidence and address standing", D-5).
+            `domain_confirmed`: the sign-in that bound this account's
+            identity carried AUTHORITATIVE evidence for `email` (Google
+            verified with matching `hd` or a Google consumer domain; a
+            Microsoft tenant that verifies the domain; the SSO issuer
+            configured for the domain). `unconfirmed`: everything else,
+            including every account created before PAC-71 that has not bound
+            yet and every account bound with MAILBOX evidence. Only a
+            `domain_confirmed` address acts as a person at the granting sites
+            (team-invite acceptance, scheduling-link co-host invitations,
+            the manager's member add, roster import and roster entries,
+            break-glass); an `unconfirmed` one works fully for its own user
+            but resolves to nobody there. It changes only when the account
+            binds (sign-in) or through the operator procedure; never on an
+            ordinary sign-in, a connect or a refusal.
         org:
           description: |
             Present only when the user has an org_id AND the org row loads
@@ -956,6 +2646,25 @@ components:
         createdAt:
           type: string
           format: date-time
+      additionalProperties: false
+
+    ConnectStartResponse:
+      type: object
+      description: |
+        New in PAC-71. The answer of `startGoogleConnect` and
+        `startMicrosoftConnect`: where to send the window to continue the
+        connect. Readable only by the web app's own origin (another site
+        cannot read it, which is the point; spec §3 "Cross-site request
+        model").
+      required: [authorize_url]
+      properties:
+        authorize_url:
+          type: string
+          format: uri
+          description: |
+            The provider's authorization URL, carrying this connect's state.
+            Single browser, 300 seconds, today's scope set. Never contains a
+            Paceday session token.
       additionalProperties: false
 
     OrgSummary:
@@ -992,11 +2701,35 @@ components:
       properties:
         type:
           type: string
-          enum: [google, microsoft, sso, generic]
+          enum: [google, microsoft, sso, generic, choose]
           description: |
-            "generic" for consumer/unparseable domains, "sso" when a provider row
-            exists for the domain, "microsoft" from a live tenant probe against
-            login.microsoftonline.com (2s timeout, 1h cache), else "google".
+            Decided in this order (PAC-97):
+            1. "generic": the address has no domain, or its domain is on the
+               fixed consumer list (gmail.com, outlook.com, ...). Only for
+               these; a company domain is never "generic".
+            2. "sso": an active provider row exists for the exact domain (a row
+               suspended through setSsoProviderState is ignored, PAC-22).
+            3. "google" / "microsoft": a strong match on the domain's MX
+               records, looked up by the server through its own resolver with
+               only the domain (never the local part), as one query for the
+               fully-qualified name with a 2 s budget. Among the records with
+               the lowest preference value, every one must match the provider
+               and no record at any preference may match the other one.
+               Google: host `google.com` or `googlemail.com`, or ending in
+               `.google.com` / `.googlemail.com`. Microsoft: host ending in
+               `.mail.protection.outlook.com`, `.mail.eo.outlook.com` or
+               `.mx.microsoft`. Hosts are compared lower-cased, without one
+               trailing dot, on label boundaries.
+            4. "choose": everything else. Mail behind a third-party gateway,
+               Google and Microsoft mixed, null MX, no MX, NXDOMAIN, a name
+               that is not a valid multi-label ASCII DNS name (never queried),
+               a timeout, SERVFAIL or any resolver error. The client asks the
+               user to pick a provider; it never shows a password form for
+               this value. A lookup failure is "choose", never a 500.
+            No third-party HTTP call is made to decide. Answers from a DNS
+            reply are cached per server process for 1 hour, failures for 1
+            minute (at most 10 000 domains). A client that receives a value
+            it does not know treats it as "choose".
         provider_name:
           type: string
           description: Display name of the SSO provider. Omitted unless type == "sso".
@@ -1050,95 +2783,431 @@ components:
 
     SsoProviderCreateRequest:
       type: object
-      description: Anonymous struct in ssoHandlers.createSSOProvider.
-      required: [domain, provider_name, provider_type]
+      description: |
+        Body of createSsoProvider. Since PAC-22 (resolves U-21, API-060) it
+        describes an OIDC configuration and nothing else: every property but
+        the client secret is required and non-empty, and the SAML properties
+        are gone (PAC-22 spec D-1, D-2, D-8). The server enforces each of these
+        with the 400 messages listed on createSsoProvider, in the order given
+        there, including a named refusal of `saml_entry_point`, `saml_issuer`
+        and `saml_cert` when present. Since PAC-50 any other property outside
+        this schema is refused with 400 `unknown property: <name>`, so
+        `additionalProperties: false` is what the server does (before PAC-50
+        such a property was ignored). U-21 redetermined at PAC-50 contract
+        revision 8 from `main`'s createSsoProvider decoder (PAC-22): nothing
+        is validated beyond what this schema states and createSsoProvider's
+        400 list names. A replace supplies every value a reader can see again;
+        the client secret alone may be left out of a replace, which keeps the
+        stored one under the conditions stated on createSsoProvider (PAC-22
+        spec §3.2, D-12, D-13, D-14). Whether SSO is active is not part of
+        this body (PAC-22 spec §3.3); see setSsoProviderState.
+      required:
+        - domain
+        - provider_name
+        - provider_type
+        - oidc_issuer
+        - oidc_client_id
       properties:
         domain:
           type: string
-          description: Must match the caller's org domain or the request is 403'd.
+          minLength: 1
+          description: |
+            Must equal the caller's org domain, exact and case-insensitive,
+            else 403 `provider_domain_mismatch` (PAC-50); a subdomain or a
+            foreign domain does not match, and surrounding whitespace is not
+            trimmed (`" acme.com "` is a 403). Stored lower-cased.
+        provider_name:
+          type: string
+          minLength: 1
+          description: Display name, returned as `provider_name` and shown by detectAuthProvider.
+        provider_type:
+          type: string
+          enum: [oidc]
+          description: |
+            The only kind the product can complete a sign-in with. `saml` is
+            refused with 400 `provider_type 'saml' is not supported` (PAC-22
+            spec D-1); before PAC-22 it was accepted, stored, and refused only
+            at sign-in with 501.
+        oidc_issuer:
+          type: string
+          minLength: 1
+          description: OIDC issuer used for discovery at sign-in. Stored as given.
+        oidc_client_id:
+          type: string
+          minLength: 1
+        oidc_client_secret:
+          type: string
+          minLength: 1
+          description: |
+            Write-only. No response of any operation returns it, or anything
+            derived from it; SsoProvider reports only whether one is on file
+            (`has_oidc_client_secret`).
+            - Supplied: a non-empty string that replaces the stored secret
+              (PAC-22 spec D-12, AC-23). `""` and `null` are refused with 400
+              `oidc_client_secret must not be empty` (AC-26): no write clears
+              the secret.
+            - Absent: required on a create; on a replace, the stored secret
+              is kept when the stored configuration is `oidc`, holds a
+              non-empty secret, and has exactly the submitted `oidc_issuer`
+              and `oidc_client_id`, all decided at the moment the write is
+              stored; otherwise 400 (PAC-22 spec D-13, D-14, AC-22, AC-24,
+              AC-25, AC-27).
+      additionalProperties: false
+
+    SsoProvider:
+      type: object
+      description: |
+        An organisation's SSO configuration as it may leave the server (PAC-22,
+        resolves U-22, closes the disclosure half of API-001). Returned by
+        createSsoProvider, listSsoProviders and setSsoProviderState. It is a
+        projection written for the wire with explicit snake_case keys, not the
+        storage row: the client secret and the signing certificate are never
+        part of it under any name, for any caller. In their place are two
+        booleans that say only whether each secret is on file; each depends on
+        its own secret and on nothing else (PAC-22 spec §3.1, AC-3, AC-4).
+
+        Rows stored before PAC-22 serialise with this same shape: a SAML row
+        reports `provider_type: saml` and its non-secret SAML values, and an
+        OIDC row with empty values reports them as `""` (PAC-22 spec AC-5). No
+        row writable since PAC-22 has a SAML value, so for those the SAML
+        properties are `""` and `has_saml_cert` is false.
+      required:
+        - id
+        - domain
+        - provider_name
+        - provider_type
+        - state
+        - oidc_issuer
+        - oidc_client_id
+        - has_oidc_client_secret
+        - saml_entry_point
+        - saml_issuer
+        - has_saml_cert
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        domain:
+          type: string
+          description: |
+            Lower-case for every row written since PAC-50, whose migration
+            (`030_sso_admin_stepup`, PAC-50 spec §9 D-7) lower-cases the rows
+            stored before it and makes the domain unique case-insensitively.
         provider_name:
           type: string
         provider_type:
           type: string
           enum: [oidc, saml]
           description: |
-            "saml" is accepted and stored, but /api/auth/sso/{domain} rejects it
-            with 501 — a SAML row can be created that can never be used to log in.
+            `saml` only for rows stored before PAC-22; createSsoProvider no
+            longer accepts it. startSsoLogin still answers 501 for such a row.
+        state:
+          $ref: '#/components/schemas/SsoProviderState'
         oidc_issuer:
           type: string
+          description: '`""` only for a row stored before PAC-22.'
         oidc_client_id:
           type: string
-        oidc_client_secret:
-          type: string
+          description: '`""` only for a row stored before PAC-22.'
+        has_oidc_client_secret:
+          type: boolean
+          description: |
+            True when a non-empty client secret is on file, false otherwise.
+            The secret itself is never returned (PAC-22 spec AC-3). It depends
+            on the stored secret and nothing else (AC-4). False only for a row
+            stored before PAC-22: every write since either supplies a non-empty
+            secret or keeps a non-empty one. A row of type `saml` stored
+            before PAC-22 can read true here (the write path stored a client
+            secret whatever the type); a replace of such a row that leaves the
+            secret out is still refused, because a secret is kept only from an
+            `oidc` row (PAC-22 spec §3.2, AC-25).
         saml_entry_point:
           type: string
+          description: Non-secret SAML sign-in address of a row stored before PAC-22; `""` otherwise.
         saml_issuer:
           type: string
-        saml_cert:
+          description: Non-secret SAML issuer of a row stored before PAC-22; `""` otherwise.
+        has_saml_cert:
+          type: boolean
+          description: |
+            True when a non-empty SAML signing certificate is on file, false
+            otherwise. The certificate itself is never returned. Only a row
+            stored before PAC-22 can be true (PAC-22 spec §3.1, D-8).
+        created_at:
           type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: |
+            Time of the last configuration write (createSsoProvider).
+            setSsoProviderState does not change it.
       additionalProperties: false
-      x-uncertain: >-
-        No field beyond the three required ones is validated, so an oidc provider
-        can be created with an empty issuer/client_id; the failure only surfaces
-        later as a 500 from /api/auth/sso/{domain}.
 
-    SsoProviderResponse:
+    SsoProviderList:
       type: object
       description: |
-        storage.SSOProvider (backend/storage/sso_providers.go) marshalled directly.
-        The struct has NO json tags, so encoding/json emits the exact Go field
-        names below — PascalCase, and including the client secret and SAML cert.
-      required:
-        - ID
-        - Domain
-        - ProviderName
-        - ProviderType
-        - Enabled
-        - OIDCIssuer
-        - OIDCClientID
-        - OIDCClientSecret
-        - SAMLEntryPoint
-        - SAMLIssuer
-        - SAMLCert
-        - CreatedAt
-        - UpdatedAt
+        listSsoProviders response (PAC-22). A named container rather than a
+        bare array so that a property added beside `providers` later does not
+        change the response's type for every consumer (PAC-22 spec §3.7). Most
+        list responses in this contract are bare arrays; this one is
+        deliberately not, and must not be "corrected" towards them.
+      required: [providers]
       properties:
-        ID:
-          type: string
-          format: uuid
-        Domain:
-          type: string
-        ProviderName:
-          type: string
-        ProviderType:
-          type: string
-          enum: [oidc, saml]
-        Enabled:
-          type: boolean
-        OIDCIssuer:
-          type: string
-        OIDCClientID:
-          type: string
-        OIDCClientSecret:
-          type: string
-          description: >-
-            Returned in plaintext to any org member by both POST and GET
-            /api/admin/sso. Documented because it is what the code does, not
-            because it is intended.
-        SAMLEntryPoint:
-          type: string
-        SAMLIssuer:
-          type: string
-        SAMLCert:
-          type: string
-        CreatedAt:
-          type: string
-          format: date-time
-        UpdatedAt:
-          type: string
-          format: date-time
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SsoProvider'
+          description: |
+            Ordered by `created_at`, oldest first. Empty when the org has none.
+            At most one item today: a configuration is listed when its domain
+            equals the org's domain exactly, and both `sso_providers.domain`
+            and `organizations.domain` are unique. The array is kept so that
+            the type does not change if an org can ever hold more than one.
       additionalProperties: false
-      x-uncertain: >-
-        No frontend code consumes /api/admin/sso, so the PascalCase key casing is
-        unverified against any real consumer; it is inferred from the absence of
-        json tags on storage.SSOProvider.
+
+    SsoProviderState:
+      type: string
+      enum: [active, suspended]
+      description: |
+        Whether sign-in uses this configuration (PAC-22, spec §3.3, §3.5).
+        `active`: detection answers `sso` for the domain and startSsoLogin
+        redirects to the provider. `suspended`: sign-in behaves as if no SSO
+        were configured; the configuration is kept. Stored as the existing
+        `enabled` column (true is `active`), so no migration.
+
+    SsoProviderStateRequest:
+      type: object
+      description: |
+        Body of setSsoProviderState: the state wanted, never a toggle, and
+        nothing else (PAC-22 spec AC-12). Any other property, including any
+        configuration value, is refused with 400 `unknown property: <name>`,
+        and `state` given twice is refused with 400 `duplicate property:
+        state`. A body that is not a JSON object (`[]`, `"active"`, `true`,
+        `null`) is refused with 400 `invalid JSON`.
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/SsoProviderState'
+      additionalProperties: false
+
+    SsoWriteForbiddenResponse:
+      description: |
+        The 403 of the three SSO configuration writes (PAC-50):
+        createSsoProvider, deleteSsoProvider and setSsoProviderState (the
+        last since PAC-50 contract revision 8, which merged PAC-22). Exactly
+        one variant applies, told apart by `error`; `stepup_url` is present
+        on, and only on, `sso_write_requires_admin_stepup`. All four keep the
+        shared `{error}` envelope, so a client that reads only `error` still
+        shows a specific message (the web client renders a 403 without
+        `error` as a generic "no permission" text).
+      oneOf:
+        - $ref: '#/components/schemas/SsoWriteMembershipRequired'
+        - $ref: '#/components/schemas/SsoWriteDomainMismatch'
+        - $ref: '#/components/schemas/SsoWriteStepupRequired'
+        - $ref: '#/components/schemas/SsoWriteFreshLoginRequired'
+
+    SsoWriteMembershipRequired:
+      type: object
+      description: |
+        The caller has no org (or its org row is gone). Checked before
+        anything else, including break-glass. No `stepup_url`: there is no org
+        to step up for. Also the 403 of getSsoStepupOptions and of
+        startSsoAdminStepup (the latter always with `org membership
+        required`), and (NEW-llm-bring-your-own Part 2) of getOrganizationAI,
+        patchOrganizationAI and confirmOrganizationAI.
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [org membership required, org not found]
+      additionalProperties: false
+
+    SsoWriteDomainMismatch:
+      type: object
+      description: |
+        The provider domain (create body `domain`, or the `{domain}` segment
+        of the DELETE and of setSsoProviderState) is not exactly the caller's
+        org domain, compared case-insensitively and untrimmed: a subdomain
+        (`sub.acme.com`), a foreign domain (`other.com`) or a padded value
+        (`" acme.com "`). A 403 by owner decision (2026-10-27, RFC 9110
+        §15.5.4), not a 400. Checked after membership and the body's 400s,
+        before authorization: nothing is written and a live step-up grant is
+        not consumed.
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: provider_domain_mismatch
+      additionalProperties: false
+
+    SsoWriteStepupRequired:
+      type: object
+      description: |
+        An org member with no live step-up grant for (caller, caller's org)
+        who is not a break-glass admin. The step-up is optional (owner
+        decision 2026-10-27, PAC-68 OQ-2 / PAC-50 OQ-2): before navigating
+        anywhere, the client explains `without_stepup` and `stepup_scopes`
+        and lets the user decline, in which case nothing is navigated and the
+        app keeps working. If the user goes ahead, the client asks which
+        provider administers their organisation, offering only the keys of
+        `stepup_scopes`, appends `?provider=google` or `?provider=microsoft`
+        to `stepup_url` and navigates the browser there. When
+        `stepup_scopes` is empty no step-up can be started on this
+        deployment, and the client offers none. The three values are the
+        ones getSsoStepupOptions returns (same components, same rules).
+      required: [error, stepup_url, stepup_scopes, without_stepup]
+      properties:
+        error:
+          type: string
+          const: sso_write_requires_admin_stepup
+        stepup_scopes:
+          $ref: '#/components/schemas/SsoStepupScopes'
+        without_stepup:
+          $ref: '#/components/schemas/SsoWithoutStepup'
+        stepup_url:
+          $ref: '#/components/schemas/SsoStepupUrl'
+      additionalProperties: false
+
+    SsoWriteFreshLoginRequired:
+      type: object
+      description: |
+        The caller's account holds an address on the deployment's
+        break-glass list domain-confirmed (PAC-71: the account's stored
+        address and standing, not the session's email claim) but the
+        session JWT was issued 10 minutes ago or more, or carries an issue
+        time more than one minute in the future (beyond that clock-skew
+        allowance a token is not fresh). The client sends the user through
+        sign-in again; a step-up grant also satisfies the gate.
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: sso_write_requires_fresh_login
+      additionalProperties: false
+
+    SsoStepupOptions:
+      type: object
+      description: |
+        getSsoStepupOptions response (PAC-50 contract revision 8, spec §9
+        D-13, AC-25): what the optional SSO admin step-up would request and
+        what is lost without it, for a client with no refused write in hand.
+        The three properties are the step-up 403's (SsoWriteStepupRequired),
+        built from the same components, under the same rules; there is no
+        `error`, because nothing was refused.
+      required: [stepup_url, stepup_scopes, without_stepup]
+      properties:
+        stepup_url:
+          $ref: '#/components/schemas/SsoStepupUrl'
+        stepup_scopes:
+          $ref: '#/components/schemas/SsoStepupScopes'
+        without_stepup:
+          $ref: '#/components/schemas/SsoWithoutStepup'
+      additionalProperties: false
+
+    SsoStepupUrl:
+      type: string
+      const: /api/admin/sso/stepup
+      description: |
+        Path of startSsoAdminStepup on the API's origin, without the
+        `provider` parameter (spec §4.3 and OQ-8). It has the same form as
+        every operation path in this document, and a client resolves it
+        the way it resolves those: against the origin of its configured
+        API base (for the web app, the base it already uses for
+        `/api/auth/...` navigations), never against the page's origin.
+        The API need not share an origin with the page: the web's API
+        base is set at runtime (`API_BASE_URL`) or at build time
+        (`VITE_API_BASE_URL`), and the session cookie is host-only on
+        the API host, so the page's origin can lack the session.
+
+    SsoStepupScopes:
+      type: object
+      description: |
+        The scopes the SSO admin step-up requests from each provider on top of
+        the identity scopes (`openid`, `email`, `profile`, and Microsoft's
+        `User.Read`, which sign-in already requests). Requested only by
+        startSsoAdminStepup, never at sign-in; the tokens are discarded after
+        the check. Carried by SsoWriteStepupRequired and SsoStepupOptions.
+
+        Normative rule: each list is exactly what startSsoAdminStepup
+        requests from that provider beyond the identity scopes, so a client
+        shows it as given and does not hard-code it. A provider's key is
+        present if and only if that provider's step-up is configured on this
+        deployment, that is, startSsoAdminStepup would not answer 503 for it
+        (spec §9 D-2 and D-9: no OAuth client for the provider, or `APP_URL`
+        unset). A deployment with only Google configured sends only `google`;
+        an empty object means no step-up can be started on this deployment.
+        An unconfigured provider is an absent key, never an empty list.
+
+        Today's values, informative only (the exact Microsoft list is spec
+        OQ-2's open technical sub-question and may narrow): Google, the
+        read-only Directory user scope
+        (`https://www.googleapis.com/auth/admin.directory.user.readonly`);
+        Microsoft, organisation and directory-role read scopes
+        (`Organization.Read.All`, `RoleManagement.Read.Directory`, which a
+        tenant administrator may have to consent to).
+      properties:
+        google:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        microsoft:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+      additionalProperties: false
+
+    SsoWithoutStepup:
+      type: array
+      minItems: 1
+      uniqueItems: true
+      description: |
+        What the caller cannot do without the SSO admin step-up, for the
+        client to explain before it navigates. Carried by
+        SsoWriteStepupRequired and SsoStepupOptions. An open list of codes:
+        the item schema is a non-empty string, not an enum, so a value added
+        later (for example by PAC-68 if it reuses this step-up) does not make
+        the body fail validation in a client generated from this revision. A
+        client explains the codes it knows and ignores any other. The only
+        value the server sends today is `sso_configuration_writes`: no SSO
+        configuration write (create, replace or delete); only a deployment
+        operator on the break-glass list can write without it. Nothing else
+        the user already has is lost. Suspend and resume
+        (setSsoProviderState) are not served under PAC-50; they become SSO
+        configuration writes covered by this code when PAC-22's follow-up
+        serves them, and a client must not offer them before then (PAC-50
+        contract revision 8.1, N6).
+
+        NEW-llm-bring-your-own Part 2 adds a second value, sent only for the
+        `llm_org_key_write` purpose (OrganizationAIWriteStepupRequired, and
+        getSsoStepupOptions with `?purpose=llm_org_key_write`):
+        `organization_ai_configuration_writes`, no change to the
+        organisation's AI provider, model, key, destination or personal-keys
+        setting except by a break-glass operator. Each response carries the
+        one code of its purpose.
+      items:
+        type: string
+        minLength: 1
+
+    SsoStepupProvider:
+      type: string
+      enum: [google, microsoft]
+      description: Identity provider an SSO admin step-up runs against (PAC-50).
+
+    SsoStepupPurpose:
+      type: string
+      enum: [sso_write, llm_org_key_write]
+      description: |
+        The write an admin step-up grant authorises (PAC-50 §4.8 `purpose`;
+        NEW-llm-bring-your-own Part 2, spec P2-D1). `sso_write`: one SSO
+        configuration write (PAC-50). `llm_org_key_write`: one change of the
+        caller's organisation's AI configuration (patchOrganizationAI). A
+        grant is consumed only by a write of its own purpose (PAC-50 AC-27).

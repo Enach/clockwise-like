@@ -19,7 +19,7 @@ import (
 const auditTestSecret = "audit-test-secret"
 
 func auditServer(t *testing.T) http.Handler {
-	return requireAuth(auditTestSecret)(auditHandler(openTestDB(t)))
+	return requireAuth(openTestDB(t), auditTestSecret)(auditHandler(openTestDB(t)))
 }
 
 func getAudit(t *testing.T, user uuid.UUID, query string) *httptest.ResponseRecorder {

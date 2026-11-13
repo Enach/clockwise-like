@@ -286,7 +286,7 @@ func TestManagerTeam_ScopedDeletePreservesOtherAssignmentAndHistory(t *testing.T
 func TestManagerTeam_PatchFormalMemberCreatesScopedSettings(t *testing.T) {
 	r := setupManagerRoutes(t, &fakeManagerWorkflow{})
 	ownerID := createTestUser(t, "manager-patch-formal@example.com")
-	memberID := createTestUser(t, "formal-report@example.com")
+	memberID := createConfirmedUser(t, "formal-report@example.com")
 	team := createManagerTestTeam(t, ownerID, "Patch Formal")
 	db := openTestDB(t)
 	if err := storage.AddTeamMember(db, team.ID, memberID, "member"); err != nil {
@@ -445,5 +445,24 @@ func TestManagerGaps_ComputesOverTheRosterInScope(t *testing.T) {
 	}
 	if got := strings.TrimSpace(global.Body.String()); got != `{"gaps":[]}` {
 		t.Fatalf("no gaps body = %s, want an empty array", got)
+	}
+}
+
+// PAC-25 AC-18 (pin): the manager-domain removal keeps refusing to remove a
+// team owner (role-based rule, D-3), and the membership is unchanged.
+func TestPAC25ManagerRemoveOwnEmailIs422(t *testing.T) {
+	r := setupManagerRoutes(t, &fakeManagerWorkflow{})
+	ownerID := createTestUser(t, "pac25-ac18-owner@example.com")
+	team := createManagerTestTeam(t, ownerID, "PAC-25 AC-18")
+	response := managerRequest(t, r, http.MethodDelete, "/api/manager/team/members/pac25-ac18-owner%40example.com?team_id="+team.ID.String(), ownerID, nil)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body: %s", response.Code, response.Body.String())
+	}
+	if body := strings.TrimSpace(response.Body.String()); body != `{"error":"the team owner cannot be removed"}` {
+		t.Fatalf("body = %s", body)
+	}
+	membership, err := storage.GetTeamMember(openTestDB(t), team.ID, ownerID)
+	if err != nil || membership.Role != "owner" {
+		t.Fatalf("owner membership after refusal = %+v, err=%v; want role owner", membership, err)
 	}
 }

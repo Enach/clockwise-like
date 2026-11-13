@@ -103,6 +103,16 @@ persistent named volume and binds port 80, none of which a test run should do.
   known to be private. Moving the stand-in to a routable address makes every
   calendar call fail closed; the fix is to move it back, never to widen the
   backend's permitted set.
+- **Sign-in detection's DNS is a stand-in too (PAC-97).** Detection reads a
+  company domain's MX records, and DNS is not covered by the sink (that maps
+  TCP to provider names only). The backend runs with
+  `PACEDAY_MX_RESOLVER=10.143.43.10:5353`, honoured only with
+  `PACEDAY_ALLOW_STANDINS=true` and a permitted address, so every MX query
+  goes to `fake-google`'s UDP responder (`e2e/fake-google/dns.go`):
+  `<x>.google-mx.pac97.test` answers Google Workspace MX,
+  `<x>.gateway-mx.pac97.test` a mail gateway, `<x>.microsoft-mx.pac97.test`
+  Exchange Online, anything else NXDOMAIN. Use a random `<x>` per test:
+  detection caches a domain for an hour.
 
 **Timing**: roughly 4–8 minutes cold (Go and npm builds dominate), 60–90 seconds
 warm with cached layers. The suite itself is about 30 seconds.
@@ -151,10 +161,28 @@ reasons in `SEAM-REQUIRED.md` item B, and is marked `test.fixme` in
 | Startup: production env boots; unsafe calendar settings refuse to boot; the redirect is announced (AC-3, 12, 13, 14, 26) | **covered, on the built image** | `tests/startup.spec.ts` |
 | Nothing reached a real provider during the run (AC-23) | **covered except the status lookup**; the strict form is **`test.fixme`** — `GET /api/auth/status` calls Google userinfo for a connected user (see the file) | `tests/hermeticity.spec.ts` |
 | The real Google OAuth callback | **`test.fixme`** — `SEAM-REQUIRED.md` item B | `tests/auth-session.spec.ts` |
+| Sign-in by email follows the mail host (PAC-97 AC-27): Google MX -> Google start with `login_hint`, Exchange Online MX -> Microsoft start, gateway MX -> choose step, back keeps the email, Google click carries the hint | **covered, UI + API through the DNS stand-in** (UI needs smart-calendar-flow#147); the Microsoft click on the choose step is **`test.fixme`** — PAC-99 (the stack configures Google sign-in only) | `tests/pac97-signin-detect.spec.ts` |
+| Booking page time zone (PAC-88): server echo, bounded overview and day zone; host-zone default (AC-1, AC-2, AC-3), "Use my time zone" (AC-7), Monday-only Paris in Auckland (AC-10, AC-13), DST transition days computed at run time (AC-19) | **covered, API + UI** (UI needs smart-calendar-flow#144) | `tests/pac88-zones.spec.ts` |
+| Booking after a zone switch (AC-9) and the confirmation in that zone (AC-21) | **covered, UI + API + DB**, serial, on a booking-only Monday | `tests/pac88-booking.spec.ts` |
 | Auto-decline reaching the stand-in | **not exercised** — spec AG-5: it only runs on its 15-minute cron | — |
 
 Every `test.fixme` carries a comment naming what blocks it, as
 `docs/factory/README.md` §3 rule 4 requires.
+
+### PAC-88 seed fixtures
+
+`seed/ids.ts PAC88_HOSTS` (b4b4… New York, b5b5… Paris, b6b6… Los Angeles,
+b7b7… no zone) and `PAC88_LINKS` (`dst` cbbbbbbb…, every day 00:00–23:59 New
+York, 365 days; `paris` cacacaca…, Monday 09:00–17:00 Paris, 365 days, with the
+Los Angeles co-host; `noZone` cddddddd…, weekdays 09:00–17:00, 60 days). All
+four hosts are in `ACCEPTED_CREDENTIALS` (an unaccepted token is an unreadable
+calendar, which PAC-72 D-6 makes busy). The no-zone owner must have no
+settings row: `seed.sql` deletes any and `verify()` checks the absence (a
+stale row would silently change AC-3). Only `tests/pac88-booking.spec.ts`
+writes to the Paris link's hosts, serially, on a Monday the read-only file
+never displays; `dst` and `noZone` are never booked. The browser zone is set
+per describe with `test.use({ timezoneId })`; the global `timezoneId: 'UTC'`
+and the compose `TZ: UTC` stay (AC-28).
 
 ### 5a. The calendar stand-in and the sink
 
@@ -231,10 +259,18 @@ currently fixme'd is blocked on it.
    window**, because `engine/booking.go hostBusy()` treats a host's confirmed
    bookings as busy time. Cleanup is by the test's own unique booker-email
    prefix (`db.deleteBookingsByBooker`), never by "clear this link".
-7. **The demo-data guard.** `src/api/client.ts` silently substitutes built-in
-   demo fixtures when the backend is unreachable. `fixtures.ts assertNotDemo`
-   asserts both the "showing demo data" banner and the demo roster names are
-   absent. Call it in every authenticated UI test.
+7. **The demo-data guard.** `fixtures.ts assertNotDemo` fails when the page
+   shows anything that means the test did not talk to a live backend: the demo
+   label (`demo-label`), the "can't reach Paceday" banner
+   (`server-unreachable-banner`), an inline lost-answer error
+   (`api-error` with `data-error-kind="lost"`), the demo roster names, and,
+   while a web from before PAC-83 can still be deployed, the old
+   "showing demo data" banner sentence. Since PAC-83 the web never falls back
+   to demo data on its own (the demo exists only in non-production builds and
+   only when chosen), so an unreachable backend shows the banner or the inline
+   error instead; a test that asserts only an absence would otherwise pass
+   against a dead backend. Call it in every UI test. Its own test is
+   `tests/guard-self-test.spec.ts` (AC-28).
 
 ---
 
@@ -269,7 +305,7 @@ npm run stack:down                    # stop and remove
 | `did not serve the SPA` | `<repo-root>/frontend` is missing or empty — see §2. |
 | `schema not ready` / `migrations are dirty` | a migration failed halfway. The version in the error names it; look at `backend/storage/migrations/`. |
 | `fixture verification failed` | `seed/seed.ts verify()` found the database is not what the tests assume. The message names the row count that was wrong. Usually a schema change that dropped a seeded column. |
-| A UI test sees "Sarah Chen" or "showing demo data" | the frontend could not reach `/api` and fell back to demo fixtures. The nginx proxy or the backend is down; the test is telling you the truth. |
+| `assertNotDemo` fails on `server-unreachable-banner` or `api-error` (`lost`) | the frontend could not reach `/api`. The nginx proxy or the backend is down; the test is telling you the truth. ("Sarah Chen" or "showing demo data" means the same on a web from before PAC-83.) |
 | 401 everywhere | `E2E_JWT_SECRET` and the compose file's `JWT_SECRET` have drifted apart. They must match. |
 | `[stand-in]` setup fails, or calendar scenarios get 500 "peer address refused" | the stand-in is down or not on its pinned address. `docker compose -p paceday-e2e -f e2e/docker-compose.e2e.yml logs fake-google backend`. "refusing to start" in the backend log means the two calendar variables are inconsistent — the message names which. |
 | A calendar scenario sees "no matching arrival" | the backend answered without reaching the stand-in. The failure message lists what did arrive under that credential label; `GET http://127.0.0.1:18090/__fixture/requests` shows everything. |
@@ -307,7 +343,11 @@ psql postgres://paceday_e2e:paceday_e2e@127.0.0.1:15433/paceday_e2e
    test. Never clear a whole table or a whole link.
 6. **Check the guardrails**: `npm run typecheck`, then
    `grep -rn "waitForTimeout\|page.route\|locator('\." tests/ lib/` should be
-   empty.
+   empty, except the reviewed uses of `page.route`: intercepting an external
+   image (`csp.spec.ts`) and holding or failing a real answer in the browser
+   (PAC-83, `public-booking.spec.ts`: `route.fetch` then `route.fulfill`, or
+   `route.abort`, never an invented body); and attribute locators on the
+   test ids of contract PAC-83 §5.1.
 
 ---
 

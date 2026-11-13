@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,10 +23,15 @@ type LLMCompleter interface {
 	Complete(ctx context.Context, systemPrompt, userMessage string) (string, error)
 }
 
+// slackAPIBase is the Slack Web API (a test seam; production never changes it).
+var slackAPIBase = "https://slack.com/api"
+
+// notionAPIBase is the Notion API (a test seam; production never changes it).
+var notionAPIBase = "https://api.notion.com/v1"
+
 const (
-	briefCacheTTL    = 24 * time.Hour
-	slackAPIBase     = "https://slack.com/api"
-	notionAPIBase    = "https://api.notion.com/v1"
+	briefCacheTTL = 24 * time.Hour
+
 	maxSlackMessages = 10
 	maxNotionPages   = 8
 	maxTerms         = 5
@@ -41,6 +47,23 @@ type MeetingBriefService struct {
 	// LLMUnavailable, when LLM is nil, is the failed brief's text: why no
 	// LLM may be used (PAC-66: its destination is not approved).
 	LLMUnavailable string
+	// FailureText, when not empty, is the failed brief's whole text after a
+	// failed call, with nothing the provider returned (PAC-73 Part 2 §3.1a:
+	// a request on the organisation's configuration).
+	FailureText string
+	// Redact, when set, is applied to provider text (an error or a
+	// completion) before it is stored, returned or reported (§3.1a).
+	Redact func(string) string
+	// OnLLMError, when set, receives a failed call's error, already
+	// redacted, for the server log and the error reporter.
+	OnLLMError func(error)
+}
+
+func (s *MeetingBriefService) redact(v string) string {
+	if s.Redact == nil {
+		return v
+	}
+	return s.Redact(v)
 }
 
 // Generate fetches Slack + Notion context and writes an LLM brief for a meeting.
@@ -59,17 +82,17 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		GeneratedAt:     time.Now().UTC(),
 		Status:          "pending",
 	}
-	_ = storage.UpsertMeetingBrief(s.DB, brief)
+	_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 
 	terms := buildSearchTerms(event)
 
-	conn, err := storage.GetWorkspaceConnection(s.DB, userID, "slack")
-	if err == nil {
+	conn, err := storage.GetWorkspaceConnectionCtx(ctx, s.DB, userID, "slack")
+	if err == nil && conn.TokenErr == nil { // PAC-84: skip an undecryptable token
 		brief.SlackResults, _ = fetchSlackMessages(ctx, conn.BotToken, terms)
 	}
 
-	notionConn, err := storage.GetWorkspaceConnection(s.DB, userID, "notion")
-	if err == nil {
+	notionConn, err := storage.GetWorkspaceConnectionCtx(ctx, s.DB, userID, "notion")
+	if err == nil && notionConn.TokenErr == nil {
 		brief.NotionResults, _ = fetchNotionPages(ctx, notionConn.AccessToken, terms)
 	}
 
@@ -79,21 +102,28 @@ func (s *MeetingBriefService) Generate(ctx context.Context, userID uuid.UUID, ev
 		if s.LLMUnavailable != "" {
 			brief.BriefText = s.LLMUnavailable
 		}
-		_ = storage.UpsertMeetingBrief(s.DB, brief)
+		_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 		return brief, nil
 	}
 
 	prompt := buildBriefPrompt(event, brief.SlackResults, brief.NotionResults)
 	text, err := s.LLM.Complete(ctx, briefSystemPrompt, prompt)
 	if err != nil {
+		redacted := s.redact(err.Error())
+		if s.OnLLMError != nil {
+			s.OnLLMError(errors.New(redacted))
+		}
 		brief.Status = "failed"
-		brief.BriefText = fmt.Sprintf("LLM error: %v", err)
+		brief.BriefText = "LLM error: " + redacted
+		if s.FailureText != "" {
+			brief.BriefText = s.FailureText
+		}
 	} else {
 		brief.Status = "ready"
-		brief.BriefText = text
+		brief.BriefText = s.redact(text)
 	}
 	brief.GeneratedAt = time.Now().UTC()
-	_ = storage.UpsertMeetingBrief(s.DB, brief)
+	_ = storage.UpsertMeetingBriefCtx(ctx, s.DB, brief)
 	return brief, nil
 }
 

@@ -29,7 +29,23 @@ type SchedulingLink struct {
 	Active           bool        `json:"active"`
 	CreatedAt        time.Time   `json:"created_at"`
 	Hosts            []*LinkHost `json:"hosts,omitempty"`
+	// BookingHorizonDays is how many days ahead the link can be booked,
+	// counting today in the link's zone (PAC-72 D-1): 1..365, default 60.
+	BookingHorizonDays int `json:"booking_horizon_days"`
+	// RefusalMessage is the link owner's choice of 409 body (PAC-72
+	// D-2/D-5): "generic" (default) or "specific".
+	RefusalMessage string `json:"refusal_message"`
 }
+
+// DefaultBookingHorizonDays is the horizon of a link created without one and
+// of every link that existed before PAC-72 revision 2.
+const DefaultBookingHorizonDays = 60
+
+// RefusalGeneric and RefusalSpecific are the two refusal_message values.
+const (
+	RefusalGeneric  = "generic"
+	RefusalSpecific = "specific"
+)
 
 // LinkHost is one accepted or pending co-host on a scheduling link.
 type LinkHost struct {
@@ -65,7 +81,7 @@ type BookingEvent struct {
 
 // --- SchedulingLink CRUD ---------------------------------------------------
 
-func CreateSchedulingLink(db *sql.DB, l *SchedulingLink) (*SchedulingLink, error) {
+func CreateSchedulingLink(db Querier, l *SchedulingLink) (*SchedulingLink, error) {
 	if l.UsageType == "" {
 		l.UsageType = "reusable"
 	}
@@ -75,56 +91,62 @@ func CreateSchedulingLink(db *sql.DB, l *SchedulingLink) (*SchedulingLink, error
 	if len(l.DaysOfWeek) == 0 {
 		l.DaysOfWeek = []int{1, 2, 3, 4, 5}
 	}
+	if l.BookingHorizonDays == 0 {
+		l.BookingHorizonDays = DefaultBookingHorizonDays
+	}
+	if l.RefusalMessage == "" {
+		l.RefusalMessage = RefusalGeneric
+	}
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_links
 			(owner_user_id, slug, title, duration_options, days_of_week,
 			 window_start_time, window_end_time, buffer_before, buffer_after,
-             min_notice_minutes, usage_type, max_uses)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             min_notice_minutes, usage_type, max_uses, booking_horizon_days, refusal_message)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 	`, l.OwnerUserID, l.Slug, l.Title,
 		pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
 		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter,
-		l.MinNoticeMinutes, l.UsageType, l.MaxUses)
+		l.MinNoticeMinutes, l.UsageType, l.MaxUses, l.BookingHorizonDays, l.RefusalMessage)
 	return scanSchedulingLink(row)
 }
 
-func GetSchedulingLinkBySlug(db *sql.DB, slug string) (*SchedulingLink, error) {
+func GetSchedulingLinkBySlug(db DBTX, slug string) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 		FROM scheduling_links WHERE slug = $1 AND active = true
 	`, slug)
 	return scanSchedulingLink(row)
 }
 
-func GetSchedulingLinkByID(db *sql.DB, id uuid.UUID) (*SchedulingLink, error) {
+func GetSchedulingLinkByID(db DBTX, id uuid.UUID) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 		FROM scheduling_links WHERE id = $1
 	`, id)
 	return scanSchedulingLink(row)
 }
 
-func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink, error) {
+func ListSchedulingLinksByUser(db DBTX, userID uuid.UUID) ([]*SchedulingLink, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT DISTINCT sl.id, sl.owner_user_id, sl.slug, sl.title,
 			sl.duration_options, sl.days_of_week,
 			sl.window_start_time, sl.window_end_time,
 			sl.buffer_before, sl.buffer_after, sl.min_notice_minutes, sl.usage_type, sl.max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id AND b.status <> 'cancelled'),
-            sl.active, sl.created_at
+            sl.active, sl.created_at, sl.booking_horizon_days, sl.refusal_message
 		FROM scheduling_links sl
 		LEFT JOIN scheduling_link_hosts slh ON slh.link_id = sl.id
 		WHERE sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted')
@@ -137,26 +159,31 @@ func ListSchedulingLinksByUser(db *sql.DB, userID uuid.UUID) ([]*SchedulingLink,
 	return scanSchedulingLinks(rows)
 }
 
-func UpdateSchedulingLink(db *sql.DB, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
+// UpdateSchedulingLink writes l over link id. A zero BookingHorizonDays or an
+// empty RefusalMessage keeps the stored value (PAC-72: callers that predate
+// those settings never reset them).
+func UpdateSchedulingLink(db Querier, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE scheduling_links SET
 			slug = $2, title = $3, duration_options = $4, days_of_week = $5,
 			window_start_time = $6, window_end_time = $7,
 			buffer_before = $8, buffer_after = $9, min_notice_minutes = $10,
-            usage_type = $11, max_uses = $12, active = $13
+            usage_type = $11, max_uses = $12, active = $13,
+            booking_horizon_days = COALESCE(NULLIF($14, 0), booking_horizon_days),
+            refusal_message = COALESCE(NULLIF($15, ''), refusal_message)
 		WHERE id = $1
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
             (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
-            active, created_at
+            active, created_at, booking_horizon_days, refusal_message
 	`, id, l.Slug, l.Title, pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
 		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter, l.MinNoticeMinutes,
-		l.UsageType, l.MaxUses, l.Active)
+		l.UsageType, l.MaxUses, l.Active, l.BookingHorizonDays, l.RefusalMessage)
 	return scanSchedulingLink(row)
 }
 
-func DeleteSchedulingLink(db *sql.DB, id uuid.UUID) error {
+func DeleteSchedulingLink(db Querier, id uuid.UUID) error {
 	_, err := db.ExecContext(context.Background(),
 		`UPDATE scheduling_links SET active = false WHERE id = $1`, id)
 	return err
@@ -170,7 +197,7 @@ func scanSchedulingLink(row *sql.Row) (*SchedulingLink, error) {
 		&durOpts, &daysOfWeek,
 		&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
 		&l.MinNoticeMinutes, &l.UsageType, &l.MaxUses, &l.UsesCount,
-		&l.Active, &l.CreatedAt,
+		&l.Active, &l.CreatedAt, &l.BookingHorizonDays, &l.RefusalMessage,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -193,7 +220,7 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 			&durOpts, &daysOfWeek,
 			&l.WindowStart, &l.WindowEnd, &l.BufferBefore, &l.BufferAfter,
 			&l.MinNoticeMinutes, &l.UsageType, &l.MaxUses, &l.UsesCount,
-			&l.Active, &l.CreatedAt,
+			&l.Active, &l.CreatedAt, &l.BookingHorizonDays, &l.RefusalMessage,
 		); err != nil {
 			return nil, err
 		}
@@ -206,7 +233,7 @@ func scanSchedulingLinks(rows *sql.Rows) ([]*SchedulingLink, error) {
 
 // --- LinkHost CRUD ---------------------------------------------------------
 
-func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
+func AddLinkHost(db Querier, linkID, userID uuid.UUID, status string) (*LinkHost, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
 		VALUES ($1, $2, $3)
@@ -220,7 +247,7 @@ func AddLinkHost(db *sql.DB, linkID, userID uuid.UUID, status string) (*LinkHost
 // already a host of the link, their row is returned unchanged and created is
 // false: an invite never changes an existing host's status, so re-inviting an
 // accepted co-host cannot drop their calendar from the link's slots (PAC-61).
-func InviteLinkHost(db *sql.DB, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
+func InviteLinkHost(db Querier, linkID, userID uuid.UUID) (host *LinkHost, created bool, err error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO scheduling_link_hosts (link_id, user_id, status)
 		VALUES ($1, $2, 'pending')
@@ -245,7 +272,7 @@ func InviteLinkHost(db *sql.DB, linkID, userID uuid.UUID) (host *LinkHost, creat
 
 // RemoveLinkHostsExcept deletes every non-owner host of linkID whose user is
 // not in keep. Hosts in keep are left exactly as they are.
-func RemoveLinkHostsExcept(db *sql.DB, linkID, ownerID uuid.UUID, keep []uuid.UUID) error {
+func RemoveLinkHostsExcept(db Querier, linkID, ownerID uuid.UUID, keep []uuid.UUID) error {
 	ids := make([]string, len(keep))
 	for i, id := range keep {
 		ids[i] = id.String()
@@ -257,7 +284,7 @@ func RemoveLinkHostsExcept(db *sql.DB, linkID, ownerID uuid.UUID, keep []uuid.UU
 	return err
 }
 
-func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
+func GetLinkHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
 		FROM scheduling_link_hosts WHERE link_id = $1 ORDER BY invited_at
@@ -277,7 +304,23 @@ func GetLinkHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
-func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
+// GetLinkHostStatus returns the user's own host status on the link. found is
+// false, with a nil error, when the user has no host row on it; any other
+// failure is returned so a caller can tell "no row" from "could not read".
+func GetLinkHostStatus(db DBTX, linkID, userID uuid.UUID) (status string, found bool, err error) {
+	err = db.QueryRowContext(context.Background(), `
+		SELECT status FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2
+	`, linkID, userID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return status, true, nil
+}
+
+func GetAcceptedHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
 		FROM scheduling_link_hosts WHERE link_id = $1 AND status = 'accepted'
@@ -297,7 +340,7 @@ func GetAcceptedHosts(db *sql.DB, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
-func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error) {
+func GetPendingInvitesForUser(db DBTX, userID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, user_id, status, invited_at, responded_at
 		FROM scheduling_link_hosts WHERE user_id = $1 AND status = 'pending'
@@ -319,7 +362,7 @@ func GetPendingInvitesForUser(db *sql.DB, userID uuid.UUID) ([]*LinkHost, error)
 
 // RemoveLinkHost deletes userID's host row on linkID. removed is false when
 // no row matched (the user was never a host, or already left): PAC-30.
-func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err error) {
+func RemoveLinkHost(db Querier, linkID, userID uuid.UUID) (removed bool, err error) {
 	res, err := db.ExecContext(context.Background(),
 		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`, linkID, userID)
 	if err != nil {
@@ -335,8 +378,8 @@ func RemoveLinkHost(db *sql.DB, linkID, userID uuid.UUID) (removed bool, err err
 // RespondToHostInvite sets userID's host row on linkID to status. matched is
 // false when the user has no host row on that link (or no such link exists);
 // nothing is written in that case: PAC-30.
-func RespondToHostInvite(db *sql.DB, linkID, userID uuid.UUID, status string) (matched bool, err error) {
-	res, err := db.ExecContext(context.Background(), `
+func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (matched bool, err error) {
+	res, err := db.Exec(`
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2
@@ -376,7 +419,7 @@ func scanLinkHostRow(rows *sql.Rows) (*LinkHost, error) {
 
 // --- Booking CRUD ----------------------------------------------------------
 
-func CreateBooking(db *sql.DB, b *Booking) (*Booking, error) {
+func CreateBooking(db DBTX, b *Booking) (*Booking, error) {
 	row := db.QueryRowContext(context.Background(), `
 		INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
 		VALUES ($1,$2,$3,$4,$5,$6)
@@ -385,7 +428,7 @@ func CreateBooking(db *sql.DB, b *Booking) (*Booking, error) {
 	return scanBooking(row)
 }
 
-func HasOverlappingBooking(db *sql.DB, linkID uuid.UUID, start, end time.Time) (bool, error) {
+func HasOverlappingBooking(db DBTX, linkID uuid.UUID, start, end time.Time) (bool, error) {
 	var exists bool
 	err := db.QueryRowContext(context.Background(), `
 		SELECT EXISTS(SELECT 1 FROM bookings
@@ -394,7 +437,7 @@ func HasOverlappingBooking(db *sql.DB, linkID uuid.UUID, start, end time.Time) (
 	return exists, err
 }
 
-func GetBookingsByLink(db *sql.DB, linkID uuid.UUID) ([]*Booking, error) {
+func GetBookingsByLink(db DBTX, linkID uuid.UUID) ([]*Booking, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
 		FROM bookings WHERE link_id = $1 ORDER BY start_time DESC
@@ -417,18 +460,18 @@ func GetBookingsByLink(db *sql.DB, linkID uuid.UUID) ([]*Booking, error) {
 	return out, rows.Err()
 }
 
-// GetConfirmedBookingsForUser returns all confirmed booking time ranges for a user
-// across any scheduling link they host: links they own, and links where they
-// are an accepted co-host. It does not depend on a calendar event having been
-// created for the booking (booking_events), so a host with no calendar
-// connected, or whose event creation failed, is still busy at a booked time
-// (PAC-64).
-func GetConfirmedBookingsForUser(db *sql.DB, userID uuid.UUID, start, end time.Time) ([]time.Time, error) {
+// GetBusyBookingsForUser returns the time ranges of every booking that is not
+// cancelled (pending or confirmed, PAC-72 D-11) across any scheduling link the
+// user hosts: links they own, and links where they are an accepted co-host.
+// It does not depend on a calendar event having been created for the booking
+// (booking_events), so a host with no calendar connected, or whose event
+// creation failed, is still busy at a booked time (PAC-64).
+func GetBusyBookingsForUser(db DBTX, userID uuid.UUID, start, end time.Time) ([]time.Time, error) {
 	rows, err := db.QueryContext(context.Background(), `
 		SELECT b.start_time, b.end_time
 		FROM bookings b
 		JOIN scheduling_links l ON l.id = b.link_id
-		WHERE b.status = 'confirmed'
+		WHERE b.status <> 'cancelled'
 		  AND b.start_time < $3
 		  AND b.end_time   > $2
 		  AND (l.owner_user_id = $1
@@ -465,7 +508,7 @@ func scanBooking(row *sql.Row) (*Booking, error) {
 
 // --- BookingEvent CRUD -----------------------------------------------------
 
-func SaveBookingEvent(db *sql.DB, bookingID, userID uuid.UUID, calEventID string) error {
+func SaveBookingEvent(db DBTX, bookingID, userID uuid.UUID, calEventID string) error {
 	_, err := db.ExecContext(context.Background(), `
 		INSERT INTO booking_events (booking_id, user_id, calendar_event_id)
 		VALUES ($1, $2, $3)
@@ -475,7 +518,7 @@ func SaveBookingEvent(db *sql.DB, bookingID, userID uuid.UUID, calEventID string
 
 // --- Slug helpers -----------------------------------------------------------
 
-func SlugExists(db *sql.DB, slug string) (bool, error) {
+func SlugExists(db DBTX, slug string) (bool, error) {
 	var exists bool
 	err := db.QueryRowContext(context.Background(),
 		`SELECT EXISTS(SELECT 1 FROM scheduling_links WHERE slug = $1)`, slug).Scan(&exists)

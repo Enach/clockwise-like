@@ -28,6 +28,30 @@ Highest priority: this is the suite's most valuable journey.
 | `booking-confirmation` | the confirmation card | So the success assertion does not depend on the copy "You are confirmed!". |
 | `booking-error` | the `submitError` paragraph | Same, for the 409/410/422 branches. |
 
+
+## 1a. PAC-88 booking page time zone — `src/pages/PublicBooking.tsx`, `src/components/booking/**`
+
+Contract `contracts/features/PAC-88.md` section 3.5 (exact spellings), used by
+`tests/pac88-zones.spec.ts` and `tests/pac88-booking.spec.ts`. Implemented by
+the web PR smart-calendar-flow#144 (the journeys need it).
+
+| Test id | Element | Used for |
+|---|---|---|
+| `booking-tz-label` | zone label, text `<zone> (UTC±hh:mm)` (U+2212 minus); the selected day's offset, or the selected time's | AC-1, AC-2, AC-3, AC-21 |
+| `booking-tz-switcher` | `<input role="combobox">` named "Time zone"; value = the current zone; typing filters; options `role="option"` named `<zone> (UTC±hh:mm)` | every zone switch (`lib/zones.ts switchZone`) |
+| `booking-tz-use-mine` | "Use my time zone (<browser zone>)", absent when equal | AC-7 |
+| `booking-tz-back-to-host` | "Back to the host's time zone (<zone>)", shown after a switch | AC-7 |
+| `booking-tz-unsupported` | "Times can't be shown in <zone>. Choose another time zone." | not driven by e2e (a zone the server refuses needs a browser zone the server lacks) |
+| `booking-tz-announcer` | `role="status"`, polite, empty on load | AC-7 (after a switch), AC-1 (nothing on load) |
+
+Also relied on (not test ids): each time button's accessible name is
+`<Weekday, Month D, YYYY>, <time>, <zone> <offset>` (spec 3.9; asserted with
+`toHaveAccessibleName`), its visible text stays the time alone (`slotButtons`);
+day cells not listed by the overview are disabled; the month caption reads
+`<Month> <YYYY>` (`lib/zones.ts showDay`); the confirmation shows the date,
+`start – end · N min` and `<zone> (UTC±hh:mm)`; "Book another time" is a
+button with that name.
+
 ## 2. Links page create form — `src/pages/Links.tsx`
 
 > **Resolved (2026-10-11) by the "acceptable alternative" below.** Since
@@ -83,14 +107,84 @@ breaks those selectors without breaking the feature.
 | `focus-run-button` | whatever triggers `POST /api/focus/run` in `QuickActions` |
 | `focus-block-<date>-<HH:MM>` | a rendered focus block, distinguishable from a meeting |
 
-## 5. Demo / mock state markers — `src/components/MockBanner.tsx`, `DemoBanner.tsx`
+## 4b. AI features off — `src/components/AINotConfiguredNotice.tsx` (NEW-llm-bring-your-own)
 
 | Test id | Element | Why |
 |---|---|---|
-| `mock-banner` | the "Backend not reachable — showing demo data" banner | `e2e/fixtures.ts assertNotDemo` asserts this banner is **absent** on every authenticated page, because `src/api/client.ts` silently substitutes demo fixtures on `ApiUnreachableError`. That guard is the single most important anti-false-pass check in the suite and it currently depends on an exact English sentence. A stable id makes it robust; changing the copy today would silently disarm it. |
-| `demo-banner` | the demo-session banner | Same reasoning. |
+| `ai-off-notice` | the "AI features are off" notice shown by the dashboard's scheduling bar and the AI section of Settings | `tests/llm-bring-your-own.spec.ts` (spec AC-21, AC-34) asserts the notice, not an error, appears for a user with no AI configuration. Provided by smart-calendar-flow in the NEW-llm-bring-your-own PR. |
+
+## 4c. Organisation AI — `src/components/settings/OrganizationAISection.tsx`, `src/components/OrgAIConsentDialog.tsx`, `src/components/AINotConfiguredNotice.tsx` (PAC-73 Part 2, PAC-87)
+
+| Test id | Element | Why |
+|---|---|---|
+| `org-ai-section` | the organisation AI section of Settings (members only) | `tests/llm-org-ai.spec.ts` and `tests/llm-bring-your-own.spec.ts` (P2-AC-30, P2-AC-31) assert what every member is shown, and that the key never is. |
+| `org-ai-read` | the read view of that section | Same. |
+| `org-ai-form` | the administrator's change form | P2-AC-32: a granted return offers the form. |
+| `org-ai-stepup` | the step-up explanation shown before navigating | P2-AC-30. |
+| `org-ai-stepup-outcome` | the step-up outcome stated in the organisation AI section | P2-AC-32: an organisation-AI landing is stated there and not in the SSO section. |
+| `org-ai-forbid-warning` | the warning before forbidding personal keys on an incomplete configuration | P2-AC-30. |
+| `org-ai-consent` / `org-ai-consent-text` / `org-ai-consent-changed` | the one-time notice dialog, its text, and its "changed meanwhile" note | P2-AC-22, P2-AC-26, P2-AC-38 (owner O-13 wording: "access", never read/reads/see). |
+| `ai-org-confirm` | the notice's "Review and confirm" action in rows 5 and 10 (PAC-87: row 10 confirms without changing the stored choice) | P2-AC-22; `tests/llm-org-ai.spec.ts` PAC87-AC-16. |
+| `ai-use-org` | the notice's "Use my organisation's AI" action in row 7 only (PAC-87: never offered from row 10) | P2-AC-31; PAC87-AC-16 asserts it is absent from row 10. |
+| `ai-personal-keys-forbidden` | the Settings note that a member's own choice and key are kept but not used | P2-AC-31; PAC87-AC-16 (rows 9 and 10). |
+| `ai-runs-on-org` | the Settings line for a member in row 9: "AI runs on your organisation's AI (‹provider›)" | `tests/llm-org-ai.spec.ts` PAC87-AC-15, PAC87-AC-16. Provided by smart-calendar-flow PAC-87 (impl/pac-87-web, #143). |
+| `org-ai-consent-kept` | the consent dialog's sentence that the member's own choice and key are kept (shown when the stored choice is not `organization`) | PAC87-AC-15, PAC87-AC-16. Provided by smart-calendar-flow #143. |
+| `org-ai-presave` / `org-ai-presave-<kind>` | the administrator form's pre-save block and each sentence (`provider_changed`, `provider_removed`, `key_or_destination`, `forbid_complete`) | PAC87-AC-17 (unit-tested in the web; available to e2e). Provided by smart-calendar-flow #143. |
+
+## 5. Demo, unreachable and failure markers (PAC-83, contract `contracts/features/PAC-83.md` §5.1)
+
+Binding test ids the web renders since PAC-83. `e2e/fixtures.ts assertNotDemo`
+— the single most important anti-false-pass check in the suite — fails on
+`demo-label`, `server-unreachable-banner` and `api-error` with
+`data-error-kind="lost"` (AC-28, self-tested in `tests/guard-self-test.spec.ts`).
+
+| Test id | Element | Used by |
+|---|---|---|
+| `demo-entry` | the demo entry control, sign-in initial view, demo builds only | `tests/demo-build.spec.ts` (AC-30: absent from the production image) |
+| `demo-label` | the non-dismissible demo label on every signed-in page during a demo; demo builds only | `assertNotDemo` |
+| `server-unreachable-banner` | the persistent "can't reach Paceday" banner (Dashboard, Settings, Audit) when the health probe fails | `assertNotDemo` |
+| `server-unreachable-retry` | its retry button | — |
+| `api-error` | an inline failure message where the action happened; attributes `data-error-kind` (`budget`, `too-large`, `lost`, `http`) and `data-effect` (`read`, `write`, `booking`) | `assertNotDemo` (`lost`); `tests/public-booking.spec.ts` AC-10 |
+| `api-error-retry` | the manual retry control inside `api-error`, only when a retry is offered | AC-10 |
+| `still-working` | the "still working, may take up to about a minute and a half" notice, on a user-started call after 8 s | AC-5, AC-24 |
+| `ai-progress` | the "asking the AI, may take up to a minute" message, from submit until answer | — (unit AC-2) |
+
+Retired: `mock-banner` (never rendered; its banner is gone) and `demo-banner`
+(replaced by `demo-label`). The old banner sentence stays in `assertNotDemo`
+only while a web from before PAC-83 can still be deployed.
+
+## 6. Framing — `src/pages/PublicBooking.tsx`, `src/components/FrameGuard.tsx` (PAC-91, contract `contracts/features/PAC-91.md` §4)
+
+Binding test ids for the PAC-91 web change (links on the booking page leave
+the frame; the app refuses to render framed off the booking page). Rendered
+by the PAC-91 web change (Enach/smart-calendar-flow, branch `impl/pac-91-web`).
+
+| Test id | Element | Used by |
+|---|---|---|
+| `booking-home-link` | the booking page's header link ("paceday"), `href="/"`, `target="_top"` | `tests/framing.spec.ts` AC-4, AC-5; web unit AC-1, AC-3 |
+| `booking-error-home-link` | the error-state "Back to Paceday" link (both error states) | web unit AC-2, AC-3 |
+| `frame-notice` | the root of the notice the app shows when framed off the booking page | web unit AC-6, AC-7, AC-8, AC-10, AC-11 |
+| `frame-notice-open` | the notice's single link, `href="/"`, same target as the booking links | web unit AC-7 |
 
 ---
+
+## 7. Sign-in provider choice — `src/components/auth/AuthDialog.tsx`, `src/components/auth/**` (PAC-97)
+
+Detection's new answer `choose` (spec `docs/specs/PAC-97.md` AC-19..AC-22,
+contract `contracts/features/PAC-97.md` section 3). Implemented by the web PR
+smart-calendar-flow#147; used by `tests/pac97-signin-detect.spec.ts` (AC-27).
+
+| Test id | Element | Used for |
+|---|---|---|
+| `auth-choose-step` | the choose step's container; heading "Choose how to sign in" (or "...sign up") | AC-27: the step is shown, not the password step |
+| `auth-choose-email` | the span showing the typed email | AC-27: the step is for the typed address |
+| `auth-choose-google` | button "Continue with Google" / "Sign up with Google" | AC-27: the click requests `/api/auth/google?login_hint=<email>` |
+| `auth-choose-microsoft` | button "Continue with Microsoft" / "Sign up with Microsoft" | AC-27: the Microsoft half (shown only when Microsoft is configured) |
+| `auth-choose-back` | button "Use a different email" | AC-21 (e2e: the email is kept) |
+| `auth-choose-unavailable` | the "sign-in with a provider is not available" text | AC-20 (vitest only) |
+
+The remembered email lives in `sessionStorage` key `paceday:signin-email`
+(AC-25, AC-26).
 
 ## Contract gaps found while writing this suite
 

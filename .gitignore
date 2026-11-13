@@ -24,3 +24,6 @@ data/
 .idea/
 .vscode/
 *.swp
+
+# Encryption key (PAC-84): never committed, never in the backup set
+encryption.env

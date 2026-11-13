@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/lifecycle"
 	"github.com/Enach/paceday/backend/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -94,13 +95,16 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 	if body.IsManager && p.DetectedAt == nil {
 		// Trigger detection async
 		eng := h.newEngine()
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// PAC-81 AC-A6: a tracked unit, awaited by the drain (own 30 s).
+		// PAC-71: GoFrom keeps the request's values, so the session guard
+		// stays: detection's token load and roster writes are re-checked.
+		lifecycle.GoFrom(r.Context(), lifecycle.Unit{Kind: "manager-detection", ID: userID.String()}, func(work context.Context) {
+			ctx, cancel := context.WithTimeout(work, 30*time.Second)
 			defer cancel()
 			_, _ = eng.DetectTeam(ctx, userID)
-		}()
+		})
 	}
-	_ = storage.UpsertUserProfile(h.db, p)
+	_ = storage.UpsertUserProfileCtx(r.Context(), h.db, p)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(p)
@@ -186,7 +190,7 @@ func (h *managerHandlers) confirmDetection(w http.ResponseWriter, r *http.Reques
 		}
 		normalized = append(normalized, email)
 	}
-	assigned, skipped, total, err := storage.ConfirmManagerTeamMembers(h.db, userID, *teamID, normalized)
+	assigned, skipped, total, err := storage.ConfirmManagerTeamMembersCtx(r.Context(), h.db, userID, *teamID, normalized)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -315,14 +319,14 @@ func (h *managerHandlers) addMember(w http.ResponseWriter, r *http.Request) {
 		CadenceCustomDays: body.CadenceCustomDays,
 	}
 	// Resolve member_user_id if they're a Paceday user
-	var uid uuid.UUID
-	if err := h.db.QueryRow(`SELECT id FROM users WHERE email=$1`, email).Scan(&uid); err == nil {
+	// PAC-71 granting site: only the one domain-confirmed holder (any case).
+	if uid, ok, err := storage.ConfirmedHolder(h.db, email); err == nil && ok {
 		m.MemberUserID = &uid
 	}
 	if teamID != nil {
-		err = storage.UpsertManagerTeamMemberForTeam(h.db, *teamID, m)
+		err = storage.UpsertManagerTeamMemberForTeamCtx(r.Context(), h.db, *teamID, m)
 	} else {
-		err = storage.UpsertManagerTeamMember(h.db, m)
+		err = storage.UpsertManagerTeamMemberCtx(r.Context(), h.db, m)
 	}
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
@@ -350,20 +354,34 @@ func (h *managerHandlers) deleteMember(w http.ResponseWriter, r *http.Request) {
 	}
 	email := managerEmailParam(r)
 	if teamID == nil {
-		_ = storage.DeleteManagerTeamMemberByEmail(h.db, userID, email)
+		_ = storage.DeleteManagerTeamMemberByEmailCtx(r.Context(), h.db, userID, email)
 	} else {
-		var targetID uuid.UUID
-		if err := h.db.QueryRow(`SELECT id FROM users WHERE lower(email)=lower($1)`, email).Scan(&targetID); err == nil {
+		// PAC-71 revoking site: every account carrying the address, at any
+		// standing and in any letter case, loses its formal membership (spec
+		// AC-43); if the owner is among them nothing is removed (422).
+		targets, terr := storage.CarrierIDs(h.db, []string{email})
+		if terr != nil {
+			writeServerError(w, r, "remove member: lookup", terr, http.StatusInternalServerError)
+			return
+		}
+		members := make([]uuid.UUID, 0, len(targets))
+		for _, targetID := range targets {
 			if membership, memberErr := storage.GetTeamMember(h.db, *teamID, targetID); memberErr == nil {
 				if membership.Role == "owner" {
 					writeError(w, "the team owner cannot be removed", http.StatusUnprocessableEntity)
 					return
 				}
-				_ = storage.RemoveTeamMember(h.db, *teamID, targetID)
+				members = append(members, targetID)
 			}
 		}
-		_ = storage.UnassignManagerTeamMember(h.db, userID, *teamID, email)
-		_, _ = h.db.Exec(`DELETE FROM team_invites WHERE team_id=$1 AND lower(invitee_email)=lower($2) AND status='pending'`, *teamID, email)
+		for _, targetID := range members {
+			_ = storage.RemoveTeamMemberCtx(r.Context(), h.db, *teamID, targetID)
+		}
+		_ = storage.UnassignManagerTeamMemberCtx(r.Context(), h.db, userID, *teamID, email)
+		_ = guarded(r.Context(), h.db, func(q storage.Querier) error {
+			_, err := q.Exec(`DELETE FROM team_invites WHERE team_id=$1 AND lower(invitee_email)=lower($2) AND status='pending'`, *teamID, email)
+			return err
+		})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -384,7 +402,7 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	m, err := h.getOrCreateScopedMember(userID, teamID, email)
+	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -417,9 +435,9 @@ func (h *managerHandlers) patchMember(w http.ResponseWriter, r *http.Request) {
 		displayName = strings.Split(m.MemberEmail, "@")[0]
 	}
 	if teamID == nil {
-		err = storage.PatchManagerTeamMember(h.db, userID, email, displayName, cadence, customDays)
+		err = storage.PatchManagerTeamMemberCtx(r.Context(), h.db, userID, email, displayName, cadence, customDays)
 	} else {
-		err = storage.PatchManagerTeamMemberForTeam(h.db, userID, *teamID, email, displayName, cadence, customDays)
+		err = storage.PatchManagerTeamMemberForTeamCtx(r.Context(), h.db, userID, *teamID, email, displayName, cadence, customDays)
 	}
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
@@ -487,7 +505,7 @@ func (h *managerHandlers) scheduleMember(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	m, err := h.getOrCreateScopedMember(userID, teamID, email)
+	m, err := h.getOrCreateScopedMember(r.Context(), userID, teamID, email)
 	if err == sql.ErrNoRows {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -666,7 +684,7 @@ func (h *managerHandlers) listManagerMembers(userID uuid.UUID, teamID *uuid.UUID
 	return result, nil
 }
 
-func (h *managerHandlers) getOrCreateScopedMember(userID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, error) {
+func (h *managerHandlers) getOrCreateScopedMember(ctx context.Context, userID uuid.UUID, teamID *uuid.UUID, email string) (*storage.ManagerTeamMember, error) {
 	if teamID == nil {
 		return storage.GetManagerTeamMemberByEmail(h.db, userID, email)
 	}
@@ -682,6 +700,11 @@ func (h *managerHandlers) getOrCreateScopedMember(userID uuid.UUID, teamID *uuid
 		if !strings.EqualFold(formal.Email, email) || formal.UserID == userID {
 			continue
 		}
+		// PAC-71 granting site: a roster entry points only at a formal member
+		// who holds the address domain-confirmed.
+		if ok, herr := storage.HoldsConfirmed(h.db, formal.UserID, email); herr != nil || !ok {
+			continue
+		}
 		memberUserID := formal.UserID
 		displayName := strings.TrimSpace(formal.Name)
 		if displayName == "" {
@@ -691,7 +714,7 @@ func (h *managerHandlers) getOrCreateScopedMember(userID uuid.UUID, teamID *uuid
 			ManagerUserID: userID, MemberEmail: strings.ToLower(email), MemberUserID: &memberUserID,
 			DisplayName: displayName, Source: "manual", Cadence: "none",
 		}
-		if err := storage.UpsertManagerTeamMemberForTeam(h.db, *teamID, member); err != nil {
+		if err := storage.UpsertManagerTeamMemberForTeamCtx(ctx, h.db, *teamID, member); err != nil {
 			return nil, err
 		}
 		return member, nil

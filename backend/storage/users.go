@@ -8,17 +8,26 @@ import (
 )
 
 type User struct {
-	ID        uuid.UUID  `json:"id"`
-	Email     string     `json:"email"`
-	Name      string     `json:"name"`
-	AvatarURL string     `json:"avatarUrl"`
-	Provider  string     `json:"provider"`
-	OrgID     *uuid.UUID `json:"-"`
-	Org       *Org       `json:"org,omitempty"`
-	CreatedAt time.Time  `json:"createdAt"`
+	ID        uuid.UUID `json:"id"`
+	Email     string    `json:"email"`
+	Name      string    `json:"name"`
+	AvatarURL string    `json:"avatarUrl"`
+	Provider  string    `json:"provider"`
+	// AddressStanding is PAC-71's address standing (domain_confirmed or
+	// unconfirmed). GetUserByID and GetUserByEmail fill it, so /api/auth/me
+	// carries it (CurrentUserResponse.addressStanding, required); the org
+	// member list does not read it and omits it.
+	AddressStanding string     `json:"addressStanding,omitempty"`
+	OrgID           *uuid.UUID `json:"-"`
+	Org             *Org       `json:"org,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
 }
 
-func UpsertUser(db *sql.DB, email, name, avatarURL, provider, providerID string) (*User, error) {
+// UpsertUser inserts or updates a user row matched by its exact address. It is
+// NOT a sign-in: since PAC-71 the callbacks resolve accounts by identity
+// (ResolveSignIn). It remains for fixtures that need a pre-PAC-71 (unbound)
+// account.
+func UpsertUser(db DBTX, email, name, avatarURL, provider, providerID string) (*User, error) {
 	row := db.QueryRow(`
 		INSERT INTO users (email, name, avatar_url, provider, provider_id, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())
@@ -34,15 +43,15 @@ func UpsertUser(db *sql.DB, email, name, avatarURL, provider, providerID string)
 	return u, row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &u.CreatedAt)
 }
 
-func GetUserByEmail(db *sql.DB, email string) (*User, error) {
+func GetUserByEmail(db DBTX, email string) (*User, error) {
 	row := db.QueryRow(`
-		SELECT id, email, name, avatar_url, provider, org_id, created_at
+		SELECT id, email, name, avatar_url, provider, address_standing, org_id, created_at
 		FROM users WHERE email = $1
 	`, email)
 
 	u := &User{}
 	var orgID uuid.NullUUID
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &orgID, &u.CreatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &u.AddressStanding, &orgID, &u.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -54,15 +63,15 @@ func GetUserByEmail(db *sql.DB, email string) (*User, error) {
 	return u, nil
 }
 
-func GetUserByID(db *sql.DB, id uuid.UUID) (*User, error) {
+func GetUserByID(db DBTX, id uuid.UUID) (*User, error) {
 	row := db.QueryRow(`
-		SELECT id, email, name, avatar_url, provider, org_id, created_at
+		SELECT id, email, name, avatar_url, provider, address_standing, org_id, created_at
 		FROM users WHERE id = $1
 	`, id)
 
 	u := &User{}
 	var orgID uuid.NullUUID
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &orgID, &u.CreatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.Provider, &u.AddressStanding, &orgID, &u.CreatedAt); err != nil {
 		return nil, err
 	}
 	if orgID.Valid {

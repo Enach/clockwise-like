@@ -1,13 +1,22 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Enach/paceday/backend/auth"
+	"github.com/Enach/paceday/backend/internal/budget"
+	"github.com/Enach/paceday/backend/storage"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
@@ -15,13 +24,65 @@ type ctxKey string
 
 const (
 	ctxUserEmail ctxKey = "userEmail"
+	// ctxSessionIssuedAt is the session JWT's issue time (time.Time; zero when
+	// the token carries none). PAC-50's break-glass freshness rule reads it.
+	ctxSessionIssuedAt ctxKey = "sessionIssuedAt"
 )
+
+// sessionIssuedAt returns the session's issue time, or the zero time.
+func sessionIssuedAt(ctx context.Context) time.Time {
+	t, _ := ctx.Value(ctxSessionIssuedAt).(time.Time)
+	return t
+}
+
+// sessionEmail returns the session's email claim, or "".
+func sessionEmail(ctx context.Context) string {
+	e, _ := ctx.Value(ctxUserEmail).(string)
+	return e
+}
 
 func userIDFromCtx(ctx context.Context) uuid.UUID {
 	return auth.UserIDFromContext(ctx)
 }
 
-func requireAuth(jwtSecret string) func(http.Handler) http.Handler {
+// sessionUnauthorized writes requireAuth's 401, byte for byte today's: the
+// JSON text with http.Error's text/plain Content-Type.
+func sessionUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+}
+
+// sessionGenerationUnavailable is the PAC-71 500 (SessionGenerationUnavailable,
+// spec AC-48): JSON, no Set-Cookie, never a 401.
+func sessionGenerationUnavailable(w http.ResponseWriter, r *http.Request, err error) {
+	writeServerError(w, r, "session generation", err, http.StatusInternalServerError)
+}
+
+// afterAuthHook is a deterministic test seam (PAC-71 AC-47, AC-50): it
+// runs after requireAuth has authenticated the request,
+// before the handler. Production leaves it nil.
+var afterAuthHook func(r *http.Request)
+
+// requireAuth authenticates the session (PAC-39: an Authorization bearer token
+// wins over the auth_token cookie) and, since PAC-71, its session generation
+// (spec docs/specs/PAC-71.md §3 "Sessions"; contract bearerAuth; plan §3):
+//
+//   - the token's `gen` (absent = 0) must equal the account's current
+//     generation, read uncached; otherwise today's 401;
+//   - a generation that cannot be read is a JSON 500, never a 401 (AC-48);
+//   - the request context carries the session guard for the in-request
+//     re-check, and a re-check that finds the session stale (or the
+//     generation unreadable) replaces whatever the handler answers with the
+//     401 (or the 500);
+//   - no account row for `sub`: the request proceeds as before PAC-71, and
+//     every in-request re-check answers the 401 (contract §5, CONTRACT-12).
+//
+// preAuthExpiry holds, by request path, the budget answer a route gives
+// before its handler registers its own (PAC-81 AC-A2): requireAuth registers
+// it ahead of the session-generation read.
+var preAuthExpiry sync.Map
+
+func requireAuth(db *sql.DB, jwtSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// PAC-39 / API-008: an explicit Authorization: Bearer header wins over
@@ -35,28 +96,140 @@ func requireAuth(jwtSecret string) func(http.Handler) http.Handler {
 				tokenStr = cookie.Value
 			}
 			if tokenStr == "" {
-				w.Header().Set("Content-Type", "application/json")
-				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				sessionUnauthorized(w)
 				return
 			}
 			claims, err := auth.ValidateToken(tokenStr, jwtSecret)
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				sessionUnauthorized(w)
 				return
 			}
 			userID, err := uuid.Parse(claims.UserID)
 			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				sessionUnauthorized(w)
+				return
+			}
+			gen, err := claims.Generation()
+			if err != nil {
+				sessionUnauthorized(w)
+				return
+			}
+			// PAC-81 AC-A2 with PAC-71: a route whose budget answer is fixed
+			// before its handler runs (the step-up callback's denied redirect)
+			// gets it now, since the generation read below can be what waits.
+			if answer, ok := preAuthExpiry.Load(r.URL.Path); ok {
+				budget.OnExpiry(r.Context(), answer.(func(http.ResponseWriter, *http.Request)))
+			}
+			// One plain, uncached read: no transaction or connection is held
+			// while the handler runs.
+			current, found, err := storage.CurrentGeneration(storage.Bind(r.Context(), db), userID)
+			if err != nil {
+				sessionGenerationUnavailable(w, r, err)
+				return
+			}
+			if found && current != gen {
+				sessionUnauthorized(w)
 				return
 			}
 			ctx := context.WithValue(r.Context(), auth.UserIDKey, userID)
 			ctx = context.WithValue(ctx, ctxUserEmail, claims.Email)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			if claims.IssuedAt != nil {
+				ctx = context.WithValue(ctx, ctxSessionIssuedAt, claims.IssuedAt.Time)
+			}
+			// Without an account row (found is false) the guard starts clean: the
+			// request proceeds as before PAC-71, and the first in-request re-check
+			// finds no current generation and marks it stale.
+			guard := &storage.SessionGuard{UserID: userID, Gen: gen}
+			ctx = storage.WithSessionGuard(ctx, guard)
+			r = r.WithContext(ctx)
+			if afterAuthHook != nil {
+				afterAuthHook(r)
+			}
+			// base: the headers requireAuth's own 401 would carry (those the
+			// outer middleware set, CORS included), restored on an override.
+			gw := &guardedResponseWriter{ResponseWriter: w, r: r, guard: guard, base: w.Header().Clone()}
+			next.ServeHTTP(gw, r)
+			gw.finish()
 		})
 	}
 }
+
+// guardedResponseWriter turns a stale in-request re-check into requireAuth's
+// 401 (and an unreadable generation into the 500), "whatever the operation
+// had already decided" (contract bearerAuth): the decision is taken when the
+// handler first writes, or when it returns without writing. On an override
+// the header map is reset to base, the headers present when requireAuth
+// handed over (exactly those its own 401 carries), so nothing the handler
+// prepared (a cookie, a Location) leaks into the answer and nothing the
+// outer middleware set (CORS) is lost.
+type guardedResponseWriter struct {
+	http.ResponseWriter
+	r          *http.Request
+	guard      *storage.SessionGuard
+	base       http.Header
+	decided    bool
+	overridden bool
+}
+
+func (g *guardedResponseWriter) decide() bool {
+	if g.decided {
+		return g.overridden
+	}
+	g.decided = true
+	if !g.guard.Stale() && !g.guard.Unavailable() {
+		return false
+	}
+	g.overridden = true
+	h := g.ResponseWriter.Header()
+	for k := range h {
+		delete(h, k)
+	}
+	// base is a Clone taken at hand-over and is restored at most once.
+	for k, v := range g.base {
+		h[k] = v
+	}
+	if g.guard.Stale() {
+		sessionUnauthorized(g.ResponseWriter)
+	} else {
+		sessionGenerationUnavailable(g.ResponseWriter, g.r, storage.ErrGenerationUnavailable)
+	}
+	return true
+}
+
+func (g *guardedResponseWriter) WriteHeader(code int) {
+	if g.decide() {
+		return
+	}
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *guardedResponseWriter) Write(b []byte) (int, error) {
+	if g.decide() {
+		return len(b), nil
+	}
+	return g.ResponseWriter.Write(b)
+}
+
+// finish decides for a handler that wrote nothing.
+func (g *guardedResponseWriter) finish() {
+	if !g.decided {
+		g.decide()
+	}
+}
+
+// Flush decides first, like a first write, and forwards the flush only when
+// the handler's response stands (PAC-90 contract section 3.4, AC-8b). Without it,
+// http.ResponseController would unwrap straight to the budget's Flush, which
+// commits the handler's headers and a 200 before the guard has decided.
+func (g *guardedResponseWriter) Flush() {
+	if g.decide() {
+		return
+	}
+	_ = http.NewResponseController(g.ResponseWriter).Flush()
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (g *guardedResponseWriter) Unwrap() http.ResponseWriter { return g.ResponseWriter }
 
 func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -84,10 +257,141 @@ func corsMiddleware(allowedOrigin string) func(http.Handler) http.Handler {
 	}
 }
 
+// loggingMiddleware writes exactly one access-log line per request (PAC-81
+// AC-A13): method, the matched route pattern (never the raw path, which can
+// carry an invite token, and never the query string), the status actually
+// sent (PAC-90: a flush before any write is 200; a handler chain that wrote
+// nothing is net/http's implicit 200 while the request context is live, and
+// "-" when that context had ended, i.e. the client went away or the server
+// cancelled the request at the end of the drain), the
+// duration, and the client address as the abuse limits resolve it
+// (TRUSTED_PROXIES and X-Real-IP). It sits outside every middleware that can
+// write or replace a status, so a replaced status and the budget's 503 are
+// what it records.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		sw := &statusWriter{ResponseWriter: w}
+		defer func() {
+			status := "-"
+			switch {
+			case sw.status != 0:
+				status = strconv.Itoa(sw.status)
+			case r.Context().Err() == nil:
+				status = strconv.Itoa(http.StatusOK)
+			}
+			p := recover()
+			if p != nil {
+				status = "panic"
+			}
+			accessLogf("%s %s %s %s client=%s", r.Method, routeOf(r), status, time.Since(start), clientIP(r, trustedProxies))
+			if p != nil {
+				panic(p)
+			}
+		}()
+		next.ServeHTTP(sw, r)
 	})
+}
+
+// guarded runs fn under PAC-71's in-request re-check: in one transaction whose
+// first statement confirms the session's generation is still the account's
+// (contract §5). Every request-path write of account data goes through it, so
+// a write never lands after a binding or an operator step advanced the
+// generation; on a mismatch nothing is stored and requireAuth answers 401.
+// The pool wait ends with the request (PAC-81 AC-A9): db is bound to ctx.
+func guarded(ctx context.Context, db storage.DBTX, fn func(q storage.Querier) error) error {
+	return storage.WithSessionGeneration(ctx, storage.Bind(ctx, db), fn)
+}
+
+// routeMux is the router whose patterns the access log reports
+// (RegisterRoutes sets it). Matching on a fresh route context reads nothing
+// the handler goroutine writes, so a request the budget answered while its
+// handler still runs is logged without a data race.
+var routeMux atomic.Pointer[chi.Mux]
+
+// routeOf is r's route pattern, "unmatched" when no route matches, or the
+// path when no router is registered (handlers tested without one).
+func routeOf(r *http.Request) string {
+	mx := routeMux.Load()
+	if mx == nil {
+		return r.URL.Path
+	}
+	rctx := chi.NewRouteContext()
+	if mx.Match(rctx, r.Method, r.URL.Path) {
+		if p := rctx.RoutePattern(); p != "" {
+			return p
+		}
+	}
+	return "unmatched"
+}
+
+// accessLogf is the access log's writer (a test seam).
+var accessLogf = log.Printf
+
+// statusWriter records the first status written to the client.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// Flush records a flush before any write as the 200 it sends, and forwards
+// it outward (Sentry's wrapper, then net/http's writer), following Unwrap
+// where a writer has no Flush of its own (PAC-90 item 4). Only the budget
+// middleware reaches it: handlers hold the budget's writer, which has no
+// Unwrap.
+func (s *statusWriter) Flush() {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	_ = http.NewResponseController(s.ResponseWriter).Flush()
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// maxRequestBody is the largest request body the backend accepts (PAC-81
+// AC-A12, D-7): 1 MiB, the same as nginx.
+const maxRequestBody = 1 << 20
+
+// bodyCapMiddleware answers 413 {"error":"request body too large"} before
+// the handler runs when the body is over the cap: a declared Content-Length
+// over it, or a body that reads past it. A body of exactly the cap is passed
+// on. Bodies are read here, bounded by the cap, so the handler sees the
+// whole body or never runs.
+func bodyCapMiddleware(limit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.ContentLength > limit {
+				writeError(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if r.Body != nil && r.Body != http.NoBody {
+				b, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+				if int64(len(b)) > limit {
+					writeError(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				if err != nil {
+					writeError(w, "invalid request body", http.StatusBadRequest)
+					return
+				}
+				_ = r.Body.Close()
+				r.Body = io.NopCloser(bytes.NewReader(b))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
