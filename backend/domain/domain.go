@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 var genericDomains = map[string]bool{
 	"gmail.com": true, "googlemail.com": true,
@@ -23,6 +26,18 @@ func ExtractDomain(email string) string {
 
 func IsGenericDomain(domain string) bool {
 	return genericDomains[domain]
+}
+
+// GenericDomains returns a sorted copy of the consumer list, for tests that
+// must cover every entry (PAC-98 AC-3, AC-21). Changing the copy changes
+// nothing.
+func GenericDomains() []string {
+	out := make([]string, 0, len(genericDomains))
+	for d := range genericDomains {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // EmailBelongsToDomain reports whether email's domain is exactly d, compared

@@ -208,8 +208,9 @@ func TestPAC97_AC17_RateLimitUnchanged(t *testing.T) {
 func TestPAC97_AC14_APITestsCannotReachLiveDNS(t *testing.T) {
 	// Detecting a consumer address through the default detector never
 	// reaches the resolver; if it did, forbiddenMXResolver would panic.
+	// PAC-98: gmail.com is answered google, still without the resolver.
 	res, err := auth.DefaultDetector().Detect(context.Background(), openTestDB(t), "carol@gmail.com")
-	if err != nil || res.Type != auth.DetectGeneric {
-		t.Fatalf("= (%+v, %v)", res, err)
+	if err != nil || res.Type != auth.DetectGoogle {
+		t.Fatalf("= (%+v, %v), want google", res, err)
 	}
 }

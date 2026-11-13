@@ -22,11 +22,18 @@ const (
 	DetectGoogle    = "google"
 	DetectMicrosoft = "microsoft"
 	DetectSSO       = "sso"
-	DetectGeneric   = "generic"
+	// DetectGeneric is a personal address on the consumer list (PAC-98): the
+	// client offers the providers that accept personal accounts. Paceday has
+	// no password sign-in.
+	DetectGeneric = "generic"
 	// DetectChoose asks the user to pick a provider (PAC-97 D-4): the mail
 	// host gave no strong signal, or could not be read.
 	DetectChoose = "choose"
 )
+
+// googleConsumerDomains are the consumer-list entries that are Google
+// accounts, answered google (PAC-98 D-2). Every entry is on the consumer list.
+var googleConsumerDomains = map[string]bool{"gmail.com": true, "googlemail.com": true}
 
 // DetectResult is returned by the /api/auth/detect endpoint.
 type DetectResult struct {
@@ -164,7 +171,21 @@ func (d *Detector) Detect(ctx context.Context, db *sql.DB, email string) (*Detec
 
 func (d *Detector) detect(ctx context.Context, ssoRow func(string) (*storage.SSOProvider, error), email string) (*DetectResult, error) {
 	dom := domain.ExtractDomain(email)
-	if dom == "" || domain.IsGenericDomain(dom) {
+	// PAC-98 step 0: no domain is not a personal address, so the user picks a
+	// provider. No SSO read, no lookup.
+	if dom == "" {
+		return &DetectResult{Type: DetectChoose}, nil
+	}
+	// PAC-98 step 1: the consumer list is answered without an SSO read or a
+	// lookup, so an SSO row for a consumer domain never applies. gmail.com and
+	// googlemail.com are Google accounts; every other entry is a personal
+	// address the client offers the providers that accept personal accounts
+	// (generic). outlook.com, hotmail.com, live.com and msn.com stay generic
+	// until PAC-77 restores personal Microsoft sign-in.
+	if domain.IsGenericDomain(dom) {
+		if googleConsumerDomains[dom] {
+			return &DetectResult{Type: DetectGoogle}, nil
+		}
 		return &DetectResult{Type: DetectGeneric}, nil
 	}
 

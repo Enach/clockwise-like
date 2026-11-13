@@ -888,11 +888,19 @@ func TestPAC35_Detect_EveryDocumentedStatus(t *testing.T) {
 		}
 	})
 	t.Run("200 not sso", func(t *testing.T) {
-		resetDetectLimiter(t, nil)
-		rec := detect(ah, `{"email":"alice@gmail.com"}`)
-		res := decode(t, rec)
-		if res.Type != "generic" || res.RedirectURL != "" || strings.Contains(rec.Body.String(), "redirect_url") {
-			t.Errorf("result = %+v (%s)", res, rec.Body.String())
+		// PAC-98 AC-6: gmail.com is google, other consumer domains are the
+		// personal-address answer (generic); none carries a redirect path.
+		for email, want := range map[string]string{
+			"alice@gmail.com":   "google",
+			"bob@yahoo.com":     "generic",
+			"carol@outlook.com": "generic",
+		} {
+			resetDetectLimiter(t, nil)
+			rec := detect(ah, `{"email":"`+email+`"}`)
+			res := decode(t, rec)
+			if res.Type != want || res.RedirectURL != "" || res.ProviderName != "" || strings.Contains(rec.Body.String(), "redirect_url") {
+				t.Errorf("%s: result = %+v (%s), want %s", email, res, rec.Body.String(), want)
+			}
 		}
 	})
 	t.Run("400 no email", func(t *testing.T) {

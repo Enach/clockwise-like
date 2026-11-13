@@ -154,16 +154,40 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
     // tests/llm-org-ai.spec.ts (outside PAC-97's allowed paths). Unblocks when
     // PAC-99 lands that compose change and re-pins those two expectations;
     // until then the click itself is covered by the web PR's vitest
-    // (AC-19) and the Microsoft start by the journey below.
+    // (AC-19); the journey below (PAC-98 AC-20) pins the choose step instead.
   });
 
-  test('AC-27: an Exchange Online domain goes straight to the Microsoft start with the hint', async ({ page }) => {
+  // PAC-98 AC-20 (spec D-6) replaces "an Exchange Online domain goes straight
+  // to the Microsoft start": this stack configures Google sign-in only, and a
+  // client that has read availability never starts a provider the deployment
+  // does not offer. PAC-99, which configures Microsoft here, re-pins this to
+  // "navigates to the Microsoft start with the hint".
+  test('PAC-98 AC-20: an Exchange Online domain on the Google-only stack gets the choose step, no Microsoft start', async ({
+    page,
+  }) => {
     await stopAtProviders(page);
+    const starts = recordProviderStarts(page);
     const email = `carol@${freshDomain('microsoft-mx')}`;
+    const availability = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/integrations/availability');
     await page.goto('/signin');
+    // D-6 applies once availability has loaded (while loading, the web navigates as before).
+    expect((await availability).status()).toBe(200);
+    // The top Google button renders only once the dialog holds availability.
+    await expect(
+      page.getByRole('dialog').getByRole('button', { name: /^(Continue|Sign up) with Google$/ }).first(),
+    ).toBeVisible();
 
-    const start = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/auth/microsoft');
     expect(await continueWithEmail(page, email)).toBe('microsoft');
-    expect(new URL((await start).url()).searchParams.get('login_hint')).toBe(email);
+
+    const step = page.getByTestId('auth-choose-step');
+    await expect(step).toBeVisible();
+    await expect(step.getByTestId('auth-choose-email')).toHaveText(email);
+    await expect(step.getByTestId('auth-choose-google')).toBeVisible();
+    await expect(page.getByTestId('auth-choose-microsoft')).toHaveCount(0);
+    await expect(page.getByRole('dialog').getByRole('button', { name: /microsoft/i })).toHaveCount(0);
+    await expect(page.getByRole('dialog').getByLabel(/password/i)).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe('/signin');
+    expect(starts.filter((r) => new URL(r.url()).pathname === '/api/auth/microsoft')).toHaveLength(0);
+    expect(starts).toHaveLength(0);
   });
 });
