@@ -57,7 +57,11 @@ jobs:
                 m=$(printf '%s\n' "$m" | grep -F "${BRANCH%%/*}/" || true)
                 why="no ${BRANCH%%/*}/ branch among $src"
               fi
-              if [ "$(n "$m")" -eq 1 ]; then ref=$m why="only match among $src"
+              # a lone leftover of another stage (factory/pac-N-spec for impl/...) with no open PR is stale
+              if [ "$(n "$m")" -eq 1 ] && [ -z "$o" ] && [[ $BRANCH == */* && $m == */* && ${m%%/*} != "${BRANCH%%/*}" ]]; then
+                why="only match $m has another prefix than ${BRANCH%%/*}/ and no open PR"
+                echo "::notice::ignoring $m for $t: prefix differs from ${BRANCH%%/*}/ and no open PR; using main"
+              elif [ "$(n "$m")" -eq 1 ]; then ref=$m why="only match among $src"
               elif printf '%s\n' "$m" | grep -qxF "$BRANCH"; then ref=$BRANCH why="same name as this branch, among $src"
               elif [ -n "$m" ]; then
                 why="several web branches among $src: $(j "$m")"
