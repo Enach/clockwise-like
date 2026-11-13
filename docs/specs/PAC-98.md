@@ -1,7 +1,7 @@
 # Spec — PAC-98: Sign-in password step posts to /api/auth/login and /register, which don't exist
 
 - **Linear**: https://linear.app/paceday/issue/PAC-98/sign-in-password-step-posts-to-apiauthlogin-and-register-which-dont
-- **Status**: draft
+- **Status**: accepted with changes (spec-challenger, 2026-11-13; changes applied in the body, Challenge log at the end). Owner questions OQ-1..OQ-4 still open; the factory defaults apply.
 - **Author**: spec-author
 - **Priority**: High
 - **Inherited scope**:
@@ -73,8 +73,14 @@ account and needs no migration.
   trims (`:16-22`); `IsGenericDomain` is an exact lookup (`:24-26`).
 - The same list is read by two other features that this ticket must not
   change: organisation matching skips consumer domains
-  (`backend/storage/orgs.go:80`), and the PAC-71 review log line skips them
-  (`backend/storage/signin.go:277`).
+  (`backend/storage/orgs.go:78-89`, `AssociateUserWithOrg`, called after every
+  Google, Microsoft and SSO sign-in: `handlers_pac71_auth.go:188,314`,
+  `handlers_sso.go:199`), and the PAC-71 review log line skips them
+  (`backend/storage/signin.go:277`). **No test pins the organisation skip**:
+  `backend/domain/domain_test.go:27-38` checks five list entries through
+  `IsGenericDomain`, and no test calls `AssociateUserWithOrg` with a consumer
+  address (the gmail.com user in `storage/org_ai_test.go:324` never goes
+  through it). AC-21 adds the pin.
 - Tests pinning `generic` today: `backend/auth/sso_detect_test.go:10-30`
   (gmail.com and `not-an-email`), `backend/auth/pac97_detect_test.go:210-228`
   (AC-4: gmail.com, outlook.com, `not-an-email`) and `:540-555` (AC-14),
@@ -132,6 +138,11 @@ account and needs no migration.
   and sees only "Paceday could not sign you in with this account."
 - `/api/auth/microsoft` answers 503 when Microsoft is not configured
   (`backend/api/handlers_microsoft_auth.go:16-21`).
+- `/api/auth/google` has **no** such check (`backend/api/handlers_auth.go:26-41`):
+  on a deployment without Google credentials it still redirects the browser
+  to Google with an empty client id, which ends on Google's own error page.
+  Availability is published by `GET /api/integrations/availability`
+  (`backend/api/integration_availability.go:21`).
 
 ### 2.5 Web (`smart-calendar-flow` `origin/main` `ae72939`)
 
@@ -152,7 +163,7 @@ account and needs no migration.
   (`:466-474`); "Use a different email" (`:477-488`). Its copy is written for
   a company: "Paceday can't tell which provider … uses. Pick the one your
   company signs in with." (`:431-437`).
-- `GenericStep` (`:493-659`): "Continue with email", "Sign in" / "Create
+- `GenericStep` (`:495-659`): "Continue with email", "Sign in" / "Create
   account" tabs, a password field (`:616-631`), a 6-character minimum
   (`:514-517`), posts to `/api/auth/login` (`:522-525`) or
   `/api/auth/register` (`:527-530`); 401 → "Incorrect email or password.",
@@ -188,12 +199,25 @@ Tests that touch the password step:
   has no password field (`:125-126`), and finds the email field by the
   label "Work email" (`:66`, `:135`).
 - The e2e stack configures Google sign-in only. Microsoft is unavailable there
-  until PAC-99 (`pac97-signin-detect.spec.ts:147-159`).
+  until PAC-99 (`pac97-signin-detect.spec.ts:146-158`, a `test.fixme`).
+- The journey "an Exchange Online domain goes straight to the Microsoft
+  start" (`pac97-signin-detect.spec.ts:160-168`) expects the dialog to
+  navigate to `/api/auth/microsoft` on that Google-only stack. It passes today
+  only because the web navigates on `microsoft` without reading availability.
+- The DNS stand-in (`e2e/fake-google/dns.go`) answers MX queries but records
+  none and exposes no query log on its control plane, so an e2e test cannot
+  observe that a name was **not** queried.
 - A consumer domain never reaches the resolver (§2.1 step 1), so an e2e
   journey with gmail.com or yahoo.com needs no DNS fixture.
 
 ### 2.7 Lovable docs (`smart-calendar-flow`)
 
+- `AGENTS.md` already says "Do not invent endpoints" (Scope section) and
+  `docs/lovable-prompts/00-global-context.md` "Do not create a new API
+  endpoint" (Hard boundaries). The password step calls two routes the contract
+  never had, so a prose rule alone did not prevent it. The rule that both
+  agents obey is the gate (`docs/factory/README.md` §3, design gate: the
+  Makefile is the only rule both agents obey).
 - No Lovable-facing document mentions password sign-in: `AGENTS.md`,
   `docs/lovable-prompts/*.md`, `.lovable/plan.md`, `PRODUCT.md`,
   `docs/architecture.md`, `docs/security.md` (`git grep -i password` hits only
@@ -227,7 +251,11 @@ When a person types an email and continues:
      with Google") with the address as the hint, when the deployment offers
      Google.
    - It says that personal Microsoft accounts cannot sign in to Paceday yet.
-     It offers no Microsoft button for the address until PAC-77.
+     It offers no Microsoft button for the address until PAC-77. The
+     sentence is shown for every personal address, not only the four
+     Microsoft domains, because a personal Microsoft account can use any
+     address (a yahoo.com one included) as its sign-in name. The copy names
+     no date.
    - It offers "Use a different email", which keeps the address.
    - When the deployment offers no provider that accepts a personal account,
      it says so and offers going back.
@@ -238,19 +266,27 @@ When a person types an email and continues:
    path, the dialog never shows a password form. It never posts to a password
    sign-in or registration route.
 5. **A direct answer for a provider the deployment does not offer** (for
-   example gmail.com on a Microsoft-only deployment) does not navigate to a
-   start that cannot work. The person gets the provider step for that
-   address instead. While availability is still unknown, the dialog
-   navigates as today.
+   example gmail.com on a Microsoft-only deployment, or an Exchange Online
+   company domain on a Google-only deployment) does not navigate to a start
+   that cannot work (Microsoft: a 503 page; Google: Google's error page,
+   §2.4). The person gets the provider step for that address instead: the
+   personal-address step for a personal address, the PAC-97 choose step for a
+   company address. While availability is still loading, or its read failed,
+   the dialog navigates as today.
 6. **After a failed or refused sign-in**, retrying from the notice brings back
    the step that fits the remembered address. A personal address gets the
    personal-address step, never a Microsoft button that can only be refused.
-   A company address gets the PAC-97 choice, unchanged.
+   A company address gets the PAC-97 choice, unchanged. When the kind of the
+   remembered address is already known in the tab, no request is made to
+   find it again; only an address remembered without its kind (written by an
+   older build, or remembered before a detection that failed) costs one
+   detection request.
 7. Company domains, SSO domains and the rest of PAC-97 behave exactly as
    today.
 8. The web repository's agent guidance (read by Lovable) states that
    Paceday's sign-in is provider-only and that no password form may be added
-   without an owner decision.
+   without an owner decision. The web gate (`make verify`), not the prose,
+   is what fails when a password form or a password route comes back (AC-13).
 
 ## 4. Acceptance criteria
 
@@ -273,7 +309,9 @@ compose stack.
 - **AC-3** [unit] Table-driven over **every** entry of the consumer list:
   gmail.com and googlemail.com → google; every other entry → the
   personal-address answer. A new entry added to the list without a row in
-  this table fails the test (the table is checked against the list itself).
+  this table fails the test (the table is checked against the list itself:
+  the test enumerates the consumer list from the `domain` package, never
+  from a hand-written copy).
 - **AC-4** [unit] Given an address with no extractable domain (`not-an-email`,
   `alice@`, `@`), when detection runs, then the answer is choose, never the
   personal-address answer, with zero queries. *(Fails today: generic.)*
@@ -334,41 +372,68 @@ compose stack.
   ending in `/api/auth/login` or `/api/auth/register`. sso without a path
   shows the PAC-97 choose step. *(Fails today for the personal-address answer
   and for sso without a path.)*
-- **AC-13** [static] No file under the web's `src/`, tests excluded, contains
-  `/api/auth/login` or `/api/auth/register`. The `/api/auth/login` sample
-  path in the client-timeout test (`api.pac83.test.ts:29`) is replaced by a
-  route that exists. *(Fails today: `AuthDialog.tsx:522,527`.)*
+- **AC-13** [static] A check that runs inside the web's `make verify` (so a
+  Lovable edit meets it in the same gate as everything else) fails when:
+  - any non-test file under `src/` contains `auth/login` or `auth/register`
+    (any prefix, any quoting, so `apiFetch("/api/auth/login")`, a template
+    literal holding `/api/auth/register` and `apiUrl("/auth/login")` all
+    fail);
+  - any non-test file under `src/components/auth/` or a sign-in page renders
+    an input of type `password`, or uses `autoComplete` `current-password`
+    or `new-password`. (The API-key fields in `src/pages/Settings.tsx:763`
+    and `src/components/settings/OrganizationAISection.tsx:274` are outside
+    this scope and stay.)
+
+  The check has a self-test: a fixture containing each forbidden form
+  makes it fail, and a fixture with none passes. The `/api/auth/login`
+  sample path in the client-timeout test (`api.pac83.test.ts:29`) is replaced
+  by a route that exists. A route composed at run time from fragments
+  (`/api/auth/${x}`) is not caught statically; AC-12 catches it in the
+  dialog at run time. *(Fails today: `AuthDialog.tsx:522,527,622`.)*
 - **AC-14** [vitest] Given detection answers google, availability has loaded,
   and Google is **not** available, then the dialog does not navigate. It
   shows the provider step for that address (for gmail.com, the
   personal-address step's "not available" state). The same holds for
   microsoft when Microsoft is unavailable (the PAC-97 choose step). Given
   availability still loading or failed, google navigates as today
-  (`AuthDialog.test.tsx:89-94` unchanged).
+  (`AuthDialog.test.tsx:89-94` unchanged). *(Fails today: the dialog
+  navigates on google and microsoft without reading availability,
+  `AuthDialog.tsx:154-161`.)*
 - **AC-15** [vitest] Given the tab remembers `dave@yahoo.com` (and separately
   `carol@outlook.com`), when the dialog is opened from a failure notice, then
   it offers the personal-address step for that address: Google with the
   hint, no Microsoft button. Given a remembered company address, it offers
   the PAC-97 choice with both providers, as today
-  (`AuthDialog.pac97.test.tsx:245-254` unchanged). If the step needs a fresh
-  detection to know which step fits, that request follows PAC-83: an
-  unreachable API shows the failure view with a retry, never the demo and
-  never a password field. *(Fails today: both providers for every remembered
-  address.)*
+  (`AuthDialog.pac97.test.tsx:245-254`). Request count, falsifiable:
+  - when the tab recorded the detection answer's kind together with the
+    email (under PAC-97 D-10's storage rules), opening from the notice makes
+    **zero** requests to `/api/auth/detect`;
+  - when only the email is remembered (no kind: an older build wrote it, or
+    the detection that followed failed), it makes **exactly one**, and that
+    request follows PAC-83: an unreachable API shows the failure view with a
+    retry, never the demo and never a password field.
+
+  The PAC-97 test at `AuthDialog.pac97.test.tsx:245-254` changes on purpose
+  in its setup only (it records the company kind with the email); its
+  assertions, both providers and zero detection requests, stay. *(Fails
+  today: both providers for every remembered address.)*
 - **AC-16** [vitest] PAC-83 AC-14 on the new step: given the personal-address
   step, when Google is clicked while Paceday is unreachable, then the failure
   view with a retry is shown, never the demo. The retry starts Google with the
   same hint. This replaces `AuthDialog.pac83.test.tsx:140-155`, which tests a
   password step that no longer exists.
 - **AC-17** [static] The web's agent guidance files that Lovable reads
-  (`AGENTS.md` and its mirror `docs/lovable-prompts/00-global-context.md`)
+  (`AGENTS.md` and `docs/lovable-prompts/00-global-context.md`, which
+  carries its own parallel list of hard boundaries)
   each contain a rule that says:
   - Paceday sign-in is provider-only (Google, Microsoft, company SSO);
   - the server has no password sign-in;
   - no password form may be added without an owner decision (PAC-98).
 
-  The web gate fails if the rule is missing from either file. *(Fails today:
-  neither file has it.)*
+  The web gate fails if the rule is missing from either file; the check
+  looks for a stable marker (the text `PAC-98` and the word `password` in the
+  same rule), not for an exact sentence. *(Fails today: neither file has
+  it.)*
 
 ### End to end
 
@@ -376,8 +441,9 @@ compose stack.
   `<random>@gmail.com` on `/signin` and continues, then detection answers
   google. The browser's next request is `/api/auth/google`, with `login_hint`
   equal to the typed address. The journey stops at the Google stand-in as in
-  `pac97-signin-detect.spec.ts`. The DNS stand-in records no query for
-  gmail.com, and the run's hermeticity check still passes.
+  `pac97-signin-detect.spec.ts`. The run's hermeticity check still passes.
+  (That gmail.com is never sent to the resolver is proven by AC-1 with the
+  fake resolver: the e2e DNS stand-in keeps no query log, §2.6.)
 - **AC-19** [e2e] Given the e2e stack, when a user types `<random>@yahoo.com`
   and continues, then:
   - the personal-address step is visible with the address;
@@ -388,6 +454,23 @@ compose stack.
   `/api/auth/login` or `/api/auth/register`. *(Microsoft is unavailable in this
   stack (PAC-99), so the "no Microsoft button although available" half is
   proven by AC-8, not here.)*
+- **AC-20** [e2e] D-6 for a company domain, on the Google-only stack: when a
+  user types `carol@<fresh>.microsoft-mx.pac97.test` and continues, then
+  detection answers microsoft (read through the pass-through, as today), no
+  request goes to `/api/auth/microsoft`, and the PAC-97 choose step is
+  visible with the address, a Google button and no Microsoft button. This
+  replaces the journey at `pac97-signin-detect.spec.ts:160-168` (changes on
+  purpose, §6). PAC-99, which configures Microsoft in the stack, re-pins it
+  to "navigates to the Microsoft start with the hint".
+
+### Organisation matching
+
+- **AC-21** [integration] Given each entry of the consumer list (enumerated
+  from the `domain` package, as in AC-3), when `AssociateUserWithOrg` runs
+  for a user with an address on it, then the user's `org_id` stays null and
+  no organisation row exists for that domain. Given `alice@acme-pac98.test`,
+  the user is linked to an organisation for `acme-pac98.test`. *(Pins
+  behaviour that must not change, §6; passes today and must still pass.)*
 
 ## 5. Explicitly out of scope
 
@@ -426,7 +509,7 @@ compose stack.
 
 | Behaviour | Protected by |
 |---|---|
-| The consumer list's members, and its use by organisation matching and the PAC-71 review log | `domain.go:5-14`; `storage/orgs.go:80` and `storage/signin.go:277` tests (the implementer names them in the plan; if none pins the list, that is a finding) |
+| The consumer list's members, and its use by organisation matching and the PAC-71 review log | `domain.go:5-14`; AC-3 and AC-21 (no test pinned the organisation skip before this ticket, §2.1); the PAC-71 review-log condition (`storage/signin.go:277`) is unchanged code |
 | Consumer rule before SSO; SSO row wins for a company domain; answer shape | `sso_detect_test.go:32-…`; `TestPAC35_Detect_EveryDocumentedStatus` (sso, 400, 429, 500); AC-5 |
 | Company-domain MX decisions and caching (PAC-97) | `backend/auth/pac97_detect_test.go` (all but AC-4's consumer rows); `backend/api/pac97_detect_test.go` |
 | Strong company answers navigate with the hint | `AuthDialog.test.tsx:89-94`; `AuthDialog.pac97.test.tsx:187-195` |
@@ -437,7 +520,7 @@ compose stack.
 | No demo after any sign-in failure (PAC-83) | `AuthDialog.pac83.test.tsx` (other cases), AC-16 |
 | Personal Microsoft accounts are refused at the callback until PAC-77 | the PAC-71 callback tests (`backend/api/pac71_*`) |
 | The hint is forwarded by the starts only when valid | `handlers_auth.go:68-73` and the PAC-35 login-hint tests |
-| Company-domain e2e journeys | `e2e/tests/pac97-signin-detect.spec.ts` |
+| Company-domain e2e journeys (Google MX, gateway) | `e2e/tests/pac97-signin-detect.spec.ts:89-136` |
 
 Tests that **change on purpose** (they pin today's password or `generic`
 behaviour):
@@ -448,7 +531,10 @@ behaviour):
 - `pac35_auth_flows_test.go:890-896`;
 - `AuthDialog.test.tsx:115-121`;
 - `AuthDialog.pac83.test.tsx:140-155`;
-- `api.pac83.test.ts:29`.
+- `api.pac83.test.ts:29`;
+- `AuthDialog.pac97.test.tsx:245-254` (setup only, AC-15);
+- `e2e/tests/pac97-signin-detect.spec.ts:160-168` (AC-20: on the
+  Google-only stack a microsoft answer no longer navigates; PAC-99 re-pins).
 
 ## 7. Deploy order, old-web compatibility and rollback
 
@@ -457,16 +543,33 @@ Reverting is a code revert in each repo.
 
 The enum is unchanged (§9 D-4), so each half is safe alone:
 
-| Deployed | gmail.com | yahoo.com / outlook.com | Company domains |
-|---|---|---|---|
-| Today (both old) | password dead end | password dead end | PAC-97 |
-| **New backend, old web** (≥ `aea164c`) | google → Google with hint (old web navigates on google, `AuthDialog.tsx:154-157`) | personal-address answer, which old web shows as the password dead end, as today | unchanged |
-| **Old backend, new web** | generic → personal-address step → Google with hint | personal-address step | unchanged |
-| Both new | Google directly | personal-address step | unchanged |
+Web builds: **W0** before PAC-97 (`< aea164c`), **W1** PAC-97 (`aea164c`,
+today's main), **W2** this ticket. Backends: **B1** today (`68540f6`),
+**B2** this ticket. "Google off" is a deployment without Google credentials.
 
-- **Order**: none is required. The orchestrator may merge and deploy either
-  PR first. Neither intermediate state is worse than today. A stale tab that
-  loaded the old web keeps today's behaviour until it reloads.
+| Deployed | gmail.com, Google on | gmail.com, Google off | yahoo.com / outlook.com | No-domain address (API clients only) | Company domains |
+|---|---|---|---|---|---|
+| B1 + W1 (today) | generic → password dead end | password dead end | password dead end | generic → password dead end | PAC-97 |
+| **B2 + W1** | google → Google with hint (W1 navigates on google, `AuthDialog.tsx:154-157`) | google → W1 navigates to the Google start, which redirects to Google's error page (§2.4): a different dead end, now off Paceday | generic → password dead end, as today | choose → PAC-97 choose step | unchanged |
+| **B2 + W0** | google → Google with hint | Google's error page | generic → password dead end | choose → password dead end (W0 shows it for everything but google, microsoft and sso with a path) | W0 behaviour, unchanged by B2 |
+| **B1 + W2** | generic → personal-address step → Google with hint | personal-address step, "not available" state | personal-address step | generic → personal-address step (W2's validation never sends one) | PAC-97, plus D-6 |
+| B2 + W2 | Google directly | personal-address step, "not available" state (D-6) | personal-address step | choose step | PAC-97, plus D-6 |
+
+The one cell worse than today is **B2 + W1 (or W0) with Google off**: the
+gmail.com user leaves Paceday for Google's error page instead of staying on
+the password form. Both are dead ends; the new one shows no Paceday text. A
+Google-off deployment is a self-hosted or test configuration, not
+production (production offers Google).
+
+- **Order**: none is required for production (Google on). The orchestrator
+  may merge and deploy either PR first; on a Google-on deployment neither
+  intermediate state is worse than today. Deploying the web first avoids the
+  Google-off cell above and is preferred when it costs nothing. A stale tab
+  that loaded the old web keeps today's behaviour until it reloads.
+- **Meaning of `generic` across builds**: B2 sends `generic` only for a
+  personal address other than gmail.com/googlemail.com. W0 and W1 read it as
+  "password step", W2 as "personal-address step". No build reads it as a
+  provider, so no build navigates anywhere on it.
 - **Old web older than PAC-97** (`< aea164c`): it would show the password
   step for `choose` (PAC-97 §7). This ticket answers choose for one more
   case only, an address without a domain, and the web's own validation never
@@ -552,24 +655,138 @@ Each is **factory-assumed** unless marked **owner**.
   hint, back link, availability states, focus on the heading, and the PAC-83
   failure view. The plan decides whether it is the same component with a
   variant.
+  The "not yet" sentence appears for every personal address (§3.3), since
+  a personal Microsoft account may use any address as its sign-in name; it
+  names no date, because PAC-77 is in Backlog.
 - **D-6 Strong answer for an unavailable provider.** Once availability has
   loaded and says the answered provider is not offered, the dialog shows the
   matching provider step instead of navigating to a start that answers 503
-  (§2.4) or cannot complete. This applies to company domains too, a small
-  widening that removes the same dead end there. While availability is
+  (Microsoft, §2.4) or ends on Google's error page (Google, §2.4). This
+  applies to company domains too, a small widening that removes the same
+  dead end there; its cost is one e2e journey re-pinned until PAC-99
+  (AC-20). While availability is
   loading or failed, the dialog navigates as today, so a slow availability
   call never blocks sign-in.
 - **D-7 Failure-return step.** The step offered after a failed or refused
-  return depends on the kind of address remembered (AC-15). The web may
-  re-run detection for the remembered address or remember the answer next to
-  the email, under PAC-97 D-10's storage rules (`sessionStorage` only, cleared
-  on sign-in and sign-out). The plan chooses.
+  return depends on the kind of address remembered (AC-15). The kind is kept
+  next to the email under PAC-97 D-10's storage rules (`sessionStorage`
+  only, cleared on sign-in and sign-out), so a return costs no request; an
+  email remembered without a kind costs exactly one detection request
+  (AC-15). The web holds no copy of the consumer list.
 - **D-8 Guardrail for Lovable.** Lovable's agent reads `AGENTS.md`, not the
   factory's specs (`docs/factory/README.md` §3), so the "no password form"
   rule goes there and in its prompt-library mirror, and the gate checks it
-  (AC-17). The static check of AC-13 also catches a password route coming
-  back in code.
+  (AC-17). The prose is guidance; the guard is AC-13's check inside the web
+  gate, which fails on a password route or a password input on the sign-in
+  surfaces whoever adds it.
 - **D-9 PAC-71 / PAC-77 interplay.** None at the callback: the Google and
   Microsoft callbacks, evidence rules and the personal-Microsoft refusal are
   unchanged. Detection only picks which start to offer. The PAC-77 hand-off
   is in §5.
+
+## Challenge — 2026-11-13
+
+**Verdict**: accept-with-changes (changes applied in the body above by the
+factory; the owner questions OQ-1..OQ-4 stay open and the factory defaults
+apply). Verified against `clockwise-like` `origin/main` `68540f6` and
+`smart-calendar-flow` `origin/main` `ae72939`, read with `git show`.
+
+### Blocking (resolved in the body)
+
+1. **D-6 breaks a PAC-97 e2e journey that §6 declared protected.** The e2e
+   stack is Google-only, so once availability has loaded the Exchange Online
+   journey (`e2e/tests/pac97-signin-detect.spec.ts:160-168`) would stop at the
+   choose step instead of reaching `/api/auth/microsoft`. Resolved: the
+   journey is listed as changing on purpose and replaced by AC-20 (choose
+   step, Google only, no navigation; PAC-99 re-pins), and the §6 row is
+   narrowed to the Google-MX and gateway journeys.
+2. **AC-18 was not falsifiable as written.** The DNS stand-in
+   (`e2e/fake-google/dns.go`) keeps no query log, so "the stand-in records no
+   query for gmail.com" has no observable. Resolved: the clause is removed;
+   AC-1 proves zero queries with the fake resolver.
+3. **AC-15 contradicted §6.** D-7 allowed re-running detection on a failure
+   return, while §6 kept `AuthDialog.pac97.test.tsx:245-254`, which asserts
+   zero detection requests. Resolved: AC-15 now fixes the request count
+   (zero when the kind is remembered with the email, exactly one when only
+   the email is), D-7 says the kind is remembered, and the PAC-97 test is
+   listed as changing in setup only.
+4. **AC-13's static check was easy to step around.** It matched only the
+   literal `/api/auth/login` and `/api/auth/register`, and not the password
+   input itself. Resolved: it now matches `auth/login` / `auth/register` with
+   any prefix, plus a password input or `current-password` / `new-password`
+   autocomplete under the sign-in surfaces (the API-key fields elsewhere
+   stay), runs inside `make verify`, and carries a self-test. The residual gap
+   (a route composed at run time) is named and covered by AC-12.
+5. **The organisation skip had no pinning test.** §6 deferred this to the
+   implementer ("if none pins the list, that is a finding"). None does:
+   `domain_test.go:27-38` checks five entries, and no test calls
+   `AssociateUserWithOrg` with a consumer address. Resolved: AC-21.
+
+### Non-blocking
+
+1. **The `generic` change and older web builds.** The deploy table now covers
+   W0 (pre-PAC-97), W1 and W2 against both backends. One cell is worse than
+   today: new backend + old web on a **Google-off** deployment sends a
+   gmail.com user to the Google start, which has no configured check
+   (`handlers_auth.go:26-41`) and ends on Google's error page instead of
+   the password form. Both are dead ends, and production offers Google. So
+   no order is required, and web-first is preferred when it costs nothing.
+2. **gmail.com → google under PAC-71 and organisations: correct.** Detection
+   picks only the start, and the top Google button already reaches the same
+   start. PAC-71 treats a verified gmail.com/googlemail.com address as
+   authoritative (`handlers_pac71_auth.go:81-95`), and `AssociateUserWithOrg`
+   still skips the whole consumer list (`orgs.go:78-89`), so no gmail.com user
+   joins an organisation. The list itself is unchanged. AC-5 keeps a gmail.com
+   SSO row from winning over the consumer rule.
+3. **Gating the Microsoft consumer shortcut on PAC-77 is right.** Microsoft
+   ends in a refusal (`handlers_pac71_auth.go:252-256`) that names no cause.
+   The "not yet" sentence belongs on the step **before** PAC-77 for every
+   personal address, not only the four Microsoft domains, because a personal
+   Microsoft account can use any address as its sign-in name. It must name no
+   date. Recorded in §3.3 and D-5. The §5 hand-off must also be visible on
+   PAC-77 itself (orchestrator).
+4. **D-6 widening for company domains.** A microsoft answer with Microsoft
+   unavailable now gets the PAC-97 choose step, which may offer Google to an
+   Exchange company. That is what PAC-97 already does for gateway domains, so
+   it adds no new behaviour class. A google answer with Google off no longer
+   leaves for Google's error page.
+5. **Lovable guardrail.** `AGENTS.md` already forbade inventing endpoints and
+   the password step exists anyway, so prose is not the guard. The gate is
+   (`docs/factory/README.md` §3). AC-17 now matches a stable marker, and §3.8
+   and D-8 say the gate, not the text, is what fails.
+6. AC-3 needs the consumer list enumerable from the test. The body now says
+   the test reads it from the `domain` package, never from a copy.
+
+### Criteria I could not falsify
+
+- None after the changes. Before them: AC-18's DNS clause (no observable),
+  and AC-15's "if the step needs a fresh detection" (no fixed request count).
+
+### Citations I checked and found wrong
+
+- `GenericStep` at `AuthDialog.tsx:493-659`: it starts at `:495`.
+- "`docs/lovable-prompts/00-global-context.md`, the mirror of `AGENTS.md`":
+  it has its own parallel boundary list and is not a mirror.
+- D-6 "a start that answers 503 (§2.4)": only the Microsoft start does. The
+  Google start redirects with an empty client id (`handlers_auth.go:26-41`).
+  Added to §2.4.
+- `pac97-signin-detect.spec.ts:147-159` for the PAC-99 note: the fixme is at
+  `:146-158`.
+- Everything else checked holds: `sso_detect.go:20-36,165-189,349-354`,
+  `domain.go:5-26`, `orgs.go:80`, `signin.go:146-153,277`,
+  `handlers_pac71_auth.go:81-95,252-256`, `ms_idtoken.go:34`,
+  `microsoft_oauth.go:20-22,66-69`, `handlers_microsoft_auth.go:16-21`,
+  `auth.yaml:833-885,2697-2740`, the five backend tests pinning `generic`,
+  and `AuthDialog.tsx:91-93,134-187,431-437,466-488,516-546`.
+
+### Consumers this breaks
+
+- `clockwise-like/e2e/tests/pac97-signin-detect.spec.ts:160-168`: no longer
+  navigates on the Google-only stack (AC-20).
+- `smart-calendar-flow/src/components/auth/AuthDialog.pac97.test.tsx:245-254`:
+  setup only (AC-15).
+- The backend and web tests listed in §6 as changing on purpose.
+- No other consumer of `/api/auth/detect` or `generic` exists. The `generic`
+  hits in `backend/storage/scheduling_links.go` and the web's
+  `schedulingLinks.ts` are PAC-72's refusal-message setting, which is
+  unrelated. `mcp/` has no reference.
