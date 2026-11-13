@@ -125,9 +125,9 @@ func TestIsQueryableDNSName(t *testing.T) {
 		{"a.b", true},
 		{"xn--exmple-cua.com", true}, // punycode is ASCII and may be queried
 		{long + ".test", true},
-		{strings.Repeat(long+".", 3) + strings.Repeat("a", 61), true}, // 253
+		{strings.Repeat(long+".", 3) + strings.Repeat("a", 61), true},  // 253
 		{strings.Repeat(long+".", 3) + strings.Repeat("a", 62), false}, // 254
-		{long + "a.test", false},                                       // 64-char label
+		{long + "a.test", false}, // 64-char label
 		{"", false},
 		{"intranet", false},
 		{"exa mple.com", false},
