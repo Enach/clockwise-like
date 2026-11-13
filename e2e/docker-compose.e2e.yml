@@ -32,6 +32,9 @@
 # tests/hermeticity.spec.ts (AC-23) reads the sink after the whole run and
 # fails if anything at all connected to it.
 #
+# DNS STAND-IN (PAC-97): sign-in detection's MX queries go to fake-google's
+# UDP 5353 (PACEDAY_MX_RESOLVER), never to the host's resolver.
+#
 # Extra host ports (127.0.0.1 only, test-side control planes):
 #   fake-google -> 127.0.0.1:18090  (/__fixture/ control plane, e2e/fake.ts)
 #   sink        -> 127.0.0.1:18091  (GET /connections)
@@ -127,6 +130,16 @@ services:
       # reached through nginx like every other API path.
       PACEDAY_GOOGLE_IDP_BASE_URL: http://fake-google:8080
       APP_URL: http://localhost:8088
+      # PAC-97 (spec D-9, AC-27): sign-in detection reads a company domain's MX
+      # records. DNS is not sinked (extra_hosts only covers TCP to provider
+      # names), so without this every journey typing a company address would
+      # query the real internet unseen. fake-google answers MX queries on UDP
+      # 5353 (e2e/fake-google/dns.go: *.google-mx.pac97.test -> Google MX,
+      # *.gateway-mx.pac97.test -> a gateway, *.microsoft-mx.pac97.test ->
+      # Exchange Online, anything else NXDOMAIN). Honoured only with
+      # PACEDAY_ALLOW_STANDINS and a permitted (RFC 1918) address; the backend
+      # prints a startup notice naming it.
+      PACEDAY_MX_RESOLVER: "10.143.43.10:5353"
       # PAC-66 AC-10: exactly one approved Azure OpenAI inference host.
       # Nothing listens on it; the tests that store an Azure key there only
       # ever reach the refusal, so no request is sent to it

@@ -103,6 +103,17 @@ func run() int {
 	}
 	api.ConfigureSSOStepup(googleIdP, microsoftIdP)
 
+	// Sign-in detection's resolver (PAC-97 D-9, AC-28): the system resolver,
+	// unless a test deployment names a DNS stand-in under the same declaration.
+	mxResolver, err := config.DecideMXResolver(os.Getenv(config.EnvMXResolver), os.Getenv(config.EnvAllowStandins))
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+	if mxResolver.Address != "" {
+		log.Printf("WARNING: %s", mxResolver.Notice)
+		auth.SetDefaultDetector(auth.NewDetector(auth.DetectorOptions{Resolver: auth.StandInResolver(mxResolver.Address)}))
+	}
+
 	// LLM approved hosts (PAC-66). Never fatal: a malformed entry is logged and
 	// approves nothing; unset approves nothing (fail closed).
 	llmHosts, llmNotices := config.DecideLLMApprovedHosts(os.Getenv)

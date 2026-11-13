@@ -579,6 +579,7 @@ const (
 
 // Defines values for SsoDetectResponseType.
 const (
+	SsoDetectResponseTypeChoose    SsoDetectResponseType = "choose"
 	SsoDetectResponseTypeGeneric   SsoDetectResponseType = "generic"
 	SsoDetectResponseTypeGoogle    SsoDetectResponseType = "google"
 	SsoDetectResponseTypeMicrosoft SsoDetectResponseType = "microsoft"
@@ -3631,17 +3632,64 @@ type SsoDetectResponse struct {
 	// needs to reach SSO; there is no `domain` field (API-010).
 	RedirectUrl *string `json:"redirect_url,omitempty"`
 
-	// Type "generic" for consumer/unparseable domains, "sso" when an active
-	// provider row exists for the domain (a row suspended through
-	// setSsoProviderState is ignored, PAC-22), "microsoft" from a live tenant probe against
-	// login.microsoftonline.com (2s timeout, 1h cache), else "google".
+	// Type Decided in this order (PAC-97):
+	// 1. "generic": the address has no domain, or its domain is on the
+	//    fixed consumer list (gmail.com, outlook.com, ...). Only for
+	//    these; a company domain is never "generic".
+	// 2. "sso": an active provider row exists for the exact domain (a row
+	//    suspended through setSsoProviderState is ignored, PAC-22).
+	// 3. "google" / "microsoft": a strong match on the domain's MX
+	//    records, looked up by the server through its own resolver with
+	//    only the domain (never the local part), as one query for the
+	//    fully-qualified name with a 2 s budget. Among the records with
+	//    the lowest preference value, every one must match the provider
+	//    and no record at any preference may match the other one.
+	//    Google: host `google.com` or `googlemail.com`, or ending in
+	//    `.google.com` / `.googlemail.com`. Microsoft: host ending in
+	//    `.mail.protection.outlook.com`, `.mail.eo.outlook.com` or
+	//    `.mx.microsoft`. Hosts are compared lower-cased, without one
+	//    trailing dot, on label boundaries.
+	// 4. "choose": everything else. Mail behind a third-party gateway,
+	//    Google and Microsoft mixed, null MX, no MX, NXDOMAIN, a name
+	//    that is not a valid multi-label ASCII DNS name (never queried),
+	//    a timeout, SERVFAIL or any resolver error. The client asks the
+	//    user to pick a provider; it never shows a password form for
+	//    this value. A lookup failure is "choose", never a 500.
+	// No third-party HTTP call is made to decide. Answers from a DNS
+	// reply are cached per server process for 1 hour, failures for 1
+	// minute (at most 10 000 domains). A client that receives a value
+	// it does not know treats it as "choose".
 	Type SsoDetectResponseType `json:"type"`
 }
 
-// SsoDetectResponseType "generic" for consumer/unparseable domains, "sso" when an active
-// provider row exists for the domain (a row suspended through
-// setSsoProviderState is ignored, PAC-22), "microsoft" from a live tenant probe against
-// login.microsoftonline.com (2s timeout, 1h cache), else "google".
+// SsoDetectResponseType Decided in this order (PAC-97):
+//  1. "generic": the address has no domain, or its domain is on the
+//     fixed consumer list (gmail.com, outlook.com, ...). Only for
+//     these; a company domain is never "generic".
+//  2. "sso": an active provider row exists for the exact domain (a row
+//     suspended through setSsoProviderState is ignored, PAC-22).
+//  3. "google" / "microsoft": a strong match on the domain's MX
+//     records, looked up by the server through its own resolver with
+//     only the domain (never the local part), as one query for the
+//     fully-qualified name with a 2 s budget. Among the records with
+//     the lowest preference value, every one must match the provider
+//     and no record at any preference may match the other one.
+//     Google: host `google.com` or `googlemail.com`, or ending in
+//     `.google.com` / `.googlemail.com`. Microsoft: host ending in
+//     `.mail.protection.outlook.com`, `.mail.eo.outlook.com` or
+//     `.mx.microsoft`. Hosts are compared lower-cased, without one
+//     trailing dot, on label boundaries.
+//  4. "choose": everything else. Mail behind a third-party gateway,
+//     Google and Microsoft mixed, null MX, no MX, NXDOMAIN, a name
+//     that is not a valid multi-label ASCII DNS name (never queried),
+//     a timeout, SERVFAIL or any resolver error. The client asks the
+//     user to pick a provider; it never shows a password form for
+//     this value. A lookup failure is "choose", never a 500.
+//
+// No third-party HTTP call is made to decide. Answers from a DNS
+// reply are cached per server process for 1 hour, failures for 1
+// minute (at most 10 000 domains). A client that receives a value
+// it does not know treats it as "choose".
 type SsoDetectResponseType string
 
 // SsoProvider An organisation's SSO configuration as it may leave the server (PAC-22,

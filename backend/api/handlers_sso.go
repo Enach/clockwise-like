@@ -41,7 +41,7 @@ func (h *ssoHandlers) detect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := auth.DetectAuthProvider(r.Context(), h.ah.db, body.Email)
+	result, err := auth.DefaultDetector().Detect(r.Context(), h.ah.db, body.Email)
 	if err != nil {
 		writeServerError(w, r, "detection failed", err, http.StatusInternalServerError)
 		return

@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractDomain(t *testing.T) {
 	cases := []struct {
@@ -106,6 +109,40 @@ func TestDeriveOrgName(t *testing.T) {
 		got := DeriveOrgName(c.domain)
 		if got != c.want {
 			t.Errorf("DeriveOrgName(%q) = %q, want %q", c.domain, got, c.want)
+		}
+	}
+}
+
+// TestIsQueryableDNSName is PAC-97 AC-13's name rule, on its own.
+func TestIsQueryableDNSName(t *testing.T) {
+	long := strings.Repeat("a", 63)
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"gorgias.com", true},
+		{"GOOGLE-CASE.TEST", true},
+		{"a.b", true},
+		{"xn--exmple-cua.com", true}, // punycode is ASCII and may be queried
+		{long + ".test", true},
+		{strings.Repeat(long+".", 3) + strings.Repeat("a", 61), true},  // 253
+		{strings.Repeat(long+".", 3) + strings.Repeat("a", 62), false}, // 254
+		{long + "a.test", false}, // 64-char label
+		{"", false},
+		{"intranet", false},
+		{"exa mple.com", false},
+		{"-bad-.test", false},
+		{"bad-.test", false},
+		{"-bad.test", false},
+		{"exämple.com", false},
+		{"under_score.test", false},
+		{"gorgias.com.", false},
+		{".gorgias.com", false},
+		{"a..b", false},
+		{"a@b.test", false},
+	} {
+		if got := IsQueryableDNSName(tc.in); got != tc.want {
+			t.Errorf("IsQueryableDNSName(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }
