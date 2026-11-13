@@ -6,7 +6,7 @@
   "contractHash": "c477dbe3b05ddc81ec73698ef566ba511c090550665e8fee3768d4f954259346",
   "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main 4f798cb and on factory/pac-91-spec (byte-identical; git show <rev>:contracts/openapi/openapi.yaml | sha256sum). python scripts/openapi_assemble.py --check -> OK: bundle is in sync (106 paths). If main's bundle moves before PAC-91 merges, the stage-4 PR records main's new hash here and changes nothing else: PAC-91 must not alter the bundle.",
   "contractDoc": "contracts/features/PAC-91.md",
-  "specDoc": "docs/specs/PAC-91.md (revision 2: spec-challenger 2026-11-12 accept-with-changes, applied in place; OQ-2 and OQ-3 resolved; OQ-1 owner, non-blocking)",
+  "specDoc": "docs/specs/PAC-91.md (revision 3, 2026-11-13 stage-4 catch-up from the review of #256: AC-16 second frame, section 2.5 note, D-3 proxy requirement; revision 2: spec-challenger 2026-11-12 accept-with-changes, applied in place; OQ-2 and OQ-3 resolved; OQ-1 owner, non-blocking). Stage-4 edit outside allowedPaths (this line and AC-16), recorded as a deviation in Enach/clockwise-like#260.",
   "sourceOfTruth": "Enach/clockwise-like",
   "interfaceKind": "No HTTP change. Non-HTTP interfaces pinned in contracts/features/PAC-91.md: nginx framability rule and decision table (section 2), web TOP_LEVEL_LINK_TARGET / isFramed() and frame guard placement (section 3), test ids (section 4).",
   "repositories": {
@@ -93,7 +93,7 @@
     "AC-13 [nginx] encoded slash/backslash or dot-segment slug rows of section 2.4 -> refused.",
     "AC-14 [nginx] every framable row of section 2.4 -> frame-ancestors *, no X-Frame-Options, other directives unchanged (guard).",
     "AC-15 [nginx] existing non-framable cases of TestFramingOnlyBookingPage and TestSecurityHeadersOnEveryResponse stay non-framable (guard).",
-    "AC-16 [e2e] embedder frames BASE_URL/app/team/invite/..%2F..%2F..%2Fbook%2Fx and BASE_URL/book//<slug> beside the booking page -> a frame-ancestors violation for each, no #root in either, booking frame renders.",
+    "AC-16 [e2e] embedder frames BASE_URL/app/team/invite/..%2F..%2F..%2Fbook%2Fx and BASE_URL/settings/..%2Fbook/<slug> beside the booking page -> a frame-ancestors violation for each, no #root in either, booking frame renders; BASE_URL/book//<slug> answers the file server's 301 to /book/<slug> with frame-ancestors 'none' + X-Frame-Options DENY (header check; spec revision 3: the real file server redirects it to the genuine booking page, so it is not framed).",
     "AC-17 [review] docs/security.md B1 row states both mitigations and the raw-path decision."
   ],
   "resolvesFindings": [
