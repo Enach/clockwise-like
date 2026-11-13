@@ -24,26 +24,49 @@ jobs:
 
       # Paired PRs (factory: the api PR and its web PR land together): use the
       # web branch naming the same PAC ticket as this branch, else main.
+      # Candidates with an open PR in the web repo win: branches of superseded
+      # PRs linger and would otherwise make the match ambiguous (-> main).
       - name: Paired web branch
         id: pair
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
+          OTHER: Enach/smart-calendar-flow
         run: |
-          ref=main
-          t=$(grep -oiE 'pac-[0-9]+' <<<"$BRANCH" | head -1 | tr 'A-Z' 'a-z' || true)
+          n() { printf '%s\n' "$1" | grep -c . || true; }  # count lines
+          j() { printf '%s\n' "$1" | paste -sd' ' -; }      # join lines
+          ref=main why="no pac-N in branch name"
+          t=$(grep -oiE 'pac-[0-9]+' <<<"$BRANCH" | head -1 | tr '[:upper:]' '[:lower:]' || true)
           if [ -n "$t" ]; then
-            m=$(gh api --paginate repos/Enach/smart-calendar-flow/branches --jq '.[].name' | grep -iE "(^|[^a-z0-9])$t([^0-9]|$)" || true)
-            # several (factory/pac-N-spec, impl/pac-N-api...): keep this branch's prefix (impl/)
-            if [ "$(printf '%s\n' "$m" | grep -c .)" -gt 1 ] && [[ $BRANCH == */* ]]; then
-              m=$(printf '%s\n' "$m" | grep -F "${BRANCH%%/*}/" || true)
+            m=$(gh api --paginate "repos/$OTHER/branches" --jq '.[].name' | grep -iE "(^|[^a-z0-9])$t([^0-9]|$)" || true)
+            why="no web branch for $t"
+            o=""
+            if [ -n "$m" ]; then
+              if heads=$(gh api --paginate "repos/$OTHER/pulls?state=open&per_page=100" --jq ".[] | select(.head.repo.full_name == \"$OTHER\") | .head.ref"); then
+                o=$(printf '%s\n' "$m" | grep -xF -f <(printf '%s\n' "$heads") || true)
+              else
+                echo "::warning::could not list open $OTHER PRs; pairing by branch name only"
+              fi
             fi
-            if [ "$(printf '%s\n' "$m" | grep -c .)" -eq 1 ]; then ref=$m
-            elif printf '%s\n' "$m" | grep -qxF "$BRANCH"; then ref=$BRANCH
-            elif [ -n "$m" ]; then echo "::warning::several web branches for $t: $(echo $m); using main"; fi
+            echo "candidates for $t: $(j "$m") | with an open PR: $(j "$o")"
+            if [ "$(n "$o")" -eq 1 ]; then ref=$o why="only $t branch with an open PR"
+            else
+              if [ -n "$o" ]; then m=$o src="open-PR candidates"; else src="candidates (none has an open PR)"; fi
+              # several (factory/pac-N-spec, impl/pac-N-api...): keep this branch's prefix (impl/)
+              if [ "$(n "$m")" -gt 1 ] && [[ $BRANCH == */* ]]; then
+                m=$(printf '%s\n' "$m" | grep -F "${BRANCH%%/*}/" || true)
+                why="no ${BRANCH%%/*}/ branch among $src"
+              fi
+              if [ "$(n "$m")" -eq 1 ]; then ref=$m why="only match among $src"
+              elif printf '%s\n' "$m" | grep -qxF "$BRANCH"; then ref=$BRANCH why="same name as this branch, among $src"
+              elif [ -n "$m" ]; then
+                why="several web branches among $src: $(j "$m")"
+                echo "::warning::several web branches for $t: $(j "$m"); using main"
+              fi
+            fi
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "web ref: $ref"
+          echo "web ref: $ref ($why)"
 
       # The web repo, where `make clone-frontend` puts it (WEB ?= ../smart-calendar-flow):
       # openapi-check also checks its generated types, e2e builds it.
