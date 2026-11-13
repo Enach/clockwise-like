@@ -481,7 +481,7 @@ func (e *BookingEngine) ConfirmBooking(
 		_ = conn.Close()
 		return nil, budget.ErrExpired
 	}
-	booking, err := storage.CreateBooking(storage.BindConn(context.WithoutCancel(ctx), conn), &storage.Booking{
+	booking, err := insertBookingOnConn(ctx, conn, &storage.Booking{
 		LinkID:      link.ID,
 		BookerName:  bookerName,
 		BookerEmail: bookerEmail,
@@ -489,7 +489,6 @@ func (e *BookingEngine) ConfirmBooking(
 		EndTime:     end,
 		Notes:       notes,
 	})
-	_ = conn.Close() // released before the completion unit needs the pool
 	if err != nil {
 		return nil, fmt.Errorf("create booking: %w", err)
 	}
@@ -502,9 +501,69 @@ func (e *BookingEngine) ConfirmBooking(
 	return booking, nil
 }
 
+// insertBookingOnConn runs the booking insert on the reserved connection and
+// gives the connection back on every exit path (PAC-90 item 1), before the
+// caller starts the completion unit (which needs the pool: a pool of one
+// must not stall, AC-A10).
+//
+// The insert runs detached from the request (only its own result counts,
+// AC-A19), but on a context this function can cancel. On a normal return
+// the connection is closed in line. On a panic, sql.Conn.Close would wait
+// for every operation the panic interrupted (the Conn's closemu: a *Row not
+// yet scanned, or a driver call cut mid-way, keeps its read lock), so the
+// unwinding path cancels the insert's context, which closes any rows still
+// open, and releases the connection on its own goroutine: the panic always
+// reaches the server, and the handler never blocks on the release (spec
+// challenge C-1). If the panic came from inside a driver call, that
+// goroutine may never finish and the interrupted connection stays lost, as
+// it was before; the request and the rest of the pool are unaffected.
+func insertBookingOnConn(ctx context.Context, conn *sql.Conn, b *storage.Booking) (*storage.Booking, error) {
+	insertCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	released := false
+	defer func() {
+		if released {
+			return
+		}
+		cancel()
+		go func() { _ = conn.Close() }()
+	}()
+	if afterBookingCommit != nil {
+		afterBookingCommit()
+	}
+	var db storage.DBTX = storage.BindConn(insertCtx, conn)
+	if bookingInsertRowReturned != nil {
+		db = rowSeamDB{db}
+	}
+	booking, err := storage.CreateBooking(db, b)
+	_ = conn.Close() // released before the completion unit needs the pool
+	cancel()
+	released = true
+	return booking, err
+}
+
 // beforeBookingConn is a test seam: it runs just before the insert's
 // connection is acquired.
 var beforeBookingConn func()
+
+// afterBookingCommit is a test seam (PAC-90 AC-1a): it runs after the
+// request committed and before the insert is sent. Nil in production.
+var afterBookingCommit func()
+
+// bookingInsertRowReturned is a test seam (PAC-90 AC-1b): it runs inside the
+// save step after the insert's *sql.Row is returned and before it is
+// scanned. Nil in production, where the save step is not wrapped.
+var bookingInsertRowReturned func()
+
+// rowSeamDB runs bookingInsertRowReturned after each QueryRowContext.
+type rowSeamDB struct{ storage.DBTX }
+
+func (d rowSeamDB) QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row {
+	row := d.DBTX.QueryRowContext(ctx, q, args...)
+	if f := bookingInsertRowReturned; f != nil {
+		f()
+	}
+	return row
+}
 
 // completion is the post-commit unit's progress, read by its abandonment
 // log line (AC-A7, AC-A19): hosts done and not done, by user id.
