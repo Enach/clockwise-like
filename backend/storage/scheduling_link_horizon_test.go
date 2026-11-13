@@ -27,7 +27,9 @@ func TestMigrationSchedulingLinkHorizonRefusal(t *testing.T) {
 	}
 
 	to(pac72HorizonMigration)
-	l, err := GetSchedulingLinkByID(db, linkID)
+	// Read at the schema under test, not through GetSchedulingLinkByID, whose
+	// query names columns of later migrations (PAC-40's deleted_at, 037).
+	l, err := readHorizonLinkAtSchema(db, linkID)
 	if err != nil || l == nil {
 		t.Fatalf("read migrated link: %v %v", l, err)
 	}
@@ -58,7 +60,7 @@ func TestMigrationSchedulingLinkHorizonRefusal(t *testing.T) {
 	}
 
 	to(pac72HorizonMigration)
-	if l, err = GetSchedulingLinkByID(db, linkID); err != nil || l.BookingHorizonDays != 60 || l.RefusalMessage != RefusalGeneric {
+	if l, err = readHorizonLinkAtSchema(db, linkID); err != nil || l.BookingHorizonDays != 60 || l.RefusalMessage != RefusalGeneric {
 		t.Errorf("up again: %+v %v, want the defaults (the down destroyed the chosen settings)", l, err)
 	}
 }
@@ -119,4 +121,16 @@ func TestGetUserTimezone(t *testing.T) {
 	if _, _, err := GetUserTimezone(db, set); err == nil {
 		t.Fatal("a failed read returned no error")
 	}
+}
+
+// readHorizonLinkAtSchema reads the three fields the PAC-72 migration test
+// asserts with a query valid at migration 032 itself.
+func readHorizonLinkAtSchema(db Querier, id uuid.UUID) (*SchedulingLink, error) {
+	var l SchedulingLink
+	err := db.QueryRow(`SELECT title, booking_horizon_days, refusal_message FROM scheduling_links WHERE id = $1`, id).
+		Scan(&l.Title, &l.BookingHorizonDays, &l.RefusalMessage)
+	if err != nil {
+		return nil, err
+	}
+	return &l, nil
 }
