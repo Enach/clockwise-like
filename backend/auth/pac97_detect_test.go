@@ -152,6 +152,9 @@ func TestPAC97_AC2_MatchersAndRecordRule(t *testing.T) {
 		{"x.mail.protection.partner.outlook.cn", false, false},
 		{"x.mail.protection.outlook.de", false, false},
 		{"x.evilmx.microsoft", false, false},
+		{"x.mail.protection.outlook.com.evil.example", false, false},
+		{"evilmail.protection.outlook.com", false, false},
+		{"x.mx.microsoft.evil.example", false, false},
 	} {
 		if g := isGoogleMX(tc.host); g != tc.google {
 			t.Errorf("isGoogleMX(%q) = %v, want %v", tc.host, g, tc.google)

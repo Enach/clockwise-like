@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -14,9 +17,11 @@ func TestDNSStandIn_AnswersTheFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Serve on the socket already bound: no window in which the port is
+	// closed and the first query times out.
+	t.Cleanup(func() { _ = pc.Close() })
 	addr := pc.LocalAddr().String()
-	_ = pc.Close()
-	go func() { _ = serveDNS(addr) }()
+	go func() { _ = serveDNSOn(pc) }()
 
 	r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 		var d net.Dialer
@@ -25,34 +30,47 @@ func TestDNSStandIn_AnswersTheFixtures(t *testing.T) {
 	lookup := func(name string) ([]*net.MX, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		var mxs []*net.MX
-		var err error
-		for i := 0; i < 20; i++ { // the listener may not be up yet
-			if mxs, err = r.LookupMX(ctx, name); err == nil || isNotFound(err) {
-				break
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-		return mxs, err
+		return r.LookupMX(ctx, name)
 	}
 
-	mxs, err := lookup("abc.google-mx.pac97.test.")
-	if err != nil || len(mxs) != 5 || mxs[0].Host != "aspmx.l.google.com." || mxs[0].Pref != 1 {
-		t.Fatalf("google-mx = %v, %v", mxs, err)
-	}
-	mxs, err = lookup("x1.gateway-mx.pac97.test.")
-	if err != nil || len(mxs) != 2 || mxs[0].Host != "eu-smtp-inbound-1.mimecast.com." {
-		t.Fatalf("gateway-mx = %v, %v", mxs, err)
-	}
-	mxs, err = lookup("x1.microsoft-mx.pac97.test.")
-	if err != nil || len(mxs) != 1 || mxs[0].Host != "pac97-test.mail.protection.outlook.com." {
-		t.Fatalf("microsoft-mx = %v, %v", mxs, err)
+	// Go's LookupMX sorts by preference and shuffles records of equal
+	// preference (RFC 5321), so the answers are compared as sets.
+	for name, want := range map[string][]string{
+		"abc.google-mx.pac97.test.": {
+			"1 aspmx.l.google.com.", "5 alt1.aspmx.l.google.com.", "5 alt2.aspmx.l.google.com.",
+			"10 alt3.aspmx.l.google.com.", "10 alt4.aspmx.l.google.com.",
+		},
+		"x1.gateway-mx.pac97.test.":   {"10 eu-smtp-inbound-1.mimecast.com.", "10 eu-smtp-inbound-2.mimecast.com."},
+		"x1.microsoft-mx.pac97.test.": {"0 pac97-test.mail.protection.outlook.com."},
+	} {
+		mxs, err := lookup(name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := recordSet(mxs); !reflect.DeepEqual(got, sorted(want)) {
+			t.Errorf("%s = %v, want %v", name, got, sorted(want))
+		}
 	}
 	for _, name := range []string{"gorgias.com.", "google-mx.pac97.test.", "elsewhere.test."} {
 		if _, err := lookup(name); !isNotFound(err) {
 			t.Errorf("%s: err = %v, want NXDOMAIN", name, err)
 		}
 	}
+}
+
+// recordSet renders records as sorted "pref host" strings.
+func recordSet(mxs []*net.MX) []string {
+	out := make([]string, 0, len(mxs))
+	for _, m := range mxs {
+		out = append(out, fmt.Sprintf("%d %s", m.Pref, m.Host))
+	}
+	return sorted(out)
+}
+
+func sorted(s []string) []string {
+	c := append([]string(nil), s...)
+	sort.Strings(c)
+	return c
 }
 
 func isNotFound(err error) bool {

@@ -111,6 +111,11 @@ func serveDNS(addr string) error {
 		return err
 	}
 	log.Printf("fake-google DNS stand-in listening on udp %s (MX fixtures under pac97.test)", addr)
+	return serveDNSOn(pc)
+}
+
+// serveDNSOn answers MX queries on an open socket until it fails.
+func serveDNSOn(pc net.PacketConn) error {
 	buf := make([]byte, 1500)
 	for {
 		n, from, err := pc.ReadFrom(buf)

@@ -124,15 +124,16 @@ test.describe('PAC-97 — sign-in detection by MX', () => {
   });
 
   test.fixme('AC-27: on the choose step, clicking Microsoft requests /api/auth/microsoft with the hint', async () => {
-    // Blocked in this stack, not in the product: the e2e backend configures
+    // Blocked by PAC-99 ("e2e: enable Microsoft sign-in in the compose stack
+    // and re-pin step-up scopes"). In this stack, not in the product: the e2e backend configures
     // Google sign-in only (no MICROSOFT_CLIENT_ID/SECRET/REDIRECT_URL), so
     // /api/integrations/availability reports Microsoft unavailable and the
     // choose step shows no auth-choose-microsoft button. Configuring Microsoft
     // in e2e/docker-compose.e2e.yml also turns on the Microsoft SSO step-up,
     // which changes the pinned stepup_scopes in tests/sso-stepup.spec.ts and
     // tests/llm-org-ai.spec.ts (outside PAC-97's allowed paths). Unblocks when
-    // the orchestrator approves that compose change and those two
-    // expectations; the click itself is covered by the web PR's vitest
+    // PAC-99 lands that compose change and re-pins those two expectations;
+    // until then the click itself is covered by the web PR's vitest
     // (AC-19) and the Microsoft start by the journey below.
   });
 
