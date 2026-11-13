@@ -1,7 +1,7 @@
 # Spec — PAC-41: Room contract mismatch, and free/busy coverage states the server never produces
 
 - **Linear**: https://linear.app/paceday/issue/PAC-41
-- **Status**: draft (Revision 2). It replaces Revision 1's scope after the owner answers of 2026-10-27, and is awaiting re-challenge.
+- **Status**: accepted (Revision 2.1, 2026-11-13). Revision 2 was challenged on 2026-11-13 with one blocking item, which Revision 2.1 fixes. The re-check found nothing blocking. See "Challenge — 2026-11-13" and "Re-check".
 - **Author**: spec-author
 - **Read on**: api `main` at `68540f6`, web `main` at `ae72939` (2026-11-13). Every
   citation in §2 was re-read on these commits. Revision 1 was read on `6d751f9` /
@@ -246,8 +246,12 @@ their own tickets (D-7).
   this applies to every Outlook-only user. When the list cannot be read for any other
   reason, the picker says the rooms could not be loaded. Other reasons include a Google
   connection that exists but can no longer be used, a server error, or an unreachable
-  server. Any session-expiry handling that applies to every request elsewhere still
-  applies here. A failure never changes the room address the form holds.
+  server. *(Revision 2.1.)* When the user's Paceday session has ended, the picker says
+  so and that signing in again is needed; it does not say a Google calendar is needed.
+  The answer "you have no connected Google calendar" is recognised by what the server
+  says, never by the kind of refusal alone, because a session that has ended is refused
+  the same way. The picker does not sign the user out itself; signing out stays where it
+  is today. A failure never changes the room address the form holds.
 - **Room search asks only for what the server answers.** It sends the search text and
   nothing that implies a time-window filter.
 - **Coverage has two states.** A participant's calendar is either readable
@@ -368,9 +372,13 @@ an identifier equal to the room's resource calendar address, and the name "Helsi
 A change to the room's wire key set fails a test. *(Holds today, but no test pins it;
 see §2.5. This pins it.)*  [contract]
 
-AC-16. *(Revision 2: the exceptions changed.)* Given room booking is open:
-- when the room list answers "calendar not connected", the picker says room booking
-  needs a connected Google calendar;
+AC-16. *(Revision 2: the exceptions changed. Revision 2.1: the session-ended case.)*
+Given room booking is open:
+- when the room list's refusal says "calendar not connected", the picker says room
+  booking needs a connected Google calendar;
+- when the room list is refused because the session has ended (the same refusal status
+  with the "unauthorized" answer), the picker says the session has ended and the user
+  must sign in again, and does not say a Google calendar is needed;
 - when it fails in any other way (an answer saying the server failed, which includes a
   stored Google connection that can no longer be used, or no answer because the server
   is unreachable), the picker says the rooms could not be loaded.
@@ -567,8 +575,10 @@ citation on api `68540f6` and web `ae72939`.*
   to what must not change.
 - **OQ-7 (new).** Does "Microsoft 365" in OQ-1 mean Outlook users get a room list?
   Carried to FOLLOW-UP-ROOM-DETAILS.
-- Unchanged: AC-1, AC-2, AC-4 to AC-11 and AC-15 (wording identical apart from AC-10's
-  "demo session" and AC-11's "build stage"), D-2, D-3, D-4, OQ-2 to OQ-4, OQ-6.
+- Unchanged in meaning: AC-1, AC-2, AC-4 to AC-11 and AC-15. Reworded without a
+  change in meaning: AC-8 (sentence split), AC-10 ("demo session", bullets) and AC-11
+  ("build stage", bullets). AC-3 gained an interim note. *(Corrected in Revision 2.1,
+  challenge non-blocking 5.)* D-2, D-3, D-4, OQ-2 to OQ-4 and OQ-6 are unchanged.
 
 ## Challenge — 2026-11-13 (Revision 2)
 
@@ -664,6 +674,37 @@ review re-derived every §2 claim from the code rather than from the author's no
     field (account membership from team data) and is untouched.
   - The narrowed search signature (AC-5) has callers only in `LocationPicker.tsx:35,49`
     and the demo mock.
+
+## Revision 2.1 — 2026-11-13
+
+*spec-author, answering the challenge above.*
+
+- **Blocking 1, the session-ended 401: accepted.** §3's sentence about "session-expiry
+  handling that applies elsewhere" was a hidden assumption, and the handling it assumed
+  does not exist. §3 now says three things. When the session has ended, the picker says
+  so and asks the user to sign in again. "No connected Google calendar" is recognised by
+  the server's answer, not by the refusal kind alone. The picker does not sign the user
+  out. AC-16 gains that case as its own branch. No contract change is needed, because
+  the contract already says the two refusals are told apart by body
+  (`components.responses.CalendarNotConnected`).
+- **Non-blocking 5: done.** The Revision 2 summary now lists the reworded criteria.
+- **Non-blocking 1 to 4 and 6:** left as recorded. OQ-8 carries 1. Item 2 is a
+  requirement on the two follow-up specs. Item 3 is carried to OQ-7 and PAC-47. Item 4 is
+  accepted. Item 6 is OQ-3.
+
+## Re-check — 2026-11-13 (spec-challenger, Revision 2.1)
+
+**Verdict**: accept
+
+- Blocking 1 is resolved. AC-16's branches are now disjoint and each can be keyed on an
+  observable answer: "calendar not connected", "unauthorized", a server failure, and no
+  answer. A test that keyed the first branch on the status alone now fails the second
+  branch. §3 no longer assumes per-request session handling.
+- No new blocking findings. The edit touched only §3, AC-16 and the Revision 2 summary.
+  No other criterion, citation or decision moved.
+- Non-blocking items 1 to 4 and 6 stand as recorded. OQ-8 (confirm D-6's interim and the
+  D-7 split) is an owner question that does not block acceptance: both options leave
+  every criterion falsifiable, and the "no" branch is stated in OQ-8.
 
 ## History
 
