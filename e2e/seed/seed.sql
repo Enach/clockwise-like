@@ -103,7 +103,9 @@ INSERT INTO users (id, email, name, avatar_url, provider, provider_id) VALUES
   ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e.host.d6@paceday.test',      'E2E D-6 Host',         '', 'google', 'e2e-host-d6'),
   -- PAC-72 AC-20: hosts the offerable-start link; its calendar holds the event
   -- an unoffered start overlaps.
-  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e.offerable@paceday.test', 'E2E Offerable Host',      '', 'google', 'e2e-offerable');
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e.offerable@paceday.test', 'E2E Offerable Host',      '', 'google', 'e2e-offerable'),
+  -- PAC-41 AC-1, AC-14: books rooms on its own calendar (seed/ids.ts CONNECTED.rooms).
+  ('f4f4f4f4-f4f4-4f4f-8f4f-f4f4f4f4f4f4', 'e2e.rooms@paceday.test',     'E2E Rooms User',          '', 'google', 'e2e-rooms');
 
 -- PAC-71: every seeded user is bound to a Google identity with authoritative
 -- evidence, so its address is domain-confirmed and the journeys that resolve an
@@ -130,7 +132,8 @@ INSERT INTO oauth_tokens (user_id, access_token, refresh_token, expiry, calendar
   ('e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5', 'e2e-host-d6-work',        'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1', 'e2e-avatar-google-work',  'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
   ('b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2', 'e2e-avatar-foreign-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
-  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e-offerable-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'e2e-offerable-work', 'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary'),
+  ('f4f4f4f4-f4f4-4f4f-8f4f-f4f4f4f4f4f4', 'e2e-rooms-work',     'e2e-refresh-never-used', '2099-01-01T00:00:00Z', 'primary');
 
 -- AC-25: a google personal calendar for the seam user. credentials_json is an
 -- oauth2.Token as backend/calendar/personal_reader.go tokenFromJSON reads it.
@@ -164,7 +167,8 @@ VALUES
   -- are in its owner's profile zone; this owner's is stored explicitly (UTC,
   -- so the journeys' UTC instants keep their meaning) to exercise the read of
   -- a real settings row. Owners without a row are UTC as well (A-4).
-  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'UTC', '09:00', '18:00', 240, 'google')
+  ('b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3', 'UTC', '09:00', '18:00', 240, 'google'),
+  ('f4f4f4f4-f4f4-4f4f-8f4f-f4f4f4f4f4f4', 'UTC', '09:00', '18:00', 240, 'google')
 ON CONFLICT (user_id) DO UPDATE SET
   timezone = EXCLUDED.timezone,
   work_start = EXCLUDED.work_start,

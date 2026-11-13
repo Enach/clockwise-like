@@ -16,6 +16,8 @@
         "backend/api (a test pinning the GET /api/rooms 200 body: exactly the keys id and name, id equal to the room's resource calendar address; spec AC-15. Adding calendar.Room to the wire-struct tag check in pac26_wire_keys_test.go is one way)",
         "e2e/tests (AC-1 and AC-14: room picked in the web is a resource attendee on the stored event)",
         "e2e/fake-google (only if the stand-in must keep a resource attendee's flag or return an earlier room on the next read; spec OQ-4, stand-in code, not product code)",
+        "e2e/seed (amendment 2026-11-13, approved by the factory coordinator: one dedicated Google-connected user, CONNECTED.rooms, that AC-1 and AC-14 own; every existing connected user already owns another journey's stand-in calendar and specs run in parallel against one stand-in, e2e README rule 6)",
+        "e2e/TESTIDS-REQUIRED.md (amendment 2026-11-13, approved by the factory coordinator: the room-picker test ids the PAC-41 journeys use, section 8)",
         "docs/factory/api-audit.md (API-040, API-041, API-046 to Fixed (PAC-41) when the web PR merges)"
       ],
       "forbiddenPaths": [
@@ -131,5 +133,8 @@
     "The api gate prints rc=0 on this branch's final commit (revision 4 is description-only; backend/api/gen did not change)."
   ],
 
+  "amendments": [
+    "2026-11-13, build stage (impl/pac-41-api), approved by the factory coordinator: allowedPaths.backend widened to e2e/seed and e2e/TESTIDS-REQUIRED.md. Reason: AC-1 and AC-14 are [e2e] criteria that need a Google-connected user whose stand-in calendar no other journey reads or clears (README rule 6), and none was free; without the seed user the journeys could only be test.fixme (that interim was PAC-103, now superseded). No contract, bundle or contractHash change."
+  ],
   "rollback": "Revert this contract PR and the paired types PR; both are description-only, so nothing on the wire, in storage or in either app's behaviour changes. The implementation PRs revert independently (spec section 7); rooms booked while they were live stay on their events, nothing is deleted."
 }

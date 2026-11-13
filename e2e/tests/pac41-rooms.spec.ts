@@ -15,11 +15,8 @@
  * room-search-input, room-option (with data-room-id = the room's id),
  * room-selected, room-booking-notice.
  *
- * BLOCKED by PAC-103: every seeded user with a Google credential already owns
- * one journey's calendar (README rule 6: specs share one stand-in, in
- * parallel), and seeding a new one edits e2e/seed, which is outside PAC-41's
- * manifest allowedPaths. Both journeys are written in full; PAC-103 seeds
- * CONNECTED.rooms, points ROOMS_USER at it and turns test.fixme into test.
+ * The journeys own CONNECTED.rooms (seed/ids.ts): its calendar is read and
+ * written by nothing else (README rule 6).
  */
 
 import type { Page } from '@playwright/test';
@@ -28,8 +25,7 @@ import { atUtc, weekDay } from '../lib/dates';
 import { fake, type FakeEvent } from '../fake';
 import { CONNECTED } from '../seed/ids';
 
-// PAC-103 replaces this with the journey's own seeded user (CONNECTED.rooms).
-const ROOMS_USER = CONNECTED.calendar;
+const ROOMS_USER = CONNECTED.rooms;
 
 type StoredAttendee = { email: string; resource?: boolean };
 
@@ -85,12 +81,10 @@ async function save(page: Page, eventId: string): Promise<void> {
 }
 
 test.describe('PAC-41 room booking (through the stand-in)', () => {
-  // eslint-disable-next-line playwright/no-skipped-test -- PAC-103
-  test.fixme('AC-1: a room picked in the editor is a resource attendee of the stored event', async ({
+  test('AC-1: a room picked in the editor is a resource attendee of the stored event', async ({
     pageAs,
     assertNotDemo,
   }) => {
-    // Blocked by PAC-103 (a seeded connected user this journey owns).
     const run = Date.now();
     const helsinki = roomAddress('helsinki', run);
     await fake.defineCalendar(helsinki, 'Helsinki');
@@ -110,9 +104,7 @@ test.describe('PAC-41 room booking (through the stand-in)', () => {
     }
   });
 
-  // eslint-disable-next-line playwright/no-skipped-test -- PAC-103
-  test.fixme('AC-14 (a): picking another room keeps the earlier one booked', async ({ apiAs, pageAs }) => {
-    // Blocked by PAC-103 (a seeded connected user this journey owns).
+  test('AC-14 (a): picking another room keeps the earlier one booked', async ({ apiAs, pageAs }) => {
     const run = Date.now();
     const helsinki = roomAddress('helsinki', run);
     const oslo = roomAddress('oslo', run);
@@ -138,9 +130,7 @@ test.describe('PAC-41 room booking (through the stand-in)', () => {
     }
   });
 
-  // eslint-disable-next-line playwright/no-skipped-test -- PAC-103
-  test.fixme('AC-14 (b): a free-text location keeps the earlier room booked', async ({ apiAs, pageAs }) => {
-    // Blocked by PAC-103 (a seeded connected user this journey owns).
+  test('AC-14 (b): a free-text location keeps the earlier room booked', async ({ apiAs, pageAs }) => {
     const run = Date.now();
     const helsinki = roomAddress('helsinki', run);
     await fake.defineCalendar(helsinki, 'Helsinki');
