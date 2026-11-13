@@ -1,0 +1,263 @@
+package storage
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/Enach/paceday/backend/internal/secretbox"
+	"github.com/google/uuid"
+)
+
+// The providers whose stored credential has a lifecycle (PAC-67). They are
+// also the `provider` values of the connection activity entries.
+const (
+	CredentialGoogle  = "google"
+	CredentialOutlook = "outlook"
+	CredentialZoom    = "zoom"
+)
+
+func validCredentialProvider(p string) bool {
+	return p == CredentialGoogle || p == CredentialOutlook || p == CredentialZoom
+}
+
+// RecordCredentialLoss marks userID's credential for provider as lost after the
+// provider permanently refused to renew it (spec PAC-67 D-1: the credential
+// itself is kept). started is true only for the refusal that starts a loss;
+// every later refusal in the same loss, from any request or process, reports
+// false, so a loss is announced once (AC-9, AC-25).
+func RecordCredentialLoss(db Querier, userID uuid.UUID, provider string) (started bool, err error) {
+	if userID == uuid.Nil {
+		return false, fmt.Errorf("RecordCredentialLoss: userID is required")
+	}
+	if !validCredentialProvider(provider) {
+		return false, fmt.Errorf("RecordCredentialLoss: unknown provider %q", provider)
+	}
+	res, err := db.Exec(`INSERT INTO credential_losses (user_id, provider) VALUES ($1, $2) ON CONFLICT (user_id, provider) DO NOTHING`, userID, provider)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ClearCredentialLoss ends userID's loss for provider: they reconnected or
+// disconnected it. A later refusal starts a new loss.
+func ClearCredentialLoss(db Querier, userID uuid.UUID, provider string) error {
+	_, err := db.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, provider)
+	return err
+}
+
+// IsCredentialLost reports whether userID's credential for provider is
+// recorded as lost.
+func IsCredentialLost(db DBTX, userID uuid.UUID, provider string) (bool, error) {
+	var lost bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM credential_losses WHERE user_id = $1 AND provider = $2)`, userID, provider).Scan(&lost)
+	return lost, err
+}
+
+// CredentialLosses returns the providers whose credential userID has lost.
+func CredentialLosses(db DBTX, userID uuid.UUID) (map[string]bool, error) {
+	rows, err := db.Query(`SELECT provider FROM credential_losses WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out[p] = true
+	}
+	return out, rows.Err()
+}
+
+// ZoomCredential is the stored Zoom record (settings.zoom_tokens). Expiry is
+// absent on records stored before PAC-67; such a credential is treated as
+// expired when it is used, so it is renewed rather than used blind.
+type ZoomCredential struct {
+	AccessToken  string     `json:"access_token"`
+	RefreshToken string     `json:"refresh_token"`
+	Expiry       *time.Time `json:"expiry,omitempty"`
+}
+
+// DecodeZoomCredential parses a stored zoom_tokens value. The caller decides
+// what a blank value means; an undecodable one is an error.
+func DecodeZoomCredential(raw string) (*ZoomCredential, error) {
+	var c ZoomCredential
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func encodeZoomCredential(c ZoomCredential) (string, error) {
+	if c.Expiry != nil {
+		e := c.Expiry.UTC()
+		c.Expiry = &e
+	}
+	data, err := json.Marshal(c)
+	return string(data), err
+}
+
+// LoadZoomCredential returns userID's stored Zoom credential, nil when none is
+// stored, or an error when the stored value does not decode.
+func LoadZoomCredential(db Querier, userID uuid.UUID) (*ZoomCredential, error) {
+	var raw sql.NullString
+	err := db.QueryRow(`SELECT zoom_tokens FROM settings WHERE user_id = $1`, userID).Scan(&raw)
+	if err == sql.ErrNoRows || (err == nil && strings.TrimSpace(raw.String) == "") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// PAC-84: a decryption failure is returned as itself (errors.Is
+	// secretbox.ErrDecrypt), never as "not stored".
+	plain, err := openSecret(bindSettings(SettingsColZoomTokens, userID), raw.String, userID)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeZoomCredential(plain)
+}
+
+// SaveZoomCredential stores userID's Zoom credential from a (re)connect, makes
+// Zoom their conferencing provider and ends any recorded loss (PAC-67 AC-12).
+// A connect that returned no refresh token keeps the stored one (AC-11).
+func SaveZoomCredential(db Querier, userID uuid.UUID, c ZoomCredential) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("SaveZoomCredential: userID is required")
+	}
+	tx, sc, err := beginOn(db)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sc.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return err
+	}
+	if c.RefreshToken == "" {
+		var raw string
+		if err := tx.QueryRow(`SELECT COALESCE(zoom_tokens, '') FROM settings WHERE user_id = $1 FOR UPDATE`, userID).Scan(&raw); err != nil {
+			return err
+		}
+		// An old value that cannot be decrypted keeps nothing (a reconnect
+		// replaces it, AC-16c b).
+		if plain, err := secretbox.Open(bindSettings(SettingsColZoomTokens, userID), raw); err == nil {
+			if old, err := DecodeZoomCredential(plain); err == nil {
+				c.RefreshToken = old.RefreshToken
+			}
+		}
+	}
+	data, err := encodeZoomCredential(c)
+	if err != nil {
+		return err
+	}
+	sealed, err := secretbox.Seal(bindSettings(SettingsColZoomTokens, userID), data)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE settings SET zoom_tokens = $2, conferencing_provider = 'zoom' WHERE user_id = $1`, userID, sealed); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, CredentialZoom); err != nil {
+		return err
+	}
+	return sc.Commit()
+}
+
+// UpdateZoomCredential writes a renewed credential back for its owner only,
+// and only while a credential is still stored: a renewal that finishes after a
+// disconnect never re-stores what the user removed.
+func UpdateZoomCredential(db Querier, userID uuid.UUID, c ZoomCredential) error {
+	data, err := encodeZoomCredential(c)
+	if err != nil {
+		return err
+	}
+	sealed, err := secretbox.Seal(bindSettings(SettingsColZoomTokens, userID), data)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE settings SET zoom_tokens = $2 WHERE user_id = $1 AND COALESCE(zoom_tokens, '') <> ''`, userID, sealed)
+	return err
+}
+
+// UpdateMicrosoftCredential writes a renewed Microsoft record back for its
+// owner only, and only while a credential is still stored.
+func UpdateMicrosoftCredential(db Querier, userID uuid.UUID, record string) error {
+	sealed, err := secretbox.Seal(bindSettings(SettingsColMicrosoftTokens, userID), record)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`UPDATE settings SET microsoft_tokens = $2 WHERE user_id = $1 AND COALESCE(microsoft_tokens, '') <> ''`, userID, sealed)
+	return err
+}
+
+// UndecryptableRemoved is what RemoveZoomCredential and
+// RemoveMicrosoftCredential return when the removed value was stored but
+// could not be decrypted (PAC-84 AC-16c c): it is non-empty (something was
+// removed) and decodes as no credential, so the Zoom revocation reports
+// "unconfirmed" and no provider call is made with it.
+const UndecryptableRemoved = "\x00undecryptable"
+
+// RemoveZoomCredential is step 1 of a Zoom disconnect (PAC-67): in one
+// transaction it reads the stored value, removes it whether or not it decodes,
+// returns conferencing to Meet (D-9) and ends any recorded loss. It returns
+// the removed value ("" when nothing was stored). On error nothing changed.
+func RemoveZoomCredential(db Querier, userID uuid.UUID) (string, error) {
+	return removeCredential(db, userID, "zoom_tokens",
+		`UPDATE settings SET zoom_tokens = '', conferencing_provider = 'meet' WHERE user_id = $1`, CredentialZoom)
+}
+
+// RemoveMicrosoftCredential is steps 1 and 2 of an Outlook disconnect (PAC-67),
+// in one transaction: the stored Microsoft credential is removed whether or
+// not it decodes, conferencing `teams` becomes `meet` (D-8), any recorded loss
+// ends, and the calendar provider is left alone (D-3). It returns the removed
+// value ("" when nothing was stored). On error nothing changed.
+func RemoveMicrosoftCredential(db Querier, userID uuid.UUID) (string, error) {
+	return removeCredential(db, userID, "microsoft_tokens",
+		`UPDATE settings SET microsoft_tokens = '',
+			conferencing_provider = CASE WHEN conferencing_provider = 'teams' THEN 'meet' ELSE conferencing_provider END
+		 WHERE user_id = $1`, CredentialOutlook)
+}
+
+func removeCredential(db Querier, userID uuid.UUID, column, update, provider string) (string, error) {
+	if userID == uuid.Nil {
+		return "", fmt.Errorf("remove %s: userID is required", provider)
+	}
+	tx, sc, err := beginOn(db)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = sc.Rollback() }()
+	var raw sql.NullString
+	err = tx.QueryRow(`SELECT `+column+` FROM settings WHERE user_id = $1 FOR UPDATE`, userID).Scan(&raw)
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	if err == nil {
+		if _, err := tx.Exec(update, userID); err != nil {
+			return "", err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM credential_losses WHERE user_id = $1 AND provider = $2`, userID, provider); err != nil {
+		return "", err
+	}
+	if err := sc.Commit(); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(raw.String) == "" {
+		return "", nil
+	}
+	plain, err := openSecret(bindSettings(column, userID), raw.String, userID)
+	if err != nil {
+		return UndecryptableRemoved, nil
+	}
+	if strings.TrimSpace(plain) == "" {
+		return "", nil
+	}
+	return plain, nil
+}

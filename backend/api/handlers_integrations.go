@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 )
 
@@ -78,7 +79,7 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 		Scopes:        strings.Split(tok.scope, ","),
 		ConnectedAt:   time.Now().UTC(),
 	}
-	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
+	if err := storage.UpsertWorkspaceConnectionCtx(r.Context(), h.db, conn); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
@@ -88,15 +89,15 @@ func (h *integrationsHandlers) slackCallback(w http.ResponseWriter, r *http.Requ
 
 func (h *integrationsHandlers) slackDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnection(h.db, userID, "slack")
+	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *integrationsHandlers) slackStatus(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	conn, err := storage.GetWorkspaceConnection(h.db, userID, "slack")
-	if err != nil {
+	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "slack")
+	if err != nil || conn.TokenErr != nil { // PAC-84 AC-16b: an undecryptable token is not connected
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
 	}
@@ -114,6 +115,12 @@ type slackTokenResponse struct {
 	scope     string
 }
 
+// The Slack and Notion token endpoints (test seams, PAC-81 AC-A3).
+var (
+	slackTokenURL  = "https://slack.com/api/oauth.v2.access"
+	notionTokenURL = "https://api.notion.com/v1/oauth/token"
+)
+
 func slackExchangeCode(code, clientID, clientSecret, redirectURI string) (*slackTokenResponse, error) {
 	form := url.Values{}
 	form.Set("code", code)
@@ -122,12 +129,12 @@ func slackExchangeCode(code, clientID, clientSecret, redirectURI string) (*slack
 	form.Set("redirect_uri", redirectURI)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		"https://slack.com/api/oauth.v2.access", strings.NewReader(form.Encode()))
+		slackTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.TokenExchangeClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +217,7 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 		WorkspaceName: tok.workspaceName,
 		ConnectedAt:   time.Now().UTC(),
 	}
-	if err := storage.UpsertWorkspaceConnection(h.db, conn); err != nil {
+	if err := storage.UpsertWorkspaceConnectionCtx(r.Context(), h.db, conn); err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
@@ -220,15 +227,15 @@ func (h *integrationsHandlers) notionCallback(w http.ResponseWriter, r *http.Req
 
 func (h *integrationsHandlers) notionDisconnect(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	_ = storage.DeleteWorkspaceConnection(h.db, userID, "notion")
+	_ = storage.DeleteWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *integrationsHandlers) notionStatus(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
 	w.Header().Set("Content-Type", "application/json")
-	conn, err := storage.GetWorkspaceConnection(h.db, userID, "notion")
-	if err != nil {
+	conn, err := storage.GetWorkspaceConnectionCtx(r.Context(), h.db, userID, "notion")
+	if err != nil || conn.TokenErr != nil { // PAC-84 AC-16b: an undecryptable token is not connected
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"connected": false})
 		return
 	}
@@ -251,14 +258,14 @@ func notionExchangeCode(code, clientID, clientSecret, redirectURI string) (*noti
 		"redirect_uri": redirectURI,
 	}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.notion.com/v1/oauth/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, notionTokenURL, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
 	req.SetBasicAuth(clientID, clientSecret)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := outbound.TokenExchangeClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

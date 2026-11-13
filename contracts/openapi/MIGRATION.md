@@ -40,37 +40,44 @@ from the contract and any edit is reported as drift.
 
 ## Progress
 
-- operations: **119**
-- generated: **0**
-- handwritten: **119**
+- operations: **130**
+- generated: **12**
+- handwritten: **118**
 
 ## Register
 
 | operationId                       | method | path                                            | tag              | status      | notes |
-|-----------------------------------|--------|-------------------------------------------------|------------------|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|-----------------------------------|--------|-------------------------------------------------|------------------|-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | listAnalyticsMeetings             | GET    | /api/analytics/meetings                         | analytics        | handwritten | |
 | recomputeAnalytics                | POST   | /api/analytics/recompute                        | analytics        | handwritten | |
-| listAnalyticsTrends               | GET    | /api/analytics/trends                           | analytics        | handwritten | |
-| getAnalyticsWeek                  | GET    | /api/analytics/week                             | analytics        | handwritten | |
-| listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | handwritten | |
-| createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | |
+| listAnalyticsTrends               | GET    | /api/analytics/trends                           | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `weeks` with 400, which this operation does not declare, where the handler falls back (to 8 outside 1..52, spec PAC-42 section 6). |
+| getAnalyticsWeek                  | GET    | /api/analytics/week                             | analytics        | handwritten | PAC-42: response modified, kept handwritten. Moving it is a contract change: the generated binder answers a malformed `date` with 400, which this operation does not declare, where the handler falls back (to today). |
+| listSsoProviders                  | GET    | /api/admin/sso                                  | auth             | generated   | PAC-22: response modified; implemented as generatedServer.ListSsoProviders (backend/api/handlers_sso.go), mounted through the generated strict wrapper. |
+| createSsoProvider                 | POST   | /api/admin/sso                                  | auth             | handwritten | PAC-22: request and response modified, kept handwritten. Moving it is a contract change: the generated binder cannot tell an absent `oidc_client_secret` from a `null` one (both decode to nil; the contract keeps the first and refuses the second), never sees the SAML properties the contract refuses by name, and answers an undecodable body with its own message instead of `invalid JSON`. |
+| startSsoAdminStepup               | GET    | /api/admin/sso/stepup                           | auth             | handwritten | |
+| ssoAdminStepupCallback            | GET    | /api/admin/sso/stepup/callback                  | auth             | handwritten | |
+| getSsoStepupOptions               | GET    | /api/admin/sso/stepup/options                   | auth             | generated   | PAC-50: new (contract revision 8); implemented as generatedServer.GetSsoStepupOptions (backend/api/handlers_sso_stepup.go), mounted through the generated strict wrapper. |
 | deleteSsoProvider                 | DELETE | /api/admin/sso/{domain}                         | auth             | handwritten | |
-| googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | |
-| ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | |
+| setSsoProviderState               | PUT    | /api/admin/sso/{domain}/state                   | auth             | handwritten | PAC-22: a new operation, so its implementation uses the generated server interface (factory §4) and flips this row to `generated` in the same PR. `handwritten` here only means no handler exists yet. |
+| googleOAuthCallback               | GET    | /api/auth/callback                              | auth             | handwritten | PAC-71: modified (refusal redirect, connect branch), kept handwritten. Moving it is a contract change: it branches on which state cookie matches and answers text/plain 400, JSON 500 and three cookie-dependent 302s, like the other two sign-in callbacks (PAC-35 precedent). |
+| ssoOidcCallback                   | GET    | /api/auth/callback/oidc/{domain}                | auth             | handwritten | PAC-71: modified (identity binding, refusal redirect), kept handwritten for the same reason as googleOAuthCallback. |
 | detectAuthProvider                | POST   | /api/auth/detect                                | auth             | handwritten | |
 | disconnectCalendar                | DELETE | /api/auth/disconnect                            | auth             | handwritten | |
 | startGoogleOAuth                  | GET    | /api/auth/google                                | auth             | handwritten | |
+| startGoogleConnect                | POST   | /api/auth/google/connect                        | auth             | generated   | PAC-71: new; implemented as generatedServer.StartGoogleConnect (backend/api/handlers_pac71_auth.go), mounted through the generated strict wrapper. |
 | logout                            | POST   | /api/auth/logout                                | auth             | handwritten | |
 | getCurrentUser                    | GET    | /api/auth/me                                    | auth             | handwritten | |
 | startMicrosoftOAuth               | GET    | /api/auth/microsoft                             | auth             | handwritten | |
-| microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | |
+| microsoftOAuthCallback            | GET    | /api/auth/microsoft/callback                    | auth             | handwritten | PAC-71: modified (tenant check, refusal redirect, connect branch), kept handwritten for the same reason as googleOAuthCallback. |
+| startMicrosoftConnect             | POST   | /api/auth/microsoft/connect                     | auth             | generated   | PAC-71: new; implemented as generatedServer.StartMicrosoftConnect (backend/api/handlers_pac71_auth.go), mounted through the generated strict wrapper. |
+| disconnectMicrosoft               | POST   | /api/auth/microsoft/disconnect                  | auth             | generated   | PAC-67: new; implemented as generatedServer.DisconnectMicrosoft (backend/api/handlers_credentials.go), mounted through the generated strict wrapper. |
 | startSsoLogin                     | GET    | /api/auth/sso/{domain}                          | auth             | handwritten | |
 | getAuthStatus                     | GET    | /api/auth/status                                | auth             | handwritten | |
 | getHealth                         | GET    | /api/health                                     | auth             | handwritten | |
 | getIntegrationAvailability        | GET    | /api/integrations/availability                  | auth             | handwritten | |
 | getPublicLinkInfo                 | GET    | /api/book/{slug}                                | booking          | handwritten | |
 | createPublicBooking               | POST   | /api/book/{slug}                                | booking          | handwritten | |
-| getPublicBookingSlots             | GET    | /api/book/{slug}/slots                          | booking          | handwritten | |
+| getPublicBookingSlots             | GET    | /api/book/{slug}/slots                          | booking          | handwritten | PAC-88: query and response modified, kept handwritten. Moving it is a contract change: the generated binder validates `date`, `from`, `to` and `display_time_zone` (format, pattern) before the handler runs, so a malformed query would answer the binder's 400 ahead of the per-client 429, the 404/410 and the link-zone 500, and with the binder's own message, where the contract pins the rate limit first and one message per check. |
 | suggestAttendees                  | GET    | /api/attendees/suggest                          | calendar         | handwritten | |
 | listAuditEntries                  | GET    | /api/audit                                      | calendar         | handwritten | PAC-23: moving this row to `generated` is a CONTRACT change. The generated binder answers an empty, non-integer, int64-overflowing or repeated `limit` with 400, which this operation does not declare. Declare the 400 in the same PR — see `listAuditEntries.parameters.limit` in contracts/openapi/paths/calendar.yaml. The binder does not enforce minimum/maximum. |
 | listCalendarEvents                | GET    | /api/calendar/events                            | calendar         | handwritten | |
@@ -88,11 +95,11 @@ from the contract and any edit is reported as drift.
 | listRooms                         | GET    | /api/rooms                                      | calendar         | handwritten | |
 | startZoomOAuth                    | GET    | /api/auth/zoom                                  | conferencing     | handwritten | |
 | handleZoomOAuthCallback           | GET    | /api/auth/zoom/callback                         | conferencing     | handwritten | |
-| createConferenceLink              | POST   | /api/conference/create                          | conferencing     | handwritten | |
+| createConferenceLink              | POST   | /api/conference/create                          | conferencing     | generated   | PAC-67: generatedServer.CreateConferenceLink (backend/api/handlers_credentials.go); body validation (API-052) and credential renewal. |
 | listConferenceProviders           | GET    | /api/conference/providers                       | conferencing     | handwritten | |
-| disconnectZoom                    | POST   | /api/conference/zoom/disconnect                 | conferencing     | handwritten | |
+| disconnectZoom                    | POST   | /api/conference/zoom/disconnect                 | conferencing     | generated   | PAC-67: generatedServer.DisconnectZoom (backend/api/handlers_credentials.go); 200 ProviderDisconnectResult with revocation at Zoom. |
 | removeEventConference             | DELETE | /api/events/{id}/conference                     | conferencing     | handwritten | |
-| addEventConference                | POST   | /api/events/{id}/conference                     | conferencing     | handwritten | |
+| addEventConference                | POST   | /api/events/{id}/conference                     | conferencing     | generated   | PAC-67: generatedServer.AddEventConference (backend/api/handlers_credentials.go); credential renewal and the connection-lost 400s. |
 | getDailyRecapSettings             | GET    | /api/settings/daily-recap                       | daily-recap      | handwritten | |
 | patchDailyRecapSettings           | PATCH  | /api/settings/daily-recap                       | daily-recap      | handwritten | |
 | previewDailyRecap                 | POST   | /api/settings/daily-recap/preview               | daily-recap      | handwritten | |
@@ -132,6 +139,10 @@ from the contract and any edit is reported as drift.
 | refreshMeetingBrief               | POST   | /api/meetings/{event_id}/brief/refresh          | meeting-briefs   | handwritten | |
 | confirmNaturalLanguage            | POST   | /api/nlp/confirm                                | nlp              | handwritten | |
 | parseNaturalLanguage              | POST   | /api/nlp/parse                                  | nlp              | handwritten | |
+| getReadiness                      | GET    | /api/ready                                      | ops              | generated   | PAC-81 Part A: new; implemented as generatedServer.GetReadiness (backend/api/readiness.go), mounted through the generated strict wrapper. |
+| getOrganizationAI                 | GET    | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
+| patchOrganizationAI               | PATCH  | /api/organization/ai                            | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
+| confirmOrganizationAI             | POST   | /api/organization/ai/consent                    | organization-ai  | generated   | NEW-llm-bring-your-own Part 2 (PAC-73): served through the generated strict wrapper (backend/api/handlers_org_ai.go). |
 | previewCompression                | POST   | /api/schedule/compress                          | schedule         | handwritten | |
 | applyCompression                  | POST   | /api/schedule/compress/apply                    | schedule         | handwritten | |
 | createScheduledMeeting            | POST   | /api/schedule/create                            | schedule         | handwritten | |

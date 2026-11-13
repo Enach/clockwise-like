@@ -84,7 +84,7 @@ func (s *AutoDeclineService) RunForUser(ctx context.Context, userID uuid.UUID, n
 
 	loc := settingsLocation(settings.Timezone)
 	start, end := nextWorkingDaysWindow(now.In(loc), AutoDeclineWorkingDays)
-	client, err := calendar.NewClient(ctx, auth.TokenSource(ctx, s.OAuthConfig, token))
+	client, err := calendar.NewClient(ctx, auth.UserTokenSource(ctx, s.DB, s.OAuthConfig, userID, token))
 	if err != nil {
 		return 0, err
 	}

@@ -151,6 +151,17 @@ make verify        # everything below, in order, fail-fast
 └── make e2e       # Playwright against docker compose
 ```
 
+Where the cross-repo half of `openapi-check` (web generated types against the
+api bundle) runs: in full on every PR, against the paired branch; **not** on
+pushes to main (CI sets `OPENAPI_CROSS_REPO=skip`, since the two halves of a
+contract change merge minutes apart); and in `release.yml` on the exact pair of
+main SHAs to publish (`make openapi-check-web`), which does not publish a pair
+that fails. A mismatch is a warning while the newer of the last change to
+`contracts/openapi/openapi.yaml` (api) and to `src/api/generated` (web) is under
+`PAIR_MISMATCH_GRACE_MINUTES` (60) old, the normal gap between paired merges;
+unrelated merges do not reset it. Past that, or when a date cannot be read or is
+in the future, it fails the release run, which is what notifies the owner.
+
 **Rules for agents:**
 
 1. You may not open a PR without pasting `make verify` output into the body.

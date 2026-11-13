@@ -39,15 +39,19 @@ func EmailBelongsToDomain(email, d string) bool {
 	return emailDomain != "" && emailDomain == d
 }
 
-// DeriveOrgName turns a domain base segment into a display name.
-// "gorgias.com" → "Gorgias", "acme-corp.io" → "Acme Corp"
-// DomainMatchesOrg returns true if d is equal to orgDomain or a subdomain of it.
+// DomainMatchesOrg reports whether d is exactly orgDomain, compared
+// case-insensitively and as sent: no whitespace is trimmed, so " acme.com "
+// is another domain (PAC-50 spec §9 D-9). Subdomains do NOT match (PAC-50
+// §4.7, ex-PAC-46): sign-in detection routes a domain to its provider row by
+// that exact domain, so allowing eu.acme.com for a member of acme.com would let
+// them configure login for a domain nobody showed they administer. An empty
+// domain never matches.
 func DomainMatchesOrg(d, orgDomain string) bool {
-	d = strings.ToLower(strings.TrimSpace(d))
-	orgDomain = strings.ToLower(strings.TrimSpace(orgDomain))
-	return d == orgDomain || strings.HasSuffix(d, "."+orgDomain)
+	return d != "" && strings.EqualFold(d, orgDomain)
 }
 
+// DeriveOrgName turns a domain base segment into a display name.
+// "gorgias.com" → "Gorgias", "acme-corp.io" → "Acme Corp"
 func DeriveOrgName(d string) string {
 	base := strings.SplitN(d, ".", 2)[0]
 	words := strings.Split(base, "-")
@@ -57,4 +61,33 @@ func DeriveOrgName(d string) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+// IsQueryableDNSName reports whether d is a name sign-in detection may send to
+// a DNS resolver (PAC-97 AC-13, D-7): ASCII letters, digits and hyphens only,
+// at least two labels, each label 1-63 characters that neither starts nor
+// ends with a hyphen, and at most 253 characters in all. A trailing dot, an
+// empty label, a single label ("intranet"), whitespace, an underscore and any
+// non-ASCII character are refused, so a name that is not a public host name
+// never leaves the server.
+func IsQueryableDNSName(d string) bool {
+	if d == "" || len(d) > 253 {
+		return false
+	}
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if len(l) == 0 || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }

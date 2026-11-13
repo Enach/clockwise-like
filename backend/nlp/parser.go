@@ -15,6 +15,7 @@ import (
 	"github.com/Enach/paceday/backend/auth"
 	"github.com/Enach/paceday/backend/calendar"
 	"github.com/Enach/paceday/backend/engine"
+	"github.com/Enach/paceday/backend/internal/outbound"
 	"github.com/Enach/paceday/backend/storage"
 	"golang.org/x/oauth2"
 )
@@ -30,9 +31,10 @@ type OpenAIClient struct {
 }
 
 func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
-	base := c.BaseURL
-	if base == "" {
-		base = "https://api.openai.com"
+	// PAC-66-B: only the chat operation of an approved destination.
+	target, refusal := c.requestURL()
+	if refusal != nil {
+		return "", refusal
 	}
 	payload := map[string]interface{}{
 		"model": c.Model,
@@ -41,7 +43,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (strin
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, base+"/v1/chat/completions",
+	return postJSONWith(ctx, userHTTPClient(ProviderOpenAI), target,
 		map[string]string{"Authorization": "Bearer " + c.APIKey}, payload,
 		func(body []byte) (string, error) {
 			var resp struct {
@@ -63,9 +65,10 @@ type AnthropicClient struct {
 }
 
 func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (string, error) {
-	base := c.BaseURL
-	if base == "" {
-		base = "https://api.anthropic.com"
+	// PAC-66-B: only the chat operation of an approved destination.
+	target, refusal := c.requestURL()
+	if refusal != nil {
+		return "", refusal
 	}
 	payload := map[string]interface{}{
 		"model":      c.Model,
@@ -75,7 +78,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 			{"role": "user", "content": user},
 		},
 	}
-	return postJSON(ctx, base+"/v1/messages",
+	return postJSONWith(ctx, userHTTPClient(ProviderAnthropic), target,
 		map[string]string{
 			"x-api-key":         c.APIKey,
 			"anthropic-version": "2023-06-01",
@@ -93,38 +96,8 @@ func (c *AnthropicClient) Complete(ctx context.Context, system, user string) (st
 		})
 }
 
-type OllamaClient struct {
-	BaseURL string
-	Model   string
-}
-
-func (c *OllamaClient) Complete(ctx context.Context, system, user string) (string, error) {
-	base := c.BaseURL
-	if base == "" {
-		base = "http://host.docker.internal:11434"
-	}
-	payload := map[string]interface{}{
-		"model":  c.Model,
-		"stream": false,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": user},
-		},
-	}
-	return postJSON(ctx, base+"/api/chat", nil, payload,
-		func(body []byte) (string, error) {
-			var resp struct {
-				Message struct{ Content string } `json:"message"`
-			}
-			if err := json.Unmarshal(body, &resp); err != nil {
-				return "", fmt.Errorf("ollama: unexpected response")
-			}
-			return resp.Message.Content, nil
-		})
-}
-
 func postJSON(ctx context.Context, url string, headers map[string]string, payload interface{}, extract func([]byte) (string, error)) (string, error) {
-	return postJSONWith(ctx, http.DefaultClient, url, headers, payload, extract)
+	return postJSONWith(ctx, outbound.LLMClient(), url, headers, payload, extract)
 }
 
 // postJSONWith is postJSON through client.
@@ -154,12 +127,14 @@ func postJSONWith(ctx context.Context, client *http.Client, url string, headers 
 }
 
 type ParseResult struct {
-	Intent           string                     `json:"intent"`
-	Title            string                     `json:"title,omitempty"`
-	DurationMinutes  int                        `json:"duration_minutes,omitempty"`
-	Attendees        []string                   `json:"attendees,omitempty"`
-	RangeStart       time.Time                  `json:"range_start,omitempty"`
-	RangeEnd         time.Time                  `json:"range_end,omitempty"`
+	Intent          string   `json:"intent"`
+	Title           string   `json:"title,omitempty"`
+	DurationMinutes int      `json:"duration_minutes,omitempty"`
+	Attendees       []string `json:"attendees,omitempty"`
+	// RangeStart and RangeEnd are absent when there is no range, never the
+	// zero time (API-080, NEW-llm-bring-your-own AC-35).
+	RangeStart       time.Time                  `json:"range_start,omitzero"`
+	RangeEnd         time.Time                  `json:"range_end,omitzero"`
 	PreferredTimes   []string                   `json:"preferred_times,omitempty"`
 	AvoidTimes       []string                   `json:"avoid_times,omitempty"`
 	Constraints      string                     `json:"constraints,omitempty"`
@@ -167,35 +142,63 @@ type ParseResult struct {
 	Error            string                     `json:"error,omitempty"`
 	SuggestedSlots   []engine.SuggestedSlot     `json:"suggested_slots,omitempty"`
 	ParticipantInfos []calendar.ParticipantInfo `json:"participant_infos,omitempty"`
+	// NotConfigured is present only when AI is not configured for the caller
+	// (NEW-llm-bring-your-own AC-13); then nothing was sent.
+	NotConfigured *storage.AINotConfigured `json:"not_configured,omitempty"`
 }
 
 type NLPService struct {
 	DB          *sql.DB
 	OAuthConfig *oauth2.Config
+	// Source is where the AI decision reads from; nil means DB (PAC-73
+	// Part 2: a test replaces it, P2-AC-37).
+	Source AISource
+}
+
+func (s *NLPService) source() AISource {
+	if s.Source != nil {
+		return s.Source
+	}
+	return DBSource{DB: s.DB}
 }
 
 const attendeeExtractionPrompt = `Extract email addresses from the user's text. Return ONLY JSON: {"attendees": ["email@example.com"]}. If none found, return {"attendees": []}.`
 
 func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, error) {
-	settings, err := storage.GetOrCreateSettingsByUser(s.DB, auth.UserIDFromContext(ctx))
+	userID := auth.UserIDFromContext(ctx)
+	st, err := LoadAIState(ctx, s.source(), userID)
 	if err != nil {
-		return nil, fmt.Errorf("load settings: %w", err)
+		return nil, err
 	}
+	settings := st.Settings
 
-	client, err := s.buildLLMClient(settings)
-	if err != nil {
-		return &ParseResult{Intent: "unknown", Error: err.Error()}, nil
+	// NEW-llm-bring-your-own: decide the configuration before anything is
+	// sent. Not configured is a 200 answer with not_configured (AC-13). The
+	// decision reads one consistent state (Part 2, P2-AC-37), and the client
+	// carries only that state's values.
+	decision := DecideState(st)
+	if decision.Err != nil {
+		// PAC-84 (contract 1): the documented 500, never not_configured
+		// and never the {"intent":"unknown"} swallow.
+		return nil, fmt.Errorf("load AI configuration: %w", decision.Err)
 	}
+	if nc := decision.NotConfigured; nc != nil {
+		return &ParseResult{Intent: "unknown", Error: nc.Message, NotConfigured: nc}, nil
+	}
+	client := decision.Client
 	// PAC-66: refuse before the first Complete (attendee extraction), in the
-	// existing "LLM unusable" shape (spec AC-13). Other errors surface from
-	// Complete as before.
+	// existing "LLM unusable" shape. Other errors surface from Complete as
+	// before.
 	var refusal *DestinationRefusal
 	if err := CheckDestination(ctx, client); errors.As(err, &refusal) {
+		if decision.Organization() {
+			refusal = OrganizationDestinationRefusal(refusal)
+		}
 		return &ParseResult{Intent: "unknown", Error: refusal.Message}, nil
 	}
 
 	// Pass 1: Extract attendee emails with a lightweight prompt
-	attendees := s.extractAttendees(ctx, client, text)
+	attendees := s.extractAttendees(ctx, client, text, decision.Redact)
 
 	// Resolve participant info (timezone, working hours)
 	participants := calendar.ResolveParticipants(attendees)
@@ -209,10 +212,13 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 
 	rawJSON, err := client.Complete(ctx, sysPrompt, text)
 	if err != nil {
-		return nil, fmt.Errorf("LLM error: %w", err)
+		// Part 2 (spec §3.1a): the provider text goes to the log and Sentry
+		// only (the handler's fixed 500), redacted of every key sent and the
+		// caller's own keys.
+		return nil, errors.New(decision.Redact("LLM error: " + err.Error()))
 	}
 
-	result := parseRawJSON(rawJSON)
+	result := parseRawJSON(decision.Redact(rawJSON))
 	result.ParticipantInfos = participants
 
 	if result.Intent == "schedule_meeting" && !result.RangeStart.IsZero() {
@@ -232,25 +238,21 @@ func (s *NLPService) Parse(ctx context.Context, text string) (*ParseResult, erro
 		}
 	}
 
-	storage.WriteAuditLog(s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
+	storage.WriteAuditLogCtx(ctx, s.DB, auth.UserIDFromContext(ctx), "nlp_parsed", fmt.Sprintf(`{"text":%q,"intent":%q}`, text, result.Intent))
 	return result, nil
 }
 
-func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string) []string {
+func (s *NLPService) extractAttendees(ctx context.Context, client LLMClient, text string, redact func(string) string) []string {
 	rawJSON, err := client.Complete(ctx, attendeeExtractionPrompt, text)
 	if err != nil {
 		return nil
 	}
-	rawJSON = cleanJSON(rawJSON)
+	rawJSON = cleanJSON(redact(rawJSON))
 	var result struct {
 		Attendees []string `json:"attendees"`
 	}
 	_ = json.Unmarshal([]byte(rawJSON), &result)
 	return result.Attendees
-}
-
-func (s *NLPService) buildLLMClient(settings *storage.Settings) (LLMClient, error) {
-	return NewLLMClientFromSettings(settings)
 }
 
 func parseRawJSON(rawJSON string) *ParseResult {

@@ -2,8 +2,10 @@
  * Create a scheduling link as an authenticated user, then book it as an
  * anonymous visitor.
  *
- * This is the complete round trip the factory spec asks for, and it needs no
- * calendar provider at any step:
+ * This is the complete round trip the factory spec asks for. Since PAC-72 D-6
+ * (an unreadable host calendar is busy) the author is a user connected through
+ * the calendar stand-in (seed/ids.ts BOOKING_HOSTS.author); the slots and the
+ * booking read its (empty) stand-in calendar:
  *   POST /api/scheduling-links  — handlers_scheduling_links.go createLink():
  *       validates, generates a slug from the owner's name via
  *       engine.BookingEngine.GenerateSlug, writes the link, adds the owner as
@@ -19,21 +21,31 @@
  */
 
 import { test, expect } from '../fixtures';
-import { LINKS, USERS } from '../seed/ids';
+import { BOOKING_HOSTS, LINKS } from '../seed/ids';
+import { fake } from '../fake';
 import { atUtc, instant, isoDate, nextBookableWeekday } from '../lib/dates';
 
 test.describe('scheduling links', () => {
   test('a user creates a link and an anonymous visitor books it', async ({
-    authedApi,
+    apiAs,
     api,
     db,
   }) => {
+    // PAC-72 D-6 (owner, 2026-11-01): a host whose calendar cannot be read is
+    // busy, so the link's author (its automatic host) must have a connected
+    // calendar. The journey runs as BOOKING_HOSTS.author, connected through
+    // the stand-in, instead of the unconnected primary user (AC-24 keeps that
+    // one unconnected). The author's stand-in calendar belongs to this
+    // journey alone: it starts and ends empty, so a retry sees every slot.
+    const author = BOOKING_HOSTS.author;
+    const authorApi = apiAs(author);
+    await fake.clearCalendar(author.email);
     const suffix = Date.now();
     const slug = `e2e-created-${suffix}`;
     const bookerEmail = `e2e.booker.created.${suffix}@paceday.test`;
 
     // ── create ────────────────────────────────────────────────────────────
-    const created = await authedApi.post('/api/scheduling-links', {
+    const created = await authorApi.post('/api/scheduling-links', {
       title: 'E2E Created Link',
       slug,
       duration_options: [30],
@@ -59,7 +71,7 @@ test.describe('scheduling links', () => {
         [link.id],
       );
       expect(hosts).toEqual([
-        expect.objectContaining({ user_id: USERS.primary.id, status: 'accepted' }),
+        expect.objectContaining({ user_id: author.id, status: 'accepted' }),
       ]);
 
       // ── the anonymous visitor ───────────────────────────────────────────
@@ -68,7 +80,7 @@ test.describe('scheduling links', () => {
       const publicLink = await publicRes.json();
       expect(publicLink.title).toBe('E2E Created Link');
       expect(publicLink.hosts.map((h: { email: string }) => h.email)).toEqual([
-        USERS.primary.email,
+        author.email,
       ]);
 
       const date = nextBookableWeekday(14);
@@ -96,7 +108,7 @@ test.describe('scheduling links', () => {
       expect(instant(confirmation.end)).toBe(atUtc(date, '16:30'));
 
       // ── back on the owner's side ────────────────────────────────────────
-      const bookings = await authedApi.get(`/api/scheduling-links/${link.id}/bookings`);
+      const bookings = await authorApi.get(`/api/scheduling-links/${link.id}/bookings`);
       expect(bookings.status()).toBe(200);
       const list = await bookings.json();
       expect(list).toEqual([
@@ -108,6 +120,7 @@ test.describe('scheduling links', () => {
     } finally {
       await db.deleteBookingsByBooker('e2e.booker.created.');
       await db.query('DELETE FROM scheduling_links WHERE slug = $1', [slug]);
+      await fake.clearCalendar(author.email);
     }
   });
 

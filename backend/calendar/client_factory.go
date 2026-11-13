@@ -14,12 +14,18 @@ import (
 func NewProvider(ctx context.Context, s *storage.Settings, googleTS oauth2.TokenSource) (Provider, error) {
 	switch s.CalendarProvider {
 	case "outlook":
+		if err := s.SecretErr(storage.SettingsColMicrosoftTokens); err != nil {
+			return nil, err // PAC-84: undecryptable, never "not configured"
+		}
 		if s.MicrosoftTokens == "" {
 			return nil, fmt.Errorf("outlook: no Microsoft tokens configured")
 		}
 		tok := &oauth2.Token{AccessToken: msAccessToken(s.MicrosoftTokens)}
 		return NewOutlookClient(oauth2.StaticTokenSource(tok)), nil
 	case "webcal":
+		if err := s.SecretErr(storage.SettingsColWebcalURL); err != nil {
+			return nil, err
+		}
 		if s.WebcalURL == "" {
 			return nil, fmt.Errorf("webcal: no URL configured")
 		}

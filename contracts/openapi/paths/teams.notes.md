@@ -221,6 +221,11 @@ The owner-protection rule (`422 "the team owner cannot be removed"`) exists only
 `DELETE /api/manager/team/members/{email}`. Two routes remove team members with different
 safety rules.
 
+*Resolved by PAC-25 (API-023)*: `removeTeamMember` now refuses, with the same `422`
+wording, a removal that would leave the team with zero owners. The two routes still
+apply different rules (count-based here, role-based on the manager route); the
+divergence is reachable only with two owners and is accepted (PAC-25 D-3).
+
 ---
 
 ## (b) Invariants (written to be turned into tests)

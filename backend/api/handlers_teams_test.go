@@ -3,9 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -472,5 +476,256 @@ func TestListTeams_ReturnsAllMemberships(t *testing.T) {
 	}
 	if !seen[first.ID] || !seen[second.ID] {
 		t.Fatalf("returned team IDs = %v, want both memberships", seen)
+	}
+}
+
+// --- PAC-25: DELETE /api/teams/{id}/members/{userId} never leaves a team
+// without an owner (spec AC-7..AC-13, AC-17, AC-19; D-3..D-6). ---
+
+// pac25Team creates a team with the given owners and members, written directly
+// to storage (the product cannot create a second owner; AC-13, AC-19).
+func pac25Team(t *testing.T, name string, owners, members []uuid.UUID) uuid.UUID {
+	t.Helper()
+	db := openTestDB(t)
+	team, err := storage.CreateTeam(db, name, owners[0])
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	for _, o := range owners {
+		if err := storage.AddTeamMember(db, team.ID, o, "owner"); err != nil {
+			t.Fatalf("add owner: %v", err)
+		}
+	}
+	for _, m := range members {
+		if err := storage.AddTeamMember(db, team.ID, m, "member"); err != nil {
+			t.Fatalf("add member: %v", err)
+		}
+	}
+	return team.ID
+}
+
+func pac25Remove(t *testing.T, r http.Handler, teamID, caller, target uuid.UUID) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/api/teams/"+teamID.String()+"/members/"+target.String(), nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, withUser(req, caller))
+	return w
+}
+
+// pac25Role reads the user's role in the team back from storage; "" means no row.
+func pac25Role(t *testing.T, teamID, userID uuid.UUID) string {
+	t.Helper()
+	var role string
+	err := openTestDB(t).QueryRow(`SELECT role FROM team_members WHERE team_id = $1 AND user_id = $2`, teamID, userID).Scan(&role)
+	if err == sql.ErrNoRows {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read role: %v", err)
+	}
+	return role
+}
+
+func pac25MembershipSnapshot(t *testing.T, teamID uuid.UUID) string {
+	t.Helper()
+	rows, err := openTestDB(t).Query(`SELECT user_id, role, joined_at FROM team_members WHERE team_id = $1 ORDER BY user_id`, teamID)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var u uuid.UUID
+		var role string
+		var joined time.Time
+		if err := rows.Scan(&u, &role, &joined); err != nil {
+			t.Fatalf("scan snapshot: %v", err)
+		}
+		b.WriteString(u.String() + "|" + role + "|" + joined.UTC().Format(time.RFC3339Nano) + "\n")
+	}
+	return b.String()
+}
+
+func assertLastOwnerRefused(t *testing.T, what string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("%s: status = %d, want 422; body: %s", what, w.Code, w.Body.String())
+	}
+	exactJSONError(t, w, "the team owner cannot be removed")
+}
+
+// AC-7: the only owner removing themself is refused and nothing changes.
+func TestPAC25SoleOwnerSelfRemovalIs422(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac7-owner@example.com")
+	member := createTestUser(t, "pac25-ac7-member@example.com")
+	team := pac25Team(t, "PAC-25 AC-7", []uuid.UUID{owner}, []uuid.UUID{member})
+	before := pac25MembershipSnapshot(t, team)
+	assertLastOwnerRefused(t, "sole owner leaves", pac25Remove(t, r, team, owner, owner))
+	if got := pac25Role(t, team, owner); got != "owner" {
+		t.Fatalf("owner role after refusal = %q, want owner", got)
+	}
+	if after := pac25MembershipSnapshot(t, team); after != before {
+		t.Fatalf("membership changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// AC-8: a sole owner who is also the only member is refused; the team survives.
+func TestPAC25SoleOwnerAloneSelfRemovalIs422(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac8-owner@example.com")
+	team := pac25Team(t, "PAC-25 AC-8", []uuid.UUID{owner}, nil)
+	assertLastOwnerRefused(t, "sole member leaves", pac25Remove(t, r, team, owner, owner))
+	if got := pac25Role(t, team, owner); got != "owner" {
+		t.Fatalf("owner role after refusal = %q, want owner", got)
+	}
+	if _, err := storage.GetTeam(openTestDB(t), team); err != nil {
+		t.Fatalf("team gone after refusal: %v", err)
+	}
+}
+
+// AC-9 (pin): a member removes themself.
+func TestPAC25MemberSelfRemovalIs204(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac9-owner@example.com")
+	member := createTestUser(t, "pac25-ac9-member@example.com")
+	team := pac25Team(t, "PAC-25 AC-9", []uuid.UUID{owner}, []uuid.UUID{member})
+	if w := pac25Remove(t, r, team, member, member); w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+	if got := pac25Role(t, team, member); got != "" {
+		t.Fatalf("member still has role %q", got)
+	}
+}
+
+// AC-10 (pin): the owner removes a member.
+func TestPAC25OwnerRemovesMemberIs204(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac10-owner@example.com")
+	member := createTestUser(t, "pac25-ac10-member@example.com")
+	team := pac25Team(t, "PAC-25 AC-10", []uuid.UUID{owner}, []uuid.UUID{member})
+	if w := pac25Remove(t, r, team, owner, member); w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+	if got := pac25Role(t, team, member); got != "" {
+		t.Fatalf("member still has role %q", got)
+	}
+}
+
+// AC-11 (pin): a member cannot remove another member.
+func TestPAC25MemberRemovesOtherMemberIs403(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac11-owner@example.com")
+	m := createTestUser(t, "pac25-ac11-m@example.com")
+	n := createTestUser(t, "pac25-ac11-n@example.com")
+	team := pac25Team(t, "PAC-25 AC-11", []uuid.UUID{owner}, []uuid.UUID{m, n})
+	w := pac25Remove(t, r, team, m, n)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+	}
+	if got := pac25Role(t, team, n); got != "member" {
+		t.Fatalf("N role = %q, want member", got)
+	}
+}
+
+// AC-12 (pin): removing a non-member is a 204 no-op.
+func TestPAC25OwnerRemovesNonMemberIs204NoOp(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac12-owner@example.com")
+	outsider := createTestUser(t, "pac25-ac12-outsider@example.com")
+	team := pac25Team(t, "PAC-25 AC-12", []uuid.UUID{owner}, nil)
+	before := pac25MembershipSnapshot(t, team)
+	if w := pac25Remove(t, r, team, owner, outsider); w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+	if after := pac25MembershipSnapshot(t, team); after != before {
+		t.Fatalf("membership changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// AC-13: with two owners the first may leave; the second, now last, may not.
+func TestPAC25SecondOwnerMayLeaveLastMayNot(t *testing.T) {
+	r := setupTeamRoutes(t)
+	o1 := createTestUser(t, "pac25-ac13-o1@example.com")
+	o2 := createTestUser(t, "pac25-ac13-o2@example.com")
+	team := pac25Team(t, "PAC-25 AC-13", []uuid.UUID{o1, o2}, nil)
+	if w := pac25Remove(t, r, team, o1, o1); w.Code != http.StatusNoContent {
+		t.Fatalf("first owner leaves: status = %d, want 204; body: %s", w.Code, w.Body.String())
+	}
+	if got := pac25Role(t, team, o2); got != "owner" {
+		t.Fatalf("O2 role = %q, want owner", got)
+	}
+	assertLastOwnerRefused(t, "last owner leaves", pac25Remove(t, r, team, o2, o2))
+	if got := pac25Role(t, team, o2); got != "owner" {
+		t.Fatalf("O2 role after refusal = %q, want owner", got)
+	}
+}
+
+// AC-17 (pin): a member naming the owner is told 403, not 422, so the answer
+// does not reveal who the owner is.
+func TestPAC25MemberRemovesOwnerIs403Not422(t *testing.T) {
+	r := setupTeamRoutes(t)
+	owner := createTestUser(t, "pac25-ac17-owner@example.com")
+	member := createTestUser(t, "pac25-ac17-member@example.com")
+	team := pac25Team(t, "PAC-25 AC-17", []uuid.UUID{owner}, []uuid.UUID{member})
+	w := pac25Remove(t, r, team, member, owner)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body: %s", w.Code, w.Body.String())
+	}
+	exactJSONError(t, w, "forbidden")
+	if got := pac25Role(t, team, owner); got != "owner" {
+		t.Fatalf("owner role = %q, want owner", got)
+	}
+}
+
+// AC-19: two owners removing themselves at the same time never leave the team
+// without an owner, and at most one of them is answered 204.
+func TestPAC25ConcurrentOwnerSelfRemovalKeepsAnOwner(t *testing.T) {
+	r := setupTeamRoutes(t)
+	o1 := createTestUser(t, "pac25-ac19-o1@example.com")
+	o2 := createTestUser(t, "pac25-ac19-o2@example.com")
+	const attempts = 40
+	for i := 0; i < attempts; i++ {
+		team := pac25Team(t, fmt.Sprintf("PAC-25 AC-19 #%d", i), []uuid.UUID{o1, o2}, nil)
+		start := make(chan struct{})
+		codes := make([]int, 2)
+		bodies := make([]string, 2)
+		var wg sync.WaitGroup
+		for j, who := range []uuid.UUID{o1, o2} {
+			wg.Add(1)
+			go func(j int, who uuid.UUID) {
+				defer wg.Done()
+				req := httptest.NewRequest(http.MethodDelete, "/api/teams/"+team.String()+"/members/"+who.String(), nil)
+				w := httptest.NewRecorder()
+				<-start
+				r.ServeHTTP(w, withUser(req, who))
+				codes[j], bodies[j] = w.Code, w.Body.String()
+			}(j, who)
+		}
+		close(start)
+		wg.Wait()
+		var owners int
+		if err := openTestDB(t).QueryRow(`SELECT count(*) FROM team_members WHERE team_id = $1 AND role = 'owner'`, team).Scan(&owners); err != nil {
+			t.Fatalf("count owners: %v", err)
+		}
+		if owners < 1 {
+			t.Fatalf("attempt %d: team left with %d owners; answers %v %q", i, owners, codes, bodies)
+		}
+		ok := 0
+		for j, c := range codes {
+			switch c {
+			case http.StatusNoContent:
+				ok++
+			case http.StatusUnprocessableEntity:
+				if strings.TrimSpace(bodies[j]) != `{"error":"the team owner cannot be removed"}` {
+					t.Fatalf("attempt %d: 422 body %q", i, bodies[j])
+				}
+			default:
+				t.Fatalf("attempt %d: unexpected answer %d %q", i, c, bodies[j])
+			}
+		}
+		if ok != 1 {
+			t.Fatalf("attempt %d: %d requests answered 204, want exactly 1 (answers %v)", i, ok, codes)
+		}
 	}
 }
