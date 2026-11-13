@@ -187,6 +187,10 @@ func RegisterRoutes(r *chi.Mux, db *sql.DB, oauthConfig *oauth2.Config, jwtSecre
 			r.Get("/invites", slh.listHostInvites)
 			r.Post("/host-invites/{id}/accept", slh.acceptInvite)
 			r.Post("/host-invites/{id}/decline", slh.declineInvite)
+			// PAC-40: the owner's archive. Static segments match before
+			// /{id} in chi, so these never reach getLink.
+			r.Get("/archive", slh.listArchivedLinks)
+			r.Get("/archive/{id}", slh.getArchivedLink)
 			r.Get("/{id}", slh.getLink)
 			r.Patch("/{id}", slh.updateLink)
 			r.Delete("/{id}", slh.deleteLink)

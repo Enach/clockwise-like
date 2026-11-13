@@ -186,6 +186,39 @@ smart-calendar-flow#147; used by `tests/pac97-signin-detect.spec.ts` (AC-27).
 The remembered email lives in `sessionStorage` key `paceday:signin-email`
 (AC-25, AC-26).
 
+## 8. Deleted links and the owner archive — `src/pages/Links.tsx`, `src/pages/LinksArchive.tsx` (PAC-40 part A)
+
+Contract `contracts/features/PAC-40.md` §2.4 and §6. Implemented by the web PR
+smart-calendar-flow#150 (`impl/pac-40-web`); used by
+`tests/pac40-lifecycle.spec.ts` (AC-10, AC-25 part A).
+
+| Test id | Element | Used for |
+|---|---|---|
+| `link-row-<slug>` | each link card on the Links page (its Delete button keeps the accessible name `Delete <title>`) | AC-10, AC-25 |
+| `links-archive-link` | the link from the Links page to `/app/links/archive` | AC-25 |
+| `link-delete-dialog` | the delete confirmation dialog | AC-10, AC-25 |
+| `link-delete-copy` | its copy: people can no longer book; the link and its bookings move to the archive | AC-25 |
+| `link-delete-erasure` | the erasure sentence; present only when `booker_erasure.enabled` is true, so absent in part A | AC-25 (asserted absent) |
+| `link-delete-confirm` | the confirm button, text "Delete link" | AC-10, AC-25 |
+| `link-delete-cancel` | the cancel button | not driven |
+| `archive-page` | the archive page | AC-25 |
+| `archive-list` / `archive-empty` / `archive-unavailable` | the list, its empty state, and "archive unavailable" (any non-200 or a body failing the schema, K4-7) | not driven in part A |
+| `archive-row-<slug>` | one archived link; `data-erasure-state` = `no_bookings` / `awaiting_erasure` / `erased` | AC-25 |
+| `archive-erasure` | the erasure date; absent while `enabled` is false | AC-25 (asserted absent) |
+| `archive-view-bookings` | the button in a row that opens its detail | AC-25 |
+| `archive-detail` | the detail dialog | AC-25 |
+| `archive-bookings` / `archive-bookings-empty` / `archive-detail-not-found` / `archive-detail-unavailable` | the bookings list and its other states | not driven in part A |
+| `archive-booking-<id>` | one booking; `data-erased` = `true` / `false` | AC-25 |
+| `archive-booker-name`, `archive-booker-email` | the booker's name and email (not erased) | AC-25 |
+| `archive-booker-erased` | the explicit erased state (part B) | AC-25 (asserted absent) |
+| `archive-booking-status` | the booking's status | AC-25 |
+
+Also relied on (not test ids): the archive offers no button or switch named
+edit, resume, restore, delete, pause or invite; the public page of a deleted
+link shows the "Link not found" heading. Every archive timestamp is UTC with a
+`Z` suffix (the web validates with `z.iso.datetime()`); the backend serialises
+them that way (`archivedLinkDTO`, `archivedBookingDTO`).
+
 ## Contract gaps found while writing this suite
 
 Not test ids — genuine `api`/`web` drift, listed here because they materially

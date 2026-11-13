@@ -12,23 +12,25 @@ import (
 
 // SchedulingLink represents a public booking page.
 type SchedulingLink struct {
-	ID               uuid.UUID   `json:"id"`
-	OwnerUserID      uuid.UUID   `json:"owner_user_id"`
-	Slug             string      `json:"slug"`
-	Title            string      `json:"title"`
-	DurationOptions  []int       `json:"duration_options"`
-	DaysOfWeek       []int       `json:"days_of_week"`
-	WindowStart      string      `json:"window_start_time"`
-	WindowEnd        string      `json:"window_end_time"`
-	BufferBefore     int         `json:"buffer_before"`
-	BufferAfter      int         `json:"buffer_after"`
-	MinNoticeMinutes int         `json:"min_notice_minutes"`
-	UsageType        string      `json:"usage_type"`
-	MaxUses          *int        `json:"max_uses,omitempty"`
-	UsesCount        int         `json:"uses_count"`
-	Active           bool        `json:"active"`
-	CreatedAt        time.Time   `json:"created_at"`
-	Hosts            []*LinkHost `json:"hosts,omitempty"`
+	ID               uuid.UUID `json:"id"`
+	OwnerUserID      uuid.UUID `json:"owner_user_id"`
+	Slug             string    `json:"slug"`
+	Title            string    `json:"title"`
+	DurationOptions  []int     `json:"duration_options"`
+	DaysOfWeek       []int     `json:"days_of_week"`
+	WindowStart      string    `json:"window_start_time"`
+	WindowEnd        string    `json:"window_end_time"`
+	BufferBefore     int       `json:"buffer_before"`
+	BufferAfter      int       `json:"buffer_after"`
+	MinNoticeMinutes int       `json:"min_notice_minutes"`
+	UsageType        string    `json:"usage_type"`
+	MaxUses          *int      `json:"max_uses,omitempty"`
+	// UsesCount is every booking stored for the link, cancelled ones
+	// included: a use, once spent, stays spent (PAC-40 D-6, API-051).
+	UsesCount int         `json:"uses_count"`
+	Active    bool        `json:"active"`
+	CreatedAt time.Time   `json:"created_at"`
+	Hosts     []*LinkHost `json:"hosts,omitempty"`
 	// BookingHorizonDays is how many days ahead the link can be booked,
 	// counting today in the link's zone (PAC-72 D-1): 1..365, default 60.
 	BookingHorizonDays int `json:"booking_horizon_days"`
@@ -106,7 +108,7 @@ func CreateSchedulingLink(db Querier, l *SchedulingLink) (*SchedulingLink, error
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at, booking_horizon_days, refusal_message
 	`, l.OwnerUserID, l.Slug, l.Title,
 		pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
@@ -115,26 +117,35 @@ func CreateSchedulingLink(db Querier, l *SchedulingLink) (*SchedulingLink, error
 	return scanSchedulingLink(row)
 }
 
+// GetSchedulingLinkBySlug is the public lookup: a link that is paused or
+// deleted is not found (PAC-40: deleted_at IS NULL as well as active, so a
+// deleted link is never bookable even on a row that somehow kept active =
+// true, challenge K4-1).
 func GetSchedulingLinkBySlug(db DBTX, slug string) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at, booking_horizon_days, refusal_message
-		FROM scheduling_links WHERE slug = $1 AND active = true
+		FROM scheduling_links WHERE slug = $1 AND active = true AND deleted_at IS NULL
 	`, slug)
 	return scanSchedulingLink(row)
 }
 
+// GetSchedulingLinkByID returns a live or paused link; a deleted one is nil,
+// exactly as an id that never existed (PAC-40 D-9). Every live by-id path
+// reads through it, so "deleted" is checked where "no such link" is: before
+// any owner or host check and before a request body is read (contract §3).
+// The owner reaches a deleted link only through the archive reads below.
 func GetSchedulingLinkByID(db DBTX, id uuid.UUID) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		SELECT id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at, booking_horizon_days, refusal_message
-		FROM scheduling_links WHERE id = $1
+		FROM scheduling_links WHERE id = $1 AND deleted_at IS NULL
 	`, id)
 	return scanSchedulingLink(row)
 }
@@ -145,11 +156,12 @@ func ListSchedulingLinksByUser(db DBTX, userID uuid.UUID) ([]*SchedulingLink, er
 			sl.duration_options, sl.days_of_week,
 			sl.window_start_time, sl.window_end_time,
 			sl.buffer_before, sl.buffer_after, sl.min_notice_minutes, sl.usage_type, sl.max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = sl.id),
             sl.active, sl.created_at, sl.booking_horizon_days, sl.refusal_message
 		FROM scheduling_links sl
 		LEFT JOIN scheduling_link_hosts slh ON slh.link_id = sl.id
-		WHERE sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted')
+		WHERE sl.deleted_at IS NULL
+		  AND (sl.owner_user_id = $1 OR (slh.user_id = $1 AND slh.status = 'accepted'))
 		ORDER BY sl.created_at DESC
 	`, userID)
 	if err != nil {
@@ -161,7 +173,10 @@ func ListSchedulingLinksByUser(db DBTX, userID uuid.UUID) ([]*SchedulingLink, er
 
 // UpdateSchedulingLink writes l over link id. A zero BookingHorizonDays or an
 // empty RefusalMessage keeps the stored value (PAC-72: callers that predate
-// those settings never reset them).
+// those settings never reset them). A deleted link is never written: the
+// UPDATE re-checks deleted_at IS NULL itself, so a PATCH that read the link
+// before a concurrent delete committed cannot write active = true back onto
+// it; the result is then nil, nil, as for an unknown id (PAC-40, K4-1).
 func UpdateSchedulingLink(db Querier, id uuid.UUID, l *SchedulingLink) (*SchedulingLink, error) {
 	row := db.QueryRowContext(context.Background(), `
 		UPDATE scheduling_links SET
@@ -171,11 +186,11 @@ func UpdateSchedulingLink(db Querier, id uuid.UUID, l *SchedulingLink) (*Schedul
             usage_type = $11, max_uses = $12, active = $13,
             booking_horizon_days = COALESCE(NULLIF($14, 0), booking_horizon_days),
             refusal_message = COALESCE(NULLIF($15, ''), refusal_message)
-		WHERE id = $1
+		WHERE id = $1 AND deleted_at IS NULL
 		RETURNING id, owner_user_id, slug, title, duration_options, days_of_week,
 			window_start_time, window_end_time, buffer_before, buffer_after,
             min_notice_minutes, usage_type, max_uses,
-            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id AND b.status <> 'cancelled'),
+            (SELECT COUNT(*) FROM bookings b WHERE b.link_id = scheduling_links.id),
             active, created_at, booking_horizon_days, refusal_message
 	`, id, l.Slug, l.Title, pq.Array(l.DurationOptions), pq.Array(l.DaysOfWeek),
 		l.WindowStart, l.WindowEnd, l.BufferBefore, l.BufferAfter, l.MinNoticeMinutes,
@@ -183,10 +198,23 @@ func UpdateSchedulingLink(db Querier, id uuid.UUID, l *SchedulingLink) (*Schedul
 	return scanSchedulingLink(row)
 }
 
-func DeleteSchedulingLink(db Querier, id uuid.UUID) error {
-	_, err := db.ExecContext(context.Background(),
-		`UPDATE scheduling_links SET active = false WHERE id = $1`, id)
-	return err
+// DeleteSchedulingLink moves link id to the deleted state: it records the
+// instant and pauses it, and keeps the link, its host rows and its bookings
+// (PAC-40 D-2). deleted is false, with nothing written, when the link does
+// not exist or is already deleted: a repeated or concurrent delete never
+// moves deleted_at, the instant the archive shows (K4-2).
+func DeleteSchedulingLink(db Querier, id uuid.UUID) (deleted bool, err error) {
+	res, err := db.ExecContext(context.Background(),
+		`UPDATE scheduling_links SET deleted_at = NOW(), active = false
+		 WHERE id = $1 AND deleted_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func scanSchedulingLink(row *sql.Row) (*SchedulingLink, error) {
@@ -340,10 +368,14 @@ func GetAcceptedHosts(db DBTX, linkID uuid.UUID) ([]*LinkHost, error) {
 	return out, rows.Err()
 }
 
+// GetPendingInvitesForUser lists the user's pending co-host invites on live or
+// paused links; an invite to a deleted link is omitted (PAC-40 AC-5).
 func GetPendingInvitesForUser(db DBTX, userID uuid.UUID) ([]*LinkHost, error) {
 	rows, err := db.QueryContext(context.Background(), `
-		SELECT id, link_id, user_id, status, invited_at, responded_at
-		FROM scheduling_link_hosts WHERE user_id = $1 AND status = 'pending'
+		SELECT h.id, h.link_id, h.user_id, h.status, h.invited_at, h.responded_at
+		FROM scheduling_link_hosts h
+		JOIN scheduling_links l ON l.id = h.link_id
+		WHERE h.user_id = $1 AND h.status = 'pending' AND l.deleted_at IS NULL
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -361,10 +393,15 @@ func GetPendingInvitesForUser(db DBTX, userID uuid.UUID) ([]*LinkHost, error) {
 }
 
 // RemoveLinkHost deletes userID's host row on linkID. removed is false when
-// no row matched (the user was never a host, or already left): PAC-30.
+// no row matched (the user was never a host, or already left): PAC-30. A
+// deleted link's host rows are kept (PAC-40 D-2, AC-5): the DELETE matches
+// only on a link that is not deleted.
 func RemoveLinkHost(db Querier, linkID, userID uuid.UUID) (removed bool, err error) {
-	res, err := db.ExecContext(context.Background(),
-		`DELETE FROM scheduling_link_hosts WHERE link_id = $1 AND user_id = $2`, linkID, userID)
+	res, err := db.ExecContext(context.Background(), `
+		DELETE FROM scheduling_link_hosts
+		WHERE link_id = $1 AND user_id = $2
+		  AND EXISTS (SELECT 1 FROM scheduling_links l WHERE l.id = $1 AND l.deleted_at IS NULL)`,
+		linkID, userID)
 	if err != nil {
 		return false, err
 	}
@@ -376,13 +413,15 @@ func RemoveLinkHost(db Querier, linkID, userID uuid.UUID) (removed bool, err err
 }
 
 // RespondToHostInvite sets userID's host row on linkID to status. matched is
-// false when the user has no host row on that link (or no such link exists);
-// nothing is written in that case: PAC-30.
+// false when the user has no host row on that link (or no such link exists,
+// or the link is deleted, PAC-40 AC-5); nothing is written in that case:
+// PAC-30.
 func RespondToHostInvite(db Querier, linkID, userID uuid.UUID, status string) (matched bool, err error) {
 	res, err := db.Exec(`
 		UPDATE scheduling_link_hosts
 		SET status = $3, responded_at = NOW()
 		WHERE link_id = $1 AND user_id = $2
+		  AND EXISTS (SELECT 1 FROM scheduling_links l WHERE l.id = $1 AND l.deleted_at IS NULL)
 	`, linkID, userID, status)
 	if err != nil {
 		return false, err
@@ -523,4 +562,133 @@ func SlugExists(db DBTX, slug string) (bool, error) {
 	err := db.QueryRowContext(context.Background(),
 		`SELECT EXISTS(SELECT 1 FROM scheduling_links WHERE slug = $1)`, slug).Scan(&exists)
 	return exists, err
+}
+
+// --- Archive of deleted links (PAC-40 §3.2) -----------------------------------
+
+// ArchivedLink is one deleted link as its owner's archive shows it. Counts and
+// instants are over every booking of the link, whatever its status (D-12).
+type ArchivedLink struct {
+	ID          uuid.UUID `json:"id"`
+	OwnerUserID uuid.UUID `json:"owner_user_id"`
+	Slug        string    `json:"slug"`
+	Title       string    `json:"title"`
+	DeletedAt   time.Time `json:"deleted_at"`
+	// BookingsCount is every booking of the link (the uses_count rule).
+	BookingsCount int `json:"bookings_count"`
+	// AwaitingErasure is the number of bookings whose booker's name and email
+	// are still stored (booker_erased_at IS NULL).
+	AwaitingErasure int `json:"awaiting_erasure"`
+	// LastBookingEndAt is the latest end_time of any booking; nil without one.
+	LastBookingEndAt *time.Time `json:"last_booking_end_at"`
+	// ErasedAt is the latest booker_erased_at; nil when none was erased.
+	ErasedAt *time.Time `json:"erased_at"`
+}
+
+// ArchivedBooking is one booking of an archived link, with the instant its
+// booker's name and email were erased (nil before). An erased booking stores
+// empty strings in both, which the API never puts on the wire (contract §2.2).
+type ArchivedBooking struct {
+	Booking
+	BookerErasedAt *time.Time `json:"booker_erased_at"`
+}
+
+const archivedLinkColumns = `
+	l.id, l.owner_user_id, l.slug, l.title, l.deleted_at,
+	(SELECT COUNT(*) FROM bookings b WHERE b.link_id = l.id),
+	(SELECT COUNT(*) FROM bookings b WHERE b.link_id = l.id AND b.booker_erased_at IS NULL),
+	(SELECT MAX(b.end_time) FROM bookings b WHERE b.link_id = l.id),
+	(SELECT MAX(b.booker_erased_at) FROM bookings b WHERE b.link_id = l.id)`
+
+// ListArchivedSchedulingLinks returns ownerID's deleted links, most recently
+// deleted first. It is filtered on owner, so co-hosts and invitees never see
+// another owner's archived link (R-1, AC-23).
+func ListArchivedSchedulingLinks(db DBTX, ownerID uuid.UUID) ([]*ArchivedLink, error) {
+	rows, err := db.QueryContext(context.Background(), `
+		SELECT `+archivedLinkColumns+`
+		FROM scheduling_links l
+		WHERE l.owner_user_id = $1 AND l.deleted_at IS NOT NULL
+		ORDER BY l.deleted_at DESC, l.id
+	`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*ArchivedLink, 0)
+	for rows.Next() {
+		a, err := scanArchivedLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// GetArchivedSchedulingLink returns link id when it is deleted AND owned by
+// ownerID, in one lookup; nil otherwise. An id that never existed, a live or
+// paused link (even the caller's own) and another owner's deleted link are
+// therefore the same nil (contract §2.1, AC-6a, AC-23).
+func GetArchivedSchedulingLink(db DBTX, ownerID, id uuid.UUID) (*ArchivedLink, error) {
+	row := db.QueryRowContext(context.Background(), `
+		SELECT `+archivedLinkColumns+`
+		FROM scheduling_links l
+		WHERE l.id = $1 AND l.owner_user_id = $2 AND l.deleted_at IS NOT NULL
+	`, id, ownerID)
+	a, err := scanArchivedLink(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return a, err
+}
+
+// GetArchivedBookings returns every booking of linkID, the future and
+// cancelled ones included, in the live bookings read's order (AC-22). The
+// caller has already established through GetArchivedSchedulingLink that the
+// link is the caller's and deleted.
+func GetArchivedBookings(db DBTX, linkID uuid.UUID) ([]*ArchivedBooking, error) {
+	rows, err := db.QueryContext(context.Background(), `
+		SELECT id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at,
+		       booker_erased_at
+		FROM bookings WHERE link_id = $1 ORDER BY start_time DESC
+	`, linkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*ArchivedBooking, 0)
+	for rows.Next() {
+		var b ArchivedBooking
+		var erasedAt sql.NullTime
+		if err := rows.Scan(
+			&b.ID, &b.LinkID, &b.BookerName, &b.BookerEmail,
+			&b.StartTime, &b.EndTime, &b.Status, &b.Notes, &b.CreatedAt, &erasedAt,
+		); err != nil {
+			return nil, err
+		}
+		if erasedAt.Valid {
+			t := erasedAt.Time
+			b.BookerErasedAt = &t
+		}
+		out = append(out, &b)
+	}
+	return out, rows.Err()
+}
+
+func scanArchivedLink(row rowScanner) (*ArchivedLink, error) {
+	var a ArchivedLink
+	var lastEnd, erasedAt sql.NullTime
+	if err := row.Scan(&a.ID, &a.OwnerUserID, &a.Slug, &a.Title, &a.DeletedAt,
+		&a.BookingsCount, &a.AwaitingErasure, &lastEnd, &erasedAt); err != nil {
+		return nil, err
+	}
+	if lastEnd.Valid {
+		t := lastEnd.Time
+		a.LastBookingEndAt = &t
+	}
+	if erasedAt.Valid {
+		t := erasedAt.Time
+		a.ErasedAt = &t
+	}
+	return &a, nil
 }
