@@ -192,7 +192,7 @@ Detection's `generic` answer is now a personal address (spec
 `docs/specs/PAC-98.md` §3, AC-8..AC-11, AC-19; contract
 `contracts/features/PAC-98.md` section 3). Paceday has no password sign-in:
 no step has a password field. Implemented by the PAC-98 web PR
-(smart-calendar-flow branch `impl/pac-98-web`); used by
+smart-calendar-flow#149 (`impl/pac-98-web`); used by
 `tests/pac98-signin-personal.spec.ts` (AC-19). The section 7 ids are reused
 by `tests/pac97-signin-detect.spec.ts` (PAC-98 AC-20: a `microsoft` answer on
 the Google-only stack shows the choose step without `auth-choose-microsoft`).
@@ -205,6 +205,12 @@ the Google-only stack shows the choose step without `auth-choose-microsoft`).
 | `auth-personal-back` | button "Use a different email" | AC-11 (vitest only) |
 | `auth-personal-unavailable` | the "sign-in for personal addresses is not available on this deployment" text | AC-10 (vitest only) |
 | `auth-personal-microsoft-note` | the "personal Microsoft accounts can't sign in to Paceday yet" sentence | AC-8 (vitest only); removed by PAC-77 |
+| `auth-resolving-step` | the step shown on a failure return while the remembered email's kind is re-detected (no kind was remembered) | AC-15 (vitest only) |
+
+The Google button calls `GET /api/health` before navigating to
+`/api/auth/google?login_hint=<encoded email>` (PAC-83). The remembered email
+lives in `sessionStorage` key `paceday:signin-email` and its kind
+(`personal` or `company`) in `paceday:signin-email-kind` (AC-15).
 
 No Microsoft button on this step until PAC-77. Also relied on (not test ids):
 the email field keeps the label "Work email" (OQ-4 open), and the top

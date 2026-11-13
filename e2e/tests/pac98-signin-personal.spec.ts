@@ -22,7 +22,7 @@
  * "no Microsoft button although Microsoft is available" is the web's vitest
  * (PAC-98 AC-8), not this journey.
  *
- * Test ids: e2e/TESTIDS-REQUIRED.md section 7a (PAC-98 web PR).
+ * Test ids: e2e/TESTIDS-REQUIRED.md section 7a (web PR smart-calendar-flow#149).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -157,8 +157,15 @@ test.describe('PAC-98 — personal addresses go to a provider, never a password 
     // Nothing navigated yet.
     expect(new URL(page.url()).pathname).toBe('/signin');
     expect(starts).toHaveLength(0);
+    // The email and its kind are remembered for this tab only (AC-15, PAC-97 D-10).
+    expect(
+      await page.evaluate(() => [
+        window.sessionStorage.getItem('paceday:signin-email'),
+        window.sessionStorage.getItem('paceday:signin-email-kind'),
+      ]),
+    ).toEqual([email, 'personal']);
 
-    // A click starts Google with the hint.
+    // A click checks /api/health (PAC-83), then starts Google with the hint.
     const start = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/auth/google');
     await step.getByTestId('auth-personal-google').click();
     expect(new URL((await start).url()).searchParams.get('login_hint')).toBe(email);
