@@ -243,9 +243,29 @@ and an unchanged row when the link is deleted. How the handler finds out is
 left to the plan; for example, the `UPDATE` can join the link and require
 `deleted_at IS NULL`.
 
-The public operations by slug already filter on `active = true`. Delete also
-sets `active = false` (§4), so the public 404 needs no new check. The slug
+The public operations by slug already filter on `active = true`, and delete
+also sets `active = false` (§4). **Binding (challenge K4-1):** the public slug
+lookups filter on `deleted_at IS NULL` as well, so a deleted link is never
+bookable even if a row ever held `deleted_at` set with `active = true`. The slug
 check (`SlugExists`) still counts deleted rows (D-3, AC-8).
+
+**Writes by id re-check "not deleted" in the write itself (binding, challenge
+K4-1, K4-2).** Every handler reads the link first and writes later, with other
+reads in between (`updateLink` reads the zone and the slug). A delete that
+commits in that gap must not be undone or moved:
+
+- `UpdateSchedulingLink` writes `active = $13` from the value it read. Its
+  `UPDATE` carries `AND deleted_at IS NULL`; zero rows is the 404 of §1 and
+  nothing is written (no co-host change either). Without this, a PATCH that
+  read the link before a concurrent DELETE would write `active = true` back
+  onto a deleted link, which every live path hides from its owner while the
+  public page (before K4-1's filter) books it.
+- The delete is `UPDATE … SET deleted_at = now(), active = false WHERE id = $1
+  AND deleted_at IS NULL`; zero rows is the 404. Two concurrent deletes give
+  one 204 and one 404, and `deleted_at` is never moved forward by a repeat
+  (it is the instant the archive and the operator listing show).
+- `scheduling_links_deleted_inactive CHECK (deleted_at IS NULL OR active = false)`
+  is binding (§4), as the last line of defence for any writer not listed here.
 
 ## 4. Storage and migration 037 (binding where marked)
 
@@ -261,15 +281,22 @@ manifest. That is not a contract revision.
   existing row. Every link that is inactive before this migration therefore
   stays **paused** (D-1, AC-12). Delete sets **both** `deleted_at = now()` and
   `active = false`. Because of the `active = false`, the down migration and a
-  code revert turn every deleted link into a paused one (spec §7). Recommended:
-  `CHECK (deleted_at IS NULL OR active = false)`. With that check, a PATCH
-  already in flight that writes `active = true` onto a deleted link fails
-  instead of reviving it (OQ-4; the race itself stays out of scope).
+  code revert turn every deleted link into a paused one (spec §7). **Binding
+  (challenge K4-1; was "recommended" in revision 3):**
+  `CHECK (deleted_at IS NULL OR active = false)`. With it, no writer can leave
+  a deleted link publicly bookable; the request-path writers are also required
+  to carry `deleted_at IS NULL` (§3), so the check is never what a caller sees.
 - **Binding:** `bookings.booker_erased_at TIMESTAMPTZ NULL`. An erased booking
   stores `booker_name = ''` and `booker_email = ''`, enforced by
   `CHECK (booker_erased_at IS NULL OR (booker_name = '' AND booker_email = ''))`.
   `NOT NULL` stays on both columns. On the wire, `''` with `booker_erased_at`
-  set is returned as null (§2.2). It is never returned as `""`.
+  set is returned as null (§2.2). It is never returned as `""` for an erased
+  booking. (A non-erased row is returned as stored. The API has refused an
+  empty name or email since before `b438e05`, so `""` there means a row written
+  outside the product, such as an e2e seed.) Adding the constraint to an
+  existing table is a full scan, and every row passes it because
+  `booker_erased_at` is null. The plan may use `NOT VALID` then `VALIDATE`, as
+  `026` did.
 - **Recommended:** a partial index for the archive and the erasure scan:
   `ON scheduling_links (owner_user_id, deleted_at DESC) WHERE deleted_at IS NOT NULL`.
 
@@ -331,6 +358,28 @@ and neither are links that were inactive before 037 (AC-29).
    transaction.
 5. Commit.
 
+**The lock and the erasing statement (binding, challenge K4-3).**
+
+- The lock in step 1 is `FOR UPDATE`, not `FOR NO KEY UPDATE` or `FOR SHARE`.
+  A booking insert checks its foreign key with `FOR KEY SHARE` on the link
+  row, and only `FOR UPDATE` conflicts with that. While a link's erasure
+  transaction is open, a booking insert on that link waits for it. It never
+  interleaves.
+- The `UPDATE` in step 3 carries the due rule in the same statement, as
+  `… AND (SELECT max(end_time) FROM bookings WHERE link_id = $1) <= $now - interval '90 days'`.
+  It must not rely only on the re-check in step 2. Then even a booking that
+  became visible between steps 2 and 3 cannot be erased before it is due.
+- **Lock order:** the link row, then that link's bookings rows, then the
+  audit insert, which takes `FOR KEY SHARE` on the owner's `users` row. Today
+  no path holds a `users` row lock and then waits on a link lock: booking
+  creation is one autocommitted insert, `FreeAddress` and `reassign` touch no
+  link, and no product path deletes a user. So there is no lock cycle. A
+  future path that does lock a user and then a link (an account deletion
+  cascade) would get a Postgres deadlock error. The job would see that as
+  failure class `40P01` for that link, roll the link back, and erase it on
+  the next run. That is the acceptable outcome. Nothing may hold a link lock
+  across a network call.
+
 Two concurrent runs serialise on the row lock. The second finds zero rows and
 writes no entry, so there is exactly one entry per erasure. A failure rolls the
 whole link back, and the run then moves on to the next link. A cancelled `ctx`
@@ -367,10 +416,17 @@ booker-erasure: link <uuid> failed: <class>
 
 `<class>` is an error class with no row data, for example the Postgres
 SQLSTATE code or `context canceled`. Never log `err.Error()` of a database
-error: a `pq` constraint error's Detail repeats the failing row, and that row
-would contain the name and email. The same rule applies to Sentry. Send a
-sanitised error, or none, and never the raw database error. No line names a
-booker.
+error, and never wrap a database error with `%w` or `%v` into a logged or
+reported error. The backend's driver is pgx through `database/sql`
+(`storage/db.go`, `stdlib.OpenDB`), so the error is a `*pgconn.PgError`. Its
+`Error()` prints `Message` but not `Detail`. Even so, `Message` repeats the
+input for some classes (`22P02 invalid input syntax … "<value>"`), and
+`Detail` ("Failing row contains (…)") holds the row, name and email included.
+Take the class with `errors.As` and the `Code` only (challenge K4-4). The
+same rule applies to Sentry. Send a sanitised error, or none, and never the
+raw database error. AC-33's injected fault is a `*pgconn.PgError` whose
+`Message` and `Detail` both contain the booker's name and email; `*pq.Error`
+may be tested too. No line names a booker.
 
 **Schedule (binding, D-13, AC-35).**
 
@@ -399,9 +455,31 @@ due within 7 days:
 - the number of bookings awaiting erasure
 - `overdue` when due more than 24 h ago
 
-It exits 0, and 1 with `--check` when any link is overdue. Its output never
-contains a name, an email or a title. The last run's time is the newest
-`booker-erasure: run` log line. The runbook says so.
+Its output never contains a name, an email or a title. The last run's time is
+the newest `booker-erasure: run` log line. The runbook says so.
+
+**Command conventions (binding, challenge K4-5, matching PAC-84's
+`encryption status`, `cmd/paceday-operator/encryption.go`):**
+
+- `main` dispatches `booker-erasure` before the PAC-71 path, as it already
+  does for `encryption`. The PAC-71 path opens with `storage.OpenAs`, which
+  **applies migrations**, and a read-only listing must never do that. The
+  command opens with `storage.OpenNoMigrate` and
+  `application_name = "paceday-operator booker-erasure"`.
+- It never applies a migration. When the schema is below 037, or is dirty,
+  it prints that it cannot list and changes nothing. That happens after a
+  rollback of A, or before the first start of this release.
+- Exit codes follow PAC-84's numbering:
+  - 0: the listing was printed;
+  - 1: failure, such as an unreachable database, a schema below 037 or
+    dirty, or a query error;
+  - 2: usage;
+  - 3: with `--check` only, when at least one link is overdue.
+- Revision 3 used exit 1 for "overdue". That would make a monitoring check
+  unable to tell an overdue erasure from an unreachable database.
+- `--check` and `-check` are both accepted (Go `flag`). There is no
+  `--operator` and no `--reason`. The run is not written to
+  `operator_audit`, as for `encryption status`.
 
 **Runbook (binding, AC-37).** Add a section "Booker erasure (PAC-40)" to
 `docs/runbook.md` covering every item in spec §3.5 "Runbook":
@@ -432,6 +510,19 @@ that case use bundle B only. What is **not** allowed is any build where the web
 promises erasure while the server's `enabled` is false. §2.4 makes that build
 impossible to produce, as long as the web never hard-codes the promise.
 
+**How A-api takes bundle A (binding, challenge K4-6).** The tip of
+`factory/pac-40-spec` carries bundle **B**: `calendar.yaml` gains
+`scheduling_link_bookers_erased`, and the regenerated `openapi.yaml` and
+`backend/api/gen` follow it. On that bundle,
+`TestPAC67_AuditEnumMatchesTheWriters` fails until B adds the writer. So
+A-api must not build on the branch tip. It starts from `origin/main` and takes
+`contracts/openapi/`, `backend/api/gen/` and the docs from `07f912d`, for
+example with `git checkout 07f912d -- contracts/openapi backend/api/gen`.
+Before it opens, it checks that its `openapi.yaml` sha256 is `d5cf6be9…` and
+that `git diff origin/main -- contracts/openapi/paths/calendar.yaml` is empty.
+A-web generates from the same bundle A. A combined A+B PR uses bundle B and
+contains the writer and the amended test.
+
 A without B does not hide bookings the owner chose to keep, because the
 archive ships with the deleted state. Revision 6.1's round 6 non-blocking 7
 asked for exactly that.
@@ -444,11 +535,30 @@ asked for exactly that.
   link deleted elsewhere gets 404 on its pre-edit `GET` (`schedulingLinks.ts:351`)
   and shows an error. That is the intended outcome.
 - **New web against old api.** `GET /api/scheduling-links/archive` answers 400
-  "invalid id" (the request reaches `getLink`). The web treats any non-200 as
-  "archive unavailable", shows no archive, and promises no erasure. The web
-  can therefore deploy first.
+  "invalid id" (the request reaches `getLink`). The web treats as "archive
+  unavailable" any non-200, **and also a 200 whose body fails its generated
+  schema** (challenge K4-7). The generated object schemas are strict, because
+  `additionalProperties: false` becomes `.strict()`. So an A-web build reading
+  a later server that adds a field must degrade the same way, never throw
+  into the page. In that case the web shows no archive and promises no
+  erasure. The web can therefore deploy first.
+- **Older web builds and strict parsing (verified).** The shipped web does not
+  zod-parse any scheduling-link or audit response. `normalizeSchedulingLink`
+  and `normalizeAuditEntries` in `src/api/client.ts` are tolerant, and
+  `describeAuditEntry` passes unknown actions through. The new enum value and
+  the description-only changes therefore break no shipped build.
 - **Rollback of A.** Code revert plus `037` down: deleted links reappear as
-  paused. No row is lost.
+  paused. No row is lost. **The deletion is lost, though (challenge K4-8).**
+  After the down step, every deleted link is an ordinary paused link that its
+  owner can resume. Upgrading again does not bring the deletion back, because
+  `deleted_at` was dropped. Those links are then outside the archive and
+  outside erasure. Their bookers' names and emails are kept until the owner
+  deletes the link again. B-api's runbook section says this. It also tells
+  the operator to record the ids of the deleted links before a rollback of A
+  (the status command and `SELECT id FROM scheduling_links WHERE deleted_at IS
+  NOT NULL`). Whether the down step should keep `deleted_at`, as PAC-71's
+  down step keeps identity bindings, is open for the owner. It would change
+  spec §7.
 - **Rollback of B.** Code revert: the job stops. Erasures already done
   **stay**, by design (spec §7). The archive keeps rendering erased bookings,
   because A still knows `booker_erased_at`. Reverting A after B shows erased
@@ -526,4 +636,225 @@ v2.4.1, following the api-gate pattern, with the host repo mounted read-only),
   and no handler changed. At `1c04056` `TestPAC67_AuditEnumMatchesTheWriters`
   is **expected to fail**: the enum has 11 values and the new one has no writer
   until B-api adds it, together with the test amendment. A-api builds on
-  `07f912d`, where the enum is unchanged.
+  `07f912d`, where the enum is unchanged. §6 says how.
+
+## Challenge — 2026-11-13 (contract-challenger, round K4, revision 3)
+
+**Verdict**: accept-with-changes. All changes are applied in this commit, to
+this document and to the manifest. No fragment changed, so the bundles and
+both hashes are unchanged: A is `d5cf6be9…` at `07f912d`, and the full
+contract is `9c2c7cbc…` at `1c04056`. I re-checked both with
+`git show <c>:contracts/openapi/openapi.yaml | sha256sum`.
+`scripts/openapi_assemble.py --check` reports "OK: bundle is in sync (110 paths)".
+
+### Requests wrongly permitted
+
+1. **K4-1 (high). A concurrent PATCH puts a deleted link back on the public
+   page.**
+   - The sequence:
+     1. The owner sends `PATCH /api/scheduling-links/{id}` with
+        `{"title":"x"}`.
+     2. `updateLink` reads the link, which is live with `active=true`
+        (`handlers_scheduling_links.go:525`), then reads the zone and the slug.
+     3. Meanwhile the owner's `DELETE` commits `deleted_at=now(), active=false`.
+     4. `UpdateSchedulingLink` then writes `active = $13 = true`
+        (`scheduling_links.go:165-185`). Its `UPDATE` has no `deleted_at`
+        condition.
+   - The result is a row with `deleted_at` set and `active=true`:
+     - every live path answers the owner with 404;
+     - the public lookup (`slug = $1 AND active = true`, `:118-128`) still
+       books the link.
+   - Revision 3 said the public path "needs no new check" and only
+     recommended the CHECK that guards this.
+   - Fix: §3 and §4 now bind three rules:
+     - the CHECK `deleted_at IS NULL OR active = false`;
+     - `deleted_at IS NULL` in the by-id PATCH and DELETE writes, with zero
+       rows answering 404;
+     - `deleted_at IS NULL` in the public slug lookups.
+2. **K4-2 (medium). A repeated or concurrent DELETE moves `deleted_at`.**
+   - Revision 3's delete is a lookup followed by an unconditional update.
+   - Two DELETE requests that pass the lookup together both answer 204, and
+     the second one overwrites the instant the archive shows.
+   - Fix: the delete runs `UPDATE … WHERE deleted_at IS NULL`, and zero rows
+     answers 404 (§3).
+3. **K4-5 (medium). The read-only operator status would apply migrations.**
+   - `paceday-operator booker-erasure status` would take the PAC-71 path in
+     `cmd/paceday-operator/main.go:36-52`. That path opens with
+     `storage.OpenAs`, which runs `runMigrations` (`storage/db.go:28-38`).
+     After a rollback of A, a listing would therefore re-apply 037 without
+     saying so.
+   - Its `--check` exit 1 also clashes with PAC-84's "failed" exit
+     (`encryption.go:23-31`).
+   - Fix: §5 now binds the PAC-84 conventions:
+     - it is dispatched like `encryption` and opens with `OpenNoMigrate`;
+     - it never migrates;
+     - it exits 0, 1 or 2, and 3 when a link is overdue under `--check`;
+     - it is not audited.
+
+### Responses the client cannot handle
+
+1. **K4-7 (low). A valid 200 can fail an older web build's parse.**
+   - `listArchivedSchedulingLinks` may answer 200 with a member that a strict
+     generated schema in an older A-web build rejects, for example a later
+     additive field.
+   - The manifest said only "any non-200 = no archive".
+   - Fix: §7 now also treats a body that fails to parse as "archive
+     unavailable".
+
+### Consumers affected
+
+- **`backend/storage/guarded_writes.go:142-148` and `:352`.** The PAC-71
+  `…Ctx` wrappers of `DeleteSchedulingLink` and `UpdateSchedulingLink` must
+  follow any signature change made for K4-1 or K4-2, such as a `found` result.
+  The file was missing from `allowedPaths` and is added.
+- **`e2e/db.ts` and `e2e/fixtures.ts`.**
+  - The helper that AC-18 uses to set a booking cancelled lives there, so
+    both files are added to `allowedPaths`.
+  - `fixtures.ts:225` deletes bookings by `booker_email LIKE 'e2e.booker.%'`,
+    and an erased row (`''`) would escape that cleanup. No e2e test runs
+    erasure, so nothing breaks today.
+- **smart-calendar-flow `src/api/types.ts`.** The web's hand-written types live
+  here (`AuditEntry` at `:249`). Added to `allowedPaths` for the archive types.
+- **smart-calendar-flow `src/api/operations.ts`.** The PAC-83 registry is
+  derived from `schedulingLinksApi`, so new members are covered without
+  editing this file (verified).
+- **mcp.** It has no booking or scheduling-link caller (`mcp/tools.go`,
+  verified).
+
+### Contract/implementation divergences
+
+1. **K4-4 (medium). The hygiene rule names the wrong driver's error.**
+   - Revision 3 framed log and Sentry hygiene around a `pq` error's Detail.
+     The driver is pgx through `database/sql` (`storage/db.go:113-125`), so
+     a constraint failure is a `*pgconn.PgError`.
+   - That type's `Error()` leaves out `Detail` but keeps `Message`, and for
+     some error classes `Message` repeats the input.
+   - An AC-33 test that injects only a `*pq.Error` would not exercise the
+     type that production returns.
+   - Fix: §5 now binds three rules:
+     - the class is taken with `errors.As`, plus `Code`;
+     - the database error is never wrapped into a logged or reported error;
+     - AC-33 injects a `*pgconn.PgError` with the name and email in both
+       `Message` and `Detail`.
+2. **K4-3 (medium). The lock must be `FOR UPDATE`, and the erasing `UPDATE`
+   must carry the due rule.**
+   - The failure, with `FOR NO KEY UPDATE`, which an implementer might choose
+     as "enough to serialise runs":
+     - a booking insert's `FOR KEY SHARE` foreign-key check does not wait for
+       that lock;
+     - in READ COMMITTED, a booking committed between the step-2 re-check and
+       the step-3 `UPDATE` is visible to the `UPDATE`;
+     - so a booking for a future meeting would be erased as soon as it is
+       inserted.
+   - Fix: §5 now binds both points and states the lock order.
+   - Deadlock analysis: there is no lock cycle today.
+     - Booking creation is one autocommitted insert.
+     - No product path locks a `users` row and then a link.
+     - A future account-deletion cascade would show up as `40P01` on one link,
+       and the next run retries that link.
+3. **K4-6 (medium). A-api could build on the wrong bundle.**
+   - The manifest says A-api "builds on 07f912d", but the branch tip carries
+     bundle B. An implementer who branches from the tip would get:
+     - a bundle hash that is not A's;
+     - a failing `TestPAC67_AuditEnumMatchesTheWriters`, whose
+       `WriteAuditLog(Ctx)?\(` pattern does not even match `WriteAuditLogTx(`
+       (`pac67_surfaces_test.go:471`).
+   - Fix: §6 now gives the procedure, plus a check that `calendar.yaml` is
+     unchanged.
+
+### Uncertainties not actually resolved
+
+1. **K4-8 (medium, owner question). A rollback of A loses the deletion.**
+   - Revision 3 says a rollback of A loses no row. That is true, but the
+     deletion itself is lost:
+     - deleted links come back as paused links that their owner can resume;
+     - upgrading again cannot restore them;
+     - so they are never archived and never erased.
+   - What changed: §7 now says this, and the B runbook must say it too.
+   - Open for the owner: whether the down step should keep `deleted_at`
+     (this changes spec §7).
+2. **OQ-4 (medium, already a follow-up). A booking can land on a link deleted
+   mid-request.**
+   - `createBooking` looks the link up without a lock
+     (`handlers_booking.go:333`) and inserts much later, after reading the
+     host calendars (`engine/booking.go:431-500`).
+   - A booking can therefore land on a link deleted in between. It gets a
+     201, plus the events and the email from the PAC-90 completion unit, and
+     its owner sees it only in the archive.
+   - Erasure handles it (AC-34): the meeting is still ahead, so the link is
+     not due, and K4-3 stops an early erasure.
+   - File the follow-up before B ships.
+3. **K4-9 (low). The archive list can return 500 on legacy dates.**
+   - A booking stored before PAC-72's horizon could end near the year 9999.
+     Adding 90 days to `last_booking_end_at` then goes past what Go's
+     `time.MarshalJSON` accepts, and the archive list answers 500.
+   - The erasure scan is safe, because it compares
+     `max(end_time) <= now - 90 days`.
+   - The plan should check the data for such rows. No contract change.
+
+### Verified clean
+
+- **Route ordering.**
+  - chi v5.4.0 tries static children before parameters (`tree.go:410-540`).
+    So `GET /archive` and `GET /archive/{id}` never reach `getLink`.
+  - On a method miss, chi backtracks to `/{id}`. PATCH or DELETE on
+    `/archive`, and POST on `/archive/accept`, reach the live handlers with
+    `id="archive"`. They answer 400 "invalid id", as on main, and write
+    nothing.
+  - `GET /archive/{uuid}/bookings` is chi's 404.
+  - A new web against an old API gets 400, as §7 says.
+- **404 uniformity and timing.**
+  - Archive detail is one lookup filtered on owner and deleted. Ids that
+    never existed, live, paused and not-owned ids each cost one query.
+  - On a deleted link, `getLink`, PATCH, DELETE, `/bookings`, `/hosts` and
+    `leave` answer 404 at the lookup. That is the same single query as an
+    unknown id.
+  - A stranger on a live link costs one extra host-status query. That comes
+    from PAC-25 and is unchanged.
+  - The body is `writeError`'s `{"error":"not found"}` in every case.
+- **The public path and other tickets.**
+  - PAC-88 slot listing, PAC-72 horizon and checks, and the 410 all go
+    through `GetSchedulingLinkBySlug`.
+  - Busy time (`GetBusyBookingsForUser`, `:465-494`) has no deleted filter.
+    AC-7 therefore holds, and erasure changes no time.
+  - PAC-84: `bookings` is not in its inventory, and erasure needs no key
+    (AC-36).
+  - PAC-71: `emptiness.go:41-42` counts bookings with no status or deleted
+    filter.
+- **Readers of booker data.**
+  - Besides the live bookings read, three places read it, all only when a
+    booking is created:
+    - the public confirmation DTO (`handlers_booking.go:112`);
+    - the host event attendee (`engine/booking.go:642`);
+    - the email and ICS (`:729`).
+  - A calendar event's `Summary` is the link title and its `Description` is
+    the notes. Events therefore hold emails but not names, and the runbook
+    covers that.
+  - No analytics, recap, MCP or web path reads `bookings`.
+  - The completion unit cannot race an erasure: a link with a booking still
+    ahead is never due.
+- **`''` versus NULL.** `NOT NULL` is kept and the CHECK is sound. The down
+  step drops the CHECK without failing. No reader other than the archive sees
+  `''`.
+- **Audit in the same transaction.** `WriteAuditLog` swallows its errors
+  (`focus_blocks.go:79-87`), so a `…Tx` sibling that returns its error is
+  needed. `NOW()` in that sibling is the transaction's time.
+- **Schedule.** `cronJob` (`main.go:45-58`) gives AC-35 the drain behaviour
+  and the rule that no run starts once shutdown has begun.
+- **The oapi-codegen workaround is sound.**
+  - `gen.Ready` survives at both `07f912d` and `1c04056`
+    (`readiness.go:80`).
+  - The new bare constants `AwaitingErasure`, `Erased` and `NoBookings`
+    clash with nothing.
+  - `minimum: 90, maximum: 90` acts as a constant on the wire and in zod.
+  - The approach is fragile: a future enum value with the same name would
+    re-trigger the renaming. §2.3 records this.
+- **Older web builds.** No shipped build zod-parses a scheduling-link or
+  audit response (§7).
+- **Migration number.** 037 is still free. Main is at `68540f6`, and no
+  `origin/*` branch carries 037 or higher (checked 2026-11-13).
+  `idx_bookings_link` exists for the scan.
+- **PATCH spelling.** The web sends only the canonical spelling on PATCH
+  (`backendLinkBody`). API-049's flip changes nothing for it.
+- **Acceptance tests.** The manifest's acceptance tests match spec AC-1 to
+  AC-37. AC-20 and AC-20a were retired in spec revision 6.

@@ -1,7 +1,7 @@
 {
   "featureId": "PAC-40",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-40",
-  "status": "contract revision 3, awaiting contract-challenger",
+  "status": "contract revision 3, challenged (K4, accept-with-changes, changes applied); awaiting stage 4",
   "contractRevision": "3",
   "contractHash": "9c2c7cbc3abe8ae082b0b920cd39e0e6383fc175de6c6c1dfcd59c1a77426e4a",
   "contractHashPartA": "d5cf6be903c182c18bc98a8b0f259c649dbe521982698e0de7ec68b4518ff9d9",
@@ -18,6 +18,7 @@
       "allowedPaths": [
         "backend/storage/migrations/037_scheduling_link_lifecycle.{up,down}.sql (contract section 4)",
         "backend/storage/scheduling_links.go (deleted filter on every by-id, list and invite read; delete sets deleted_at and active=false; accept/decline/leave refuse a deleted link; uses_count without the status filter; archive reads) and backend/storage/*_test.go",
+        "backend/storage/guarded_writes.go (only the PAC-71 ...Ctx wrappers of scheduling-link functions whose signature changes for contract section 3, e.g. a found result on delete/update)",
         "backend/storage/booker_erasure.go or equivalent (due scan, per-link transaction) and its test (part B)",
         "backend/storage/focus_blocks.go or audit_log.go: a transactional WriteAuditLogTx that returns its error (part B)",
         "backend/storage/emptiness_test.go (deleted and erased rows still count as account data)",
@@ -31,7 +32,8 @@
         "docs/factory/api-audit.md (API-049, API-050, API-051 -> 'Fixed (PAC-40)')",
         "e2e/seed/seed.sql (comment at :270; a dedicated single-use link for AC-18; deleted-link fixtures), e2e/seed/ids.ts, e2e/tests/pac40-*.spec.ts (new), e2e/TESTIDS-REQUIRED.md",
         "docs/plans/PAC-40.md",
-        "contracts/features/PAC-40.{md,yaml} (contractHash field only, if main's bundle moved; migration renumbering)"
+        "contracts/features/PAC-40.{md,yaml} (contractHash field only, if main's bundle moved; migration renumbering)",
+        "e2e/db.ts and e2e/fixtures.ts (DB helpers for AC-18 and the deleted-link fixtures only)"
       ],
       "forbiddenPaths": [
         "contracts/openapi/** except through a contract revision (back to stage 2); contracts/openapi/openapi.yaml and backend/api/gen by hand",
@@ -45,6 +47,7 @@
       "url": "https://github.com/Enach/smart-calendar-flow",
       "allowedPaths": [
         "src/api/generated/** (regenerated only: bundle A with A-web, bundle B with B-web)",
+        "src/api/types.ts (archive and BookerErasurePolicy types)",
         "src/api/schedulingLinks.ts (archive and archivedLink reads behind demoOrReal; delete unchanged)",
         "src/pages/Links.tsx (delete confirmation from BookerErasurePolicy; entry point to the archive)",
         "src/pages/LinksArchive.tsx or src/components/links/Archive*.tsx (new: list, detail dialog, erased rendering; no edit/resume/restore/delete control)",
@@ -129,14 +132,15 @@
     "AuditEntry.action (calendar.yaml, part B): enum gains scheduling_link_bookers_erased; details documented as JSON without booker data."
   ],
   "nonHttpInterface": {
-    "migration": "037_scheduling_link_lifecycle: scheduling_links.deleted_at TIMESTAMPTZ NULL (existing rows null = paused, D-1; delete sets deleted_at and active=false); bookings.booker_erased_at TIMESTAMPTZ NULL with CHECK (booker_erased_at IS NULL OR (booker_name = '' AND booker_email = '')); NOT NULL kept. Down: drop both columns and constraints; cannot fail on erased rows, cannot restore a value; deleted links reappear paused, erased bookings read blank (contract section 4).",
-    "erasureJob": "In-process, part B. Due: deleted_at IS NOT NULL, some booking with booker_erased_at IS NULL, max(end_time over all bookings, every status) + 90*24h <= now. One transaction per link: lock link row FOR UPDATE, re-check, UPDATE bookings SET name='', email='', booker_erased_at=now WHERE not yet erased, audit entry in the same transaction when rows changed. Failure rolls back that link only; ctx cancellation stops between links. Injectable clock and logger (contract section 5).",
+    "migration": "037_scheduling_link_lifecycle: scheduling_links.deleted_at TIMESTAMPTZ NULL (existing rows null = paused, D-1; delete sets deleted_at and active=false) with CHECK (deleted_at IS NULL OR active = false) (binding, challenge K4-1); bookings.booker_erased_at TIMESTAMPTZ NULL with CHECK (booker_erased_at IS NULL OR (booker_name = '' AND booker_email = '')); NOT NULL kept. Down: drop both columns and constraints; cannot fail on erased rows, cannot restore a value; deleted links reappear paused, erased bookings read blank (contract section 4).",
+    "erasureJob": "In-process, part B. Due: deleted_at IS NOT NULL, some booking with booker_erased_at IS NULL, max(end_time over all bookings, every status) + 90*24h <= now. One transaction per link: lock link row FOR UPDATE (not FOR NO KEY UPDATE/FOR SHARE: it must block a booking insert's FK check), re-check, UPDATE bookings SET name='', email='', booker_erased_at=now WHERE not yet erased AND the due rule holds in the same statement (K4-3), audit entry in the same transaction when rows changed. Failure rolls back that link only; ctx cancellation stops between links. Injectable clock and logger (contract section 5). Lock order: link row, its bookings, audit insert (KEY SHARE on the owner's users row); no lock held across a network call; a 40P01 is a per-link failure retried next run.",
     "schedule": "Once as part of start-up before the first periodic run, then @every 24h; both wrapped by cronJob (PAC-81 drain awaits a run in progress; no run starts once shutdown has begun).",
     "auditEntry": "Owner's activity log, action scheduling_link_bookers_erased, details JSON {link_id, link_title, bookings_erased, last_booking_end_at, ran_at}; exactly one per link per erasure; written by a transactional WriteAuditLogTx that returns its error.",
-    "logLine": "Exactly one per run: 'booker-erasure: run at=<RFC3339 UTC> links_examined=<n> links_erased=<n> bookings_erased=<n> failures=<n>'; per failure: 'booker-erasure: link <uuid> failed: <class>' where class carries no row data (never err.Error() of a database error: pq Detail repeats the row); Sentry gets no raw database error.",
-    "operatorCommand": "paceday-operator booker-erasure status [--check]: read-only; per deleted link due, overdue or due within 7 days: link id, owner id, deleted_at, last_booking_end_at, erasure_due_at, bookings awaiting, 'overdue' if > 24 h past due; no name, email or title; --check exits 1 when any link is overdue.",
-    "runbook": "docs/runbook.md 'Booker erasure (PAC-40)': reach and limits (calendar events, sent emails, backups up to 14 days), start-up + daily and the run log line, the status command, backup retention bounds survival, after a restore start the backend and check the next run line before use, what to do on failures>0, erasure is irreversible even by revert.",
-    "webClient": "contracts/features/PAC-40.md sections 2.4 and 6: archive list + detail; erased rendered as an explicit state; no mutating control in the archive; delete confirmation promises erasure only when booker_erasure.enabled is true and quotes retention_days; any non-200 from the archive read = no archive shown and no erasure promised."
+    "logLine": "Exactly one per run: 'booker-erasure: run at=<RFC3339 UTC> links_examined=<n> links_erased=<n> bookings_erased=<n> failures=<n>'; per failure: 'booker-erasure: link <uuid> failed: <class>' where class carries no row data: SQLSTATE Code via errors.As on *pgconn.PgError (the driver is pgx stdlib), never err.Error() and never a wrapped database error (Message and Detail can repeat the row; K4-4); Sentry gets no raw database error.",
+    "operatorCommand": "paceday-operator booker-erasure status [--check]: read-only; dispatched before the PAC-71 path like 'encryption'; opens with storage.OpenNoMigrate, application_name 'paceday-operator booker-erasure', never applies a migration (schema below 037 or dirty: message, exit 1); per deleted link due, overdue or due within 7 days: link id, owner id, deleted_at, last_booking_end_at, erasure_due_at, bookings awaiting, 'overdue' if > 24 h past due; no name, email or title; exit 0 listed, 1 failure, 2 usage, 3 with --check when any link is overdue (PAC-84 numbering; K4-5); not written to operator_audit.",
+    "runbook": "docs/runbook.md 'Booker erasure (PAC-40)': reach and limits (calendar events, sent emails, backups up to 14 days), start-up + daily and the run log line, the status command, backup retention bounds survival, after a restore start the backend and check the next run line before use, what to do on failures>0, erasure is irreversible even by revert. Also (K4-8): a rollback of A turns every deleted link into a resumable paused link and a re-upgrade does not restore the deletion, so record deleted link ids before rolling A back.",
+    "webClient": "contracts/features/PAC-40.md sections 2.4 and 6: archive list + detail; erased rendered as an explicit state; no mutating control in the archive; delete confirmation promises erasure only when booker_erasure.enabled is true and quotes retention_days; any non-200 from the archive read, or a 200 whose body fails the generated schema (K4-7), = no archive shown and no erasure promised.",
+    "deletedWrites": "Binding (contract section 3, K4-1/K4-2): public slug lookups also filter deleted_at IS NULL; the PATCH UPDATE and the delete UPDATE carry AND deleted_at IS NULL, zero rows = 404 with nothing written; a repeated or concurrent delete never moves deleted_at."
   },
   "prSplit": [
     {
@@ -144,7 +148,8 @@
       "repo": "Enach/clockwise-like",
       "bundleCommit": "07f912d",
       "bundleSha256": "d5cf6be903c182c18bc98a8b0f259c649dbe521982698e0de7ec68b4518ff9d9",
-      "contains": "migration 037, deleted state, archive (enabled=false, erasure_due_at null, nothing erased), aliases, uses_count; AC-1..AC-19 except AC-7's second half, AC-21 (without the due instant), AC-22..AC-24"
+      "contains": "migration 037, deleted state, archive (enabled=false, erasure_due_at null, nothing erased), aliases, uses_count; AC-1..AC-19 except AC-7's second half, AC-21 (without the due instant), AC-22..AC-24",
+      "howToTakeBundleA": "Start from origin/main; git checkout 07f912d -- contracts/openapi backend/api/gen (and the PAC-40 docs); check openapi.yaml sha256 = d5cf6be9... and git diff origin/main -- contracts/openapi/paths/calendar.yaml is empty. Never build A on the factory/pac-40-spec tip (bundle B, failing PAC-67 enum test). Contract section 6."
     },
     {
       "pr": "A-web",
@@ -178,7 +183,8 @@
     "stage4": "api-gate.sh, web-gate.sh, e2e gate (make verify in both repos); each api PR body records the bundle sha256 equal to its prSplit bundleSha256 (B: contractHash).",
     "defaultBranch": "main",
     "ci": "local",
-    "deployment": "local-only"
+    "deployment": "local-only",
+    "contractChallenge": "K4 2026-11-13: accept-with-changes; no fragment changed, bundles and hashes unchanged (re-verified: 07f912d d5cf6be9..., 1c04056 9c2c7cbc...; openapi_assemble.py --check OK, 110 paths)."
   },
   "acceptanceTests": [
     "AC-1  [contract] owner list excludes the deleted link; accepted co-host has it in neither owned nor shared. (A)",
@@ -188,6 +194,7 @@
     "AC-5  [contract] deleted link: invite absent from the invitee's list; accept/decline 404 with status unchanged; accepted co-host leave 404; pending invitee leave 404 with the row still stored; owner leave 404 and nothing changes. (A)",
     "AC-6  [contract] owner invite, repeated delete and live bookings read on a deleted link: 404, nothing changes; bookings only through getArchivedSchedulingLink. (A)",
     "AC-6a [contract] non-owner non-co-host on a deleted link: fetch, edit, delete, bookings, archive list/detail, invite answer byte-identical to a never-existing id (not 403); nothing changes. (A)",
+    "AC-6b [unit, challenge K4-1/K4-2] a PATCH whose read ran before a concurrent delete committed answers 404 and leaves deleted_at set and active=false; two concurrent deletes give one 204 and one 404 with deleted_at unchanged by the second; a row forced to deleted_at set (constraint bypassed in the test) is 404 on the public slug paths. (A)",
     "AC-7  [unit] deleted link's confirmed booking is busy; still busy for its period after an erasure run whose clock is past the due instant. (first half A, second half B)",
     "AC-8  [contract] another link creating or patching to a deleted link's slug: 409 slug already exists, before and after erasure. (A; after-erasure half B)",
     "AC-9  [unit] after delete: bookings and host rows stored, names and emails unchanged, deleted_at recorded. (A)",
@@ -215,11 +222,11 @@
     "AC-30 [unit] link deleted at D, only booking ended E with E+90d < D: erased by a run at D+1s. (B)",
     "AC-31 [unit] three-booking erasure: exactly one owner audit entry naming title, id, 3, last booking date, run time; no name or email in the entry, the log output or any error report. (B)",
     "AC-32 [contract] after AC-27: archive shows erasure_state erased with erased_at; each booking keeps start, end, status, notes, created_at; booker_name and booker_email null with booker_erased_at set. (B)",
-    "AC-33 [unit] storing A's erasure fails (injected fault, including a pq error whose Detail holds the row): B erased with its entry; A unchanged, no entry; failure logged and reported without personal data; next run erases A; ctx cancelled between links: each link all-or-nothing. (B)",
+    "AC-33 [unit] storing A's erasure fails (injected fault, including a *pgconn.PgError whose Message and Detail hold the name and email): B erased with its entry; A unchanged, no entry; failure logged and reported without personal data; next run erases A; ctx cancelled between links: each link all-or-nothing. (B)",
     "AC-34 [unit] booking inserted after erasure R1 ending T3: untouched at T3+90d-1s; erased at T3+90d with a second audit entry; earlier bookings unchanged. (B)",
     "AC-35 [unit] start-up with an overdue link and a periodic trigger that never fires: one run, link erased; trigger fires once (clock +24h): exactly one more run and summary line; after shutdown begins no run starts and a running one is awaited by the drain. (B)",
     "AC-36 [unit] AC-26/AC-27 with encryption configured, not configured, and configured with an unrelated undecryptable secret: same result. (B)",
-    "AC-37 [review + unit] runbook section covers spec section 3.5 'Runbook'; paceday-operator booker-erasure status output contains no name, email or title. (B)"
+    "AC-37 [review + unit] runbook section covers spec section 3.5 'Runbook'; paceday-operator booker-erasure status output contains no name, email or title. (B) Also (K4-5): the status command never applies a migration (schema below 037: exit 1, schema unchanged) and exits 3 under --check only when a link is overdue."
   ],
   "amendedExistingTests": [
     "backend/api/pac67_surfaces_test.go TestPAC67_AuditEnumMatchesTheWriters: also match the transactional writer; enum count 10 -> 11 (B-api only).",
@@ -306,7 +313,10 @@
     "OQ-4: requests in flight around a delete and concurrent single-use bookings (triage files one issue).",
     "OQ-6: duration option maximum and a pin for 'end must be after start'.",
     "OQ-8/OQ-9/OQ-10: owner answers; OQ-8 'yes' is a contract revision (notes erasable).",
-    "owner-decisions.md PAC-40 entry still carries the 'confirm if this was meant otherwise' caveat; the readings are not confirmed (spec 6.2)."
+    "owner-decisions.md PAC-40 entry still carries the 'confirm if this was meant otherwise' caveat; the readings are not confirmed (spec 6.2).",
+    "K4-8: owner question - should 037 down keep scheduling_links.deleted_at (as PAC-71's down keeps identity bindings) so a rollback of A does not un-delete links? Changes spec section 7.",
+    "OQ-4 race (createBooking reads the link unlocked and inserts after host calendar reads): file before B ships.",
+    "K4-9: check production data for bookings ending near year 9999 (archive JSON would fail on erasure_due_at)."
   ],
-  "challenge": "pending (contract-challenger)"
+  "challenge": "K4 2026-11-13 accept-with-changes, applied in contracts/features/PAC-40.md 'Challenge - 2026-11-13' and this manifest."
 }
