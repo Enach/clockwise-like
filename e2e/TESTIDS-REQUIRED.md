@@ -153,14 +153,14 @@ only while a web from before PAC-83 can still be deployed.
 ## 6. Framing — `src/pages/PublicBooking.tsx`, `src/components/FrameGuard.tsx` (PAC-91, contract `contracts/features/PAC-91.md` §4)
 
 Binding test ids for the PAC-91 web change (links on the booking page leave
-the frame; the app refuses to render framed off the booking page). Not
-rendered yet: the web PR follows PAC-88 (Enach/smart-calendar-flow#144).
+the frame; the app refuses to render framed off the booking page). Rendered
+by the PAC-91 web change (Enach/smart-calendar-flow, branch `impl/pac-91-web`).
 
 | Test id | Element | Used by |
 |---|---|---|
-| `booking-home-link` | the booking page's header link ("paceday"), `href="/"`, `target="_top"` | `tests/framing.spec.ts` AC-4 (`test.fixme` until the web image ships), AC-5 (role and name until then); web unit AC-1 |
-| `booking-error-home-link` | the error-state "Back to Paceday" link (both error states) | web unit AC-2 |
-| `frame-notice` | the root of the notice the app shows when framed off the booking page | web unit AC-6, AC-8, AC-10, AC-11 |
+| `booking-home-link` | the booking page's header link ("paceday"), `href="/"`, `target="_top"` | `tests/framing.spec.ts` AC-4, AC-5; web unit AC-1, AC-3 |
+| `booking-error-home-link` | the error-state "Back to Paceday" link (both error states) | web unit AC-2, AC-3 |
+| `frame-notice` | the root of the notice the app shows when framed off the booking page | web unit AC-6, AC-7, AC-8, AC-10, AC-11 |
 | `frame-notice-open` | the notice's single link, `href="/"`, same target as the booking links | web unit AC-7 |
 
 ---
