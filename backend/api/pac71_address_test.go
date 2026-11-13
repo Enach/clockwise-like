@@ -295,22 +295,29 @@ func TestPAC71_AC21_StepupMustBeTheBoundIdentity(t *testing.T) {
 		}
 	})
 	t.Run("Microsoft", func(t *testing.T) {
+		const (
+			pac89TenantABC   = "abcabcab-0000-4000-8000-0000000000ab"
+			pac89TenantOther = "0e0e0e0e-0000-4000-8000-0000000000e0"
+			pac89OID2        = "02020202-0000-4000-8000-000000000002"
+		)
 		for _, c := range []struct {
 			tenant, oid, want string
 		}{
-			{"tenant-abc", "BOUND", "stepup=granted"},
-			{"tenant-abc", "O2", "stepup=denied&reason=identity_mismatch"},
-			{"tenant-other", "O2", "stepup=granted"}, // bound in another tenant: 4b does not apply
+			// PAC-89 fixtures: GUID tenants and object ids; the token spells
+			// the tenant in upper-case hex, the binding holds it lower-case.
+			{pac89TenantABC, "BOUND", "stepup=granted"},
+			{pac89TenantABC, pac89OID2, "stepup=denied&reason=identity_mismatch"},
+			{pac89TenantOther, pac89OID2, "stepup=granted"}, // bound in another tenant: 4b does not apply
 		} {
 			e := newSSOEnv(t)
 			u, org := e.member(t, "m-4b")
-			o1 := strings.ToLower("O1-" + uuid.NewString())
+			o1 := strings.ToLower(uuid.NewString())
 			execT(t, `UPDATE user_identities SET provider = 'microsoft', tenant = $2, subject = $3 WHERE user_id = $1`, u.ID, c.tenant, o1)
 			oid := c.oid
 			if oid == "BOUND" {
 				oid = strings.ToUpper(o1)
 			}
-			e.ms.set(microsoftAdmin(u.Email, "tenant-abc", org.Domain))
+			e.ms.set(microsoftAdmin(u.Email, strings.ToUpper(pac89TenantABC), org.Domain))
 			e.ms.set(func(i *stepupIdP) { i.claims["oid"] = oid })
 			rec := e.stepup(t, "microsoft", session(t, u, time.Now()))
 			wantOutcome(t, rec, rec.Code, c.want)

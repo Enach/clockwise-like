@@ -1,0 +1,194 @@
+{
+  "featureId": "PAC-98",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-98",
+  "status": "contract revision 1, awaiting contract-challenger",
+  "contractRevision": "1",
+  "contractHash": "3221112e60941b8d3ec78721ba7c8642bcec76a8a61e0bd473ae7da1395c07d7",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after make openapi in an LF clone of factory/pac-98-c at c98f169 (base origin/main 68540f6; golang:1.25-bookworm, oapi-codegen v2.4.1), 2026-11-13: make openapi rc 0 (130 operations, 12 generated; regenerated openapi.yaml and backend/api/gen/paceday.gen.go, committed as 4b11ccb), make openapi-check WEB=/nonexistent rc 0, cd backend && go build ./... ok. The committed blob hashes to the same value. Main 68540f6 alone = 5367da004130aa9037752baa1e17be951f9d4130d46e0cf0ce6e467975603328. Reproduce with: python3 scripts/openapi_assemble.py --check && sha256sum contracts/openapi/openapi.yaml.",
+  "contractDoc": "contracts/features/PAC-98.md",
+  "specDoc": "docs/specs/PAC-98.md (spec-challenger accept-with-changes 2026-11-13, changes applied in the body; Challenge log at the end)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "factoryAssumed": "Spec banner and OQ-1: Paceday has no password sign-in. If the owner chooses password sign-in, this revision is withdrawn with the spec, not amended.",
+  "scope": "Remove the web's password step (it posts to /api/auth/login and /api/auth/register, which never existed). Detection answers google for gmail.com/googlemail.com, generic (now: a personal address, the client offers providers that accept personal accounts) for the other consumer domains, and choose for an address without a domain. The web shows a personal-address step (Google with the hint, no Microsoft until PAC-77), never a password form, does not navigate to a provider the deployment does not offer, and the web gate blocks the password routes and a password input on the sign-in surfaces.",
+  "mergeAfter": "origin/main 68540f6. No dependency on open PRs.",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/auth/sso_detect.go (detect: no domain -> choose; gmail.com/googlemail.com -> google; other consumer entries -> generic; order unchanged) and backend/auth/sso_detect_test.go",
+        "backend/auth/*_test.go (new PAC-98 tests AC-1..AC-5; the PAC-97 AC-4 and AC-14 expectations change on purpose)",
+        "backend/domain/domain.go only for a read-only enumeration of the consumer list (AC-3, AC-21); the list's members are unchanged; backend/domain/domain_test.go",
+        "backend/api/pac97_detect_test.go (:207-215 expectation), backend/api/pac35_auth_flows_test.go ('200 not sso' sub-test), backend/api/pac98_*_test.go (new, AC-6)",
+        "backend/storage/*_test.go (new, AC-21 organisation skip pin); no change to backend/storage/*.go",
+        "e2e/tests/pac98-*.spec.ts (new, AC-18, AC-19), e2e/tests/pac97-signin-detect.spec.ts (:160-168 replaced by AC-20 only), e2e/TESTIDS-REQUIRED.md",
+        "docs/factory/api-audit.md (API-092 note for the changed outcomes)",
+        "docs/plans/PAC-98.md",
+        "contracts/features/PAC-98.{md,yaml} (contractHash field only, if main's bundle moved)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; contracts/openapi/openapi.yaml and backend/api/gen by hand",
+        "backend/domain/domain.go genericDomains members (organisation matching and the PAC-71 review log read the same list)",
+        "backend/storage/orgs.go, backend/storage/signin.go (behaviour)",
+        "backend/api/ratelimit_detect.go (API-062 deferred)",
+        "the Google, Microsoft and SSO starts and callbacks, PAC-71 evidence rules, the personal-Microsoft refusal, loginHintFrom",
+        "any password, registration or credential route, table or migration",
+        "backend/storage/migrations (no migration)",
+        "mcp/"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/components/auth/AuthDialog.tsx (remove GenericStep and its calls; personal-address step; availability-aware google/microsoft answers; sso without path -> choose) and AuthDialog*.test.tsx",
+        "src/components/auth/** (personal-address step, remembered email + kind) and tests",
+        "src/pages/Index.tsx only if the failure return needs it, and Index*.test.tsx",
+        "src/lib/api.pac83.test.ts (:29 sample path only)",
+        "the AC-13 static check and its self-test, wired into make verify (scripts/, Makefile target used by verify, or a vitest file)",
+        "AGENTS.md and docs/lovable-prompts/00-global-context.md (the PAC-98 rule, AC-17); .lovable/plan.md:62 optional",
+        "src/api/generated (regenerated with REGEN=1 web-gate, never edited)"
+      ],
+      "forbiddenPaths": [
+        "any password input, password route or registration form on the sign-in surfaces",
+        "a hand-written copy of the consumer list in the web",
+        "keeping the email or its kind anywhere but sessionStorage (PAC-97 D-10)",
+        "the top provider buttons' behaviour (PAC-71 AC-32: no hint, never a connect)",
+        "the 'Work email' label and you@company.com placeholder (OQ-4 open)",
+        "a demo entry or fallback after a sign-in failure (PAC-83)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {
+      "operationId": "detectAuthProvider",
+      "change": "Description only: an address without a domain, or on the consumer list, is answered without any SSO read or lookup (choose, google or generic). Statuses, request and rate limit unchanged."
+    }
+  ],
+  "componentsChanged": [
+    "schemas.SsoDetectResponse.type: enum unchanged ([google, microsoft, sso, generic, choose]). Description: step 0 no domain -> choose; consumer list -> google for gmail.com/googlemail.com, generic for every other entry (personal address; client offers providers that accept personal accounts; the four Microsoft consumer domains stay generic until PAC-77); Paceday has no password sign-in and no password or registration route; a client never shows a password form for any value; a client that has read getIntegrationAvailability and finds the answered provider not offered shows the provider choice instead of starting a sign-in. provider_name and redirect_url unchanged."
+  ],
+  "nonHttpInterface": {
+    "webClient": "contracts/features/PAC-98.md section 3 and spec section 3 / AC-8..AC-17.",
+    "webGate": "AC-13 static check inside make verify with a self-test; AC-17 guidance-file check."
+  },
+  "gates": {
+    "contractApproval": "contract-challenger review on factory/pac-98-spec, then the stage-4 PRs",
+    "assembler": "LF clone of factory/pac-98-c at c98f169 (golang:1.25-bookworm, api-gate pattern), 2026-11-13: make openapi rc 0; OK: bundle is in sync (108 paths)",
+    "migrationRegister": "same clone: OK: MIGRATION.md covers all 130 operations (12 generated)",
+    "goGen": "same clone: OK: backend/api/gen matches the contract (doc comments only); cd backend && go build ./... ok",
+    "openapiCheckApi": "same clone: make openapi-check WEB=/nonexistent rc 0 (web half SKIPPED by design at this stage)",
+    "webGate": "Not run at this stage: the web's generated doc comments differ until the paired web PR regenerates src/api/generated (REGEN=1 web-gate).",
+    "stage4": "api-gate.sh, web-gate.sh, e2e gate (make verify in both repos); the api PR body records the bundle sha256 equal to contractHash.",
+    "defaultBranch": "main",
+    "ci": "local",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] carol@gmail.com, Carol@GMail.com, dan@googlemail.com -> google, no provider_name/redirect_url; zero resolver queries; SSO row not read.",
+    "AC-2  [unit] outlook.com, hotmail.com, live.com, msn.com -> generic, not microsoft; zero queries; SSO row not read; the test names PAC-77 as the change to this expectation.",
+    "AC-3  [unit] table over every consumer-list entry, enumerated from the domain package: gmail.com/googlemail.com -> google, every other -> generic; a new list entry without a row fails.",
+    "AC-4  [unit] not-an-email, alice@, @ -> choose (never generic); zero queries.",
+    "AC-5  [unit] SSO row for gmail.com in the test DB: carol@gmail.com -> google (consumer rule before SSO).",
+    "AC-6  [api] real router: alice@gmail.com -> 200 google strict decode, no provider_name/redirect_url; bob@yahoo.com, carol@outlook.com -> 200 generic; PAC-35 '200 not sso' updated; 400/429 (21st in a minute)/500 unchanged.",
+    "AC-7  [contract] SsoDetectResponse.type description: generic = personal address offered providers on the client; gmail/googlemail = google; no domain = choose; no password form for any value; no password sign-in. Enum unchanged; openapi-check passes in both repos with regenerated types.",
+    "AC-8  [vitest] generic for dave@yahoo.com, Google+Microsoft available: personal-address step with the address, Google button, no Microsoft button, 'not yet' sentence, no password field, no navigation; Google click -> /api/auth/google?login_hint=dave%40yahoo.com.",
+    "AC-9  [vitest] AC-8 in sign-up mode: 'Sign up with Google'.",
+    "AC-10 [vitest] generic, Google not available: 'not available on this deployment' for personal addresses, back offered; no password field, no Microsoft button.",
+    "AC-11 [vitest] 'Use a different email' from the personal-address step returns to discover with the email filled.",
+    "AC-12 [vitest] for google, microsoft, sso with path, sso without path, generic, choose, 'future': no element labelled password; fetch never called with a path ending /api/auth/login or /api/auth/register; sso without path -> PAC-97 choose step.",
+    "AC-13 [static] inside make verify: fails on 'auth/login' or 'auth/register' in any non-test src/ file, and on an input of type password or autoComplete current-password/new-password under src/components/auth/ or a sign-in page; self-test with forbidden and clean fixtures; api.pac83.test.ts:29 uses an existing route.",
+    "AC-14 [vitest] availability loaded and the answered provider not offered: no navigation, provider step for the address (gmail.com -> personal-address 'not available'; microsoft -> PAC-97 choose step); availability loading or failed -> navigate as today.",
+    "AC-15 [vitest] failure return with remembered dave@yahoo.com / carol@outlook.com: personal-address step, Google with hint, no Microsoft; company address: both providers. Kind remembered with the email -> zero detect requests; email without kind -> exactly one, PAC-83 failure view on unreachable API.",
+    "AC-16 [vitest] personal-address step, Google click while unreachable: failure view with retry (never the demo); retry starts Google with the same hint. Replaces AuthDialog.pac83.test.tsx:140-155.",
+    "AC-17 [static] AGENTS.md and docs/lovable-prompts/00-global-context.md each carry the PAC-98 rule (provider-only sign-in, no password sign-in on the server, no password form without an owner decision); the web gate checks a stable marker (PAC-98 + password in one rule).",
+    "AC-18 [e2e] <random>@gmail.com on /signin: detect answers google; next request /api/auth/google with login_hint = the address; stops at the Google stand-in; hermeticity passes.",
+    "AC-19 [e2e] <random>@yahoo.com: personal-address step with the address, no password field, no Microsoft button; Google click -> /api/auth/google with the hint; no request to a path ending /api/auth/login or /api/auth/register during the journey.",
+    "AC-20 [e2e] carol@<fresh>.microsoft-mx.pac97.test on the Google-only stack: detect answers microsoft; no request to /api/auth/microsoft; PAC-97 choose step with the address, Google button, no Microsoft button. Replaces pac97-signin-detect.spec.ts:160-168 until PAC-99.",
+    "AC-21 [integration] AssociateUserWithOrg for every consumer-list entry leaves org_id null and creates no org row; alice@acme-pac98.test is linked to an org for acme-pac98.test."
+  ],
+  "amendedExistingTests": [
+    "backend/auth/sso_detect_test.go:10-30 (gmail.com -> google; not-an-email -> choose).",
+    "backend/auth/pac97_detect_test.go AC-4 (:210-228) and AC-14 (:540-555): new expectations (google / generic / choose); still zero queries.",
+    "backend/api/pac97_detect_test.go:207-215: gmail.com through the default detector -> google, still no resolver use.",
+    "backend/api/pac35_auth_flows_test.go:890-896 '200 not sso': AC-6 expectations.",
+    "smart-calendar-flow AuthDialog.test.tsx:115-121 (password step for generic): replaced by AC-8.",
+    "smart-calendar-flow AuthDialog.pac83.test.tsx:140-155: replaced by AC-16.",
+    "smart-calendar-flow src/lib/api.pac83.test.ts:29: sample path only.",
+    "smart-calendar-flow AuthDialog.pac97.test.tsx:245-254: setup records the company kind; assertions unchanged (AC-15).",
+    "clockwise-like e2e/tests/pac97-signin-detect.spec.ts:160-168: replaced by AC-20 (PAC-99 re-pins)."
+  ],
+  "resolvesFindings": [
+    "PAC-97 B-1 (PAC-97 manifest doesNotResolve): the password step and its nonexistent routes are removed.",
+    "API-092 (detect share): the changed outcomes get Go assertions through the router (AC-6)."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "Spec D-4 (contract stage): the value keeps the name generic; only the description changes.",
+    "Spec OQ-5: no deploy order required for production; web-first preferred (Google-off cell, spec section 7)."
+  ],
+  "openOwnerQuestions": [
+    "OQ-1 password sign-in or provider-only (factory default: provider-only; this contract).",
+    "OQ-2 personal Microsoft addresses until PAC-77 (factory default: generic + 'not yet', no Microsoft button).",
+    "OQ-3 regional and custom-domain Microsoft consumer addresses (factory default: unchanged, PAC-97 choice).",
+    "OQ-4 'Work email' label and placeholder (factory default: unchanged)."
+  ],
+  "doesNotResolve": [
+    "API-062 (per-replica detect rate limit): unchanged.",
+    "Personal Microsoft sign-in (PAC-77): hand-off in spec section 5 (flip the four domains to microsoft, offer Microsoft on the personal-address step, drop the 'not yet' sentence).",
+    "e2e Microsoft availability (PAC-99): re-pins AC-20 to navigation."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "Enach/smart-calendar-flow W1 (PAC-97, aea164c) and W0 (pre-PAC-97)",
+      "breaks": "degrades only on a Google-off deployment",
+      "detail": "gmail.com now answers google; W0/W1 navigate to /api/auth/google without reading availability. With Google configured that is Google sign-in (better than today). Without Google credentials the start redirects to Google's error page (handlers_auth.go:26-41) instead of the password dead end. generic still shows W0/W1's password dead end, as today. A no-domain address (W0/W1 never send one) gets choose."
+    },
+    {
+      "consumer": "Enach/smart-calendar-flow (web PR, W2)",
+      "breaks": "n/a",
+      "detail": "Implements section 3; against today's backend gmail.com arrives as generic and reaches Google through the personal-address step."
+    },
+    {
+      "consumer": "smart-calendar-flow src/api/generated",
+      "breaks": "regenerated",
+      "detail": "Doc comments only; the SsoDetectResponse.type union is unchanged."
+    },
+    {
+      "consumer": "backend/api/gen",
+      "breaks": "regenerated",
+      "detail": "Doc comments only (committed 4b11ccb)."
+    },
+    {
+      "consumer": "clockwise-like e2e/tests/pac97-signin-detect.spec.ts:160-168",
+      "breaks": "yes, on purpose",
+      "detail": "A microsoft answer on the Google-only stack no longer navigates (D-6); replaced by AC-20."
+    },
+    {
+      "consumer": "backend/storage/orgs.go AssociateUserWithOrg, backend/storage/signin.go review log",
+      "breaks": "no",
+      "detail": "Same consumer list; AC-21 pins the organisation skip."
+    },
+    {
+      "consumer": "mcp",
+      "breaks": "no",
+      "detail": "No reference to detection."
+    }
+  ],
+  "mergeConditions": [
+    "contract-challenger accepts this revision (or a later one).",
+    "The api PR's contracts/openapi/openapi.yaml sha256 equals contractHash (or a recorded later revision after a rebase).",
+    "No deploy order required for production (Google configured); web-first preferred. The orchestrator records which PR deployed first (OQ-5).",
+    "OQ-1 still open: if the owner chooses password sign-in before merge, both PRs are closed and the spec withdrawn.",
+    "The PAC-77 hand-off (spec section 5) is recorded on PAC-77 before the api PR merges.",
+    "No migration in either PR."
+  ],
+  "rollback": "Code only: no migration, nothing stored. Either repo, either order. Backend alone: gmail.com returns to generic, which the new web still sends to Google through the personal-address step. Web alone: the password dead end returns for personal addresses other than gmail.com (gmail.com goes to Google on the new backend).",
+  "ownerDecided": [
+    "Personal Microsoft accounts wait for PAC-77 (2026-11-01): basis for keeping the four Microsoft consumer domains generic."
+  ],
+  "followUps": [
+    "OQ-3 if the owner says file it: regional/custom-domain Microsoft consumer addresses.",
+    "Optional: a web gate check that every /api path the web calls exists in the contract (wider than the AC-13 password-route check)."
+  ],
+  "challenge": "pending (contract-challenger)"
+}
