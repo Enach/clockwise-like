@@ -3632,10 +3632,27 @@ type SsoDetectResponse struct {
 	// needs to reach SSO; there is no `domain` field (API-010).
 	RedirectUrl *string `json:"redirect_url,omitempty"`
 
-	// Type Decided in this order (PAC-97):
-	// 1. "generic": the address has no domain, or its domain is on the
-	//    fixed consumer list (gmail.com, outlook.com, ...). Only for
-	//    these; a company domain is never "generic".
+	// Type Decided in this order (PAC-97, PAC-98):
+	// 0. An address with no domain (no "@", or nothing after the first "@") is
+	//    "choose", with no SSO read and no lookup. It is not a personal
+	//    address.
+	// 1. A domain on the fixed consumer list (gmail.com, googlemail.com,
+	//    outlook.com, hotmail.com, live.com, msn.com, yahoo.com,
+	//    icloud.com, proton.me, ...): gmail.com and googlemail.com are
+	//    "google" (a verified address on them is authoritative for
+	//    Google sign-in, PAC-71). Every other entry is "generic": a
+	//    personal address that is not sent straight to a provider; the
+	//    client offers the providers that accept personal accounts,
+	//    with the address as the login hint. Until PAC-77, outlook.com,
+	//    hotmail.com, live.com and msn.com are "generic", not
+	//    "microsoft": personal Microsoft accounts are refused at
+	//    sign-in. A company domain is never "generic". No SSO row is
+	//    read and no lookup is made for any consumer domain, so an SSO
+	//    row for one of them never applies.
+	//    Paceday has no password sign-in and no password or
+	//    registration route. A client never shows a password form for
+	//    any value of this field ("generic" included); builds older
+	//    than PAC-98 showed one for "generic".
 	// 2. "sso": an active provider row exists for the exact domain (a row
 	//    suspended through setSsoProviderState is ignored, PAC-22).
 	// 3. "google" / "microsoft": a strong match on the domain's MX
@@ -3653,8 +3670,12 @@ type SsoDetectResponse struct {
 	//    Google and Microsoft mixed, null MX, no MX, NXDOMAIN, a name
 	//    that is not a valid multi-label ASCII DNS name (never queried),
 	//    a timeout, SERVFAIL or any resolver error. The client asks the
-	//    user to pick a provider; it never shows a password form for
-	//    this value. A lookup failure is "choose", never a 500.
+	//    user to pick a provider. A lookup failure is "choose", never a
+	//    500.
+	// A client that has read the deployment's availability
+	// (`getIntegrationAvailability`) and finds the answered provider
+	// not offered shows the provider choice for the address instead of
+	// starting a sign-in that cannot complete (PAC-98).
 	// No third-party HTTP call is made to decide. Answers from a DNS
 	// reply are cached per server process for 1 hour, failures for 1
 	// minute (at most 10 000 domains). A client that receives a value
@@ -3662,10 +3683,27 @@ type SsoDetectResponse struct {
 	Type SsoDetectResponseType `json:"type"`
 }
 
-// SsoDetectResponseType Decided in this order (PAC-97):
-//  1. "generic": the address has no domain, or its domain is on the
-//     fixed consumer list (gmail.com, outlook.com, ...). Only for
-//     these; a company domain is never "generic".
+// SsoDetectResponseType Decided in this order (PAC-97, PAC-98):
+//  0. An address with no domain (no "@", or nothing after the first "@") is
+//     "choose", with no SSO read and no lookup. It is not a personal
+//     address.
+//  1. A domain on the fixed consumer list (gmail.com, googlemail.com,
+//     outlook.com, hotmail.com, live.com, msn.com, yahoo.com,
+//     icloud.com, proton.me, ...): gmail.com and googlemail.com are
+//     "google" (a verified address on them is authoritative for
+//     Google sign-in, PAC-71). Every other entry is "generic": a
+//     personal address that is not sent straight to a provider; the
+//     client offers the providers that accept personal accounts,
+//     with the address as the login hint. Until PAC-77, outlook.com,
+//     hotmail.com, live.com and msn.com are "generic", not
+//     "microsoft": personal Microsoft accounts are refused at
+//     sign-in. A company domain is never "generic". No SSO row is
+//     read and no lookup is made for any consumer domain, so an SSO
+//     row for one of them never applies.
+//     Paceday has no password sign-in and no password or
+//     registration route. A client never shows a password form for
+//     any value of this field ("generic" included); builds older
+//     than PAC-98 showed one for "generic".
 //  2. "sso": an active provider row exists for the exact domain (a row
 //     suspended through setSsoProviderState is ignored, PAC-22).
 //  3. "google" / "microsoft": a strong match on the domain's MX
@@ -3683,9 +3721,13 @@ type SsoDetectResponse struct {
 //     Google and Microsoft mixed, null MX, no MX, NXDOMAIN, a name
 //     that is not a valid multi-label ASCII DNS name (never queried),
 //     a timeout, SERVFAIL or any resolver error. The client asks the
-//     user to pick a provider; it never shows a password form for
-//     this value. A lookup failure is "choose", never a 500.
+//     user to pick a provider. A lookup failure is "choose", never a
+//     500.
 //
+// A client that has read the deployment's availability
+// (`getIntegrationAvailability`) and finds the answered provider
+// not offered shows the provider choice for the address instead of
+// starting a sign-in that cannot complete (PAC-98).
 // No third-party HTTP call is made to decide. Answers from a DNS
 // reply are cached per server process for 1 hour, failures for 1
 // minute (at most 10 000 domains). A client that receives a value

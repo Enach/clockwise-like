@@ -29,6 +29,10 @@ type IdPEndpoint struct {
 	AuthURL  string // browser-facing authorization endpoint
 	TokenURL string
 	JWKSURL  string
+	// TenantKeysURL (Microsoft only) is a tenant's own key address, with
+	// TenantPlaceholder standing for the token's `tid`. PAC-89: the Microsoft
+	// step-up reads its keys here, per tenant, not at JWKSURL.
+	TenantKeysURL string
 	// Issuer is the exact expected `iss`. For Microsoft it contains
 	// TenantPlaceholder, replaced by the token's `tid` before comparison.
 	Issuer string
@@ -62,6 +66,8 @@ func ProductionMicrosoftIdP() IdPEndpoint {
 		JWKSURL:  "https://login.microsoftonline.com/common/discovery/v2.0/keys",
 		Issuer:   "https://login.microsoftonline.com/" + TenantPlaceholder + "/v2.0",
 		APIBase:  "https://graph.microsoft.com/v1.0",
+
+		TenantKeysURL: "https://login.microsoftonline.com/" + TenantPlaceholder + "/discovery/v2.0/keys",
 	}
 }
 
@@ -87,6 +93,8 @@ func MicrosoftIdPAt(base string) IdPEndpoint {
 		JWKSURL:  base + "/common/discovery/v2.0/keys",
 		Issuer:   base + "/" + TenantPlaceholder + "/v2.0",
 		APIBase:  base + "/v1.0",
+
+		TenantKeysURL: base + "/" + TenantPlaceholder + "/discovery/v2.0/keys",
 	}
 }
 
