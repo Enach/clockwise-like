@@ -7,25 +7,40 @@ import (
 	"github.com/Enach/paceday/backend/storage"
 )
 
-func TestDetectAuthProvider_GenericDomain(t *testing.T) {
+// PAC-98: gmail.com is a Google account (was generic, which old clients
+// sent to a password form that never existed).
+func TestDetectAuthProvider_GmailIsGoogle(t *testing.T) {
 	db := openTestDB(t)
 	result, err := DetectAuthProvider(context.Background(), db, "user@gmail.com")
 	if err != nil {
 		t.Fatalf("DetectAuthProvider: %v", err)
 	}
-	if result.Type != "generic" {
-		t.Errorf("expected generic for gmail.com, got %q", result.Type)
+	if result.Type != "google" {
+		t.Errorf("expected google for gmail.com, got %q", result.Type)
 	}
 }
 
+// PAC-98: another consumer domain is a personal address (generic).
+func TestDetectAuthProvider_GenericDomain(t *testing.T) {
+	db := openTestDB(t)
+	result, err := DetectAuthProvider(context.Background(), db, "user@yahoo.com")
+	if err != nil {
+		t.Fatalf("DetectAuthProvider: %v", err)
+	}
+	if result.Type != "generic" {
+		t.Errorf("expected generic for yahoo.com, got %q", result.Type)
+	}
+}
+
+// PAC-98: an address without a domain is choose, not a personal address.
 func TestDetectAuthProvider_InvalidEmail(t *testing.T) {
 	db := openTestDB(t)
 	result, err := DetectAuthProvider(context.Background(), db, "not-an-email")
 	if err != nil {
 		t.Fatalf("DetectAuthProvider: %v", err)
 	}
-	if result.Type != "generic" {
-		t.Errorf("expected generic for invalid email, got %q", result.Type)
+	if result.Type != "choose" {
+		t.Errorf("expected choose for invalid email, got %q", result.Type)
 	}
 }
 

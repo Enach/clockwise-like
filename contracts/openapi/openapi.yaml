@@ -2018,7 +2018,11 @@ paths:
 
         (see `SsoDetectResponse.type`); a failed or slow lookup is a 200
 
-        "choose", never an error. Only a failed SSO-row read is a 500.
+        "choose", never an error. Only a failed SSO-row read is a 500. An
+
+        address without a domain, or on the consumer list, is answered
+
+        without any SSO read or lookup ("choose", "google" or "generic").
 
         '
       security: []
@@ -14336,23 +14340,36 @@ components:
           - sso
           - generic
           - choose
-          description: "Decided in this order (PAC-97):\n1. \"generic\": the address has no domain, or\
-            \ its domain is on the\n   fixed consumer list (gmail.com, outlook.com, ...). Only for\n \
-            \  these; a company domain is never \"generic\".\n2. \"sso\": an active provider row exists\
-            \ for the exact domain (a row\n   suspended through setSsoProviderState is ignored, PAC-22).\n\
-            3. \"google\" / \"microsoft\": a strong match on the domain's MX\n   records, looked up by\
-            \ the server through its own resolver with\n   only the domain (never the local part), as\
-            \ one query for the\n   fully-qualified name with a 2 s budget. Among the records with\n \
-            \  the lowest preference value, every one must match the provider\n   and no record at any\
-            \ preference may match the other one.\n   Google: host `google.com` or `googlemail.com`, or\
-            \ ending in\n   `.google.com` / `.googlemail.com`. Microsoft: host ending in\n   `.mail.protection.outlook.com`,\
+          description: "Decided in this order (PAC-97, PAC-98):\n0. An address with no domain (no \"@\"\
+            , or nothing after the first \"@\") is\n   \"choose\", with no SSO read and no lookup. It\
+            \ is not a personal\n   address.\n1. A domain on the fixed consumer list (gmail.com, googlemail.com,\n\
+            \   outlook.com, hotmail.com, live.com, msn.com, yahoo.com,\n   icloud.com, proton.me, ...):\
+            \ gmail.com and googlemail.com are\n   \"google\" (a verified address on them is authoritative\
+            \ for\n   Google sign-in, PAC-71). Every other entry is \"generic\": a\n   personal address\
+            \ that is not sent straight to a provider; the\n   client offers the providers that accept\
+            \ personal accounts,\n   with the address as the login hint. Until PAC-77, outlook.com,\n\
+            \   hotmail.com, live.com and msn.com are \"generic\", not\n   \"microsoft\": personal Microsoft\
+            \ accounts are refused at\n   sign-in. A company domain is never \"generic\". No SSO row is\n\
+            \   read and no lookup is made for any consumer domain, so an SSO\n   row for one of them\
+            \ never applies.\n   Paceday has no password sign-in and no password or\n   registration route.\
+            \ A client never shows a password form for\n   any value of this field (\"generic\" included);\
+            \ builds older\n   than PAC-98 showed one for \"generic\".\n2. \"sso\": an active provider\
+            \ row exists for the exact domain (a row\n   suspended through setSsoProviderState is ignored,\
+            \ PAC-22).\n3. \"google\" / \"microsoft\": a strong match on the domain's MX\n   records,\
+            \ looked up by the server through its own resolver with\n   only the domain (never the local\
+            \ part), as one query for the\n   fully-qualified name with a 2 s budget. Among the records\
+            \ with\n   the lowest preference value, every one must match the provider\n   and no record\
+            \ at any preference may match the other one.\n   Google: host `google.com` or `googlemail.com`,\
+            \ or ending in\n   `.google.com` / `.googlemail.com`. Microsoft: host ending in\n   `.mail.protection.outlook.com`,\
             \ `.mail.eo.outlook.com` or\n   `.mx.microsoft`. Hosts are compared lower-cased, without one\n\
             \   trailing dot, on label boundaries.\n4. \"choose\": everything else. Mail behind a third-party\
             \ gateway,\n   Google and Microsoft mixed, null MX, no MX, NXDOMAIN, a name\n   that is not\
             \ a valid multi-label ASCII DNS name (never queried),\n   a timeout, SERVFAIL or any resolver\
-            \ error. The client asks the\n   user to pick a provider; it never shows a password form for\n\
-            \   this value. A lookup failure is \"choose\", never a 500.\nNo third-party HTTP call is\
-            \ made to decide. Answers from a DNS\nreply are cached per server process for 1 hour, failures\
+            \ error. The client asks the\n   user to pick a provider. A lookup failure is \"choose\",\
+            \ never a\n   500.\nA client that has read the deployment's availability\n(`getIntegrationAvailability`)\
+            \ and finds the answered provider\nnot offered shows the provider choice for the address instead\
+            \ of\nstarting a sign-in that cannot complete (PAC-98).\nNo third-party HTTP call is made\
+            \ to decide. Answers from a DNS\nreply are cached per server process for 1 hour, failures\
             \ for 1\nminute (at most 10 000 domains). A client that receives a value\nit does not know\
             \ treats it as \"choose\".\n"
         provider_name:

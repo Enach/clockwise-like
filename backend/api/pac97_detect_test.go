@@ -156,8 +156,10 @@ func TestPAC97_StrongMatchesThroughTheRouter(t *testing.T) {
 	for email, want := range map[string]gen.SsoDetectResponseType{
 		"alice@gorgias.com":  gen.SsoDetectResponseTypeGoogle,
 		"alice@contoso.test": gen.SsoDetectResponseTypeMicrosoft,
-		"carol@gmail.com":    gen.SsoDetectResponseTypeGeneric,
-		"user@intranet":      gen.SsoDetectResponseTypeChoose,
+		// PAC-98: gmail.com is google; another consumer domain is generic.
+		"carol@gmail.com": gen.SsoDetectResponseTypeGoogle,
+		"dave@yahoo.com":  gen.SsoDetectResponseTypeGeneric,
+		"user@intranet":   gen.SsoDetectResponseTypeChoose,
 	} {
 		if got := decodeGenerated(t, pac97Detect(r, "192.0.2.98:1000", email)).Type; got != want {
 			t.Errorf("%s = %q, want %q", email, got, want)
@@ -208,8 +210,9 @@ func TestPAC97_AC17_RateLimitUnchanged(t *testing.T) {
 func TestPAC97_AC14_APITestsCannotReachLiveDNS(t *testing.T) {
 	// Detecting a consumer address through the default detector never
 	// reaches the resolver; if it did, forbiddenMXResolver would panic.
+	// PAC-98: gmail.com is answered google, still without the resolver.
 	res, err := auth.DefaultDetector().Detect(context.Background(), openTestDB(t), "carol@gmail.com")
-	if err != nil || res.Type != auth.DetectGeneric {
-		t.Fatalf("= (%+v, %v)", res, err)
+	if err != nil || res.Type != auth.DetectGoogle {
+		t.Fatalf("= (%+v, %v), want google", res, err)
 	}
 }

@@ -209,18 +209,24 @@ func TestPAC97_AC3_SSORowWinsWithoutAQuery(t *testing.T) {
 	}
 }
 
-// AC-4: consumer domains and an invalid address are generic, nothing queried,
-// and the SSO table is not even read.
-func TestPAC97_AC4_ConsumerAndInvalidAreGenericWithoutAQuery(t *testing.T) {
+// AC-4: consumer domains and an invalid address are answered without a
+// query, and the SSO table is not even read. PAC-98 changed the answers on
+// purpose: gmail.com google, outlook.com generic (until PAC-77), no domain
+// choose.
+func TestPAC97_AC4_ConsumerAndInvalidAreAnsweredWithoutAQuery(t *testing.T) {
 	f := newFixtureFake()
 	d := newTestDetector(f)
-	for _, email := range []string{"carol@gmail.com", "carol@outlook.com", "not-an-email"} {
+	for email, want := range map[string]string{
+		"carol@gmail.com":   DetectGoogle,
+		"carol@outlook.com": DetectGeneric,
+		"not-an-email":      DetectChoose,
+	} {
 		res, err := d.detect(context.Background(), func(string) (*storage.SSOProvider, error) {
 			t.Errorf("%s: the SSO row was read", email)
 			return nil, nil
 		}, email)
-		if err != nil || res.Type != DetectGeneric {
-			t.Errorf("%s = (%+v, %v), want generic", email, res, err)
+		if err != nil || res.Type != want {
+			t.Errorf("%s = (%+v, %v), want %s", email, res, err, want)
 		}
 	}
 	if n := f.count(); n != 0 {
@@ -545,11 +551,16 @@ func TestPAC97_AC14_DefaultDetectorIsForbiddenInTests(t *testing.T) {
 		t.Fatalf("the default detector's resolver is %T, want the fail-on-use resolver", DefaultDetector().resolver)
 	}
 	// The pre-existing detection paths through the default detector do not
-	// reach it: generic and invalid return before any lookup.
-	for _, email := range []string{"user@gmail.com", "not-an-email"} {
+	// reach it: consumer and invalid addresses return before any lookup
+	// (PAC-98 answers: gmail.com google, yahoo.com generic, no domain choose).
+	for email, want := range map[string]string{
+		"user@gmail.com": DetectGoogle,
+		"user@yahoo.com": DetectGeneric,
+		"not-an-email":   DetectChoose,
+	} {
 		res, err := DetectAuthProvider(context.Background(), nil, email)
-		if err != nil || res.Type != DetectGeneric {
-			t.Errorf("%s = (%+v, %v)", email, res, err)
+		if err != nil || res.Type != want {
+			t.Errorf("%s = (%+v, %v), want %s", email, res, err, want)
 		}
 	}
 }

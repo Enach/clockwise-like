@@ -146,3 +146,24 @@ func TestIsQueryableDNSName(t *testing.T) {
 		}
 	}
 }
+
+// PAC-98: GenericDomains enumerates exactly the consumer list, sorted, and
+// returns a copy.
+func TestGenericDomains(t *testing.T) {
+	list := GenericDomains()
+	if len(list) != len(genericDomains) {
+		t.Fatalf("len = %d, want %d", len(list), len(genericDomains))
+	}
+	for i, d := range list {
+		if !IsGenericDomain(d) {
+			t.Errorf("%q is not on the consumer list", d)
+		}
+		if i > 0 && list[i-1] >= d {
+			t.Errorf("not sorted at %d: %q >= %q", i, list[i-1], d)
+		}
+	}
+	list[0] = "evil.example"
+	if IsGenericDomain("evil.example") {
+		t.Error("changing the returned slice changed the consumer list")
+	}
+}
