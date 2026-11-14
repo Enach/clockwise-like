@@ -250,6 +250,27 @@ link shows the "Link not found" heading. Every archive timestamp is UTC with a
 `Z` suffix (the web validates with `z.iso.datetime()`); the backend serialises
 them that way (`archivedLinkDTO`, `archivedBookingDTO`).
 
+## 9. Room picker — `src/components/LocationPicker.tsx` (PAC-41)
+
+Spec `docs/specs/PAC-41.md` AC-1, AC-12, AC-13, AC-14, AC-16. Implemented by
+the web PR smart-calendar-flow#151; used by `tests/pac41-rooms.spec.ts`. The
+editor is reached through existing accessible names: the event title on the
+week grid, the "Edit event" button, and "Save changes".
+
+| Test id | Element | Used for |
+|---|---|---|
+| `location-mode-text` | button "Free text" (`aria-pressed`) | AC-14 (b) |
+| `location-mode-room` | button "Book a room" (`aria-pressed`) | AC-1, AC-14 (a) |
+| `location-text-input` | the free-text location input, named "Location" | AC-14 (b) |
+| `room-search-input` | the room search input, named "Search rooms"; sends `q` only | AC-1, AC-14 (a) |
+| `room-results` | the list of rooms | vitest only |
+| `room-option` | each room's button, named by the room's name, with `data-room-id` = the room's `id` (its resource calendar address) | AC-1, AC-14 (a): pick a run-unique room |
+| `room-selected` | the selected-room card (name only) | AC-1, AC-14 (a) |
+| `room-clear` | button "Clear room" | AC-13 (vitest) |
+| `room-list-error` | `role="alert"`: why the room list could not be read, plus "Try again" when retrying can help | AC-16 (vitest) |
+| `room-booking-notice` | "Saving adds the chosen room … release a held room in your calendar itself." | AC-12; AC-1 checks it is shown |
+| `room-left-notice` | "A room already booked on this event stays booked. …" | AC-13 (vitest) |
+
 ## Contract gaps found while writing this suite
 
 Not test ids — genuine `api`/`web` drift, listed here because they materially

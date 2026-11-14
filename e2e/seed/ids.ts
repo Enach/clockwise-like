@@ -97,6 +97,17 @@ export const CONNECTED = {
     token: 'e2e-offerable-work',
     label: 'offerable-work',
   },
+  /**
+   * PAC-41 AC-1, AC-14 (tests/pac41-rooms.spec.ts): books rooms on events of
+   * its own calendar. The room calendars it defines are run-unique.
+   */
+  rooms: {
+    id: 'f4f4f4f4-f4f4-4f4f-8f4f-f4f4f4f4f4f4',
+    email: 'e2e.rooms@paceday.test',
+    name: 'E2E Rooms User',
+    token: 'e2e-rooms-work',
+    label: 'rooms-work',
+  },
 } as const;
 
 /**
@@ -430,6 +441,7 @@ export const ACCEPTED_CREDENTIALS = [
     CONNECTED.manager,
     CONNECTED.seam,
     CONNECTED.offerable,
+    CONNECTED.rooms,
     DISCONNECTING,
     ...Object.values(BOOKING_HOSTS),
     ...Object.values(AVATAR_HOSTS),
