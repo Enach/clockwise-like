@@ -1,6 +1,27 @@
 # CI on GitHub-hosted runners: the repo's own gate, `make verify` (factory §3).
 # Runs on every pull request and every push to main; release.yml publishes
-# only main commits on which this job ("verify") passed in both repos.
+# only main commits on which the "verify" check passed in both repos.
+#
+# `make verify` runs lint, openapi-check, test, coverage and e2e one after the
+# other (~30 min). Here the same make targets run as parallel jobs, and the job
+# named "verify" passes only when every one of them passed. That job is the
+# required check (branch protection, release.yml, the factory scripts): no
+# other job may be named "verify". Each make target below is one that
+# `make verify` runs; none is left out, none is added.
+#
+#   pair ──┬─ lint            make lint + make openapi-check     (web repo: openapi)
+#          ├─ e2e             make e2e                           (web repo: frontend build)
+#          └─ verify  ◄── all of these, plus:
+#   backend-test       make test-backend       (= make test, backend suite)
+#   backend-coverage   make coverage-backend   (= make coverage, backend half)
+#   go-suites          make test-mcp test-fake-google test-fileserver coverage-mcp
+#   nginx              make test-nginx
+#   compose            make test-compose
+#
+# Caches only skip work that is not the check itself: module downloads, Go
+# compilation, npm downloads, browser downloads, docker layers. GOFLAGS=-count=1
+# (and -count=1 inside scripts/test-backend.sh when its cache is on) means a
+# restored Go build cache never replays a test result: every test runs.
 name: ci
 
 on:
@@ -15,13 +36,19 @@ concurrency:
 permissions:
   contents: read
 
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
+env:
+  GOFLAGS: -count=1
+  GO_TOOLS_KEY: golangci-lint@v1.64.8+oapi-codegen@v2.4.1
 
+jobs:
+  pair:
+    name: pair web branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.pair.outputs.ref }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
       # Paired PRs (factory: the api PR and its web PR land together): use the
       # web branch naming the same PAC ticket as this branch, else main.
       # Candidates with an open PR in the web repo win: branches of superseded
@@ -36,33 +63,43 @@ jobs:
           n() { printf '%s\n' "$1" | grep -c . || true; }  # count lines
           j() { printf '%s\n' "$1" | paste -sd' ' -; }      # join lines
           ref=main why="no pac-N in branch name"
-          t=$(grep -oiE 'pac-[0-9]+' <<<"$BRANCH" | head -1 | tr '[:upper:]' '[:lower:]' || true)
+          t=$(grep -oiE -- 'pac-[0-9]+' <<<"$BRANCH" | head -1 | tr '[:upper:]' '[:lower:]' || true)
           if [ -n "$t" ]; then
-            m=$(gh api --paginate "repos/$OTHER/branches" --jq '.[].name' | grep -iE "(^|[^a-z0-9])$t([^0-9]|$)" || true)
-            why="no web branch for $t"
-            o=""
+            m="" o="" prs=unknown
+            if ! names=$(gh api --paginate "repos/$OTHER/branches" --jq '.[].name'); then
+              why="could not list $OTHER branches"
+              echo "::warning::could not list $OTHER branches; using main"
+            else
+              m=$(printf '%s\n' "$names" | grep -iE -- "(^|[^a-z0-9])$t([^0-9]|$)" || true)
+              why="no web branch for $t"
+            fi
             if [ -n "$m" ]; then
-              if heads=$(gh api --paginate "repos/$OTHER/pulls?state=open&per_page=100" --jq ".[] | select(.head.repo.full_name == \"$OTHER\") | .head.ref"); then
-                o=$(printf '%s\n' "$m" | grep -xF -f <(printf '%s\n' "$heads") || true)
+              # head.repo is null for a deleted fork; owner/repo names are case-insensitive.
+              if heads=$(gh api --paginate "repos/$OTHER/pulls?state=open&per_page=100" --jq ".[] | select((.head.repo.full_name // \"\" | ascii_downcase) == (\"$OTHER\" | ascii_downcase)) | .head.ref"); then
+                prs=listed
+                o=$(printf '%s\n' "$m" | grep -xF -f <(printf '%s\n' "$heads") -- || true)
               else
-                echo "::warning::could not list open $OTHER PRs; pairing by branch name only"
+                echo "::warning::could not list open $OTHER PRs; pairing by branch name only (no open-PR preference, no stale-branch rule)"
               fi
             fi
             echo "candidates for $t: $(j "$m") | with an open PR: $(j "$o")"
             if [ "$(n "$o")" -eq 1 ]; then ref=$o why="only $t branch with an open PR"
             else
               if [ -n "$o" ]; then m=$o src="open-PR candidates"; else src="candidates (none has an open PR)"; fi
-              # several (factory/pac-N-spec, impl/pac-N-api...): keep this branch's prefix (impl/)
+              [ "$prs" = listed ] || src="candidates (open PRs unknown)"
+              # several (factory/pac-N-spec, impl/pac-N-api...): keep this branch's prefix (impl/),
+              # anchored: reimpl/... and factory/impl/... are not impl/ branches
               if [ "$(n "$m")" -gt 1 ] && [[ $BRANCH == */* ]]; then
-                m=$(printf '%s\n' "$m" | grep -F "${BRANCH%%/*}/" || true)
+                m=$(printf '%s\n' "$m" | awk -v p="${BRANCH%%/*}/" 'index($0, p) == 1' || true)
                 why="no ${BRANCH%%/*}/ branch among $src"
               fi
-              # a lone leftover of another stage (factory/pac-N-spec for impl/...) with no open PR is stale
-              if [ "$(n "$m")" -eq 1 ] && [ -z "$o" ] && [[ $BRANCH == */* && $m == */* && ${m%%/*} != "${BRANCH%%/*}" ]]; then
+              # a lone leftover of another stage (factory/pac-N-spec for impl/...) with no open PR
+              # is stale; that is only known when the open PRs could be listed
+              if [ "$(n "$m")" -eq 1 ] && [ -z "$o" ] && [ "$prs" = listed ] && [[ $BRANCH == */* && $m == */* && ${m%%/*} != "${BRANCH%%/*}" ]]; then
                 why="only match $m has another prefix than ${BRANCH%%/*}/ and no open PR"
                 echo "::notice::ignoring $m for $t: prefix differs from ${BRANCH%%/*}/ and no open PR; using main"
               elif [ "$(n "$m")" -eq 1 ]; then ref=$m why="only match among $src"
-              elif printf '%s\n' "$m" | grep -qxF "$BRANCH"; then ref=$BRANCH why="same name as this branch, among $src"
+              elif printf '%s\n' "$m" | grep -qxF -- "$BRANCH"; then ref=$BRANCH why="same name as this branch, among $src"
               elif [ -n "$m" ]; then
                 why="several web branches among $src: $(j "$m")"
                 echo "::warning::several web branches for $t: $(j "$m"); using main"
@@ -72,53 +109,305 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "web ref: $ref ($why)"
 
+      # Pinned once, so the lint job (openapi-check) and the e2e job (frontend
+      # build) test the same web commit even if the branch moves meanwhile.
+      - name: Web commit
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.pair.outputs.ref }}
+        run: |
+          sha=$(gh api "repos/Enach/smart-calendar-flow/commits/$(jq -rn --arg r "$REF" '$r|@uri')" --jq .sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "web: $REF @ $sha"
+
+  lint:
+    name: lint + openapi-check
+    needs: pair
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
       # The web repo, where `make clone-frontend` puts it (WEB ?= ../smart-calendar-flow):
-      # openapi-check also checks its generated types, e2e builds it.
+      # openapi-check also checks its generated types.
       - uses: actions/checkout@v4
         with:
           repository: Enach/smart-calendar-flow
-          ref: ${{ steps.pair.outputs.ref }}
+          ref: ${{ needs.pair.outputs.sha }}
           path: web
-      - run: mv web ../smart-calendar-flow
-      # docker/frontend.dockerfile (e2e and release) builds from frontend/ = the
-      # web repo ("CI clones it at run-time"). Copied before npm ci, so no node_modules.
-      - run: rm -rf frontend && cp -r ../smart-calendar-flow frontend && rm -rf frontend/.git
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
-          cache-dependency-path: |
-            backend/go.sum
-            mcp/go.sum
-
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+            ~/go/bin
+          key: go-lint-${{ env.GO_TOOLS_KEY }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-lint-${{ env.GO_TOOLS_KEY }}-${{ hashFiles('**/go.sum') }}-
+            go-lint-${{ env.GO_TOOLS_KEY }}-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: mv web ../smart-calendar-flow
       - name: Tools pinned by the Makefile and scripts
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
           go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1
           sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
       - name: Web dependencies (openapi-check runs its generator)
         working-directory: ../smart-calendar-flow
         run: npm ci --legacy-peer-deps
-
-      - name: e2e dependencies
-        working-directory: e2e
-        run: npm ci && npx playwright install --with-deps
-
+      - name: make lint
+        run: make lint
       # Pushes to main skip the cross-repo half of openapi-check: a paired
       # contract change merges api first and web minutes later, and in between
       # the two mains disagree by design. Release.yml runs that check on the
       # exact pair of main SHAs it would publish. PRs keep the full check.
-      - name: make verify
+      - name: make openapi-check
         env:
           OPENAPI_CROSS_REPO: ${{ github.event_name == 'push' && 'skip' || 'check' }}
-        run: make verify
+        run: make openapi-check
 
-      - name: Verify summary
-        if: always()
-        run: cat .verify/steps.txt .verify/coverage.txt 2>/dev/null || true
+  backend-test:
+    name: test backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/paceday-backend-go
+          key: backend-go-test-${{ hashFiles('backend/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            backend-go-test-${{ hashFiles('backend/go.sum') }}-
+            backend-go-test-
+      - name: make test-backend
+        run: |
+          mkdir -p ~/.cache/paceday-backend-go
+          PACEDAY_GO_CACHE_DIR=$HOME/.cache/paceday-backend-go make test-backend
+
+  backend-coverage:
+    name: coverage backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      # coverage-gate.sh reads the profile with the host's `go tool cover`.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/paceday-backend-go
+          key: backend-go-cover-${{ hashFiles('backend/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            backend-go-cover-${{ hashFiles('backend/go.sum') }}-
+            backend-go-cover-
+      - name: make coverage-backend
+        run: |
+          mkdir -p ~/.cache/paceday-backend-go .verify
+          PACEDAY_GO_CACHE_DIR=$HOME/.cache/paceday-backend-go \
+            COVERAGE_SUMMARY_FILE=$PWD/.verify/coverage-backend.txt make coverage-backend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verify-coverage-backend
+          path: .verify/coverage-backend.txt
+          retention-days: 7
+
+  go-suites:
+    name: test mcp, fake-google, fileserver + coverage mcp
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-suites-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-suites-${{ hashFiles('**/go.sum') }}-
+            go-suites-
+      - run: make test-mcp test-fake-google test-fileserver
+      - name: make coverage-mcp
+        run: |
+          mkdir -p .verify
+          COVERAGE_SUMMARY_FILE=$PWD/.verify/coverage-mcp.txt make coverage-mcp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verify-coverage-mcp
+          path: .verify/coverage-mcp.txt
+          retention-days: 7
+
+  nginx:
+    name: test nginx
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-nginx-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-nginx-${{ hashFiles('**/go.sum') }}-
+            go-nginx-
+      - run: make test-nginx
+
+  compose:
+    name: test compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-compose-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-compose-${{ hashFiles('**/go.sum') }}-
+            go-compose-
+      - name: Expose the GHA cache service to docker buildx
+        uses: actions/github-script@v7
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k]);
+            }
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', process.env.ACTIONS_CACHE_SERVICE_V2 || 'true');
+      # compose-test builds its images with a plain `docker build` (default
+      # builder). Building the same Dockerfiles and contexts first, on the same
+      # builder, with the GHA layer cache fills that builder's local cache, so
+      # the test's own builds are cache hits. Only a warm-up: if it fails, the
+      # test still builds everything itself.
+      - name: Warm docker layer cache (backend, mcp)
+        continue-on-error: true
+        run: |
+          for svc in backend mcp; do
+            docker buildx build --builder default \
+              --cache-from "type=gha,scope=compose-$svc" \
+              --cache-to "type=gha,scope=compose-$svc,mode=max" \
+              -t "paceday-ci-warm-$svc" "$svc"
+          done
+      - run: make test-compose
+
+  e2e:
+    name: e2e
+    needs: pair
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Enach/smart-calendar-flow
+          ref: ${{ needs.pair.outputs.sha }}
+          path: web
+      - run: mv web ../smart-calendar-flow
+      # docker/frontend.dockerfile (e2e and release) builds from frontend/ = the
+      # web repo ("CI clones it at run-time"). Copied before any npm install, so no node_modules.
+      - run: rm -rf frontend && cp -r ../smart-calendar-flow frontend && rm -rf frontend/.git
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Playwright browsers cache
+        id: pw
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+      # Same command as before: on a cache hit it finds the browsers already
+      # there and only installs the system dependencies.
+      - name: e2e dependencies
+        working-directory: e2e
+        run: npm ci && npx playwright install --with-deps
+      - name: Expose the GHA cache service to docker buildx
+        uses: actions/github-script@v7
+        with:
+          script: |
+            for (const k of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL']) {
+              if (process.env[k]) core.exportVariable(k, process.env[k]);
+            }
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', process.env.ACTIONS_CACHE_SERVICE_V2 || 'true');
+      # The suite's global setup runs `docker compose up --build` on the default
+      # builder. Baking the same compose services first, on that builder, with
+      # the GHA layer cache makes those builds cache hits. Only a warm-up: if
+      # it fails, compose still builds everything itself.
+      - name: Warm docker layer cache (e2e stack)
+        continue-on-error: true
+        run: |
+          docker buildx bake --builder default -f e2e/docker-compose.e2e.yml \
+            --set '*.cache-from=type=gha,scope=e2e' \
+            --set '*.cache-to=type=gha,scope=e2e,mode=max' \
+            backend fake-google sink frontend
+      - name: make e2e
+        run: make e2e
+
+  # The required check. Passes only when every job above passed, i.e. when
+  # every make target `make verify` runs passed; prints the same summary.
+  verify:
+    if: always()
+    needs: [pair, lint, backend-test, backend-coverage, go-suites, nginx, compose, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: verify-coverage-*
+          merge-multiple: true
+          path: .verify
+      - name: Gate and summary
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          CROSS: ${{ github.event_name == 'push' && 'skip' || 'check' }}
+          WEB_REF: ${{ needs.pair.outputs.ref }}
+          WEB_SHA: ${{ needs.pair.outputs.sha }}
+        run: |
+          r() { jq -r --arg j "$1" '.[$j].result' <<<"$NEEDS"; }
+          st() { local s=PASS; for j in "$@"; do [ "$(r "$j")" = success ] || s="FAIL ($j: $(r "$j"))"; done; echo "$s"; }
+          if [ "$CROSS" = skip ]; then oa="PASS (api half; cross-repo half deferred to release)"; else oa=PASS; fi
+          [ "$(r lint)" = success ] && lint=PASS || lint="FAIL (lint: $(r lint))"
+          [ "$(r lint)" = success ] || oa="$lint"
+          echo "===== BEGIN make verify summary (parallel jobs of ci.yml) ====="
+          echo "api  : ${GITHUB_SHA::7} on ${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          echo "web  : ${WEB_SHA::7} on $WEB_REF"
+          echo
+          printf '%-14s %s\n' lint "$lint" openapi-check "$oa" \
+            test "$(st backend-test go-suites nginx compose)" \
+            coverage "$(st backend-coverage go-suites)" e2e "$(st e2e)"
+          echo
+          cat .verify/coverage-backend.txt .verify/coverage-mcp.txt 2>/dev/null || true
+          echo "===== END make verify summary ====="
+          echo
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          bad=$(jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(" ")' <<<"$NEEDS")
+          if [ -n "$bad" ]; then echo "::error::verify: not passed: $bad"; exit 1; fi
