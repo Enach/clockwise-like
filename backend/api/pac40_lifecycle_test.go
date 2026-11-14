@@ -413,7 +413,7 @@ func TestPAC40_ConcurrentDeletesAnswerOne204AndOne404(t *testing.T) {
 // CHECK bypassed, in a database of its own) is not found on the public slug
 // paths: deleted_at IS NULL is part of the public lookup (K4-1).
 func TestPAC40_ForcedDeletedActiveRowIs404OnPublicPaths(t *testing.T) {
-	db := pac40IsolatedDB(t, 0)
+	db, _ := pac40IsolatedDB(t, 0)
 	e := newPAC40Env(t, db)
 	owner := pac40RawUser(t, db, "pac40-forced@example.com")
 	link, err := storage.CreateSchedulingLink(db, &storage.SchedulingLink{OwnerUserID: owner, Slug: "pac40-forced", Title: "Forced",
@@ -843,7 +843,7 @@ func TestPAC40_ContractDeclaresTheArchive(t *testing.T) {
 
 // pac40IsolatedDB is a database of its own, migrated to ceiling (0: every
 // migration), for tests that bypass a constraint or start below 037.
-func pac40IsolatedDB(t *testing.T, ceiling uint) *sql.DB {
+func pac40IsolatedDB(t *testing.T, ceiling uint) (*sql.DB, string) {
 	t.Helper()
 	dsn, cleanup, err := testdb.Create()
 	if err != nil {
@@ -864,7 +864,7 @@ func pac40IsolatedDB(t *testing.T, ceiling uint) *sql.DB {
 			t.Errorf("cleanup isolated database: %v", err)
 		}
 	})
-	return db
+	return db, dsn
 }
 
 func pac40RawUser(t *testing.T, db *sql.DB, email string) uuid.UUID {
@@ -882,7 +882,7 @@ func pac40RawUser(t *testing.T, db *sql.DB, email string) uuid.UUID {
 // limit-1 link whose only booking was cancelled before the deploy is used up
 // and shows one use.
 func TestPAC40_DataMigration037KeepsInactiveLinksPausedAndCountsOldCancellations(t *testing.T) {
-	db := pac40IsolatedDB(t, 36)
+	db, dsn := pac40IsolatedDB(t, 36)
 	var v int
 	if err := db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&v); err != nil || v != 36 {
 		t.Fatalf("schema = %d, %v; want 36", v, err)
@@ -907,9 +907,18 @@ func TestPAC40_DataMigration037KeepsInactiveLinksPausedAndCountsOldCancellations
 		t.Fatal(err)
 	}
 
-	if err := storage.Migrate(db); err != nil {
+	// PAC-116 (OQ-3): pending migrations are applied only while nothing
+	// else is connected, so the test closes its pool, waits until its
+	// sessions are gone, and reopens the database through the procedure.
+	db.Close()
+	if err := testdb.WaitNoSessions(dsn, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	db, err := storage.Open(dsn)
+	if err != nil {
 		t.Fatalf("migrate to 037: %v", err)
 	}
+	t.Cleanup(func() { db.Close() })
 	if err := db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&v); err != nil || v < 37 {
 		t.Fatalf("schema = %d, %v; want 037 applied", v, err)
 	}

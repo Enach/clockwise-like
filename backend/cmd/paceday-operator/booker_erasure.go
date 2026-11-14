@@ -61,6 +61,15 @@ func runBookerErasure(args []string, getenv func(string) string, out, errw io.Wr
 	}
 	defer db.Close()
 	ctx := context.Background()
+	// PAC-116 (contract 4.5, challenge note of revision 3): a multi-table
+	// read during a migration could be the other side of a deadlock, so the
+	// listing refuses (exit 1) while a migrator holds the maintenance lock,
+	// and keeps the connection it checked on open until it ends.
+	pinned, code := holdPresence(ctx, db, "booker-erasure status", errw)
+	if pinned == nil {
+		return code
+	}
+	defer pinned.Close()
 
 	want, err := storage.LifecycleMigrationVersion()
 	if err != nil {

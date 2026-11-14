@@ -101,7 +101,7 @@ A release that adds a migration is applied with **no backend serving**. A
 migration changes tables that live requests are reading and writing. If the
 two run at the same time, Postgres can abort one of them (`40P01`): a
 booking is lost, or the migration fails half-way and the database is left
-dirty. From PAC-116's implementation on, the backend and `paceday-operator`
+dirty. The backend and `paceday-operator` (PAC-116)
 refuse to apply pending migrations while the app is serving. They print what
 they saw and change nothing. There is no override.
 
@@ -114,7 +114,7 @@ they saw and change nothing. There is no override.
      It applies the migrations.
   3. Start the others.
 
-  From PAC-116's implementation on, a new backend started while an old one
+  A new backend started while an old one
   is still serving refuses to start (`refusing to start: pending migrations
   … were not applied: the app is serving`). Docker restarts it
   (`restart: unless-stopped`) until the old ones are stopped. `compose up -d`
@@ -186,11 +186,14 @@ they saw and change nothing. There is no override.
   - The backend's start and `paceday-operator` must reach PostgreSQL
     directly or through **session** pooling, never through transaction
     pooling: the migration lock is a session lock.
-- **The Postgres health check.** `pg_isready` in the compose file opens a
-  short connection to the application database every few seconds. A
-  backend start whose check falls in that instant is refused as "serving",
-  and Docker retries it a moment later. A single `refusing to start` line
-  followed by a normal start is expected and harmless.
+- **The Postgres health check.** The shipped compose files probe
+  `pg_isready -d postgres`: the probe's short connection is on the
+  maintenance database, never the application database, so it never makes a
+  migration refuse. A health check you add yourself must do the same. One
+  that connects to the application database every few seconds can make a
+  backend start whose check falls in that instant refuse as "serving".
+  Docker retries it a moment later, so a single `refusing to start` line
+  followed by a normal start is harmless.
 
 ### PAC-71 release: sign every session out once (release step)
 
@@ -203,13 +206,17 @@ compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-
 ```
 
 - `advance-all` runs after the new backend has migrated, so it applies
-  nothing itself. (From PAC-116's implementation on, a newer operator
+  nothing itself. (A newer operator
   against an older schema refuses while the backend serves; see
   [Applying migrations](#applying-migrations-stop-migrate-start).)
 - `advance-all` runs against the running backend (`exec`): it needs no
   backend stop, unlike the encryption subcommands below that use
   `run --rm --no-deps backend`. (`run --rm --no-deps backend /paceday-operator
   advance-all …` also works; it reads the same environment.)
+- Exit codes: 0 done; 1 refused or failed (nothing changed when refused);
+  **2 usage error** (an unknown or malformed flag, a bad `-account`,
+  `-identity` or `-evidence`), checked before the database is touched. Since
+  PAC-116 a usage error is 2; it used to be 1.
 - Every session issued before it gets 401 on its next request, so every user
   signs in once more. No account, credential or setting changes. The run is
   recorded in `operator_audit`; record in the release notes that it ran.
@@ -575,7 +582,7 @@ exits 0 when nothing plain is left (3 while some is).
 
 `paceday-operator encryption <subcommand>` ships in the backend image as
 `/paceday-operator`. It reads `DATABASE_URL` and the same two key variables
-as the backend. From PAC-116's implementation on, like the backend, it
+as the backend. Like the backend (PAC-116), it
 applies pending migrations only while no backend is serving
 ([Applying migrations](#applying-migrations-stop-migrate-start)). Subcommands that need the backend **running or not** use
 `exec`:

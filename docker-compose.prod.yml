@@ -38,7 +38,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clockwise -d clockwise"]
+      # PAC-116: the probe connects to the maintenance database "postgres",
+      # never the app database, so a migrator never counts it as serving.
+      test: ["CMD-SHELL", "pg_isready -U clockwise -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 10

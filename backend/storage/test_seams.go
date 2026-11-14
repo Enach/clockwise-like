@@ -135,3 +135,74 @@ func InstallAfterBookingInsert(tb TB, fn func(b *Booking) error) (uninstall func
 	tb.Helper()
 	return afterBookingInsert.install(tb, fn)
 }
+
+// PAC-116 seams (contract 6: test-only, unexported, installed through an
+// Install function that takes the test's testing.TB; no flag, environment
+// variable or configuration reaches them).
+var (
+	afterMigrateStateRead   seam[func(caller string)]
+	afterMigrateCheck       seam[func(caller string)]
+	insideMigrationFile     seam[func(version uint)]
+	afterHeartbeatWrite     seam[func(inst Instance)]
+	afterMigrateLockRefused seam[func(caller string)]
+	afterProbeDirtyRead     seam[func()]
+)
+
+// InstallAfterMigrateLockRefused installs the seam that runs inside
+// MigrateWhenStopped when pg_try_advisory_lock failed, before the run
+// returns and closes its paceday-migrate: connection, so a test can keep
+// the loser's connection open across the winner's serving check (PAC-116
+// challenge S4, AC-21).
+func InstallAfterMigrateLockRefused(tb TB, fn func(caller string)) (uninstall func()) {
+	tb.Helper()
+	return afterMigrateLockRefused.install(tb, fn)
+}
+
+// InstallAfterProbeDirtyRead installs the seam that runs inside
+// ProbeVersionState after a first lock-free read found the version dirty
+// with no migrating holder, before its one re-read (PAC-116 contract 2
+// "Read order"), so a test can finish the migration in between.
+func InstallAfterProbeDirtyRead(tb TB, fn func()) (uninstall func()) {
+	tb.Helper()
+	return afterProbeDirtyRead.install(tb, fn)
+}
+
+// InstallAfterMigrateStateRead installs the seam that runs inside
+// MigrateWhenStopped after step 1 found something to decide (pending, or
+// dirty with no migrating holder) and before it tries the maintenance lock,
+// so a test can hold two migrators at a barrier there (PAC-116 AC-10, AC-21).
+func InstallAfterMigrateStateRead(tb TB, fn func(caller string)) (uninstall func()) {
+	tb.Helper()
+	return afterMigrateStateRead.install(tb, fn)
+}
+
+// InstallAfterMigrateCheck installs the seam that runs inside
+// MigrateWhenStopped after the serving check passed (step 5), with the
+// maintenance lock held, and before any migration is applied (PAC-116 AC-8,
+// AC-11, AC-23).
+func InstallAfterMigrateCheck(tb TB, fn func(caller string)) (uninstall func()) {
+	tb.Helper()
+	return afterMigrateCheck.install(tb, fn)
+}
+
+// InstallInsideMigrationFile installs the seam that runs when golang-migrate
+// reads an up file's body during MigrateWhenStopped's step 6: the version is
+// then marked dirty and the file has not run yet (PAC-116 AC-19).
+func InstallInsideMigrationFile(tb TB, fn func(version uint)) (uninstall func()) {
+	tb.Helper()
+	return insideMigrationFile.install(tb, fn)
+}
+
+// InstallAfterHeartbeatWrite installs the seam that runs in LoadKeyring after
+// the backend wrote its first heartbeat and before it reads the maintenance
+// lock's holder (PAC-116 AC-9).
+func InstallAfterHeartbeatWrite(tb TB, fn func(inst Instance)) (uninstall func()) {
+	tb.Helper()
+	return afterHeartbeatWrite.install(tb, fn)
+}
+
+func fireMigrateHook(s *seam[func(caller string)], caller string) {
+	if fn, ok := s.get(); ok {
+		fn(caller)
+	}
+}

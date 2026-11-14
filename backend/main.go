@@ -3,6 +3,9 @@ package main
 import (
 	"cmp"
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -80,6 +83,37 @@ func scheduleBookerErasure(c cronRegistrar, job bookerErasureJob) (startup func(
 		return nil, err
 	}
 	return unit, nil
+}
+
+// openDatabase is the backend's start step 3 (PAC-84 contract 5.3, amended
+// by PAC-116 contract 4.1): the migrate-when-stopped procedure with caller
+// paceday-backend, then the pool, opened without migrating. A refusal is
+// "refusing to start: <PAC-116 contract 5 text>"; any other failure keeps
+// today's "failed to open database: run migrations: ..." text.
+func openDatabase(ctx context.Context, dsn string) (*sql.DB, error) {
+	res, err := storage.MigrateWhenStopped(ctx, dsn, storage.MigrateOptions{Caller: storage.AppBackend})
+	var refusal *storage.MigrationRefusal
+	switch {
+	case errors.As(err, &refusal):
+		return nil, fmt.Errorf("refusing to start: %w", err)
+	case err != nil:
+		return nil, fmt.Errorf("failed to open database: run migrations: %w", err)
+	case res.Applied:
+		log.Printf("database: migrations applied, schema version %s -> %d", fromVersion(res), res.To)
+	}
+	db, err := storage.OpenNoMigrate(dsn, storage.AppBackend)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	return db, nil
+}
+
+// fromVersion prints the version a migration run started from.
+func fromVersion(res storage.MigrateResult) string {
+	if !res.FromPresent {
+		return "none"
+	}
+	return fmt.Sprint(res.From)
 }
 
 func run() int {
@@ -189,9 +223,12 @@ func run() int {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}
 
-	db, err := storage.Open(dsn)
+	// PAC-116 (contract 4.1, PAC-84 5.3 step 3 as amended): pending
+	// migrations go through the migrate-when-stopped procedure before the
+	// serving pool is opened; the pool is then opened without migrating.
+	db, err := openDatabase(context.Background(), dsn)
 	if err != nil {
-		log.Fatalf("failed to open database: %v", err)
+		log.Fatal(err)
 	}
 	// PAC-81 AC-A9: pool caps, operator settings with the spec's defaults.
 	pool, poolNotices := config.DecideDBPool(os.Getenv)

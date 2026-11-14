@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -53,4 +54,72 @@ func Create() (string, func() error, error) {
 		return err
 	}
 	return target.String(), cleanup, nil
+}
+
+// WaitNoSessions waits until no client session is connected to dsn's
+// database (autovacuum workers are not sessions). A
+// pool a test closed can linger server-side for a moment, and PAC-116's
+// migrate-when-stopped procedure counts every other session on the database
+// as "serving", so a test that closes its pool and then applies pending
+// migrations waits here first (PAC-116 OQ-3). The check runs from the admin
+// database, so it is not itself a session on dsn's database.
+func WaitNoSessions(dsn string, timeout time.Duration) error {
+	target, err := url.Parse(dsn)
+	if err != nil {
+		return err
+	}
+	name := strings.TrimPrefix(target.Path, "/")
+	admin, err := sql.Open("pgx", AdminDSN())
+	if err != nil {
+		return err
+	}
+	defer admin.Close()
+	deadline := time.Now().Add(timeout)
+	for {
+		var n int
+		if err := admin.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND backend_type = 'client backend'`, name).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%d session(s) still connected to %s after %s", n, name, timeout)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// AdminDSN is the DSN of the database the test databases are created from:
+// a session there is not a session on any test database.
+func AdminDSN() string {
+	if dsn := os.Getenv("PACEDAY_TEST_DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	return fallbackDSN
+}
+
+// WaitPIDGone waits until the server process pid has ended, for a test that
+// closed one connection of its own and must not have it counted as another
+// session by PAC-116's procedure.
+func WaitPIDGone(pid int, timeout time.Duration) error {
+	admin, err := sql.Open("pgx", AdminDSN())
+	if err != nil {
+		return err
+	}
+	defer admin.Close()
+	deadline := time.Now().Add(timeout)
+	for {
+		var n int
+		if err := admin.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE pid = $1`, pid).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("server process %d still running after %s", pid, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
