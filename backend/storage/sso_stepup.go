@@ -181,10 +181,63 @@ type SSOStepupOutcome struct {
 	Now     time.Time
 }
 
+// StepupDenialRecordBound is how many denied step-up outcomes of one user are
+// recorded individually per StepupDenialWindow (PAC-75 contract §3.1; owner
+// OQ-1 factory default). Each one beyond is counted in
+// sso_stepup_denial_windows.left_out instead. Granted outcomes are always
+// recorded.
+const StepupDenialRecordBound = 5
+
+// StepupDenialWindow is the length of a denial window. A window starts at a
+// multiple of it since the Unix epoch (UTC-aligned), from the outcome's Now.
+const StepupDenialWindow = 10 * time.Minute
+
+// StepupDenialWindowStart is the start of the denial window holding t:
+// floor(unix_seconds(t) / 600) * 600, in UTC (contract §3.1). Go's zero time
+// is a whole number of windows before the Unix epoch, so Truncate is aligned
+// to the epoch too.
+func StepupDenialWindowStart(t time.Time) time.Time {
+	return t.UTC().Truncate(StepupDenialWindow)
+}
+
+// SSOStepupRecord is what recording one outcome did.
+type SSOStepupRecord struct {
+	// Grant is the issued grant, nil for a denied outcome.
+	Grant *SSOStepupGrant
+	// WindowStart and LeftOut describe a denied outcome's window after this
+	// record: LeftOut is 0 when this outcome was recorded individually, and
+	// the window's left-out count otherwise. Both are zero for a grant.
+	WindowStart time.Time
+	LeftOut     int
+}
+
 // RecordSSOStepupOutcome records a step-up outcome and, when granted, pins the
 // tenant and issues the grant, all in one transaction: if any part fails,
-// nothing is issued (spec Decisions, D-4). A denied outcome returns a nil grant.
+// nothing is issued (spec Decisions, D-4). A denied outcome returns a nil
+// grant, and is recorded individually only within the PAC-75 bound
+// (RecordSSOStepupOutcomeWindow).
 func RecordSSOStepupOutcome(ctx context.Context, db DBTX, o SSOStepupOutcome) (*SSOStepupGrant, error) {
+	rec, err := RecordSSOStepupOutcomeWindow(ctx, db, o)
+	return rec.Grant, err
+}
+
+// RecordSSOStepupOutcomeWindow is RecordSSOStepupOutcome reporting what was
+// done with a denied outcome (PAC-75 contract §3.3). One READ COMMITTED
+// transaction:
+//
+//  1. the PAC-71 re-check, which KEY SHARE-locks the session's user; when no
+//     guard names o.UserID, the acting user's row is KEY SHARE-locked
+//     explicitly, so it is always the first lock (lock order, contract §3.5:
+//     users, then one window row, then organizations through the event's FK);
+//  2. granted: tenant pin, grant and event, as before; no window statement;
+//  3. denied: a transaction-local lock_timeout (LinkLockTimeout), then one
+//     upsert of the (user, window) row deciding "recorded or counted";
+//  4. the sso_stepup event only when this outcome is recorded individually
+//     (the returned left_out is 0);
+//  5. commit. Any failure rolls everything back: no count without its
+//     event, no event without its count.
+func RecordSSOStepupOutcomeWindow(ctx context.Context, db DBTX, o SSOStepupOutcome) (SSOStepupRecord, error) {
+	var rec SSOStepupRecord
 	tx, err := db.BeginTx(ctx, nil)
 	// PAC-71 in-request re-check, in this transaction.
 	if err == nil {
@@ -194,9 +247,20 @@ func RecordSSOStepupOutcome(ctx context.Context, db DBTX, o SSOStepupOutcome) (*
 		}
 	}
 	if err != nil {
-		return nil, err
+		return rec, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// PAC-75 §3.3 step 1: without a guard for the acting user, the re-check
+	// locked nothing of theirs; take the same KEY SHARE explicitly, before
+	// the window row (contract §3.5: without it a concurrent account
+	// deletion deadlocks with the window row's FK check).
+	if g := SessionGuardFrom(ctx); g == nil || g.UserID != o.UserID {
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = $1 FOR KEY SHARE`, o.UserID).Scan(&one); err != nil {
+			return SSOStepupRecord{}, fmt.Errorf("lock step-up actor: %w", err)
+		}
+	}
 
 	purpose := o.Purpose
 	if purpose == "" {
@@ -206,10 +270,9 @@ func RecordSSOStepupOutcome(ctx context.Context, db DBTX, o SSOStepupOutcome) (*
 	if purpose != SSOGrantPurposeSSOWrite {
 		details.Purpose = purpose
 	}
-	var grant *SSOStepupGrant
 	if o.Granted {
 		if o.OrgID == nil {
-			return nil, fmt.Errorf("RecordSSOStepupOutcome: a grant needs an org")
+			return SSOStepupRecord{}, fmt.Errorf("RecordSSOStepupOutcome: a grant needs an org")
 		}
 		details.Outcome = "granted"
 		if o.PinTenant != "" {
@@ -217,29 +280,90 @@ func RecordSSOStepupOutcome(ctx context.Context, db DBTX, o SSOStepupOutcome) (*
 				UPDATE organizations SET ms_tenant_id = lower($2)
 				WHERE id = $1 AND (ms_tenant_id IS NULL OR lower(ms_tenant_id) = lower($2))`, *o.OrgID, o.PinTenant)
 			if err != nil {
-				return nil, err
+				return SSOStepupRecord{}, err
 			}
 			if n, err := res.RowsAffected(); err != nil {
-				return nil, err
+				return SSOStepupRecord{}, err
 			} else if n != 1 {
-				return nil, ErrTenantPinned
+				return SSOStepupRecord{}, ErrTenantPinned
 			}
 		}
 		// The grant carries the purpose the step-up was started for.
-		if grant, err = issueGrant(ctx, tx, o.UserID, *o.OrgID, o.Provider, purpose, o.Now); err != nil {
-			return nil, err
+		if rec.Grant, err = issueGrant(ctx, tx, o.UserID, *o.OrgID, o.Provider, purpose, o.Now); err != nil {
+			return SSOStepupRecord{}, err
 		}
 	} else {
 		r := o.Reason
 		details.Reason = &r
+		now := o.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		rec.WindowStart = StepupDenialWindowStart(now)
+		if err := setLinkLockTimeout(tx); err != nil {
+			return SSOStepupRecord{}, err
+		}
+		// left_out grows only once recorded has reached the bound, and
+		// recorded never grows after that: left_out = 0 after this statement
+		// means this statement incremented recorded (contract §3.3).
+		if err := tx.QueryRowContext(ctx, `
+			INSERT INTO sso_stepup_denial_windows AS w (user_id, window_start, recorded)
+			VALUES ($1, $2, 1)
+			ON CONFLICT (user_id, window_start) DO UPDATE SET
+			  recorded         = w.recorded + CASE WHEN w.recorded < $3 THEN 1 ELSE 0 END,
+			  left_out         = w.left_out + CASE WHEN w.recorded < $3 THEN 0 ELSE 1 END,
+			  last_left_out_at = CASE WHEN w.recorded < $3 THEN w.last_left_out_at ELSE $4 END
+			RETURNING left_out`,
+			o.UserID, rec.WindowStart, StepupDenialRecordBound, now.UTC(),
+		).Scan(&rec.LeftOut); err != nil {
+			return SSOStepupRecord{}, err
+		}
+		fireAfterStepupDenialUpsert(o.UserID)
 	}
-	if err := insertSSOEvent(ctx, tx, o.UserID, o.OrgID, SSOEventStepup, details); err != nil {
-		return nil, err
+	if rec.LeftOut == 0 {
+		if err := insertSSOEvent(ctx, tx, o.UserID, o.OrgID, SSOEventStepup, details); err != nil {
+			return SSOStepupRecord{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
+		return SSOStepupRecord{}, err
+	}
+	return rec, nil
+}
+
+// SSOStepupDenialWindow is one row of sso_stepup_denial_windows (operators
+// and tests; no API operation reads it, contract §3.6).
+type SSOStepupDenialWindow struct {
+	UserID        uuid.UUID  `json:"user_id"`
+	WindowStart   time.Time  `json:"window_start"`
+	Recorded      int        `json:"recorded"`
+	LeftOut       int        `json:"left_out"`
+	LastLeftOutAt *time.Time `json:"last_left_out_at"`
+}
+
+// ListSSOStepupDenialWindows returns a user's denial windows, oldest first.
+func ListSSOStepupDenialWindows(ctx context.Context, db *sql.DB, userID uuid.UUID) ([]SSOStepupDenialWindow, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT user_id, window_start, recorded, left_out, last_left_out_at
+		FROM sso_stepup_denial_windows WHERE user_id = $1 ORDER BY window_start`, userID)
+	if err != nil {
 		return nil, err
 	}
-	return grant, nil
+	defer func() { _ = rows.Close() }()
+	out := make([]SSOStepupDenialWindow, 0)
+	for rows.Next() {
+		var w SSOStepupDenialWindow
+		var last sql.NullTime
+		if err := rows.Scan(&w.UserID, &w.WindowStart, &w.Recorded, &w.LeftOut, &last); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			t := last.Time
+			w.LastLeftOutAt = &t
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 // GetOrgMSTenantID returns the org's pinned Microsoft tenant id, or "".

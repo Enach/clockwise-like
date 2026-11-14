@@ -54,6 +54,7 @@ var (
 	afterBookerErasureRecheck seam[func(tx *sql.Tx, linkID uuid.UUID) error]
 	afterBookerErasureUpdate  seam[func(linkID uuid.UUID) error]
 	afterLinkPatchUpdate      seam[func(linkID uuid.UUID) error]
+	afterStepupDenialUpsert   seam[func(userID uuid.UUID)]
 )
 
 // InstallGuardedCallHook installs the mid-request seam (PAC-71 review of
@@ -98,4 +99,20 @@ func InstallAfterBookerErasureUpdate(tb TB, fn func(linkID uuid.UUID) error) (un
 func InstallAfterLinkPatchUpdate(tb TB, fn func(linkID uuid.UUID) error) (uninstall func()) {
 	tb.Helper()
 	return afterLinkPatchUpdate.install(tb, fn)
+}
+
+// InstallAfterStepupDenialUpsert installs the seam that runs inside a denied
+// step-up record's transaction after the window upsert and before the event
+// insert (PAC-75 AC-32), so a test can hold the window row while the same
+// user is deleted and prove the lock order (contract §3.5).
+func InstallAfterStepupDenialUpsert(tb TB, fn func(userID uuid.UUID)) (uninstall func()) {
+	tb.Helper()
+	return afterStepupDenialUpsert.install(tb, fn)
+}
+
+// fireAfterStepupDenialUpsert runs the PAC-75 seam, if a test installed one.
+func fireAfterStepupDenialUpsert(userID uuid.UUID) {
+	if fn, ok := afterStepupDenialUpsert.get(); ok {
+		fn(userID)
+	}
 }

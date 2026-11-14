@@ -54,15 +54,37 @@ func EmailBelongsToDomain(email, d string) bool {
 	return emailDomain != "" && emailDomain == d
 }
 
-// DomainMatchesOrg reports whether d is exactly orgDomain, compared
-// case-insensitively and as sent: no whitespace is trimmed, so " acme.com "
-// is another domain (PAC-50 spec §9 D-9). Subdomains do NOT match (PAC-50
-// §4.7, ex-PAC-46): sign-in detection routes a domain to its provider row by
-// that exact domain, so allowing eu.acme.com for a member of acme.com would let
-// them configure login for a domain nobody showed they administer. An empty
-// domain never matches.
+// DomainMatchesOrg reports whether d is exactly orgDomain, compared as sent:
+// no whitespace is trimmed, so " acme.com " is another domain (PAC-50 spec §9
+// D-9). Subdomains do NOT match (PAC-50 §4.7, ex-PAC-46): sign-in detection
+// routes a domain to its provider row by that exact domain, so allowing
+// eu.acme.com for a member of acme.com would let them configure login for a
+// domain nobody showed they administer. An empty domain never matches.
+//
+// PAC-75 (contract md 2.1): the comparison is case-insensitive for ASCII
+// letters only. The two values must have the same length in bytes and be
+// bytewise equal once A-Z is mapped to a-z; every other byte, including the
+// bytes of any non-ASCII letter, must be identical. No Unicode case folding
+// (strings.EqualFold accepted U+017F for "s" and U+212A for "k"), no trimming,
+// no IDNA, no normalisation. Callers replace an accepted value with orgDomain.
 func DomainMatchesOrg(d, orgDomain string) bool {
-	return d != "" && strings.EqualFold(d, orgDomain)
+	if d == "" || len(d) != len(orgDomain) {
+		return false
+	}
+	for i := 0; i < len(d); i++ {
+		if asciiLower(d[i]) != asciiLower(orgDomain[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiLower maps 'A'-'Z' to 'a'-'z' and leaves every other byte unchanged.
+func asciiLower(b byte) byte {
+	if 'A' <= b && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 // DeriveOrgName turns a domain base segment into a display name.

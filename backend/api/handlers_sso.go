@@ -236,11 +236,14 @@ func (h *ssoHandlers) createSSOProvider(w http.ResponseWriter, r *http.Request) 
 	// Step 3, owner 2026-10-27 (spec §9 D-10): a subdomain of, or a domain
 	// foreign to, the caller's org domain is understood and not permitted:
 	// 403 (RFC 9110 §15.5.4). Untrimmed; before the grant is touched (AC-3c).
+	// PAC-75: case-insensitive for ASCII letters only, and what is accepted
+	// is the org domain's own bytes from here on (stored, looked up, answered),
+	// so every stored configuration is one the org's list shows.
 	if !domain.DomainMatchesOrg(body.Domain, caller.org.Domain) {
 		writeError(w, "provider_domain_mismatch", http.StatusForbidden)
 		return
 	}
-	body.Domain = strings.ToLower(body.Domain)
+	body.Domain = caller.org.Domain
 
 	// Step 4, PAC-22's check 6: a secret left out is kept only from the row
 	// this write would be stored under, and only while the issuer and client
@@ -459,14 +462,16 @@ func (h *ssoHandlers) deleteSSOProvider(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	// The segment is a target, never an authorization: lower-cased, and it
-	// must be the caller's own org domain exactly, as sent (no trimming:
-	// spec §9 D-9).
-	d := strings.ToLower(chi.URLParam(r, "domain"))
-	if !domain.DomainMatchesOrg(d, caller.org.Domain) {
+	// The segment is a target, never an authorization: as the router yields
+	// it (no trimming: spec §9 D-9), it must be the caller's own org domain
+	// up to ASCII letter case (PAC-75: no Unicode lower-casing before the
+	// comparison, so U+212A no longer becomes "k"), and the target is then
+	// the org domain's own bytes.
+	if !domain.DomainMatchesOrg(chi.URLParam(r, "domain"), caller.org.Domain) {
 		writeError(w, "provider_domain_mismatch", http.StatusForbidden) // spec §9 D-10
 		return
 	}
+	d := caller.org.Domain
 
 	via, ok := h.authorizeWrite(w, r, caller)
 	if !ok {
