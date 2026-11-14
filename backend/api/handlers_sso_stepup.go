@@ -46,7 +46,8 @@ const (
 )
 
 // The callback's denial reasons (spec §4.6). The same values go into the
-// redirect and into the SSO event table.
+// redirect and into the SSO event table, except reasonUnavailable (redirect
+// only, PAC-75).
 const (
 	reasonStateMismatch = "state_mismatch"
 	reasonTokenInvalid  = "token_invalid"
@@ -58,6 +59,12 @@ const (
 	reasonNotAdmin      = "not_admin"
 	// reasonIdentityMismatch is PAC-71 check 4b, checked after every other.
 	reasonIdentityMismatch = "identity_mismatch"
+	// reasonUnavailable is PAC-75 / PAC-95: the time budget ran out after
+	// the administrator check passed (from check 4b) or after the outcome
+	// was decided, before the record started. Redirect only: it is only ever
+	// the budget's answer, and the budget's answer records nothing, so it is
+	// never written to the SSO event table.
+	reasonUnavailable = "unavailable"
 )
 
 // ssoStore is the part of storage the SSO write and step-up paths go
@@ -87,7 +94,20 @@ func (s dbSSOStore) deleteProvider(ctx context.Context, d string, actor, org uui
 
 func (s dbSSOStore) recordStepup(ctx context.Context, o storage.SSOStepupOutcome) (*storage.SSOStepupGrant, error) {
 	// A connection reserved by the callback (PAC-81) is used when present.
-	return storage.RecordSSOStepupOutcome(ctx, storage.Reserved(ctx, s.ah.db), o)
+	rec, err := storage.RecordSSOStepupOutcomeWindow(ctx, storage.Reserved(ctx, s.ah.db), o)
+	if err == nil && rec.LeftOut == 1 {
+		logStepupLeftOut(o.UserID, rec.WindowStart)
+	}
+	return rec.Grant, err
+}
+
+// logStepupLeftOut is the one log line per user and window telling operators
+// that denied step-up outcomes beyond the bound are now counted rather than
+// recorded (PAC-75 contract §3.3). It is written after the commit, when the
+// window's left_out became 1, so it is never itself the flood.
+func logStepupLeftOut(user uuid.UUID, windowStart time.Time) {
+	log.Printf("sso step-up: denied outcomes of user %s in window %s beyond %d are counted, not recorded (sso_stepup_denial_windows.left_out)",
+		user, windowStart.UTC().Format(time.RFC3339), storage.StepupDenialRecordBound)
 }
 
 func (s dbSSOStore) consumeGrant(ctx context.Context, user, org uuid.UUID, now time.Time) (bool, error) {
@@ -525,7 +545,9 @@ func (h *ssoHandlers) stepupCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// PAC-81 AC-A2: at the budget, the denied redirect: state_mismatch
 	// until check 0 (state and organisation) completes, then the reason of
-	// the check that is running. Step 5 (the record) is waited for.
+	// the check that is running; PAC-75: from check 4b `unavailable`, and
+	// once decided, the decided outcome's answer (finishStepup). Step 5 (the
+	// record) is waited for.
 	h.stepupExpiry(ctx, "", reasonStateMismatch)
 	user, err := storage.GetUserByID(h.ah.db, userIDFromCtx(ctx))
 	if err != nil || user == nil {
@@ -602,6 +624,7 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 		if err != nil || !admin {
 			return reasonNotAdmin, ""
 		}
+		h.beforeIdentityCheck(ctx, running)
 		if !h.stepupIdentityMatches(ctx, user, storage.Identity{Provider: storage.IdentityGoogle, Subject: id.Subject}) {
 			return reasonIdentityMismatch, ""
 		}
@@ -642,11 +665,27 @@ func (h *ssoHandlers) checkStepup(ctx context.Context, r *http.Request, user *st
 	if !auth.HasQualifyingEntraRole(roles) {
 		return reasonNotAdmin, ""
 	}
+	h.beforeIdentityCheck(ctx, running)
 	if !h.stepupIdentityMatches(ctx, user, storage.Identity{Provider: storage.IdentityMicrosoft, Tenant: tid, Subject: id.ObjectID}) {
 		return reasonIdentityMismatch, ""
 	}
 	return "", tid
 }
+
+// beforeIdentityCheck registers the budget's answer for check 4b (PAC-71's
+// binding read): the administrator check has passed, so a server delay from
+// here on is `unavailable`, never `not_admin` (PAC-75 contract §4, spec D-8).
+func (h *ssoHandlers) beforeIdentityCheck(ctx context.Context, running func(string)) {
+	running(reasonUnavailable)
+	if stepupBeforeIdentityCheck != nil {
+		stepupBeforeIdentityCheck(ctx)
+	}
+}
+
+// stepupBeforeIdentityCheck is a test seam (PAC-75 AC-26): it runs in
+// checkStepup after the `unavailable` registration and before check 4b. Nil
+// in production.
+var stepupBeforeIdentityCheck func(ctx context.Context)
 
 func containsFold(list []string, s string) bool {
 	for _, v := range list {
@@ -662,6 +701,16 @@ func containsFold(list []string, s string) bool {
 // grant carries purpose; an llm_org_key_write outcome's landing says so
 // (`&purpose=llm_org_key_write`), an sso_write one is PAC-50's exactly.
 func (h *ssoHandlers) finishStepup(w http.ResponseWriter, r *http.Request, user *storage.User, orgID *uuid.UUID, provider, purpose, reason, pin string) {
+	// PAC-75 / PAC-95 (contract §4): the outcome is decided, so before
+	// anything that can block, the budget's answer becomes the decided
+	// redirect's: a decided denial answers its own reason (with the purpose
+	// the decided redirect carries), and a granted outcome, which cannot be
+	// granted unless the record runs, answers `unavailable`.
+	answer := reason
+	if answer == "" {
+		answer = reasonUnavailable
+	}
+	h.stepupExpiry(r.Context(), purpose, answer)
 	o := storage.SSOStepupOutcome{
 		UserID: user.ID, OrgID: orgID, Provider: provider,
 		Granted: reason == "", Reason: reason, PinTenant: pin, Purpose: purpose, Now: h.clock.Now(),

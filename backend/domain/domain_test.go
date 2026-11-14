@@ -57,6 +57,26 @@ func TestDomainMatchesOrg(t *testing.T) {
 		{" acme.com ", "ACME.com", false},
 		{"", "acme.com", false},
 		{"", "", false},
+		// PAC-75 AC-6 (contract md 2.1): ASCII letters fold, nothing else.
+		{"acmeſ.com", "acmes.com", false},           // U+017F long s
+		{"ACMEſ.COM", "acmes.com", false},           // U+017F long s
+		{"Kcme.com", "kcme.com", false},        // U+212A Kelvin sign
+		{"ａｃｍｅ.com", "acme.com", false},             // fullwidth letters
+		{"ａcme.com", "acme.com", false},              // one fullwidth letter
+		{"İstanbul.com", "istanbul.com", false},     // U+0130
+		{"ıstanbul.com", "istanbul.com", false},     // U+0131
+		{"ISTANBUL.COM", "istanbul.com", true},      // ASCII
+		{"ıstanbul.com", "ıstanbul.com", true},      // non-ASCII org, same bytes
+		{"Istanbul.com", "ıstanbul.com", false},     // ı is not i
+		{"istanbul.com", "ıstanbul.com", false},     // ı is not i
+		{"STRAßE.DE", "straße.de", true},            // ASCII fold, ß same bytes
+		{"STRASSE.DE", "straße.de", false},          // no full case folding
+		{"straẞe.de", "straße.de", false},           // U+1E9E
+		{"ÉCOLE.fr", "école.fr", false},             // non-ASCII upper case of the org's letter
+		{"école.fr", "école.fr", true},              // exact bytes
+		{"XN--BCHER-KVA.EXAMPLE", "xn--bcher-kva.example", true},
+		{"bücher.example", "xn--bcher-kva.example", false}, // no IDNA
+		{"acme.com.", "acme.com", false},
 	}
 	for _, c := range cases {
 		got := DomainMatchesOrg(c.d, c.org)

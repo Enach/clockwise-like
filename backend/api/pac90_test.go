@@ -328,8 +328,9 @@ func TestPAC90_StepupPoolHeldAtRecordIsBudgetDenied(t *testing.T) {
 }
 
 // AC-5b: the record's connection is reserved, then the budget answers before
-// budget.Commit: the denied redirect, the handler returns within budget +
-// 1 s, the reserved connection is released within 1 s, nothing is stored.
+// budget.Commit: the denied redirect with reason=unavailable (PAC-75
+// AC-25), the handler returns within budget + 1 s, the reserved connection
+// is released within 1 s, nothing is stored.
 // Fails if finishStepup's `!budget.Commit` return is removed.
 func TestPAC90_StepupBudgetBetweenReserveAndCommitStoresNothing(t *testing.T) {
 	s := newPAC90Stepup(t, nil)
@@ -337,7 +338,12 @@ func TestPAC90_StepupBudgetBetweenReserveAndCommitStoresNothing(t *testing.T) {
 	t.Cleanup(func() { stepupBeforeCommit = nil })
 	rec, _, returned, stored := s.run(t, "pac90-commit")
 	stepupBeforeCommit = nil
+	// PAC-75 AC-25 (PAC-95): every check passed, so the budget's answer is
+	// "could not be completed, try again", never not_admin.
 	pac90WantDenied(t, rec)
+	if got, want := rec.Header().Get("Location"), pac50Frontend+"/settings?stepup=denied&reason=unavailable"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
 	if limit := pac90StepupBudget + time.Second; returned > limit {
 		t.Fatalf("handler returned after %s, want within %s", returned, limit)
 	}

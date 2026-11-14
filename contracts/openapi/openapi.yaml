@@ -30,13 +30,15 @@ info:
     answers that branch''s NOT CREDITED redirect, Location `<FRONTEND_URL>/?connect=not_credited`, with
     the connect state cookie expired; budget expiry never answers `?error=signin_refused`; (3) `ssoAdminStepupCallback`
     answers its denied redirect: `state_mismatch` when the budget runs out before check 0 completes (the
-    state could not be verified), else the reason of the check that was running; once step 5 (issuing
-    the grant) has started it is waited for like the booking insert, and the answer is granted, or the
-    500 if it failed; (4) `createPublicBooking` is never answered with the 503 once its booking insert
-    is sent: it waits for the insert and answers 201 if the row was saved or 500 if the insert failed.
-    Only that 503 proves no booking was saved; a 500 does not (a lost connection leaves the outcome unknown).
-    A request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before the handler
-    runs, by the backend and by nginx alike.'
+    state could not be verified), else the reason of the check that was running; from the start of check
+    4b it is `unavailable`, and once the outcome is decided a granted outcome answers `unavailable` and
+    a decided denial its own reason (PAC-75 / PAC-95); once step 5 (the record and, when granted, the
+    grant) has started it is waited for like the booking insert, and the answer is the outcome''s redirect,
+    or the 500 if it failed; (4) `createPublicBooking` is never answered with the 503 once its booking
+    insert is sent: it waits for the insert and answers 201 if the row was saved or 500 if the insert
+    failed. Only that 503 proves no booking was saved; a 500 does not (a lost connection leaves the outcome
+    unknown). A request body over 1 MiB is refused with 413 `{"error":"request body too large"}` before
+    the handler runs, by the backend and by nginx alike.'
 servers:
 - url: http://localhost:8080
   description: backend, direct
@@ -99,18 +101,30 @@ paths:
         \ Then, when\n      `oidc_client_secret` is present, it is a non-empty string: `\"\"`\n      and\
         \ `null` are refused with `oidc_client_secret must not be\n      empty` (PAC-22 spec D-12, AC-26).\
         \ Values are stored as given (not\n      trimmed).\n3. Domain: `domain` must equal the caller's\
-        \ org domain, exact and\n   case-insensitive. Otherwise 403 `provider_domain_mismatch` (owner\n\
-        \   decision 2026-10-27, RFC 9110 §15.5.4: the request is understood\n   and the caller is not\
-        \ permitted to configure that domain). A\n   subdomain does NOT match: with org `acme.com`, `sub.acme.com`\
-        \ is a\n   403, and so is a foreign domain such as `other.com`. Nothing is\n   trimmed: `\" acme.com\
-        \ \"` is a 403 too. Nothing is written and a live\n   grant is NOT consumed. (Before PAC-50 this\
-        \ was the suffix rule\n   domain.DomainMatchesOrg, which accepted any subdomain, with the\n  \
-        \ 403 `can only configure SSO for your own domain`; ex-PAC-46.)\n4. Kept secret (PAC-22 check\
-        \ 6), only when `oidc_client_secret` is\n   absent, against the row this write would be stored\
-        \ under: the row\n   under the lower-cased `domain` (PAC-50 stores domains lower-cased\n   and\
-        \ its migration lower-cases older rows, so `ACME.com` is checked\n   against the `acme.com` row).\
-        \ After step 3 the domain is the\n   caller's org domain, so the row read is always the caller's\
-        \ own\n   organisation's. 400 `oidc_client_secret is required` when there is\n   no configuration,\
+        \ org domain, exact and\n   case-insensitive for ASCII letters only; any other difference,\n \
+        \  including non-ASCII case folding, is a different domain (PAC-75,\n   the DOMAIN MATCH rule\
+        \ below). Otherwise 403\n   `provider_domain_mismatch` (owner\n   decision 2026-10-27, RFC 9110\
+        \ §15.5.4: the request is understood\n   and the caller is not permitted to configure that domain).\
+        \ A\n   subdomain does NOT match: with org `acme.com`, `sub.acme.com` is a\n   403, and so is\
+        \ a foreign domain such as `other.com`. Nothing is\n   trimmed: `\" acme.com \"` is a 403 too.\
+        \ Nothing is written and a live\n   grant is NOT consumed. (Before PAC-50 this was the suffix\
+        \ rule\n   domain.DomainMatchesOrg, which accepted any subdomain, with the\n   403 `can only configure\
+        \ SSO for your own domain`; ex-PAC-46.)\n\n   DOMAIN MATCH (PAC-75; the same rule for createSsoProvider,\n\
+        \   deleteSsoProvider and setSsoProviderState). The value as sent (no\n   trimming, no IDNA or\
+        \ punycode conversion, no Unicode\n   normalisation) matches the org domain when both have the\
+        \ same\n   length in bytes and, byte by byte, are equal or differ only by\n   mapping `A`-`Z`\
+        \ to `a`-`z`. Nothing else folds: `ſ` (U+017F) is\n   not `s`, the Kelvin sign `K` (U+212A) is\
+        \ not `k`, `İ` (U+0130)\n   and `ı` (U+0131) are not `i`, a fullwidth `ａ` (U+FF41) is not\n  \
+        \ `a`, and a U-label (`bücher.example`) is not its A-label\n   (`xn--bcher-kva.example`); each\
+        \ is a 403 here. An A-label is\n   ASCII and matches its own ASCII case variants\n   (`XN--BCHER-KVA.example`).\
+        \ An org domain holding a non-ASCII\n   letter is matched by those exact bytes (with ASCII letters\
+        \ still\n   case-free), never by a non-ASCII case variant. What is accepted\n   is stored and\
+        \ targeted as the org domain's exact bytes, so every\n   stored configuration is one listSsoProviders\
+        \ shows.\n4. Kept secret (PAC-22 check 6), only when `oidc_client_secret` is\n   absent, against\
+        \ the row this write would be stored under: the row\n   under the caller's org domain (since PAC-75\
+        \ the write's domain is\n   replaced by the org domain's exact bytes once step 3 passes, so\n\
+        \   `ACME.com` is checked against the `acme.com` row). The row read\n   is always the caller's\
+        \ own organisation's. 400 `oidc_client_secret is required` when there is\n   no configuration,\
         \ or it is not of type `oidc`, or its stored client\n   secret is empty (PAC-22 spec AC-7, AC-25);\
         \ 400 `oidc_client_secret\n   is required when oidc_issuer or oidc_client_id changes` when the\n\
         \   submitted issuer or client id differs from the stored one (PAC-22\n   spec D-13, AC-24). Like\
@@ -140,30 +154,31 @@ paths:
         \ that grant on the write.\n   Neither gives 403 `sso_write_requires_admin_stepup` with\n   `stepup_url`,\
         \ `stepup_scopes` and `without_stepup`. A 403 rather\n   than a 401: the session is valid, the\
         \ privilege is not there.\n   Every 403 leaves the provider table unchanged.\n6. Store: the domain\
-        \ is stored lower-cased, so `ACME.com` replaces the\n   existing `acme.com` row rather than adding\
-        \ a second one.\n   Interleaved writes (PAC-22 spec D-14, AC-27, AC-28): another write\n   to\
-        \ the same domain can be stored between this request's checks and\n   its store, so what a replace\
-        \ keeps is decided again, atomically\n   with the store, against the configuration as it is at\
-        \ that moment\n   and under the same key as step 4. When the secret is left out, the\n   store\
-        \ keeps the stored secret only if the conditions of step 4\n   still hold; if they do not (the\
-        \ issuer or client id now differs,\n   there is no secret to keep, the configuration was removed\
-        \ or is no\n   longer `oidc`), the request is refused with the 400 step 4 would\n   give against\
-        \ that state and nothing it carried is stored. The\n   grant consumed in step 5a stays consumed\
-        \ (PAC-50 spec §4.2 step\n   5a: the consume is the last step before the write; §9 D-14). A\n\
-        \   stored configuration never pairs one write's issuer or client id\n   with a secret kept from\
-        \ a configuration that had a different issuer\n   or client id, and never holds an empty secret\
-        \ written by this\n   operation. The active state is never written by a replace: the\n   configuration\
-        \ keeps the state stored at the moment the replace is\n   stored, so a setSsoProviderState transition\
-        \ stored while the\n   replace was in flight is never undone (PAC-22 AC-28).\n   Each stored write\
-        \ is recorded server-side for operators (PAC-50\n   spec §4.6, `op` `create` or `update`, `via`\
-        \ `stepup` or\n   `breakglass`); a refused or failed store records nothing. No\n   operation exposes\
-        \ that record.\n\nActive state (PAC-22 spec §3.3, D-3, resolves API-066). This operation\nnever\
-        \ changes whether SSO is active: a new configuration is created\nactive, and a replaced configuration\
-        \ keeps the state stored at the\nmoment the replace is stored. Only setSsoProviderState changes\
-        \ it.\n(Before PAC-22 every write forced `enabled` to true.)\n\nConfigurations stored before PAC-22\
-        \ (a SAML row, an OIDC row with an\nempty issuer, client id or secret) are not rewritten or deleted\
-        \ by\nthese checks. They stay readable through listSsoProviders and can be\nsuspended, resumed\
-        \ and deleted.\n"
+        \ is stored as the org domain's exact bytes\n   (PAC-75; org domains are lower-case, so this is\
+        \ the lower-cased\n   ASCII value PAC-50 stored), so `ACME.com` replaces the existing\n   `acme.com`\
+        \ row rather than adding a second one.\n   Interleaved writes (PAC-22 spec D-14, AC-27, AC-28):\
+        \ another write\n   to the same domain can be stored between this request's checks and\n   its\
+        \ store, so what a replace keeps is decided again, atomically\n   with the store, against the\
+        \ configuration as it is at that moment\n   and under the same key as step 4. When the secret\
+        \ is left out, the\n   store keeps the stored secret only if the conditions of step 4\n   still\
+        \ hold; if they do not (the issuer or client id now differs,\n   there is no secret to keep, the\
+        \ configuration was removed or is no\n   longer `oidc`), the request is refused with the 400 step\
+        \ 4 would\n   give against that state and nothing it carried is stored. The\n   grant consumed\
+        \ in step 5a stays consumed (PAC-50 spec §4.2 step\n   5a: the consume is the last step before\
+        \ the write; §9 D-14). A\n   stored configuration never pairs one write's issuer or client id\n\
+        \   with a secret kept from a configuration that had a different issuer\n   or client id, and\
+        \ never holds an empty secret written by this\n   operation. The active state is never written\
+        \ by a replace: the\n   configuration keeps the state stored at the moment the replace is\n  \
+        \ stored, so a setSsoProviderState transition stored while the\n   replace was in flight is never\
+        \ undone (PAC-22 AC-28).\n   Each stored write is recorded server-side for operators (PAC-50\n\
+        \   spec §4.6, `op` `create` or `update`, `via` `stepup` or\n   `breakglass`); a refused or failed\
+        \ store records nothing. No\n   operation exposes that record.\n\nActive state (PAC-22 spec §3.3,\
+        \ D-3, resolves API-066). This operation\nnever changes whether SSO is active: a new configuration\
+        \ is created\nactive, and a replaced configuration keeps the state stored at the\nmoment the replace\
+        \ is stored. Only setSsoProviderState changes it.\n(Before PAC-22 every write forced `enabled`\
+        \ to true.)\n\nConfigurations stored before PAC-22 (a SAML row, an OIDC row with an\nempty issuer,\
+        \ client id or secret) are not rewritten or deleted by\nthese checks. They stay readable through\
+        \ listSsoProviders and can be\nsuspended, resumed and deleted.\n"
       requestBody:
         required: true
         content:
@@ -200,7 +215,7 @@ paths:
 
             is true (the kept secret, PAC-22 spec AC-22). `domain` is the
 
-            lower-cased domain (PAC-50).
+            org domain''s exact bytes (PAC-75; lower-case, as PAC-50 stored).
 
             '
           content:
@@ -665,13 +680,32 @@ paths:
         \ for an absent or `sso_write` purpose\n(NEW-llm-bring-your-own Part 2) covers what a client can\
         \ observe: the\n302 and its Location, the 400 bodies, the options read and the\nlanding Location.\
         \ It does not cover the signed state cookie's value,\nwhich now also binds the purpose and is\
-        \ opaque to clients.\n\nEvery outcome with a session, granted or denied, is recorded\nserver-side\
-        \ for operators (spec §4.6) and clears the state cookie.\nNo outcome touches the session, the\
-        \ user's settings or token store.\nThe mapping of a provider `error`, a missing `code`, a failed\n\
-        organisation lookup and an unverified Google email onto the enum is\nassumed by the factory at\
-        \ stage 2, pending owner confirmation (spec\n\"Decisions\", D-3).\n\nThe web app's Settings page\
-        \ reads the outcome from this query\n(`stepup`, and `reason` on a denial) and states it (spec\
-        \ AC-25); a\nstep-up started from a refused write elsewhere also lands there.\n"
+        \ opaque to clients.\n\nEvery outcome with a session clears the state cookie. Every granted\n\
+        outcome is recorded server-side for operators (spec §4.6). Denied\noutcomes are recorded individually\
+        \ up to a bound (PAC-75, owner\ndefault OQ-1): at most 5 denied outcomes per user per 10-minute\n\
+        window (UTC-aligned: the window holding instant t starts at\nfloor(unix_seconds(t) / 600) * 600,\
+        \ t read on the api's clock when\nthe outcome is decided), whatever the reason, the purpose, the\n\
+        provider, the organisation (or none) and the number of api\nprocesses. Each denied outcome beyond\
+        \ the bound is not recorded\nindividually; it is counted instead, so the operator record shows,\n\
+        per user and window, how many were left out (`left_out` in\n`sso_stepup_denial_windows`, contracts/features/PAC-75.md\
+        \ §3). The\nbound changes nothing a client can observe: the 302, its Location\n(reason included),\
+        \ the cleared cookie and the absence of any grant\nare the same as for a recorded denial. A denial\
+        \ whose record\ntransaction cannot complete (storage failure, or a wait on the\nwindow's row longer\
+        \ than 10 s) is the 500 below, as before.\nNo outcome touches the session, the user's settings\
+        \ or token store.\n\nTime budget (PAC-81 rule, completed by PAC-75 / PAC-95). While\nchecks 0\
+        \ to 4 run, a budget expiry answers the denied redirect with\n`state_mismatch` before check 0\
+        \ completes, else the reason of the\ncheck that is running (unchanged). Once check 4 has passed\
+        \ (from\nthe start of check 4b), the answer is `unavailable`. Once the\noutcome is decided and\
+        \ until step 5 starts (reserving the record's\ndatabase connection, then the commit point), the\
+        \ answer is the\nredirect the decided outcome would have had, except that a granted\noutcome answers\
+        \ `unavailable`: a decided denial answers its own\nreason (for example `hd_mismatch`, never the\
+        \ earlier `token_invalid`\nlabel), with `&purpose=llm_org_key_write` exactly when the decided\n\
+        redirect carries it. A budget answer never issues a grant and never\nrecords anything. Once step\
+        \ 5 has started it is waited for, as\nbefore.\nThe mapping of a provider `error`, a missing `code`,\
+        \ a failed\norganisation lookup and an unverified Google email onto the enum is\nassumed by the\
+        \ factory at stage 2, pending owner confirmation (spec\n\"Decisions\", D-3).\n\nThe web app's\
+        \ Settings page reads the outcome from this query\n(`stepup`, and `reason` on a denial) and states\
+        \ it (spec AC-25); a\nstep-up started from a refused write elsewhere also lands there.\n"
       parameters:
       - name: state
         in: query
@@ -700,26 +734,44 @@ paths:
             Location:
               schema:
                 type: string
-                pattern: /settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin|identity_mismatch))(&purpose=llm_org_key_write)?$
+                pattern: /settings\?stepup=(granted|denied&reason=(state_mismatch|token_invalid|no_hd|hd_mismatch|tid_mismatch|tid_changed|email_mismatch|not_admin|identity_mismatch|unavailable))(&purpose=llm_org_key_write)?$
               description: '`<FRONTEND_URL>/settings?stepup=granted`, or
 
                 `<FRONTEND_URL>/settings?stepup=denied&reason=<reason>`, where
 
-                `<reason>` is one of the nine values in the pattern (spec
+                `<reason>` is one of the ten values in the pattern:
 
-                §4.6; the same enum the server records): `state_mismatch`,
+                `state_mismatch`, `token_invalid`, `no_hd`, `hd_mismatch`
 
-                `token_invalid`, `no_hd`, `hd_mismatch` (Google only),
+                (Google only), `tid_mismatch`, `tid_changed` (Microsoft only),
 
-                `tid_mismatch`, `tid_changed` (Microsoft only),
+                `email_mismatch`, `not_admin`, since PAC-71
 
-                `email_mismatch`, `not_admin`, and since PAC-71
+                `identity_mismatch` (check 4b), and since PAC-75 (PAC-95)
 
-                `identity_mismatch` (check 4b). Never a raw token or provider
+                `unavailable`. The first nine are the enum the server records
 
-                error text. Built from the configured frontend URL, never a
+                (spec §4.6). `unavailable` means "the confirmation could not be
 
-                literal path (contrast API-084).
+                completed in time; nothing was granted; try again": it is
+
+                answered only by the time budget after check 4 has passed or
+
+                after the outcome was decided (see the operation''s "Time
+
+                budget"), never decided by a check, and never recorded,
+
+                because it arises only when the record did not happen. So the
+
+                redirect enum is the recorded enum plus `unavailable`. A client
+
+                that does not know a reason states a denial without detail.
+
+                Never a raw token or provider error text. Built from the
+
+                configured frontend URL, never a literal path (contrast
+
+                API-084).
 
 
                 NEW-llm-bring-your-own Part 2: when the state''s purpose is
@@ -765,7 +817,13 @@ paths:
         '500':
           description: 'Issuing the grant, pinning the tenant or writing the record failed
 
-            in storage. Body: `{"error":"internal error"}`; the detail is
+            in storage (since PAC-75 also: counting a denied outcome against
+
+            its window failed, or waited on the window''s row for more than
+
+            10 s; nothing is recorded or counted then). Body:
+
+            `{"error":"internal error"}`; the detail is
 
             written to the server log and Sentry only (PAC-21). No usable grant
 
@@ -924,13 +982,37 @@ paths:
 
         body to check: membership (403 `org membership required` / `org not
 
-        found`), then the `{domain}` segment, lower-cased and not trimmed, must
+        found`), then the `{domain}` segment (as the router yields it, see
 
-        equal the caller''s org domain exactly (403 `provider_domain_mismatch`,
+        below; not trimmed) must equal the caller''s org domain exactly, case-insensitive for
 
-        owner decision 2026-10-27; a subdomain does not match, nor does a
+        ASCII letters only; any other difference, including non-ASCII case
 
-        foreign domain, nor `%20acme.com`; no grant is consumed), then
+        folding, is a different domain (createSsoProvider''s DOMAIN MATCH,
+
+        PAC-75; 403 `provider_domain_mismatch`, owner decision 2026-10-27; a
+
+        subdomain does not match, nor does a foreign domain, nor
+
+        `%20acme.com`, nor `%E2%84%AAcme.com` for org `kcme.com`, nor
+
+        `acme%C5%BF.com` for org `acmes.com`; no grant is consumed). Before
+
+        PAC-75 the segment was lower-cased with Unicode rules before the
+
+        comparison, so the Kelvin sign and `İ` passed; they no longer do.
+
+        The segment is percent-decoded only when the request path uses the
+
+        canonical escaping (upper-case hex, escapes only where needed:
+
+        `%E2%84%AAcme.com` is `Kcme.com` with the Kelvin sign); a path with
+
+        any other escape (`%41cme.com`, `%e2%84%aacme.com`) yields the
+
+        escaped text itself, which never matches an org domain (403), as
+
+        before PAC-75 (chi routes on the raw path then). Then
 
         authorization (a live step-up grant, consumed, or break-glass with a
 
@@ -945,9 +1027,9 @@ paths:
         and only ever within the caller''s own org domain.
 
 
-        The row deleted is the lower-cased domain, so `DELETE
+        The row deleted is the org domain''s (its exact bytes, PAC-75), so
 
-        /api/admin/sso/ACME.com` removes the `acme.com` row, whatever its
+        `DELETE /api/admin/sso/ACME.com` removes the `acme.com` row, whatever its
 
         state: a suspended configuration (PAC-22) is deleted like an active
 
@@ -1054,38 +1136,40 @@ paths:
         \ a second `state` is refused (`duplicate property:\n   state`), so a body never asks for two\
         \ states and no decoder's\n   \"last one wins\" decides a kill switch; then `state` is `active`\
         \ or\n   `suspended` (`state must be 'active' or 'suspended'`, for a missing\n   or `null` state\
-        \ too).\n3. Domain: `{domain}`, lower-cased and not trimmed, must equal the\n   caller's org domain\
-        \ exactly, case-insensitively, else 403\n   `provider_domain_mismatch` (SsoWriteDomainMismatch),\
-        \ as on the\n   other two SSO writes (owner decision 2026-10-27; PAC-22 spec D-15,\n   PAC-50\
-        \ spec §9 D-10). A subdomain of the org domain, another org's\n   domain and a padded segment\
-        \ (`%20acme.com`) are all refused (PAC-22\n   spec AC-21).\n4. Authorization: step 5 of createSsoProvider\
-        \ (a live step-up grant,\n   consumed, tried first; or break-glass with a fresh session), else\n\
-        \   403 `sso_write_requires_admin_stepup` (with `stepup_url`,\n   `stepup_scopes` and `without_stepup`)\
-        \ or\n   `sso_write_requires_fresh_login`. Steps 1-3 are decided from the\n   request alone and\
-        \ leave the grant unspent.\n5. Lookup of the configuration for the lower-cased domain, whatever\n\
-        \   its state: none gives 404 `sso provider not found`; nothing is\n   created and nothing is\
-        \ recorded, and the grant is spent\n   (PAC-22 spec D-9, AC-19; as deleteSsoProvider's 404, PAC-50\
-        \ spec\n   §9 D-5).\n6. If the configuration is already in the requested state, nothing\n   changes\
-        \ and the answer is 200 with the configuration as stored\n   (PAC-22 spec AC-20). Otherwise only\
-        \ the active state is written: no\n   configuration value is read from the request or written,\
-        \ so a\n   replace stored while this request is in flight keeps its values\n   and this request\
-        \ keeps its state (PAC-22 spec AC-28).\n   `updated_at` is not changed by this operation in either\
-        \ case: it\n   records the last configuration write (createSsoProvider).\n7. Recording: every\
-        \ transition that found its configuration,\n   including one that changed nothing, is recorded\
-        \ where PAC-50\n   records configuration writes (PAC-50 spec §4.6), as\n   `sso_provider_written`\
-        \ with `op` `suspend` (state `suspended`) or\n   `resume` (state `active`) and `via` `stepup`\
-        \ or `breakglass`,\n   naming the organisation, the acting user and the provider (PAC-22\n   spec\
-        \ D-10, AC-16). No operation exposes that record.\n   The state write and its record are one transaction,\
-        \ as PAC-50's\n   configuration writes are: either both happen or neither does.\n\nSteps 5 to\
-        \ 7 see one and the same row: the state write and its\nrecord apply to the row the lookup found,\
-        \ and to nothing else. A\nconfiguration removed (deleteSsoProvider) after\nthis request's lookup\
-        \ and before its write is stored is answered\nexactly as one that was never there: 404 `sso provider\
-        \ not found`,\nnothing written, nothing recorded, the grant spent (PAC-22 spec\nD-9: never success\
-        \ for a configuration that does not exist). A\nremoval stored after this request's write is an\
-        \ ordinary later\nremoval.\n\nThis operation acts on configurations stored before PAC-22 that\n\
-        createSsoProvider would refuse today (a SAML row, an incomplete OIDC\nrow) exactly as on any other\
-        \ (PAC-22 spec AC-8).\n\n`PUT /api/admin/sso/stepup/state` (PAC-50 defines only GET under\n`/api/admin/sso/stepup`)\
-        \ is this operation with `{domain}` =\n`stepup`, which is never an org domain: 403 `provider_domain_mismatch`.\n"
+        \ too).\n3. Domain: `{domain}` (as deleteSsoProvider's segment, not trimmed) must equal the\n\
+        \   caller's org domain exactly, case-insensitive for ASCII letters\n   only; any other difference,\
+        \ including non-ASCII case folding, is\n   a different domain (createSsoProvider's DOMAIN MATCH,\
+        \ PAC-75), else 403\n   `provider_domain_mismatch` (SsoWriteDomainMismatch), as on the\n   other\
+        \ two SSO writes (owner decision 2026-10-27; PAC-22 spec D-15,\n   PAC-50 spec §9 D-10). A subdomain\
+        \ of the org domain, another org's\n   domain and a padded segment (`%20acme.com`) are all refused\
+        \ (PAC-22\n   spec AC-21).\n4. Authorization: step 5 of createSsoProvider (a live step-up grant,\n\
+        \   consumed, tried first; or break-glass with a fresh session), else\n   403 `sso_write_requires_admin_stepup`\
+        \ (with `stepup_url`,\n   `stepup_scopes` and `without_stepup`) or\n   `sso_write_requires_fresh_login`.\
+        \ Steps 1-3 are decided from the\n   request alone and leave the grant unspent.\n5. Lookup of\
+        \ the configuration for the org domain, whatever\n   its state: none gives 404 `sso provider not\
+        \ found`; nothing is\n   created and nothing is recorded, and the grant is spent\n   (PAC-22 spec\
+        \ D-9, AC-19; as deleteSsoProvider's 404, PAC-50 spec\n   §9 D-5).\n6. If the configuration is\
+        \ already in the requested state, nothing\n   changes and the answer is 200 with the configuration\
+        \ as stored\n   (PAC-22 spec AC-20). Otherwise only the active state is written: no\n   configuration\
+        \ value is read from the request or written, so a\n   replace stored while this request is in\
+        \ flight keeps its values\n   and this request keeps its state (PAC-22 spec AC-28).\n   `updated_at`\
+        \ is not changed by this operation in either case: it\n   records the last configuration write\
+        \ (createSsoProvider).\n7. Recording: every transition that found its configuration,\n   including\
+        \ one that changed nothing, is recorded where PAC-50\n   records configuration writes (PAC-50\
+        \ spec §4.6), as\n   `sso_provider_written` with `op` `suspend` (state `suspended`) or\n   `resume`\
+        \ (state `active`) and `via` `stepup` or `breakglass`,\n   naming the organisation, the acting\
+        \ user and the provider (PAC-22\n   spec D-10, AC-16). No operation exposes that record.\n   The\
+        \ state write and its record are one transaction, as PAC-50's\n   configuration writes are: either\
+        \ both happen or neither does.\n\nSteps 5 to 7 see one and the same row: the state write and its\n\
+        record apply to the row the lookup found, and to nothing else. A\nconfiguration removed (deleteSsoProvider)\
+        \ after\nthis request's lookup and before its write is stored is answered\nexactly as one that\
+        \ was never there: 404 `sso provider not found`,\nnothing written, nothing recorded, the grant\
+        \ spent (PAC-22 spec\nD-9: never success for a configuration that does not exist). A\nremoval\
+        \ stored after this request's write is an ordinary later\nremoval.\n\nThis operation acts on configurations\
+        \ stored before PAC-22 that\ncreateSsoProvider would refuse today (a SAML row, an incomplete OIDC\n\
+        row) exactly as on any other (PAC-22 spec AC-8).\n\n`PUT /api/admin/sso/stepup/state` (PAC-50\
+        \ defines only GET under\n`/api/admin/sso/stepup`) is this operation with `{domain}` =\n`stepup`,\
+        \ which is never an org domain: 403 `provider_domain_mismatch`.\n"
       parameters:
       - name: domain
         in: path
@@ -15139,13 +15223,21 @@ components:
         domain:
           type: string
           minLength: 1
-          description: 'Must equal the caller''s org domain, exact and case-insensitive,
+          description: 'Must equal the caller''s org domain, exact and case-insensitive
 
-            else 403 `provider_domain_mismatch` (PAC-50); a subdomain or a
+            for ASCII letters only; any other difference, including
 
-            foreign domain does not match, and surrounding whitespace is not
+            non-ASCII case folding, is a different domain (PAC-75; see
 
-            trimmed (`" acme.com "` is a 403). Stored lower-cased.
+            createSsoProvider''s DOMAIN MATCH), else 403
+
+            `provider_domain_mismatch` (PAC-50); a subdomain or a foreign
+
+            domain does not match, and surrounding whitespace is not trimmed
+
+            (`" acme.com "` is a 403). Stored as the org domain''s exact bytes
+
+            (lower-case).
 
             '
         provider_name:
@@ -15448,11 +15540,16 @@ components:
 
         of the DELETE and of setSsoProviderState) is not exactly the caller''s
 
-        org domain, compared case-insensitively and untrimmed: a subdomain
+        org domain, compared untrimmed and case-insensitively for ASCII
 
-        (`sub.acme.com`), a foreign domain (`other.com`) or a padded value
+        letters only (PAC-75): a subdomain (`sub.acme.com`), a foreign domain
 
-        (`" acme.com "`). A 403 by owner decision (2026-10-27, RFC 9110
+        (`other.com`), a padded value (`" acme.com "`) or a value that
+
+        matches only under non-ASCII case folding (`acmeſ.com` for
+
+        `acmes.com`, `Kcme.com` with the Kelvin sign for `kcme.com`). A 403 by owner decision (2026-10-27,
+        RFC 9110
 
         §15.5.4), not a 400. Checked after membership and the body''s 400s,
 

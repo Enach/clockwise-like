@@ -57,6 +57,9 @@ var accountDataChecks = []accountDataCheck{
 	{"activity_log_entry", `SELECT EXISTS (SELECT 1 FROM audit_log WHERE user_id = $1)`},                                 // D13
 	{"stepup_grant", `SELECT EXISTS (SELECT 1 FROM sso_stepup_grants WHERE user_id = $1)`},                               // D14
 	{"sso_event", `SELECT EXISTS (SELECT 1 FROM sso_events WHERE user_id = $1)`},                                         // D14
+	// PAC-75 (migration 039): a step-up denial window counts denied outcomes
+	// of the account, recorded or left out.
+	{"sso_stepup_denial_window", `SELECT EXISTS (SELECT 1 FROM sso_stepup_denial_windows WHERE user_id = $1)`},
 	// PAC-73 part 2 (migration 031): an organisation AI configuration written by
 	// the account (admin standing) and the account's confirmation of it.
 	{"org_ai_write", `SELECT EXISTS (SELECT 1 FROM org_ai_configurations WHERE updated_by = $1)`},
@@ -94,6 +97,7 @@ var classifiedUserRefs = map[string]bool{
 	"audit_log.user_id":                               true,
 	"sso_stepup_grants.user_id":                       true,
 	"sso_events.user_id":                              true,
+	"sso_stepup_denial_windows.user_id":               true,
 	"user_identities.user_id":                         true,
 	"org_ai_configurations.updated_by":                true,
 	"org_ai_confirmations.user_id":                    true,
