@@ -2,7 +2,7 @@ package storage
 
 // PAC-82 (contracts/features/PAC-82.md sections 3-6): the booking save is
 // decided again under ordered advisory keys. These tests hold one save inside
-// its transaction (AfterBookingLocks / AfterBookingInsert) on real PostgreSQL
+// its transaction (InstallAfterBookingLocks / InstallAfterBookingInsert) on real PostgreSQL
 // and observe the other in pg_locks, never by sleeping alone.
 
 import (
@@ -19,7 +19,7 @@ import (
 )
 
 // pac82Gate holds one save at a seam until released; err, when set before
-// release, is what AfterBookingInsert returns (a rollback).
+// release, is what the after-insert seam returns (a rollback).
 type pac82Gate struct {
 	reached chan struct{}
 	release chan struct{}
@@ -52,15 +52,9 @@ type pac82Seams struct {
 func installPAC82Seams(t *testing.T) *pac82Seams {
 	t.Helper()
 	s := &pac82Seams{locks: map[string]*pac82Gate{}, inserts: map[string]*pac82Gate{}}
-	AfterBookingLocks = func(b *Booking) { s.pass(s.locks, b) }
-	AfterBookingInsert = func(b *Booking) error {
-		if g := s.pass(s.inserts, b); g != nil {
-			return g.err
-		}
-		return nil
-	}
+	// Registered first so it runs last: the seams are cleared before the
+	// gates open.
 	t.Cleanup(func() {
-		AfterBookingLocks, AfterBookingInsert = nil, nil
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		for _, g := range s.locks {
@@ -69,6 +63,13 @@ func installPAC82Seams(t *testing.T) *pac82Seams {
 		for _, g := range s.inserts {
 			g.open()
 		}
+	})
+	InstallAfterBookingLocks(t, func(b *Booking) { s.pass(s.locks, b) })
+	InstallAfterBookingInsert(t, func(b *Booking) error {
+		if g := s.pass(s.inserts, b); g != nil {
+			return g.err
+		}
+		return nil
 	})
 	return s
 }
