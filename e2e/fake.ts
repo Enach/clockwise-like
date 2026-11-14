@@ -34,6 +34,9 @@ export const SINK_HOSTS = [
   'slack.com',
   'api.notion.com',
   'zoom.us',
+  // PAC-111: the BYO-key journeys' OpenAI probes. Without it a runner with
+  // internet access sent the fake key to the real service.
+  'api.openai.com',
 ] as const;
 
 /** The sink's fixed address on the pinned network. */
@@ -198,7 +201,24 @@ export function unexplainedSinkConnections(conns: SinkConnection[]): SinkConnect
         c.sni === 'www.googleapis.com' &&
         !c.credential_presented &&
         c.method === undefined
-      ),
+      ) && !isSealedOpenAIProbe(c),
+  );
+}
+
+/**
+ * PAC-111: a BYO-key journey's OpenAI call, sealed at the sink. Those journeys
+ * prove "a key was used" by the provider call failing (502), so the backend
+ * opens a TLS connection to api.openai.com, which the stack maps to the sink.
+ * The sink refuses the handshake at the ClientHello, before any request byte
+ * (and so the key) is sent. That is the expected footprint; anything more —
+ * plain HTTP, a request read, a credential — is not.
+ */
+export function isSealedOpenAIProbe(c: SinkConnection): boolean {
+  return (
+    c.listener === ':443' &&
+    c.sni === 'api.openai.com' &&
+    !c.credential_presented &&
+    c.method === undefined
   );
 }
 

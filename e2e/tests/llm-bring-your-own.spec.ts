@@ -5,10 +5,11 @@
  *
  * The compose stack configures no LLM key anywhere and approves no extra
  * OpenAI/Anthropic host. The public OpenAI host is approved by the product but
- * unreachable from the stack, so a configured OpenAI probe reaches the
- * provider call and fails there (502), which is how these journeys tell "a
- * request was attempted" from "refused before sending" (422) and "not
- * configured" (409).
+ * maps to the recording sink inside the stack (PAC-111, e2e/fake.ts
+ * SINK_HOSTS), which refuses the TLS handshake before the key is sent, so a
+ * configured OpenAI probe reaches the provider call and fails there (502),
+ * which is how these journeys tell "a request was attempted" from "refused
+ * before sending" (422) and "not configured" (409).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -16,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { test, expect } from '../fixtures';
 import { storageStateFor, type SessionUser } from '../auth';
 import { query, queryOne } from '../db';
+import { isSealedOpenAIProbe, sink } from '../fake';
 
 async function freshUser(label: string): Promise<SessionUser> {
   const id = randomUUID();
@@ -373,10 +375,16 @@ test.describe('NEW-llm-bring-your-own — AI runs only on a key the user brings'
         llmApiKeysSet: { openai: true },
         aiStatus: { configured: true, provider: 'openai' },
       });
+      const sinkBefore = (await sink.connections()).length;
       const probe = await api.post('/api/llm/test', {});
       if (clear) {
-        // Reaches the provider call: api.openai.com is approved but unreachable here.
+        // Reaches the provider call: api.openai.com is approved, and sealed
+        // at the sink here (PAC-111), which refuses it before the key is sent.
         expect(probe.status(), await probe.text()).toBe(502);
+        // The sink logs a refused handshake just after refusing it, so poll.
+        await expect
+          .poll(async () => (await sink.connections()).slice(sinkBefore).filter(isSealedOpenAIProbe).length)
+          .toBeGreaterThan(0);
       } else {
         expect(probe.status(), await probe.text()).toBe(422);
         expect(await probe.json()).toMatchObject({ reason: 'destination_not_approved', property: 'llmBaseUrl' });
