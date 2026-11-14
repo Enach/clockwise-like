@@ -59,13 +59,110 @@ func docker(ctx context.Context, args ...string) (string, string, error) {
 	return out.String(), errb.String(), err
 }
 
-func mustDocker(t *testing.T, args ...string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+// PAC-115: `docker run` exits 125 when the daemon itself refuses or fails
+// the run, as opposed to the container's command failing. CI run
+// 43577068776 hit one: the first `docker run` of the suite pulled the nginx
+// image implicitly and Docker Hub answered a blob GET with 502 Bad Gateway.
+// The image is now pulled once in setup (with the retry below) and every run
+// passes --pull never, so no test pulls; the retry remains for the other
+// daemon-side transients.
+
+// transientDaemonErrors are stderr fragments of daemon-side failures that a
+// later attempt can succeed past: registry and network hiccups. Anything
+// else (bad flags, name conflict, missing mount source, no such network) is
+// a real error and is reported at once.
+var transientDaemonErrors = []string{
+	"500 Internal Server Error",
+	"502 Bad Gateway",
+	"503 Service Unavailable",
+	"504 Gateway Time",
+	"TLS handshake timeout",
+	"connection reset by peer",
+	"i/o timeout",
+	"unexpected EOF",
+	"net/http: request canceled",
+}
+
+const dockerAttempts = 3
+
+// exitCode is the process exit code of a docker CLI error, or -1.
+func exitCode(err error) int {
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// isTransientDaemonError reports whether a docker CLI failure is a
+// daemon-side transient worth one more attempt: exit 125 from `docker run`
+// (or 1 from `docker pull`) with a known transient fragment on stderr. Exit
+// 1 from `docker run` is the container's own command failing and is never
+// retried, whatever it printed.
+func isTransientDaemonError(subcommand string, code int, stderr string) bool {
+	want := 125
+	if subcommand == "pull" {
+		want = 1
+	}
+	if code != want {
+		return false
+	}
+	for _, s := range transientDaemonErrors {
+		if strings.Contains(stderr, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// dockerRetry runs a docker command, retrying a bounded number of times on a
+// daemon-side transient (isTransientDaemonError) and logging every retry
+// with Docker's stderr. before, if non-nil, runs ahead of each retry: a
+// named `docker run` uses it to remove the container a failed attempt may
+// have created, so the retry cannot hit a name conflict. It only ever
+// touches that one name.
+func dockerRetry(timeout time.Duration, logf func(string, ...any), before func(), args ...string) (string, string, error) {
+	var out, errOut string
+	var err error
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		out, errOut, err = docker(ctx, args...)
+		cancel()
+		if err == nil || attempt == dockerAttempts || !isTransientDaemonError(args[0], exitCode(err), errOut) {
+			return out, errOut, err
+		}
+		logf("docker %s: attempt %d/%d failed with a daemon-side transient (%v), retrying; stderr:\n%s",
+			args[0], attempt, dockerAttempts, err, errOut)
+		if before != nil {
+			before()
+		}
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+}
+
+// dockerFailure formats a failed docker command with its exit code and
+// Docker's stderr, which carries the daemon's reason for a 125.
+func dockerFailure(args []string, err error, out, errOut string) string {
+	return fmt.Sprintf("docker %s: %v (exit code %d)\nstdout:\n%s\nstderr:\n%s",
+		strings.Join(args, " "), err, exitCode(err), out, errOut)
+}
+
+// removeContainer force-removes exactly the named container (exact-name
+// match; a "pnt-" name cannot be read as an ID prefix).
+func removeContainer(name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	out, errOut, err := docker(ctx, args...)
+	_, _, _ = docker(ctx, "rm", "-f", name)
+}
+
+// mustRun starts the named container with `docker run` args. The cleanup is
+// registered before the run, so a container a failed run created is still
+// removed, and it removes only this name.
+func mustRun(t *testing.T, name string, args ...string) string {
+	t.Helper()
+	t.Cleanup(func() { removeContainer(name) })
+	out, errOut, err := dockerRetry(2*time.Minute, t.Logf, func() { removeContainer(name) }, args...)
 	if err != nil {
-		t.Fatalf("docker %s: %v\n%s%s", strings.Join(args, " "), err, out, errOut)
+		t.Fatal(dockerFailure(args, err, out, errOut))
 	}
 	return out
 }
@@ -115,6 +212,17 @@ func setup() error {
 			return fmt.Errorf("no nginx image in docker-compose.prod.yml")
 		}
 		nginxImage = string(m[1])
+	}
+
+	// PAC-115: pull the image once, here, with the bounded retry, instead of
+	// letting the first `docker run` of whichever parallel test starts first
+	// pull it implicitly. Runs then use --pull never.
+	stderrLog := func(format string, a ...any) { fmt.Fprintf(os.Stderr, "nginx harness: "+format+"\n", a...) }
+	if _, _, err := docker(ctx, "image", "inspect", "--format", "{{.Id}}", nginxImage); err != nil {
+		pullArgs := []string{"pull", "--quiet", nginxImage}
+		if out, errOut, err := dockerRetry(3*time.Minute, stderrLog, nil, pullArgs...); err != nil {
+			return fmt.Errorf("pulling the nginx image: %s", dockerFailure(pullArgs, err, out, errOut))
+		}
 	}
 
 	stubDir, err = os.MkdirTemp("", "paceday-nginx-stub-")
@@ -190,11 +298,10 @@ func startStub(t *testing.T) string {
 	t.Helper()
 	harness(t)
 	name := uniqueName("stub")
-	args := []string{"run", "-d", "--name", name, "--label", labelKey + "=" + runID, "--network", netName}
+	args := []string{"run", "-d", "--pull", "never", "--name", name, "--label", labelKey + "=" + runID, "--network", netName}
 	args = append(args, stubMount()...)
 	args = append(args, "--entrypoint", "/stub/stub", nginxImage, "upstream")
-	mustDocker(t, args...)
-	t.Cleanup(func() { _, _, _ = docker(context.Background(), "rm", "-f", name) })
+	mustRun(t, name, args...)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -213,7 +320,7 @@ func startStub(t *testing.T) string {
 // nginxArgs builds `docker run` arguments for the shipped config and render
 // step, with the stub as both upstreams, plus the given environment.
 func nginxArgs(name, stub string, env map[string]string, detach bool, cmd ...string) []string {
-	args := []string{"run", "--name", name, "--label", labelKey + "=" + runID, "--network", netName}
+	args := []string{"run", "--pull", "never", "--name", name, "--label", labelKey + "=" + runID, "--network", netName}
 	if detach {
 		args = append(args, "-d")
 	} else {
@@ -238,8 +345,7 @@ func nginxArgs(name, stub string, env map[string]string, detach bool, cmd ...str
 func startNginx(t *testing.T, stub string, env map[string]string) string {
 	t.Helper()
 	name := uniqueName("nginx")
-	mustDocker(t, nginxArgs(name, stub, env, true, "nginx", "-g", "daemon off;")...)
-	t.Cleanup(func() { _, _, _ = docker(context.Background(), "rm", "-f", name) })
+	mustRun(t, name, nginxArgs(name, stub, env, true, "nginx", "-g", "daemon off;")...)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -260,14 +366,15 @@ func startNginx(t *testing.T, stub string, env map[string]string) string {
 // in a throwaway container and returns its combined output and error.
 func runNginxOnce(t *testing.T, stub string, env map[string]string, cmd ...string) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	out, errOut, err := docker(ctx, nginxArgs(uniqueName("once"), stub, env, false, cmd...)...)
+	name := uniqueName("once")
+	t.Cleanup(func() { removeContainer(name) }) // --rm misses a run that failed to start
+	out, errOut, err := dockerRetry(2*time.Minute, t.Logf, func() { removeContainer(name) },
+		nginxArgs(name, stub, env, false, cmd...)...)
 	return out + errOut, err
 }
 
 func clientArgs(ip, url string, flags ...string) []string {
-	args := []string{"run", "--rm", "--label", labelKey + "=" + runID, "--network", netName}
+	args := []string{"run", "--rm", "--pull", "never", "--label", labelKey + "=" + runID, "--network", netName}
 	if ip != "" {
 		args = append(args, "--ip", ip)
 	}
@@ -301,11 +408,10 @@ type Recorded struct {
 // returns the responses. flags are stub client flags (-H, -method, -n, ...).
 func send(t *testing.T, ip, url string, flags ...string) []Response {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	out, errOut, err := docker(ctx, clientArgs(ip, url, flags...)...)
+	args := clientArgs(ip, url, flags...)
+	out, errOut, err := dockerRetry(5*time.Minute, t.Logf, nil, args...)
 	if err != nil {
-		t.Fatalf("client %s: %v\n%s%s", url, err, out, errOut)
+		t.Fatalf("client %s: %s", url, dockerFailure(args, err, out, errOut))
 	}
 	var res []Response
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
