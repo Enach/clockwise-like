@@ -36,7 +36,7 @@ directive per list item; no defaults for unset variables).
   | Variable | Default | Effect |
   |---|---|---|
   | `NGINX_TRUSTED_PROXIES` | empty | Addresses/CIDRs whose `X-Forwarded-For` / `X-Forwarded-Proto` are believed (D-9). Empty: nothing trusted. |
-  | `NGINX_CSP_SENTRY_ORIGIN` | `https://o4512081160896512.ingest.de.sentry.io` | The frontend's Sentry ingest origin in `connect-src`. Empty = default (AC-B4 "unset does not remove it"). Must match the frontend build's DSN. |
+  | `NGINX_CSP_SENTRY_ORIGIN` | empty | The frontend's Sentry ingest origin in `connect-src`. Empty: no Sentry origin (amended by PAC-86, 2026-11-14: the web has no built-in DSN, so the former default and AC-B4's "unset does not remove it" are gone). When set, must be the origin of the frontend build's `VITE_SENTRY_DSN`. |
   | `NGINX_CSP_CONNECT_ORIGINS` | empty | Extra `connect-src` origins, comma or space separated. |
   | `API_BASE_URL` | empty | The same variable the frontend service reads. When it is an absolute URL its origin is added to `connect-src` (cross-origin API, AC-B4). |
   | `NGINX_BACKEND_UPSTREAM` / `NGINX_FRONTEND_UPSTREAM` | `backend:8080` / `frontend:80` | Upstream `host:port`. Needed so the e2e injection variant (AC-B3(b)) and the integration tests can point the shipped config at another upstream without a second config file. |

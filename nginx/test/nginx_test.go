@@ -13,10 +13,6 @@ import (
 )
 
 const (
-	// The origin of the web's hard-coded Sentry DSN
-	// (smart-calendar-flow:src/lib/sentry.ts:19-20), the AC-B4 default.
-	defaultSentryOrigin = "https://o4512081160896512.ingest.de.sentry.io"
-
 	forgedClient = "203.0.113.7"   // F: what the client claims
 	realClient   = "198.51.100.23" // C: what the trusted proxy appended
 )
@@ -180,7 +176,7 @@ func TestCSPDirectives(t *testing.T) {
 		"style-src":       {"'self'", "'unsafe-inline'", "https://fonts.googleapis.com"},
 		"font-src":        {"'self'", "data:", "https://fonts.gstatic.com"}, // FullCalendar embeds its icon font (fcicons) as data:
 		"img-src":         {"'self'", "data:", "https://*.googleusercontent.com"},
-		"connect-src":     {"'self'", defaultSentryOrigin},
+		"connect-src":     {"'self'"}, // PAC-86: no Sentry origin unless configured
 		"object-src":      {"'none'"},
 		"base-uri":        {"'self'"},
 		"form-action":     {"'self'"},
@@ -208,17 +204,24 @@ func TestCSPConnectSrc(t *testing.T) {
 		env  map[string]string
 		want []string
 	}{
-		{"default", nil, []string{"'self'", defaultSentryOrigin}},
-		{"sentry origin changed", map[string]string{"NGINX_CSP_SENTRY_ORIGIN": "https://o1.ingest.sentry.example"},
+		// PAC-86 (AC-B4 amended): the web has no built-in DSN, so unset or
+		// empty allows no Sentry origin; a set value allows exactly that one.
+		{"default", nil, []string{"'self'"}},
+		{"sentry origin set", map[string]string{"NGINX_CSP_SENTRY_ORIGIN": "https://o1.ingest.sentry.example"},
 			[]string{"'self'", "https://o1.ingest.sentry.example"}},
 		{"sentry origin set empty", map[string]string{"NGINX_CSP_SENTRY_ORIGIN": ""},
-			[]string{"'self'", defaultSentryOrigin}},
+			[]string{"'self'"}},
+		{"sentry origin with API and extras", map[string]string{
+			"NGINX_CSP_SENTRY_ORIGIN":   "https://o1.ingest.sentry.example",
+			"API_BASE_URL":              "https://api.example.test/api",
+			"NGINX_CSP_CONNECT_ORIGINS": "https://a.example.test",
+		}, []string{"'self'", "https://o1.ingest.sentry.example", "https://api.example.test", "https://a.example.test"}},
 		{"cross-origin API and extras", map[string]string{
 			"API_BASE_URL":              "https://api.example.test/api",
 			"NGINX_CSP_CONNECT_ORIGINS": "https://a.example.test, https://b.example.test:8443",
-		}, []string{"'self'", defaultSentryOrigin, "https://api.example.test", "https://a.example.test", "https://b.example.test:8443"}},
+		}, []string{"'self'", "https://api.example.test", "https://a.example.test", "https://b.example.test:8443"}},
 		{"relative API base adds nothing", map[string]string{"API_BASE_URL": "/api"},
-			[]string{"'self'", defaultSentryOrigin}},
+			[]string{"'self'"}},
 	}
 	for _, c := range cases {
 		n := startNginx(t, stub, c.env)
