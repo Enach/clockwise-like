@@ -167,9 +167,7 @@ COVERAGE_SUITES := backend mcp
 # The steps `verify` runs, in its recipe below, in this order.
 VERIFY_STEPS := lint openapi-check test coverage e2e
 
-test: $(addprefix test-,$(TEST_SUITES)) test-fake
-test-fake:
-	@echo fake
+test: $(addprefix test-,$(TEST_SUITES))
 
 # `make -j test` keeps the suites one at a time and in order, as before the
 # split (GNU make >= 4.4 serialises just these prerequisites; older makes treat
