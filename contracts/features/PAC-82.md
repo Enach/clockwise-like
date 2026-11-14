@@ -11,7 +11,9 @@
 - **Fragment**: `contracts/openapi/paths/booking.yaml` only.
 - **Base**: `origin/main` `d520775` (bundle of main recorded in the manifest).
 - **Revision**: 1.1 (revision 1 by contract-author, 1.1 after the challenge below,
-  same day; see "Challenge — 2026-11-14").
+  same day; see "Challenge — 2026-11-14"). Revision 1.2 (2026-11-14): PAC-116
+  amendment note in §4.4 (migrations rule, row "save / DDL on a live-read
+  table"); no fragment change, `contractHash` unchanged.
 
 ## 0. The rule this contract fixes
 
@@ -271,6 +273,41 @@ any statement that can wait on a row or an index entry; reads in steps 3, 6,
 
 A delete or PATCH that queues behind a save that is itself waiting on a key
 waits at most its own 10 s bound (PAC-101 §2.4). AC-24 asserts no `40P01`.
+
+- **Amended by PAC-116 (2026-11-14, spec `docs/specs/PAC-116.md`, contract
+  `contracts/features/PAC-116.md`; owner decisions Q1–Q3 of 2026-11-14;
+  revision 1.2).** The table above has no row for a migration. Migrations run
+  against a database that may be serving traffic: at server start with other
+  backends still live, and from `paceday-operator encryption` (every
+  subcommand calls `storage.Migrate`, `cmd/paceday-operator/encryption.go:181`).
+  Each up file runs as one transaction. Read this row as part of the table:
+
+  | Pair | Wait? | Cycle? |
+  |---|---|---|
+  | save / DDL on a live-read table (a migration touching `bookings`, `scheduling_links`, `scheduling_link_hosts` or `users`) | the save waits at step 2 (link `FOR SHARE`), at its reads or at its insert while the migration holds a conflicting lock; the migration waits for the save's locks to be released | No, **under the migrations rule below**. Without it: yes. Example: a migration holding SHARE on `bookings` (`CREATE INDEX`) asks for ACCESS EXCLUSIVE (`ALTER TABLE`) while a save holding ACCESS SHARE (step 6–8 reads) waits for ROW EXCLUSIVE (step 9 insert). Both wait on each other, and one is aborted with `40P01` |
+
+  **Migrations rule (binding).** Consider a migration file that touches one
+  of those four tables, where the table existed before the file runs. It takes
+  its strongest lock on that table before any weaker lock in the same
+  transaction. Strength is measured by the level at which the lock blocks
+  what live paths take (ACCESS EXCLUSIVE > EXCLUSIVE > SHARE, SHARE ROW
+  EXCLUSIVE > everything else). The full definition, the statement
+  classification (including locks a statement takes on a second table, such as
+  an FK referencing `users`) and the test that enforces it are in
+  `contracts/features/PAC-116.md` §2–§5. A migration meets the rule in one of
+  two ways: its ACCESS EXCLUSIVE statements come first, or it starts with
+  `LOCK TABLE <table> IN ACCESS EXCLUSIVE MODE`. Transaction control and
+  `CONCURRENTLY` are not allowed in an up file. There is no exemption.
+  Migrations 001–039 comply (037 and 038 take ACCESS EXCLUSIVE first).
+
+  **Not covered (advice, PAC-116 OQ-1).** The rule orders locks on one
+  table. A migration that locks two of these tables can still deadlock if it
+  takes them in an order different from a live path's. Take them in the save's
+  order, `scheduling_links` → `scheduling_link_hosts` → `bookings`. Do not
+  combine `users` with another of them at SHARE or stronger outside a
+  maintenance window: erasure locks `users` last, account deletion first.
+
+  The approved text and table above are kept as revision 1.1 approved them.
 
 ### 4.5 Wait bound (spec OQ-2: answered)
 
