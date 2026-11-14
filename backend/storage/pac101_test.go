@@ -282,6 +282,23 @@ func pac101IsLockTimeout(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "55P03"
 }
 
+// pac101WithinBound runs f on its own goroutine and fails the test fast,
+// instead of hanging, when f does not return within the (shortened) link-lock
+// bound plus 5 s: a write that ignores the bound waits forever on a held lock.
+// The caller's deferred rollback of the holder then releases the goroutine.
+func pac101WithinBound[T any](t *testing.T, what string, f func() T) T {
+	t.Helper()
+	done := make(chan T, 1)
+	go func() { done <- f() }()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(LinkLockTimeout + 5*time.Second):
+		t.Fatalf("%s did not return within the bound + 5 s: the link-lock bound is not applied", what)
+		panic("unreachable")
+	}
+}
+
 func pac101ShortBound(t *testing.T) {
 	t.Helper()
 	prev := LinkLockTimeout
@@ -323,13 +340,9 @@ func TestPAC101_EveryLinkWriteGivesUpAtTheBound(t *testing.T) {
 		"delete": func() error { _, err := DeleteSchedulingLinkCtx(ctx, db, link.ID); return err },
 	}
 	for name, write := range writes {
-		began := time.Now()
-		err := write()
+		err := pac101WithinBound(t, name, write)
 		if !pac101IsLockTimeout(err) {
 			t.Errorf("%s: %v, want SQLSTATE 55P03", name, err)
-		}
-		if took := time.Since(began); took > 5*time.Second {
-			t.Errorf("%s took %s past a 300 ms bound", name, took)
 		}
 	}
 	_ = holder.Rollback()
@@ -364,6 +377,13 @@ func TestPAC101_HostWritesWaitForAHeldDeleteThenWriteNothing(t *testing.T) {
 		"accept":  func(id uuid.UUID) (bool, error) { return RespondToHostInviteCtx(ctx, db, id, cohost, "accepted") },
 		"decline": func(id uuid.UUID) (bool, error) { return RespondToHostInviteCtx(ctx, db, id, cohost, "declined") },
 		"leave":   func(id uuid.UUID) (bool, error) { return RemoveLinkHostCtx(ctx, db, id, cohost) },
+		"remove-except": func(id uuid.UUID) (bool, error) {
+			err := RemoveLinkHostsExceptCtx(ctx, db, id, owner, nil)
+			if errors.Is(err, ErrLinkGone) {
+				return false, nil
+			}
+			return err == nil, err
+		},
 	}
 	for name, write := range cases {
 		link := pac40Link(t, db, owner, "pac101-host-"+uuid.NewString()[:8])
@@ -466,7 +486,10 @@ func TestPAC101_BoundDoesNotLeakThroughThePool(t *testing.T) {
 	if _, err := holder.Exec(`SELECT 1 FROM scheduling_links WHERE id = $1 FOR UPDATE`, link.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pac101Save(db, link.ID, pac101Start().Add(time.Hour), nil); !pac101IsLockTimeout(err) {
+	if err := pac101WithinBound(t, "the held save", func() error {
+		_, err := pac101Save(db, link.ID, pac101Start().Add(time.Hour), nil)
+		return err
+	}); !pac101IsLockTimeout(err) {
 		t.Fatalf("held link: %v, want 55P03", err)
 	}
 	_ = holder.Rollback()

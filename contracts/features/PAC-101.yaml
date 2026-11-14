@@ -126,5 +126,10 @@
     "PAC-106 (low): booking judged on settings edited mid-request.",
     "PAC-82: single-use / max-uses race folded in; must respect AC-16 or amend it explicitly."
   ],
-  "rollback": "Revert the backend PR and the paired web regeneration. No migration, no data change; rows written under PAC-101 are valid under the old code."
+  "rollback": "Revert the backend PR and the paired web regeneration. No migration, no data change; rows written under PAC-101 are valid under the old code.",
+  "stage4Notes": [
+    "Implemented on impl/pac-101-api (Enach/clockwise-like#268), paired with Enach/smart-calendar-flow#153 (regeneration only). Bundle sha256 unchanged: equals contractHash; no fragment change.",
+    "Deviation from allowedPaths: backend/storage/guarded.go is changed. The accept/decline wrapper RespondToHostInviteCtx lives there, not in guarded_writes.go; its body now runs through withLinkWriteTx with the FOR SHARE lock step (section 3.2), so no unlocked accept/decline path remains. No other change in that file except its package comment naming the exception. Accepted by the stage-4 review (#268, review 5900804017).",
+    "RemoveLinkHostsExceptCtx (no longer called by a handler) also runs through withLinkWriteTx with the lock step, so every exported scheduling-link writer is locked."
+  ]
 }

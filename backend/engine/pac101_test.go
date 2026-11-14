@@ -49,6 +49,23 @@ func pac101Twin(t *testing.T, db *sql.DB) *sql.DB {
 	return twin
 }
 
+// pac101WithinBound runs f on its own goroutine and fails the test fast,
+// instead of hanging, when f does not return within the (shortened) link-lock
+// bound plus 5 s: a write that ignores the bound waits forever on a held lock.
+// The caller's deferred rollback of the holder then releases the goroutine.
+func pac101WithinBound[T any](t *testing.T, what string, f func() T) T {
+	t.Helper()
+	done := make(chan T, 1)
+	go func() { done <- f() }()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(storage.LinkLockTimeout + 5*time.Second):
+		t.Fatalf("%s did not return within the bound + 5 s: the link-lock bound is not applied", what)
+		panic("unreachable")
+	}
+}
+
 type pac101World struct {
 	db     *sql.DB
 	twin   *sql.DB
@@ -218,7 +235,15 @@ func TestPAC101_SavePastTheBoundFailsAndStoresNothing(t *testing.T) {
 	if _, err := holder.Exec(`SELECT 1 FROM scheduling_links WHERE id = $1 FOR UPDATE`, w.link.ID); err != nil {
 		t.Fatal(err)
 	}
-	b, err := w.book(context.Background(), nextWeekday(time.Now()).Add(12*time.Hour))
+	type result struct {
+		b   *storage.Booking
+		err error
+	}
+	r := pac101WithinBound(t, "the booking save", func() result {
+		b, err := w.book(context.Background(), nextWeekday(time.Now()).Add(12*time.Hour))
+		return result{b, err}
+	})
+	b, err := r.b, r.err
 	if err == nil || errors.Is(err, ErrLinkGone) || b != nil {
 		t.Fatalf("ConfirmBooking = %+v, %v; want a save error (the 500)", b, err)
 	}

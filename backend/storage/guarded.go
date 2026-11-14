@@ -15,6 +15,13 @@ import (
 // instead of anything stored after the account's generation advanced. Without
 // a guard (scheduled jobs, public pages, tests that inject a user) it is the
 // plain function.
+//
+// Exception: RespondToHostInviteCtx below, like the scheduling-link wrappers
+// in guarded_writes.go (DeleteSchedulingLinkCtx, InviteLinkHostCtx,
+// RemoveLinkHostCtx, RemoveLinkHostsExceptCtx, UpdateSchedulingLinkCtx), runs
+// through withLinkWriteTx (PAC-101): it ALWAYS opens a transaction, guard or
+// not, sets the link-lock bound after the re-check, and locks the link FOR
+// SHARE before writing; it is never the plain function.
 
 // GetOrCreateSettingsByUserCtx carries D2–D5 for the request.
 func GetOrCreateSettingsByUserCtx(ctx context.Context, db DBTX, userID uuid.UUID) (s *Settings, err error) {

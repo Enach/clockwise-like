@@ -199,6 +199,23 @@ func pac101NotFound(t *testing.T, w *httptest.ResponseRecorder, what string) {
 	}
 }
 
+// pac101WithinBound runs f on its own goroutine and fails the test fast,
+// instead of hanging, when f does not return within the (shortened) link-lock
+// bound plus 5 s: a write that ignores the bound waits forever on a held lock.
+// The caller's deferred rollback of the holder then releases the goroutine.
+func pac101WithinBound[T any](t *testing.T, what string, f func() T) T {
+	t.Helper()
+	done := make(chan T, 1)
+	go func() { done <- f() }()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(storage.LinkLockTimeout + 5*time.Second):
+		t.Fatalf("%s did not return within the bound + 5 s: the link-lock bound is not applied", what)
+		panic("unreachable")
+	}
+}
+
 func pac101ShortBound(t *testing.T) {
 	t.Helper()
 	prev := storage.LinkLockTimeout
@@ -268,7 +285,7 @@ func TestPAC101_BookingPastTheBoundIs500AndStoresNothing(t *testing.T) {
 	if _, err := holder.Exec(`UPDATE scheduling_links SET title = title WHERE id = $1`, link.ID); err != nil {
 		t.Fatal(err)
 	}
-	w := e.book(link.Slug, 2, "ac7@booker.test")
+	w := pac101WithinBound(t, "the booking", func() *httptest.ResponseRecorder { return e.book(link.Slug, 2, "ac7@booker.test") })
 	if w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != `{"error":"internal error"}` {
 		t.Fatalf("status %d %s; want 500 internal error", w.Code, w.Body.String())
 	}
@@ -347,7 +364,7 @@ func TestPAC101_InviteWaitsForAHeldDelete(t *testing.T) {
 			}
 			continue
 		case "bound":
-			w = <-got
+			w = pac101WithinBound(t, "the invite", func() *httptest.ResponseRecorder { return <-got })
 			_ = tx.Rollback()
 			if w.Code != http.StatusInternalServerError {
 				t.Errorf("invite past the bound: %d %s; want 500", w.Code, w.Body.String())

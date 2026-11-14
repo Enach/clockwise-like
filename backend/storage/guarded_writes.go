@@ -3,6 +3,15 @@
 // WithSessionGeneration: under a session guard it runs in the transaction
 // whose first statement re-checks the generation, and refuses with
 // ErrStaleSession instead of writing; without one it is X.
+//
+// Exception, the scheduling-link writes (PAC-101 contract §3.2, §4.3):
+// DeleteSchedulingLinkCtx, InviteLinkHostCtx, RemoveLinkHostCtx,
+// RemoveLinkHostsExceptCtx, UpdateSchedulingLinkCtx (and
+// UpdateSchedulingLinkAndCoHostsCtx), and RespondToHostInviteCtx in guarded.go,
+// run through withLinkWriteTx instead: they ALWAYS open a transaction, with
+// or without a session guard. Under a guard the re-check is still its first
+// statement; then the link-lock bound (SET LOCAL lock_timeout) is set and the
+// link is locked (FOR SHARE, or the PATCH's UPDATE) before anything is written.
 
 package storage
 
@@ -225,12 +234,16 @@ func RemoveLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uu
 	return r0, err
 }
 
-// RemoveLinkHostsExceptCtx is RemoveLinkHostsExcept under the in-request re-check (PAC-71, contract §5).
+// RemoveLinkHostsExceptCtx is RemoveLinkHostsExcept under the in-request re-check (PAC-71, contract §5),
+// behind the link's FOR SHARE lock (PAC-101): ErrLinkGone, with no host row removed, when the
+// link is deleted first. No handler calls it (the PATCH sets co-hosts inside its own transaction).
 func RemoveLinkHostsExceptCtx(ctx context.Context, db DBTX, linkID uuid.UUID, ownerID uuid.UUID, keep []uuid.UUID) (err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+	return withLinkWriteTx(ctx, db, func(q Querier) error {
+		if err := lockLiveLinkForShare(q, linkID); err != nil {
+			return err
+		}
 		return RemoveLinkHostsExcept(q, linkID, ownerID, keep)
 	})
-	return err
 }
 
 // RemoveMicrosoftCredentialCtx is RemoveMicrosoftCredential under the in-request re-check (PAC-71, contract §5).
