@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -465,6 +466,186 @@ func CreateBooking(db DBTX, b *Booking) (*Booking, error) {
 		RETURNING id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
 	`, b.LinkID, b.BookerName, b.BookerEmail, b.StartTime, b.EndTime, b.Notes)
 	return scanBooking(row)
+}
+
+// --- PAC-101: writes ordered against the link's delete ----------------------
+
+// ErrLinkGone is the commit-point outcome "the link is gone" (PAC-101
+// contract §3): the link was deleted (or, for a booking, paused) before the
+// write took its lock on the link, so nothing was written. It is a result of
+// its own, never a nil row with a nil error.
+var ErrLinkGone = errors.New("scheduling link is gone")
+
+// LinkLockTimeout bounds each wait for a lock on a scheduling link (and the
+// rows a link write locks after it) in a request-path transaction: PostgreSQL
+// lock_timeout semantics, per lock acquisition (contract §4.2). Past it the
+// statement fails with SQLSTATE 55P03 and the transaction is rolled back. A
+// package variable only so that tests can shorten it; nothing else assigns it.
+var LinkLockTimeout = 10 * time.Second
+
+// AfterLinkPatchUpdate is a test seam (PAC-101 contract §5): it runs inside a
+// PATCH's transaction after the link UPDATE matched and before the co-host
+// steps. A non-nil error rolls the whole PATCH back. Nil in production.
+var AfterLinkPatchUpdate func(linkID uuid.UUID) error
+
+// setLinkLockTimeout sets the bound for the rest of q's transaction only:
+// set_config(..., true) is SET LOCAL, so it ends with the transaction, commit
+// or rollback, and never reaches the next user of the pooled connection
+// (contract §4.3; a session-level setting is forbidden there).
+func setLinkLockTimeout(q Querier) error {
+	_, err := q.ExecContext(context.Background(), `SELECT set_config('lock_timeout', $1, true)`,
+		fmt.Sprintf("%dms", LinkLockTimeout.Milliseconds()))
+	return err
+}
+
+// lockLiveLinkForShare is the host writes' commit-point check: it locks link
+// id FOR SHARE when it is not deleted. FOR SHARE conflicts with the delete's
+// FOR NO KEY UPDATE (so a delete in progress makes this wait, and a delete
+// started after it waits for this transaction) and not with another FOR SHARE.
+// After a wait, READ COMMITTED re-evaluates the WHERE on the newest version,
+// so a delete that committed meanwhile yields ErrLinkGone. Pausing does not
+// count: host writes work on a paused link (contract §2.3).
+func lockLiveLinkForShare(q Querier, id uuid.UUID) error {
+	var one int
+	err := q.QueryRowContext(context.Background(),
+		`SELECT 1 FROM scheduling_links WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrLinkGone
+	}
+	return err
+}
+
+// SaveBookingOnLiveLink is the booking save at the commit point (PAC-101
+// contract §3.1 step 5): one explicit transaction on conn, which sets the
+// link-lock bound for itself, then inserts the booking only while the link is
+// active and not deleted, holding the link FOR SHARE from the same statement.
+// Zero rows is ErrLinkGone, after a rollback: nothing is stored. wrap, when
+// not nil, wraps the transaction for the insert statement (the PAC-90 seam).
+//
+// There is deliberately no deferred rollback: on a panic the caller cancels
+// ctx, which makes database/sql close any open row and roll the transaction
+// back; a deferred Rollback would instead wait on a row the panic left open
+// (PAC-90 item 1, challenge C-1).
+func SaveBookingOnLiveLink(ctx context.Context, conn *sql.Conn, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	booking, err := saveBookingInTx(tx, b, wrap)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return booking, nil
+}
+
+func saveBookingInTx(tx *sql.Tx, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
+	if err := setLinkLockTimeout(tx); err != nil {
+		return nil, err
+	}
+	var q Querier = tx
+	if wrap != nil {
+		q = wrap(tx)
+	}
+	row := q.QueryRowContext(context.Background(), `
+		INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
+		SELECT l.id, $2::text, $3::text, $4::timestamptz, $5::timestamptz, $6::text
+		FROM scheduling_links l
+		WHERE l.id = $1 AND l.active AND l.deleted_at IS NULL
+		FOR SHARE OF l
+		RETURNING id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
+	`, b.LinkID, b.BookerName, b.BookerEmail, b.StartTime, b.EndTime, b.Notes)
+	var out Booking
+	err := row.Scan(&out.ID, &out.LinkID, &out.BookerName, &out.BookerEmail,
+		&out.StartTime, &out.EndTime, &out.Status, &out.Notes, &out.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrLinkGone
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// inviteLinkHostLocked is InviteLinkHost behind the link lock: link gone is
+// decided by the lock step only, never by the insert's zero rows, which mean
+// "already a host" (PAC-61, contract §3.2).
+func inviteLinkHostLocked(q Querier, linkID, userID uuid.UUID) (*LinkHost, bool, error) {
+	if err := lockLiveLinkForShare(q, linkID); err != nil {
+		return nil, false, err
+	}
+	return InviteLinkHost(q, linkID, userID)
+}
+
+// respondToHostInviteLocked is RespondToHostInvite behind the link lock; a
+// gone link is matched = false, the PAC-30 404 by design.
+func respondToHostInviteLocked(q Querier, linkID, userID uuid.UUID, status string) (bool, error) {
+	if err := lockLiveLinkForShare(q, linkID); errors.Is(err, ErrLinkGone) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return RespondToHostInvite(q, linkID, userID, status)
+}
+
+// removeLinkHostLocked is RemoveLinkHost (leave) behind the link lock.
+func removeLinkHostLocked(q Querier, linkID, userID uuid.UUID) (bool, error) {
+	if err := lockLiveLinkForShare(q, linkID); errors.Is(err, ErrLinkGone) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return RemoveLinkHost(q, linkID, userID)
+}
+
+// updateSchedulingLinkAndCoHosts is a PATCH as one unit (contract §3.2, spec
+// D-5): the guarded link UPDATE is the transaction's first lock on the link
+// (exclusive; never FOR SHARE first and an upgrade after, which would let two
+// PATCHes deadlock), then, when coHostEmails is not nil, the co-host list is
+// set by difference (PAC-61) on the same transaction. A link deleted before
+// the UPDATE is ErrLinkGone; any error makes the caller roll everything back.
+func updateSchedulingLinkAndCoHosts(q Querier, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (*SchedulingLink, error) {
+	result, err := UpdateSchedulingLink(q, id, l)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, ErrLinkGone
+	}
+	if f := AfterLinkPatchUpdate; f != nil {
+		if err := f(id); err != nil {
+			return nil, err
+		}
+	}
+	if coHostEmails == nil {
+		return result, nil
+	}
+	// PAC-71: the keep set is a KEEPING site (every account carrying a listed
+	// address, any standing, ignoring letter case, AC-43); new entries are a
+	// GRANTING site (only the one domain-confirmed holder).
+	keep, err := CarrierIDs(q, coHostEmails)
+	if err != nil {
+		return nil, fmt.Errorf("co-host lookup: %w", err)
+	}
+	if err := RemoveLinkHostsExcept(q, id, ownerID, keep); err != nil {
+		return nil, fmt.Errorf("co-host removal: %w", err)
+	}
+	for _, email := range coHostEmails {
+		uid, ok, err := ConfirmedHolder(q, email)
+		if err != nil {
+			return nil, fmt.Errorf("co-host lookup: %w", err)
+		}
+		if !ok || uid == ownerID {
+			continue
+		}
+		if _, _, err := InviteLinkHost(q, id, uid); err != nil {
+			return nil, fmt.Errorf("co-host invite: %w", err)
+		}
+	}
+	return result, nil
 }
 
 func HasOverlappingBooking(db DBTX, linkID uuid.UUID, start, end time.Time) (bool, error) {

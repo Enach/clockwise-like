@@ -98,10 +98,11 @@ func CreateTeamCtx(ctx context.Context, db DBTX, name string, createdBy uuid.UUI
 }
 
 // RespondToHostInviteCtx answers a co-host invitation under the re-check
-// (spec AC-46/AC-47 "accepts a co-host invitation").
+// (spec AC-46/AC-47 "accepts a co-host invitation"), behind the link's FOR
+// SHARE lock (PAC-101 contract §3.2): a link deleted first matches nothing.
 func RespondToHostInviteCtx(ctx context.Context, db DBTX, linkID, userID uuid.UUID, status string) (matched bool, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
-		matched, err = RespondToHostInvite(q, linkID, userID, status)
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
+		matched, err = respondToHostInviteLocked(q, linkID, userID, status)
 		return err
 	})
 	return matched, err

@@ -8,6 +8,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -139,9 +140,11 @@ func DeletePersonalCalendarForUserCtx(ctx context.Context, db DBTX, id int64, us
 	return r0, err
 }
 
-// DeleteSchedulingLinkCtx is DeleteSchedulingLink under the in-request re-check (PAC-71, contract §5).
+// DeleteSchedulingLinkCtx is DeleteSchedulingLink under the in-request re-check (PAC-71, contract §5),
+// in a transaction of its own with the link-lock bound (PAC-101 contract §2.4): a write
+// of the link in progress completes first and the delete waits for it, at most the bound.
 func DeleteSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID) (r0 bool, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
 		r0, e = DeleteSchedulingLink(q, id)
 		return e
@@ -165,11 +168,13 @@ func DeleteWorkspaceConnectionCtx(ctx context.Context, db DBTX, userID uuid.UUID
 	return err
 }
 
-// InviteLinkHostCtx is InviteLinkHost under the in-request re-check (PAC-71, contract §5).
+// InviteLinkHostCtx is InviteLinkHost under the in-request re-check (PAC-71, contract §5),
+// behind the link's FOR SHARE lock (PAC-101 contract §3.2): ErrLinkGone, with no host
+// row written, when the link is deleted before the lock is taken.
 func InviteLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID) (r0 *LinkHost, r1 bool, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, r1, e = InviteLinkHost(q, linkID, userID)
+		r0, r1, e = inviteLinkHostLocked(q, linkID, userID)
 		return e
 	})
 	return r0, r1, err
@@ -209,11 +214,12 @@ func RecordCredentialLossCtx(ctx context.Context, db DBTX, userID uuid.UUID, pro
 	return r0, err
 }
 
-// RemoveLinkHostCtx is RemoveLinkHost under the in-request re-check (PAC-71, contract §5).
+// RemoveLinkHostCtx is RemoveLinkHost under the in-request re-check (PAC-71, contract §5),
+// behind the link's FOR SHARE lock (PAC-101): a link deleted first removes nothing.
 func RemoveLinkHostCtx(ctx context.Context, db DBTX, linkID uuid.UUID, userID uuid.UUID) (r0 bool, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, e = RemoveLinkHost(q, linkID, userID)
+		r0, e = removeLinkHostLocked(q, linkID, userID)
 		return e
 	})
 	return r0, err
@@ -351,13 +357,26 @@ func UpdatePersonalCalendarCtx(ctx context.Context, db DBTX, id int64, userID uu
 	return r0, err
 }
 
-// UpdateSchedulingLinkCtx is UpdateSchedulingLink under the in-request re-check (PAC-71, contract §5).
+// UpdateSchedulingLinkCtx is UpdateSchedulingLink under the in-request re-check (PAC-71, contract §5):
+// UpdateSchedulingLinkAndCoHostsCtx with the co-host list left as it is.
 func UpdateSchedulingLinkCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink) (r0 *SchedulingLink, err error) {
-	err = WithSessionGeneration(ctx, db, func(q Querier) error {
+	return UpdateSchedulingLinkAndCoHostsCtx(ctx, db, id, l, uuid.Nil, nil)
+}
+
+// UpdateSchedulingLinkAndCoHostsCtx is a PATCH under the in-request re-check (PAC-71, contract §5),
+// as one transaction (PAC-101 contract §3.2): the link UPDATE is its first lock on the link, and
+// when coHostEmails is not nil the co-host list (owner ownerID) is set by difference on the same
+// transaction. A nil result with a nil error means the link was deleted before the UPDATE: nothing
+// changed. Any error rolls back the fields and the co-hosts together.
+func UpdateSchedulingLinkAndCoHostsCtx(ctx context.Context, db DBTX, id uuid.UUID, l *SchedulingLink, ownerID uuid.UUID, coHostEmails []string) (r0 *SchedulingLink, err error) {
+	err = withLinkWriteTx(ctx, db, func(q Querier) error {
 		var e error
-		r0, e = UpdateSchedulingLink(q, id, l)
+		r0, e = updateSchedulingLinkAndCoHosts(q, id, l, ownerID, coHostEmails)
 		return e
 	})
+	if errors.Is(err, ErrLinkGone) {
+		return nil, nil
+	}
 	return r0, err
 }
 
