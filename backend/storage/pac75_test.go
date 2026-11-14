@@ -269,6 +269,15 @@ func TestPAC75_DenialRecordAndAccountDeletionDoNotDeadlock(t *testing.T) {
 				}
 				ctx = WithSessionGuard(ctx, &SessionGuard{UserID: user, Gen: gen})
 			}
+			// The window row exists before the held record, so its upsert
+			// takes the UPDATE path, which re-checks no foreign key: only the
+			// explicit KEY SHARE on the actor (contract §3.3 step 1) puts the
+			// users row first. Without it, the deletion locks users, waits on
+			// the window row, and the record's event insert (FK KEY SHARE on
+			// users) closes the cycle: 40P01 (review F1).
+			if _, err := RecordSSOStepupOutcomeWindow(ctx, db, pac75Denied(user, &org, "not_admin", pac75T0)); err != nil {
+				t.Fatalf("first record: %v", err)
+			}
 			held, release := make(chan struct{}), make(chan struct{})
 			InstallAfterStepupDenialUpsert(t, func(id uuid.UUID) {
 				if id == user {
