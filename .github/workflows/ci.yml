@@ -363,9 +363,11 @@ jobs:
       # it fails, compose still builds everything itself.
       - name: Warm docker layer cache (e2e stack)
         continue-on-error: true
+        # bake resolves the compose file's contexts (../backend, ..) against the cwd
+        working-directory: e2e
         run: |
           # --allow: the frontend's build context is the repo root (".." from e2e/).
-          docker buildx bake --allow=fs.read=.. --builder default -f e2e/docker-compose.e2e.yml \
+          docker buildx bake --allow=fs.read=.. --builder default -f docker-compose.e2e.yml \
             --set '*.cache-from=type=gha,scope=e2e' \
             --set '*.cache-to=type=gha,scope=e2e,mode=max' \
             backend fake-google sink frontend
