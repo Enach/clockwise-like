@@ -28,10 +28,9 @@ const BookerRetention = 90 * 24 * time.Hour
 // requires both columns to be empty strings once booker_erased_at is set.
 //
 // OQ-8 (owner, open; factory default: notes are KEPT, D-11): if the owner
-// answers that notes are erased too, add notes (set to the empty string)
-// to this list. That is a
-// contract revision (manifest followUps), and the archive reads notes as
-// stored, so nothing else in the backend changes.
+// answers that notes are erased too, add notes (set to the empty string) to
+// this list. That is a contract revision (manifest followUps); the archive
+// reads notes as stored, so nothing else in the backend changes.
 const bookerErasureSet = `booker_name = '', booker_email = ''`
 
 // AuditBookersErased is the audit action an erasure writes in the link
