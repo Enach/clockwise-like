@@ -3933,10 +3933,14 @@ type SsoProviderProviderType string
 // spec §3.2, D-12, D-13, D-14). Whether SSO is active is not part of
 // this body (PAC-22 spec §3.3); see setSsoProviderState.
 type SsoProviderCreateRequest struct {
-	// Domain Must equal the caller's org domain, exact and case-insensitive,
-	// else 403 `provider_domain_mismatch` (PAC-50); a subdomain or a
-	// foreign domain does not match, and surrounding whitespace is not
-	// trimmed (`" acme.com "` is a 403). Stored lower-cased.
+	// Domain Must equal the caller's org domain, exact and case-insensitive
+	// for ASCII letters only; any other difference, including
+	// non-ASCII case folding, is a different domain (PAC-75; see
+	// createSsoProvider's DOMAIN MATCH), else 403
+	// `provider_domain_mismatch` (PAC-50); a subdomain or a foreign
+	// domain does not match, and surrounding whitespace is not trimmed
+	// (`" acme.com "` is a 403). Stored as the org domain's exact bytes
+	// (lower-case).
 	Domain       string `json:"domain"`
 	OidcClientId string `json:"oidc_client_id"`
 
@@ -4157,9 +4161,11 @@ type SsoWithoutStepup = []string
 
 // SsoWriteDomainMismatch The provider domain (create body `domain`, or the `{domain}` segment
 // of the DELETE and of setSsoProviderState) is not exactly the caller's
-// org domain, compared case-insensitively and untrimmed: a subdomain
-// (`sub.acme.com`), a foreign domain (`other.com`) or a padded value
-// (`" acme.com "`). A 403 by owner decision (2026-10-27, RFC 9110
+// org domain, compared untrimmed and case-insensitively for ASCII
+// letters only (PAC-75): a subdomain (`sub.acme.com`), a foreign domain
+// (`other.com`), a padded value (`" acme.com "`) or a value that
+// matches only under non-ASCII case folding (`acmeſ.com` for
+// `acmes.com`, `Kcme.com` with the Kelvin sign for `kcme.com`). A 403 by owner decision (2026-10-27, RFC 9110
 // §15.5.4), not a 400. Checked after membership and the body's 400s,
 // before authorization: nothing is written and a live step-up grant is
 // not consumed.
