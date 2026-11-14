@@ -114,10 +114,15 @@ they saw and change nothing. There is no override.
      It applies the migrations.
   3. Start the others.
 
-  A new backend started while an old one is still serving refuses to start
-  (`refusing to start: pending migrations … were not applied: the app is
-  serving`). Docker restarts it (`restart: unless-stopped`) until the old
-  ones are stopped.
+  From PAC-116's implementation on, a new backend started while an old one
+  is still serving refuses to start (`refusing to start: pending migrations
+  … were not applied: the app is serving`). Docker restarts it
+  (`restart: unless-stopped`) until the old ones are stopped. `compose up -d`
+  still returns success: the refusal shows as `Restarting` in
+  `compose ps backend` and as `refusing to start` in `compose logs backend`,
+  and [Deploy order](#deploy-order) step 5 (`/api/ready`) does not turn
+  green. The same happens for up to 90 seconds with one backend when the old
+  container was killed rather than stopped (its heartbeat still counts).
 - **`paceday-operator` newer than the database** (it would apply
   migrations): either start the new backend first, which migrates, and then
   use `compose exec backend /paceday-operator …` as usual; or stop every
@@ -137,8 +142,12 @@ they saw and change nothing. There is no override.
     ```sql
     SELECT pid, application_name, usename, client_addr, backend_start, state
     FROM pg_stat_activity
-    WHERE datname = current_database() AND backend_type = 'client backend';
+    WHERE datname = current_database() AND pid <> pg_backend_pid()
+      AND (backend_type = 'client backend' OR backend_type IS NULL);
     ```
+
+    Run it as the database superuser (or a role with `pg_read_all_stats`):
+    other roles see another role's sessions with most columns empty.
 
     Close it. As a last resort, use `SELECT pg_terminate_backend(<pid>);`.
     Stop monitoring agents that connect to the application database for the
@@ -157,8 +166,9 @@ compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-
 ```
 
 - `advance-all` runs after the new backend has migrated, so it applies
-  nothing itself (a newer operator against an older schema refuses; see
-  [Applying migrations](#applying-migrations-stop-migrate-start)).
+  nothing itself. (From PAC-116's implementation on, a newer operator
+  against an older schema refuses while the backend serves; see
+  [Applying migrations](#applying-migrations-stop-migrate-start).)
 - `advance-all` runs against the running backend (`exec`): it needs no
   backend stop, unlike the encryption subcommands below that use
   `run --rm --no-deps backend`. (`run --rm --no-deps backend /paceday-operator
@@ -528,9 +538,9 @@ exits 0 when nothing plain is left (3 while some is).
 
 `paceday-operator encryption <subcommand>` ships in the backend image as
 `/paceday-operator`. It reads `DATABASE_URL` and the same two key variables
-as the backend. Like the backend, it applies pending migrations only while
-no backend is serving ([Applying migrations](#applying-migrations-stop-migrate-start)).
-as the backend. Subcommands that need the backend **running or not** use
+as the backend. From PAC-116's implementation on, like the backend, it
+applies pending migrations only while no backend is serving
+([Applying migrations](#applying-migrations-stop-migrate-start)). Subcommands that need the backend **running or not** use
 `exec`:
 
 ```sh
