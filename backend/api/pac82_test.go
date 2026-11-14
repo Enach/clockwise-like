@@ -643,7 +643,7 @@ func TestPAC82_KeyFormatAndOrder(t *testing.T) {
 	bad := `{"error":"invalid Idempotency-Key header"}`
 	good := pac82Req{email: "k@ac17.test", start: pac82At(10, 0)}
 	for name, q := range map[string]pac82Req{
-		"15 characters": {key: strings.Repeat("a", 15)},
+		"15 characters":  {key: strings.Repeat("a", 15)},
 		"256 characters": {key: strings.Repeat("a", 256)},
 		"a dot":          {key: "abcdefghijklmnop.q"},
 		"quoted":         {key: `"8e03978e-40d5-43e8-bc93-6894a57f9324"`},
@@ -939,4 +939,3 @@ func TestPAC82_CORSAllowsTheKeyHeader(t *testing.T) {
 		t.Fatalf("Allow-Headers %q", got)
 	}
 }
-

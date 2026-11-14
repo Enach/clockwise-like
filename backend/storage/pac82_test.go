@@ -182,7 +182,9 @@ func pac82Slot(h, m int) (time.Time, time.Time) {
 	return s, s.Add(30 * time.Minute)
 }
 
-func pac82Key(label string) string { return strings.ReplaceAll("pac82-"+label+"-"+uuid.NewString(), ".", "_") }
+func pac82Key(label string) string {
+	return strings.ReplaceAll("pac82-"+label+"-"+uuid.NewString(), ".", "_")
+}
 
 // AC-4 (and AC-31): R held after its keys; S on another link of the same host,
 // overlapping (not equal) slot, waits on an advisory key. R commits: S is host

@@ -8,8 +8,8 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/binary"
 	"sort"
 	"strconv"
