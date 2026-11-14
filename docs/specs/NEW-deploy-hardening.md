@@ -734,6 +734,15 @@ Tests:
 - an unset setting does not remove it.
 [integration]
 
+**Amended by PAC-86 (2026-11-14).** The web no longer has a hard-coded DSN:
+web monitoring is off unless the frontend image is built with
+`VITE_SENTRY_DSN`. To stay consistent, the Sentry ingest origin is no longer a
+default: with `NGINX_CSP_SENTRY_ORIGIN` unset or empty, `connect-src` holds no
+Sentry origin; when set, it holds exactly that origin, which must be the origin
+of the build's DSN. The tests become: unset or empty adds no Sentry origin; a
+set value adds exactly that origin; cross-origin API and extra origins are
+added as before. The text above is kept as approved.
+
 AC-B5 (F-B3). Given nginx with the shipped config, a trusted-proxy list
 containing address P, and a stub upstream in place of the backend that records
 the headers it receives, when a request arrives from P with `X-Forwarded-For:

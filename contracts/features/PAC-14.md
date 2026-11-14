@@ -62,6 +62,16 @@ incidents are currently undiagnosable without reproduction.
   `Dsn: os.Getenv("SENTRY_DSN")`). The frontend's hard-coded fallback is not
   changed by PAC-81; it is the web follow-up WEB-sentry-default (spec §10).
   The text below is kept as PAC-14 approved it.
+- **Amended by PAC-86 (2026-11-14, web follow-up WEB-sentry-default).** The
+  frontend has **no default DSN** either. With `VITE_SENTRY_DSN` unset or empty
+  at build time, web monitoring is off: `Sentry.init` is not called and the
+  monitoring status goes `uninitialized -> disabled` (the existing "no DSN"
+  transition). The `?? "<DSN>"` fallback in the frontend init below is
+  superseded (read it as `dsn: import.meta.env.VITE_SENTRY_DSN`, with init
+  skipped when it is empty). The CSP `connect-src` has no Sentry origin by
+  default (PAC-81 AC-B4 amended): an operator enabling web monitoring sets both
+  `VITE_SENTRY_DSN` (frontend build) and `NGINX_CSP_SENTRY_ORIGIN` (nginx) to
+  the same project. The text below is kept as PAC-14 approved it.
 - **DSN handling**: the DSN is read from env `SENTRY_DSN` (backend) with the
   PAC-14 value as the documented default; it is **not** a secret in the classic
   sense (Sentry ingest DSNs are client-side identifiers) but MUST still be

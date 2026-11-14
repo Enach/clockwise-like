@@ -19,9 +19,11 @@
 #                              believed. Empty (default): nothing is trusted
 #                              and the socket peer is the client.
 #   NGINX_CSP_SENTRY_ORIGIN    The frontend's Sentry ingest origin, allowed in
-#                              connect-src. Empty = the default below, which is
-#                              the origin of the web's built-in DSN; it must
-#                              match the DSN the frontend image was built with.
+#                              connect-src. Empty (default): no Sentry origin is
+#                              allowed, matching a frontend built without
+#                              VITE_SENTRY_DSN (web monitoring off, PAC-86).
+#                              When set, it must be the origin of the DSN the
+#                              frontend image was built with.
 #   NGINX_CSP_CONNECT_ORIGINS  Extra connect-src origins.
 #   API_BASE_URL               The frontend's setting. When absolute, its
 #                              origin is allowed in connect-src.
@@ -36,7 +38,6 @@
 set -eu
 
 OUT=/etc/nginx/conf.d/00-paceday-runtime.conf
-DEFAULT_SENTRY_ORIGIN=https://o4512081160896512.ingest.de.sentry.io
 
 fail() {
 	echo "paceday-render: $*" >&2
@@ -117,9 +118,13 @@ add_connect() {
 	esac
 }
 
-sentry=${NGINX_CSP_SENTRY_ORIGIN:-$DEFAULT_SENTRY_ORIGIN}
-is_origin "$sentry" || fail "NGINX_CSP_SENTRY_ORIGIN must be an origin (scheme://host[:port]), got '$sentry'"
-add_connect "$sentry"
+# PAC-86: no built-in Sentry origin. The web has no default DSN, so an unset
+# setting allows none, and connect-src stays consistent with the build.
+sentry=${NGINX_CSP_SENTRY_ORIGIN:-}
+if [ -n "$sentry" ]; then
+	is_origin "$sentry" || fail "NGINX_CSP_SENTRY_ORIGIN must be an origin (scheme://host[:port]), got '$sentry'"
+	add_connect "$sentry"
+fi
 
 api=${API_BASE_URL:-}
 case "$api" in
