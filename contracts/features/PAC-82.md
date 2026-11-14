@@ -4,7 +4,8 @@
 - **Spec**: `docs/specs/PAC-82.md` on `factory/pac-82-spec` (`65e1fa2`), accepted
   2026-11-14 (self-challenged, accept-with-changes applied in place).
 - **Split**: spec issue item 3 (provider-side idempotency for host calendar
-  events and personal-sync blockers) is its own ticket, linked from PAC-82
+  events and personal-sync blockers) is **PAC-108**
+  (https://linear.app/paceday/issue/PAC-108), linked to PAC-82 as related
   (spec OQ-1, D-12). Nothing in this contract depends on it.
 - **Manifest**: `contracts/features/PAC-82.yaml`.
 - **Fragment**: `contracts/openapi/paths/booking.yaml` only.
@@ -61,6 +62,12 @@ reaching its save is preceded by one more lookup of its key; a booking saved
 with that key meanwhile turns the answer into the replay (or the key-reused
 409). Without it a retry racing its own original's commit is told "slot taken"
 for its own booking (challenge C-3).
+
+What a keyed refusal proves (challenge C-8): when the refusal was decided, no
+booking with that key existed on that link. It does not prove that an earlier
+request with the same key, still being handled, will not save afterwards; that
+can only happen when the earlier request had already reserved its save
+connection, and then within its save (the 10 s lock bound plus the insert).
 
 ### 1.2 Replay matching (binding)
 
@@ -377,5 +384,184 @@ header), so the web merges after the server and reverts before it.
 
 ## 10. Gate results (contract stage)
 
-See the manifest's `gates` and `contractHashOf` (regenerated in an LF clone,
-api-gate pattern).
+Regenerated in an LF clone (`golang:1.25-bookworm`, oapi-codegen v2.4.1, the
+api-gate pattern, host repo mounted read-only), 2026-11-14, at `0fb0480`:
+`make openapi WEB=/nonexistent` rc 0 (132 operations, 12 generated);
+regenerated `contracts/openapi/openapi.yaml` and `backend/api/gen/paceday.gen.go`;
+`make openapi-check WEB=/nonexistent` rc 0 ("bundle is in sync (110 paths)",
+"MIGRATION.md covers all 132 operations (12 generated)", "backend/api/gen
+matches the contract"; web half SKIPPED by design); `cd backend && go build ./...`
+ok. Bundle sha256
+`85187c9448b95f89e3ce05ac334d53ec9cf1bb0f896bb89d788ce46726adbdd4`
+(= `contractHash`; main `d520775`: `3fa2668c…`). Not run: test suites, lint and
+coverage (no hand-written Go changed).
+
+## Challenge — 2026-11-14
+
+**Verdict**: accept-with-changes. The changes are applied in revision 1.1 (this
+document, the manifest, and the fragment text committed at `0fb0480`, whose
+bundle is `contractHash`).
+
+The contract-challenger role was played by the same agent, which re-read
+`origin/main` `d520775` (handlers, engine, storage, middleware), the web at
+`d935bcc`, and ran every locking and migration claim on a throwaway PostgreSQL
+16.15 container on an internal docker network with no published port, against a
+database migrated with the real files 001..037 (each in one transaction, as
+golang-migrate runs them).
+
+### Requests wrongly permitted
+
+1. `POST /api/book/s` with `Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"`
+   (the draft's quoted structured-field form). Revision 1 said "the IETF
+   header" without a form; a server following the draft would strip the
+   quotes, one following the pattern would answer 400. Fixed: bare token only,
+   quotes are the 400 (parameter description, §9).
+2. The header on two field lines (`Idempotency-Key: aaaa…` twice). Go's
+   `Header.Get` reads the first and ignores the second, so the server and an
+   intermediary could disagree on the key. Fixed: two or more lines = 400.
+3. `Idempotency-Key:` with an empty value. The schema (`minLength: 16`) forbids
+   it; the server treats it as absent (spec AC-17). Stated in the parameter
+   description as tolerated, not part of the schema.
+
+### Responses the client cannot handle
+
+1. The 409 is now a `oneOf`. `PublicBooking.tsx` (web `d935bcc`) treats every
+   409 as a slot refusal (refetch the day, clear the slot). It never sends a
+   key, so it never receives the key-reused body; the web PR that adds keys
+   must branch on `error` (AC-27). Generated Go gets an opaque union, harmless:
+   the route is handwritten.
+
+### Consumers affected
+
+- Web generated types (header, union, descriptions): regeneration paired with
+  stage 4. `PublicBooking.test.tsx:8` keeps compiling (schema name unchanged).
+- PAC-83 AC-21 test, PAC-101 AC-16 test
+  (`TestPAC101_SavesOnOneLinkDoNotWaitForEachOther`): amended, listed in the
+  manifest.
+- `mcp/`, `e2e/` keyless journeys: none.
+
+### Contract/implementation divergences (fixed in 1.1)
+
+1. **C-1 (blocking) spec OQ-2 answered by observation.** With a holder in
+   another session, `SET LOCAL lock_timeout='300ms'; SELECT pg_advisory_xact_lock(8201,42)`
+   gives `ERROR 55P03 canceling statement due to lock timeout`; same for
+   `pg_advisory_xact_lock_shared`. The waiter shows `wait_event_type='Lock'`,
+   `wait_event='advisory'` and a `pg_locks` row
+   `advisory|8201|42|2|ExclusiveLock|f`. The unique-index wait on another
+   transaction's uncommitted key times out too: `55P03 … while inserting index
+   tuple … in relation "bookings_link_idempotency_key"`. When that holder
+   commits, the waiter gets `23505`; when it rolls back, the waiter's insert
+   succeeds. §4.5.
+2. **C-2 (blocking) stale snapshot.** Observed in READ COMMITTED:
+   `SELECT (SELECT EXISTS(<winner's slot>)) FROM (SELECT pg_advisory_xact_lock(8202,7)) s`
+   returned **false** after waiting for a winner that inserted and committed;
+   the next statement returned true. A single-statement "lock and check" (or a
+   CTE) double-books, and so would REPEATABLE READ. The spec did not say.
+   Fixed: §3 (separate statements, READ COMMITTED), AC-31.
+3. **C-3 (blocking) a retry refused for its own booking.** Keyed A' does its
+   replay lookup (nothing yet), then its original A commits, then A' reaches the
+   410 check or `HasOverlappingBooking` and answers 410 or 409 `taken` for the
+   booking its own key saved; the web would then say "not saved". The spec's
+   in-transaction lookup only covers requests that reach the save. Fixed: one
+   more key lookup before any keyed 409 or 410 (§1.1, operation description),
+   AC-29.
+4. **C-4 (blocking) replay turned into a 400.** The spec's order puts every body
+   400 before the replay, but "invalid duration" (`durationAllowed`,
+   `handlers_booking.go:401`) depends on the link's current durations: an owner
+   who removes 30 min after a 30-minute booking turns its retry into a 400. The
+   issue requires the replay before link-state checks. Fixed: for keyed
+   requests "invalid duration" moves after the replay and the 410 (§1.1, 400
+   description); AC-10 extended.
+5. **C-5 (blocking) lock-table exhaustion.** The spec's per-(host, bucket)
+   scheme is unbounded in hosts × slot length (up to 101 buckets per host).
+   Observed with the default `max_locks_per_transaction` 64 and
+   `max_connections` 100: one transaction took 12 000 advisory locks and 14 000
+   failed; while one session held 11 000, another session asking for 3 000 more
+   failed with `53200 out of shared memory`. The table is server-wide, so a
+   burst of long multi-host saves would break unrelated transactions. Fixed: the
+   fine/coarse rule with `BookingKeyCap` 64 (§4.3), at most 64 + hosts + 1 keys
+   per save. Also observed: a shared request queues behind a waiting exclusive
+   one, so the coarse cost is stated. Spec AC-5 is narrowed to fine saves
+   (manifest AC-5); AC-30 pins the derivation.
+6. **C-6 key space.** PAC-84 is the only other advisory user (class 8400:
+   `(8400,1)` session lock, `(8400,2)` transaction lock). Observed: a `bigint`
+   key `(8400<<32)|1` and the pair `(8400,1)` are distinct locks (`objsubid` 1
+   vs 2; `pg_try_advisory_xact_lock` of the bigint succeeds while the pair is
+   held), but PAC-84's presence query (`classid=8400 AND objid=1`, no
+   `objsubid`) counted **both**. A 64-bit hashed bigint key can therefore look
+   like PAC-84's maintenance lock (2^-64 per key, but nonzero). Fixed:
+   two-integer form with reserved classes 8201-8203 (§4.1); the hash and its
+   byte order are pinned so replicas agree.
+7. **C-7 bucket edges.** The proof holds for any alignment: a slot ends at e,
+   another starts at s ≥ e + 15 min, and the first's last bucket
+   floor((e − 1 µs)/900 s) is below floor(s/900 s). So AC-5 holds for 09:10
+   grids, odd durations (7, 50 min), :45 offsets and DST days, given the
+   exclusive end. The engine's overlap is half-open (`overlapsMerged` in
+   `engine/booking.go`; SQL `start_time < $end AND end_time > $start`), which
+   matches the buckets. Pre-PAC-72 rows with seconds matter only to the
+   re-check, which is a plain overlap query. AC-30.
+8. **C-8 (open, does not block the contract) what a refused "Try again"
+   proves.** Spec AC-27 tells the visitor "the earlier attempt was not saved"
+   after a slot 409 or a 410 on Try again. With C-3 fixed, the server
+   guarantees that no booking with this key existed on the link when the
+   refusal was decided. An original attempt that is still running can save
+   afterwards only if it had already reserved its save connection when its
+   client lost it. An earlier disconnect cancels `r.Context()`, and the host
+   reads and `DB.Conn(ctx)` then fail before anything is written (read from the
+   code, not tested). Even then it can only save within its save step (at most
+   the 10 s lock bound plus the insert), and only when the refusal was one the
+   original would not also hit: a calendar event added at the provider in the
+   meantime (`host_busy`), the start crossing the notice, or a settings edit.
+   So "not saved" is almost always true but not guaranteed. The wording is the
+   spec's (D-9) and is recorded as a follow-up; the contract states the exact
+   guarantee in §1.1 (the operation description states the re-lookup). Also found: spec AC-27 does not say
+   what a 429 or a 400 on Try again shows. The manifest reads it as: 429 keeps
+   "may have been saved" and Try again; 400 "invalid duration" is treated like a
+   slot refusal (after C-4 it can only follow a non-replay).
+9. **C-9 stale sentence the spec missed.** PAC-101's "Bookings of the same link
+   are never made to wait for each other by this ordering" (`booking.yaml:183`)
+   becomes false under AC-5 and AC-8. Rewritten.
+
+### Uncertainties not actually resolved
+
+1. `BookingKeyCap` 64 is a factory number, not measured against production
+   PostgreSQL settings. The compose files do not set
+   `max_locks_per_transaction`, so the defaults observed here apply.
+2. C-8's claim about a disconnected original is read from the code
+   (`budget.Commit`, `ConfirmBooking`), not covered by a test; AC-28 covers only
+   the saved-then-dropped case.
+3. Spec D-1..D-12 remain factory-assumed (the spec raised no owner question).
+   The AC-5 narrowing (C-5) and the keyed 400 order (C-4) are contract-stage
+   amendments of accepted criteria, recorded here and in the manifest.
+
+### Verified clean (PostgreSQL 16.15, two or three sessions, READ COMMITTED)
+
+- Migration 038 on a database at 037 holding two identical bookings of one link
+  and a cross-link overlap: up ok, rows unchanged, every key NULL; a second row
+  with the same (link, key) gives `23505`; the same key on another link is
+  accepted; a 15-character key and a key ending in a newline violate the check
+  (`~` with `$` does not match before a trailing newline); down keeps all 5
+  rows; up again ok.
+- Ordered mixed-mode locking: T1 (8201 shared, 8202 exclusive), T2 (8201
+  exclusive, waits), T3 (8201 shared, queued behind T2): all three complete in
+  order, no deadlock.
+- Lock order against PAC-101 (link `FOR SHARE` first, unchanged), PAC-40 part B
+  (erasure works only on deleted links, which the save's step 2 filters out
+  without locking), PAC-71 (no `users` lock in the save) and PAC-84 (disjoint
+  classes; bookings are not encrypted, so no key load inside a save): §4.4. The
+  insert's FK `KEY SHARE` is covered by the `FOR SHARE` already held, so after
+  the keys nothing waits on a row except the unique index, whose holder is past
+  its key phase.
+- The lock host set covers every host whose busy time can see the booking:
+  `GetBusyBookingsForUser` counts links the user owns or co-hosts as accepted,
+  which is exactly owner ∪ accepted. The re-check uses the rule host set
+  (`GetAcceptedHosts`), so listing and booking stay equivalent (PAC-72).
+- Replay before vs inside the transaction: the in-transaction lookup after the
+  keys serializes same-key, same-details requests (same link, so same owner, so
+  a common `8202` key, or `8201` in coarse mode). The same key with different
+  times shares no key and is caught by the unique index (C-1 observed both
+  outcomes).
+- Web retry: `requestApi` sends only `Content-Type` today (`client.ts:588-606`),
+  and `bookSlot` always sends `end` and `duration`, so the web's resolved end
+  never depends on the link's default duration.
+- `storage.CreateBooking` (a lockless insert) has no production caller.

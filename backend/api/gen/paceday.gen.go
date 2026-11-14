@@ -113,6 +113,11 @@ const (
 	AuthStatusResponseProviderWebcal  AuthStatusResponseProvider = "webcal"
 )
 
+// Defines values for BookingIdempotencyKeyReusedErrorError.
+const (
+	IdempotencyKeyAlreadyUsed BookingIdempotencyKeyReusedErrorError = "idempotency key already used"
+)
+
 // Defines values for BookingRateLimitErrorError.
 const (
 	RateLimitExceeded BookingRateLimitErrorError = "rate limit exceeded"
@@ -1175,6 +1180,14 @@ type BookingError struct {
 	Error string `json:"error"`
 }
 
+// BookingIdempotencyKeyReusedError The second 409 body of `createPublicBooking` (PAC-82): the request's `Idempotency-Key` was already used on this link for a booking with different details (name, email, start, end or notes), or for a booking saved 24 hours ago or more. Exactly `{"error":"idempotency key already used"}`: no `reason`, the same whatever the link's `refusal_message`, and nothing of the stored booking. It does not say whether the stored booking was this client's. Written by api.writeError.
+type BookingIdempotencyKeyReusedError struct {
+	Error BookingIdempotencyKeyReusedErrorError `json:"error"`
+}
+
+// BookingIdempotencyKeyReusedErrorError defines model for BookingIdempotencyKeyReusedError.Error.
+type BookingIdempotencyKeyReusedErrorError string
+
 // BookingRateLimitError The `BookingError` envelope with its one possible message pinned, so a client can tell a rate-limit refusal from every other error by status and body alone (NEW-booking-rate-limit). Written by api.writeError.
 type BookingRateLimitError struct {
 	Error BookingRateLimitErrorError `json:"error"`
@@ -1189,7 +1202,7 @@ type BookingRefusalMessage string
 // BookingRefusalReason Why `createPublicBooking` refused a start (PAC-72 revision 2). Sent only when the link's `refusal_message` is `specific`. Precedence when several hold: `beyond_horizon`, `outside_link_hours`, `too_soon`, `taken`, `host_busy`. `outside_link_hours` covers a day not among the link's days, a start or end outside its daily window and a start off the 15-minute grid. `taken` is a non-cancelled booking on this same link; `host_busy` is any other busy time of an accepted host (calendar event widened by buffers, focus block, booking on another link, unreadable calendar per D-6) or a link with no accepted host.
 type BookingRefusalReason string
 
-// BookingSlotUnavailableError The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default): exactly `{"error":"slot is no longer available"}`, no `reason` key, whatever rule failed. `specific`: both keys, `reason` naming the first failed rule and `error` the one text paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` - "slot is outside the link's days or hours"; `beyond_horizon` - "slot is beyond the link's booking horizon"; `host_busy` - "a host is busy at that time"; `taken` - "slot is already booked". "slot is no longer available" never carries a `reason`, and a specific text never appears without its `reason`. The pairing is not expressible in this schema (no `oneOf`, see contracts/features/PAC-72.md); it is asserted by the implementation's tests, which compare the exact (error, reason) pair for every cause. Written by api.writeError (generic) or the same envelope plus `reason` (specific).
+// BookingSlotUnavailableError The slot-refusal 409 body of `createPublicBooking` (PAC-72; the other 409 body is BookingIdempotencyKeyReusedError, PAC-82, see PublicBookingConflict). Its shape depends on the link's `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default): exactly `{"error":"slot is no longer available"}`, no `reason` key, whatever rule failed. `specific`: both keys, `reason` naming the first failed rule and `error` the one text paired with it: `too_soon` - "slot is too soon"; `outside_link_hours` - "slot is outside the link's days or hours"; `beyond_horizon` - "slot is beyond the link's booking horizon"; `host_busy` - "a host is busy at that time"; `taken` - "slot is already booked". "slot is no longer available" never carries a `reason`, and a specific text never appears without its `reason`. The pairing is not expressible in this schema (no `oneOf`, see contracts/features/PAC-72.md); it is asserted by the implementation's tests, which compare the exact (error, reason) pair for every cause. Written by api.writeError (generic) or the same envelope plus `reason` (specific).
 type BookingSlotUnavailableError struct {
 	Error BookingSlotUnavailableErrorError `json:"error"`
 
@@ -2968,6 +2981,11 @@ type PublicBookingConfirmation struct {
 	Title string `json:"title"`
 }
 
+// PublicBookingConflict The 409 of `createPublicBooking`: exactly one variant applies, told apart by `error` alone (the two `error` sets are disjoint). BookingSlotUnavailableError is the slot refusal (PAC-72, and PAC-82's concurrent loser); BookingIdempotencyKeyReusedError is the reused or expired `Idempotency-Key` (PAC-82). Both keep the shared `{error}` envelope, so a client that reads only `error` still shows a message.
+type PublicBookingConflict struct {
+	union json.RawMessage
+}
+
 // PublicBookingSlot engine.AvailableSlot. Times are Go time.Time marshalled as RFC3339 with nanoseconds.
 type PublicBookingSlot struct {
 	End   time.Time `json:"end"`
@@ -4476,6 +4494,9 @@ type WorkingHoursSchedule struct {
 // A GET never returns `”`, because normalisation rewrites it.
 type WorkingHoursScheduleMode string
 
+// BookingIdempotencyKey defines model for BookingIdempotencyKey.
+type BookingIdempotencyKey = string
+
 // EventId defines model for EventId.
 type EventId = string
 
@@ -4816,6 +4837,12 @@ type HandleZoomOAuthCallbackParams struct {
 
 	// State Must equal the `zoom_oauth_state` cookie value, otherwise 400.
 	State *string `form:"state,omitempty" json:"state,omitempty"`
+}
+
+// CreatePublicBookingParams defines parameters for CreatePublicBooking.
+type CreatePublicBookingParams struct {
+	// IdempotencyKey Optional label of one booking attempt (PAC-82; the header named by draft-ietf-httpapi-idempotency-key-header, sent as a bare token, not the draft's quoted structured-field string: a value with quotes is the 400). Chosen by the client, fresh for every attempt (the web sends a random UUID per attempt and the same value only when re-sending that exact attempt). Format: 16 to 255 characters from `A-Z a-z 0-9 - _`, compared byte for byte (case-sensitive). An empty value is treated as absent (not part of this schema: send no header instead). Any other value outside the format, or the header sent on two or more field lines, is 400 "invalid Idempotency-Key header" and nothing is written. Scope: one scheduling link (the link the slug resolves to; the same key on another link is unrelated). Window: 24 hours from the moment the keyed booking was saved, measured by the database clock; within it the same key and the same details replay the saved booking (201), other details are the 409 `{"error":"idempotency key already used"}`; from 24 hours on, the key is that 409 whatever the details. The key is stored on the booking row and never expires from storage; it is never returned in any response. A request carrying a key counts against the booking rate limit like any other.
+	IdempotencyKey *BookingIdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
 // GetPublicBookingSlotsParams defines parameters for GetPublicBookingSlots.
@@ -6636,6 +6663,68 @@ func (t *OrganizationAIWriteForbiddenResponse) UnmarshalJSON(b []byte) error {
 	return err
 }
 
+// AsBookingSlotUnavailableError returns the union data inside the PublicBookingConflict as a BookingSlotUnavailableError
+func (t PublicBookingConflict) AsBookingSlotUnavailableError() (BookingSlotUnavailableError, error) {
+	var body BookingSlotUnavailableError
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBookingSlotUnavailableError overwrites any union data inside the PublicBookingConflict as the provided BookingSlotUnavailableError
+func (t *PublicBookingConflict) FromBookingSlotUnavailableError(v BookingSlotUnavailableError) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBookingSlotUnavailableError performs a merge with any union data inside the PublicBookingConflict, using the provided BookingSlotUnavailableError
+func (t *PublicBookingConflict) MergeBookingSlotUnavailableError(v BookingSlotUnavailableError) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsBookingIdempotencyKeyReusedError returns the union data inside the PublicBookingConflict as a BookingIdempotencyKeyReusedError
+func (t PublicBookingConflict) AsBookingIdempotencyKeyReusedError() (BookingIdempotencyKeyReusedError, error) {
+	var body BookingIdempotencyKeyReusedError
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromBookingIdempotencyKeyReusedError overwrites any union data inside the PublicBookingConflict as the provided BookingIdempotencyKeyReusedError
+func (t *PublicBookingConflict) FromBookingIdempotencyKeyReusedError(v BookingIdempotencyKeyReusedError) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeBookingIdempotencyKeyReusedError performs a merge with any union data inside the PublicBookingConflict, using the provided BookingIdempotencyKeyReusedError
+func (t *PublicBookingConflict) MergeBookingIdempotencyKeyReusedError(v BookingIdempotencyKeyReusedError) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t PublicBookingConflict) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *PublicBookingConflict) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsSsoWriteMembershipRequired returns the union data inside the SsoWriteForbiddenResponse as a SsoWriteMembershipRequired
 func (t SsoWriteForbiddenResponse) AsSsoWriteMembershipRequired() (SsoWriteMembershipRequired, error) {
 	var body SsoWriteMembershipRequired
@@ -6844,7 +6933,7 @@ type ServerInterface interface {
 	GetPublicLinkInfo(w http.ResponseWriter, r *http.Request, slug string)
 	// Book a slot on a public scheduling link.
 	// (POST /api/book/{slug})
-	CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string)
+	CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string, params CreatePublicBookingParams)
 	// Available slots for one day, or the days of a bounded range that have any slot.
 	// (GET /api/book/{slug}/slots)
 	GetPublicBookingSlots(w http.ResponseWriter, r *http.Request, slug string, params GetPublicBookingSlotsParams)
@@ -7336,7 +7425,7 @@ func (_ Unimplemented) GetPublicLinkInfo(w http.ResponseWriter, r *http.Request,
 
 // Book a slot on a public scheduling link.
 // (POST /api/book/{slug})
-func (_ Unimplemented) CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string) {
+func (_ Unimplemented) CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string, params CreatePublicBookingParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -8918,8 +9007,32 @@ func (siw *ServerInterfaceWrapper) CreatePublicBooking(w http.ResponseWriter, r 
 		return
 	}
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreatePublicBookingParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey BookingIdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreatePublicBooking(w, r, slug)
+		siw.Handler.CreatePublicBooking(w, r, slug, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -13998,8 +14111,9 @@ func (response GetPublicLinkInfo500JSONResponse) VisitGetPublicLinkInfoResponse(
 }
 
 type CreatePublicBookingRequestObject struct {
-	Slug string `json:"slug"`
-	Body *CreatePublicBookingJSONRequestBody
+	Slug   string `json:"slug"`
+	Params CreatePublicBookingParams
+	Body   *CreatePublicBookingJSONRequestBody
 }
 
 type CreatePublicBookingResponseObject interface {
@@ -14033,7 +14147,7 @@ func (response CreatePublicBooking404JSONResponse) VisitCreatePublicBookingRespo
 	return json.NewEncoder(w).Encode(response)
 }
 
-type CreatePublicBooking409JSONResponse BookingSlotUnavailableError
+type CreatePublicBooking409JSONResponse PublicBookingConflict
 
 func (response CreatePublicBooking409JSONResponse) VisitCreatePublicBookingResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
@@ -20514,10 +20628,11 @@ func (sh *strictHandler) GetPublicLinkInfo(w http.ResponseWriter, r *http.Reques
 }
 
 // CreatePublicBooking operation middleware
-func (sh *strictHandler) CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string) {
+func (sh *strictHandler) CreatePublicBooking(w http.ResponseWriter, r *http.Request, slug string, params CreatePublicBookingParams) {
 	var request CreatePublicBookingRequestObject
 
 	request.Slug = slug
+	request.Params = params
 
 	var body CreatePublicBookingJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
