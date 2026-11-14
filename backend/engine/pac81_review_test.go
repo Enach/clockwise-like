@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/smtp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,17 +75,14 @@ func TestPAC81_BookingSkippedHostIsLogged(t *testing.T) {
 	// Reads succeed (the D-6 check passes); the create fails.
 	g.set(badTok, stubBehaviour{createDelay: time.Hour})
 	link := pac81Link(t, db, []uuid.UUID{ok, bad})
-	var buf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(prev)
+	logged := captureStdLog(t)
 	start := nextWeekday(time.Now()).Add(16 * time.Hour)
 	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lifecycle.Default().Wait(context.Background())
-	out := buf.String()
+	out := logged()
 	want := fmt.Sprintf("ERROR: booking %s: not every host event was created (hosts done: [%s]; hosts not done: [%s]", booking.ID, ok, bad)
 	if !strings.Contains(out, want) {
 		t.Fatalf("log %q lacks %q", out, want)
@@ -199,5 +197,29 @@ func TestPAC81_RecapOnlyUserIsSent(t *testing.T) {
 	_ = db.QueryRow(`SELECT status FROM recap_sends WHERE user_id = $1`, u.ID).Scan(&status)
 	if status != "sent" {
 		t.Fatalf("recap status %q, want sent", status)
+	}
+}
+
+// captureStdLog sends the standard logger to a buffer until the test ends and
+// returns a reader of what was logged so far. Writes and reads share a mutex:
+// a goroutine the test does not wait for (an oauth2 token refresh, say) may
+// still log while the test reads (PAC-110 item 3).
+func captureStdLog(t *testing.T) func() string {
+	t.Helper()
+	var (
+		mu  sync.Mutex
+		buf bytes.Buffer
+	)
+	prev := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
 	}
 }
