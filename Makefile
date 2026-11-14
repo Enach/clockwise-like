@@ -44,7 +44,7 @@ SELF := $(MAKE) --no-print-directory -f $(ROOT)/Makefile
 .PHONY: help clone-frontend install-hooks db-shell \
         openapi openapi-check openapi-check-web lint test coverage e2e \
         test-backend test-mcp test-fake-google test-fileserver test-nginx test-compose \
-        coverage-backend coverage-mcp require-docker \
+        coverage-backend coverage-mcp require-docker print-suites \
         verify verify-banner verify-summary
 
 help:
@@ -159,8 +159,28 @@ lint:
 
 ## Unit + contract tests for both modules
 # One target per suite, so ci.yml can run them as parallel jobs; `test` runs
-# them all, in this order, fail-fast, exactly as before.
-test: test-backend test-mcp test-fake-google test-fileserver test-nginx test-compose
+# them all, in this order, fail-fast, exactly as before. These lists are the
+# single source: scripts/ci_suites_check.py (run by ci.yml) fails when the jobs
+# in ci.yml stop running exactly these targets. Add a suite here AND in ci.yml.
+TEST_SUITES := backend mcp fake-google fileserver nginx compose
+COVERAGE_SUITES := backend mcp
+# The steps `verify` runs, in its recipe below, in this order.
+VERIFY_STEPS := lint openapi-check test coverage e2e
+
+test: $(addprefix test-,$(TEST_SUITES))
+
+# `make -j test` keeps the suites one at a time and in order, as before the
+# split (GNU make >= 4.4 serialises just these prerequisites; older makes treat
+# any .NOTPARALLEL as the whole makefile). Note the backend suite's postgres is
+# published on one fixed port (15432), so test-backend and coverage-backend
+# cannot run at once on one host either.
+.NOTPARALLEL: test coverage
+
+# For scripts/ci_suites_check.py.
+print-suites:
+	@echo "TEST_SUITES=$(TEST_SUITES)"
+	@echo "COVERAGE_SUITES=$(COVERAGE_SUITES)"
+	@echo "VERIFY_STEPS=$(VERIFY_STEPS)"
 
 require-docker:
 	@command -v docker >/dev/null 2>&1 || { \
@@ -195,7 +215,7 @@ test-compose:
 	cd $(ROOT)/compose-test && go vet ./... && go test -timeout 40m ./...
 
 ## The same suites with coverage profiles, gated
-coverage: coverage-backend coverage-mcp
+coverage: $(addprefix coverage-,$(COVERAGE_SUITES))
 
 coverage-backend:
 	@command -v docker >/dev/null 2>&1 || { \

@@ -18,10 +18,18 @@
 #   nginx              make test-nginx
 #   compose            make test-compose
 #
+# The suite lists live in the Makefile (TEST_SUITES, COVERAGE_SUITES,
+# VERIFY_STEPS); the lint job runs scripts/ci_suites_check.py, which fails when
+# the jobs here stop running exactly those targets, or one of them is not
+# behind "verify". A new suite goes in both places.
+#
 # Caches only skip work that is not the check itself: module downloads, Go
 # compilation, npm downloads, browser downloads, docker layers. GOFLAGS=-count=1
 # (and -count=1 inside scripts/test-backend.sh when its cache is on) means a
 # restored Go build cache never replays a test result: every test runs.
+# Caches are SAVED only on push to main (Go: one key per go.sum per ISO week;
+# npm/Playwright: one per lockfile; docker layers: cache-to only on main) and
+# only RESTORED on pull requests, so PR runs add nothing to the 10 GB budget.
 name: ci
 
 on:
@@ -139,22 +147,28 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache: false
-      - uses: actions/cache@v4
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/golangci-lint
             ~/go/bin
-          key: go-lint-${{ env.GO_TOOLS_KEY }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: ci-go-lint-${{ env.GO_TOOLS_KEY }}-${{ hashFiles('**/go.sum') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            go-lint-${{ env.GO_TOOLS_KEY }}-${{ hashFiles('**/go.sum') }}-
-            go-lint-${{ env.GO_TOOLS_KEY }}-
+            ci-go-lint-${{ env.GO_TOOLS_KEY }}-${{ hashFiles('**/go.sum') }}-
+            ci-go-lint-${{ env.GO_TOOLS_KEY }}-
+      - id: npm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: ci-npm-web-${{ hashFiles('web/package-lock.json') }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - run: mv web ../smart-calendar-flow
       - name: Tools pinned by the Makefile and scripts
         run: |
@@ -162,6 +176,9 @@ jobs:
           go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1
           sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # ci.yml and the Makefile agree on the suites (see the header).
+      - name: CI runs exactly what make verify runs
+        run: python3 scripts/ci_suites_check.py
       - name: Web dependencies (openapi-check runs its generator)
         working-directory: ../smart-calendar-flow
         run: npm ci --legacy-peer-deps
@@ -175,6 +192,20 @@ jobs:
         env:
           OPENAPI_CROSS_REPO: ${{ github.event_name == 'push' && 'skip' || 'check' }}
         run: make openapi-check
+      - if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+            ~/go/bin
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+      - if: github.event_name == 'push' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.npm
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
 
   backend-test:
     name: test backend
@@ -182,17 +213,25 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/paceday-backend-go
-          key: backend-go-test-${{ hashFiles('backend/go.sum') }}-${{ github.sha }}
+          key: ci-backend-go-test-${{ hashFiles('backend/go.sum') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            backend-go-test-${{ hashFiles('backend/go.sum') }}-
-            backend-go-test-
+            ci-backend-go-test-${{ hashFiles('backend/go.sum') }}-
+            ci-backend-go-test-
       - name: make test-backend
         run: |
           mkdir -p ~/.cache/paceday-backend-go
           PACEDAY_GO_CACHE_DIR=$HOME/.cache/paceday-backend-go make test-backend
+      - if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/paceday-backend-go
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   backend-coverage:
     name: coverage backend
@@ -205,13 +244,16 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache: false
-      - uses: actions/cache@v4
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/paceday-backend-go
-          key: backend-go-cover-${{ hashFiles('backend/go.sum') }}-${{ github.sha }}
+          key: ci-backend-go-cover-${{ hashFiles('backend/go.sum') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            backend-go-cover-${{ hashFiles('backend/go.sum') }}-
-            backend-go-cover-
+            ci-backend-go-cover-${{ hashFiles('backend/go.sum') }}-
+            ci-backend-go-cover-
       - name: make coverage-backend
         run: |
           mkdir -p ~/.cache/paceday-backend-go .verify
@@ -222,6 +264,11 @@ jobs:
           name: verify-coverage-backend
           path: .verify/coverage-backend.txt
           retention-days: 7
+      - if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/paceday-backend-go
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   go-suites:
     name: test mcp, fake-google, fileserver + coverage mcp
@@ -233,15 +280,18 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache: false
-      - uses: actions/cache@v4
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-suites-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: ci-go-suites-${{ hashFiles('**/go.sum') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            go-suites-${{ hashFiles('**/go.sum') }}-
-            go-suites-
+            ci-go-suites-${{ hashFiles('**/go.sum') }}-
+            ci-go-suites-
       - run: make test-mcp test-fake-google test-fileserver
       - name: make coverage-mcp
         run: |
@@ -252,6 +302,13 @@ jobs:
           name: verify-coverage-mcp
           path: .verify/coverage-mcp.txt
           retention-days: 7
+      - if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   nginx:
     name: test nginx
@@ -263,16 +320,26 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache: false
-      - uses: actions/cache@v4
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-nginx-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: ci-go-nginx-${{ hashFiles('**/go.sum') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            go-nginx-${{ hashFiles('**/go.sum') }}-
-            go-nginx-
+            ci-go-nginx-${{ hashFiles('**/go.sum') }}-
+            ci-go-nginx-
       - run: make test-nginx
+      - if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   compose:
     name: test compose
@@ -284,15 +351,18 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache: false
-      - uses: actions/cache@v4
+      - id: week
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-compose-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: ci-go-compose-${{ hashFiles('**/go.sum') }}-${{ steps.week.outputs.week }}
           restore-keys: |
-            go-compose-${{ hashFiles('**/go.sum') }}-
-            go-compose-
+            ci-go-compose-${{ hashFiles('**/go.sum') }}-
+            ci-go-compose-
       - name: Expose the GHA cache service to docker buildx
         uses: actions/github-script@v7
         with:
@@ -305,17 +375,26 @@ jobs:
       # builder). Building the same Dockerfiles and contexts first, on the same
       # builder, with the GHA layer cache fills that builder's local cache, so
       # the test's own builds are cache hits. Only a warm-up: if it fails, the
-      # test still builds everything itself.
+      # test still builds everything itself. Layers are exported on main only.
       - name: Warm docker layer cache (backend, mcp)
         continue-on-error: true
+        env:
+          EXPORT: ${{ github.event_name == 'push' }}
         run: |
           for svc in backend mcp; do
+            to=(); [ "$EXPORT" = true ] && to=(--cache-to "type=gha,scope=compose-$svc,mode=max")
             docker buildx build --builder default \
-              --cache-from "type=gha,scope=compose-$svc" \
-              --cache-to "type=gha,scope=compose-$svc,mode=max" \
+              --cache-from "type=gha,scope=compose-$svc" "${to[@]}" \
               -t "paceday-ci-warm-$svc" "$svc"
           done
       - run: make test-compose
+      - if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   e2e:
     name: e2e
@@ -336,14 +415,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: e2e/package-lock.json
-      - name: Playwright browsers cache
-        id: pw
-        uses: actions/cache@v4
+      - id: npm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.npm
+          key: ci-npm-e2e-${{ hashFiles('e2e/package-lock.json') }}
+      - id: pw-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+          key: ci-playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
       # Same command as before: on a cache hit it finds the browsers already
       # there and only installs the system dependencies.
       - name: e2e dependencies
@@ -360,19 +441,32 @@ jobs:
       # The suite's global setup runs `docker compose up --build` on the default
       # builder. Baking the same compose services first, on that builder, with
       # the GHA layer cache makes those builds cache hits. Only a warm-up: if
-      # it fails, compose still builds everything itself.
+      # it fails, compose still builds everything itself. Layers are exported
+      # on main only.
       - name: Warm docker layer cache (e2e stack)
         continue-on-error: true
         # bake resolves the compose file's contexts (../backend, ..) against the cwd
         working-directory: e2e
+        env:
+          EXPORT: ${{ github.event_name == 'push' }}
         run: |
+          to=(); [ "$EXPORT" = true ] && to=(--set '*.cache-to=type=gha,scope=e2e,mode=max')
           # --allow: the frontend's build context is the repo root (".." from e2e/).
           docker buildx bake --allow=fs.read=.. --builder default -f docker-compose.e2e.yml \
-            --set '*.cache-from=type=gha,scope=e2e' \
-            --set '*.cache-to=type=gha,scope=e2e,mode=max' \
+            --set '*.cache-from=type=gha,scope=e2e' "${to[@]}" \
             backend fake-google sink frontend
       - name: make e2e
         run: make e2e
+      - if: github.event_name == 'push' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.npm
+          key: ${{ steps.npm-cache.outputs.cache-primary-key }}
+      - if: github.event_name == 'push' && steps.pw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw-cache.outputs.cache-primary-key }}
 
   # The required check. Passes only when every job above passed, i.e. when
   # every make target `make verify` runs passed; prints the same summary.
