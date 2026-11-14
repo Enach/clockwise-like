@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -444,4 +445,164 @@ func mustURL(t *testing.T, dsn string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// pac116Set writes schema_migrations on a short-lived connection.
+func pac116Set(t *testing.T, dsn string, v uint, dirty bool) {
+	t.Helper()
+	pac116Observe(t, dsn, func(conn *sql.Conn) {
+		if _, err := conn.ExecContext(context.Background(), `UPDATE schema_migrations SET version = $1, dirty = $2`, v, dirty); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// Contract 2 "Read order", review B1: a dirty row read with no lock and no
+// migrating holder is never final. A migrator that writes clean and unlocks
+// right after the step-1 read must not turn into today's dirty error; step 4
+// decides under the lock.
+func TestPAC116_LockFreeDirtyIsNeverFinal(t *testing.T) {
+	latest, _ := LatestMigrationVersion()
+	ctx := context.Background()
+	for _, after := range []struct {
+		name    string
+		v       uint
+		applied bool
+	}{{"finished: current", latest, false}, {"finished: still pending", latest - 1, true}} {
+		dsn := pac116DB(t, latest-1)
+		pac116Set(t, dsn, latest-1, true)
+		var once sync.Once
+		uninstall := InstallAfterMigrateStateRead(t, func(string) {
+			once.Do(func() { pac116Set(t, dsn, after.v, false) })
+		})
+		res, err := MigrateWhenStopped(ctx, dsn, MigrateOptions{Caller: "pac116 test"})
+		uninstall()
+		if err != nil || res.Applied != after.applied {
+			t.Fatalf("%s: dirty at step 1, clean before step 4: %+v %v", after.name, res, err)
+		}
+		if v, dirty := pac116Version(t, dsn); v != latest || dirty {
+			t.Fatalf("%s: %d dirty=%v", after.name, v, dirty)
+		}
+	}
+}
+
+// Contract 5.1 / review B1 (M3c): status's lock-free probe re-reads once; a
+// migration that finishes between the two reads is reported as finished,
+// never as dirty.
+func TestPAC116_ProbeRereadsDirty(t *testing.T) {
+	latest, _ := LatestMigrationVersion()
+	ctx := context.Background()
+	dsn := pac116DB(t, latest-1)
+	pac116Set(t, dsn, latest-1, true)
+	fired := false
+	InstallAfterProbeDirtyRead(t, func() {
+		fired = true
+		pac116Set(t, dsn, latest, false)
+	})
+	var st VersionState
+	pac116Observe(t, dsn, func(conn *sql.Conn) {
+		var err error
+		if st, err = ProbeVersionState(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !fired || st.Kind != VersionCurrent || st.Version != latest {
+		t.Fatalf("probe after a migration finished between its reads: fired=%v %+v", fired, st)
+	}
+}
+
+// Challenge S4 / review N1: the loser's paceday-migrate: connection stays
+// open across the winner's serving check (the loser is held after its lock
+// attempt failed until the winner returned): exactly one applies, the other
+// gets "lock held", neither refuses as serving.
+func TestPAC116_LoserSessionDuringWinnersCheck(t *testing.T) {
+	latest, _ := LatestMigrationVersion()
+	dsn := pac116DB(t, latest-1)
+	winnerDone := make(chan struct{})
+	var closeOnce sync.Once
+	loserHeld := make(chan struct{}, 2)
+	InstallAfterMigrateLockRefused(t, func(string) {
+		loserHeld <- struct{}{}
+		select {
+		case <-winnerDone:
+		case <-time.After(30 * time.Second):
+		}
+	})
+	// Both read the version (pending) before either tries the lock.
+	arrived := make(chan struct{}, 2)
+	gate := make(chan struct{})
+	var opened sync.Once
+	InstallAfterMigrateStateRead(t, func(string) {
+		arrived <- struct{}{}
+		if len(arrived) == 2 {
+			opened.Do(func() { close(gate) })
+		}
+		select {
+		case <-gate:
+		case <-time.After(30 * time.Second):
+		}
+	})
+	type out struct {
+		res MigrateResult
+		err error
+	}
+	results := make(chan out, 2)
+	for _, caller := range []string{"pac116 A", "pac116 B"} {
+		go func(caller string) {
+			res, err := MigrateWhenStopped(context.Background(), dsn, MigrateOptions{Caller: caller})
+			if err == nil {
+				closeOnce.Do(func() { close(winnerDone) })
+			}
+			results <- out{res, err}
+		}(caller)
+	}
+	applied, held := 0, 0
+	for i := 0; i < 2; i++ {
+		r := <-results
+		switch {
+		case r.err == nil && r.res.Applied:
+			applied++
+		case errors.Is(r.err, ErrMigrationLockHeld):
+			held++
+		default:
+			t.Errorf("unexpected outcome: %+v %v", r.res, r.err)
+		}
+		if errors.Is(r.err, ErrServing) {
+			t.Errorf("a migrator refused as serving: %v", r.err)
+		}
+	}
+	closeOnce.Do(func() { close(winnerDone) })
+	if applied != 1 || held != 1 || len(loserHeld) != 1 {
+		t.Fatalf("applied %d, lock held %d, losers held across the check %d", applied, held, len(loserHeld))
+	}
+	if v, dirty := pac116Version(t, dsn); v != latest || dirty {
+		t.Fatalf("%d dirty=%v", v, dirty)
+	}
+}
+
+// Review N3: a dirty row at a version the binary has no file for is
+// "unknown" (golang-migrate's "no migration found"), not "dirty".
+func TestPAC116_DirtyUnknownVersionIsUnknown(t *testing.T) {
+	latest, _ := LatestMigrationVersion()
+	ctx := context.Background()
+	dsn := pac116DB(t, latest-1)
+	pac116Set(t, dsn, latest+1, true)
+	var st VersionState
+	pac116Observe(t, dsn, func(conn *sql.Conn) {
+		var err error
+		if st, err = ProbeVersionState(ctx, conn); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if st.Kind != VersionUnknown {
+		t.Fatalf("probe: %+v", st)
+	}
+	_, err := MigrateWhenStopped(ctx, dsn, MigrateOptions{Caller: "pac116 test"})
+	var unknown *UnknownVersionError
+	if !errors.As(err, &unknown) || errors.As(err, new(migrate.ErrDirty)) || !strings.Contains(err.Error(), fmt.Sprintf("no migration found for version %d", latest+1)) {
+		t.Fatalf("dirty unknown version: %v", err)
+	}
+	if v, dirty := pac116Version(t, dsn); v != latest+1 || !dirty {
+		t.Fatal("row touched")
+	}
 }

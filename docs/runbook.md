@@ -186,11 +186,14 @@ they saw and change nothing. There is no override.
   - The backend's start and `paceday-operator` must reach PostgreSQL
     directly or through **session** pooling, never through transaction
     pooling: the migration lock is a session lock.
-- **The Postgres health check.** `pg_isready` in the compose file opens a
-  short connection to the application database every few seconds. A
-  backend start whose check falls in that instant is refused as "serving",
-  and Docker retries it a moment later. A single `refusing to start` line
-  followed by a normal start is expected and harmless.
+- **The Postgres health check.** The shipped compose files probe
+  `pg_isready -d postgres`: the probe's short connection is on the
+  maintenance database, never the application database, so it never makes a
+  migration refuse. A health check you add yourself must do the same. One
+  that connects to the application database every few seconds can make a
+  backend start whose check falls in that instant refuse as "serving".
+  Docker retries it a moment later, so a single `refusing to start` line
+  followed by a normal start is harmless.
 
 ### PAC-71 release: sign every session out once (release step)
 
@@ -210,6 +213,10 @@ compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-
   backend stop, unlike the encryption subcommands below that use
   `run --rm --no-deps backend`. (`run --rm --no-deps backend /paceday-operator
   advance-all …` also works; it reads the same environment.)
+- Exit codes: 0 done; 1 refused or failed (nothing changed when refused);
+  **2 usage error** (an unknown or malformed flag, a bad `-account`,
+  `-identity` or `-evidence`), checked before the database is touched. Since
+  PAC-116 a usage error is 2; it used to be 1.
 - Every session issued before it gets 401 on its next request, so every user
   signs in once more. No account, credential or setting changes. The run is
   recorded in `operator_audit`; record in the release notes that it ran.

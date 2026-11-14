@@ -802,3 +802,69 @@ func TestPAC116_AC23_OperatorAfterNothingToDo(t *testing.T) {
 	}
 	p.wantVersion(latest, false)
 }
+
+// Contract 4.5 / review N2: the connection the holder was read on stays open
+// until the command ends. advance-all is held on a row lock the test takes;
+// meanwhile the run has two sessions, its idle pinned connection and the
+// worker waiting on the lock. The pinned one is never handed back to the
+// pool while the command runs.
+func TestPAC116_PinnedConnectionHeldUntilTheEnd(t *testing.T) {
+	p := newP116(t, 0)
+	u := p.user()
+	cfg, err := pgx.ParseConfig(p.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RuntimeParams["application_name"] = "pac116-test-locker"
+	locker := stdlib.OpenDB(*cfg)
+	defer locker.Close()
+	tx, err := locker.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, u); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		code      int
+		out, errw string
+	}
+	done := make(chan result, 1)
+	go func() {
+		var out, errw bytes.Buffer
+		code := runPAC71(p116Advance, p.envWith(nil), &out, &errw)
+		done <- result{code, out.String(), errw.String()}
+	}()
+	admin, err := sql.Open("pgx", testdb.AdminDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	deadline := time.Now().Add(20 * time.Second)
+	var waiting, idle int
+	for {
+		err := admin.QueryRow(`SELECT count(*) FILTER (WHERE wait_event_type = 'Lock'), count(*) FILTER (WHERE state = 'idle')
+			FROM pg_stat_activity WHERE datname = $1 AND application_name = 'paceday-operator advance-all'`, p.name).Scan(&waiting, &idle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("advance-all never waited on the row lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if idle != 1 {
+		t.Fatalf("while the command runs: %d waiting, %d idle sessions of it; want the pinned connection idle beside the worker", waiting, idle)
+	}
+	_ = tx.Rollback()
+	r := <-done
+	if r.code != 0 || !strings.Contains(r.out, "advanced the session generation of 1 accounts") {
+		t.Fatalf("advance-all: %+v", r)
+	}
+	locker.Close()
+	p.settle()
+}

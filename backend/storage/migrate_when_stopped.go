@@ -186,6 +186,11 @@ func ProbeVersionState(ctx context.Context, q DBTXQuery) (VersionState, error) {
 			st.Kind, st.Holder = VersionInProgress, h
 			return st, nil
 		}
+		if attempt == 0 {
+			if fn, ok := afterProbeDirtyRead.get(); ok {
+				fn()
+			}
+		}
 	}
 	return st, nil
 }
@@ -468,6 +473,7 @@ func MigrateWhenStopped(ctx context.Context, dsn string, opt MigrateOptions) (Mi
 		return res, err
 	}
 	if !ok {
+		fireMigrateHook(&afterMigrateLockRefused, opt.Caller)
 		h, _ := MaintenanceHolder(ctx, conn)
 		if h.Migrating() && st.Kind == VersionDirty {
 			return res, &MigrationRefusal{kind: refusalInProgress, From: st.Version, FromPresent: true, To: highest, Holder: h}
@@ -478,7 +484,11 @@ func MigrateWhenStopped(ctx context.Context, dsn string, opt MigrateOptions) (Mi
 	unlock := func() {
 		if locked {
 			locked = false
-			_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1, $2)`, lockClass, lockMaintenance)
+			// Bounded: if the server does not answer, closing the
+			// handle ends the session, which releases the lock anyway.
+			uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = conn.ExecContext(uctx, `SELECT pg_advisory_unlock($1, $2)`, lockClass, lockMaintenance)
 		}
 	}
 	defer unlock()

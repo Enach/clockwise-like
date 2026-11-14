@@ -350,6 +350,14 @@ migrating holder begins the graceful shutdown, as for those two commands. It
 is the same write-then-check on both sides. With nothing pending, no lock is
 taken and nothing changes. The text above is kept as PAC-84 approved it.
 
+**Amended by PAC-116 stage 4 (2026-11-14; PR #282, review N4).** The holder
+of `(8400, 1)` is looked up in **this database only**: `MaintenanceHolder`
+reads `pg_locks` rows whose `database` is `current_database()`'s oid.
+Advisory locks are per database, so a holder of `(8400, 1)` on another
+database of the same server was never this database's holder. Before, the
+lookup could name one anyway, and a backend could refuse to start or shut
+down because of it. The text above is kept as PAC-84 approved it.
+
 ## 5. Environment and start order
 
 ### 5.1 Grammar

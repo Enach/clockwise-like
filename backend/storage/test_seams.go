@@ -140,11 +140,32 @@ func InstallAfterBookingInsert(tb TB, fn func(b *Booking) error) (uninstall func
 // Install function that takes the test's testing.TB; no flag, environment
 // variable or configuration reaches them).
 var (
-	afterMigrateStateRead seam[func(caller string)]
-	afterMigrateCheck     seam[func(caller string)]
-	insideMigrationFile   seam[func(version uint)]
-	afterHeartbeatWrite   seam[func(inst Instance)]
+	afterMigrateStateRead   seam[func(caller string)]
+	afterMigrateCheck       seam[func(caller string)]
+	insideMigrationFile     seam[func(version uint)]
+	afterHeartbeatWrite     seam[func(inst Instance)]
+	afterMigrateLockRefused seam[func(caller string)]
+	afterProbeDirtyRead     seam[func()]
 )
+
+// InstallAfterMigrateLockRefused installs the seam that runs inside
+// MigrateWhenStopped when pg_try_advisory_lock failed, before the run
+// returns and closes its paceday-migrate: connection, so a test can keep
+// the loser's connection open across the winner's serving check (PAC-116
+// challenge S4, AC-21).
+func InstallAfterMigrateLockRefused(tb TB, fn func(caller string)) (uninstall func()) {
+	tb.Helper()
+	return afterMigrateLockRefused.install(tb, fn)
+}
+
+// InstallAfterProbeDirtyRead installs the seam that runs inside
+// ProbeVersionState after a first lock-free read found the version dirty
+// with no migrating holder, before its one re-read (PAC-116 contract 2
+// "Read order"), so a test can finish the migration in between.
+func InstallAfterProbeDirtyRead(tb TB, fn func()) (uninstall func()) {
+	tb.Helper()
+	return afterProbeDirtyRead.install(tb, fn)
+}
 
 // InstallAfterMigrateStateRead installs the seam that runs inside
 // MigrateWhenStopped after step 1 found something to decide (pending, or
