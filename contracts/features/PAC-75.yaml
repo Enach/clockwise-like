@@ -1,0 +1,158 @@
+{
+  "featureId": "PAC-75",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-75",
+  "foldsIn": ["https://linear.app/paceday/issue/PAC-95 (close as done in PAC-75 when the api PR merges)"],
+  "status": "contract revision 1.1, challenged 2026-11-14 (accept-with-changes, applied); awaiting stage 3 (plan)",
+  "contractRevision": "1.1",
+  "contractHash": "ae3d6c1c045e66fe898390ff291afa9655c53d1065b451135020738d6f2cef8d",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi WEB=/nonexistent` in an LF clone of factory/pac-75-k at d9d82e5 (golang:1.25-bookworm, oapi-codegen v2.4.1, api-gate pattern, host repo mounted read-only), 2026-11-14, base origin/main fd4e7b1 (bundle 85187c9448b95f89e3ce05ac334d53ec9cf1bb0f896bb89d788ce46726adbdd4). make openapi rc 0 (132 operations, 12 generated); regenerated contracts/openapi/openapi.yaml (committed c238245) and, at revision 1, backend/api/gen/paceday.gen.go (doc comments of SsoProviderCreateRequest.Domain and SsoWriteDomainMismatch only; no type, field or name changed); make openapi-check WEB=/nonexistent rc 0 ('bundle is in sync (110 paths)', 'MIGRATION.md covers all 132 operations (12 generated)', 'backend/api/gen matches the contract'); cd backend && go build ./... ok. Reproduce: git show c238245:contracts/openapi/openapi.yaml | sha256sum. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs make openapi on its base and records the new hash here, changing nothing else.",
+  "contractDoc": "contracts/features/PAC-75.md",
+  "specDoc": "docs/specs/PAC-75.md (accepted 2026-11-14 on factory/pac-75-spec 4fbe015)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "(1) SSO write/delete domain match: ASCII-only case, refuse anything else, store and target the org domain's bytes; (2) denied step-up outcomes recorded individually up to 5 per user per UTC-aligned 10-minute window, the rest counted in sso_stepup_denial_windows.left_out (migration 039), decided by one upsert in the record transaction; (3) PAC-95: budget answers after check 4 / after the decision: unavailable (granted) or the decided reason; new redirect reason unavailable (never recorded); (4) web: own-key reason/code lookups in both landings, unavailable text, options-failure error line; (5) PAC-50 wording corrections (three PAC-22 assertions; section 4.6 note); PAC-81 Part A rule note; (6) API-001 relabelled Fixed.",
+  "openQuestions": {
+    "OQ-1": "factory default applied: 5 individually recorded denials per user per 10 minutes, the rest counted (owner may still answer; the numbers are two Go constants).",
+    "OQ-2": "factory default applied: no. During checks 0-4 the budget keeps PAC-81's running-check rule.",
+    "OQ-3": "resolved here: reason name `unavailable`; the left-out count is `left_out` in table `sso_stepup_denial_windows` (one row per user per window; md section 3.6 is the operator query)."
+  },
+  "interfaceKind": "HTTP: one new value in the ssoAdminStepupCallback Location pattern; descriptions of createSsoProvider, deleteSsoProvider, setSsoProviderState, ssoAdminStepupCallback (302, 500), SsoProviderCreateRequest.domain, SsoWriteDomainMismatch and info.description exception (3). No schema shape changes. Non-HTTP and binding: domain predicate (md 2), migration 039 DDL, the record transaction and its upsert, lock order, operator query (md 3), budget answer table (md 4), web display contract (md 5).",
+  "mergeAfter": "origin/main fd4e7b1. Migration number 039 (main's latest 038; no origin/* branch carries 039+ on 2026-11-14). api and web PRs may merge in either order (md 5.6).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/domain/domain.go (DomainMatchesOrg: ASCII-only) and domain_test.go (AC-4, AC-6 table, md 2.1 rows)",
+        "backend/api/handlers_sso.go (create: domain := org.Domain after the match; delete: no ToLower before the match, target org.Domain)",
+        "backend/api/handlers_sso_stepup.go (checkStepup: register `unavailable` before check 4b; finishStepup: register the decided outcome's answer first; reasonUnavailable constant; left-out log line; the 4b test seam)",
+        "backend/storage/sso_stepup.go (RecordSSOStepupOutcome: KEY SHARE on the actor when no guard, lock_timeout, window upsert, conditional event insert; StepupDenialRecordBound, StepupDenialWindow; the result tells the caller when left_out became 1)",
+        "backend/storage/migrations/039_sso_stepup_denial_windows.{up,down}.sql (md 3.2, verbatim DDL)",
+        "backend/api/*_test.go, backend/storage/*_test.go, backend/domain/*_test.go (new pac75 tests; pac90_test.go AC-5b tightened to reason=unavailable)",
+        "e2e/tests/** (AC-15 unchanged; optional new journey)",
+        "docs/plans/PAC-75.md",
+        "contracts/features/PAC-75.{md,yaml} (contractHash field and stage-4 notes only)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
+        "any other migration; changing sso_events' columns, CHECKs or existing rows",
+        "an in-process limiter or cache deciding the bound; any 429 on the callback or the start",
+        "IDNA, NFKC or Unicode case mapping in the SSO domain path",
+        "the PAC-81 running-check rule during checks 0-4 (OQ-2)",
+        "EqualFold on provider-asserted domains (handlers_sso_stepup.go:594, :651-657) and on emails (spec section 5)",
+        "mcp/ (unaffected)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only, against this bundle: comment drift only)",
+        "src/components/settings/SsoAdminStepupSection.tsx and its tests (md 5.1-5.5)",
+        "src/components/settings/OrganizationAISection.tsx and its tests (md 5.1-5.3)"
+      ],
+      "forbiddenPaths": [
+        "a retry control in the SSO section (spec D-5)",
+        "any demo implementation of the options call (spec D-6: the demo shows nothing)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {"operationId": "ssoAdminStepupCallback", "change": "302 Location pattern + `unavailable`; description: recording bound and left_out, Time budget paragraph; 500 also covers the window count failing or waiting > 10 s"},
+    {"operationId": "createSsoProvider", "change": "step 3 DOMAIN MATCH rule (ASCII-only); steps 4, 6 and 201: the org domain's exact bytes"},
+    {"operationId": "deleteSsoProvider", "change": "segment as the router yields it (canonical escapes decoded, others literal), ASCII-only match, no Unicode lower-casing; target the org domain"},
+    {"operationId": "setSsoProviderState", "change": "same wording as deleteSsoProvider (operation still not served, API-066)"}
+  ],
+  "componentsChanged": [
+    "schemas.SsoProviderCreateRequest.properties.domain (description)",
+    "schemas.SsoWriteDomainMismatch (description)",
+    "info.description (scripts/openapi_assemble.py INFO, budget exception (3))"
+  ],
+  "migration": "039_sso_stepup_denial_windows: table (user_id FK users ON DELETE CASCADE, window_start TIMESTAMPTZ 600 s-aligned CHECK, recorded INTEGER >= 1, left_out INTEGER >= 0 DEFAULT 0, last_left_out_at NULL iff left_out = 0; PK (user_id, window_start)). Down drops the table only. Applied after 001..038 on PG 16.15.",
+  "nonHttpInterface": {
+    "domainMatch": "md 2.1: equal length in bytes, bytewise equal after mapping only A-Z to a-z; no trim, IDNA, normalisation; accepted value replaced by org.Domain for every later step.",
+    "recordTransaction": "md 3.3: READ COMMITTED; PAC-71 re-check (KEY SHARE on the actor; explicit when no guard); granted: unchanged; denied: set_config lock_timeout (storage.LinkLockTimeout, local) then one INSERT .. ON CONFLICT (user_id, window_start) DO UPDATE .. RETURNING left_out; recorded individually iff left_out = 0; event insert only then; commit.",
+    "lockOrder": "users (KEY SHARE) -> one window row -> organizations (KEY SHARE, FK). No advisory lock; disjoint from PAC-82 (8201-8203), PAC-84 (8400), PAC-101 (scheduling_links).",
+    "operatorRecord": "sso_stepup_denial_windows.left_out per (user, window); md 3.6 query; one log line per user per window when left_out becomes 1.",
+    "budgetAnswers": "md 4 table: unchanged during checks 0-4; unavailable from check 4b; after the decision, unavailable for granted and the decided reason (with the decided redirect's purpose) for a denial; step 5 waited for."
+  },
+  "gates": {
+    "contractApproval": "contract-challenger review 2026-11-14 (accept-with-changes, applied in revision 1.1)",
+    "assembler": "make openapi WEB=/nonexistent rc 0 and make openapi-check WEB=/nonexistent rc 0 in an LF clone at d9d82e5; cd backend && go build ./... ok",
+    "webGate": "Stage 4: regenerate smart-calendar-flow src/api/generated against this bundle (descriptions only: types.ts, schemas.types.d.ts); the cross-repo openapi-check must pass on the pair.",
+    "stage4": "make verify in both repos (factory section 3); every DB-backed test in acceptanceTests against real PostgreSQL ('could not run' stated, never silent); the PR body states the bundle sha256.",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml runs make verify",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] org acmes.com, live grant, create for acmeſ.com (U+017F): 403 provider_domain_mismatch, grant live, no sso_providers row for any domain, no event.",
+    "AC-2  [unit] org kcme.com, create for Kcme.com (U+212A Kelvin): as AC-1.",
+    "AC-3  [unit] org acme.com, create for ACME.com: accepted; stored domain byte-identical to the org domain and listed by listSsoProviders; pac22_sso_secrets_test.go:810-821 passes.",
+    "AC-4  [unit] property over the domain table (mixed ASCII case included): every accepted create stores exactly the org domain's bytes.",
+    "AC-5  [unit] org acmes.com / kcme.com: DELETE acme%C5%BF.com / %E2%84%AAcme.com -> 403 provider_domain_mismatch, no grant consumed, no row removed. Plus (contract C-2): DELETE %41cme.com and %e2%84%aacme.com for org acme.com / kcme.com -> 403.",
+    "AC-6  [unit] domain table gains U+017F, U+212A, a fullwidth letter, İ/ı pairs, a non-ASCII org domain matched by its exact bytes (accepted) and by its non-ASCII upper case (refused), and the md 2.1 rows (straße/ẞ, punycode A-label vs U-label).",
+    "AC-7  [contract] createSsoProvider and deleteSsoProvider say 'case-insensitive for ASCII letters only; any other difference, including non-ASCII case folding, is a different domain'.",
+    "AC-8  [unit] 50 denied callbacks by one user in one window (mixed reasons, with and without a start): 50 identical-to-today redirects; 5 sso_stepup rows; window row recorded 5, left_out 45.",
+    "AC-9  [unit] at the bound, a granted step-up: grant issued and recorded as today; window row unchanged.",
+    "AC-10 [unit] user A at the bound, user B (same org) denied: B's outcome recorded.",
+    "AC-11 [unit] at the bound, clock advanced past window_start + 10 min: next denial recorded (new window row, recorded 1).",
+    "AC-12 [unit] 50 concurrent denied outcomes for one user across at least two *sql.DB pools (and separately through the handler): exactly 5 recorded, left_out 45, no 40P01/55P03.",
+    "AC-13 [unit] orgless user's state_mismatch callbacks: bounded the same way (org_id NULL rows).",
+    "AC-14 [contract] callback description states bound, window, left-out, operator view, unchanged redirect; PAC-50 spec section 4.6 note.",
+    "AC-15 [e2e] e2e/tests/sso-stepup.spec.ts granted step-up then a write: two rows, unchanged.",
+    "AC-16 [web unit] SSO landing: reason constructor, toString, valueOf, hasOwnProperty, __proto__, isPrototypeOf -> exactly 'Administrator confirmation was denied.' and no function text.",
+    "AC-17 [web unit] the same on the org-AI landing (&purpose=llm_org_key_write).",
+    "AC-18 [web unit] both sections: without_stepup containing constructor (or another prototype key) shows only known codes' texts; no function text; no React child warning.",
+    "AC-19 [web unit] every known reason (ten, unavailable included, md 5.2 text) shows its text on both landings.",
+    "AC-20 [web unit] options 500, network failure, client timeout, 200 failing schema validation, and (contract C-1) a 403 whose body is not SsoWriteMembershipRequired: section shown, error line (data-testid sso-stepup-options-error, starts 'Administrator confirmation options could not be loaded.'), no entry point.",
+    "AC-21 [web unit] options 403 with SsoWriteMembershipRequired ('org membership required' and, contract C-1, 'org not found'): section not shown; SsoAdminStepupSection.test.tsx:122-127 passes.",
+    "AC-22 [web unit] demo session: section not shown, no error line, no options request.",
+    "AC-23 [web unit] outcome in the URL and a failing options request: both outcome and error line shown.",
+    "AC-24 [contract] PAC-50.yaml consumersAffected (Revision 8.1 N2) and docs/specs/PAC-50.md section 9 D-15(2) name the three changed assertions with a dated 'Corrected by PAC-75' note; no Challenge section altered.",
+    "AC-25 [unit] Google and Microsoft step-ups passing every check, budget expiring at the connection reservation and at the commit seam (stepupBeforeCommit): Location reason=unavailable (purpose kept for llm_org_key_write), no grant, nothing recorded, window untouched. pac90_test.go AC-5b asserts reason=unavailable.",
+    "AC-26 [unit] admin check passed, budget expiring during check 4b (seam): reason=unavailable.",
+    "AC-27 [unit] decided denial (Google hd_mismatch, no_hd, email_mismatch; Microsoft email_mismatch, tid_changed; and (contract C-3) the early token_invalid from a provider error=, with purpose llm_org_key_write) and budget expiring before the record starts: that decided reason (and purpose), nothing recorded.",
+    "AC-28 [unit] budget expiring while checks 0-4 run: PAC-81's rule unchanged (state_mismatch before check 0, else the running check's reason).",
+    "AC-29 [web unit] both landings state unavailable in plain words (md 5.2).",
+    "AC-30 [contract] Location pattern and description list ten values; unavailable never recorded, why the enums differ; PAC-81 Part A rule text carries the post-check-4 case (PAC-81-part-a.yaml note) and info.description exception (3).",
+    "AC-31 [contract] api-audit.md API-001 'Fixed (PAC-22, PAC-50)' with the GET-by-design note.",
+    "AC-32 [unit, added by the contract (md 3.5)] a denied record held after its window upsert while the same user is deleted: no 40P01; the deletion completes after the record commits. Same with no session guard in the context.",
+    "AC-33 [unit, added by the contract (md 3.3)] a denied record waiting on the window row past the lock timeout (shortened): 500 {\"error\":\"internal error\"}, nothing recorded or counted.",
+    "AC-34 [unit, added by the contract (md 3.2)] migration 039 up on a database with sso_events rows and down again: sso_events unchanged; up again succeeds; an unaligned window_start is refused by the CHECK."
+  ],
+  "resolvesFindings": [
+    "API-001: status relabelled Fixed (PAC-22, PAC-50) with the GET-by-design note (spec item 7).",
+    "PAC-50 contract/spec wording: three PAC-22 assertions named (spec item 5); section 4.6 'every outcome recorded' and 'same enum' corrected by a dated note.",
+    "PAC-81 Part A: post-check-4 budget case added (dated note)."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "OQ-1: factory default (5 per 10 min).",
+    "OQ-2: factory default (no).",
+    "OQ-3: `unavailable`; sso_stepup_denial_windows.left_out."
+  ],
+  "doesNotResolve": [
+    "Removal of existing lookalike sso_providers rows (spec D-2): release-note operator query, md 2.3.",
+    "Retention of sso_events and sso_stepup_denial_windows (spec section 5).",
+    "EqualFold on provider-asserted domains and on emails (spec section 5)."
+  ],
+  "consumersAffected": [
+    {"consumer": "backend/api/pac90_test.go:334-356 (PAC-90 AC-5b)", "breaks": "tightened", "detail": "asserts reason=unavailable instead of any denied redirect."},
+    {"consumer": "backend/api/gen", "breaks": "no", "detail": "doc comments only; regenerated at revision 1."},
+    {"consumer": "backend tests counting sso_events per user", "breaks": "no (none found making > 5 denials for one user in one window)", "detail": "the event-reading call sites in api/pac50_*_test.go, pac73p2_*, pac87_*, pac90_test.go and storage/*_test.go create fresh users per test; stage 4 re-greps."},
+    {"consumer": "Enach/smart-calendar-flow src/components/settings/SsoAdminStepupSection.tsx, OrganizationAISection.tsx", "breaks": "no", "detail": "web PR implements md 5; an older web shows unavailable as a plain denial."},
+    {"consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "drift only (comments)", "detail": "regeneration commit paired with stage 4; no type changes shape."},
+    {"consumer": "e2e/tests/sso-stepup.spec.ts", "breaks": "no", "detail": "AC-15."},
+    {"consumer": "mcp", "breaks": "no", "detail": "no SSO call."}
+  ],
+  "mergeConditions": [
+    "This revision (or a later one) accepted by contract-challenger.",
+    "The stage-4 PR's bundle sha256 equals contractHash, or the recorded rebased hash with no fragment text change.",
+    "Migration number still free on main at merge (else renumber; manifest and md only).",
+    "Web regeneration paired with the web PR; api and web may merge in either order.",
+    "make verify output pasted in each PR body (factory section 3)."
+  ],
+  "followUps": [
+    "Owner: OQ-1 / OQ-2 answers may change the two constants or open a follow-up for budget expiry during checks 0-4."
+  ],
+  "rollback": "Revert the api PR (down 039 drops sso_stepup_denial_windows; individually recorded sso_events rows are kept, only left-out counts are lost) and the web PR, in either order. The dated doc notes stay."
+}

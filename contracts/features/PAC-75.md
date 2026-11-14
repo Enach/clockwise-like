@@ -360,7 +360,7 @@ hand-written web code depends on the regenerated text.
 - `backend/api/pac90_test.go:334-356` (AC-5b): asserts `reason=unavailable`
   (intended tightening, spec AC-25).
 - Backend tests that make more than 5 denied callbacks for one user within one
-  window and count rows: none found (challenge V-6); the stage-4 PR re-greps.
+  window and count rows: none found (challenge, "Consumers affected"); the stage-4 PR re-greps.
 - `backend/api/pac50_sso_gate_test.go:274` `failingSSOStore.recordStepup`:
   signature unchanged.
 - `e2e/tests/sso-stepup.spec.ts:123-129` (one granted step-up then a write: two
@@ -410,4 +410,161 @@ PR, in either order (§5.6). The docs notes stay (they record history).
 
 ## 10. Gate results (contract stage)
 
-See the manifest `contractHashOf` and the challenge below (revision 1.1 numbers).
+Regenerated in an LF clone (`golang:1.25-bookworm`, oapi-codegen v2.4.1, the
+api-gate pattern, host repo mounted read-only), 2026-11-14. Revision 1 at
+`9b7d70b`: `make openapi WEB=/nonexistent` rc 0, regenerated
+`contracts/openapi/openapi.yaml` and `backend/api/gen/paceday.gen.go` (doc
+comments only). Revision 1.1 at `d9d82e5`: `make openapi WEB=/nonexistent` rc 0
+(132 operations, 12 generated), regenerated `contracts/openapi/openapi.yaml`
+only (committed `c238245`); `make openapi-check WEB=/nonexistent` rc 0 ("bundle
+is in sync (110 paths)", "MIGRATION.md covers all 132 operations (12
+generated)", "backend/api/gen matches the contract"; web half SKIPPED by
+design); `cd backend && go build ./...` ok. Bundle sha256
+`ae3d6c1c045e66fe898390ff291afa9655c53d1065b451135020738d6f2cef8d`
+(= `contractHash`; main `fd4e7b1`: `85187c94…`). Not run: test suites, lint and
+coverage (no hand-written Go changed).
+
+**Web type regeneration: yes, comments only.** `src/api/generated/types.ts` and
+`schemas.types.d.ts` embed the changed descriptions; no type, schema or enum
+changes shape, so no hand-written web code depends on the regeneration. Not
+run here (no web worktree); the web PR carries it.
+
+## Challenge — 2026-11-14
+
+**Verdict**: accept-with-changes. The changes are applied in revision 1.1 (this
+document, the manifest, and the fragment text committed at `d9d82e5`, whose
+bundle is `contractHash`).
+
+The contract-challenger role was played by the same agent, which re-read
+`origin/main` `fd4e7b1` (`handlers_sso.go`, `handlers_sso_stepup.go`,
+`storage/sso_stepup.go`, `storage/session.go`, `internal/budget`, chi v5.4.0's
+`mux.go`), the web at `4f71ad2` (both settings sections, `client.ts`,
+`demoGate.ts`, generated `schemas.ts`), and ran every storage claim on a
+throwaway PostgreSQL 16.15 container (`postgres:16`, `en_US.utf8`) on an
+internal docker network with no published port, migrated with the real files
+001..038 plus §3.2's 039, each in one transaction.
+
+### Requests wrongly permitted
+
+1. (C-2) `DELETE /api/admin/sso/%41cme.com` and `DELETE
+   /api/admin/sso/%e2%84%aacme.com`: revision 1 said the segment is
+   "percent-decoded". It is not always: chi v5.4.0 routes on `r.URL.RawPath`
+   when set (`mux.go:460-466`), and Go sets RawPath whenever the request's
+   escaping is not the canonical one, so `chi.URLParam` returns the escaped
+   text (observed: `"%41cme.com"`, `"%e2%84%aacme.com"`; canonical
+   `%E2%84%AAcme.com` gives `"Kcme.com"` with the Kelvin sign, `acme%C5%BF.com`
+   gives `"acmeſ.com"`, `%EF%BD%81cme.com` gives `"ａcme.com"`). The outcome is
+   a 403 either way (safe direction), but the contract described a decoding the
+   server does not do. Fix (applied): deleteSsoProvider and setSsoProviderState
+   describe the segment "as the router yields it", with both cases; AC-5 gains
+   the two non-canonical requests.
+
+### Responses the client cannot handle
+
+1. (C-1) `getSsoStepupOptions` may answer 403 `{"error":"org not found"}` (the
+   org row is gone; `auth.yaml` getSsoStepupOptions 403,
+   `SsoWriteMembershipRequired` enum). Revision 1's §5.4 hid the section only
+   for `org membership required`, so a user whose org was deleted would get
+   an error line for a documented no-organisation answer. Fix (applied): hide
+   on any 403 body that parses as the generated `SsoWriteMembershipRequired`
+   (`schemas.ts:353`, already used that way at `client.ts:348`); AC-20/AC-21
+   extended.
+2. Nothing else: `unavailable` reaches an older web as an unknown reason, which
+   (today, for a non-prototype name, and after §5.1 for every name) is the
+   plain denial.
+
+### Consumers affected
+
+- `backend/api/pac90_test.go:334-356`: tightened (AC-25), intended.
+- Event-counting tests (`api/pac50_sso_helpers_test.go:393` `events()` and its
+  call sites in `pac50_rev81_test.go`, `pac50_sso_gate_test.go`,
+  `pac50_sso_stepup_test.go`, `pac73p2_org_ai_test.go:467`,
+  `pac90_test.go:285`; `pac73p2_rows_test.go:775`; `pac87_test.go:357`;
+  `storage/sso_stepup_test.go`, `storage/org_ai_test.go`): each builds a fresh
+  user per environment and makes a handful of callbacks for it at most; none
+  found exceeding 5 denials for one user in one window. The stage-4 PR
+  re-greps. `e2e/tests/sso-stepup.spec.ts` (two rows): unchanged.
+- Web generated files: comment drift (§10). `mcp/`: no SSO call.
+
+### Contract/implementation divergences (fixed in 1.1)
+
+1. (C-3) Budget answer for a callback decided before any `running` call:
+   `checkStepup` returns `token_invalid` for a provider `error=` or a missing
+   `code` (`handlers_sso_stepup.go:575-577`) before registering anything, so
+   on `main` the budget's answer in `finishStepup` is the initial
+   `state_mismatch` **with no purpose** (`stepupCallback` registers it with
+   purpose `""`, `:531`), even for a verified `llm_org_key_write` state.
+   Revision 1's §4 already covers it (the decided redirect, purpose included);
+   AC-27 now names this case explicitly.
+2. (C-4) `info.description` exception (3) in revision 1 said "from the start of
+   check 4b, and once the outcome is decided, a granted outcome answers
+   `unavailable`", which reads as if check 4b's answer depended on a granted
+   outcome. Fix (applied): "from the start of check 4b it is `unavailable`,
+   and once the outcome is decided …".
+
+### Uncertainties not actually resolved
+
+- None. OQ-1/OQ-2 are factory defaults the owner may still change (two Go
+  constants; a follow-up for OQ-2), not uncertainties about behaviour.
+
+### Verified clean (PostgreSQL 16.15, `READ COMMITTED`)
+
+- **V-1, race-freedom of the bound.** pgbench running §3.3's transaction
+  verbatim (re-check KEY SHARE, `set_config` lock_timeout, the upsert with
+  `RETURNING left_out \gset`, the event insert under `\if :left_out = 0`):
+  50 clients × 1 transaction gave window row `recorded 5, left_out 45` and 5
+  events; 50 clients × 4 transactions with `pg_sleep(0.02)` after the upsert
+  (holders overlap) gave `5 / 195` and 5 events; 0 failed transactions, no
+  40P01. The separate connections stand in for separate api processes:
+  nothing outside the database takes part in the decision. "Recorded iff
+  `left_out = 0`" matched the event count in both runs.
+- **V-2, lock order.** Without §3.3 step 1 (update the window row, sleep, then
+  insert the event) a concurrent `DELETE FROM users` of the same user
+  deadlocks: `ERROR: deadlock detected … while deleting tuple … in relation
+  "sso_stepup_denial_windows"` (reproduced). With step 1 (`SELECT 1 FROM users
+  … FOR KEY SHARE` first) the same schedule completes: the delete waits for
+  the record, then removes the user and its window row. This is why step 1 is
+  binding when no session guard is present (AC-32). PAC-82's advisory classes,
+  PAC-84's 8400, PAC-101's `scheduling_links` locks, grants and bookings are
+  not touched by the record transaction, and a generation bump (FOR NO KEY
+  UPDATE) is compatible with KEY SHARE, so no cycle with PAC-71, PAC-82 or
+  PAC-101 exists; a granted record's tenant pin (FOR NO KEY UPDATE on
+  `organizations`) is compatible with a concurrent denial's FK KEY SHARE.
+- **V-3, wait bound.** A holder keeping the window row 2 s and a waiter with a
+  1 s transaction-local `lock_timeout`: `ERROR: 55P03: canceling statement
+  due to lock timeout` (AC-33).
+- **V-4, `lower()` on org domains.** Under `en_US.utf8`, `lower('ıstanbul.com')`,
+  `lower('straße.de')` and `lower('xn--bcher-kva.example')` are unchanged, so
+  the unchanged storage predicates find a row stored under an org domain.
+  Note: `lower(U&'\212Acme') = 'kcme'` is true in PostgreSQL too, so a Kelvin
+  row would collide with `kcme.com` in the `lower(domain)` unique index; none
+  can exist, because before PAC-75 the create stored `strings.ToLower`, which
+  maps the Kelvin sign to `k`. Only `ſ` lookalikes can be stray rows (§2.3).
+- **V-5, migration 039.** Applies after 001..038; an unaligned `window_start`
+  (`10:00:01Z`, `10:00:00.5Z`) is refused by the CHECK; `11:00:00+01:00` is
+  the same key as `10:00:00Z` (zone-independent); down drops only the table
+  (`sso_events` 10 rows before and after); up again succeeds.
+- **V-6, budget at the record step.** After `budget.Commit` returns true the
+  budget cannot answer (`internal/budget/budget.go:73-85`), so a left-out or a
+  recorded denial, and the `ErrTenantPinned` re-record as `tid_changed`, are
+  all waited for; between the reservation and `Commit`, the registered answer
+  is §4's decided one; a handler still running after expiry cannot record,
+  because `Commit` refuses. A budget expiry during check 4b's binding read
+  makes that read fail (`identity_mismatch` decided), but the answer already
+  sent was `unavailable` and nothing is recorded. `OnExpiry` replaces the
+  registration under the state's mutex, so the latest registration wins.
+- **V-7, Unicode table (§2.1).** Every row follows from the bytewise rule:
+  `ſ`, `K`, `İ`, `ı`, `ẞ` and fullwidth letters are multi-byte, so neither
+  length nor bytes can match an ASCII letter; `ß` matches only itself; an
+  A-label is ASCII; a U-label is a different byte string. Go's
+  `strings.EqualFold` (today's create) accepts `ſ`/`s` and `K`/`k` and refuses
+  `İ`/`i`; `strings.ToLower` (today's delete, before the comparison) maps `K`
+  to `k` and `İ` to `i`, so today's delete accepts both; the new rule refuses
+  both (AC-5, AC-6).
+- **V-8, web on older servers.** An older server never sends `unavailable`;
+  the options request and its schema are unchanged; the web's new behaviour
+  (own-key lookups, error line) depends on nothing new from the server. A
+  pre-PAC-75 web on a PAC-75 server: `DENIAL_TEXT['unavailable']` is
+  `undefined`, so it renders the plain denial. Either merge order is safe.
+- **V-9, conventions.** No `operationId`, schema name, `security` key or shared
+  component changed; `make openapi-check` rc 0 (§10).
