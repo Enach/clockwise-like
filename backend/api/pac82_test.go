@@ -587,13 +587,12 @@ func TestPAC82_RetryWaitsForTheOriginalsSave(t *testing.T) {
 	l := e.link(e.host("ac15"), "reusable", nil, []int{30}, true)
 	reached, release := make(chan struct{}), make(chan struct{})
 	var first atomic.Bool
-	storage.AfterBookingLocks = func(*storage.Booking) {
+	storage.InstallAfterBookingLocks(t, func(*storage.Booking) {
 		if first.CompareAndSwap(false, true) {
 			close(reached)
 			<-release
 		}
-	}
-	defer func() { storage.AfterBookingLocks = nil }()
+	})
 	q := pac82Req{email: "k@ac15.test", start: pac82At(10, 0), key: pac82Key("ac15")}
 	a := e.async(l.Slug, q)
 	<-reached
@@ -742,13 +741,12 @@ func TestPAC82_WaitPastTheBoundIs500(t *testing.T) {
 	e := newPAC82Env(t)
 	l := e.link(e.host("ac23"), "reusable", nil, []int{30}, true)
 	reached, release := make(chan struct{}), make(chan struct{})
-	storage.AfterBookingLocks = func(b *storage.Booking) {
+	storage.InstallAfterBookingLocks(t, func(b *storage.Booking) {
 		if b.BookerEmail == "holder@ac23.test" {
 			close(reached)
 			<-release
 		}
-	}
-	defer func() { storage.AfterBookingLocks = nil }()
+	})
 	holder := e.async(l.Slug, pac82Req{email: "holder@ac23.test", start: pac82At(10, 0)})
 	<-reached
 	w := pac101WithinBound(t, "the waiting booking", func() *httptest.ResponseRecorder {
