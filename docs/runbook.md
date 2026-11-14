@@ -129,7 +129,9 @@ they saw and change nothing. There is no override.
   backend and use `compose run --rm --no-deps backend /paceday-operator …`. A
   refusal exits 6 for `encryption` subcommands (5 if another operator holds
   the maintenance lock) and 1 for `free-address`, `reassign` and
-  `advance-all`.
+  `advance-all`. `encryption status` never applies migrations and never
+  refuses: it prints the pending migrations and whether the app is serving,
+  then its usual report.
 - **Reading a refusal.** Each line names what blocked the migration:
   - `live backend heartbeat: instance … on "<host>", seen <n>s ago`: stop
     that backend. A backend that was killed rather than stopped stops
@@ -152,8 +154,42 @@ they saw and change nothing. There is no override.
     Close it. As a last resort, use `SELECT pg_terminate_backend(<pid>);`.
     Stop monitoring agents that connect to the application database for the
     duration of the migration.
-  - `the maintenance lock is held by …`: another migration or encryption
-    command is running. Run again after it ends.
+  - `the maintenance lock is held by …` or `being applied by …`: another
+    migration or encryption command is running. Run again after it ends.
+    "Being applied" with a dirty version is a migration in progress, not a
+    failed one: do **not** `force` the version while it runs.
+- **A lock holder on a dead host.** The maintenance lock is released as soon
+  as its database session ends. But if the host (or its network) running a
+  migration died, the server keeps that session until TCP keepalive notices:
+  about 2 hours with Linux defaults, unless `tcp_keepalives_idle` is set.
+  Until then every start refuses with `being applied by <name> (pid <p>)`.
+  Find the holder:
+
+  ```sql
+  SELECT a.pid, a.application_name, a.client_addr, a.backend_start, a.state
+  FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+  WHERE l.locktype = 'advisory' AND l.classid = 8400 AND l.objid = 1
+    AND l.granted;
+  ```
+
+  Once you are certain the process is gone, run
+  `SELECT pg_terminate_backend(<pid>);`. If it died inside a migration file,
+  that file's changes roll back and the version stays dirty: follow
+  [Rollback](#rollback).
+- **With a connection pooler** (none ships; for deployments that add one,
+  such as pgbouncer):
+  - Its idle server connections stay open after every backend has stopped,
+    until `server_idle_timeout` (pgbouncer default: 600 s). Each one counts
+    as an other database session, so migrations are refused until the
+    pooler is stopped or told to reconnect (`RECONNECT`).
+  - The backend's start and `paceday-operator` must reach PostgreSQL
+    directly or through **session** pooling, never through transaction
+    pooling: the migration lock is a session lock.
+- **The Postgres health check.** `pg_isready` in the compose file opens a
+  short connection to the application database every few seconds. A
+  backend start whose check falls in that instant is refused as "serving",
+  and Docker retries it a moment later. A single `refusing to start` line
+  followed by a normal start is expected and harmless.
 
 ### PAC-71 release: sign every session out once (release step)
 

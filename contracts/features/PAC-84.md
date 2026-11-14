@@ -342,7 +342,7 @@ This is any process applying pending migrations: the backend at start,
 lock on a dedicated connection whose `application_name` starts with
 `paceday-migrate: `. Under the lock it refuses ("the app is serving") when
 any heartbeat is live (90 s), **or** any other client session is connected to
-the database. Only when neither is found does it apply the migrations, and
+the database (other migrators' `paceday-migrate:` sessions excepted). Only when neither is found does it apply the migrations, and
 then it releases the lock. The backend at start writes its heartbeat and then
 refuses to start on a migrating holder, as for `decrypt-all` and
 `reset-lost-key`, deleting its heartbeat first. A refresher tick that finds a
@@ -670,7 +670,10 @@ together) and nothing else. The 7.1 text is order-independent:
 **Amended by PAC-116 (2026-11-14; contract `contracts/features/PAC-116.md`
 §3, §5, §6).** "Migrations are applied first" now goes only through PAC-116's
 migrate-when-stopped procedure, for every subcommand that reaches it,
-`status` included. With pending migrations and the app serving (a live
+except `status`, which stays a read-only probe: it never migrates, never
+takes the lock, and never refuses as "serving", but reports pending
+migrations and the serving state (PAC-116 §5.1, revision 3). With pending
+migrations and the app serving (a live
 heartbeat or any other client session), the subcommand applies nothing and
 exits **6**, whose meaning widens to "a backend is running / the app is
 serving". It lists the heartbeats and sessions it saw. With the maintenance
@@ -697,8 +700,9 @@ the down step, into the kept `operator_audit`.
 
 **Amended by PAC-116 (2026-11-14).** In every row, the implicit "apply
 pending migrations" step before the lock column follows the §8.1 amendment.
-`status` (lock "none") takes `(8400, 1)` only for that step, and only when a
-migration is pending. `downgrade-schema` is not routed through it: it applies
+`status` (lock "none") keeps lock "none": it applies nothing (PAC-116 §5.1). A
+dirty version while a migrator holds `(8400, 1)` is a migration in progress:
+the mutating subcommands and `status` exit 5, naming the holder. `downgrade-schema` is not routed through it: it applies
 no pending up migration and keeps its own heartbeat check. The table above is
 kept as PAC-84 approved it.
 
