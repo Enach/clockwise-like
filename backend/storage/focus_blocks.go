@@ -97,12 +97,13 @@ var ErrAuditNoSubject = errors.New("audit entry has no subject")
 // it, so a caller that must record an entry together with the change it
 // describes rolls both back. created_at is NOW(), the transaction's start.
 // The error is the driver's; a caller that logs it must classify it first
-// (it can repeat row data).
-func WriteAuditLogTx(tx *sql.Tx, userID uuid.UUID, action, details string) error {
+// (it can repeat row data). ctx is the caller's: a cancelled caller cancels
+// the insert, which rolls the caller's transaction back.
+func WriteAuditLogTx(ctx context.Context, tx *sql.Tx, userID uuid.UUID, action, details string) error {
 	if userID == uuid.Nil {
 		return ErrAuditNoSubject
 	}
-	_, err := tx.ExecContext(context.Background(),
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO audit_log (user_id, action, details, created_at) VALUES ($1, $2, $3, NOW())`,
 		userID, action, details)
 	return err

@@ -77,6 +77,13 @@ func ListBookerErasureDue(ctx context.Context, db DBTX, now time.Time) ([]uuid.U
 	return out, rows.Err()
 }
 
+// AfterBookerErasureRecheck is a test seam (review of #269, K4-3): it runs
+// inside a link's erasure transaction after the step-2 re-check passed and
+// before the erasing UPDATE, on that transaction, so a test can make a
+// not-yet-due booking visible to the UPDATE and prove that the UPDATE's own
+// due rule leaves it alone. Nil in production.
+var AfterBookerErasureRecheck func(tx *sql.Tx, linkID uuid.UUID) error
+
 // AfterBookerErasureUpdate is a test seam (AC-33): it runs inside a link's
 // erasure transaction after the erasing UPDATE and before the audit insert. A
 // non-nil error rolls the whole link back. Nil in production.
@@ -135,6 +142,11 @@ func EraseLinkBookers(ctx context.Context, db DBTX, linkID uuid.UUID, now time.T
 	if !lastEnd.Valid || awaiting == 0 || lastEnd.Time.After(cutoff) {
 		return 0, nil
 	}
+	if AfterBookerErasureRecheck != nil {
+		if err := AfterBookerErasureRecheck(tx, linkID); err != nil {
+			return 0, err
+		}
+	}
 	res, err := tx.ExecContext(ctx, `
 		UPDATE bookings SET `+bookerErasureSet+`, booker_erased_at = $2
 		WHERE link_id = $1 AND booker_erased_at IS NULL
@@ -163,7 +175,7 @@ func EraseLinkBookers(ctx context.Context, db DBTX, linkID uuid.UUID, now time.T
 	if err != nil {
 		return 0, err
 	}
-	if err := WriteAuditLogTx(tx, owner, "scheduling_link_bookers_erased", string(details)); err != nil {
+	if err := WriteAuditLogTx(ctx, tx, owner, "scheduling_link_bookers_erased", string(details)); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

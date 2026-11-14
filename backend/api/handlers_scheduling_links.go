@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -878,6 +879,34 @@ func bookerErasurePolicy() gen.BookerErasurePolicy {
 	return gen.BookerErasurePolicy{Enabled: bookerErasureEnabled, RetentionDays: bookerRetentionDays}
 }
 
+// maxWireInstant is the latest instant encoding/json can write
+// (time.MarshalJSON refuses years past 9999; K4-9).
+var maxWireInstant = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+
+// clampWireInstant caps t at maxWireInstant, so a legacy booking ending near
+// the year 9999 gives an erasure date at the end of 9999 instead of an
+// archive that cannot be written (review of #269). Such a link is never due
+// before then anyway: the job compares max(end_time) <= now - 90 days.
+func clampWireInstant(t time.Time) time.Time {
+	if t.After(maxWireInstant) {
+		return maxWireInstant
+	}
+	return t
+}
+
+// writeArchiveJSON encodes v before writing anything, so an encode failure
+// (an instant past 9999 stored outside the product) is a logged 500 with
+// the JSON error body, never a 200 with an empty or truncated body.
+func writeArchiveJSON(w http.ResponseWriter, r *http.Request, op string, v any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		writeServerError(w, r, op, err, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(buf.Bytes())
+}
+
 // archivedLinkDTO maps a stored archived link to the wire, every instant in
 // UTC (Z suffix). erasure_due_at is set only for a link awaiting erasure in a
 // build whose job runs.
@@ -900,7 +929,7 @@ func archivedLinkDTO(a *storage.ArchivedLink) gen.ArchivedSchedulingLink {
 	case a.AwaitingErasure > 0:
 		dto.ErasureState = gen.AwaitingErasure
 		if bookerErasureEnabled && dto.LastBookingEndAt != nil {
-			due := dto.LastBookingEndAt.Add(storage.BookerRetention)
+			due := clampWireInstant(dto.LastBookingEndAt.Add(storage.BookerRetention))
 			dto.ErasureDueAt = &due
 		}
 	default:
@@ -949,8 +978,7 @@ func (h *schedulingLinkHandlers) listArchivedLinks(w http.ResponseWriter, r *htt
 	for _, link := range links {
 		out.Links = append(out.Links, archivedLinkDTO(link))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeArchiveJSON(w, r, "encode archive", out)
 }
 
 // GET /api/scheduling-links/archive/{id}
@@ -986,6 +1014,5 @@ func (h *schedulingLinkHandlers) getArchivedLink(w http.ResponseWriter, r *http.
 	for _, b := range bookings {
 		out.Bookings = append(out.Bookings, archivedBookingDTO(b))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeArchiveJSON(w, r, "encode archived link", out)
 }

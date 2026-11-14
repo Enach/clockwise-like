@@ -469,9 +469,9 @@ func TestPAC67_AuditEnumMatchesTheWriters(t *testing.T) {
 	// same writer under the in-request re-check; its generated wrapper
 	// (storage/guarded_writes.go) only forwards the caller's action.
 	// PAC-40 part B: the booker-erasure job writes through the transactional
-	// sibling WriteAuditLogTx(tx, ...), which returns its error (contract §5).
+	// sibling WriteAuditLogTx(ctx, tx, ...), which returns its error (contract §5).
 	call := regexp.MustCompile(`WriteAuditLog(Ctx|Tx)?\(`)
-	literal := regexp.MustCompile(`WriteAuditLog(?:Ctx\([^,]+,\s*|Tx\(|\()[^,]+,\s*[^,]+,\s*"([a-z_]+)"`)
+	literal := regexp.MustCompile(`WriteAuditLog(?:Ctx\([^,]+,\s*|Tx\([^,]+,\s*|\()[^,]+,\s*[^,]+,\s*"([a-z_]+)"`)
 	writers := map[string][]string{}
 	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
 		if err != nil {

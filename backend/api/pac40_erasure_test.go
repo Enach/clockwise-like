@@ -119,3 +119,64 @@ func TestPAC40B_ArchiveAfterErasure(t *testing.T) {
 		t.Errorf("erasure entries in the owner's log = %d; want 1", found)
 	}
 }
+
+// Review of #269, finding 3 (K4-9): an erasure date past the year 9999 is
+// clamped to 9999-12-31T23:59:59Z, so the archive is always writable.
+func TestPAC40B_ErasureDueAtIsClampedToTheLastWritableInstant(t *testing.T) {
+	end := time.Date(9999, 12, 1, 10, 0, 0, 0, time.UTC)
+	dto := archivedLinkDTO(&storage.ArchivedLink{BookingsCount: 1, AwaitingErasure: 1, LastBookingEndAt: &end})
+	want := time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+	if dto.ErasureDueAt == nil || !dto.ErasureDueAt.Equal(want) {
+		t.Fatalf("erasure_due_at = %v; want %v", dto.ErasureDueAt, want)
+	}
+	if _, err := json.Marshal(dto); err != nil {
+		t.Fatalf("clamped DTO does not encode: %v", err)
+	}
+	normal := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := clampWireInstant(normal); !got.Equal(normal) {
+		t.Errorf("clamp moved %v to %v", normal, got)
+	}
+
+	// Through the handler: a legacy booking ending in December 9999.
+	e := newPAC40Env(t, openTestDB(t))
+	owner := createConfirmedUser(t, "pac40b-9999@example.com")
+	link := createSchedulingLinkRecord(t, owner, "pac40b-9999", "Far")
+	if _, err := e.db.Exec(`INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
+		VALUES ($1, 'n', 'n@booker.test', '9999-12-01T09:30:00Z', '9999-12-01T10:00:00Z', '')`, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.deleteLink(owner, link.ID)
+	w := e.do(http.MethodGet, "/api/scheduling-links/archive", owner, "")
+	e.mustStatus(w, http.StatusOK, "archive with a 9999 booking")
+	if !strings.Contains(w.Body.String(), `"erasure_due_at":"9999-12-31T23:59:59Z"`) {
+		t.Errorf("archive = %s; want the clamped due instant", w.Body.String())
+	}
+}
+
+// Review of #269, finding 3: a stored instant JSON cannot write (a booking
+// ending after the year 9999, possible only outside the product) makes both
+// archive reads a logged 500 with the JSON error body, never a 200 with an
+// empty or truncated body.
+func TestPAC40B_ArchiveEncodeFailureIsA500(t *testing.T) {
+	e := newPAC40Env(t, openTestDB(t))
+	owner := createConfirmedUser(t, "pac40b-10000@example.com")
+	link := createSchedulingLinkRecord(t, owner, "pac40b-10000", "Beyond")
+	if _, err := e.db.Exec(`INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
+		VALUES ($1, 'n', 'n@booker.test', '9999-12-31T23:00:00Z', '10000-01-01T01:00:00Z', '')`, link.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.deleteLink(owner, link.ID)
+	logs := pac84Logs(t)
+	for _, path := range []string{"/api/scheduling-links/archive", "/api/scheduling-links/archive/" + link.ID.String()} {
+		w := e.do(http.MethodGet, path, owner, "")
+		if w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != internalError {
+			t.Errorf("%s = %d %q; want 500 %s", path, w.Code, w.Body.String(), internalError)
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("%s Content-Type = %q", path, ct)
+		}
+	}
+	if !strings.Contains(logs.String(), "encode archive") || !strings.Contains(logs.String(), "encode archived link") {
+		t.Errorf("encode failures not logged: %s", logs.String())
+	}
+}
