@@ -1,0 +1,98 @@
+{
+  "featureId": "PAC-74",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-74",
+  "status": "stage 4 (spec accepted 2026-11-14; web-only, no contract change, so no contract-challenger round: spec D-1)",
+  "contractRevision": "unchanged: PAC-74 changes no HTTP operation. PAC-74 manifest revision 1.",
+  "contractHash": "85187c9448b95f89e3ce05ac334d53ec9cf1bb0f896bb89d788ce46726adbdd4",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml on origin/main fd4e7b1 (last bundle change fd4e7b1, PAC-82) and on this branch (byte-identical: git diff origin/main -- contracts/openapi is empty). Reproduce with: `git show origin/main:contracts/openapi/openapi.yaml | sha256sum` (LF blob; a CRLF Windows checkout hashes differently). If main's bundle moves before PAC-74 merges, record main's new hash here and change nothing else in this field: PAC-74 must not alter the bundle.",
+  "specDoc": "docs/specs/PAC-74.md (accepted 2026-11-14; branch factory/pac-74-spec @ eb5940c)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "Web only. The Settings page's API key field: an emptied field never asks for the saved key to be removed (only \"Remove saved key\" does), erasing typed text restores the pre-typing intent including a pending removal (D-3), and without the per-provider map the single llmApiKeySet flag applies to the saved provider only (D-4). The server's absent / \"\" / value / null semantics of SettingsUpdate.llmApiKey are already explicit and unchanged (spec section 2.2).",
+  "interfaceKind": "No HTTP change. The web omits llmApiKey from PATCH /api/settings and POST /api/llm/test more often; it never sends a property the contract does not have.",
+  "mergeAfter": "factory/pac-74-spec (contained in this branch). Pairs with smart-calendar-flow impl/pac-74-web, which merges first; this branch adds only e2e and this manifest.",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "e2e/tests/pac74-api-key-field.spec.ts (new)",
+        "contracts/features/PAC-74.yaml (this file)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** (no HTTP change; any bundle diff is a contract defect, back to stage 2)",
+        "backend/** (no server change, spec D-1)",
+        "mcp/**",
+        "e2e/tests/llm-bring-your-own.spec.ts (must pass unchanged, spec section 6)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/lib/aiProviders.ts (providerSwitch, keyIsSetFor, editKey)",
+        "src/pages/Settings.tsx (the API key field and the draft seed/reset)",
+        "src/api/client.ts (doc comment only)",
+        "src/lib/aiProviders.test.ts, src/api/settingsAdapter.test.ts, src/pages/Settings.pac74.test.tsx (new)"
+      ],
+      "forbiddenPaths": [
+        "src/api/generated/** (bundle unchanged, nothing to regenerate)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [],
+  "componentsChanged": [],
+  "operationsNotChanged": [
+    {
+      "operationId": "updateSettings (PATCH /api/settings)",
+      "reason": "llmApiKey keeps absent = unchanged, \"\" = cleared, value = replaced. The web sends \"\" only after \"Remove saved key\"."
+    },
+    {
+      "operationId": "testLLM (POST /api/llm/test)",
+      "reason": "llmApiKey \"\" keeps meaning \"no key, do not use the stored one\"; after type-and-erase the web omits it, so the stored key is tested."
+    }
+  ],
+  "gates": {
+    "web": "make verify in smart-calendar-flow (factory section 3), output in the web PR body.",
+    "e2e": "cd e2e && npx tsc --noEmit && npx playwright test --list locally; the full run is CI's, paired impl/pac-74-web with impl/pac-74-e2e.",
+    "defaultBranch": "main",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1 [unit, web] settingsAdapter.test.ts 'PAC-74 the key field' AC-1; Settings.pac74.test.tsx AC-1.",
+    "AC-2 [e2e] e2e/tests/pac74-api-key-field.spec.ts 'AC-2: type, erase, change the model, save: the OpenAI key is still on file and is the one tested' (PATCH has no llmApiKey; llmApiKeysSet.openai true, aiStatus configured for openai; llm_api_key_openai byte-identical; probe of the stored key reaches the provider call, 502, not 409 needs_key).",
+    "AC-3 [unit, web] Settings.pac74.test.tsx AC-3; settingsAdapter.test.ts AC-3 (also observed in the AC-2 e2e).",
+    "AC-4 [unit, web] Settings.pac74.test.tsx AC-4; settingsAdapter.test.ts AC-4 (also observed in the AC-2 e2e).",
+    "AC-5 [unit, web] Settings.pac74.test.tsx AC-5; settingsAdapter.test.ts AC-5. [e2e] pac74-api-key-field.spec.ts 'AC-5: Remove saved key, save: the OpenAI key is gone'.",
+    "AC-6 [unit, web] Settings.pac74.test.tsx AC-6; settingsAdapter.test.ts AC-6.",
+    "AC-7 [unit, web] Settings.pac74.test.tsx AC-7; settingsAdapter.test.ts AC-7.",
+    "AC-8 [unit, web] Settings.pac74.test.tsx 'AC-8 and AC-9'; settingsAdapter.test.ts AC-8; aiProviders.test.ts providerSwitch flags.",
+    "AC-9 [unit, web] Settings.pac74.test.tsx 'AC-8 and AC-9'; settingsAdapter.test.ts AC-9.",
+    "AC-10 [unit, web] Settings.pac74.test.tsx AC-10; settingsAdapter.test.ts AC-10; existing llm-bring-your-own.spec.ts W-1 tests unchanged."
+  ],
+  "resolvesFindings": [
+    "PAC-73 part 1 reviewer, non-blocking: type-and-erase in the key field deletes the saved key; single-flag fallback shows the wrong provider's key."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [],
+  "doesNotResolve": [
+    "Spec OQ-1 (whitespace-only key): unchanged behaviour, owner question, follow-up if yes."
+  ],
+  "consumersAffected": [
+    {
+      "consumer": "Enach/smart-calendar-flow",
+      "breaks": "no",
+      "detail": "No operation changes; no regeneration."
+    },
+    {
+      "consumer": "mcp",
+      "breaks": "no",
+      "detail": "Does not read the web draft."
+    }
+  ],
+  "mergeConditions": [
+    "smart-calendar-flow impl/pac-74-web merges first (make verify in its body).",
+    "contracts/openapi/openapi.yaml byte-identical to main's (sha256 above).",
+    "The paired CI run of the e2e suite passes."
+  ],
+  "followUps": [],
+  "rollback": "Revert the web PR (restores today's behaviour, including the data-loss path), then this PR. No migration, no configuration, no bundle change."
+}
