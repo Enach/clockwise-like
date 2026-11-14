@@ -206,6 +206,9 @@
     "Release notes: operators must create encryption.env (mode 600, beside .env, outside the backup set) before upgrading, or the backend refuses to start; rollback after the conversion is decrypt-all + downgrade-schema or a restore, never an image swap (spec section 7).",
     "Docker Compose 2.24.0 or later on the deployment host (env_file required:false); the release notes say so."
   ],
+  "amendments": [
+    "2026-11-14, PAC-116 (spec docs/specs/PAC-116.md revision 2, contract contracts/features/PAC-116.md; owner decision 'stop traffic' 2026-11-14), no revision bump (PAC-14 convention): dated 'Amended by PAC-116' notes in md sections 4.3 (migrating holder of (8400,1) named 'paceday-migrate: <caller>'; serving = live heartbeat or any other client session; backend refuses to start and refresher shuts down on a migrating holder), 5.3 (start step 3 runs the migrate-when-stopped procedure before the pool), 8.1 (operator applies pending migrations only through that procedure; exit 6 widened to the app is serving, exit 5 for a held lock; no override) and 8.2 (status takes the lock only for a pending migration; downgrade-schema not routed through it). Approved text kept."
+  ],
   "rollback": "Before the conversion has run: image-only rollback. After: either restore the pre-deploy backup, or stop the backend, paceday-operator encryption decrypt-all, paceday-operator encryption downgrade-schema, start the previous image (never the new image in between). downgrade-schema refuses while anything is encrypted; it drops encryption_data_keys, encryption_backend_heartbeats and the sequence, and keeps operator_audit with its widened CHECK. No HTTP contract revision to revert.",
   "ownerDecided": [
     "Q-1 key from the environment now, KMS later (2026-11-01).",

@@ -2,46 +2,63 @@
   "featureId": "PAC-116",
   "linearIssueUrl": "https://linear.app/paceday/issue/PAC-116",
   "splitFrom": "https://linear.app/paceday/issue/PAC-110 (item 1)",
-  "status": "contract revision 1, draft 2026-11-14; spec and contract awaiting challenge",
-  "contractRevision": "1",
+  "status": "contract revision 2, draft 2026-11-14 (owner 'stop traffic' decision after the REVISE challenge of revision 1); spec and contract awaiting challenge",
+  "contractRevision": "2",
+  "supersedes": "revision 1 (parser-enforced lock-order rule, classification table, Go checker) at 2c13c9c; challenge kept verbatim in both md files",
   "contractHash": "ae3d6c1c045e66fe898390ff291afa9655c53d1065b451135020738d6f2cef8d",
   "contractHashOf": "UNCHANGED. sha256 of contracts/openapi/openapi.yaml at origin/main c2609a6 (git show origin/main:contracts/openapi/openapi.yaml | sha256sum, LF blob); this contract edits no fragment and no generated file. python scripts/openapi_assemble.py --check: 'OK: bundle is in sync (110 paths)'. If main's bundle moves before stage 4 merges, record main's hash here; no fragment of this feature exists to drift.",
   "contractDoc": "contracts/features/PAC-116.md",
-  "specDoc": "docs/specs/PAC-116.md (draft 2026-11-14 on factory/pac-116-spec)",
+  "specDoc": "docs/specs/PAC-116.md (revision 2, draft 2026-11-14 on factory/pac-116-spec)",
   "sourceOfTruth": "Enach/clockwise-like",
-  "scope": "A Go test (no database) that parses every backend/storage/migrations/*.up.sql in version order and fails when a file takes a weaker lock on bookings, scheduling_links, scheduling_link_hosts or users before a stronger one in the same file (levels: contract md section 2), when it uses transaction control or CONCURRENTLY, or when a statement naming a covered table cannot be classified; no exemption mechanism. PAC-82 contract section 4.4 amended (dated note; PAC-82 stays at revision 1.1). No runtime, migration, operator or HTTP change.",
+  "scope": "Pending migrations are applied only while the app is not serving. One storage procedure (md section 3): if pending, on a dedicated one-connection handle named 'paceday-migrate: <caller>', take the maintenance lock (8400,1), re-read the version, refuse when a backend heartbeat is live (90 s) or any other client session is connected to the database, else apply and release. Used by the backend at start (before its pool), every paceday-operator encryption subcommand (today encryption.go:181) and PAC-71's free-address/reassign/advance-all (today main.go:56). Backends refuse to start, and running backends shut down, when the lock has a migrating holder. No override. PAC-84 and PAC-82 contracts amended; runbook stop-migrate-start procedure. No HTTP change.",
   "ownerDecisions": {
-    "Q1": "covered tables: bookings, scheduling_links, scheduling_link_hosts, users (2026-11-14).",
-    "Q2": "enforced by a Go test parsing storage/migrations/*.up.sql; no PostgreSQL reproduction test (2026-11-14).",
-    "Q3": "operator behaviour unchanged (PAC-84 untouched); runbook guidance stands (2026-11-14)."
+    "Q1": "2026-11-14: the live-read tables are bookings, scheduling_links, scheduling_link_hosts, users (kept as the statement of what is at risk; the rule now protects every table).",
+    "Q2": "2026-11-14, REVERSED the same day: the SQL-reading checker is dropped.",
+    "Q3": "2026-11-14, REVERSED the same day: operator behaviour changes (refuses to migrate while serving); PAC-84 contract amended.",
+    "revision": "2026-11-14, after the challenge on #281: 'stop traffic' - pending migrations applied only when the app is not serving; the operator tool refuses otherwise."
+  },
+  "decisions": {
+    "serving": "live heartbeat (encryption_backend_heartbeats, seen within 90 s) OR any other client backend session on current_database(), whatever its application_name (spec D-1).",
+    "gate": "existing maintenance lock (8400,1), held by the migrator under application_name 'paceday-migrate: <caller>'; write-then-check with the backend's heartbeat (spec D-2).",
+    "backendStart": "the backend is a migrator like any other, only when something is pending; single-backend deploys unchanged; several backends must all be stopped (spec D-3).",
+    "override": "none (spec D-4; owner may revisit, OQ-1).",
+    "onlyWhenPending": "no lock and no check when nothing is pending (spec D-5)."
   },
   "openQuestions": {
-    "OQ-1": "owner, non-blocking, default not in PAC-116: enforce a lock order across two or more covered tables (spec section 2.5). Recorded as advice in the PAC-82 section 4.4 amendment.",
-    "OQ-2": "stage 3: hand-written lexer (default) vs vendored parser; the classification table binds either way."
+    "OQ-1": "owner, non-blocking, default none: an audited emergency override?",
+    "OQ-2": "owner, non-blocking, default accept and document: a pre-PAC-116 backend started in the instant between the check and golang-migrate's lock.",
+    "OQ-3": "stage 3: tests that migrate with another pool open; restructure or the unexported test seam (md section 6).",
+    "OQ-4": "owner, non-blocking, default refuse: permanently connected monitoring clients."
   },
-  "interfaceKind": "Non-HTTP only: lock levels and rules R1-R3 (md section 2), lexing (section 3), statement classification table with schema replay (section 4), test interface and failure format (section 5).",
+  "interfaceKind": "Non-HTTP only: terms (md section 2), the migrate-when-stopped procedure (section 3), backend start order and running-backend rule (section 4), refusal texts and exit codes (section 5), no override (section 6), runbook content (section 7).",
   "mergeAfter": "origin/main c2609a6. No migration number is used.",
   "repositories": {
     "backend": {
       "url": "https://github.com/Enach/clockwise-like",
       "allowedPaths": [
-        "backend/storage/migration_lock_order_check_test.go (the pure checker and classifier; a _test.go file, so it is not compiled into the server or operator binaries: spec section 6 'the check is test-only code'; package storage so it reads the embedded migrationFiles)",
-        "backend/storage/migration_lock_order_test.go (AC-1..AC-19: synthetic files, the classification-table cases, the run over every real up file)",
-        "backend/storage/testdata/pac116/** (optional synthetic .sql fixtures)",
+        "backend/storage/db.go (the procedure; Open/OpenAs/Migrate route through it or stop migrating; runMigrations unexported and called only by it)",
+        "backend/storage/encryption_keys.go (migrating-holder recognition beside destructiveApps; LoadKeyring offline check; Refresher.Tick shutdown; the other-sessions query may live here or in a new storage file)",
+        "backend/storage/migrate_when_stopped.go (optional new file for the procedure) and its _test.go",
+        "backend/main.go (start order step 3: procedure before the pool, pool opened without migrating)",
+        "backend/encryption.go (only if the refusal/delete-heartbeat path needs it)",
+        "backend/cmd/paceday-operator/encryption.go (dispatch: the procedure instead of storage.Migrate; exit 6/5 mapping)",
+        "backend/cmd/paceday-operator/main.go (PAC-71 subcommands: open without migrating, then the procedure; exit 1)",
+        "backend/**/*_test.go (new pac116 integration tests AC-1..AC-14; existing tests adjusted per OQ-3 without weakening their assertions)",
+        "backend/storage/test_seams.go (the AC-8/AC-9 pause seams and the OQ-3 seam; unexported, test-only)",
+        "docs/runbook.md (section 'Applying migrations: stop, migrate, start' and its pointers; refusal sentence no longer 'from PAC-116's implementation on')",
         "docs/plans/PAC-116.md",
         "docs/specs/PAC-116.md (challenge section and status only)",
         "contracts/features/PAC-116.{md,yaml} (challenge, gate results, stage-4 notes)",
-        "contracts/features/PAC-82.{md,yaml} (the PAC-116 amendment only)"
+        "contracts/features/PAC-84.{md,yaml} and contracts/features/PAC-82.{md,yaml} (the PAC-116 amendment notes only)"
       ],
       "forbiddenPaths": [
-        "backend/storage/migrations/** (no existing migration is edited, spec D-7; no new migration)",
-        "backend/storage/db.go and the migration runtime (how migrations run is unchanged, Q3)",
-        "backend/cmd/paceday-operator/** (Q3, PAC-84 untouched)",
-        "docs/runbook.md (Q3)",
+        "backend/storage/migrations/** (no migration added or edited)",
+        "any flag, environment variable, prompt or config that skips the serving check (md section 6)",
+        "a new heartbeat table, lock id or column (the existing heartbeat lease and (8400,1) are the interface)",
+        "the operator stopping or signalling processes or containers",
+        "downgrade-schema and booker-erasure behaviour",
         "contracts/openapi/** and backend/api/gen/** (no HTTP change)",
-        "any allow-list, directive comment or environment variable that exempts a file (spec D-4)",
-        "Enach/smart-calendar-flow (unaffected)",
-        "mcp/ (unaffected)"
+        "Enach/smart-calendar-flow, mcp/ (unaffected)"
       ]
     }
   },
@@ -50,66 +67,66 @@
   "componentsChanged": [],
   "migration": "none",
   "nonHttpInterface": {
-    "coveredTables": ["bookings", "scheduling_links", "scheduling_link_hosts", "users"],
-    "levels": "0: ACCESS SHARE, ROW SHARE, ROW EXCLUSIVE, SHARE UPDATE EXCLUSIVE; 1: SHARE, SHARE ROW EXCLUSIVE; 2: EXCLUSIVE; 3: ACCESS EXCLUSIVE (md section 2, from PostgreSQL 16 docs 13.3.1 restricted to the modes live paths take).",
-    "R1": "per file, per covered table not created earlier in the file: no statement after the first lock on it takes a higher level than that first lock.",
-    "R2": "no top-level transaction control and no CONCURRENTLY in an up file (each file is one implicit transaction: golang-migrate v4.19.1 postgres driver, MultiStatementEnabled false, one ExecContext without arguments, pgx v5 simple protocol).",
-    "R3": "a statement naming a covered table that the classifier cannot classify fails, unless level 3 is already held on that table in the file.",
-    "remedies": "ACCESS EXCLUSIVE statements first, or a leading LOCK TABLE <t> IN ACCESS EXCLUSIVE MODE.",
-    "exemptions": "none (spec D-4)."
+    "pending": "schema_migrations absent/empty or version below the binary's highest embedded up version, not dirty.",
+    "liveHeartbeat": "encryption_backend_heartbeats.seen_at > now() - 90 s; table absent = none.",
+    "otherSession": "pg_stat_activity: datname = current_database(), backend_type = 'client backend', pid <> pg_backend_pid(); every row counts.",
+    "migratorName": "application_name 'paceday-migrate: <caller>' (caller paceday-backend | paceday-operator encryption <sub> | paceday-operator <sub>).",
+    "procedure": "not pending -> nothing; dedicated 1-connection handle, no other connection of the process open; pg_try_advisory_lock(8400,1) else 'lock held'; re-read version; live heartbeats or other sessions -> 'serving'; golang-migrate Up on that connection; unlock; close.",
+    "backend": "start step 3 runs the procedure before the pool; key load refuses (heartbeat deleted) on a migrating holder; refresher shuts down on a migrating holder.",
+    "exitCodes": "backend exit 1 before listening; encryption subcommands serving 6, lock held 5; PAC-71 subcommands 1. No audit row on refusal.",
+    "override": "none; an unexported test seam settable only from _test.go."
   },
   "gates": {
-    "contractApproval": "pending contract-challenger",
+    "contractApproval": "pending contract-challenger (revision 2)",
     "assembler": "python scripts/openapi_assemble.py --check rc 0 on factory/pac-116-spec ('bundle is in sync (110 paths)'); full make openapi-check not run (no fragment or generator input changed).",
-    "stage4": "make verify (factory section 3); the new test is in test-backend, needs no database, and is not skipped under -short. Before merge, grep origin/* for branches adding migrations 040+ and run the checker on them.",
+    "stage4": "make verify (factory section 3); AC-1..AC-14 run against real PostgreSQL in test-backend (testcontainers in CI); 'could not run' stated, never silent; the PR body names every existing test adjusted under OQ-3.",
     "defaultBranch": "main",
     "ci": "GitHub Actions .github/workflows/ci.yml; required check verify",
-    "deployment": "none (test-only)"
+    "deployment": "release note: a release with a migration needs every backend stopped (runbook section); single-backend compose deploys unchanged"
   },
   "acceptanceTests": [
-    "AC-1  [unit] CREATE INDEX on bookings then ALTER TABLE bookings ADD COLUMN: fails, naming file, bookings, statement 1 SHARE, statement 2 ACCESS EXCLUSIVE.",
-    "AC-2  [unit] the same, ALTER first: passes.",
-    "AC-3  [unit] AC-1 with a leading LOCK TABLE bookings IN ACCESS EXCLUSIVE MODE, or `lock bookings`, or one LOCK listing two covered tables: passes.",
-    "AC-4  [unit] leading LOCK TABLE bookings IN SHARE MODE then ALTER TABLE bookings ADD COLUMN: fails.",
-    "AC-5  [unit] AC-1 fails for each covered table; passes for a non-covered table (settings).",
-    "AC-6  [unit] a file creating bookings then indexing and altering it in any order (checked alone): passes.",
-    "AC-7  [unit] UPDATE users then CREATE INDEX ON users: fails; SELECT FROM users then UPDATE users: passes.",
-    "AC-8  [unit] CREATE TABLE t (u REFERENCES users) then ALTER TABLE users ADD COLUMN: fails on users; same with ADD COLUMN … REFERENCES and a table-level FOREIGN KEY.",
-    "AC-9  [unit] INSERT INTO t (t has an FK to users from an earlier file) then CREATE TABLE z (… REFERENCES users): fails on users.",
-    "AC-10 [unit] DROP CONSTRAINT t_user_id_fkey / DROP COLUMN user_id / DROP TABLE t (t references users) after a weaker lock on users: fails.",
-    "AC-11 [unit] DROP INDEX idx_bookings_link after a weaker lock on bookings: fails; DROP INDEX of an index no file created: fails 'cannot resolve index'.",
-    "AC-12 [unit] case, quoting, schema qualification, -- and nested /* */ comments, multi-line statements, missing final ';': same verdict, statement numbers and modes as AC-1.",
-    "AC-13 [unit] covered names and DDL text inside '…', E'…' and $$…$$ literals, and ';' inside comments: not statements, not table references.",
-    "AC-14 [unit] DO/CALL body naming a covered table: fails 'cannot classify' unless level 3 already held; DO naming none (as 023): ignored; CREATE FUNCTION body: no lock.",
-    "AC-15 [unit] unknown statement naming a covered table (GRANT … ON users, CREATE POLICY … ON bookings): fails 'cannot classify', same level-3 exception.",
-    "AC-16 [unit] top-level BEGIN/START TRANSACTION/COMMIT/END/ROLLBACK/SAVEPOINT/RELEASE or any CONCURRENTLY form: fails; PL/pgSQL BEGIN inside a DO body: not counted.",
-    "AC-17 [unit] every real up file (001-039 today) in version order: passes; zero files found: fails.",
-    "AC-18 [unit] failure message format of md section 5 (file, table, first statement number/mode/80 chars, each offending statement, fix line naming both remedies).",
-    "AC-19 [unit] one table-driven case per row of md section 4 asserting the mode per table.",
-    "AC-20 [contract] PAC-82 md section 4.4 carries the dated 'Amended by PAC-116' block (row 'save / DDL on a live-read table' and the migrations rule), approved text unchanged; PAC-82.yaml has an amendments entry and keeps contractRevision 1.1."
+    "AC-1  [integration] pending + simulated heartbeat 5 s old: encryption status/convert/rotate-data-key exit 6, advance-all exit 1; message names instance, host, age, 'stop every backend first'; version unchanged, not dirty; no audit row.",
+    "AC-2  [integration] pending + no heartbeat + one other session (application_name paceday-backend; then empty; then psql): refuses as AC-1, session pid and name listed.",
+    "AC-3  [integration] pending + heartbeat 91 s old + no other session: applies (highest version, not dirty), then the subcommand runs as today.",
+    "AC-4  [integration] pending + nothing: applies. Nothing pending + live heartbeat + app session: convert, rotate-data-key, status, advance-all run as today (no check).",
+    "AC-5  [integration] below 034 (no heartbeat table), advance-all, pending: applies with no other session, refuses with one; encryption subcommands keep today's below-034 refusal.",
+    "AC-6  [integration] backend start, pending + live heartbeat or app session: exit non-zero before listening, AC-1/AC-2 text; version unchanged, not dirty.",
+    "AC-7  [integration] backend start, pending + nothing else: migrates and /api/ready 200; nothing pending + other backends live: starts as today.",
+    "AC-8  [integration] migrator held after its check (seam); a backend with nothing pending starts: writes heartbeat, sees the migrating holder, deletes its heartbeat, exits non-zero naming it; after release it starts.",
+    "AC-9  [integration] backend held after writing its heartbeat, before its lock check (seam); operator with pending takes the lock, sees the heartbeat, refuses; nothing applied; the backend then starts.",
+    "AC-10 [integration] two migrators at a barrier (operator + backend, or two backends): exactly one applies; the other gets lock held (operator exit 5 / backend non-zero, holder named) or nothing pending; never dirty, applied once.",
+    "AC-11 [integration] running backend, heartbeat removed, refresher tick while a migrator holds the lock: graceful shutdown with a log line naming the migrator.",
+    "AC-12 [integration] the migrator's own process connections are not 'other sessions' (operator pool opened before the procedure); a second operator process is.",
+    "AC-13 [unit + integration] no override: --force/-force/--yes/--override are usage errors (exit 2); no environment variable skips the check (backend start with every variable the code reads set to 'true' still refuses); every registered flag of every subcommand asserted not to skip the procedure.",
+    "AC-14 [integration] dirty database: today's golang-migrate error on every path, dirty untouched; booker-erasure applies nothing; downgrade-schema keeps its own heartbeat check (exit 6) and is not routed through the procedure.",
+    "AC-15 [contract] PAC-84.md: dated 'Amended by PAC-116' notes in sections 4.3, 5.3, 8.1, 8.2; approved text kept.",
+    "AC-16 [contract] PAC-82.md section 4.4: the PAC-116 note says the save / DDL pair is prevented operationally; revision 1's rule marked superseded; contractRevision stays 1.1.",
+    "AC-17 [doc] docs/runbook.md 'Applying migrations: stop, migrate, start' (single backend, several backends, newer operator, reading a refusal, no override) with pointers from Deploy order step 4 and the operator sections."
   ],
   "documentsAmended": [
-    "contracts/features/PAC-82.md section 4.4: 'Amended by PAC-116 (2026-11-14)' block after the deadlock table: row 'save / DDL on a live-read table', binding migrations rule R1-R3 (pointing at PAC-116.md), cross-table advice (spec OQ-1). Header revision line notes the amendment.",
-    "contracts/features/PAC-82.yaml: status line and amendments entry; contractRevision stays 1.1 (amendment notes do not bump, PAC-14 convention; contractHash unchanged)."
+    "contracts/features/PAC-84.md sections 4.3, 5.3, 8.1, 8.2: dated 'Amended by PAC-116 (2026-11-14)' blocks (migrating holder; two-signal serving check; start order step 3; operator migration rule; exit 6 widened, exit 5 also for a migration's lock). PAC-84.yaml: amendments entry; no revision bump.",
+    "contracts/features/PAC-82.md section 4.4: PAC-116 note rewritten (row 'save / DDL on a live-read table': prevented operationally); revision-1 rule and cross-table advice marked superseded. PAC-82.yaml: amendments entry rewritten; contractRevision stays 1.1.",
+    "docs/runbook.md: new section 'Applying migrations: stop, migrate, start'; pointers from Deploy order step 4, the PAC-71 release step and Operator commands."
   ],
   "resolvesFindings": [],
   "resolvesUncertain": [],
-  "existingMigrationViolations": "none. 001-039 checked by hand and by a prototype classifier on c2609a6 (spec section 2.4); no migration edited.",
+  "existingMigrationViolations": "not applicable under revision 2 (no static rule). For the record, revision 1's challenge showed 022 would deadlock against live sign-in if applied while serving, which this rule prevents.",
   "consumersAffected": [
-    {"consumer": "future migrations (040+)", "breaks": "only if they break R1-R3", "detail": "make test / CI test-backend fail with the md section 5 message; remedy in plain SQL."},
-    {"consumer": "backend/storage/migrations 001-039", "breaks": "no", "detail": "pass unchanged (spec section 2.4)."},
-    {"consumer": "backend/storage/migrations_down_test.go", "breaks": "no", "detail": "no migration file changes."},
-    {"consumer": "PAC-82 save (storage/scheduling_links.go SaveBookingOnLiveLink) and PAC-82 AC-24", "breaks": "no", "detail": "no runtime change; the amendment documents the migration side of the deadlock table."},
-    {"consumer": "paceday-operator, runbook, OpenAPI bundle, web, mcp", "breaks": "no", "detail": "untouched (Q3)."}
+    {"consumer": "operators running a newer paceday-operator against a live stack with pending migrations", "breaks": "yes (intended)", "detail": "refusal exit 6/5/1 with instructions; runbook section."},
+    {"consumer": "multi-backend deployments", "breaks": "yes (intended)", "detail": "a release with a migration requires every backend stopped; a refused backend is restarted by Docker until then."},
+    {"consumer": "single-backend compose deploy, e2e stack, compose tests", "breaks": "no", "detail": "compose stops the old container before the new one migrates."},
+    {"consumer": "backend tests calling storage.Open/OpenAs/Migrate with another pool open and migrations pending", "breaks": "possibly", "detail": "listed in md section 9; plan resolves per OQ-3."},
+    {"consumer": "PAC-84 operator tests (cmd/paceday-operator/*_test.go), main_pac84_test.go", "breaks": "possibly (setup only)", "detail": "assertions on existing refusals unchanged; setups that migrate with another connection open adjusted."},
+    {"consumer": "OpenAPI bundle, web, mcp", "breaks": "no", "detail": "untouched."}
   ],
   "mergeConditions": [
-    "Spec docs/specs/PAC-116.md accepted by spec-challenger and this contract by contract-challenger (accept or accept-with-changes applied).",
-    "Stage-4 PR: make verify output in the body; the new test runs in test-backend without a database.",
-    "Every up migration on main at merge time passes; any origin/* branch adding 040+ checked and named in the PR body.",
-    "OpenAPI bundle sha256 still equals main's (no fragment change)."
+    "Spec revision 2 accepted by spec-challenger and this contract by contract-challenger (accept or accept-with-changes applied).",
+    "Stage-4 PR: make verify output in the body; AC-1..AC-14 run against real PostgreSQL.",
+    "OpenAPI bundle sha256 still equals main's (no fragment change).",
+    "Release note: 'a release with a migration needs every backend stopped' (runbook section)."
   ],
   "followUps": [
-    "Owner: OQ-1 (cross-table lock order); if enforced, a follow-up ticket amends this contract and PAC-82 section 4.4."
+    "Owner: OQ-1 (override), OQ-2 (pre-PAC-116 backend residual), OQ-4 (monitoring clients)."
   ],
-  "rollback": "Revert the stage-4 test PR and this contract PR; nothing at runtime, in storage or on the wire changes. the PAC-82 amendment note and amendments entry revert with it."
+  "rollback": "Revert the stage-4 PR: every path migrates as today with no lock and no check; no schema or data change. The contract notes and runbook section revert with this PR or stay as practice."
 }
