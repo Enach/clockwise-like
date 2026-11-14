@@ -92,6 +92,8 @@ func TestPAC71_EveryGuardedWriterRefusesAStaleSession(t *testing.T) {
 	add("UpsertPersonalBlocker", UpsertPersonalBlockerCtx(ctx, db, n, "p", "w"))
 	add("UpsertTeamAnalytics", UpsertTeamAnalyticsCtx(ctx, db, &TeamAnalyticsRow{ManagerUserID: u}))
 	add("UpsertUserProfile", UpsertUserProfileCtx(ctx, db, &UserProfile{UserID: u, IsManager: true}))
+	_, err = GetOrCreateUserProfileCtx(ctx, db, u) // PAC-80 item 2
+	add("GetOrCreateUserProfile", err)
 	add("SaveSettingsForUser", SaveSettingsForUserCtx(ctx, db, u, &Settings{}))
 	add("UpsertWorkspaceConnection", UpsertWorkspaceConnectionCtx(ctx, db, &WorkspaceConnection{UserID: u, Provider: "slack", AccessToken: "x"}))
 	_, err = InsertPersonalCalendarCtx(ctx, db, &PersonalCalendar{UserID: u})

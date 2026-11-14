@@ -18,7 +18,10 @@ type UserProfile struct {
 	UpdatedAt                  time.Time  `json:"updated_at"`
 }
 
-func GetOrCreateUserProfile(db DBTX, userID uuid.UUID) (*UserProfile, error) {
+// GetOrCreateUserProfile returns userID's profile, creating the row at its
+// defaults when there is none. On a request path call GetOrCreateUserProfileCtx,
+// which creates the row only under the in-request re-check (PAC-80 item 2).
+func GetOrCreateUserProfile(db Querier, userID uuid.UUID) (*UserProfile, error) {
 	_, err := db.Exec(`
 		INSERT INTO user_profiles (user_id) VALUES ($1)
 		ON CONFLICT (user_id) DO NOTHING`, userID)
@@ -28,7 +31,7 @@ func GetOrCreateUserProfile(db DBTX, userID uuid.UUID) (*UserProfile, error) {
 	return GetUserProfile(db, userID)
 }
 
-func GetUserProfile(db DBTX, userID uuid.UUID) (*UserProfile, error) {
+func GetUserProfile(db Querier, userID uuid.UUID) (*UserProfile, error) {
 	row := db.QueryRow(`
 		SELECT user_id, is_manager, detected_at, analytics_shared_with_manager, updated_at
 		FROM user_profiles WHERE user_id = $1`, userID)

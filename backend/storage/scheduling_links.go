@@ -483,10 +483,8 @@ var ErrLinkGone = errors.New("scheduling link is gone")
 // package variable only so that tests can shorten it; nothing else assigns it.
 var LinkLockTimeout = 10 * time.Second
 
-// AfterLinkPatchUpdate is a test seam (PAC-101 contract §5): it runs inside a
-// PATCH's transaction after the link UPDATE matched and before the co-host
-// steps. A non-nil error rolls the whole PATCH back. Nil in production.
-var AfterLinkPatchUpdate func(linkID uuid.UUID) error
+// The PATCH's test seam (afterLinkPatchUpdate, PAC-101 contract §5) lives in
+// test_seams.go (PAC-80 item 1).
 
 // setLinkLockTimeout sets the bound for the rest of q's transaction only:
 // set_config(..., true) is SET LOCAL, so it ends with the transaction, commit
@@ -615,7 +613,7 @@ func updateSchedulingLinkAndCoHosts(q Querier, id uuid.UUID, l *SchedulingLink, 
 	if result == nil {
 		return nil, ErrLinkGone
 	}
-	if f := AfterLinkPatchUpdate; f != nil {
+	if f, ok := afterLinkPatchUpdate.get(); ok {
 		if err := f(id); err != nil {
 			return nil, err
 		}

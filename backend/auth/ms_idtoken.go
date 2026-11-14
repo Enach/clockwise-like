@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -354,22 +355,45 @@ func (v *MicrosoftIDTokenVerifier) key(ctx context.Context, addr, kid string) (*
 	v.flights[addr] = f
 	v.mu.Unlock()
 
+	// PAC-80 item 5: the flight is always ended, in a defer, so a fetch that
+	// does not return normally can never leave it registered (waiters would
+	// otherwise block until their own deadlines, and every later sign-in for
+	// this key address with them, until a restart). Unless the fetch
+	// returned keys, it ends with an error and nothing is cached.
+	var keys map[string]*rsa.PublicKey
+	err := idTokenErr("keys fetch did not complete")
+	defer func() {
+		v.mu.Lock()
+		defer v.mu.Unlock()
+		if err == nil {
+			e := v.store(addr, keys, now)
+			if fresh {
+				e.lastRefetch = entry.lastRefetch
+			}
+		}
+		f.keys, f.err = keys, err
+		delete(v.flights, addr)
+		close(f.done)
+	}()
+
 	// The fetch serves every request waiting on it, so it does not end with
 	// this request's context; it is bounded by the identity-provider limit.
-	keys, err := v.fetch(context.WithoutCancel(ctx), addr)
-
-	v.mu.Lock()
-	if err == nil {
-		e := v.store(addr, keys, now)
-		if fresh {
-			e.lastRefetch = entry.lastRefetch
-		}
-	}
-	f.keys, f.err = keys, err
-	delete(v.flights, addr)
-	close(f.done)
-	v.mu.Unlock()
+	keys, err = v.fetchRecovering(context.WithoutCancel(ctx), addr)
 	return pick(keys, err, kid)
+}
+
+// fetchRecovering is fetch with a panic (for instance from a custom HTTP
+// client's transport) turned into the fetch's error for the leader and every
+// waiter (PAC-80 item 5, spec D-7). The panic is logged once, with the key
+// address and the panic value; the fetch handles no token material.
+func (v *MicrosoftIDTokenVerifier) fetchRecovering(ctx context.Context, addr string) (keys map[string]*rsa.PublicKey, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("microsoft id token: keys fetch from %s panicked: %v", addr, p)
+			keys, err = nil, idTokenErr("keys fetch panicked")
+		}
+	}()
+	return v.fetch(ctx, addr)
 }
 
 func pick(keys map[string]*rsa.PublicKey, err error, kid string) (*rsa.PublicKey, error) {

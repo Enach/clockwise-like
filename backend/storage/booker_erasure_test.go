@@ -198,15 +198,13 @@ func TestPAC40B_NotDueBookingVisibleUnderTheLockSurvives(t *testing.T) {
 	owner, link := erasureFixture(t, db, "pac40b-under-lock", now)
 	before := erasureState(t, db, link)
 	seen := false
-	prev := AfterBookerErasureRecheck
-	AfterBookerErasureRecheck = func(tx *sql.Tx, id uuid.UUID) error {
+	InstallAfterBookerErasureRecheck(t, func(tx *sql.Tx, id uuid.UUID) error {
 		seen = true
 		_, err := tx.Exec(`INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
 			VALUES ($1, 'Late Booker', 'late@booker.test', $2, $3, '')`,
 			id, now.Add(24*time.Hour), now.Add(25*time.Hour))
 		return err
-	}
-	t.Cleanup(func() { AfterBookerErasureRecheck = prev })
+	})
 
 	n, err := EraseLinkBookers(context.Background(), db, link, now)
 	if err != nil || n != 0 || !seen {

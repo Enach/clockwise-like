@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,7 +59,8 @@ func newManagerHandlersWithEngineFactory(db *sql.DB, newEngine func() ManagerWor
 
 func (h *managerHandlers) getProfile(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromCtx(r.Context())
-	p, err := storage.GetOrCreateUserProfile(h.db, userID)
+	// PAC-80 item 2: the default row is created under the session re-check.
+	p, err := storage.GetOrCreateUserProfileCtx(r.Context(), h.db, userID)
 	if err != nil {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
@@ -85,14 +87,18 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := storage.GetOrCreateUserProfile(h.db, userID)
-	if err != nil {
+	// PAC-80 item 2 (spec AC-5, AC-9): nothing is written into the account
+	// before the detection is spawned. The current profile is read under the
+	// re-check without creating a row; the default row, if missing, is created
+	// under the re-check after the spawn, so a session that goes stale at any
+	// point up to it leaves no profile row at all.
+	cur, err := storage.GetUserProfileCtx(r.Context(), h.db, userID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		logServerError(r, "db error", err, http.StatusInternalServerError)
 		writeError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	p.IsManager = body.IsManager
-	if body.IsManager && p.DetectedAt == nil {
+	if body.IsManager && (cur == nil || cur.DetectedAt == nil) {
 		// Trigger detection async
 		eng := h.newEngine()
 		// PAC-81 AC-A6: a tracked unit, awaited by the drain (own 30 s).
@@ -104,6 +110,13 @@ func (h *managerHandlers) postProfile(w http.ResponseWriter, r *http.Request) {
 			_, _ = eng.DetectTeam(ctx, userID)
 		})
 	}
+	p, err := storage.GetOrCreateUserProfileCtx(r.Context(), h.db, userID)
+	if err != nil {
+		logServerError(r, "db error", err, http.StatusInternalServerError)
+		writeError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	p.IsManager = body.IsManager
 	_ = storage.UpsertUserProfileCtx(r.Context(), h.db, p)
 
 	w.Header().Set("Content-Type", "application/json")

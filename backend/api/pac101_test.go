@@ -296,7 +296,7 @@ func TestPAC101_BookingPastTheBoundIs500AndStoresNothing(t *testing.T) {
 }
 
 // guarded returns a request for user carrying a current session guard, so the
-// write runs under the PAC-71 re-check (and GuardedCallHook).
+// write runs under the PAC-71 re-check (and the InstallGuardedCallHook seam).
 func (e *pac101Env) guarded(method, path string, user uuid.UUID, body string) *httptest.ResponseRecorder {
 	e.t.Helper()
 	gen, ok, err := storage.CurrentGeneration(e.db, user)
@@ -318,14 +318,13 @@ func TestPAC101_InviteRacingADeleteIs404AndWritesNothing(t *testing.T) {
 	invitee := e.user("pac101-ac8-invitee@example.com")
 	link := createSchedulingLinkRecord(t, owner, "pac101-ac8", "PAC-101 AC-8")
 	var once sync.Once
-	storage.GuardedCallHook = func(context.Context) {
+	defer storage.InstallGuardedCallHook(t, func(context.Context) {
 		once.Do(func() {
 			if ok, err := storage.DeleteSchedulingLink(e.db, link.ID); err != nil || !ok {
 				t.Errorf("inject delete: %v %v", ok, err)
 			}
 		})
-	}
-	defer func() { storage.GuardedCallHook = nil }()
+	})()
 	w := e.guarded(http.MethodPost, "/api/scheduling-links/"+link.ID.String()+"/hosts", owner, `{"email":"pac101-ac8-invitee@example.com"}`)
 	pac101NotFound(t, w, "invite racing a delete")
 	if _, found := e.hostRows(link.ID)[invitee]; found {
@@ -391,15 +390,14 @@ func TestPAC101_DeleteDuringAPatchWaitsForItsCoHosts(t *testing.T) {
 	}
 	p := "/api/scheduling-links/" + link.ID.String()
 	var deleted <-chan *httptest.ResponseRecorder
-	storage.AfterLinkPatchUpdate = func(uuid.UUID) error {
+	uninstall := storage.InstallAfterLinkPatchUpdate(t, func(uuid.UUID) error {
 		deleted = e.async(http.MethodDelete, p, owner, "")
 		pac101AwaitWaiter(t, e.db)
 		return nil
-	}
-	defer func() { storage.AfterLinkPatchUpdate = nil }()
+	})
 	w := e.do(http.MethodPatch, p, owner, `{"title":"patched","co_host_emails":["pac101-ac10-c@example.com"]}`)
 	e.mustStatus(w, http.StatusOK, "PATCH")
-	storage.AfterLinkPatchUpdate = nil
+	uninstall()
 	e.mustStatus(<-deleted, http.StatusNoContent, "delete that waited")
 	at, active := e.linkRow(link.ID)
 	if !at.Valid || active {
@@ -428,14 +426,13 @@ func TestPAC101_PatchAfterADeleteChangesNoCoHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	var once sync.Once
-	storage.GuardedCallHook = func(context.Context) {
+	defer storage.InstallGuardedCallHook(t, func(context.Context) {
 		once.Do(func() {
 			if ok, err := storage.DeleteSchedulingLink(e.db, link.ID); err != nil || !ok {
 				t.Errorf("inject delete: %v %v", ok, err)
 			}
 		})
-	}
-	defer func() { storage.GuardedCallHook = nil }()
+	})()
 	w := e.guarded(http.MethodPatch, "/api/scheduling-links/"+link.ID.String(), owner,
 		`{"title":"x","co_host_emails":["pac101-ac11-c@example.com"]}`)
 	pac101NotFound(t, w, "PATCH after a delete")
@@ -456,8 +453,7 @@ func TestPAC101_FailedCoHostStepChangesNothing(t *testing.T) {
 	if _, err := storage.AddLinkHost(e.db, link.ID, b, "accepted"); err != nil {
 		t.Fatal(err)
 	}
-	storage.AfterLinkPatchUpdate = func(uuid.UUID) error { return errors.New("pac101: co-host step failed") }
-	defer func() { storage.AfterLinkPatchUpdate = nil }()
+	storage.InstallAfterLinkPatchUpdate(t, func(uuid.UUID) error { return errors.New("pac101: co-host step failed") })
 	w := e.do(http.MethodPatch, "/api/scheduling-links/"+link.ID.String(), owner,
 		`{"title":"changed","active":false,"co_host_emails":["pac101-ac12-c@example.com"]}`)
 	if w.Code != http.StatusInternalServerError || strings.TrimSpace(w.Body.String()) != `{"error":"internal error"}` {
