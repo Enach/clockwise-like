@@ -9,7 +9,7 @@
   "contractDoc": "contracts/features/PAC-116.md",
   "specDoc": "docs/specs/PAC-116.md (draft 2026-11-14 on factory/pac-116-spec)",
   "sourceOfTruth": "Enach/clockwise-like",
-  "scope": "A Go test (no database) that parses every backend/storage/migrations/*.up.sql in version order and fails when a file takes a weaker lock on bookings, scheduling_links, scheduling_link_hosts or users before a stronger one in the same file (levels: contract md section 2), when it uses transaction control or CONCURRENTLY, or when a statement naming a covered table cannot be classified; no exemption mechanism. PAC-82 contract section 4.4 amended (revision 1.2). No runtime, migration, operator or HTTP change.",
+  "scope": "A Go test (no database) that parses every backend/storage/migrations/*.up.sql in version order and fails when a file takes a weaker lock on bookings, scheduling_links, scheduling_link_hosts or users before a stronger one in the same file (levels: contract md section 2), when it uses transaction control or CONCURRENTLY, or when a statement naming a covered table cannot be classified; no exemption mechanism. PAC-82 contract section 4.4 amended (dated note; PAC-82 stays at revision 1.1). No runtime, migration, operator or HTTP change.",
   "ownerDecisions": {
     "Q1": "covered tables: bookings, scheduling_links, scheduling_link_hosts, users (2026-11-14).",
     "Q2": "enforced by a Go test parsing storage/migrations/*.up.sql; no PostgreSQL reproduction test (2026-11-14).",
@@ -25,7 +25,7 @@
     "backend": {
       "url": "https://github.com/Enach/clockwise-like",
       "allowedPaths": [
-        "backend/storage/migration_lock_order.go (the pure checker and classifier, test-only use; may instead live in a _test.go file; package storage so it reads the embedded migrationFiles)",
+        "backend/storage/migration_lock_order_check_test.go (the pure checker and classifier; a _test.go file, so it is not compiled into the server or operator binaries: spec section 6 'the check is test-only code'; package storage so it reads the embedded migrationFiles)",
         "backend/storage/migration_lock_order_test.go (AC-1..AC-19: synthetic files, the classification-table cases, the run over every real up file)",
         "backend/storage/testdata/pac116/** (optional synthetic .sql fixtures)",
         "docs/plans/PAC-116.md",
@@ -78,7 +78,7 @@
     "AC-9  [unit] INSERT INTO t (t has an FK to users from an earlier file) then CREATE TABLE z (… REFERENCES users): fails on users.",
     "AC-10 [unit] DROP CONSTRAINT t_user_id_fkey / DROP COLUMN user_id / DROP TABLE t (t references users) after a weaker lock on users: fails.",
     "AC-11 [unit] DROP INDEX idx_bookings_link after a weaker lock on bookings: fails; DROP INDEX of an index no file created: fails 'cannot resolve index'.",
-    "AC-12 [unit] case, quoting, schema qualification, -- and nested /* */ comments, multi-line statements, missing final ';': same verdict and statement numbers as AC-1.",
+    "AC-12 [unit] case, quoting, schema qualification, -- and nested /* */ comments, multi-line statements, missing final ';': same verdict, statement numbers and modes as AC-1.",
     "AC-13 [unit] covered names and DDL text inside '…', E'…' and $$…$$ literals, and ';' inside comments: not statements, not table references.",
     "AC-14 [unit] DO/CALL body naming a covered table: fails 'cannot classify' unless level 3 already held; DO naming none (as 023): ignored; CREATE FUNCTION body: no lock.",
     "AC-15 [unit] unknown statement naming a covered table (GRANT … ON users, CREATE POLICY … ON bookings): fails 'cannot classify', same level-3 exception.",
@@ -86,11 +86,11 @@
     "AC-17 [unit] every real up file (001-039 today) in version order: passes; zero files found: fails.",
     "AC-18 [unit] failure message format of md section 5 (file, table, first statement number/mode/80 chars, each offending statement, fix line naming both remedies).",
     "AC-19 [unit] one table-driven case per row of md section 4 asserting the mode per table.",
-    "AC-20 [contract] PAC-82 md section 4.4 carries the dated 'Amended by PAC-116' block (row 'save / DDL on a live-read table' and the migrations rule), approved text unchanged; PAC-82.yaml at revision 1.2 with an amendments entry."
+    "AC-20 [contract] PAC-82 md section 4.4 carries the dated 'Amended by PAC-116' block (row 'save / DDL on a live-read table' and the migrations rule), approved text unchanged; PAC-82.yaml has an amendments entry and keeps contractRevision 1.1."
   ],
   "documentsAmended": [
-    "contracts/features/PAC-82.md section 4.4: 'Amended by PAC-116 (2026-11-14)' block after the deadlock table: row 'save / DDL on a live-read table', binding migrations rule R1-R3 (pointing at PAC-116.md), cross-table advice (spec OQ-1). Header revision line notes 1.2.",
-    "contracts/features/PAC-82.yaml: contractRevision 1.1 -> 1.2 (description-only amendment, contractHash unchanged), status line, amendments entry."
+    "contracts/features/PAC-82.md section 4.4: 'Amended by PAC-116 (2026-11-14)' block after the deadlock table: row 'save / DDL on a live-read table', binding migrations rule R1-R3 (pointing at PAC-116.md), cross-table advice (spec OQ-1). Header revision line notes the amendment.",
+    "contracts/features/PAC-82.yaml: status line and amendments entry; contractRevision stays 1.1 (amendment notes do not bump, PAC-14 convention; contractHash unchanged)."
   ],
   "resolvesFindings": [],
   "resolvesUncertain": [],
@@ -111,5 +111,5 @@
   "followUps": [
     "Owner: OQ-1 (cross-table lock order); if enforced, a follow-up ticket amends this contract and PAC-82 section 4.4."
   ],
-  "rollback": "Revert the stage-4 test PR and this contract PR; nothing at runtime, in storage or on the wire changes. PAC-82 returns to revision 1.1."
+  "rollback": "Revert the stage-4 test PR and this contract PR; nothing at runtime, in storage or on the wire changes. the PAC-82 amendment note and amendments entry revert with it."
 }

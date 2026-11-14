@@ -11,9 +11,9 @@
 - **Fragment**: `contracts/openapi/paths/booking.yaml` only.
 - **Base**: `origin/main` `d520775` (bundle of main recorded in the manifest).
 - **Revision**: 1.1 (revision 1 by contract-author, 1.1 after the challenge below,
-  same day; see "Challenge — 2026-11-14"). Revision 1.2 (2026-11-14): PAC-116
-  amendment note in §4.4 (migrations rule, row "save / DDL on a live-read
-  table"); no fragment change, `contractHash` unchanged.
+  same day; see "Challenge — 2026-11-14"). Amended by PAC-116 (2026-11-14):
+  dated note in §4.4 (migrations rule, row "save / DDL on a live-read table");
+  no revision bump, no fragment change, `contractHash` unchanged.
 
 ## 0. The rule this contract fixes
 
@@ -276,7 +276,7 @@ waits at most its own 10 s bound (PAC-101 §2.4). AC-24 asserts no `40P01`.
 
 - **Amended by PAC-116 (2026-11-14, spec `docs/specs/PAC-116.md`, contract
   `contracts/features/PAC-116.md`; owner decisions Q1–Q3 of 2026-11-14;
-  revision 1.2).** The table above has no row for a migration. Migrations run
+  no revision bump).** The table above has no row for a migration. Migrations run
   against a database that may be serving traffic: at server start with other
   backends still live, and from `paceday-operator encryption` (every
   subcommand calls `storage.Migrate`, `cmd/paceday-operator/encryption.go:181`).
@@ -284,7 +284,7 @@ waits at most its own 10 s bound (PAC-101 §2.4). AC-24 asserts no `40P01`.
 
   | Pair | Wait? | Cycle? |
   |---|---|---|
-  | save / DDL on a live-read table (a migration touching `bookings`, `scheduling_links`, `scheduling_link_hosts` or `users`) | the save waits at step 2 (link `FOR SHARE`), at its reads or at its insert while the migration holds a conflicting lock; the migration waits for the save's locks to be released | No, **under the migrations rule below**. Without it: yes. Example: a migration holding SHARE on `bookings` (`CREATE INDEX`) asks for ACCESS EXCLUSIVE (`ALTER TABLE`) while a save holding ACCESS SHARE (step 6–8 reads) waits for ROW EXCLUSIVE (step 9 insert). Both wait on each other, and one is aborted with `40P01` |
+  | save / DDL on a live-read table (a migration touching `bookings`, `scheduling_links`, `scheduling_link_hosts` or `users`) | the save waits at step 2 (link `FOR SHARE`), at its reads or at its insert while the migration holds a conflicting lock; the migration waits for the save's locks to be released | No cycle on that one table, **under the migrations rule below** (a migration that locks two of these tables can still form a cross-table cycle: see "Not covered"). Without the rule: yes. Example: a migration holding SHARE on `bookings` (`CREATE INDEX`) asks for ACCESS EXCLUSIVE (`ALTER TABLE`) while a save holding ACCESS SHARE (step 6–8 reads) waits for ROW EXCLUSIVE (step 9 insert). Both wait on each other, and one is aborted with `40P01` |
 
   **Migrations rule (binding).** Consider a migration file that touches one
   of those four tables, where the table existed before the file runs. It takes
