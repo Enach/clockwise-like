@@ -56,7 +56,7 @@ func (f *fakeBookingFlow) CollectiveSlotsDays(ctx context.Context, link *storage
 	return out, nil
 }
 
-func (f *fakeBookingFlow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes string) (*storage.Booking, error) {
+func (f *fakeBookingFlow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes, _ string) (*storage.Booking, error) {
 	if link != nil {
 		f.confirmLinkID = link.ID
 	}

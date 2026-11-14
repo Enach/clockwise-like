@@ -433,12 +433,19 @@ func (e *BookingEngine) calendarClientForUser(ctx, dbCtx context.Context, userID
 // on the link, that the link is still active and not deleted. When it is not,
 // the result is ErrLinkGone: nothing is stored and no completion unit starts.
 // A wait for that lock is bounded by storage.LinkLockTimeout (a 500 past it).
+//
+// PAC-82: the save decides the booking again under its advisory keys
+// (storage.SaveBookingOnLiveLink). idempotencyKey is the request's
+// Idempotency-Key ("" for none). A save that wrote nothing returns one of
+// ErrSlotTaken, ErrHostBusy, ErrLinkExhausted, ErrIdempotencyKeyReused or
+// ErrLinkGone; a replay returns the stored booking with Replayed set. Neither
+// starts a completion unit (spec D-10).
 func (e *BookingEngine) ConfirmBooking(
 	ctx context.Context,
 	link *storage.SchedulingLink,
 	bookerName, bookerEmail string,
 	start, end time.Time,
-	notes string,
+	notes, idempotencyKey string,
 ) (*storage.Booking, error) {
 	// Re-verify availability.
 	hosts, err := storage.GetAcceptedHosts(storage.Bind(ctx, e.DB), link.ID)
@@ -493,6 +500,8 @@ func (e *BookingEngine) ConfirmBooking(
 		StartTime:   start,
 		EndTime:     end,
 		Notes:       notes,
+
+		IdempotencyKey: idempotencyKey,
 	})
 	if errors.Is(err, storage.ErrLinkGone) {
 		// PAC-101: the link was deleted or paused before the save took its
@@ -500,8 +509,19 @@ func (e *BookingEngine) ConfirmBooking(
 		// connection is already released.
 		return nil, ErrLinkGone
 	}
+	for _, refusal := range saveRefusals {
+		if errors.Is(err, refusal) {
+			// PAC-82: decided again under the save's keys; nothing stored,
+			// no completion unit.
+			return nil, refusal
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create booking: %w", err)
+	}
+	if booking.Replayed {
+		// PAC-82: the booking this key saved; nothing written or sent.
+		return booking, nil
 	}
 
 	done := e.startCompletion(link, booking, hosts)
@@ -559,6 +579,16 @@ func insertBookingOnConn(ctx context.Context, conn *sql.Conn, b *storage.Booking
 // took its lock on the link. Nothing was written and no completion unit was
 // started. The public booking handler answers it with the 404.
 var ErrLinkGone = storage.ErrLinkGone
+
+// The PAC-82 outcomes of a save that wrote nothing (storage's sentinels).
+var (
+	ErrSlotTaken            = storage.ErrSlotTaken
+	ErrHostBusy             = storage.ErrHostBusy
+	ErrLinkExhausted        = storage.ErrLinkExhausted
+	ErrIdempotencyKeyReused = storage.ErrIdempotencyKeyReused
+)
+
+var saveRefusals = []error{ErrSlotTaken, ErrHostBusy, ErrLinkExhausted, ErrIdempotencyKeyReused}
 
 // beforeBookingConn is a test seam: it runs just before the insert's
 // connection is acquired.

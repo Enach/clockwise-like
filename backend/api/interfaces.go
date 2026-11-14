@@ -62,7 +62,7 @@ type BookingFlow interface {
 	// calendar read per host (PAC-88 contract section 2.3): out[i] is
 	// CollectiveSlots(days[i]).
 	CollectiveSlotsDays(ctx context.Context, link *storage.SchedulingLink, days []time.Time, durationMinutes int) ([][]engine.AvailableSlot, error)
-	ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes string) (*storage.Booking, error)
+	ConfirmBooking(ctx context.Context, link *storage.SchedulingLink, bookerName, bookerEmail string, start, end time.Time, notes, idempotencyKey string) (*storage.Booking, error)
 }
 
 type ConferenceEventClient interface {

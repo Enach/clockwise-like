@@ -27,6 +27,7 @@ Highest priority: this is the suite's most valuable journey.
 | `booking-slot-list` | the slots container | To assert "no times available" distinctly from "the slots have not loaded yet". |
 | `booking-confirmation` | the confirmation card | So the success assertion does not depend on the copy "You are confirmed!". |
 | `booking-error` | the `submitError` paragraph | Same, for the 409/410/422 branches. |
+| `booking-try-again` | the one "Try again" button shown with "may have been saved" after a booking whose answer was lost (PAC-82 AC-26) | `tests/public-booking.spec.ts` PAC-82 AC-28 presses it to re-send the same attempt. Provided by smart-calendar-flow in the PAC-82 web PR. |
 
 
 ## 1a. PAC-88 booking page time zone — `src/pages/PublicBooking.tsx`, `src/components/booking/**`

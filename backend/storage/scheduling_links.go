@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lib/pq"
 )
 
@@ -71,6 +72,13 @@ type Booking struct {
 	Status      string    `json:"status"`
 	Notes       string    `json:"notes"`
 	CreatedAt   time.Time `json:"created_at"`
+	// IdempotencyKey is the optional key of the public booking attempt that
+	// saved the row (PAC-82); "" is none. Never returned in any response.
+	IdempotencyKey string `json:"-"`
+	// Replayed marks a booking returned for a request that carried the key
+	// of this already-saved booking with the same details: nothing was
+	// written (PAC-82). Never part of a response.
+	Replayed bool `json:"-"`
 }
 
 // BookingEvent links a booking to a specific host's calendar event ID.
@@ -514,25 +522,53 @@ func lockLiveLinkForShare(q Querier, id uuid.UUID) error {
 }
 
 // SaveBookingOnLiveLink is the booking save at the commit point (PAC-101
-// contract §3.1 step 5): one explicit transaction on conn, which sets the
-// link-lock bound for itself, then inserts the booking only while the link is
-// active and not deleted, holding the link FOR SHARE from the same statement.
-// Zero rows is ErrLinkGone, after a rollback: nothing is stored. wrap, when
-// not nil, wraps the transaction for the insert statement (the PAC-90 seam).
+// contract section 3.1 step 5, as replaced by PAC-82 contract section 3): one
+// explicit READ COMMITTED transaction on conn that sets the link-lock bound
+// for itself, locks the link FOR SHARE while it is active and not deleted,
+// takes the save's advisory keys (BookingAdvisoryKeys) one statement each in
+// ascending order, and only then decides the booking again in separate
+// statements: the idempotency key (replay or key reused), the link's use
+// limit, the overlap with the link's own bookings and with every rule host's
+// bookings on any link. Each outcome is distinct and never nil, nil:
+// ErrLinkGone, ErrIdempotencyKeyReused, ErrLinkExhausted, ErrSlotTaken,
+// ErrHostBusy, a booking with Replayed set (nothing written), or the saved
+// booking. wrap, when not nil, wraps the transaction for the insert statement
+// only (the PAC-90 seam).
 //
 // There is deliberately no deferred rollback: on a panic the caller cancels
 // ctx, which makes database/sql close any open row and roll the transaction
 // back; a deferred Rollback would instead wait on a row the panic left open
 // (PAC-90 item 1, challenge C-1).
 func SaveBookingOnLiveLink(ctx context.Context, conn *sql.Conn, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
+	// READ COMMITTED (the default): every statement after a wait takes a new
+	// snapshot and sees the winner (contract challenge C-2).
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	booking, err := saveBookingInTx(tx, b, wrap)
+	booking, err := saveBookingInTx(ctx, tx, b, wrap)
+	if errors.Is(err, errBookingKeyConflict) {
+		// Step 9: a same-key request with other details took other keys and
+		// committed first; resolve against its stored row (step 6's rule).
+		_ = tx.Rollback()
+		replay, reused, lerr := ResolveIdempotencyKey(conn, b.LinkID, b.IdempotencyKey, b)
+		switch {
+		case lerr != nil:
+			return nil, lerr
+		case replay != nil:
+			return replay, nil
+		case reused:
+			return nil, ErrIdempotencyKeyReused
+		}
+		return nil, errors.New("idempotency key conflict without a stored row")
+	}
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
+	}
+	if booking.Replayed {
+		_ = tx.Rollback()
+		return booking, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -540,32 +576,242 @@ func SaveBookingOnLiveLink(ctx context.Context, conn *sql.Conn, b *Booking, wrap
 	return booking, nil
 }
 
-func saveBookingInTx(tx *sql.Tx, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
+// The outcomes of a save that wrote nothing (PAC-82 contract section 3).
+var (
+	// ErrSlotTaken: a non-cancelled booking of the same link overlaps the
+	// slot (the 409 taken).
+	ErrSlotTaken = errors.New("slot already booked on this link")
+	// ErrHostBusy: a non-cancelled booking on another link of a rule host
+	// overlaps the slot (the 409 host_busy).
+	ErrHostBusy = errors.New("a host is booked at that time")
+	// ErrLinkExhausted: the link's use limit is reached (the 410).
+	ErrLinkExhausted = errors.New("link use limit reached")
+	// ErrIdempotencyKeyReused: the key is stored on this link with other
+	// details, or 24 hours ago or more (the key-reused 409).
+	ErrIdempotencyKeyReused = errors.New("idempotency key already used")
+)
+
+// errBookingKeyConflict is the insert's 23505 on (link, key).
+var errBookingKeyConflict = errors.New("idempotency key conflict")
+
+// AfterBookingLocks is a test seam (PAC-82 contract section 6): it runs inside
+// the save after every advisory key is held and before the re-checks. Nil in
+// production.
+var AfterBookingLocks func(b *Booking)
+
+// AfterBookingInsert is a test seam (PAC-82 contract section 6): it runs
+// after the insert and before COMMIT; a non-nil error rolls the save back and
+// is returned. Nil in production.
+var AfterBookingInsert func(b *Booking) error
+
+// BookingIdempotencyTTL is how long a stored key replays (PAC-82 D-7).
+const BookingIdempotencyTTL = 24 * time.Hour
+
+// MatchesAttempt reports whether the stored booking b has the details of the
+// attempt a (PAC-82 contract section 1.2): name and email byte for byte (the
+// caller trims them), start and end as instants, notes byte for byte.
+func (b *Booking) MatchesAttempt(a *Booking) bool {
+	return b.BookerName == a.BookerName && b.BookerEmail == a.BookerEmail &&
+		b.StartTime.Equal(a.StartTime) && b.EndTime.Equal(a.EndTime) && b.Notes == a.Notes
+}
+
+// ResolveIdempotencyKey decides a keyed attempt against the booking stored on
+// linkID with key (contract sections 1.2 and 3 step 6): none stored is nil,
+// false; stored with the attempt's details and younger than 24 hours by the
+// database clock is that booking with Replayed set; anything else is
+// reused = true.
+func ResolveIdempotencyKey(db RowQuerier, linkID uuid.UUID, key string, attempt *Booking) (replay *Booking, reused bool, err error) {
+	if key == "" {
+		return nil, false, nil
+	}
+	var stored Booking
+	var expired bool
+	err = db.QueryRowContext(context.Background(), `
+		SELECT id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at,
+		       now() - created_at >= make_interval(secs => $3)
+		FROM bookings WHERE link_id = $1 AND idempotency_key = $2`,
+		linkID, key, BookingIdempotencyTTL.Seconds()).Scan(
+		&stored.ID, &stored.LinkID, &stored.BookerName, &stored.BookerEmail,
+		&stored.StartTime, &stored.EndTime, &stored.Status, &stored.Notes, &stored.CreatedAt, &expired)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if expired || !stored.MatchesAttempt(attempt) {
+		return nil, true, nil
+	}
+	stored.IdempotencyKey = key
+	stored.Replayed = true
+	return &stored, false, nil
+}
+
+// bookingLimit is the link's use limit: 1 for single_use, max_uses for a
+// recurring link that has one; limited is false otherwise.
+func bookingLimit(usageType string, maxUses sql.NullInt64) (limit int64, limited bool) {
+	switch {
+	case usageType == "single_use":
+		return 1, true
+	case usageType == "recurring" && maxUses.Valid:
+		return maxUses.Int64, true
+	}
+	return 0, false
+}
+
+func saveBookingInTx(ctx context.Context, tx *sql.Tx, b *Booking, wrap func(Querier) Querier) (*Booking, error) {
+	// 1. The PAC-101 bound, for every wait of this transaction.
 	if err := setLinkLockTimeout(tx); err != nil {
 		return nil, err
 	}
-	var q Querier = tx
-	if wrap != nil {
-		q = wrap(tx)
-	}
-	row := q.QueryRowContext(context.Background(), `
-		INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes)
-		SELECT l.id, $2::text, $3::text, $4::timestamptz, $5::timestamptz, $6::text
-		FROM scheduling_links l
-		WHERE l.id = $1 AND l.active AND l.deleted_at IS NULL
-		FOR SHARE OF l
-		RETURNING id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
-	`, b.LinkID, b.BookerName, b.BookerEmail, b.StartTime, b.EndTime, b.Notes)
-	var out Booking
-	err := row.Scan(&out.ID, &out.LinkID, &out.BookerName, &out.BookerEmail,
-		&out.StartTime, &out.EndTime, &out.Status, &out.Notes, &out.CreatedAt)
+	// 2. The link FOR SHARE, live only.
+	var owner uuid.UUID
+	var usageType string
+	var maxUses sql.NullInt64
+	err := tx.QueryRowContext(ctx, `
+		SELECT owner_user_id, usage_type, max_uses FROM scheduling_links
+		WHERE id = $1 AND active AND deleted_at IS NULL FOR SHARE`, b.LinkID).Scan(&owner, &usageType, &maxUses)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrLinkGone
 	}
 	if err != nil {
 		return nil, err
 	}
+	// 3. The rule host set (the PAC-72 accepted hosts) and the lock host set
+	// (owner and accepted co-hosts), plain reads.
+	ruleHosts, lockHosts, err := bookingHostSets(ctx, tx, b.LinkID, owner)
+	if err != nil {
+		return nil, err
+	}
+	limit, useLimited := bookingLimit(usageType, maxUses)
+	// 4. The advisory keys, one statement per key, ascending. A statement
+	// taking several keys is forbidden (contract section 3 step 4).
+	for _, k := range BookingAdvisoryKeys(lockHosts, b.LinkID, useLimited, b.StartTime, b.EndTime) {
+		q := `SELECT pg_advisory_xact_lock($1::int, $2::int)`
+		if k.Shared {
+			q = `SELECT pg_advisory_xact_lock_shared($1::int, $2::int)`
+		}
+		if _, err := tx.ExecContext(ctx, q, k.Class, k.ObjID); err != nil {
+			return nil, err
+		}
+	}
+	// 5. The seam.
+	if f := AfterBookingLocks; f != nil {
+		f(b)
+	}
+	// 6. The key, decided under the keys. Steps 6-8 are separate statements
+	// issued after the last lock statement returned (challenge C-2).
+	if b.IdempotencyKey != "" {
+		replay, reused, err := ResolveIdempotencyKey(tx, b.LinkID, b.IdempotencyKey, b)
+		if err != nil {
+			return nil, err
+		}
+		if replay != nil {
+			return replay, nil
+		}
+		if reused {
+			return nil, ErrIdempotencyKeyReused
+		}
+	}
+	// 7. The use limit, every status counted (PAC-40 D-6).
+	if useLimited {
+		var n int64
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM bookings WHERE link_id = $1`, b.LinkID).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n >= limit {
+			return nil, ErrLinkExhausted
+		}
+	}
+	// 8. The overlap: this link's bookings, then the rule hosts' bookings on
+	// any link they own or co-host as accepted (the bookings half of the
+	// PAC-72 rule, GetBusyBookingsForUser's predicate; raw overlap, no
+	// buffers). If that rule ever widens bookings, the buckets must cover
+	// the widened interval.
+	var taken bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM bookings
+		WHERE link_id = $1 AND status <> 'cancelled'
+		  AND start_time < $3 AND end_time > $2)`, b.LinkID, b.StartTime, b.EndTime).Scan(&taken); err != nil {
+		return nil, err
+	}
+	if taken {
+		return nil, ErrSlotTaken
+	}
+	if len(ruleHosts) > 0 {
+		var busy bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (SELECT 1 FROM bookings bk
+			JOIN scheduling_links l ON l.id = bk.link_id
+			WHERE bk.status <> 'cancelled'
+			  AND bk.start_time < $3 AND bk.end_time > $2
+			  AND (l.owner_user_id = ANY($1::uuid[])
+			       OR EXISTS (SELECT 1 FROM scheduling_link_hosts h
+			                  WHERE h.link_id = l.id AND h.user_id = ANY($1::uuid[]) AND h.status = 'accepted')))`,
+			pq.Array(ruleHosts), b.StartTime, b.EndTime).Scan(&busy); err != nil {
+			return nil, err
+		}
+		if busy {
+			return nil, ErrHostBusy
+		}
+	}
+	// 9. The insert, carrying the key when there is one.
+	var q Querier = tx
+	if wrap != nil {
+		q = wrap(tx)
+	}
+	var key sql.NullString
+	if b.IdempotencyKey != "" {
+		key = sql.NullString{String: b.IdempotencyKey, Valid: true}
+	}
+	row := q.QueryRowContext(ctx, `
+		INSERT INTO bookings (link_id, booker_name, booker_email, start_time, end_time, notes, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, link_id, booker_name, booker_email, start_time, end_time, status, notes, created_at
+	`, b.LinkID, b.BookerName, b.BookerEmail, b.StartTime, b.EndTime, b.Notes, key)
+	var out Booking
+	err = row.Scan(&out.ID, &out.LinkID, &out.BookerName, &out.BookerEmail,
+		&out.StartTime, &out.EndTime, &out.Status, &out.Notes, &out.CreatedAt)
+	if isUniqueViolationOn(err, "bookings_link_idempotency_key") {
+		return nil, errBookingKeyConflict
+	}
+	if err != nil {
+		return nil, err
+	}
+	out.IdempotencyKey = b.IdempotencyKey
+	if f := AfterBookingInsert; f != nil {
+		if err := f(b); err != nil {
+			return nil, err
+		}
+	}
 	return &out, nil
+}
+
+// bookingHostSets reads the link's accepted hosts (GetAcceptedHosts' rule
+// host set, as strings) and the lock host set: the owner and those hosts.
+func bookingHostSets(ctx context.Context, tx *sql.Tx, linkID, owner uuid.UUID) (ruleHosts []string, lockHosts []uuid.UUID, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT user_id FROM scheduling_link_hosts WHERE link_id = $1 AND status = 'accepted'`, linkID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	ruleHosts = []string{}
+	lockHosts = []uuid.UUID{owner}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, nil, err
+		}
+		ruleHosts = append(ruleHosts, id.String())
+		lockHosts = append(lockHosts, id)
+	}
+	return ruleHosts, lockHosts, rows.Err()
+}
+
+// isUniqueViolationOn reports whether err is SQLSTATE 23505 on constraint.
+func isUniqueViolationOn(err error, constraint string) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == constraint
 }
 
 // inviteLinkHostLocked is InviteLinkHost behind the link lock: link gone is

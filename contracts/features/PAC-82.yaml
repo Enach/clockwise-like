@@ -1,0 +1,153 @@
+{
+  "featureId": "PAC-82",
+  "linearIssueUrl": "https://linear.app/paceday/issue/PAC-82",
+  "status": "contract revision 1.1, challenged 2026-11-14 (accept-with-changes, applied); awaiting stage 3 (plan)",
+  "contractRevision": "1.1",
+  "contractHash": "85187c9448b95f89e3ce05ac334d53ec9cf1bb0f896bb89d788ce46726adbdd4",
+  "contractHashOf": "sha256 of contracts/openapi/openapi.yaml (LF) after `make openapi WEB=/nonexistent` in an LF clone of factory/pac-82-k at 0fb0480 (golang:1.25-bookworm, oapi-codegen v2.4.1, api-gate pattern, host repo mounted read-only), 2026-11-14, base origin/main d520775 (bundle 3fa2668c6ef88504c4d4357e250f94443133333c2f425b0fe7701151fe301d7d). make openapi rc 0 (132 operations, 12 generated); regenerated contracts/openapi/openapi.yaml and backend/api/gen/paceday.gen.go (CreatePublicBookingParams.IdempotencyKey, BookingIdempotencyKeyReusedError, PublicBookingConflict union; nothing renamed); make openapi-check WEB=/nonexistent rc 0; cd backend && go build ./... ok. Revision 1.1 changed no fragment text after 0fb0480 (the challenge's fixes went into the fragment before that commit and into the md/yaml after it), so this is revision 1.1's hash. Reproduce with: git show <commit>:contracts/openapi/openapi.yaml | sha256sum (LF blob) and python3 scripts/openapi_assemble.py --check. If main's bundle moves before stage 4 merges, the stage-4 PR re-runs make openapi on its base and records the new hash here, changing nothing else.",
+  "contractDoc": "contracts/features/PAC-82.md",
+  "specDoc": "docs/specs/PAC-82.md (accepted 2026-11-14 on factory/pac-82-spec 65e1fa2)",
+  "sourceOfTruth": "Enach/clockwise-like",
+  "scope": "createPublicBooking only: (1) concurrent bookings decided again inside the save under ordered transaction-scoped advisory locks per (host, 15-minute UTC bucket) and per use-limited link, with in-transaction re-checks (taken / host_busy 409, 410); (2) optional Idempotency-Key header: 24 h replay 201 of the stored booking, key-reused 409, invalid-key 400; (3) CORS allows the header; (4) migration 038 (nullable key column, format CHECK, partial unique index); (5) stale contract sentences removed. Issue item 3 split to PAC-108.",
+  "interfaceKind": "HTTP: one header parameter, one 400 message, the 409 schema becomes a oneOf (slot refusal | key reused), descriptions. Non-HTTP and binding: the save transaction (md section 3), advisory key space, buckets, fine/coarse cap and lock order (section 4), migration DDL (section 5), test seams (section 6).",
+  "mergeAfter": "origin/main d520775 (PAC-101 b98b6a8, PAC-40 part B d520775). Migration number 038 (main's latest 037; no origin/* branch carries 038+ on 2026-11-14). Server before web (CORS).",
+  "repositories": {
+    "backend": {
+      "url": "https://github.com/Enach/clockwise-like",
+      "allowedPaths": [
+        "backend/storage/migrations/038_booking_idempotency_key.{up,down}.sql (md section 5, verbatim DDL)",
+        "backend/storage/scheduling_links.go (SaveBookingOnLiveLink / saveBookingInTx: the section 3 transaction; key lookup by (link, key); Booking.IdempotencyKey; the new outcome errors; AfterBookingLocks, AfterBookingInsert seams)",
+        "backend/storage/booking_locks.go (new: BookingAdvisoryKeys, BookingKeyCap, the h32 derivation) and its _test.go",
+        "backend/engine/booking.go (ConfirmBooking gains the key; replay and refusal outcomes start no completion unit; PAC-90 release paths kept)",
+        "backend/api/handlers_booking.go (header parsing and 400; keyed order of evaluation, md section 1.1; replay lookup; re-lookup before a keyed 409/410; mapping of the new outcomes; replay 201 via confirmation())",
+        "backend/api/middleware.go (corsMiddleware Access-Control-Allow-Headers value only)",
+        "backend/api/*_test.go, backend/engine/*_test.go, backend/storage/*_test.go fakes of BookingFlow (signature only) and new pac82 tests",
+        "backend/storage/pac101_test.go (TestPAC101_SavesOnOneLinkDoNotWaitForEachOther amended per AC-5/AC-8, not deleted)",
+        "e2e/tests/** (AC-20, AC-28)",
+        "docs/plans/PAC-82.md",
+        "contracts/features/PAC-82.{md,yaml} (contractHash field and stage-4 notes only)"
+      ],
+      "forbiddenPaths": [
+        "contracts/openapi/** except through a contract revision; openapi.yaml and backend/api/gen by hand",
+        "any other migration; an exclusion constraint; btree_gist",
+        "a bigint advisory key, any class other than 8201-8203, a session-level advisory lock, a single statement taking several advisory keys",
+        "REPEATABLE READ / SERIALIZABLE on the save",
+        "PAC-81/PAC-90 budget code and the commit point's position; PAC-101's lock_timeout scoping",
+        "any provider call inside the save transaction",
+        "mcp/ (unaffected)"
+      ]
+    },
+    "frontend": {
+      "url": "https://github.com/Enach/smart-calendar-flow",
+      "allowedPaths": [
+        "src/api/generated/** (regeneration only, against this bundle)",
+        "src/api/client.ts (requestApi: optional extra headers; lostBooking message and its retry flag for booking)",
+        "src/api/schedulingLinks.ts (bookSlot: Idempotency-Key per attempt)",
+        "src/pages/PublicBooking.tsx and its tests (attempt key, Try again, AC-25..AC-27)",
+        "src/pages/PublicBooking.pac83.test.tsx (AC-21 test amended by AC-26, not deleted)"
+      ],
+      "forbiddenPaths": [
+        "storing the key beyond page memory (localStorage, sessionStorage, cookies, URL)",
+        "any automatic resend (PAC-83 AC-25)"
+      ]
+    }
+  },
+  "operationsAdded": [],
+  "operationsChanged": [
+    {"operationId": "createPublicBooking", "change": "parameter Idempotency-Key (components/parameters/BookingIdempotencyKey); description: concurrency rule, idempotent retry, keyed order, CORS; stale sentences removed (API-051 'still open', 'Not guaranteed', PAC-101 'never made to wait', the 201 retry paragraph); 201 replay; 400 'invalid Idempotency-Key header' and keyed placement of 'invalid duration'; 404 keyed retry on a gone link; 409 schema PublicBookingConflict (oneOf) and concurrent loser; 410 concurrent loser; 500 wait on another save"}
+  ],
+  "componentsChanged": [
+    "parameters.BookingIdempotencyKey (new)",
+    "schemas.BookingIdempotencyKeyReusedError (new)",
+    "schemas.PublicBookingConflict (new, oneOf BookingSlotUnavailableError | BookingIdempotencyKeyReusedError)",
+    "schemas.BookingSlotUnavailableError (description only)"
+  ],
+  "migration": "038_booking_idempotency_key: bookings.idempotency_key TEXT NULL; CHECK (idempotency_key IS NULL OR idempotency_key ~ '^[A-Za-z0-9_-]{16,255}$'); UNIQUE INDEX bookings_link_idempotency_key ON bookings (link_id, idempotency_key) WHERE idempotency_key IS NOT NULL. Builds on any existing data (all NULL), verified on PG 16.15 with duplicate and overlapping rows. Down drops index, check, column; rows survive.",
+  "nonHttpInterface": {
+    "saveTransaction": "md section 3: READ COMMITTED; set_config lock_timeout; link FOR SHARE (404 link gone); host sets; advisory keys one statement each, ascending; AfterBookingLocks; key lookup (replay / key reused); use-limit count (410); overlap re-check (taken, then host_busy, the PAC-72 bookings rule); insert with key (23505 -> resolve as the lookup); commit -> completion unit. Re-checks are separate statements after the last lock statement.",
+    "advisoryKeys": "two-int form, classes 8201 host-wide (shared fine / exclusive coarse), 8202 (host, bucket) exclusive, 8203 link uses exclusive; objid = first 4 bytes of SHA-256('pac82:host:'|'pac82:bucket:'|'pac82:uses:' + canonical uuid [+ ':' + bucket]) as big-endian int32; bucket = floor(unix_us / 900e6), last bucket from end - 1 us.",
+    "cap": "fine when |lock hosts| x |buckets| <= BookingKeyCap (64), else coarse.",
+    "waitBound": "storage.LinkLockTimeout (10 s, per lock acquisition) covers advisory exclusive, advisory shared and unique-index waits (55P03), observed on PG 16.15 (spec OQ-2 answered)."
+  },
+  "gates": {
+    "contractApproval": "contract-challenger review 2026-11-14 (accept-with-changes, applied in revision 1.1)",
+    "assembler": "make openapi WEB=/nonexistent rc 0 and make openapi-check WEB=/nonexistent rc 0 in an LF clone at 0fb0480 ('bundle is in sync (110 paths)', 'MIGRATION.md covers all 132 operations (12 generated)', 'backend/api/gen matches the contract'); cd backend && go build ./... ok",
+    "webGate": "Stage 4: regenerate smart-calendar-flow src/api/generated against this bundle; the cross-repo openapi-check must pass on the pair.",
+    "stage4": "make verify in both repos (factory section 3); every DB-backed test in acceptanceTests ran against real PostgreSQL ('could not run' stated, never silent); the PR body states the bundle sha256.",
+    "defaultBranch": "main",
+    "ci": "GitHub Actions .github/workflows/ci.yml runs make verify",
+    "deployment": "local-only"
+  },
+  "acceptanceTests": [
+    "AC-1  [unit] two requests for one slot on an unlimited link released together at afterBookingCommit: one 201, one 409 (taken specific / generic body), one row, one completion unit (one event per host, one email).",
+    "AC-2  [unit] links L1, L2 sharing host H (owner of one, accepted co-host of the other; and owner of both), overlapping (not equal) slots, released together: one 201, one 409 (host_busy specific), one row.",
+    "AC-3  [unit] AC-1 with 20 requests: one 201, nineteen 409, one row, no 500, no 40P01, no 55P03.",
+    "AC-4  [unit] R held at AfterBookingLocks; S (overlapping, shared host) waits (pg_locks advisory not granted); R commits -> S 409, nothing written; R rolled back via AfterBookingInsert -> S 201.",
+    "AC-5  [unit, AMENDED by contract section 4.3] unlimited link, two FINE saves whose slots are >= 15 min apart (BookingAdvisoryKeys asserts disjoint 8202 sets first) held at AfterBookingLocks at once: no advisory waiter. Plus: a COARSE save (BookingKeyCap shortened, or hosts x buckets > 64) does wait for a fine save of a common host at another time. Replaces PAC-101 AC-16 for fine saves.",
+    "AC-6  [unit] two links with no common host, same time, both held: no waiter (key sets asserted disjoint first).",
+    "AC-7  [unit] single-use link, 0 bookings, two non-overlapping requests released together: one 201, one 410, one row; max_uses N with N-1 stored: same; with N-2 stored: both 201.",
+    "AC-8  [unit] use-limited link: the second save waits while the first is held at AfterBookingLocks (8203 not granted) and proceeds when it commits.",
+    "AC-9  [unit] keyed B saved; same key and details within 24 h -> 201 with B's id, start, end, duration_minutes, booker_name, booker_email, notes; row count, booking_events and emails unchanged.",
+    "AC-10 [unit, EXTENDED] AC-9's retry still replays when: the link is single-use and now used up; the start is now inside min notice; the slot is now busy for a host; the slot is now taken; AND (contract C-4) the link's duration list no longer contains the duration.",
+    "AC-11 [unit] key K on the same link with one differing field (name, email, start, end/resolved duration, notes; one test each) -> 409 {\"error\":\"idempotency key already used\"} with both refusal_message settings, nothing written, body contains none of B's details.",
+    "AC-12 [unit] B's created_at set 25 h back; same or different details -> AC-11's 409, nothing written. Boundary: age exactly 24 h -> 409.",
+    "AC-13 [unit] key K used on L1, sent to L2 -> handled as new on L2 (201 there).",
+    "AC-14 [unit] A (key K) held at afterBookingLinkRead; A' (same) completes 201; A released -> 201 same id, nothing written, no completion unit; one row, one unit.",
+    "AC-15 [unit] A held at AfterBookingLocks; A' reaches its save and waits; A commits -> A' 201 with A's id, nothing written; A rolled back via AfterBookingInsert -> A' 201 new id. One row either way.",
+    "AC-16 [unit] two requests with key K, same link, different non-overlapping times, released together: one 201, the other AC-11's 409 (the unique-index path, 23505 resolved); one row.",
+    "AC-17 [unit] empty key -> as keyless; key of 15 chars, 256 chars, with '.', with surrounding double quotes, or sent on two field lines -> 400 'invalid Idempotency-Key header', nothing written, after the 404 (unknown slug with bad key -> 404) and before the body (bad key + invalid JSON -> the key 400); a body failing validation answers its 400 with or without a key.",
+    "AC-18 [unit] keyless requests: order 429, 404, 410, 400, 409 unchanged; existing PAC-72/PAC-81/PAC-101 booking tests pass unchanged except the AC-16 test amended by AC-5/AC-8.",
+    "AC-19 [unit] link deleted, and separately paused, after B: B's keyed retry -> 404, nothing written.",
+    "AC-20 [e2e] cross-origin page on the allowed origin: preflight answers Access-Control-Allow-Headers containing Idempotency-Key; the keyed booking succeeds.",
+    "AC-21 [unit] database at 037 with two identical non-cancelled bookings on one link and two overlapping bookings on links sharing a host; migration 038 applies; rows unchanged; a new booking overlapping them -> 409.",
+    "AC-22 [unit] down 038 on a database with keyed bookings: every row survives, only the key column, check and index are gone; up again succeeds.",
+    "AC-23 [unit] a save waiting at an advisory key (holder parked at AfterBookingLocks) past LinkLockTimeout (shortened) -> 500 {\"error\":\"internal error\"}, nothing written. Same for the unique-index wait (holder parked at AfterBookingInsert with key K).",
+    "AC-24 [unit] soak: concurrent bookings (shared hosts, overlapping and non-overlapping, a use-limited link, keyed retries), deletes, pauses, PATCHes with co-host changes, accept/leave, a PAC-40 part B erasure run: no 40P01, 55P03 or 53200; every 201 has its row; every refusal wrote nothing; no host has two overlapping non-cancelled bookings created during the run.",
+    "AC-25 [web unit] Book sends a fresh key; changing time, duration, name, email or notes and pressing Book again sends a different key.",
+    "AC-26 [web unit] lost answer (bound, network failure, non-JSON, any 5xx except the first send's budget 503): 'may have been saved' + one 'Try again'; exactly one request until pressed; pressing sends exactly one request with the same key and body; nothing re-sends without the press (PAC-83 AC-25 holds).",
+    "AC-27 [web unit, see challenge C-8] Try again answers: 201 -> confirmation; slot 409 / 410 / 400 'invalid duration' -> the time is no longer available (wording: spec AC-27, subject to the open item recorded in the md challenge C-8); key-reused 409 or 404 -> may have been saved, check email, no further retry; lost again, any 5xx (budget 503 included) or 429 -> 'may have been saved' and 'Try again' stay.",
+    "AC-28 [e2e] first booking's answer dropped by route interception after the server saved it; Try again -> confirmation; exactly one booking for the slot.",
+    "AC-29 [unit, added by the contract challenge C-3] A (key K) committed after A' (key K) passed its replay lookup and before A' decided a refusal (seam between them): A' answers the replay 201, never 409/410.",
+    "AC-30 [unit, added by the contract challenge C-5] BookingAdvisoryKeys: fixed vectors for h32 (pinned in the test), bucket ranges for a slot ending on a bucket edge, a 09:10-grid slot touching two buckets, a 25 h fall-back-day slot; coarse when hosts x buckets > 64; keys ascending and de-duplicated.",
+    "AC-31 [unit, added by the contract challenge C-2] the save's re-checks see a winner committed during the wait: with the winner held at AfterBookingInsert and the loser waiting, commit the winner -> loser 409 (fails if a re-check shares a statement with the lock or the transaction is not READ COMMITTED).",
+    "AC-32 [contract] the descriptions and schemas listed in operationsChanged / componentsChanged."
+  ],
+  "resolvesFindings": [
+    "Stale contract text (spec 'Inherited scope', N-5): booking.yaml 'Not guaranteed ...' and 'Still open (API-051 ...)' removed (API-051 was already Fixed by PAC-40); the 201's retry paragraph rewritten; PAC-101's 'never made to wait for each other' corrected."
+  ],
+  "resolvesUncertain": [],
+  "resolvesOpenQuestions": [
+    "Spec OQ-1: split to PAC-108 (related link added on PAC-82, 2026-11-14).",
+    "Spec OQ-2: yes, lock_timeout caps pg_advisory_xact_lock (exclusive and shared) and the unique-index wait with 55P03; observed on PG 16.15 (md section 4.5, challenge).",
+    "Spec OQ-3: separate schema BookingIdempotencyKeyReusedError in a oneOf PublicBookingConflict, told apart by error (md section 2.2)."
+  ],
+  "doesNotResolve": [
+    "Provider-side idempotency of host events and personal-sync blockers: PAC-108.",
+    "Conflicts with calendar events or focus blocks written outside the database during the request (spec section 5).",
+    "A retry after a page reload (key in page memory only, spec D-8)."
+  ],
+  "consumersAffected": [
+    {"consumer": "Enach/smart-calendar-flow PublicBooking.tsx / schedulingLinks.ts / client.ts", "breaks": "no (keys optional)", "detail": "web PR adds the key and Try again (AC-25..AC-27); must merge after the server."},
+    {"consumer": "Enach/smart-calendar-flow src/api/generated", "breaks": "drift only", "detail": "header param, PublicBookingConflict, BookingIdempotencyKeyReusedError, descriptions: regeneration commit paired with stage 4. PublicBooking.test.tsx:8 imports BookingSlotUnavailableError, unchanged."},
+    {"consumer": "Enach/smart-calendar-flow PublicBooking.pac83.test.tsx:184-211", "breaks": "yes, by design", "detail": "PAC-83 AC-21 'no control re-sends' amended by spec AC-26."},
+    {"consumer": "backend/api/gen", "breaks": "no", "detail": "regenerated; route is handwritten (MIGRATION.md)."},
+    {"consumer": "backend fakes of BookingFlow", "breaks": "compile", "detail": "ConfirmBooking gains the key argument; fakes updated in the stage-4 PR."},
+    {"consumer": "backend/storage/pac101_test.go TestPAC101_SavesOnOneLinkDoNotWaitForEachOther", "breaks": "amended", "detail": "AC-5/AC-8."},
+    {"consumer": "e2e keyless bookings (edge.spec.ts:86, PAC-72/PAC-40 journeys)", "breaks": "no", "detail": "AC-18."},
+    {"consumer": "mcp", "breaks": "no", "detail": "no booking call."},
+    {"consumer": "PAC-84 advisory class 8400", "breaks": "no", "detail": "disjoint classes; its presence query (encryption_keys.go:130) never matches a PAC-82 key."}
+  ],
+  "mergeConditions": [
+    "This revision (or a later one) accepted by contract-challenger.",
+    "The stage-4 PR's bundle sha256 equals contractHash, or the recorded rebased hash with no fragment text change.",
+    "Migration number still free on main at merge (else renumber; manifest and md only).",
+    "Server PR merges before the web PR (CORS); web regeneration paired.",
+    "make verify output pasted in each PR body (factory section 3)."
+  ],
+  "followUps": [
+    "PAC-108: provider-side idempotency (issue item 3).",
+    "Challenge C-8 (open, spec/web wording): what a refusal of a 'Try again' proves about the first attempt."
+  ],
+  "stage4Notes": "Stage 4 (impl/pac-82-api, 2026-11-14): implemented against this revision on base origin/main d520775 (unchanged since the contract stage), bundle sha256 85187c9448b95f89e3ce05ac334d53ec9cf1bb0f896bb89d788ce46726adbdd4 = contractHash, no fragment or generated file changed. Orchestrator decisions recorded in docs/specs/PAC-82.md 'Stage 4 — orchestrator decisions': the contract-stage AC changes (AC-5 narrowed, AC-10 extended, keyed 400 order, AC-29..AC-32) acknowledged; C-8 decided (a refused Try again says 'This time can't be booked now. Your earlier attempt may still have been saved — check your email before booking another time.'; a 429 or 400 on Try again keeps 'may have been saved' and Try again), so AC-27 below reads per the amended spec. Seam names as implemented: storage.AfterBookingLocks, storage.AfterBookingInsert, api afterBookingReplayLookup (AC-29); the api concurrency tests release requests at a barrier in their BookingFlow wrapper, after every pre-save check (the role of afterBookingCommit, which the api package cannot reach). Deviation: api/pac81_paths_test.go TestPAC81_BookingInsertFailsAfterBudgetIs500 injects its insert failure through storage.AfterBookingInsert instead of a table lock plus ALTER TABLE, which deadlocks against the save's new re-check reads; its assertion is unchanged.",
+  "rollback": "Revert the backend PR (down 038 drops the key column, check and index; bookings never deleted). Web reverts independently, before the server (CORS)."
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -321,6 +322,13 @@ func (h *bookingHandlers) getSlots(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/book/{slug}
+//
+// Order of evaluation (PAC-82 contract section 1.1). Without a key (or with
+// an empty one), unchanged: 429, 404, 410, body 400s, zone 500, cheap 409s,
+// taken 409, host reads (host_busy 409 / 503), save. With a key: 429, 404,
+// the key's 400, the body 400s that do not depend on the link, the replay
+// decision, 410, "invalid duration" 400, then as without a key. A keyed
+// request about to answer a 409 or 410 looks for its key once more first.
 func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) {
 	// NEW-booking-rate-limit: counted before the link lookup and the body, so
 	// 429 precedes every other status and a refused request writes nothing.
@@ -339,7 +347,13 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "not found", http.StatusNotFound)
 		return
 	}
-	if linkExhausted(link) {
+	key, ok := idempotencyKey(r)
+	if !ok {
+		writeError(w, errInvalidIdempotencyKey, http.StatusBadRequest)
+		return
+	}
+	keyed := key != ""
+	if !keyed && linkExhausted(link) {
 		writeError(w, "link is no longer accepting bookings", http.StatusGone)
 		return
 	}
@@ -407,13 +421,43 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		}
 		end = start.Add(time.Duration(requestedDuration) * time.Minute)
 	}
-	if !durationAllowed(link, requestedDuration) {
+	// Keyless: "invalid duration" keeps its place before "end must be after
+	// start". Keyed: it depends on the link's current durations, so it comes
+	// after the replay decision and the 410 (contract challenge C-4).
+	if !keyed && !durationAllowed(link, requestedDuration) {
 		writeError(w, "invalid duration", http.StatusBadRequest)
 		return
 	}
 	if !end.After(start) {
 		writeError(w, "end must be after start", http.StatusBadRequest)
 		return
+	}
+	attempt := &storage.Booking{LinkID: link.ID, BookerName: body.Name, BookerEmail: body.Email,
+		StartTime: start, EndTime: end, Notes: body.Notes, IdempotencyKey: key}
+	// refuse answers a refusal; a keyed request first looks for its key once
+	// more, so a retry racing its own original's commit gets the replay
+	// rather than a refusal of its own booking (contract challenge C-3).
+	refuse := func(write func()) {
+		if keyed && h.answerKeyed(w, r, link, attempt) {
+			return
+		}
+		write()
+	}
+	if keyed {
+		if h.answerKeyed(w, r, link, attempt) {
+			return
+		}
+		if afterBookingReplayLookup != nil {
+			afterBookingReplayLookup()
+		}
+		if linkExhausted(link) {
+			refuse(func() { writeError(w, "link is no longer accepting bookings", http.StatusGone) })
+			return
+		}
+		if !durationAllowed(link, requestedDuration) {
+			writeError(w, "invalid duration", http.StatusBadRequest)
+			return
+		}
 	}
 	// The offerable-start rule (PAC-72): [start, end) must be exactly a slot
 	// the listing offers now, compared as instants; anything else is the 409
@@ -430,7 +474,7 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 	}
 	now := h.now()
 	if reason, refused := cheapRefusal(link, loc, start, end, requestedDuration, now); refused {
-		writeRefusal(w, link, reason)
+		refuse(func() { writeRefusal(w, link, reason) })
 		return
 	}
 	if conflict, e := storage.HasOverlappingBooking(db, link.ID, start, end); e != nil {
@@ -438,7 +482,7 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "booking conflict check failed", http.StatusInternalServerError)
 		return
 	} else if conflict {
-		writeRefusal(w, link, gen.Taken)
+		refuse(func() { writeRefusal(w, link, gen.Taken) })
 		return
 	}
 	offered, err := h.offeredSlots(r.Context(), link, loc, calendarDay(start, loc), requestedDuration, now)
@@ -462,38 +506,111 @@ func (h *bookingHandlers) createBooking(w http.ResponseWriter, r *http.Request) 
 		// Every cheap check passed, so the slot is busy for a host: a
 		// calendar event (with buffers), a focus block, a booking on another
 		// link, an unreadable calendar (D-6) or no accepted host (D-10).
-		writeRefusal(w, link, gen.HostBusy)
+		refuse(func() { writeRefusal(w, link, gen.HostBusy) })
 		return
 	}
 	// PAC-81 AC-A19: 503 only when the budget ran out before the insert was
 	// sent (nothing saved); once sent, the insert's own result is 201 or 500.
-	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, slot.Start, slot.End, body.Notes)
-	if errors.Is(err, budget.ErrExpired) {
+	booking, err := h.eng.ConfirmBooking(r.Context(), link, body.Name, body.Email, slot.Start, slot.End, body.Notes, key)
+	switch {
+	case errors.Is(err, budget.ErrExpired):
 		budget.WriteExpired(w)
 		return
-	}
-	if errors.Is(err, engine.ErrLinkGone) {
+	case errors.Is(err, engine.ErrLinkGone):
 		// PAC-101: the link was deleted or paused while the request was
 		// handled, before the save took its lock on it. Nothing was written:
 		// the same 404 as for a link deleted before the request.
 		writeError(w, "not found", http.StatusNotFound)
 		return
-	}
-	if errors.Is(err, engine.ErrHostCalendarUnreadable) {
+	case errors.Is(err, engine.ErrHostCalendarUnreadable):
 		// PAC-72 D-6: an unreadable host calendar counts as busy.
-		writeRefusal(w, link, gen.HostBusy)
+		refuse(func() { writeRefusal(w, link, gen.HostBusy) })
 		return
-	}
-	if err != nil {
+	case errors.Is(err, engine.ErrSlotTaken):
+		// PAC-82: lost, at the save, to a booking of this link saved first.
+		refuse(func() { writeRefusal(w, link, gen.Taken) })
+		return
+	case errors.Is(err, engine.ErrHostBusy):
+		// PAC-82: lost, at the save, to a host's booking on another link.
+		refuse(func() { writeRefusal(w, link, gen.HostBusy) })
+		return
+	case errors.Is(err, engine.ErrLinkExhausted):
+		// PAC-82: the use limit was reached by bookings saved first.
+		refuse(func() { writeError(w, "link is no longer accepting bookings", http.StatusGone) })
+		return
+	case errors.Is(err, engine.ErrIdempotencyKeyReused):
+		writeError(w, errIdempotencyKeyReused, http.StatusConflict)
+		return
+	case err != nil:
 		writeServerError(w, r, "booking failed", err, http.StatusInternalServerError)
 		return
 	}
-	// The booking is saved: the answer is the 201, past the budget if need be.
+	// The booking is saved (or, PAC-82, replayed): the answer is the 201,
+	// past the budget if need be.
+	h.writeBooked(w, r, link, booking)
+}
+
+// writeBooked writes the 201 of a saved or replayed booking, built from the
+// stored row with the link's current title and hosts.
+func (h *bookingHandlers) writeBooked(w http.ResponseWriter, r *http.Request, link *storage.SchedulingLink, booking *storage.Booking) {
 	saved := storage.Bind(context.WithoutCancel(r.Context()), h.db)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(h.confirmation(saved, link, booking))
 }
+
+// The PAC-82 bodies: the key's 400 and the key-reused 409.
+const (
+	errInvalidIdempotencyKey = "invalid Idempotency-Key header"
+	errIdempotencyKeyReused  = "idempotency key already used"
+)
+
+// idempotencyKeyPattern is the contract's format: 16 to 255 characters from
+// A-Z a-z 0-9 - _ (components/parameters/BookingIdempotencyKey).
+var idempotencyKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,255}$`)
+
+// idempotencyKey reads the request's Idempotency-Key. Absent or empty is
+// "", true (a request without a key). ok is false for a value outside the
+// format (quotes included) or a header sent on two or more field lines.
+func idempotencyKey(r *http.Request) (key string, ok bool) {
+	values := r.Header.Values("Idempotency-Key")
+	switch {
+	case len(values) == 0:
+		return "", true
+	case len(values) > 1:
+		return "", false
+	case values[0] == "":
+		return "", true
+	case !idempotencyKeyPattern.MatchString(values[0]):
+		return "", false
+	}
+	return values[0], true
+}
+
+// answerKeyed decides a keyed attempt on the pool (contract section 1.1): a
+// booking saved with the key on this link with the same details is the
+// replay 201; with other details or 24 hours old or more, the key-reused
+// 409. It reports whether it answered (a failed read is the 500).
+func (h *bookingHandlers) answerKeyed(w http.ResponseWriter, r *http.Request, link *storage.SchedulingLink, attempt *storage.Booking) bool {
+	replay, reused, err := storage.ResolveIdempotencyKey(storage.Bind(r.Context(), h.db), link.ID, attempt.IdempotencyKey, attempt)
+	switch {
+	case err != nil:
+		writeServerError(w, r, "booking idempotency lookup", err, http.StatusInternalServerError)
+		return true
+	case replay != nil:
+		h.writeBooked(w, r, link, replay)
+		return true
+	case reused:
+		writeError(w, errIdempotencyKeyReused, http.StatusConflict)
+		return true
+	}
+	return false
+}
+
+// afterBookingReplayLookup is a test seam (PAC-82 AC-29): it runs in
+// createBooking after a keyed request's first replay lookup found no booking
+// and before any check that can refuse it. Nil in production.
+var afterBookingReplayLookup func()
 
 // afterBookingLinkRead is a test seam (PAC-101 contract §5): it runs in
 // createBooking after the link read and the 410 check, before the body is

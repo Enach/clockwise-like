@@ -49,7 +49,7 @@ func TestPAC81_BookingCommittedDuringDrainCreatesHostEvents(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	start := nextWeekday(time.Now()).Add(15 * time.Hour)
-	if _, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), ""); err != nil {
+	if _, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	busy()
@@ -79,7 +79,7 @@ func TestPAC81_BookingSkippedHostIsLogged(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(prev)
 	start := nextWeekday(time.Now()).Add(16 * time.Hour)
-	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "")
+	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestPAC81_BookingPoolSaturatedBeforeInsertIs503(t *testing.T) {
 	done := make(chan struct{})
 	h := budget.Middleware(400*time.Millisecond, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
-		_, engErr = (&BookingEngine{DB: db}).ConfirmBooking(r.Context(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "")
+		_, engErr = (&BookingEngine{DB: db}).ConfirmBooking(r.Context(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", "")
 	}))
 	rec := httptest.NewRecorder()
 	began := time.Now()

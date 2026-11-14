@@ -208,21 +208,17 @@ func TestPAC81_BookingInsertFailsAfterBudgetIs500(t *testing.T) {
 	withBudget(t, 400*time.Millisecond)
 	link := pac81Link(t)
 	r := fullRouter(t)
-	defer func() {
-		_, _ = sharedTestDB.Exec(`ALTER TABLE bookings DROP CONSTRAINT IF EXISTS pac81_fail`)
-	}()
-	tx, err := sharedTestDB.Begin()
-	if err != nil {
-		t.Fatal(err)
+	// PAC-82: the save now reads bookings (its re-checks) before the insert,
+	// so the original injection (a table lock held while a CHECK is added)
+	// deadlocks against those reads instead of failing the insert. The
+	// failure is injected at the save's own seam instead: the insert is
+	// sent, the budget runs out while the save is held, then the save fails
+	// and rolls back. The assertion is unchanged.
+	storage.AfterBookingInsert = func(*storage.Booking) error {
+		time.Sleep(700 * time.Millisecond) // past the 400 ms budget
+		return errors.New("pac81: injected insert failure")
 	}
-	if _, err := tx.Exec(`LOCK TABLE bookings IN EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		time.Sleep(700 * time.Millisecond) // the insert is waiting by now
-		_, _ = tx.Exec(`ALTER TABLE bookings ADD CONSTRAINT pac81_fail CHECK (booker_name <> 'pac81-fail') NOT VALID`)
-		_ = tx.Commit()
-	}()
+	defer func() { storage.AfterBookingInsert = nil }()
 	rec := serveAt(r, http.MethodPost, "/api/book/"+link.Slug, pac81BookingBody("pac81-fail", pac81Start(49)))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d %s, want 500", rec.Code, rec.Body.String())
@@ -290,7 +286,7 @@ func (e *cutEngine) CollectiveSlotsDays(ctx context.Context, link *storage.Sched
 	return out, nil
 }
 
-func (e *cutEngine) ConfirmBooking(context.Context, *storage.SchedulingLink, string, string, time.Time, time.Time, string) (*storage.Booking, error) {
+func (e *cutEngine) ConfirmBooking(context.Context, *storage.SchedulingLink, string, string, time.Time, time.Time, string, string) (*storage.Booking, error) {
 	return nil, errors.New("unused")
 }
 

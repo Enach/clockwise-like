@@ -43,7 +43,7 @@ func (f *pac40Flow) CollectiveSlotsDays(_ context.Context, _ *storage.Scheduling
 	return out, nil
 }
 
-func (f *pac40Flow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes string) (*storage.Booking, error) {
+func (f *pac40Flow) ConfirmBooking(_ context.Context, link *storage.SchedulingLink, name, email string, start, end time.Time, notes, _ string) (*storage.Booking, error) {
 	return storage.CreateBooking(f.db, &storage.Booking{LinkID: link.ID, BookerName: name, BookerEmail: email, StartTime: start, EndTime: end, Notes: notes})
 }
 

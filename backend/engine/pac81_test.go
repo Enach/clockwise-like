@@ -249,7 +249,7 @@ func TestPAC81_BookingUnreadableHostIsRefused(t *testing.T) {
 	g.set(badTok, stubBehaviour{status: http.StatusInternalServerError})
 	link := pac81Link(t, db, []uuid.UUID{ok, bad})
 	start := nextWeekday(time.Now()).Add(10 * time.Hour)
-	_, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "")
+	_, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if !errors.Is(err, ErrHostCalendarUnreadable) {
 		t.Fatalf("got %v, want ErrHostCalendarUnreadable", err)
 	}
@@ -530,7 +530,7 @@ func TestPAC81_BookingBudgetAfterCommitCompletesInBackground(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := nextWeekday(time.Now()).Add(10 * time.Hour)
-	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(ctx, link, "Booker", "booker@pac81.test", start, start.Add(30*time.Minute), "")
+	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(ctx, link, "Booker", "booker@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err != nil || booking == nil {
 		t.Fatalf("booking %v err %v", booking, err)
 	}
@@ -588,7 +588,7 @@ func TestPAC81_BookingCompletionAbandonedAtDrainIsLogged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := nextWeekday(time.Now()).Add(11 * time.Hour)
-	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(ctx, link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "")
+	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(ctx, link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +632,7 @@ func TestPAC81_BookingEmailFailureLogged(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(prev)
 	start := nextWeekday(time.Now()).Add(12 * time.Hour)
-	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "booker@pac81.test", start, start.Add(30*time.Minute), "")
+	booking, err := (&BookingEngine{DB: db}).ConfirmBooking(context.Background(), link, "B", "booker@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +658,7 @@ func TestPAC81_BookingBudgetBeforeInsertWritesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := nextWeekday(time.Now()).Add(13 * time.Hour)
-	_, err := (&BookingEngine{DB: db}).ConfirmBooking(ctx, link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "")
+	_, err := (&BookingEngine{DB: db}).ConfirmBooking(ctx, link, "B", "b@pac81.test", start, start.Add(30*time.Minute), "", "")
 	if err == nil {
 		t.Fatal("booked with the budget gone")
 	}

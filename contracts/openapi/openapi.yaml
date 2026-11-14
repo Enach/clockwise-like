@@ -3252,15 +3252,14 @@ paths:
         the slot is not offered and the booking is refused with the 409 (reason `host_busy`); nothing
         is written. A host not read because the request budget ran out is the 503, never a 409. A storage
         failure while reading the link''s accepted hosts, a host''s focus blocks or the bookings on the
-        hosts'' links answers 500 and writes nothing, never 409. Not guaranteed: two concurrent requests
-        for the same or overlapping starts can both pass the check before either is written (no storage-level
-        exclusion; out of scope for PAC-72). Still open (API-051, owned by PAC-40): `uses_count` is recomputed
-        from live bookings, so cancelling a booking re-opens an exhausted single-use link. When the start
-        is accepted, the booking row is saved, then a calendar event (with the booker email as a guest)
-        is attempted on each accepted host''s calendar, best effort: a host whose user record or calendar
-        client cannot be loaded is skipped and a failed event creation is ignored, so a 201 does not mean
-        any host''s calendar was written. Operation-level `security: []` is kept: this operation is public
-        and is registered outside requireAuth; the rate limit is not authentication.
+        hosts'' links answers 500 and writes nothing, never 409. Concurrent requests (PAC-82) are decided
+        as if they had arrived one after the other: see the concurrency paragraph below. `uses_count`
+        counts every booking ever made on the link, cancelled ones included (PAC-40, API-051 Fixed), see
+        the 410. When the start is accepted, the booking row is saved, then a calendar event (with the
+        booker email as a guest) is attempted on each accepted host''s calendar, best effort: a host whose
+        user record or calendar client cannot be loaded is skipped and a failed event creation is ignored,
+        so a 201 does not mean any host''s calendar was written. Operation-level `security: []` is kept:
+        this operation is public and is registered outside requireAuth; the rate limit is not authentication.
 
 
         A link deleted or paused while the request is handled (PAC-101): the booking row is saved only
@@ -3273,9 +3272,61 @@ paths:
         listed in the owner''s archive after the delete (its `created_at` may be a few milliseconds after
         the link''s deletion instant, which is the delete''s start, not its commit). A request refused
         for another reason (400, 409, 410, 429, 503) keeps that answer even when the link was deleted
-        meanwhile, and writes nothing either way. Bookings of the same link are never made to wait for
-        each other by this ordering. A save that must wait for a delete, pause or edit of the same link
-        still in progress waits at most 10 seconds; past that it is the 500 and nothing is written.'
+        meanwhile, and writes nothing either way. This ordering against the delete never makes two bookings
+        wait for each other; the PAC-82 ordering below can, only for the length of a save. A save that
+        must wait for a delete, pause or edit of the same link, or for another booking''s save, still
+        in progress waits at most 10 seconds per wait; past that it is the 500 and nothing is written.
+
+
+        Concurrent bookings (PAC-82). However many requests arrive at once, a host is never booked twice
+        for overlapping time through public booking links, on the same link or on two links that share
+        the host (owner or accepted co-host), and a link with a use limit (`single_use`, or `recurring`
+        with `max_uses`) never stores more bookings than its limit. When requests conflict, exactly one
+        is saved and each other one gets the answer it would have got had it arrived after the winner
+        was saved: the 409 (`taken` on the same link, `host_busy` on another link, same body rules as
+        the 409 below) or the 410, and writes nothing (no row, no event, no email). The decision is made
+        again when the booking is saved, after the checks that read host calendars, so a request that
+        passed those checks can still lose there. Two saves wait for each other only when they could conflict:
+        overlapping or near time for a common host (two slots at least 15 minutes apart, end of one to
+        start of the other, never wait for each other, except that a save whose number of hosts times
+        the 15-minute UTC blocks its slot touches is above 64 waits for every other save of those hosts),
+        or any two bookings of one use-limited link. No such wait includes a call to a calendar provider;
+        each is bounded by the 10 seconds above. Conflicts with calendar events or focus blocks written
+        by something other than a booking during the request are not ordered (the provider is outside
+        the database); the calendar read stays the only check for those.
+
+
+        Idempotent retry (PAC-82). A client may label one booking attempt with the optional `Idempotency-Key`
+        request header (see the parameter for format, scope and window) and send the same attempt again
+        with the same key when it did not get the answer. Sending the same attempt again never creates
+        a second booking: when a booking with that key was saved on this link less than 24 hours ago and
+        its details match (name and email after trimming, start and end as instants, and notes byte for
+        byte), the answer is that booking''s 201 (see the 201), even when the link has since been used
+        up, the start is now too soon, outside the link''s hours or beyond its horizon, the slot is now
+        busy or taken, or the duration is no longer one of the link''s durations; nothing is written and
+        no calendar event or email is sent again. When the key exists on this link with different details,
+        or was saved 24 hours ago or more, the answer is the 409 `{"error":"idempotency key already used"}`,
+        whatever the link''s `refusal_message`, and nothing is written; it never reveals the stored booking''s
+        details. When no booking with that key exists on this link, the request is handled as a new one
+        and, if saved, carries the key. A key is scoped to its link: the same key on another link is a
+        new request there. Order of evaluation for a request that carries a key: 429, 404, the key''s
+        400, the body''s 400s that do not depend on the link (invalid body, required fields, start and
+        end format, duration not matching end, a length that is not whole minutes, end not after start),
+        then the replay decision, then the 410, the "invalid duration" 400, and the remaining checks as
+        for a request without a key. A request without a key (or with an empty one) is answered exactly
+        as before PAC-82 apart from the concurrency rules above. A request that carries a key and would
+        be refused with a 409 or 410 looks for its key again just before answering; if a booking with
+        that key was saved meanwhile, the answer is the replay (or the key-reused 409) instead. A link
+        deleted or paused since the original save answers the 404 (never a replay). The 503 and the 500
+        keep their meaning for the request that receives them.
+
+
+        CORS: `Idempotency-Key` is an allowed request header for this operation (the server''s `Access-Control-Allow-Headers`
+        is `Content-Type, Authorization, Idempotency-Key`), so a page on the allowed origin can send it
+        cross-origin. A server before PAC-82 refuses the header in a cross-origin preflight: the web ships
+        after the server.'
+      parameters:
+      - $ref: '#/components/parameters/BookingIdempotencyKey'
       requestBody:
         required: true
         content:
@@ -3292,9 +3343,16 @@ paths:
             and not done). The server waits for that unit only until the request budget runs out, then
             answers this 201 anyway, so a host''s calendar event may be written after the response. The
             body is the same either way and carries no event data. With responsive calendars every host
-            event exists when the 201 is sent, as before. A retry behaves as before PAC-81: 409 when the
-            start is no longer offered (the retried booking itself now occupies it), 410 when the link
-            is exhausted; no request returns another request''s booking.'
+            event exists when the 201 is sent, as before. Replay (PAC-82): a request carrying the `Idempotency-Key`
+            of a booking saved on this link less than 24 hours ago, with matching details, is answered
+            with this 201 for THAT booking: the same `id`, `link_slug` (the slug the request used), `start`,
+            `end`, `duration_minutes`, `booker_name`, `booker_email` and `notes` as the original 201,
+            built from the stored row; `title` and `hosts` are the link''s current values, as on every
+            201, so they differ from the original answer only when the owner changed them in between.
+            A replay writes nothing, starts no calendar event and no email, and does not wait for the
+            original''s calendar events, which may still be in progress. Nothing in the answer marks it
+            as a replay. A request without a key never receives another request''s booking; with a key,
+            only the booking that key saved on this link.'
           content:
             application/json:
               schema:
@@ -3309,7 +3367,12 @@ paths:
             the link has none; never rounded or truncated to an accepted duration); "end must be after
             start" (reachable only when the end computed from `duration_minutes` overflows, which needs
             a link duration option above about 153,722,867 minutes; an ordinary end at or before start
-            answers "duration does not match end time" or "invalid duration" instead).'
+            answers "duration does not match end time" or "invalid duration" instead). PAC-82: "invalid
+            Idempotency-Key header" when the header is present, not empty, and not 16 to 255 characters
+            from `A-Z a-z 0-9 - _`, or when it is sent more than once (two or more field lines, even identical);
+            checked after the 404 and before the body is read, nothing written. With a valid key, "invalid
+            duration" for a duration that is not one of the link''s is checked after the replay decision
+            and the 410 (a replay is never turned into this 400); every other message keeps its place.'
           content:
             application/json:
               schema:
@@ -3318,7 +3381,9 @@ paths:
           description: 'No live link with that slug: never existed, paused (`active=false`) or deleted
             (PAC-40); or the link was deleted or paused while this request was handled, before its booking
             was saved (PAC-101). Nothing is written in either case: no booking row, no calendar event,
-            no email. Body: {"error":"not found"}'
+            no email. Also the answer to a retry carrying the `Idempotency-Key` of a booking saved before
+            the link was deleted or paused: never a replay (PAC-82); the booking itself is kept. Body:
+            {"error":"not found"}'
           content:
             application/json:
               schema:
@@ -3337,14 +3402,23 @@ paths:
             several causes hold, the reason is the first in this order: `beyond_horizon`, `outside_link_hours`,
             `too_soon`, `taken`, `host_busy`. With `refusal_message` `generic` (the default) the body
             is always exactly `{"error":"slot is no longer available"}` and has no `reason`, so a refusal
-            does not reveal which rule failed. The setting is read when the request is handled.'
+            does not reveal which rule failed. The setting is read when the request is handled. PAC-82:
+            `taken` and `host_busy` are also the answer of a request that passed every check but lost,
+            when saved, to a concurrent booking that was saved first (same body rules). A second, distinct
+            409 body: the `Idempotency-Key` was already used on this link with different details, or was
+            used 24 hours ago or more: exactly `{"error":"idempotency key already used"}`, never a `reason`,
+            the same whatever the link''s `refusal_message`, and nothing of the stored booking. Nothing
+            is written. A client tells the two apart by `error` alone (see PublicBookingConflict).'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BookingSlotUnavailableError'
+                $ref: '#/components/schemas/PublicBookingConflict'
         '410':
           description: 'Link exhausted (same rule as getPublicLinkInfo: `uses_count` counts every booking
-            made, cancelled ones included; PAC-40). Body: {"error":"link is no longer accepting bookings"}'
+            made, cancelled ones included; PAC-40). PAC-82: also the answer of a request that passed the
+            check but, when saved, found the limit reached by bookings saved first (concurrent requests
+            on a use-limited link). Never the answer to a replay. Nothing written. Body: {"error":"link
+            is no longer accepting bookings"}'
           content:
             application/json:
               schema:
@@ -3364,7 +3438,10 @@ paths:
             the outcome is unknown and the answer is this 500 (PAC-81 contract revision 2). Only the 503
             proves that nothing was saved. Also this 500, with `{"error":"internal error"}` and nothing
             written: the save waited 10 seconds for a delete, pause or edit of the same link still in
-            progress (PAC-101); the client cannot tell this case from the others.'
+            progress (PAC-101), or for another booking''s save on a common host or the same use-limited
+            link (PAC-82); the client cannot tell this case from the others. A 500 answered to a request
+            carrying an `Idempotency-Key` may be retried with the same key and the same details: if the
+            first request was saved, the retry is its replay.'
           content:
             application/json:
               schema:
@@ -10160,6 +10237,21 @@ components:
           type: string
           description: 'Human-readable, server-chosen message. Never the text of a Go, driver or provider
             error (PAC-21): those go to the server log and Sentry only.'
+    BookingIdempotencyKeyReusedError:
+      type: object
+      description: 'The second 409 body of `createPublicBooking` (PAC-82): the request''s `Idempotency-Key`
+        was already used on this link for a booking with different details (name, email, start, end or
+        notes), or for a booking saved 24 hours ago or more. Exactly `{"error":"idempotency key already
+        used"}`: no `reason`, the same whatever the link''s `refusal_message`, and nothing of the stored
+        booking. It does not say whether the stored booking was this client''s. Written by api.writeError.'
+      required:
+      - error
+      additionalProperties: false
+      properties:
+        error:
+          type: string
+          enum:
+          - idempotency key already used
     BookingRateLimitError:
       type: object
       description: The `BookingError` envelope with its one possible message pinned, so a client can tell
@@ -10199,12 +10291,13 @@ components:
       - taken
     BookingSlotUnavailableError:
       type: object
-      description: 'The 409 body of `createPublicBooking` (PAC-72). Its shape depends on the link''s `refusal_message`
-        (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default): exactly `{"error":"slot
-        is no longer available"}`, no `reason` key, whatever rule failed. `specific`: both keys, `reason`
-        naming the first failed rule and `error` the one text paired with it: `too_soon` - "slot is too
-        soon"; `outside_link_hours` - "slot is outside the link''s days or hours"; `beyond_horizon` -
-        "slot is beyond the link''s booking horizon"; `host_busy` - "a host is busy at that time"; `taken`
+      description: 'The slot-refusal 409 body of `createPublicBooking` (PAC-72; the other 409 body is
+        BookingIdempotencyKeyReusedError, PAC-82, see PublicBookingConflict). Its shape depends on the
+        link''s `refusal_message` (PAC-72 revision 2, owner decisions D-2/D-5). `generic` (the default):
+        exactly `{"error":"slot is no longer available"}`, no `reason` key, whatever rule failed. `specific`:
+        both keys, `reason` naming the first failed rule and `error` the one text paired with it: `too_soon`
+        - "slot is too soon"; `outside_link_hours` - "slot is outside the link''s days or hours"; `beyond_horizon`
+        - "slot is beyond the link''s booking horizon"; `host_busy` - "a host is busy at that time"; `taken`
         - "slot is already booked". "slot is no longer available" never carries a `reason`, and a specific
         text never appears without its `reason`. The pairing is not expressible in this schema (no `oneOf`,
         see contracts/features/PAC-72.md); it is asserted by the implementation''s tests, which compare
@@ -13408,6 +13501,15 @@ components:
         notes:
           type: string
           description: Omitted when empty (json `notes,omitempty`).
+    PublicBookingConflict:
+      description: 'The 409 of `createPublicBooking`: exactly one variant applies, told apart by `error`
+        alone (the two `error` sets are disjoint). BookingSlotUnavailableError is the slot refusal (PAC-72,
+        and PAC-82''s concurrent loser); BookingIdempotencyKeyReusedError is the reused or expired `Idempotency-Key`
+        (PAC-82). Both keep the shared `{error}` envelope, so a client that reads only `error` still shows
+        a message.'
+      oneOf:
+      - $ref: '#/components/schemas/BookingSlotUnavailableError'
+      - $ref: '#/components/schemas/BookingIdempotencyKeyReusedError'
     PublicBookingSlot:
       type: object
       description: engine.AvailableSlot. Times are Go time.Time marshalled as RFC3339 with nanoseconds.
@@ -16311,6 +16413,29 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
   parameters:
+    BookingIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 'Optional label of one booking attempt (PAC-82; the header named by draft-ietf-httpapi-idempotency-key-header,
+        sent as a bare token, not the draft''s quoted structured-field string: a value with quotes is
+        the 400). Chosen by the client, fresh for every attempt (the web sends a random UUID per attempt
+        and the same value only when re-sending that exact attempt). Format: 16 to 255 characters from
+        `A-Z a-z 0-9 - _`, compared byte for byte (case-sensitive). An empty value is treated as absent
+        (not part of this schema: send no header instead). Any other value outside the format, or the
+        header sent on two or more field lines, is 400 "invalid Idempotency-Key header" and nothing is
+        written. Scope: one scheduling link (the link the slug resolves to; the same key on another link
+        is unrelated). Window: 24 hours from the moment the keyed booking was saved, measured by the database
+        clock; within it the same key and the same details replay the saved booking (201), other details
+        are the 409 `{"error":"idempotency key already used"}`; from 24 hours on, the key is that 409
+        whatever the details. The key is stored on the booking row and never expires from storage; it
+        is never returned in any response. A request carrying a key counts against the booking rate limit
+        like any other.'
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 255
+        pattern: ^[A-Za-z0-9_-]{16,255}$
     EventId:
       name: event_id
       in: path
