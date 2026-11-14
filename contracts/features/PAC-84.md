@@ -333,6 +333,23 @@ active data key missing from the table, or the maintenance lock held by
 graceful shutdown (exit 1 after the drain, logged 9.4) instead of carrying on
 with keys the database no longer has.
 
+**Amended by PAC-116 (2026-11-14; spec `docs/specs/PAC-116.md` revision 2,
+contract `contracts/features/PAC-116.md` §2-§4; owner decision "stop
+traffic", which reverses PAC-116's original "PAC-84 untouched").** The
+maintenance lock `(8400, 1)` has one more kind of holder: a **migrator**.
+This is any process applying pending migrations: the backend at start,
+`paceday-operator encryption <sub>`, or PAC-71's subcommands. It holds the
+lock on a dedicated connection whose `application_name` starts with
+`paceday-migrate: `. Under the lock it refuses ("the app is serving") when
+any heartbeat is live (90 s), **or** any other client session is connected to
+the database (other migrators' `paceday-migrate:` sessions excepted). Only when neither is found does it apply the migrations, and
+then it releases the lock. The backend at start writes its heartbeat and then
+refuses to start on a migrating holder, as for `decrypt-all` and
+`reset-lost-key`, deleting its heartbeat first. A refresher tick that finds a
+migrating holder begins the graceful shutdown, as for those two commands. It
+is the same write-then-check on both sides. With nothing pending, no lock is
+taken and nothing changes. The text above is kept as PAC-84 approved it.
+
 ## 5. Environment and start order
 
 ### 5.1 Grammar
@@ -426,6 +443,15 @@ The KEK is used only in step 4 and by the refresher for a data key id it has
 not seen (created by `rotate-data-key` or by another process's first-key
 creation). AC-26's counter equals the number of data keys over a run in which
 no data key is created.
+
+**Amended by PAC-116 (2026-11-14; contract `contracts/features/PAC-116.md`
+§4.1).** Step 3 reads: `DATABASE_URL` check, then the **migrate-when-stopped
+procedure** with caller `paceday-backend`, which applies pending migrations
+only when the app is not serving (PAC-116 §3), before the serving pool is
+opened. A refusal is `log.Fatalf("refusing to start: …")` before listening.
+Then the pool is opened without migrating, and the pool caps are applied.
+Step 4's offline-operation check also refuses on a migrating holder of
+`(8400, 1)` (§4.3 amendment). The text above is kept as PAC-84 approved it.
 
 ## 6. Go package `backend/internal/secretbox`
 
@@ -641,6 +667,21 @@ together) and nothing else. The 7.1 text is order-independent:
 | 5 | maintenance lock held by another process (named) |
 | 6 | a backend is running (heartbeat within 90 s; `decrypt-all`, `reset-lost-key`) |
 
+**Amended by PAC-116 (2026-11-14; contract `contracts/features/PAC-116.md`
+§3, §5, §6).** "Migrations are applied first" now goes only through PAC-116's
+migrate-when-stopped procedure, for every subcommand that reaches it,
+except `status`, which stays a read-only probe: it never migrates, never
+takes the lock, and never refuses as "serving", but reports pending
+migrations and the serving state (PAC-116 §5.1, revision 3). With pending
+migrations and the app serving (a live
+heartbeat or any other client session), the subcommand applies nothing and
+exits **6**, whose meaning widens to "a backend is running / the app is
+serving". It lists the heartbeats and sessions it saw. With the maintenance
+lock held by another process when a migration is pending, it exits **5**.
+Neither writes an audit row. There is no flag that overrides the refusal.
+With nothing pending, behaviour is unchanged. The text and table above are
+kept as PAC-84 approved them.
+
 ### 8.2 Subcommands
 
 | Subcommand | Flags | Key needed | Lock | Does | Audit action |
@@ -656,6 +697,14 @@ together) and nothing else. The 7.1 text is order-independent:
 to name the command that runs the down step, and nothing can today (the
 backend migrates up only, `storage/db.go:59`). Its audit row is written after
 the down step, into the kept `operator_audit`.
+
+**Amended by PAC-116 (2026-11-14).** In every row, the implicit "apply
+pending migrations" step before the lock column follows the §8.1 amendment.
+`status` (lock "none") keeps lock "none": it applies nothing (PAC-116 §5.1). A
+dirty version while a migrator holds `(8400, 1)` is a migration in progress:
+the mutating subcommands and `status` exit 5, naming the holder. `downgrade-schema` is not routed through it: it applies
+no pending up migration and keeps its own heartbeat check. The table above is
+kept as PAC-84 approved it.
 
 ### 8.3 Batch passes (conversion, rotation, decrypt-all)
 

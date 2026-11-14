@@ -11,7 +11,10 @@
 - **Fragment**: `contracts/openapi/paths/booking.yaml` only.
 - **Base**: `origin/main` `d520775` (bundle of main recorded in the manifest).
 - **Revision**: 1.1 (revision 1 by contract-author, 1.1 after the challenge below,
-  same day; see "Challenge — 2026-11-14").
+  same day; see "Challenge — 2026-11-14"). Amended by PAC-116 (2026-11-14,
+  revision 2 of its note): dated note in §4.4 (row "save / DDL on a live-read
+  table", prevented operationally); no revision bump, no fragment change,
+  `contractHash` unchanged.
 
 ## 0. The rule this contract fixes
 
@@ -271,6 +274,28 @@ any statement that can wait on a row or an index entry; reads in steps 3, 6,
 
 A delete or PATCH that queues behind a save that is itself waiting on a key
 waits at most its own 10 s bound (PAC-101 §2.4). AC-24 asserts no `40P01`.
+
+- **Amended by PAC-116 (2026-11-14, revision 2; spec `docs/specs/PAC-116.md`,
+  contract `contracts/features/PAC-116.md`; owner decision "stop traffic" of
+  2026-11-14; no revision bump).** The table above has no row for a migration.
+  Migrations can run against a live database: at server start with other
+  backends still serving, and from `paceday-operator` (every `encryption`
+  subcommand, `cmd/paceday-operator/encryption.go:181`, and PAC-71's
+  subcommands, `main.go:56`). Each up file runs as one transaction. Read
+  this row as part of the table:
+
+  | Pair | Wait? | Cycle? |
+  |---|---|---|
+  | save / DDL on a live-read table (a migration touching `bookings`, `scheduling_links`, `scheduling_link_hosts`, `users` or a table whose FK actions reach them) | none in operation: **no migration is applied while a save can run** (PAC-116 §0, §3) | No, prevented operationally. The backend at start and the operator apply pending migrations only after taking the maintenance lock `(8400,1)` and finding no live backend heartbeat and no other client session. Starting backends refuse, and running backends shut down, while a migrator holds that lock. Without this rule: yes. A migration that holds SHARE on `bookings` and then asks for ACCESS EXCLUSIVE, while a save holding ACCESS SHARE waits for ROW EXCLUSIVE, aborts one of them with `40P01`; so do row-lock and FK-action variants (PAC-116, "Challenge — 2026-11-14") |
+
+  Because the rule is operational, a migration may take whatever locks it
+  needs, in any order. Revision 1 of this note had two parts, both
+  **superseded**: a binding lock-order rule for migrations (strongest lock
+  first, enforced by a Go test parsing the up files), and advice on
+  cross-table order. The PAC-116 challenge showed that the static rule
+  could not be made sound.
+
+  The approved text and table above are kept as revision 1.1 approved them.
 
 ### 4.5 Wait bound (spec OQ-2: answered)
 

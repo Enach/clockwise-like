@@ -77,7 +77,9 @@ would leave MCP out.
 3. **Start Postgres** — `compose up -d --wait postgres`: it returns once the
    service's `pg_isready` health check passes.
 4. **Start the backend** — `compose up -d backend`. It runs every pending
-   migration (up only) **before** it starts listening.
+   migration (up only) **before** it starts listening. No other backend may be
+   serving at that moment: see
+   [Applying migrations: stop, migrate, start](#applying-migrations-stop-migrate-start).
 5. **Wait for readiness** — the backend listens only after its migrations,
    then `GET /api/ready` answers `200 {"status":"ready"}` (PAC-81 Part A,
    AC-A11). Check it through your proxy, or inside the container with
@@ -93,6 +95,103 @@ would leave MCP out.
    are healthy. Check through your proxy:
    `curl -fsS https://<your host>/api/ready`.
 
+### Applying migrations: stop, migrate, start
+
+A release that adds a migration is applied with **no backend serving**. A
+migration changes tables that live requests are reading and writing. If the
+two run at the same time, Postgres can abort one of them (`40P01`): a
+booking is lost, or the migration fails half-way and the database is left
+dirty. From PAC-116's implementation on, the backend and `paceday-operator`
+refuse to apply pending migrations while the app is serving. They print what
+they saw and change nothing. There is no override.
+
+- **One backend** (the shipped compose file): nothing extra to do. In
+  [Deploy order](#deploy-order) step 4, `compose up -d backend` stops the old
+  container (graceful drain) before the new one starts and migrates.
+- **Several backends** (on one or more hosts):
+  1. Stop every backend: `compose stop backend` on every host.
+  2. Start **one** backend with the new version and wait until it is ready.
+     It applies the migrations.
+  3. Start the others.
+
+  From PAC-116's implementation on, a new backend started while an old one
+  is still serving refuses to start (`refusing to start: pending migrations
+  … were not applied: the app is serving`). Docker restarts it
+  (`restart: unless-stopped`) until the old ones are stopped. `compose up -d`
+  still returns success: the refusal shows as `Restarting` in
+  `compose ps backend` and as `refusing to start` in `compose logs backend`,
+  and [Deploy order](#deploy-order) step 5 (`/api/ready`) does not turn
+  green. The same happens for up to 90 seconds with one backend when the old
+  container was killed rather than stopped (its heartbeat still counts).
+- **`paceday-operator` newer than the database** (it would apply
+  migrations): either start the new backend first, which migrates, and then
+  use `compose exec backend /paceday-operator …` as usual; or stop every
+  backend and use `compose run --rm --no-deps backend /paceday-operator …`. A
+  refusal exits 6 for `encryption` subcommands (5 if another operator holds
+  the maintenance lock) and 1 for `free-address`, `reassign` and
+  `advance-all`. `encryption status` never applies migrations and never
+  refuses as "serving": it prints the pending migrations and whether the app
+  is serving, then its usual report. While a migration is in progress it exits
+  5 (`being applied by …`).
+- **Reading a refusal.** Each line names what blocked the migration:
+  - `live backend heartbeat: instance … on "<host>", seen <n>s ago`: stop
+    that backend. A backend that was killed rather than stopped stops
+    counting 90 seconds after it was last seen.
+  - `other database session: pid …`: something else is connected to the
+    database (a backend that has not written its heartbeat yet, an older
+    backend, another operator command, `psql`, a monitoring agent). Find it
+    with:
+
+    ```sql
+    SELECT pid, application_name, usename, client_addr, backend_start, state
+    FROM pg_stat_activity
+    WHERE datname = current_database() AND pid <> pg_backend_pid()
+      AND (backend_type = 'client backend' OR backend_type IS NULL);
+    ```
+
+    Run it as the database superuser (or a role with `pg_read_all_stats`):
+    other roles see another role's sessions with most columns empty.
+
+    Close it. As a last resort, use `SELECT pg_terminate_backend(<pid>);`.
+    Stop monitoring agents that connect to the application database for the
+    duration of the migration.
+  - `the maintenance lock is held by …` or `being applied by …`: another
+    migration or encryption command is running. Run again after it ends.
+    "Being applied" with a dirty version is a migration in progress, not a
+    failed one: do **not** `force` the version while it runs.
+- **A lock holder on a dead host.** The maintenance lock is released as soon
+  as its database session ends. But if the host (or its network) running a
+  migration died, the server keeps that session until TCP keepalive notices:
+  about 2 hours with Linux defaults, unless `tcp_keepalives_idle` is set.
+  Until then every start refuses with `being applied by <name> (pid <p>)`.
+  Find the holder:
+
+  ```sql
+  SELECT a.pid, a.application_name, a.client_addr, a.backend_start, a.state
+  FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+  WHERE l.locktype = 'advisory' AND l.classid = 8400 AND l.objid = 1
+    AND l.granted;
+  ```
+
+  Once you are certain the process is gone, run
+  `SELECT pg_terminate_backend(<pid>);`. If it died inside a migration file,
+  that file's changes roll back and the version stays dirty: follow
+  [Rollback](#rollback).
+- **With a connection pooler** (none ships; for deployments that add one,
+  such as pgbouncer):
+  - Its idle server connections stay open after every backend has stopped,
+    until `server_idle_timeout` (pgbouncer default: 600 s). Each one counts
+    as an other database session, so migrations are refused until the
+    pooler is stopped or told to reconnect (`RECONNECT`).
+  - The backend's start and `paceday-operator` must reach PostgreSQL
+    directly or through **session** pooling, never through transaction
+    pooling: the migration lock is a session lock.
+- **The Postgres health check.** `pg_isready` in the compose file opens a
+  short connection to the application database every few seconds. A
+  backend start whose check falls in that instant is refused as "serving",
+  and Docker retries it a moment later. A single `refusing to start` line
+  followed by a normal start is expected and harmless.
+
 ### PAC-71 release: sign every session out once (release step)
 
 The PAC-71 release has one extra step, decided by the owner (OQ-6, 2026-11-01:
@@ -103,6 +202,10 @@ running, advance every account's session generation once:
 compose exec backend /paceday-operator advance-all -operator <you> -reason "PAC-71 deploy (OQ-6)"
 ```
 
+- `advance-all` runs after the new backend has migrated, so it applies
+  nothing itself. (From PAC-116's implementation on, a newer operator
+  against an older schema refuses while the backend serves; see
+  [Applying migrations](#applying-migrations-stop-migrate-start).)
 - `advance-all` runs against the running backend (`exec`): it needs no
   backend stop, unlike the encryption subcommands below that use
   `run --rm --no-deps backend`. (`run --rm --no-deps backend /paceday-operator
@@ -472,7 +575,9 @@ exits 0 when nothing plain is left (3 while some is).
 
 `paceday-operator encryption <subcommand>` ships in the backend image as
 `/paceday-operator`. It reads `DATABASE_URL` and the same two key variables
-as the backend. Subcommands that need the backend **running or not** use
+as the backend. From PAC-116's implementation on, like the backend, it
+applies pending migrations only while no backend is serving
+([Applying migrations](#applying-migrations-stop-migrate-start)). Subcommands that need the backend **running or not** use
 `exec`:
 
 ```sh
