@@ -217,11 +217,12 @@ the email field keeps the label "Work email" (OQ-4 open), and the top
 provider button is named "Continue with Google" / "Sign up with Google" once
 availability has loaded.
 
-## 8. Deleted links and the owner archive — `src/pages/Links.tsx`, `src/pages/LinksArchive.tsx` (PAC-40 part A)
+## 8. Deleted links and the owner archive — `src/pages/Links.tsx`, `src/pages/LinksArchive.tsx` (PAC-40 parts A and B)
 
 Contract `contracts/features/PAC-40.md` §2.4 and §6. Implemented by the web PR
 smart-calendar-flow#150 (`impl/pac-40-web`); used by
-`tests/pac40-lifecycle.spec.ts` (AC-10, AC-25 part A).
+`tests/pac40-lifecycle.spec.ts` (AC-10, AC-25; part B adds AC-32 on the seeded
+erased link, no new test id).
 
 | Test id | Element | Used for |
 |---|---|---|
@@ -229,19 +230,19 @@ smart-calendar-flow#150 (`impl/pac-40-web`); used by
 | `links-archive-link` | the link from the Links page to `/app/links/archive` | AC-25 |
 | `link-delete-dialog` | the delete confirmation dialog | AC-10, AC-25 |
 | `link-delete-copy` | its copy: people can no longer book; the link and its bookings move to the archive | AC-25 |
-| `link-delete-erasure` | the erasure sentence; present only when `booker_erasure.enabled` is true, so absent in part A | AC-25 (asserted absent) |
+| `link-delete-erasure` | the erasure sentence; present only when `booker_erasure.enabled` is true (part B on) | AC-25 (asserted present, quotes 90 days) |
 | `link-delete-confirm` | the confirm button, text "Delete link" | AC-10, AC-25 |
 | `link-delete-cancel` | the cancel button | not driven |
 | `archive-page` | the archive page | AC-25 |
 | `archive-list` / `archive-empty` / `archive-unavailable` | the list, its empty state, and "archive unavailable" (any non-200 or a body failing the schema, K4-7) | not driven in part A |
-| `archive-row-<slug>` | one archived link; `data-erasure-state` = `no_bookings` / `awaiting_erasure` / `erased` | AC-25 |
-| `archive-erasure` | the erasure date; absent while `enabled` is false | AC-25 (asserted absent) |
-| `archive-view-bookings` | the button in a row that opens its detail | AC-25 |
-| `archive-detail` | the detail dialog | AC-25 |
+| `archive-row-<slug>` | one archived link; `data-erasure-state` = `no_bookings` / `awaiting_erasure` / `erased` | AC-25, AC-32 |
+| `archive-erasure` | the erasure date (due, or erased on); absent while `enabled` is false | AC-25 (due date), AC-32 (erased on) |
+| `archive-view-bookings` | the button in a row that opens its detail | AC-25, AC-32 |
+| `archive-detail` | the detail dialog | AC-25, AC-32 |
 | `archive-bookings` / `archive-bookings-empty` / `archive-detail-not-found` / `archive-detail-unavailable` | the bookings list and its other states | not driven in part A |
-| `archive-booking-<id>` | one booking; `data-erased` = `true` / `false` | AC-25 |
-| `archive-booker-name`, `archive-booker-email` | the booker's name and email (not erased) | AC-25 |
-| `archive-booker-erased` | the explicit erased state (part B) | AC-25 (asserted absent) |
+| `archive-booking-<id>` | one booking; `data-erased` = `true` / `false` | AC-25, AC-32 |
+| `archive-booker-name`, `archive-booker-email` | the booker's name and email (not erased) | AC-25 (present), AC-32 (absent) |
+| `archive-booker-erased` | the explicit erased state (part B) | AC-25 (absent), AC-32 (present) |
 | `archive-booking-status` | the booking's status | AC-25 |
 
 Also relied on (not test ids): the archive offers no button or switch named

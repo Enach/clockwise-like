@@ -372,8 +372,12 @@ and neither are links that were inactive before 037 (AC-29).
 - **Lock order:** the link row, then that link's bookings rows, then the
   audit insert, which takes `FOR KEY SHARE` on the owner's `users` row. Today
   no path holds a `users` row lock and then waits on a link lock: booking
-  creation is one autocommitted insert, `FreeAddress` and `reassign` touch no
-  link, and no product path deletes a user. So there is no lock cycle. A
+  creation is, since PAC-101, one transaction that locks only the link
+  (`FOR SHARE`, under the 10 s link-lock bound) and then inserts the booking,
+  taking no `users` row lock (`contracts/features/PAC-101.md` §4.1; on a
+  deleted link it finds no row, so it never interleaves with this
+  `FOR UPDATE`); `FreeAddress` and `reassign` touch no link, and no product
+  path deletes a user. So there is no lock cycle. A
   future path that does lock a user and then a link (an account deletion
   cascade) would get a Postgres deadlock error. The job would see that as
   failure class `40P01` for that link, roll the link back, and erase it on
@@ -748,7 +752,9 @@ contract is `9c2c7cbc…` at `1c04056`. I re-checked both with
        inserted.
    - Fix: §5 now binds both points and states the lock order.
    - Deadlock analysis: there is no lock cycle today.
-     - Booking creation is one autocommitted insert.
+     - Booking creation is one autocommitted insert (true at K4; since
+       PAC-101 it is one transaction holding the link `FOR SHARE`, still
+       with no `users` row lock: §5).
      - No product path locks a `users` row and then a link.
      - A future account-deletion cascade would show up as `40P01` on one link,
        and the next run retries that link.

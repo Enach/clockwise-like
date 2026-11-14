@@ -638,6 +638,97 @@ to one before encryption at rest is a restore of the pre-deploy backup
 The alternative is restoring the pre-deploy backup (losing what was written
 since).
 
+## Booker erasure (PAC-40)
+
+When an owner deletes a scheduling link, the link and its bookings move to
+the owner's archive. **90 × 24 hours after the latest meeting end of any of
+the link's bookings** (whatever their status), the backend erases each
+booker's **name and email address** on that link. Only deleted links are
+erased; live and paused links never are. There is no setting that turns this
+off or changes the 90 days.
+
+**What it erases and what it keeps.** In the database, each booking's
+`booker_name` and `booker_email` become empty and `booker_erased_at` records
+the instant; the archive then shows the booking as erased. Everything else is
+kept: the link, its deletion time, its hosts, each booking's start, end,
+status, notes, creation time and calendar-event references. So uses counts,
+busy times and the reserved slug do not change.
+
+**What it cannot reach.** Copies outside the database stay as they are:
+
+- the attendee (the booker's email) and description on each host's calendar
+  event;
+- the confirmation email and invitation the booker received;
+- **database backups taken before the erasure**: they keep the values until
+  the backup set is deleted by its retention (14 days by default,
+  [Backups](#backups)). **The backup retention therefore bounds how long an
+  erased value survives anywhere Paceday controls.** A database page that held
+  an erased value is reclaimed by Postgres' routine cleanup, not at once.
+
+**When it runs.** On its own, inside the backend, with no operator action:
+once at every start-up, then every 24 hours. A link is erased within 24 hours
+of becoming due while the backend runs; one that became due while it was down
+is erased by the first run after start. Every run writes exactly one line to
+the backend log, also when it erases nothing:
+
+```
+booker-erasure: run at=2026-06-01T03:00:00Z links_examined=2 links_erased=2 bookings_erased=5 failures=0
+```
+
+The newest such line is the last run. Each erased link also gets one entry
+`scheduling_link_bookers_erased` in its **owner's** activity log (title, link
+id, bookings erased, last booking date, run time). No log line, activity
+entry or error report ever holds a booker's name or email.
+
+**Listing what is due**, without seeing any personal data (read-only, no
+`--operator`/`--reason`, never applies a migration, not written to
+`operator_audit`; backend running or not):
+
+```sh
+docker compose -f docker-compose.prod.yml exec backend /paceday-operator booker-erasure status [--check]
+```
+
+It prints one line per deleted link that is due, overdue (more than 24 h past
+due) or due within 7 days: link id, owner user id, `deleted_at`,
+`last_booking_end_at`, `erasure_due_at`, bookings awaiting erasure, and
+`overdue`. Never a name, an email or a title. Exit codes: 0 listed, 1 failure
+(database unreachable, schema below migration 037 or dirty, query error),
+2 usage, 3 with `--check` only when at least one link is overdue (use that
+for monitoring).
+
+**When a run line shows `failures>0`.** Each failed link has its own line
+`booker-erasure: link <id> failed: <class>`, where the class is a Postgres
+SQLSTATE (`sqlstate 55P03` is a lock wait past the 10 s bound, `sqlstate
+40P01` a deadlock) or a fixed word such as `context canceled` (shutdown).
+A failed link is rolled back entirely and retried by the next run; the
+others in the run are unaffected. Run `booker-erasure status`: a link that
+stays `overdue` across two daily runs needs a look. Read the class, check the
+database (locks: `pg_stat_activity`, `pg_locks`), and restart the backend to
+retry at once (the start-up run). Open an issue if the same link keeps
+failing; do not edit the bookings by hand.
+
+**After a restore.** A backup taken before an erasure brings the erased values
+back. Start the backend ([Restore](#restore) step 5), which runs the erasure
+at start-up, and **check the next `booker-erasure: run` line before anyone
+uses the restored data**: the links due are erased again, each with a new
+activity entry.
+
+**Erasure cannot be undone**, not by a code revert either: reverting the
+release stops the job, and what it erased stays erased. Only a pre-erasure
+backup within its retention holds the values, and restoring one to undo an
+erasure defeats the owner's decision; after any restore the start-up run
+erases them again anyway.
+
+**Rolling back the deleted state (part A, migration 037).** Never migrate
+down in production ([Rollback](#rollback)): restore the pre-deploy backup.
+If 037's down step is ever run (development, staging), every deleted link
+becomes an ordinary **paused** link that its owner can resume, and upgrading
+again does not bring the deletion back (`deleted_at` is dropped); those links
+then leave the archive and are never erased. Before any rollback that crosses
+037, record the deleted link ids
+(`SELECT id FROM scheduling_links WHERE deleted_at IS NOT NULL`, or
+`booker-erasure status` for those with bookings awaiting erasure).
+
 ## Account recovery
 
 Recovering an account whose only sign-in method stopped working, or that

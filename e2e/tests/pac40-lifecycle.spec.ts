@@ -1,16 +1,25 @@
 /**
- * PAC-40 part A: the scheduling-link lifecycle through the full stack
- * (nginx -> backend -> Postgres, and the built web app for the UI journeys).
+ * PAC-40 (parts A and B): the scheduling-link lifecycle through the full
+ * stack (nginx -> backend -> Postgres, and the built web app for the UI
+ * journeys).
  *
  * AC-10: an owner deletes a link on the Links page; after a reload it is gone
  * from the page and its public booking page shows the not-found state. The
  * row is kept (deleted_at set, active false: spec D-2, migration 037).
  *
- * AC-25 (part A: no erasure sentence, no erasure date, because
- * booker_erasure.enabled is false in this build): the delete confirmation
- * says the link and its bookings move to the archive; the archive then shows
- * the link with its booking, the booker's name and email; and the archive
- * offers no control that edits, resumes, restores or deletes the link.
+ * AC-25 (part B: booker_erasure.enabled is true in this build): the delete
+ * confirmation says the link and its bookings move to the archive AND that
+ * bookers' names and emails are erased 90 days after the last booking; the
+ * archive then shows the link with its booking, the booker's name and email
+ * and the erasure date; and it offers no control that edits, resumes,
+ * restores or deletes the link.
+ *
+ * AC-32 (part B, rendered through the stack): a seeded deleted link whose
+ * booking was already erased (LINKS.pac40Erased) is in the erased state in
+ * the archive, the booking shows "erased" and no name or email. The job
+ * itself (clock, schedule, transaction) is proven by the backend's unit
+ * tests (engine/booker_erasure_test.go, main_pac40_test.go): it runs at
+ * start-up and every 24 h and has no clock this suite can move.
  *
  * AC-18: a dedicated single-use link booked once stays used up when that
  * booking is cancelled (D-6). Nothing in Paceday cancels a booking yet, so
@@ -18,7 +27,8 @@
  * alone, never the shared exhausted link.
  *
  * The seeded deleted link (LINKS.pac40Archived, owned by USERS.second) pins
- * AC-4, AC-21 (part A), AC-22 and AC-23 against the real stack.
+ * AC-4, AC-21 (with part B's due instant), AC-22 and AC-23 against the real
+ * stack.
  *
  * The UI journeys use the test ids of smart-calendar-flow#150 (PAC-40 part A
  * web), listed in e2e/TESTIDS-REQUIRED.md section 8.
@@ -29,6 +39,13 @@ import { LINKS, MISSING_SLUG, USERS } from '../seed/ids';
 
 const NOT_FOUND = { error: 'not found' };
 const ARCHIVED = LINKS.pac40Archived;
+const ERASED = LINKS.pac40Erased;
+const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/** end + 90 x 24 h, as the server serialises it (UTC, Z suffix). */
+function dueAfter(end: string): string {
+  return new Date(Date.parse(end) + RETENTION_MS).toISOString().replace('.000Z', 'Z');
+}
 
 /** A reusable link owned by the primary user, with a run-unique slug. */
 async function createOwnedLink(
@@ -58,7 +75,7 @@ async function removeLink(db: Db, id: string) {
   await db.query('DELETE FROM scheduling_links WHERE id = $1', [id]);
 }
 
-test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
+test.describe('scheduling-link lifecycle (PAC-40)', () => {
   test('AC-10: a link deleted on the Links page is gone after a reload, and its booking page is not found', async ({
     authedPage,
     authedApi,
@@ -109,7 +126,7 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
     }
   });
 
-  test('AC-25 (part A): delete moves the link and its booking to a read-only archive, with no erasure promise', async ({
+  test('AC-25: delete moves the link and its booking to a read-only archive and promises erasure 90 days after the last booking', async ({
     authedPage,
     authedApi,
     db,
@@ -132,9 +149,12 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
       const copy = dialog.getByTestId('link-delete-copy');
       await expect(copy).toContainText(/no longer be able to book/i);
       await expect(copy).toContainText(/archive/i);
-      // enabled=false in part A: nothing promises erasure (contract §2.4).
-      await expect(dialog.getByTestId('link-delete-erasure')).toHaveCount(0);
-      await expect(dialog).not.toContainText(/eras/i);
+      // enabled=true in part B: the erasure sentence quotes retention_days
+      // (contract §2.4); its copy is the web's, the figure is the server's.
+      const erasure = dialog.getByTestId('link-delete-erasure');
+      await expect(erasure).toBeVisible();
+      await expect(erasure).toContainText(/names and emails/i);
+      await expect(erasure).toContainText(/\b90 days\b/);
       await dialog.getByTestId('link-delete-confirm').click();
       await expect(authedPage.getByTestId(`link-row-${link.slug}`)).toHaveCount(0);
 
@@ -146,7 +166,17 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
       await expect(row).toBeVisible();
       await expect(row).toContainText(link.title);
       await expect(row).toHaveAttribute('data-erasure-state', 'awaiting_erasure');
-      await expect(archive.getByTestId('archive-erasure')).toHaveCount(0);
+      // The erasure date: 2020-02-03T09:30Z + 90 x 24 h = 2020-05-03T09:30Z.
+      const date = row.getByTestId('archive-erasure');
+      await expect(date).toContainText(/will be erased on/i);
+      await expect(date).toContainText(/May/);
+      await expect(date).toContainText(/2020/);
+      const listed = (await (await authedApi.get('/api/scheduling-links/archive')).json()) as {
+        links: Array<{ id: string; erasure_due_at: string | null }>;
+        booker_erasure: unknown;
+      };
+      expect(listed.booker_erasure).toEqual({ enabled: true, retention_days: 90 });
+      expect(listed.links.find((l) => l.id === link.id)?.erasure_due_at).toBe('2020-05-03T09:30:00Z');
 
       await row.getByTestId('archive-view-bookings').click();
       const detail = authedPage.getByTestId('archive-detail');
@@ -168,7 +198,7 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
     }
   });
 
-  test('a seeded deleted link is gone from every live path and in its owner\'s archive only (AC-4, AC-21 part A, AC-22, AC-23)', async ({
+  test('a seeded deleted link is gone from every live path and in its owner\'s archive only (AC-4, AC-21, AC-22, AC-23)', async ({
     api,
     authedApi,
     apiAs,
@@ -201,11 +231,11 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
     expect(fetched.status()).toBe(404);
     expect(await fetched.json()).toEqual(NOT_FOUND);
 
-    // AC-21 (part A): in the owner's archive, no erasure date, policy off.
+    // AC-21: in the owner's archive, with its erasure date (part B: policy on).
     const archive = await owner.get('/api/scheduling-links/archive');
     expect(archive.status()).toBe(200);
     const body = (await archive.json()) as { links: Array<Record<string, unknown>>; booker_erasure: unknown };
-    expect(body.booker_erasure).toEqual({ enabled: false, retention_days: 90 });
+    expect(body.booker_erasure).toEqual({ enabled: true, retention_days: 90 });
     expect(body.links.find((l) => l.id === ARCHIVED.id)).toEqual({
       id: ARCHIVED.id,
       title: ARCHIVED.title,
@@ -214,7 +244,7 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
       bookings_count: 1,
       last_booking_end_at: ARCHIVED.booking.end,
       erasure_state: 'awaiting_erasure',
-      erasure_due_at: null,
+      erasure_due_at: dueAfter(ARCHIVED.booking.end),
       erased_at: null,
     });
 
@@ -240,6 +270,60 @@ test.describe('scheduling-link lifecycle (PAC-40 part A)', () => {
     expect(await other.text()).toBe(await unknown.text());
     const theirs = (await (await authedApi.get('/api/scheduling-links/archive')).json()) as { links: Array<{ id: string }> };
     expect(theirs.links.map((l) => l.id)).not.toContain(ARCHIVED.id);
+  });
+
+  test('AC-32: an erased booking reads as erased, never as its old or a blank name and email', async ({
+    apiAs,
+    secondUserPage,
+    assertNotDemo,
+  }) => {
+    const owner = apiAs(USERS.second);
+
+    // The API: erased state, erased_at, no due date; the booking keeps its
+    // times, status and notes, with null name and email and the instant.
+    const list = (await (await owner.get('/api/scheduling-links/archive')).json()) as {
+      links: Array<Record<string, unknown>>;
+    };
+    expect(list.links.find((l) => l.id === ERASED.id)).toEqual({
+      id: ERASED.id,
+      title: ERASED.title,
+      slug: ERASED.slug,
+      deleted_at: ERASED.deletedAt,
+      bookings_count: 1,
+      last_booking_end_at: ERASED.booking.end,
+      erasure_state: 'erased',
+      erasure_due_at: null,
+      erased_at: ERASED.booking.erasedAt,
+    });
+    const detail = await owner.get(`/api/scheduling-links/archive/${ERASED.id}`);
+    expect(detail.status()).toBe(200);
+    const d = (await detail.json()) as { bookings: Array<Record<string, unknown>> };
+    expect(d.bookings).toEqual([
+      expect.objectContaining({
+        id: ERASED.booking.id,
+        booker_name: null,
+        booker_email: null,
+        booker_erased_at: ERASED.booking.erasedAt,
+        start_time: ERASED.booking.start,
+        end_time: ERASED.booking.end,
+        status: 'confirmed',
+        notes: ERASED.booking.notes,
+      }),
+    ]);
+
+    // The page: the row is erased with its date, the booking says so.
+    await secondUserPage.goto('/app/links/archive');
+    await assertNotDemo(secondUserPage);
+    const archive = secondUserPage.getByTestId('archive-page');
+    const row = archive.getByTestId(`archive-row-${ERASED.slug}`);
+    await expect(row).toHaveAttribute('data-erasure-state', 'erased');
+    await expect(row.getByTestId('archive-erasure')).toContainText(/erased on/i);
+    await row.getByTestId('archive-view-bookings').click();
+    const item = secondUserPage.getByTestId('archive-detail').getByTestId(`archive-booking-${ERASED.booking.id}`);
+    await expect(item).toHaveAttribute('data-erased', 'true');
+    await expect(item.getByTestId('archive-booker-erased')).toBeVisible();
+    await expect(item.getByTestId('archive-booker-name')).toHaveCount(0);
+    await expect(item.getByTestId('archive-booker-email')).toHaveCount(0);
   });
 
   test('AC-18: a single-use link stays used up when its booking is cancelled', async ({
