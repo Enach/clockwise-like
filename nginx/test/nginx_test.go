@@ -279,6 +279,30 @@ func TestInvalidSettingsRefuseToStart(t *testing.T) {
 	}
 }
 
+// PAC-114: a whitespace-only NGINX_CSP_SENTRY_ORIGIN is not "unset". It is
+// neither treated as empty (no Sentry origin) nor trimmed: the render step
+// refuses it, so nginx does not start. The refusal must name the setting, so
+// it comes from the validation and not from a broken generated config.
+func TestWhitespaceOnlySentryOriginRefusesToStart(t *testing.T) {
+	t.Parallel()
+	stub := startStub(t)
+	for what, v := range map[string]string{
+		"one space":       " ",
+		"several spaces":  "   ",
+		"space-padded ok": " https://o1.ingest.sentry.example ",
+	} {
+		env := map[string]string{"NGINX_CSP_SENTRY_ORIGIN": v}
+		out, err := runNginxOnce(t, stub, env, "nginx", "-t")
+		if err == nil {
+			t.Errorf("%s: started with %q; want a refusal\n%s", what, env, out)
+			continue
+		}
+		if !strings.Contains(out, "paceday-render: NGINX_CSP_SENTRY_ORIGIN") {
+			t.Errorf("%s: refused, but not by the NGINX_CSP_SENTRY_ORIGIN check\n%s", what, out)
+		}
+	}
+}
+
 func TestConfigLoads(t *testing.T) {
 	t.Parallel()
 	stub := startStub(t)

@@ -35,5 +35,5 @@
     "Frontend error boundary captures a render exception and shows fallback UI.",
     "Contract/provider/consumer tests must pass locally before implementation approval."
   ],
-  "rollback": "Revert the implementation PRs and keep the approved contract revision immutable. Runtime kill switch: unset SENTRY_DSN / VITE_SENTRY_DSN."
+  "rollback": "Revert the implementation PRs and keep the approved contract revision immutable. Runtime kill switch (backend only): unset SENTRY_DSN and restart the backend. VITE_SENTRY_DSN is set at build time, not a runtime kill switch: turn web monitoring off by rebuilding and redeploying the frontend without it, or, without a rebuild, by unsetting NGINX_CSP_SENTRY_ORIGIN and restarting nginx so the CSP blocks the events (amended by PAC-114, 2026-11-14; see contracts/features/PAC-14.md section 7)."
 }
