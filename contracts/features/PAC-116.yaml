@@ -98,7 +98,7 @@
     "AC-4  [integration] pending + nothing: applies. Nothing pending + live heartbeat + app session: convert, rotate-data-key, status, advance-all run as today (no check).",
     "AC-5  [integration] below 034 (no heartbeat table), advance-all, pending: applies with no other session, refuses with one; encryption subcommands keep today's below-034 refusal.",
     "AC-6  [integration] backend start, pending + live heartbeat or app session: exit non-zero before listening, AC-1/AC-2 text; version unchanged, not dirty.",
-    "AC-7  [integration] backend start, pending + nothing else: migrates and /api/ready 200; nothing pending + other backends live: starts as today.",
+    "AC-7  [integration] backend start, pending + nothing else: migrates and /api/ready 200; nothing pending + other backends live: starts as today; once ready, no 'paceday-migrate:' session of the backend remains in pg_stat_activity (the S4 exemption's premise).",
     "AC-8  [integration] migrator held after its check (seam); a backend with nothing pending starts: writes heartbeat, sees the migrating holder, deletes its heartbeat, exits non-zero naming it; after release it starts.",
     "AC-9  [integration] backend held after writing its heartbeat, before its lock check (seam); operator with pending takes the lock, sees the heartbeat, refuses; nothing applied; the backend then starts.",
     "AC-10 [integration] operator + starting backend released together, nothing else connected: exactly one applies; the other gets lock held (exit 5 / non-zero, holder named) or nothing pending; neither refuses as serving; applied once, never dirty.",

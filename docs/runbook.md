@@ -130,8 +130,9 @@ they saw and change nothing. There is no override.
   refusal exits 6 for `encryption` subcommands (5 if another operator holds
   the maintenance lock) and 1 for `free-address`, `reassign` and
   `advance-all`. `encryption status` never applies migrations and never
-  refuses: it prints the pending migrations and whether the app is serving,
-  then its usual report.
+  refuses as "serving": it prints the pending migrations and whether the app
+  is serving, then its usual report. While a migration is in progress it exits
+  5 (`being applied by …`).
 - **Reading a refusal.** Each line names what blocked the migration:
   - `live backend heartbeat: instance … on "<host>", seen <n>s ago`: stop
     that backend. A backend that was killed rather than stopped stops
